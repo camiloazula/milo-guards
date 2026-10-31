@@ -271,16 +271,22 @@ the same line. It is `stop_system` when the line stops more than a name:
   after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
   process but the ones named) are always `stop_system`.
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
-  `-G`, `killall -u me`, `killall -t ttys000`, `taskkill /FI "USERNAME eq me"`,
-  given no name. With a name (`pkill -u me node`) it is the name that is
-  judged. `killall -c name` is a name too, judged as the operands are
-  (`killall -c loginwindow`, `killall -m -c .`).
+  `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
+  `taskkill /FI "USERNAME eq me"`, given no name. With a name
+  (`pkill -u me node`) it is the name that is judged. `killall -c name` is a
+  name too, judged as the operands are (`killall -c loginwindow`,
+  `killall -m -c .`).
 - **Every process a selection picks.** `pkill` given no pattern stops whatever
-  its selection picks: `-P`/`--parent` of 0 or 1 (every child of `launchd` or
-  `init`, which is every app and daemon, `pkill -P 1`), and `--older`,
-  `--runstates`, `--cgroup`, `--ns`, `--env`, `-t`/`--terminal` with any value
-  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$`, `pkill -F pids.txt`
-  and `pkill -P 1 node` (the name is judged) are not.
+  its selection picks: `-P`/`--parent`, `-s`/`--session` and `-g`/`--pgroup` of
+  0 or 1, or of a value only known when it runs (`pkill -P 1`, the children of
+  `launchd` or `init`, which is every app and daemon; `pkill -s 0`, the
+  session of the shell that runs the line, which is the terminal's processes;
+  `pkill -P "$(pgrep -x launchd)"`), and `-O`/`--older`, `-r`/`--runstates`,
+  `--cgroup`, `--ns`, `--nslist`, `--env`, `-t`/`--terminal` with any value
+  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$` (the shell's own
+  children, read by its source text), `pkill -F pids.txt`, `pkill -s 1234` and
+  `pkill -P 1 node` (the name is judged) are not. A value an option takes is
+  never a pattern (`pkill -q 1 -u me`, `-r R`).
 - **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
   `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
   "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
@@ -361,8 +367,11 @@ the same line. It is `stop_system` when the line stops more than a name:
   functions that call each other is not read.
 
 `killall`'s and `pkill`'s options are read as they read them: bundled letters,
-`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`), long
-options abbreviated to three letters. `pgrep` stops nothing and is safe.
+`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,
+`-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
+and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
+(`--pa 1` is `--parent 1`; a prefix that fits several is read as the
+riskier). `pgrep` stops nothing and is safe.
 
 A caller that used to stop on `killall node` stops seeing it: it was
 `stop_system` ("stops every process with a name") and is now safe.

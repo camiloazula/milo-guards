@@ -113,6 +113,10 @@ impl Checker<'_> {
             Some("stops every process of a user")
         } else if options.has_value("t") {
             Some("stops every process on a terminal")
+        } else if ["Z", "context"].iter().any(|name| options.has_value(name)) {
+            // `-Z` makes the names optional and stops every process whose
+            // security context matches, as `-u` does for a user.
+            Some("stops every process a filter picks")
         } else {
             None
         };
@@ -121,7 +125,7 @@ impl Checker<'_> {
 
     /// `pkill`: regular expressions, searched for in each name.
     pub(super) fn pkill(&mut self, args: &[Arg]) {
-        let options = Options::read(args, "uUGgPstFjMN", &PKILL_LONGS);
+        let options = Options::read(args, "uUGgPstFjMNqrO", &PKILL_LONGS);
         let user = ["u", "U", "G", "euid", "uid", "group"]
             .iter()
             .any(|name| options.has_value(name));
@@ -483,7 +487,7 @@ const KILLALL_LONGS: [Long; 15] = [
 ];
 
 /// pkill's options with a long form.
-const PKILL_LONGS: [Long; 22] = [
+const PKILL_LONGS: [Long; 23] = [
     Long::value("signal"),
     Long::value("euid"),
     Long::value("uid"),
@@ -499,6 +503,7 @@ const PKILL_LONGS: [Long; 22] = [
     Long::value("env"),
     Long::value("older"),
     Long::value("runstates"),
+    Long::value("queue"),
     Long::flag("inverse"),
     Long::flag("exact"),
     Long::flag("full"),
@@ -551,22 +556,34 @@ impl<'a> Options<'a> {
                 reading = false;
             } else if let Some(long) = text.strip_prefix("--") {
                 let name = long.split_once('=').map_or(long, |(name, _)| name);
-                // A long option may be abbreviated to three letters.
-                let found = longs.iter().find(|full| full.name == name).or_else(|| {
-                    longs
+                // `getopt_long` takes the name as written, or else any
+                // prefix that fits a long option. A prefix that fits several
+                // is an error to the program; it is read as all of them, so
+                // that the riskier reading counts.
+                let exact = longs.iter().find(|full| full.name == name);
+                let found: Vec<&Long> = match exact {
+                    Some(full) => vec![full],
+                    None if name.is_empty() => Vec::new(),
+                    None => longs
                         .iter()
-                        .find(|full| name.len() >= 3 && full.name.starts_with(name))
-                });
-                match found {
-                    Some(full) if full.value => {
-                        let value = match long.split_once('=') {
+                        .filter(|full| full.name.starts_with(name))
+                        .collect(),
+                };
+                if found.is_empty() {
+                    options.given.push((name.to_string(), None));
+                } else {
+                    let value = if found.iter().any(|full| full.value) {
+                        match long.split_once('=') {
                             Some((_, value)) => Some(Arg::Known(value.to_string())),
                             None => iter.next().cloned(),
-                        };
+                        }
+                    } else {
+                        None
+                    };
+                    for full in found {
+                        let value = value.clone().filter(|_| full.value);
                         options.given.push((full.name.to_string(), value));
                     }
-                    Some(full) => options.given.push((full.name.to_string(), None)),
-                    None => options.given.push((name.to_string(), None)),
                 }
             } else if text.len() > 1 && text.starts_with('-') {
                 options.bundle(&text[1..], short_values, &mut iter);
@@ -579,13 +596,10 @@ impl<'a> Options<'a> {
 
     /// The letters after one `-`.
     fn bundle(&mut self, letters: &str, short_values: &str, iter: &mut std::slice::Iter<'a, Arg>) {
-        // A signal, not letters: `-9`, `-KILL`, `-SIGHUP`.
-        let signal = letters.chars().all(|c| c.is_ascii_digit())
-            || (letters.len() >= 2
-                && letters
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
-        if signal {
+        // A signal, not letters: `-9`, `-KILL`, `-SIGHUP`, `-USR1`. A bundle
+        // of capitals and digits that is not one is letters: `-P1` is
+        // `-P 1`, `-U0` is `-U 0`.
+        if is_signal(letters) {
             return;
         }
         for (at, letter) in letters.char_indices() {
@@ -624,20 +638,69 @@ impl<'a> Options<'a> {
     }
 }
 
+/// The signals a program is given by name, without `SIG`.
+const SIGNALS: &[&str] = &[
+    "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "IOT", "EMT", "FPE", "KILL", "BUS", "SEGV", "SYS",
+    "PIPE", "ALRM", "TERM", "URG", "STOP", "TSTP", "CONT", "CHLD", "CLD", "TTIN", "TTOU", "IO",
+    "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "INFO", "USR1", "USR2", "POLL", "PWR", "STKFLT",
+    "LOST", "UNUSED", "RTMIN", "RTMAX",
+];
+
+/// Whether the text after a `-` is a signal: a number, or a name with or
+/// without `SIG` (`HUP`, `SIGHUP`, `USR1`, `RTMIN+3`).
+fn is_signal(letters: &str) -> bool {
+    if letters.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let name = letters.strip_prefix("SIG").unwrap_or(letters);
+    let name = match name.split_once(['+', '-']) {
+        Some((base @ ("RTMIN" | "RTMAX"), number))
+            if number.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => name,
+    };
+    SIGNALS.contains(&name)
+}
+
 /// Whether a `pkill` given the selections in `options` and no pattern stops
 /// every process they pick: the children of `init` or of nothing (`-P 1`),
 /// the processes older than a time, in a state, a control group, a namespace
 /// or with a variable, and a terminal's.
 fn picks_without_pattern(options: &Options<'_>) -> bool {
-    let init = ["P", "parent"].iter().any(|name| {
-        options.values(name).iter().any(|value| {
-            value.known().is_some_and(|text| {
-                text.split(',')
-                    .any(|id| matches!(id.trim().parse::<u64>(), Ok(0 | 1)))
-            })
+    // A parent, session or process group that is `launchd`'s or `init`'s (1),
+    // the caller's own (0: `pkill -s 0` is the terminal's processes and the
+    // shell that runs this) or only known when it runs. `pkill -P $$`, the
+    // children of this shell, is read by its source text.
+    let picks = |names: [&str; 2], own_shell_is_known: bool| {
+        names.iter().any(|name| {
+            options
+                .values(name)
+                .iter()
+                .any(|value| match value.known() {
+                    Some(text) => text
+                        .split(',')
+                        .any(|id| matches!(id.trim().parse::<u64>(), Ok(0 | 1))),
+                    None => !(own_shell_is_known && matches!(value.text(), "$$" | "\"$$\"")),
+                })
         })
-    });
-    init || ["older", "runstates", "cgroup", "ns", "env", "t", "terminal"]
+    };
+    picks(["P", "parent"], true)
+        || picks(["s", "session"], false)
+        || picks(["g", "pgroup"], false)
+        || [
+            "older",
+            "O",
+            "runstates",
+            "r",
+            "cgroup",
+            "ns",
+            "nslist",
+            "env",
+            "t",
+            "terminal",
+        ]
         .iter()
         .any(|name| options.has(name))
 }
@@ -739,9 +802,19 @@ fn wildcard_pieces(pattern: &str) -> Vec<Piece> {
 /// Whether the wildcard `pieces` match `name`, in time proportional to
 /// their number times the name's length.
 fn wildcard_matches(pieces: &[Piece], name: &[char]) -> bool {
+    // Every piece but a star takes one character, so a name shorter than
+    // that many pieces is not matched; this also keeps the work below to the
+    // name's length, however long the wildcard is.
+    let needed = pieces
+        .iter()
+        .filter(|piece| !matches!(piece, Piece::Star))
+        .count();
+    if needed > name.len() {
+        return false;
+    }
     // The positions in `pieces` the matching can be at, after the name so
     // far; a star can also match nothing.
-    let spread = |at: &mut Vec<bool>| {
+    let spread = |at: &mut [bool]| {
         for index in 0..pieces.len() {
             if at[index] && matches!(pieces[index], Piece::Star) {
                 at[index + 1] = true;
@@ -749,10 +822,11 @@ fn wildcard_matches(pieces: &[Piece], name: &[char]) -> bool {
         }
     };
     let mut at = vec![false; pieces.len() + 1];
+    let mut next = vec![false; pieces.len() + 1];
     at[0] = true;
     spread(&mut at);
     for &c in name {
-        let mut next = vec![false; pieces.len() + 1];
+        next.fill(false);
         for (index, piece) in pieces.iter().enumerate() {
             if !at[index] {
                 continue;
@@ -764,7 +838,7 @@ fn wildcard_matches(pieces: &[Piece], name: &[char]) -> bool {
             }
         }
         spread(&mut next);
-        at = next;
+        std::mem::swap(&mut at, &mut next);
     }
     at[pieces.len()]
 }

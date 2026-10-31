@@ -1188,16 +1188,6 @@ fn the_process_rules_read_long_patterns_quickly() {
             &linux,
         ),
         (
-            Shell::PowerShell,
-            format!("gps{}", "|kill".repeat(12_000)),
-            &windows,
-        ),
-        (
-            Shell::PowerShell,
-            format!("Get-Process{}", " | Stop-Process".repeat(4_000)),
-            &windows,
-        ),
-        (
             Shell::Posix,
             format!("pkill '{}'", "[a-z]x?(a|b)+".repeat(4_000)),
             &linux,
@@ -1213,12 +1203,26 @@ fn the_process_rules_read_long_patterns_quickly() {
             &linux,
         ),
     ];
-    for (shell, line, paths) in &lines {
+    // Long pipelines: most of the time is the parser's, not the rules', so
+    // the limit is loose, as for the deep functions of the fork-bomb test.
+    let pipelines = [
+        format!("gps{}", "|kill".repeat(12_000)),
+        format!("Get-Process{}", " | Stop-Process".repeat(4_000)),
+    ];
+    let limits = lines
+        .iter()
+        .map(|(shell, line, paths)| (*shell, line, *paths, slow))
+        .chain(
+            pipelines
+                .iter()
+                .map(|line| (Shell::PowerShell, line, &windows, slow * 8)),
+        );
+    for (shell, line, paths, limit) in limits {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
         let started = std::time::Instant::now();
-        let _ = classify(line, *shell, paths);
+        let _ = classify(line, shell, paths);
         let took = started.elapsed();
-        assert!(took < slow, "{shell:?} {} bytes took {took:?}", line.len());
+        assert!(took < limit, "{shell:?} {} bytes took {took:?}", line.len());
     }
 }
 
@@ -1509,5 +1513,151 @@ fn pkill_given_only_a_selection_stops_everything_it_picks() {
             ("pkill -t pts/1", Rule::StopSystem),
             ("pkill --terminal pts/1", Rule::StopSystem),
         ],
+    );
+}
+
+// ---- Review follow-up: the fourth review of the process rules ----
+
+#[test]
+fn an_attached_value_on_a_capital_option_is_not_a_signal() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill -USR1 node",
+            "pkill -USR2 node",
+            "pkill -KILL node",
+            "pkill -SIGHUP node",
+            "pkill -HUP -f gunicorn",
+            "pkill -RTMIN+3 node",
+            "pkill -P1 node",
+            "pkill -U501 node",
+            "killall -USR1 node",
+            "killall -SIGTERM node",
+        ],
+        &[
+            ("pkill -P1", Rule::StopSystem),
+            ("pkill -P0", Rule::StopSystem),
+            ("pkill -U0", Rule::StopSystem),
+            ("pkill -U501", Rule::StopSystem),
+            ("pkill -G0", Rule::StopSystem),
+            ("pkill -Uno_such_user_zz", Rule::StopSystem),
+            ("pkill -P 1", Rule::StopSystem),
+            ("pkill -U 501", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_long_option_is_read_by_any_prefix_that_fits() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill --sig KILL node",
+            "pkill --s KILL node",
+            "pkill --pa 1234 node",
+            "killall --u me node",
+            "killall --us=me node",
+            "killall --re 'node.*'",
+        ],
+        &[
+            ("pkill --pa 1", Rule::StopSystem),
+            ("pkill --par 1", Rule::StopSystem),
+            ("pkill --p 1", Rule::StopSystem),
+            ("pkill --eu me", Rule::StopSystem),
+            ("pkill --ui me", Rule::StopSystem),
+            ("pkill --u me", Rule::StopSystem),
+            ("pkill --te pts/1", Rule::StopSystem),
+            ("pkill --i node", Rule::StopSystem),
+            ("pkill --n 1", Rule::StopSystem),
+            ("pkill --o 1", Rule::StopSystem),
+            ("pkill --ru R", Rule::StopSystem),
+            ("pkill --nslist ipc", Rule::StopSystem),
+            ("killall --us me", Rule::StopSystem),
+            ("killall --u me", Rule::StopSystem),
+            ("killall --us=me", Rule::StopSystem),
+            ("killall --re .", Rule::StopSystem),
+            ("killall --r .", Rule::StopSystem),
+            ("killall --reg .", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn pkill_options_that_take_a_value_hide_no_pattern() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill -q 1 node",
+            "pkill --queue 1 node",
+            "pkill -r R node",
+            "pkill --runstates R node",
+        ],
+        &[
+            ("pkill -q 1 -u me", Rule::StopSystem),
+            ("pkill --queue 1 -u me", Rule::StopSystem),
+            ("pkill --q 1 -u me", Rule::StopSystem),
+            ("pkill -q 1 -P 1", Rule::StopSystem),
+            ("pkill -r R", Rule::StopSystem),
+            ("pkill --runstates R", Rule::StopSystem),
+            ("pkill -O 1", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_selection_only_known_when_it_runs_picks_everything() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill -P $$",
+            "pkill -s 1234",
+            "pkill -g 1234",
+            "pkill --session 1234",
+            "pkill -s 0 node",
+            "pkill -g 0 node",
+            "pkill -P \"$(pgrep -x launchd)\" node",
+        ],
+        &[
+            ("pkill -P \"$(pgrep -x launchd)\"", Rule::StopSystem),
+            ("pkill -P $(cat ppid)", Rule::StopSystem),
+            ("pkill -P $PPID", Rule::StopSystem),
+            ("pkill --parent $(cat ppid)", Rule::StopSystem),
+            ("pkill -s 0", Rule::StopSystem),
+            ("pkill -g 0", Rule::StopSystem),
+            ("pkill --session 0", Rule::StopSystem),
+            ("pkill --pgroup 0", Rule::StopSystem),
+            ("pkill -s 1", Rule::StopSystem),
+            ("pkill -g 1", Rule::StopSystem),
+            ("pkill -s $SID", Rule::StopSystem),
+            ("pkill -g $(ps -o pgid= -p 1)", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn killall_z_with_no_name_picks_every_process_of_a_context() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["killall -Z ctx node", "killall --context ctx node"],
+        &[
+            ("killall -Z ctx", Rule::StopSystem),
+            ("killall --context ctx", Rule::StopSystem),
+            ("killall --cont ctx", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_wildcard_longer_than_every_name_matches_none_of_them() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["taskkill /IM node???????????????????.exe"],
+        &[("taskkill /IM l???n*", Rule::StopSystem)],
     );
 }
