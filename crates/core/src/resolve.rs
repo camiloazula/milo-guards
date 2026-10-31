@@ -645,8 +645,12 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         }
         // Nor is a spelling that goes on past `fd/<digits>`: descriptor 3
         // could be a folder, and a `..` after it lands beside that folder's
-        // parent, not on `/dev/fd`.
-        let raw: Vec<&str> = lower.split('/').collect();
+        // parent, not on `/dev/fd`. The kernel drops `//` and `/.`, so an
+        // empty or `.` part between `fd` and the digits changes nothing.
+        let raw: Vec<&str> = lower
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
         if raw.windows(3).any(|w| w[0] == "fd" && is_digits(w[1])) {
             return None;
         }
@@ -1081,6 +1085,9 @@ mod tests {
             ("/dev/fd/3/x", POSIX, None),
             // A part after the descriptor makes it a folder, `..` or not.
             ("/dev/fd/3/../1", POSIX, None),
+            ("/dev/fd//3/../1", POSIX, None),
+            ("/dev/fd/./3/../1", POSIX, None),
+            ("/dev//fd//3//..//1", POSIX, None),
             ("/dev/fd/0/./../1", POSIX, None),
             ("/dev/fd/3/../null", POSIX, None),
             ("/dev/fd/*", POSIX, None),

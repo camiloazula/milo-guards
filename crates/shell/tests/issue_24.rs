@@ -25,3 +25,22 @@ fn a_dot_dot_after_a_descriptor_is_not_a_device() {
         ],
     );
 }
+
+#[test]
+fn an_empty_or_dot_part_does_not_hide_the_descriptor_folder() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &["echo x > /dev/fd//1", "echo x > /dev/fd/./1"],
+        &[
+            ("rm -rf /dev/fd//3/../1", Rule::Delete),
+            ("echo x > /dev/fd/./3/../1", Rule::Overwrite),
+            ("rm -rf /dev//fd//3//..//1", Rule::Delete),
+            ("tee /dev/fd/./3/../1", Rule::Overwrite),
+            ("truncate -s0 /dev/fd//3/../1", Rule::Overwrite),
+            ("dd if=/dev/zero of=/dev/fd//3/../1", Rule::Overwrite),
+            ("rm -rf '/dev/fd//3/../1'", Rule::Delete),
+            ("cd /dev/fd && rm -rf ./3/../1", Rule::Delete),
+        ],
+    );
+}
