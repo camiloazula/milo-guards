@@ -3,7 +3,7 @@
 mod common;
 
 use common::{check, windows};
-use milo_guards_shell::{classify, Rule, Shell};
+use milo_guards_shell::{classify, Paths, Rule, Shell};
 
 #[test]
 fn everyday_powershell_is_safe() {
@@ -308,4 +308,77 @@ fn windows_paths_compare_without_case() {
     );
     let finding = classify("rd /s /q c:\\USERS\\me", Shell::Cmd, &windows());
     assert_eq!(finding.findings()[0].reason, "deletes your home directory");
+}
+
+#[test]
+fn a_provider_is_read_before_a_wildcard() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item *.log", "Remove-Item build\\*.obj"],
+        &[
+            ("Remove-Item -Recurse -Force HKCU:*", Rule::SystemSettings),
+            ("Remove-Item -Recurse -Force HKLM:*", Rule::SystemSettings),
+            ("Remove-Item -Recurse -Force HKCU:\\*", Rule::SystemSettings),
+            ("Remove-Item -Recurse hklm:Software*", Rule::SystemSettings),
+            ("Remove-Item -Recurse Cert:*", Rule::Delete),
+            ("Remove-Item -Recurse Env:*", Rule::Delete),
+            (
+                "Get-ChildItem HKCU:*.x | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            ("Get-ChildItem Cert:* | Remove-Item", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_drive_relative_path_is_from_its_drives_own_directory() {
+    // The working directory is on D:, so `C:` is a drive it is not on.
+    let on_d = Paths::new(r"D:\work\repo", r"D:\Users\me", [r"D:\work\repo"]);
+    check(
+        Shell::PowerShell,
+        &on_d,
+        &["Remove-Item *.log", "Remove-Item D:*.log"],
+        &[
+            ("Remove-Item -Recurse C:*", Rule::Delete),
+            ("Remove-Item -Recurse c:build", Rule::Delete),
+            ("Remove-Item -Recurse C:..", Rule::Delete),
+            ("Remove-Item -Recurse D:*", Rule::Delete),
+            ("Get-ChildItem C:*.log | Remove-Item", Rule::Delete),
+            (
+                "Remove-Item -Recurse C:*; Remove-Item -Recurse D:",
+                Rule::Delete,
+            ),
+            ("cd D:\\work; Remove-Item -Recurse C:*", Rule::Delete),
+            ("'x' > C:i.sh; bash c:i.sh", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &on_d,
+        &["del *.obj", "del D:*.obj"],
+        &[("del /q C:*", Rule::Delete), ("rd /s /q C:x", Rule::Delete)],
+    );
+    // On C:, `C:x` is `x` from the working directory.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item C:*.log",
+            "Remove-Item -Recurse c:target",
+            "Remove-Item -Recurse C:build\\*.obj",
+            "Get-ChildItem C:*.log | Remove-Item",
+        ],
+        &[
+            ("Remove-Item -Recurse C:*", Rule::Delete),
+            ("Remove-Item -Recurse C:..\\..", Rule::Delete),
+            ("Remove-Item -Recurse D:target", Rule::Delete),
+            ("'x' > C:i.sh; bash i.sh", Rule::Unknown),
+            // A `cd` moves where `C:x` lands.
+            ("cd C:..; Remove-Item -Recurse C:x", Rule::Delete),
+            ("cd ..\\..; Remove-Item -Recurse C:x", Rule::Delete),
+            ("cd C:..\\..\\..; Remove-Item -Recurse x", Rule::Delete),
+        ],
+    );
 }
