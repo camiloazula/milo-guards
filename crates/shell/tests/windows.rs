@@ -485,3 +485,57 @@ fn a_bare_drive_is_that_drives_working_directory() {
     let finding = classify("Remove-Item -Recurse C:", Shell::PowerShell, &windows());
     assert_eq!(finding.findings()[0].reason, "deletes the whole workspace");
 }
+
+#[test]
+fn a_listing_of_a_drives_root_is_the_root() {
+    let lines = [
+        "Get-ChildItem C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem -Path C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem C:/* | Remove-Item -Recurse",
+        "Get-ChildItem -Force C:\\.* | Remove-Item -Recurse",
+        "Get-ChildItem -Recurse C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem FileSystem::C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::C:\\* | Remove-Item -Recurse",
+    ];
+    // From the workspace and from a folder inside it.
+    let inside = Paths::new(
+        r"C:\Users\me\dev\repo\app",
+        r"C:\Users\me",
+        [r"C:\Users\me\dev\repo"],
+    );
+    for paths in [windows(), inside] {
+        let rows: Vec<_> = lines.iter().map(|line| (*line, Rule::Delete)).collect();
+        check(Shell::PowerShell, &paths, &[], &rows);
+        for line in lines {
+            let found = classify(line, Shell::PowerShell, &paths);
+            assert_eq!(
+                found.findings()[0].reason,
+                "deletes the root of the disk",
+                "{line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_script_run_from_a_place_the_guard_cannot_read_is_risky() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "cd sub; cargo test",
+            "cd C:\\Users\\me\\dev\\repo\\sub; bash C:\\Users\\me\\dev\\repo\\sub\\x.sh",
+        ],
+        &[
+            ("cd C:; 'x' > i.sh; bash C:i.sh", Rule::Unknown),
+            ("cd sub; 'x' > i.sh; bash C:i.sh", Rule::Unknown),
+            ("cd $x; 'x' > i.sh; bash i.sh", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[("cd C: & echo x > i.sh & bash C:i.sh", Rule::Unknown)],
+    );
+}

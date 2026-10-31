@@ -279,6 +279,20 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
+        // A script path the guard cannot place (after a `cd` to somewhere
+        // unknown, or on a drive whose directory is) may be the one the line
+        // writes.
+        if matches!(
+            path::within(unit.dir.as_ref(), script, unit.shell),
+            Arg::Unknown(_)
+        ) {
+            self.add(
+                Rule::Unknown,
+                "runs a script only known when it runs",
+                Some(script),
+            );
+            return;
+        }
         let Some(wanted) = self
             .resolver
             .file_key(unit.dir.as_ref(), script, unit.shell)

@@ -136,6 +136,7 @@ a path.
   (`Get-ChildItem C:* | Remove-Item` takes the whole working directory), and
   a provider-qualified one (`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER*`)
   keeps its qualifier, so the pattern is judged on the provider's own path.
+  A drive's root listed (`C:\*`) is the root, not the drive's working directory.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
@@ -177,6 +178,8 @@ Some risks only show when units are read together.
   written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
   `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `run_downloaded`. The guard
   matches the two by the file they name (core's `key`).
+  A script whose path cannot be placed (after a `cd` to somewhere unknown, or
+  `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the

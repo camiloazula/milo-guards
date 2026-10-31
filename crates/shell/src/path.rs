@@ -224,6 +224,8 @@ fn before_wildcards(text: &str, shell: Shell) -> String {
     let separators = flavour(shell).separators();
     match head.rfind(separators) {
         Some(0) => head[..1].to_string(),
+        // `C:\*`: the root of the drive, which `C:` alone is not.
+        Some(end) if head[..end].ends_with(':') => head[..=end].to_string(),
         Some(end) => head[..end].to_string(),
         None if head.starts_with('~') => "~".to_string(),
         // `HKCU:*`, `C:x*`: the drive's own working directory.
