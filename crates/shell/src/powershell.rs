@@ -40,6 +40,33 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     .walk(tree.root_node(), None, 0);
 }
 
+/// The cmdlets that register a script block to run when an event happens:
+/// the block is read where it is written, and runs later.
+const EVENTS: [&str; 4] = [
+    "register-engineevent",
+    "register-objectevent",
+    "register-wmievent",
+    "register-cimindicationevent",
+];
+
+/// Whether `node` is a script block written out, however it is wrapped by
+/// the grammar (`{ … }` is an array of one unary expression of the block).
+fn is_script_block(node: Node<'_>) -> bool {
+    let mut node = node;
+    loop {
+        match node.kind() {
+            "script_block_expression" => return true,
+            "array_literal_expression" | "unary_expression" if node.named_child_count() == 1 => {
+                match node.named_child(0) {
+                    Some(only) => node = only,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// The cmdlet an alias stands for, in lower case; any other name as given.
 pub(crate) fn canonical(name: &str) -> &str {
     match name {
@@ -105,8 +132,22 @@ impl Walker<'_> {
                 if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
                     self.item = stage;
                 }
+                // The block of an event runs later, in this session.
+                let later = key
+                    .as_deref()
+                    .is_some_and(|key| EVENTS.contains(&key))
+                    .then(|| self.split.begin_later());
                 self.children(node, None, level);
+                if let Some(began) = later {
+                    self.split.end_later(began);
+                }
                 self.item = outer;
+            }
+            // `trap { … }`: its block runs on a terminating error, later.
+            "trap_statement" => {
+                let began = self.split.begin_later();
+                self.children(node, stage, level);
+                self.split.end_later(began);
             }
             "redirection" => {
                 self.redirect(node);
@@ -133,9 +174,26 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        // What an event cmdlet's `-Action` is: a script block written out
+        // (`Some(true)`), which the walk reads in place, or anything else.
+        let mut action = None;
+        let mut after_action = false;
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
+                match element.kind() {
+                    "command_argument_sep" | "comment" | "redirection" => {}
+                    "command_parameter" => {
+                        let name = unit::text(&element, self.source).trim_start_matches('-');
+                        after_action =
+                            !name.is_empty() && "action".starts_with(&name.to_ascii_lowercase());
+                    }
+                    _ if after_action => {
+                        action = Some(is_script_block(element));
+                        after_action = false;
+                    }
+                    _ => {}
+                }
                 // `--%` passes the rest verbatim, but only up to a `|`: the
                 // grammar runs it to the end of the line, so what follows the
                 // pipe is read again as the next command.
@@ -172,6 +230,15 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        // A block known only when it runs (`-Action $block`) is a script the
+        // guard cannot read, run by the event.
+        if action == Some(false) && key.as_deref().is_some_and(|key| EVENTS.contains(&key)) {
+            self.split.problem(
+                Rule::Unknown,
+                "runs an event action only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
         launch::add(self.split, unit, self.depth);
         key
     }
@@ -254,7 +321,9 @@ impl Walker<'_> {
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                     at = child.end_byte();
                 }

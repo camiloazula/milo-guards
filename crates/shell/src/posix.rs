@@ -485,16 +485,44 @@ impl Walker<'_> {
                     .to_string(),
             ),
             "string" => self.string(node),
+            // `'rm -rf '"$d"`: known text and expansions side by side. A
+            // value only when every part is; otherwise a template, which a
+            // script can still be read from.
             "concatenation" => {
                 let mut value = String::new();
+                let mut template = String::new();
+                let mut partial = false;
                 let mut cursor = node.walk();
                 for part in node.named_children(&mut cursor) {
                     match self.arg(part) {
-                        Arg::Known(text) => value.push_str(&text),
+                        Arg::Known(text) => {
+                            value.push_str(&text);
+                            template.push_str(&text);
+                        }
+                        Arg::Template { text, .. } => {
+                            partial = true;
+                            template.push_str(&text);
+                        }
+                        Arg::Unknown(_) | Arg::Input
+                            if matches!(
+                                part.kind(),
+                                "simple_expansion" | "expansion" | "command_substitution"
+                            ) =>
+                        {
+                            partial = true;
+                            template.push_str(unit::text(&part, self.source));
+                        }
                         Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
                     }
                 }
-                Arg::Known(value)
+                if partial {
+                    Arg::Template {
+                        text: template,
+                        source: source.to_string(),
+                    }
+                } else {
+                    Arg::Known(value)
+                }
             }
             "simple_expansion" | "expansion" => self.variable(source),
             "command_name" => match node.named_child(0) {
@@ -506,36 +534,54 @@ impl Walker<'_> {
     }
 
     /// A double-quoted string: its text with the variables the guard can name
-    /// put in; anything else expanded inside makes it unknown.
+    /// put in. Anything else expanded inside makes it a template: the text
+    /// with each expansion as written, which is not a value but can be read
+    /// as a script.
     fn string(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         let start = node.start_byte() + 1;
         let end = node.end_byte().saturating_sub(1).max(start);
         let mut value = String::new();
+        let mut template = String::new();
+        let mut partial = false;
         let mut at = start;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            value.push_str(&unescape_quoted(
-                self.source.get(at..child.start_byte()).unwrap_or_default(),
-            ));
+            let gap = unescape_quoted(self.source.get(at..child.start_byte()).unwrap_or_default());
+            value.push_str(&gap);
+            template.push_str(&gap);
+            let written = unit::text(&child, self.source);
             match child.kind() {
                 "string_content" => {
-                    value.push_str(&unescape_quoted(unit::text(&child, self.source)));
+                    let text = unescape_quoted(written);
+                    value.push_str(&text);
+                    template.push_str(&text);
                 }
                 "simple_expansion" | "expansion" => {
-                    match self.variable(unit::text(&child, self.source)) {
+                    match self.variable(written) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => partial = true,
                     }
+                    template.push_str(written);
                 }
-                _ => return Arg::Unknown(source.to_string()),
+                _ => {
+                    partial = true;
+                    template.push_str(written);
+                }
             }
             at = child.end_byte();
         }
-        value.push_str(&unescape_quoted(
-            self.source.get(at..end).unwrap_or_default(),
-        ));
-        Arg::Known(value)
+        let rest = unescape_quoted(self.source.get(at..end).unwrap_or_default());
+        value.push_str(&rest);
+        template.push_str(&rest);
+        if partial {
+            Arg::Template {
+                text: template,
+                source: source.to_string(),
+            }
+        } else {
+            Arg::Known(value)
+        }
     }
 
     /// `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` as paths the resolver reads,

@@ -1,6 +1,6 @@
 //! Adding a unit to a split: the wrappers in front of a program come off
 //! (`sudo rm` is `rm`, run as root), and a program started with a script
-//! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`,
+//! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`, `trap`,
 //! `Invoke-Expression`) has that script split in its own grammar.
 
 use crate::dotglob;
@@ -14,7 +14,7 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
-use interpreters::{interpreter, shell};
+use interpreters::{interpreter, shell, trap};
 pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
 use wrappers::{cmd, env, powershell, rsh, start, start_process, tmux, xargs};
 
@@ -90,17 +90,32 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 match script {
                     Arg::Known(text) => {
                         // A script in a process of its own sets its options
-                        // for itself; `eval` runs in this shell, or in a
-                        // subshell when it is a stage of a pipeline, which
-                        // can turn the option on but not off. A
-                        // `GLOBIGNORE` in front of any is in its
+                        // for itself; `eval` and `trap` run in this shell,
+                        // or in a subshell when they are a stage of a
+                        // pipeline, which can turn the option on but not
+                        // off. A `GLOBIGNORE` in front of any is in its
                         // environment.
                         let outer = split.hidden_snapshot();
                         if starts_hidden || split.scoped_hidden() {
                             split.hide_for_script();
                         }
+                        // A `trap`'s script runs later: when the line ends,
+                        // or between its commands. It is a body, judged with
+                        // the option on if the line ever turns it on, and
+                        // nothing in it is certain to run before the line's
+                        // next unit.
+                        let later = (key == "trap").then(|| {
+                            split.branches += 1;
+                            split.bodies += 1;
+                            split.begin_later()
+                        });
                         unit::script(split, &text, shell, depth + 1);
-                        if key != "eval" {
+                        if let Some(began) = later {
+                            split.branches -= 1;
+                            split.bodies -= 1;
+                            split.end_later(began);
+                        }
+                        if !matches!(key.as_str(), "eval" | "trap") {
                             split.restore_hidden(outer);
                         } else if stage.is_some() {
                             split.restore_hidden(outer.or(split.hidden_snapshot()));
@@ -387,6 +402,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "eval" if unit.shell == Shell::Posix => Launch::Script(Shell::Posix, join(args)),
+        "trap" if unit.shell == Shell::Posix => trap(args),
         "source" | "." if unit.shell == Shell::Posix => match args.first() {
             Some(Arg::Known(script)) if is_stdin(script) => Launch::Reads(Reads::Shell),
             Some(Arg::Known(_)) | None => Launch::Itself,

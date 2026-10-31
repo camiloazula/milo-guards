@@ -11,6 +11,16 @@ pub(crate) enum Arg {
     Known(String),
     /// Only known when it runs (`$VAR`, `$(…)`, `%X%`): its source text.
     Unknown(String),
+    /// A string known except for the expansions in it, which stand as they
+    /// are written: `"rm -rf $d"` is the text `rm -rf $d` and `"$x"` is
+    /// `$x`. Not a value, but readable as a script, whose own grammar then
+    /// finds what it expands.
+    Template {
+        /// The text, with each expansion as written.
+        text: String,
+        /// The argument as written, quotes and all.
+        source: String,
+    },
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
@@ -20,6 +30,21 @@ impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
+            Self::Unknown(_) | Self::Template { .. } | Self::Input => None,
+        }
+    }
+
+    /// Whether the value is only known when it runs, however much of its
+    /// text is readable.
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown(_) | Self::Template { .. })
+    }
+
+    /// The text to read as a script: the value, or a template's text with
+    /// its expansions as written.
+    pub(crate) fn script(&self) -> Option<&str> {
+        match self {
+            Self::Known(text) | Self::Template { text, .. } => Some(text),
             Self::Unknown(_) | Self::Input => None,
         }
     }
@@ -27,7 +52,7 @@ impl Arg {
     /// The value, or the source text of what is only known when it runs.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::Known(text) | Self::Unknown(text) => text,
+            Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
             Self::Input => "<input>",
         }
     }
@@ -221,6 +246,30 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
+    /// How many `cd`s the walk has read, wherever they are: a later one
+    /// means an action that runs later may run from somewhere else.
+    moves: usize,
+    /// The actions that run later in this shell (a `trap`'s script).
+    later: Vec<Later>,
+}
+
+/// Where the walk was when an action that runs later began.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Began {
+    units: usize,
+    writes: usize,
+    moves: usize,
+}
+
+/// An action that runs later, in this shell, from wherever the line has
+/// moved to by then (a `trap`'s script, a PowerShell event's block): the
+/// units and writes it added, and how many `cd`s the line had read when it
+/// ended.
+#[derive(Debug)]
+struct Later {
+    units: std::ops::Range<usize>,
+    writes: std::ops::Range<usize>,
+    moves: usize,
 }
 
 impl Split {
@@ -248,6 +297,7 @@ impl Split {
             self.in_body.push(self.units.len());
         }
         if let Some(target) = moves_to(&unit) {
+            self.moves += 1;
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
         self.units.push(unit);
@@ -367,6 +417,51 @@ impl Split {
         for &at in &self.write_in_body {
             if let Some(write) = self.writes.get_mut(at) {
                 write.hidden = true;
+            }
+        }
+    }
+
+    /// Note where an action that runs later begins, which the walk is about
+    /// to read in place.
+    pub(crate) fn begin_later(&self) -> Began {
+        Began {
+            units: self.units.len(),
+            writes: self.writes.len(),
+            moves: self.moves,
+        }
+    }
+
+    /// Note that the action which began at `began` has been read. It runs
+    /// after the rest of the line, or between its commands, in this shell: if
+    /// the line moves with a `cd` after it, where its relative paths land is
+    /// not known, which [`Split::settle_later`] says once the line is read.
+    /// A `cd` in the action itself may run before any of the line, so the
+    /// rest of the line is read from somewhere unknown.
+    pub(crate) fn end_later(&mut self, began: Began) {
+        if self.moves != began.moves {
+            self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
+        }
+        self.later.push(Later {
+            units: began.units..self.units.len(),
+            writes: began.writes..self.writes.len(),
+            moves: self.moves,
+        });
+    }
+
+    /// After the whole line is read: an action that runs later is read from
+    /// where the line ends up, so when a `cd` came after it, its relative
+    /// paths are known only when it runs.
+    fn settle_later(&mut self) {
+        let moved = Arg::Unknown("where the line moves to".to_string());
+        for later in std::mem::take(&mut self.later) {
+            if later.moves == self.moves {
+                continue;
+            }
+            for unit in self.units.get_mut(later.units).unwrap_or_default() {
+                unit.dir = Some(moved.clone());
+            }
+            for write in self.writes.get_mut(later.writes).unwrap_or_default() {
+                write.dir = Some(moved.clone());
             }
         }
     }
@@ -499,6 +594,7 @@ pub(crate) fn split(command: &str, shell: Shell) -> Split {
     let mut split = Split::default();
     script(&mut split, command, shell, 0);
     split.hide_bodies();
+    split.settle_later();
     split
 }
 

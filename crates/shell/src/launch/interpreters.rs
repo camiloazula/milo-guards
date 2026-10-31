@@ -60,10 +60,40 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
         (true, Some(script)) => Launch::Script(Shell::Posix, script.clone()),
         (true, None) => Launch::Itself,
         (false, Some(Arg::Known(script))) if !stdin && !is_stdin(script) => Launch::Itself,
-        (false, Some(script @ (Arg::Unknown(_) | Arg::Input))) if !stdin => {
+        (false, Some(script)) if !stdin && script.known().is_none() => {
             Launch::Script(Shell::Posix, script.clone())
         }
         _ => Launch::Reads(Reads::Shell),
+    }
+}
+
+/// `trap ACTION SIGNAL…`: the action is a script that runs later, in this
+/// shell. `trap -p` and `trap -l` print, `trap - SIGNAL` puts the default
+/// back and `trap '' SIGNAL` ignores the signal: none runs anything. The
+/// signals are not read, since the action runs for any of them.
+pub(super) fn trap(args: &[Arg]) -> Launch {
+    let mut rest = args;
+    if let Some(Arg::Known(first)) = rest.first() {
+        if first == "--" {
+            rest = &rest[1..];
+        } else if first.len() > 1
+            && first.starts_with('-')
+            && first[1..]
+                .chars()
+                .all(|letter| matches!(letter, 'p' | 'l' | 'P'))
+        {
+            return Launch::Itself;
+        }
+    }
+    match rest.first() {
+        None => Launch::Itself,
+        Some(Arg::Known(action)) if action == "-" => Launch::Itself,
+        // `"rm -rf $d"` runs `rm -rf $d`, read as such; a variable or a
+        // substitution alone is a script only known when it runs.
+        Some(action) => match action.script() {
+            Some(text) => Launch::Script(Shell::Posix, Arg::Known(text.to_string())),
+            None => Launch::Script(Shell::Posix, action.clone()),
+        },
     }
 }
 

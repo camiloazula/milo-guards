@@ -61,6 +61,52 @@ A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
 counts as far as a depth limit. Past it, the line is unreadable.
 
+### Actions that run later
+
+Some commands only register a script, which runs when something happens
+rather than now. The script is read where it is written, in its own grammar,
+and its findings are the line's, since the shell runs it as the same user.
+
+- **`trap`** in a POSIX shell: `trap 'ACTION' SIGNAL…`, also `trap -- 'ACTION'
+  …`, whichever signal (`EXIT`, `0`, `INT`, `TERM`, `ERR`, `DEBUG`, `RETURN`,
+  `HUP`, a number, several at once). The action is read like an `eval`'s
+  script: `trap 'rm -rf ~' EXIT` deletes the home directory. A double-quoted
+  action is read with each expansion left as written, so `trap "rm -rf $d"
+  EXIT` is `rm -rf $d`, a delete of a path known only when it runs, and
+  `trap "$x" EXIT` or `trap "$(cat f)" EXIT` is a program only known when it
+  runs, which is `unknown`. A script a variable holds is read as the text
+  around it says; what the variable holds when the trap fires is not.
+- **Nothing runs** for `trap - EXIT` and `trap -- - INT` (put the default
+  back), `trap '' INT` (ignore the signal), `trap -p`, `trap -l` and a bare
+  `trap`.
+- **PowerShell**: the block of `trap { … }`, and the block given with
+  `-Action` to `Register-EngineEvent`, `Register-ObjectEvent`,
+  `Register-WmiEvent` and `Register-CimIndicationEvent`. The grammar reads a
+  block in place, so its commands are judged as if they stood on the line,
+  and a `-Action` whose value is not a block written out (`-Action $block`,
+  `-Action ([scriptblock]::Create($t))`) is a script known only when it runs,
+  which is `unknown`. An action given as a bare variable in the position
+  where a block goes (`Register-EngineEvent X $block`) is not recognised.
+- cmd has nothing like it.
+
+The action runs in this shell, later: after the line's last command, or
+between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the
+line leaves things, whichever is more conservative and needs the least state:
+
+- **Where it runs.** Its relative paths are judged from where the line was
+  at the `trap`. A `cd` (or `pushd`, `popd`, `Set-Location`) after it, anywhere
+  in the line, makes those paths known only when it runs: `trap 'rm -rf
+  build' EXIT; cd ~` deletes a path known only when it runs. A `cd` inside
+  the action may run before the next command, so the rest of the line is read
+  from somewhere unknown too. An absolute path or `~` is the same wherever the
+  line has moved.
+- **Hidden names.** The action is a body (see Bodies below): when the line
+  turns `dotglob` on anywhere, even after the `trap`, its wildcards match
+  hidden names. An off switch inside it changes nothing for the rest of the
+  line, and an on switch inside it stays on.
+- **Nesting.** A `trap` inside a script, a `bash -c` or another `trap` counts
+  as far as the depth limit.
+
 ### Where a line is
 
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
@@ -243,7 +289,7 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 
 A line is never safe because the guard gave up on it. These come back risky:
 
-- A program or script known only when it runs: `$CMD`, `eval "$x"`, `iex $s`,
+- A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
   one.
