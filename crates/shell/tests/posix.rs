@@ -1548,7 +1548,6 @@ fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
             "cd conf && ls",
             "cd conf && touch new.txt",
             "rm -f *.log conf/*.log",
-            "rm -rf **/y.yaml",
             "rm -rf conf/o*",
         ],
         &[
@@ -1562,6 +1561,7 @@ fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
             ("rm -rf c*", Rule::Delete),
             ("rm -rf conf/a*", Rule::Delete),
             ("rm -rf **/x.yaml", Rule::Delete),
+            ("rm -rf **/y.yaml", Rule::Delete),
             ("rm conf/**/x.yaml", Rule::Delete),
             ("rm -rf conf/**", Rule::Delete),
             ("rm -rf */*/x.yaml", Rule::Delete),
@@ -1663,5 +1663,110 @@ fn a_pattern_picking_a_protected_path_in_the_home_directory_says_so() {
     assert_eq!(
         assessment.findings()[0].reason,
         "deletes your home directory"
+    );
+}
+
+/// A copy, move or link into the folder of a protected file puts a file at
+/// its name there, and replaces it. A copy elsewhere, or under another name,
+/// does not.
+#[test]
+fn a_copy_into_a_protected_files_folder_by_its_name_replaces_it() {
+    let paths = posix().with_protected([Protected::new(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cp a.txt conf/app",
+            "cp a.txt conf/app/",
+            "cp a.txt conf",
+            "cp a.txt conf/",
+            "cp new/y.yaml conf/app",
+            "cp -t conf/app y.yaml",
+            "cp *.txt conf/app/",
+            "cp *.yaml conf/",
+            "install -m 644 a.txt conf/app/",
+            "mv a.txt conf/app/",
+            "ln -s other/y.yaml conf/app/",
+            "cp -r src/. dist/",
+            "cp -r src dist",
+            "cp -a src dist/",
+            "rsync -a src/ dist/",
+            "cp $f conf/",
+            "cp -r a.txt src/",
+        ],
+        &[
+            ("cp x.yaml conf/app/", Rule::Overwrite),
+            ("cp x.yaml conf/app", Rule::Overwrite),
+            ("cp new/x.yaml conf/app", Rule::Overwrite),
+            ("cp ./new/x.yaml conf/app/", Rule::Overwrite),
+            ("cp -t conf/app x.yaml", Rule::Overwrite),
+            ("cp --target-directory=conf/app x.yaml", Rule::Overwrite),
+            ("install x.yaml conf/app/", Rule::Overwrite),
+            ("install -m 600 x.yaml conf/app", Rule::Overwrite),
+            ("mv x.yaml conf/app/", Rule::Overwrite),
+            ("mv new/x.yaml conf/app", Rule::Overwrite),
+            ("cp *.yaml conf/app/", Rule::Overwrite),
+            ("cp x.* conf/app/", Rule::Overwrite),
+            ("cp * conf/app/", Rule::Overwrite),
+            ("cp $f conf/app/", Rule::Overwrite),
+            ("ln -sf other/x.yaml conf/app/", Rule::Overwrite),
+            ("ln -s other/x.yaml conf/app", Rule::Overwrite),
+            ("cd conf && cp ../x.yaml app/", Rule::Overwrite),
+            ("cp -f a.txt x.yaml conf/app", Rule::Overwrite),
+        ],
+    );
+    let assessment = classify("cp x.yaml conf/app/", Shell::Posix, &paths);
+    assert_eq!(assessment.findings().len(), 1);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "writes to the agent's settings"
+    );
+}
+
+/// A recursive copy or mirror into a folder holding a protected path can
+/// replace anything below it.
+#[test]
+fn a_recursive_copy_into_a_folder_holding_a_protected_path_is_a_finding() {
+    let paths = posix().with_protected([Protected::new(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cp -r other/. dist",
+            "cp a.txt conf/app/",
+            "cp -r a.txt conf/other",
+            "rsync -a src/ conf/other/",
+            "rsync src/ conf/",
+            "cp -r conf/other conf/new",
+        ],
+        &[
+            ("cp -r other/. conf", Rule::Overwrite),
+            ("cp -R app conf/", Rule::Overwrite),
+            ("cp -a app conf", Rule::Overwrite),
+            ("cp -R other/ conf/", Rule::Overwrite),
+            ("cp --recursive other conf", Rule::Overwrite),
+            ("cp -r other conf/app", Rule::Overwrite),
+            ("rsync -a src/ conf/", Rule::Overwrite),
+            ("rsync -r src conf", Rule::Overwrite),
+            ("rsync -avz src/ conf/app/", Rule::Overwrite),
+        ],
+    );
+    // Mirroring is the delete rule's own: it keeps its words.
+    let assessment = classify("rsync -a --delete src/ conf/", Shell::Posix, &paths);
+    assert!(assessment
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Delete));
+    // A risky destination keeps its own words.
+    let assessment = classify("cp -r src ~", Shell::Posix, &paths);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "writes to your home directory"
     );
 }

@@ -1314,3 +1314,62 @@ fn a_windows_short_name_and_a_holding_folder_are_protected() {
         ],
     );
 }
+
+/// A copy or move into the folder of a protected file by its name replaces
+/// it, in every shell; a recursive copy into a folder holding one can.
+#[test]
+fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
+    let paths = windows().with_protected([Protected::new(
+        r"C:\Users\me\dev\repo\conf\app\x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Copy-Item a.txt conf\app",
+            r"Copy-Item y.yaml conf\app\",
+            r"Move-Item a.txt conf\app",
+            r"Copy-Item -Recurse src dist",
+            r"Copy-Item -Recurse -Force src conf\other",
+            r"Copy-Item *.txt conf\app",
+        ],
+        &[
+            (r"Copy-Item x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml conf\app\", Rule::Overwrite),
+            (
+                r"Copy-Item -Path new\x.yaml -Destination conf\app",
+                Rule::Overwrite,
+            ),
+            (r"Move-Item x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item *.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item -Recurse -Force src conf", Rule::Overwrite),
+            (r"Copy-Item -Recurse src conf\app", Rule::Overwrite),
+            (r"Copy-Item -Recurse app conf", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"copy a.txt conf\app",
+            r"move /y a.txt conf\app",
+            r"xcopy /y a.txt conf\app",
+            r"robocopy src dist /E",
+            r"robocopy src conf\other /E",
+            r"xcopy /s /y src dist",
+        ],
+        &[
+            (r"copy /y x.yaml conf\app", Rule::Overwrite),
+            (r"copy x.yaml conf\app\", Rule::Overwrite),
+            (r"move /y x.yaml conf\app", Rule::Overwrite),
+            (r"xcopy /y x.yaml conf\app", Rule::Overwrite),
+            (r"xcopy /s /y src conf", Rule::Overwrite),
+            (r"xcopy /e src conf\app", Rule::Overwrite),
+            (r"robocopy src conf /E", Rule::Overwrite),
+            (r"robocopy src conf\app /S", Rule::Overwrite),
+            (r"robocopy src conf\app x.yaml", Rule::Overwrite),
+            (r"robocopy src conf\app", Rule::Overwrite),
+        ],
+    );
+}

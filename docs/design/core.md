@@ -156,8 +156,17 @@ itself.
     target): `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
     beside a protected `conf/app/x.yaml`, while a write to the protected path
     or a pattern that picks it is still protected. The shell guard asks it for
-    writes and `place_hidden` for everything else. A recursive copy onto an
-    existing folder is not read further.
+    writes and `place_hidden` for everything else. A copy, move or link into a
+    folder puts each file at its own name there, so the shell guard also
+    judges that landing path (the destination plus the source's last part,
+    a pattern for a wildcard or unknown source, both readings of a
+    destination that may be a file or a folder): `cp x.yaml conf/app/` writes
+    the protected `conf/app/x.yaml`, and `cp *.yaml conf/app/` can. A
+    recursive copy or mirror (`cp -r`, `-R`, `-a`, `rsync -a`, `Copy-Item
+    -Recurse`, `robocopy /E`, `xcopy /s`) can replace anything below its
+    destination, so there the full `place` is used, holding rule included.
+    What other rules own stays theirs: `rsync --delete` and `robocopy /MIR`
+    delete through the delete rule, and unpacking an archive is not read.
   - **Names compare without case on every host**, not only Windows: a macOS
     or Windows file system ignores it, and the caller names a path as it
     knows it. A protected name is also matched, on Windows, by its 8.3 short
@@ -174,8 +183,10 @@ itself.
     but the workspace or a temporary folder itself. One that stops at a folder
     holding it picks that folder (`c*` for `repo/conf/app/x.yaml`), which
     counts only where the verdict would be harmless. A part of two or more
-    stars alone may stand for any number of names, all the rest when it is the
-    last part (`**/x.yaml`, `conf/**`). A catch-all at the workspace root is
+    stars alone may stand for any number of names a `*` could match, the
+    protected name itself included, and all the rest when it is the last part
+    (`**/x.yaml`, `conf/**`): `**/*.rs` goes below a protected `cfg`, since
+    the stars can take `cfg`. A catch-all at the workspace root is
     still the workspace. Without this a glob inside a workspace would reach a
     protected file that its spelling does not name.
 - Windows names are normalised before they are compared, so a spelling that

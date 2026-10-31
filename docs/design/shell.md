@@ -343,7 +343,9 @@ cannot be deleted or moved. With `Protected::new("/home/me/work/repo/conf/app/x.
 | --- | --- |
 | `rm -rf conf`, `cd conf && rm -rf app`, `mv conf /tmp/x`, `rm -rf c*`, `rm -rf **/x.yaml` | `delete`, in the caller's words |
 | `Remove-Item -Recurse conf`, `rd /s /q conf` | `delete`, in the caller's words |
-| `touch conf/new.txt`, `rm conf/other.txt`, `rm -rf src`, `cp a.txt conf/`, `mkdir -p conf/app` | safe: a write into a folder is not a write of it |
+| `touch conf/new.txt`, `rm conf/other.txt`, `rm -rf src`, `cp a.txt conf/`, `cp a.txt conf/app`, `mkdir -p conf/app` | safe: a write into a folder is not a write of it |
+| `cp x.yaml conf/app/`, `cp -t conf/app x.yaml`, `mv x.yaml conf/app`, `install x.yaml conf/app/`, `ln -sf other/x.yaml conf/app/`, `cp *.yaml conf/app/`, `Copy-Item x.yaml conf\app`, `copy /y x.yaml conf\app` | `overwrite`: the file lands at its own name, which is the protected one |
+| `cp -r other/. conf`, `cp -a app conf`, `rsync -a src/ conf/`, `Copy-Item -Recurse src conf`, `robocopy src conf /E`, `xcopy /s /y src conf` | `overwrite`: a recursive copy can replace anything below the folder |
 | `rm -rf .`, `rm -rf ~` | the workspace, the home directory: a risky place keeps its own words |
 
 A wildcard part stands for one entry, so a `..` after it still climbs:

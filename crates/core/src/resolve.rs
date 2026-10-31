@@ -800,7 +800,8 @@ fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windo
 
 /// Whether the pattern parts `tail` pick the names `names` in order. A part
 /// that is nothing but two or more stars may stand for any number of names
-/// (a shell with `globstar`), all the rest of them when it is the last. `whole` asks that every name be reached; when
+/// (a shell with `globstar`) that a `*` could match, all the rest of them
+/// when it is the last, and the last name itself too. `whole` asks that every name be reached; when
 /// it is not, a pattern that ends first picks the folder holding the rest.
 /// The pattern going on past the last name is below it, which counts.
 fn picks(
@@ -819,11 +820,11 @@ fn picks(
             } else if i == tail.len() {
                 !whole
             } else if tail[i].len() >= 2 && tail[i].bytes().all(|b| b == b'*') {
-                // As many names as it takes, but not the last one: that one
-                // is what the part after it picks.
+                // As many names as it takes, the last one included: a name
+                // the stars take is what a part after them goes below.
                 i + 1 == tail.len()
                     || reach[j]
-                    || (j + 1 < names.len() && row.get(j + 1).copied().unwrap_or(false))
+                    || (matches("*", &names[j]) && row.get(j + 1).copied().unwrap_or(false))
             } else {
                 matches(tail[i], &names[j]) && reach.get(j + 1).copied().unwrap_or(false)
             };
@@ -1685,6 +1686,10 @@ mod tests {
             ("conf/**", protected),
             ("conf/**/x.yaml", protected),
             ("**/**/x.yaml", protected),
+            // The stars can take the protected name, and what follows goes
+            // below it.
+            ("**/y.yaml", protected),
+            ("**/*.rs", protected),
             // What the pattern cannot pick stays the agent's own.
             ("*.log", Place::Inside),
             ("src/*.rs", Place::Inside),
@@ -1692,7 +1697,6 @@ mod tests {
             ("sr*/x", Place::Inside),
             ("conf/o*", Place::Inside),
             ("conf/*/y.yaml", Place::Inside),
-            ("**/y.yaml", Place::Inside),
             // The whole workspace is still the workspace.
             ("*", Place::Workspace { exact: true }),
         ] {
@@ -1725,6 +1729,29 @@ mod tests {
         assert_eq!(at(&home, "/home/me/.a*", POSIX), protected);
         assert_eq!(at(&home, "/home/me/*", POSIX), Place::Home { exact: true });
         assert_eq!(at(&home, "/home/me/x*", POSIX), Place::Home { exact: true });
+    }
+
+    #[test]
+    fn globstar_stars_can_take_the_protected_name_itself() {
+        let paths = gated(testing::posix(), &["/home/me/work/repo/cfg"]);
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("**/rules", protected),
+            ("**/*.yaml", protected),
+            ("**/*.rs", protected),
+            ("**/cfg", protected),
+            ("**/cfg/x", protected),
+            ("src/**/x", Place::Inside),
+            // A star part does not take a hidden name.
+            ("**", Place::Workspace { exact: true }),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        let hidden = gated(testing::posix(), &["/home/me/work/repo/.cfg"]);
+        assert_eq!(at(&hidden, "**/rules", POSIX), Place::Inside);
+        let resolver = Resolver::new(&hidden);
+        let on = |path| resolver.place_hidden(Spelling::Plain(path), POSIX, true);
+        assert_eq!(on("**/rules"), protected);
     }
 
     #[test]

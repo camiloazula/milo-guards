@@ -51,17 +51,28 @@ impl Checker<'_> {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 self.move_away(unit, &sources);
                 if let Some(destination) = destination {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    self.copy_to(
+                        shell,
+                        unit.scope(),
+                        &leaves(&sources, shell),
+                        &destination,
+                        false,
+                    );
                 }
             }
             "cp" | "install" if shell != Shell::PowerShell => {
-                if let (_, Some(destination)) = sources_and_destination(
+                let recursive = key == "cp"
+                    && (has_flag(args, Some('r'), Some("recursive"))
+                        || has_flag(args, Some('R'), None)
+                        || has_flag(args, Some('a'), Some("archive")));
+                if let (sources, Some(destination)) = sources_and_destination(
                     args,
                     &[
                         "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
                     ],
                 ) {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    let leaves = leaves(&sources, shell);
+                    self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
             }
             "ln" if shell != Shell::PowerShell => {
@@ -80,7 +91,13 @@ impl Checker<'_> {
                     }
                 }
                 if let Some(destination) = destination {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    self.copy_to(
+                        shell,
+                        unit.scope(),
+                        &leaves(&sources, shell),
+                        &destination,
+                        false,
+                    );
                 }
             }
             "copy" | "xcopy" | "move" if shell == Shell::Cmd => {
@@ -91,7 +108,11 @@ impl Checker<'_> {
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
-                        self.write(shell, unit.scope(), destination, "writes to");
+                        let recursive =
+                            key == "xcopy" && (has_switch(args, "s") || has_switch(args, "e"));
+                        let sources = &operands[..operands.len() - 1];
+                        let leaves = leaves(sources, shell);
+                        self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                     }
                 }
             }
@@ -101,7 +122,17 @@ impl Checker<'_> {
                     if has_switch(args, "mir") || has_switch(args, "purge") {
                         self.delete(unit, &[destination], "deletes files in");
                     }
-                    self.write(shell, unit.scope(), destination, "writes to");
+                    // What it names after the two folders is what it copies;
+                    // with none, every file of the first.
+                    let named = leaves(&operands[2..], shell);
+                    let leaves = if named.is_empty() {
+                        vec!["*".to_string()]
+                    } else {
+                        named
+                    };
+                    let recursive =
+                        has_switch(args, "e") || has_switch(args, "s") || has_switch(args, "mir");
+                    self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                 }
             }
             "rsync" => {
@@ -144,7 +175,11 @@ impl Checker<'_> {
                         {
                             self.delete(unit, &[destination], "deletes files in");
                         }
-                        self.write(shell, unit.scope(), destination, "writes to");
+                        let recursive = has_flag(args, Some('r'), Some("recursive"))
+                            || has_flag(args, Some('a'), Some("archive"));
+                        let sources = &operands[..operands.len() - 1];
+                        let leaves = leaves(sources, shell);
+                        self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                     }
                 }
             }
@@ -163,7 +198,13 @@ impl Checker<'_> {
                     .first()
                     .or(positional.first())
                 {
-                    self.write(shell, unit.scope(), destination, "writes to");
+                    let recursive = key == "copy-item"
+                        && params
+                            .named
+                            .iter()
+                            .any(|(name, _)| "recurse".starts_with(name.as_str()));
+                    let leaves = leaves(&sources, shell);
+                    self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                 }
             }
 
@@ -325,4 +366,27 @@ fn remote(arg: &Arg) -> bool {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
     })
+}
+
+/// The name each source lands as inside a folder it is copied into: its last
+/// part. A source that is not known lands as a name that could be anything
+/// (`*`), and `.` or `..` (the contents of a folder) has no name of its own.
+fn leaves(sources: &[&Arg], shell: Shell) -> Vec<String> {
+    let separators: &[char] = if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    };
+    sources
+        .iter()
+        .filter_map(|source| {
+            let Some(text) = source.known() else {
+                return Some("*".to_string());
+            };
+            match text.trim_end_matches(separators).rsplit(separators).next() {
+                None | Some("" | "." | ".." | "~") => None,
+                Some(name) => Some(name.to_string()),
+            }
+        })
+        .collect()
 }
