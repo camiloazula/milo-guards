@@ -26,6 +26,7 @@
 
 mod cmd;
 mod detect;
+mod dotglob;
 mod launch;
 mod path;
 mod posix;

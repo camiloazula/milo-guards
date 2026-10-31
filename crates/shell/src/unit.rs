@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use crate::dotglob;
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -64,6 +65,18 @@ pub(crate) struct Unit {
     /// Where an earlier `cd` in the line moved to, when one did: relative
     /// paths resolve from there.
     pub(crate) dir: Option<Arg>,
+    /// Whether an earlier unit in the line turned on a shell option that
+    /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
+    /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
+    pub(crate) hidden: bool,
+}
+
+/// Where and how a unit's paths are read: the folder an earlier `cd` moved
+/// to, and whether its wildcards match hidden names.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Scope<'a> {
+    pub(crate) dir: Option<&'a Arg>,
+    pub(crate) hidden: bool,
 }
 
 impl Unit {
@@ -76,6 +89,14 @@ impl Unit {
             stage,
             reads: Reads::Nothing,
             dir: None,
+            hidden: false,
+        }
+    }
+
+    pub(crate) fn scope(&self) -> Scope<'_> {
+        Scope {
+            dir: self.dir.as_ref(),
+            hidden: self.hidden,
         }
     }
 
@@ -112,6 +133,53 @@ pub(crate) struct Write {
     pub(crate) target: Arg,
     /// As [`Unit::dir`].
     pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
+}
+
+impl Write {
+    pub(crate) fn scope(&self) -> Scope<'_> {
+        Scope {
+            dir: self.dir.as_ref(),
+            hidden: self.hidden,
+        }
+    }
+}
+
+/// One of the two options in [`Hidden`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Flag {
+    Bash,
+    Zsh,
+}
+
+/// The two options that let a wildcard match a leading dot: bash's (`shopt
+/// -s dotglob`, `GLOBIGNORE`) and zsh's (`setopt globdots`). Each has its own
+/// off switch, which is an error in the other shell and so clears only its
+/// own; hidden names match when either is on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Hidden {
+    bash: bool,
+    zsh: bool,
+}
+
+impl Hidden {
+    const ON: Self = Self {
+        bash: true,
+        zsh: true,
+    };
+
+    fn any(self) -> bool {
+        self.bash || self.zsh
+    }
+
+    /// Either shell's flag on in `self` or `other`.
+    pub(crate) fn or(self, other: Self) -> Self {
+        Self {
+            bash: self.bash || other.bash,
+            zsh: self.zsh || other.zsh,
+        }
+    }
 }
 
 /// Everything a line was split into.
@@ -128,12 +196,57 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Whether the shell reading the line has turned on a option that lets a
+    /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
+    /// except that a subshell or a script in a process of its own gives it
+    /// back as it was, and only a certain off switch turns it off.
+    dotglob: Hidden,
+    /// Whether the command being added hands the option to a shell it
+    /// starts, and not to itself: `GLOBIGNORE=x bash -c '…'`. The shell that
+    /// expands the command's own wildcards has run them before it applies.
+    scoped_dotglob: bool,
+    /// How deep the line is inside something that may not run, or runs in
+    /// a process of its own: the right side of `&&` and `||`, a branch, a
+    /// loop, a function body, a background command.
+    pub(crate) branches: usize,
+    /// How deep the line is inside a function body or a loop, whose
+    /// commands may run after the line has turned the option on.
+    pub(crate) bodies: usize,
+    /// Whether the line ever turned the option on, in this shell or in a
+    /// script it ran, even if it turned it off again.
+    ever_dotglob: bool,
+    /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
+    /// call.
+    functions: Vec<String>,
+    /// The units and redirect writes added inside a function body or a loop.
+    in_body: Vec<usize>,
+    write_in_body: Vec<usize>,
 }
 
 impl Split {
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
+        unit.hidden = self.hidden();
+        if let Some(change) = unit
+            .key()
+            .filter(|_| unit.shell == Shell::Posix)
+            .and_then(|key| dotglob::change(&key, &unit.args))
+        {
+            // Behind `env` or `nohup` a builtin runs in a process of its own.
+            let own = dotglob::in_shell(&unit.wrappers);
+            let certain = own && unit.stage.is_none();
+            for (flag, on) in [(Flag::Bash, change.bash), (Flag::Zsh, change.zsh)] {
+                match on {
+                    Some(true) => self.set_flag(flag, true),
+                    Some(false) => self.show(flag, certain),
+                    None => {}
+                }
+            }
+        }
+        if self.bodies > 0 {
+            self.in_body.push(self.units.len());
+        }
         if let Some(target) = moves_to(&unit) {
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
@@ -143,7 +256,119 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to.
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
-        self.writes.push(Write { shell, target, dir });
+        let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.write_in_body.push(self.writes.len());
+        }
+        self.writes.push(Write {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
+    }
+
+    /// Whether a wildcard in what comes next may match a leading dot.
+    pub(crate) fn hidden(&self) -> bool {
+        self.dotglob.any()
+    }
+
+    /// Whether the command being added hands the option to a shell it
+    /// starts.
+    pub(crate) fn scoped_hidden(&self) -> bool {
+        self.scoped_dotglob
+    }
+
+    /// The options as the shell has them, to put back after a subshell or a
+    /// script in a process of its own, whose change must not reach the rest
+    /// of the line.
+    pub(crate) fn hidden_snapshot(&self) -> Hidden {
+        self.dotglob
+    }
+
+    pub(crate) fn restore_hidden(&mut self, hidden: Hidden) {
+        self.dotglob = hidden;
+    }
+
+    fn set_flag(&mut self, flag: Flag, on: bool) {
+        match flag {
+            Flag::Bash => self.dotglob.bash = on,
+            Flag::Zsh => self.dotglob.zsh = on,
+        }
+        self.ever_dotglob |= on;
+    }
+
+    /// Turn bash's option on for the rest of the shell: `GLOBIGNORE`,
+    /// `BASHOPTS`.
+    pub(crate) fn hide(&mut self) {
+        self.set_flag(Flag::Bash, true);
+    }
+
+    /// Turn the option on for a script started with it, which is not this
+    /// shell's own. The shell is not known, and a function body the line
+    /// exports may run in it, so both flags go on.
+    pub(crate) fn hide_for_script(&mut self) {
+        self.dotglob = Hidden::ON;
+        self.ever_dotglob = true;
+    }
+
+    /// Note that the line defines the function `name`.
+    pub(crate) fn define_function(&mut self, name: &str) {
+        self.functions.push(name.to_string());
+    }
+
+    /// Whether the line defines the function `name`.
+    pub(crate) fn defines_function(&self, name: &str) -> bool {
+        self.functions.iter().any(|known| known == name)
+    }
+
+    /// Say a function the line defines runs with the option on, as a
+    /// `GLOBIGNORE=x f` in front of its call does.
+    pub(crate) fn hide_functions(&mut self) {
+        self.ever_dotglob = true;
+    }
+
+    /// Turn one option off, when the line is `certain` to run that in this
+    /// shell: a pipeline stage runs in a subshell and a branch may not run,
+    /// so neither can be counted on to. The other shell's option stays.
+    pub(crate) fn show(&mut self, flag: Flag, certain: bool) {
+        if certain && self.branches == 0 {
+            match flag {
+                Flag::Bash => self.dotglob.bash = false,
+                Flag::Zsh => self.dotglob.zsh = false,
+            }
+        }
+    }
+
+    /// Say the command being added hands the option on when `on`, and say
+    /// what it was, for [`Split::unscope_hidden`] to put back.
+    pub(crate) fn scope_hidden(&mut self, on: bool) -> bool {
+        let outer = self.scoped_dotglob;
+        self.scoped_dotglob |= on;
+        outer
+    }
+
+    pub(crate) fn unscope_hidden(&mut self, outer: bool) {
+        self.scoped_dotglob = outer;
+    }
+
+    /// After the walk: a function body or a loop may run after the line has
+    /// turned the option on, so when it ever did, what they hold is judged
+    /// with it on.
+    fn hide_bodies(&mut self) {
+        if !self.ever_dotglob {
+            return;
+        }
+        for &at in &self.in_body {
+            if let Some(unit) = self.units.get_mut(at) {
+                unit.hidden = true;
+            }
+        }
+        for &at in &self.write_in_body {
+            if let Some(write) = self.writes.get_mut(at) {
+                write.hidden = true;
+            }
+        }
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested
@@ -273,6 +498,7 @@ const MAX_LEN: usize = 64 * 1024;
 pub(crate) fn split(command: &str, shell: Shell) -> Split {
     let mut split = Split::default();
     script(&mut split, command, shell, 0);
+    split.hide_bodies();
     split
 }
 

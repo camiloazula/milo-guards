@@ -423,6 +423,16 @@ impl Resolver {
     /// `x.txt:stream`, or a part before the last that ends in a space).
     #[must_use]
     pub fn place(&self, path: Spelling<'_>, flavour: Flavour) -> Place {
+        self.place_hidden(path, flavour, false)
+    }
+
+    /// As [`place`](Self::place), for a pattern that may match hidden names
+    /// when `hidden` is set: the shell has `dotglob` (or `globdots`, or
+    /// `GLOBIGNORE`) on, so a wildcard matches a leading dot as it does on
+    /// the `Windows` flavour. `hidden` changes nothing on `Windows`, whose
+    /// wildcards always do, and nothing for a path without a wildcard.
+    #[must_use]
+    pub fn place_hidden(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
         let text = path.text();
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
@@ -479,7 +489,7 @@ impl Resolver {
                     // A PowerShell or cmd wildcard directly in the workspace
                     // folder can match the dot name `.git`, and reach what is
                     // in it; deeper down no `.git` is the model's to protect.
-                    let hidden = flavour == Flavour::Windows;
+                    let hidden = hidden || flavour == Flavour::Windows;
                     let reaches = tail.is_some_and(|tail| {
                         let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
                         glob::reaches_git(&tail, flavour, hidden)
@@ -862,6 +872,54 @@ mod tests {
             assert_eq!(
                 at(&windows, path, WINDOWS),
                 Place::Workspace { exact: true },
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posix_wildcard_reaches_the_repository_history_when_hidden_names_match() {
+        let hidden = Place::Sensitive("a hidden file such as the repository's history");
+        let posix = testing::posix();
+        let resolver = Resolver::new(&posix);
+        let place =
+            |path: &str, flavour, on| resolver.place_hidden(Spelling::Plain(path), flavour, on);
+        for path in [
+            "*git",
+            "?git",
+            "[!x]git",
+            "*.*",
+            "????",
+            "*/objects",
+            "????/HEAD",
+        ] {
+            assert_eq!(place(path, POSIX, false), Place::Inside, "{path}");
+            assert_eq!(place(path, POSIX, true), hidden, "{path}");
+        }
+        // The same picks as without the option: not a name `.git` has, or
+        // not directly in the workspace folder.
+        for path in [
+            "*.tmp",
+            "*gitx",
+            "*/bin",
+            "*/*.o",
+            "src/*git",
+            "src/*/objects",
+        ] {
+            assert_eq!(place(path, POSIX, true), Place::Inside, "{path}");
+        }
+        // A catch-all is the whole folder either way, and a path without a
+        // wildcard is not read differently.
+        assert_eq!(place("*", POSIX, true), Place::Workspace { exact: true });
+        assert_eq!(place("src/a.rs", POSIX, true), Place::Inside);
+        // `place` is the same as `place_hidden` with the flag off, and the
+        // flag changes nothing on Windows, whose wildcards always match.
+        let windows = testing::windows();
+        let resolver = Resolver::new(&windows);
+        for path in ["*git", "src\\*git", "*.tmp", "*\\bin"] {
+            assert_eq!(
+                resolver.place_hidden(Spelling::Plain(path), WINDOWS, true),
+                resolver.place(Spelling::Plain(path), WINDOWS),
                 "{path}"
             );
         }

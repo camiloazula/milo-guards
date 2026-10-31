@@ -171,7 +171,15 @@ itself.
   is accepted as rare. Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
-  wildcard does not match a leading dot, so `*git` and `?git` pass.
+  wildcard does not match a leading dot, so `*git` and `?git` pass, unless
+  the caller says hidden names match: `Resolver::place_hidden(path, flavour,
+  hidden)` reads the pattern as the `Windows` flavour does (`place` is the same
+  with `hidden` off). A shell guard sets it from the line, for a shell that
+  has switched on bash's `dotglob`, zsh's `globdots`, or a non-empty
+  `GLOBIGNORE`; it changes nothing on `Windows` or for a path without a
+  wildcard. Only the leading dot changes: case and `[!x]` negation still read
+  as POSIX. Under a workspace folder `*git`, `?git`, `*.*` and `*/objects`
+  then reach the repository's history.
 
   `glob::matches` is the matcher behind it: one pattern part against one name
   (`*`, `?`, `[...]`, ranges). On `Windows` it reads PowerShell's rules, with
@@ -181,7 +189,8 @@ itself.
   included (a dotless `i`
   counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts. Its
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
-  sets it on `Windows` only.
+  sets it on `Windows`, and on `Posix` when the caller passes it to
+  `place_hidden`.
   On `Windows`, `*.*` as a last part is a catch-all like `*`. That is cmd's
   meaning; in PowerShell it needs a dot in the name, so taking it as every
   entry is the wider reading.

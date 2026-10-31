@@ -2,8 +2,9 @@
 
 use tree_sitter::Node;
 
+use crate::dotglob;
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -183,15 +184,127 @@ struct Walker<'a> {
 
 impl Walker<'_> {
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.walk_in(node, stage, level, false);
+    }
+
+    /// Walk `node`; `background` says it is followed by `&`, so it runs in a
+    /// subshell and a change it makes is not certain to reach the rest of the
+    /// line.
+    fn walk_in(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize, background: bool) {
         if level > unit::MAX_TREE_DEPTH {
             self.split
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
             return;
         }
+        self.split.branches += usize::from(background);
+        self.node(node, stage, level);
+        self.split.branches -= usize::from(background);
+    }
+
+    fn node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         match node.kind() {
+            // The assignments in front of a command are that command's, which
+            // `command` reads; what they hold is still walked.
             "command" => {
                 self.command(node, stage);
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "variable_assignment" {
+                        self.children(child, None, level + 1);
+                    } else {
+                        self.walk(child, None, level + 1);
+                    }
+                }
+            }
+            // `GLOBIGNORE=x` on a line of its own, or after `export`: the
+            // shell has it from here on.
+            "variable_assignment" => {
+                self.assignment(node);
                 self.children(node, None, level);
+            }
+            // The right side of `&&` and `||` may not run.
+            "list" => {
+                let mut cursor = node.walk();
+                for (at, child) in node.named_children(&mut cursor).enumerate() {
+                    self.split.branches += usize::from(at > 0);
+                    self.walk(child, stage, level + 1);
+                    self.split.branches -= usize::from(at > 0);
+                }
+            }
+            // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
+            // `unset -f GLOBIGNORE` removes a function, not the variable.
+            "unset_command" => {
+                let mut cursor = node.walk();
+                let names: Vec<&str> = node
+                    .named_children(&mut cursor)
+                    .map(|name| unit::text(&name, self.source))
+                    .collect();
+                let function = names.iter().any(|name| {
+                    name.starts_with('-') && !name.starts_with("--") && name.contains('f')
+                });
+                if !function && names.contains(&dotglob::GLOBIGNORE) {
+                    self.split.show(Flag::Bash, stage.is_none());
+                }
+                self.children(node, stage, level);
+            }
+            // `export "GLOBIGNORE=x"`, `declare 'GLOBIGNORE=x'`: a quoted
+            // assignment is a string, not an assignment node.
+            "declaration_command" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() != "variable_assignment" && self.arg_hides(child) {
+                        self.split.hide();
+                    }
+                }
+                self.children(node, stage, level);
+            }
+            // `(( GLOBIGNORE=1 ))`
+            "binary_expression" => {
+                let mut cursor = node.walk();
+                let operator = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .map(|child| unit::text(&child, self.source));
+                let assigns = operator.is_some_and(|operator| {
+                    operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                });
+                let left = node.child_by_field_name("left");
+                if assigns
+                    && left
+                        .is_some_and(|left| unit::text(&left, self.source) == dotglob::GLOBIGNORE)
+                {
+                    self.split.hide();
+                }
+                self.children(node, stage, level);
+            }
+            // What may not run, may run more than once, or runs when the
+            // line calls it. A function body or a loop may run after the
+            // line has turned the option on, which the walk's end settles.
+            "if_statement"
+            | "case_statement"
+            | "while_statement"
+            | "for_statement"
+            | "c_style_for_statement"
+            | "function_definition" => {
+                let body = !matches!(node.kind(), "if_statement" | "case_statement");
+                if node.kind() == "for_statement"
+                    && node
+                        .child_by_field_name("variable")
+                        .is_some_and(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE)
+                {
+                    self.split.hide();
+                }
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .filter(|_| node.kind() == "function_definition")
+                {
+                    self.split.define_function(unit::text(&name, self.source));
+                }
+                self.split.branches += 1;
+                self.split.bodies += usize::from(body);
+                self.children(node, stage, level);
+                self.split.bodies -= usize::from(body);
+                self.split.branches -= 1;
             }
             "pipeline" => {
                 let pipeline = self.split.pipeline();
@@ -226,8 +339,10 @@ impl Walker<'_> {
             // A subshell's `cd` does not move the rest of the line.
             "subshell" | "command_substitution" | "process_substitution" => {
                 let outer = self.split.dir_snapshot();
+                let hidden = self.split.hidden_snapshot();
                 self.children(node, stage, level);
                 self.split.restore_dir(outer);
+                self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
         }
@@ -235,8 +350,12 @@ impl Walker<'_> {
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            self.walk(child, stage, level + 1);
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if child.is_named() {
+                let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                self.walk_in(*child, stage, level + 1, background);
+            }
         }
     }
 
@@ -246,15 +365,79 @@ impl Walker<'_> {
         };
         let program = self.arg(name);
         let mut cursor = node.walk();
-        let args = node
+        let args: Vec<Arg> = node
             .children_by_field_name("argument", &mut cursor)
             .map(|arg| self.arg(arg))
             .collect();
+        // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
+        // `let GLOBIGNORE=1`: set by a command whose value the line does not
+        // show or reads as an assignment.
+        let names = |at: usize| args.get(at).and_then(Arg::known) == Some(dotglob::GLOBIGNORE);
+        let sets = match program.known() {
+            Some("read" | "mapfile" | "readarray") => (0..args.len()).any(names),
+            Some("printf") => {
+                args.iter().any(|arg| {
+                    arg.known().and_then(|word| word.strip_prefix("-v"))
+                        == Some(dotglob::GLOBIGNORE)
+                }) || args
+                    .iter()
+                    .enumerate()
+                    .any(|(at, arg)| arg.known() == Some("-v") && names(at + 1))
+            }
+            Some("let") => args.iter().any(dotglob::assigns_hiding),
+            _ => false,
+        };
+        if sets {
+            self.split.hide();
+        }
+        // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
+        let mut cursor = node.walk();
+        let prefixed = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .any(|assignment| self.sets_hiding(assignment));
+        // In front of a call to a function the line defines, it is set while
+        // the body runs.
+        if prefixed
+            && program
+                .known()
+                .is_some_and(|name| self.split.defines_function(name))
+        {
+            self.split.hide_functions();
+        }
+        let outer = self.split.scope_hidden(prefixed);
         launch::add(
             self.split,
             Unit::new(Shell::Posix, program, args, stage),
             self.depth,
         );
+        self.split.unscope_hidden(outer);
+    }
+
+    /// Whether `assignment` gives a variable a value that turns the option
+    /// on: `GLOBIGNORE` not empty, `BASHOPTS` with `dotglob`.
+    fn sets_hiding(&self, assignment: Node<'_>) -> bool {
+        assignment.child_by_field_name("name").is_some_and(|name| {
+            dotglob::hides(
+                unit::text(&name, self.source),
+                assignment
+                    .child_by_field_name("value")
+                    .map(|value| self.arg(value))
+                    .as_ref(),
+            )
+        })
+    }
+
+    /// Whether `node`, an argument of `export` or `declare`, is a quoted
+    /// assignment that turns the option on.
+    fn arg_hides(&self, node: Node<'_>) -> bool {
+        dotglob::assigns_hiding(&self.arg(node))
+    }
+
+    fn assignment(&mut self, node: Node<'_>) {
+        if self.sets_hiding(node) {
+            self.split.hide();
+        }
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a

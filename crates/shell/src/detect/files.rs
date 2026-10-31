@@ -51,7 +51,7 @@ impl Checker<'_> {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 self.move_away(unit, &sources);
                 if let Some(destination) = destination {
-                    self.write(shell, unit.dir.as_ref(), &destination, "writes to");
+                    self.write(shell, unit.scope(), &destination, "writes to");
                 }
             }
             "cp" | "install" if shell != Shell::PowerShell => {
@@ -61,7 +61,7 @@ impl Checker<'_> {
                         "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
                     ],
                 ) {
-                    self.write(shell, unit.dir.as_ref(), &destination, "writes to");
+                    self.write(shell, unit.scope(), &destination, "writes to");
                 }
             }
             "ln" if shell != Shell::PowerShell => {
@@ -70,7 +70,7 @@ impl Checker<'_> {
                 // whatever it points at.
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 for source in &sources {
-                    let place = self.place(shell, unit.dir.as_ref(), source);
+                    let place = self.place(shell, unit.scope(), source);
                     if !place.harmless() && !matches!(place, Place::Workspace { exact: true }) {
                         self.add(
                             Rule::Overwrite,
@@ -80,7 +80,7 @@ impl Checker<'_> {
                     }
                 }
                 if let Some(destination) = destination {
-                    self.write(shell, unit.dir.as_ref(), &destination, "writes to");
+                    self.write(shell, unit.scope(), &destination, "writes to");
                 }
             }
             "copy" | "xcopy" | "move" if shell == Shell::Cmd => {
@@ -91,7 +91,7 @@ impl Checker<'_> {
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
-                        self.write(shell, unit.dir.as_ref(), destination, "writes to");
+                        self.write(shell, unit.scope(), destination, "writes to");
                     }
                 }
             }
@@ -101,7 +101,7 @@ impl Checker<'_> {
                     if has_switch(args, "mir") || has_switch(args, "purge") {
                         self.delete(unit, &[destination], "deletes files in");
                     }
-                    self.write(shell, unit.dir.as_ref(), destination, "writes to");
+                    self.write(shell, unit.scope(), destination, "writes to");
                 }
             }
             "rsync" => {
@@ -144,7 +144,7 @@ impl Checker<'_> {
                         {
                             self.delete(unit, &[destination], "deletes files in");
                         }
-                        self.write(shell, unit.dir.as_ref(), destination, "writes to");
+                        self.write(shell, unit.scope(), destination, "writes to");
                     }
                 }
             }
@@ -163,14 +163,14 @@ impl Checker<'_> {
                     .first()
                     .or(positional.first())
                 {
-                    self.write(shell, unit.dir.as_ref(), destination, "writes to");
+                    self.write(shell, unit.scope(), destination, "writes to");
                 }
             }
 
             // Writing into files.
             "truncate" => {
                 for target in operands(args, &["-s", "--size", "-r", "--reference"]) {
-                    self.write(shell, unit.dir.as_ref(), target, "truncates");
+                    self.write(shell, unit.scope(), target, "truncates");
                 }
             }
             // Creating a file or folder beyond the workspace: `touch
@@ -180,27 +180,27 @@ impl Checker<'_> {
                     args,
                     &["-m", "--mode", "-r", "--reference", "-d", "--date", "-t"],
                 ) {
-                    self.write(shell, unit.dir.as_ref(), target, "creates");
+                    self.write(shell, unit.scope(), target, "creates");
                 }
             }
             "md" if shell == Shell::Cmd => {
                 for target in plain(args) {
-                    self.write(shell, unit.dir.as_ref(), target, "creates");
+                    self.write(shell, unit.scope(), target, "creates");
                 }
             }
             "sed" if has_flag(args, Some('i'), Some("in-place")) => {
                 for file in sed_files(args) {
-                    self.write(shell, unit.dir.as_ref(), file, "edits");
+                    self.write(shell, unit.scope(), file, "edits");
                 }
             }
             "perl" if shell == Shell::Posix => {
                 for file in perl_edits(args).unwrap_or_default() {
-                    self.write(shell, unit.dir.as_ref(), file, "edits");
+                    self.write(shell, unit.scope(), file, "edits");
                 }
             }
             "tee" if shell != Shell::PowerShell => {
                 for target in operands(args, &[]) {
-                    self.write(shell, unit.dir.as_ref(), target, "writes to");
+                    self.write(shell, unit.scope(), target, "writes to");
                 }
             }
             "set-content" | "add-content" | "out-file" | "tee-object" | "new-item"
@@ -216,7 +216,7 @@ impl Checker<'_> {
                     "writes to"
                 };
                 for target in targets {
-                    self.write(shell, unit.dir.as_ref(), target, verb);
+                    self.write(shell, unit.scope(), target, verb);
                 }
             }
             "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
@@ -226,7 +226,7 @@ impl Checker<'_> {
                     targets.extend(params.positional.first().copied());
                 }
                 for target in targets {
-                    self.write(shell, unit.dir.as_ref(), target, "changes");
+                    self.write(shell, unit.scope(), target, "changes");
                 }
             }
             "dd" => {
@@ -234,7 +234,7 @@ impl Checker<'_> {
                     if let Some(file) = arg.known().and_then(|text| text.strip_prefix("of=")) {
                         self.write(
                             shell,
-                            unit.dir.as_ref(),
+                            unit.scope(),
                             &Arg::Known(file.to_string()),
                             "writes to",
                         );
@@ -243,12 +243,12 @@ impl Checker<'_> {
             }
             "curl" | "wget" if shell != Shell::PowerShell => {
                 for file in downloads_to(key, args) {
-                    self.write(shell, unit.dir.as_ref(), &file, "writes to");
+                    self.write(shell, unit.scope(), &file, "writes to");
                 }
             }
             "invoke-webrequest" | "invoke-restmethod" => {
                 if let Some(file) = Params::read(args).values(&["outfile"]).first() {
-                    self.write(shell, unit.dir.as_ref(), file, "writes to");
+                    self.write(shell, unit.scope(), file, "writes to");
                 }
             }
 

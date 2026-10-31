@@ -7,7 +7,7 @@ use crate::powershell::Params;
 
 use std::collections::HashMap;
 
-use crate::unit::{operands, plain, Arg, Reads, Split, Unit};
+use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
 mod code;
@@ -81,7 +81,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         checker.unit(unit);
     }
     for write in &split.writes {
-        checker.write(write.shell, write.dir.as_ref(), &write.target, "writes to");
+        checker.write(write.shell, write.scope(), &write.target, "writes to");
     }
     let mut seen = std::collections::HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
@@ -181,24 +181,32 @@ impl Checker<'_> {
 
     /// The places `arg` stands for: a pipeline's input is the files the
     /// stage before it lists, when that stage lists files the guard can place.
-    fn expand(&self, unit: &Unit, arg: &Arg) -> Vec<Arg> {
+    /// Also whether the stage that listed them had wildcards match hidden
+    /// names.
+    fn expand(&self, unit: &Unit, arg: &Arg) -> (Vec<Arg>, bool) {
         if *arg != Arg::Input {
-            return vec![arg.clone()];
+            return (vec![arg.clone()], false);
         }
         let producer = unit
             .stage
             .filter(|stage| stage.index > 0)
             .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
             .and_then(|&at| self.split.units.get(at));
-        producer
+        let found = producer
             .and_then(listed)
-            .unwrap_or_else(|| vec![Arg::Unknown("<input>".to_string())])
+            .unwrap_or_else(|| vec![Arg::Unknown("<input>".to_string())]);
+        (found, producer.is_some_and(|producer| producer.hidden))
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
         for target in targets {
-            for arg in self.expand(unit, target) {
-                match self.place(unit.shell, unit.dir.as_ref(), &arg) {
+            let (found, listed_hidden) = self.expand(unit, target);
+            let scope = Scope {
+                hidden: unit.hidden || listed_hidden,
+                ..unit.scope()
+            };
+            for arg in found {
+                match self.place(unit.shell, scope, &arg) {
                     place if place.harmless() => {}
                     Place::Registry => {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
@@ -219,7 +227,7 @@ impl Checker<'_> {
     /// `rm -rf /tmp/x` deletes it).
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
         for source in sources {
-            let place = self.place(unit.shell, unit.dir.as_ref(), source);
+            let place = self.place(unit.shell, unit.scope(), source);
             if !place.harmless() {
                 self.add(
                     Rule::Delete,
@@ -231,12 +239,13 @@ impl Checker<'_> {
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
-    fn place(&self, shell: Shell, dir: Option<&Arg>, arg: &Arg) -> Place {
-        self.resolver.place(&path::within(dir, arg, shell), shell)
+    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+        self.resolver
+            .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
     }
 
-    fn write(&mut self, shell: Shell, dir: Option<&Arg>, target: &Arg, verb: &str) {
-        match self.place(shell, dir, target) {
+    fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        match self.place(shell, scope, target) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),
@@ -261,7 +270,7 @@ impl Checker<'_> {
 
     fn permissions(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
         for target in targets {
-            match self.place(unit.shell, unit.dir.as_ref(), target) {
+            match self.place(unit.shell, unit.scope(), target) {
                 place if place.harmless() => {}
                 Place::Workspace { exact: true } => {}
                 Place::Registry => {
