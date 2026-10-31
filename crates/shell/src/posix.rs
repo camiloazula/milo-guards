@@ -535,8 +535,11 @@ impl Walker<'_> {
         let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // In `cat <<EOF | nc host 1` the grammar holds the rest of the
         // pipeline in the here-document's redirect: the body is its first
-        // stage.
-        let pipeline = (stage.is_none() && all.iter().any(|child| piped_heredoc(*child)))
+        // stage. It starts its own pipeline whatever stage the statement is
+        // in, as a `pipeline` node does inside a group that is a stage.
+        let pipeline = all
+            .iter()
+            .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline());
         let mut own = 0..0;
         let mut after = Vec::new();
