@@ -350,3 +350,25 @@ fn a_windows_wildcard_can_match_a_dot_name() {
         "deletes a hidden file such as the repository's history"
     );
 }
+
+#[test]
+fn star_dot_star_is_every_entry_on_windows() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["del /q build\\*.*"],
+        &[("del /q *", Rule::Delete), ("del /q *.*", Rule::Delete)],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item -Recurse build\\*.*"],
+        &[("Remove-Item -Recurse -Force *.*", Rule::Delete)],
+    );
+    let all = classify("del /q *", Shell::Cmd, &windows());
+    let dotted = classify("del /q *.*", Shell::Cmd, &windows());
+    // Judged alike: the same rule and reason (only the target text differs).
+    assert_eq!(all.findings()[0].rule, dotted.findings()[0].rule);
+    assert_eq!(all.findings()[0].reason, dotted.findings()[0].reason);
+    assert_eq!(dotted.findings()[0].reason, "deletes the whole workspace");
+}

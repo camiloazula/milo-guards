@@ -130,7 +130,8 @@ itself.
     hidden names whatever follows.
   - `Windows`: PowerShell and cmd wildcards do match a leading dot, and names
     compare without case, so `*git`, `?git`, `*GIT` and `*\objects` all reach
-    `.git`. A catch-all last part (`*`) is still the whole folder.
+    `.git`. A catch-all last part is still the whole folder, and on Windows `*.*`
+    is one, like `*`.
 
   `matches` takes a `hidden` flag, whether a wildcard may match a leading dot,
   which the flavour sets; a POSIX shell with `dotglob` set is the `true` case.

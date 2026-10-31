@@ -188,14 +188,14 @@ pub fn shape(text: &str, flavour: Flavour) -> Shape {
     let hidden = |at: usize, part: &str| {
         (part.starts_with('.') && part != "..")
             || (has_wildcard(part)
-                && !(at + 1 == parts.len() && catch_all(part))
+                && !(at + 1 == parts.len() && catch_all(part, flavour))
                 && PROTECTED
                     .iter()
                     .any(|name| matches(part, name, flavour, dots)))
     };
     if parts.iter().enumerate().any(|(at, part)| hidden(at, part)) {
         Shape::Hidden
-    } else if parts.last().is_some_and(|last| catch_all(last)) {
+    } else if parts.last().is_some_and(|last| catch_all(last, flavour)) {
         Shape::All
     } else {
         Shape::Entries
@@ -204,8 +204,12 @@ pub fn shape(text: &str, flavour: Flavour) -> Shape {
 
 /// Whether a wildcard pattern matches every entry of its folder (`*`, `**`,
 /// `?*`, `[!.]*`): once its wildcards and classes are removed, nothing is
-/// left to match against.
-fn catch_all(part: &str) -> bool {
+/// left to match against. On Windows `*.*` is one too: it means every entry,
+/// with or without an extension.
+fn catch_all(part: &str, flavour: Flavour) -> bool {
+    if flavour == Flavour::Windows && part == "*.*" {
+        return true;
+    }
     if !part.contains('*') {
         return false;
     }
@@ -339,7 +343,10 @@ mod tests {
         assert_eq!(shape("*git", windows), Shape::Hidden);
         assert_eq!(shape("?git", windows), Shape::Hidden);
         assert_eq!(shape(r"src\*G?T\x", windows), Shape::Hidden);
-        assert_eq!(shape("*.*", windows), Shape::Hidden);
+        assert_eq!(shape("*.*", windows), Shape::All);
+        assert_eq!(shape(r"build\*.*", windows), Shape::All);
+        assert_eq!(shape(r"*.*\x", windows), Shape::Hidden);
+        assert_eq!(shape("*.*", Flavour::Posix), Shape::Entries);
         assert_eq!(shape("*.tmp", windows), Shape::Entries);
         assert_eq!(shape("*", windows), Shape::All);
         assert_eq!(shape(r"build\*", windows), Shape::All);
