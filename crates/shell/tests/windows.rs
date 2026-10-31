@@ -3,7 +3,7 @@
 mod common;
 
 use common::{check, rules, windows};
-use milo_guards_shell::{classify, Paths, Rule, Shell};
+use milo_guards_shell::{classify, Paths, Protected, Rule, Shell};
 
 #[test]
 fn everyday_powershell_is_safe() {
@@ -1199,5 +1199,68 @@ fn a_long_path_prefix_is_outside_the_workspace() {
             "Remove-Item -Recurse -Force '\\\\?\\C:\\Users\\me\\dev\\repo\\.git.'",
             Rule::Delete,
         )],
+    );
+}
+
+/// A Windows spelling of a protected path resolves the same way, in every
+/// shell, and without regard to case.
+#[test]
+fn a_protected_path_is_a_finding_on_windows_too() {
+    let paths = windows().with_protected([
+        Protected::new(r"C:\Users\me\.agent", "the agent's settings"),
+        Protected::new(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+    ]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Get-Content C:\Users\me\.agent\config.yaml",
+            r"Get-ChildItem C:\Users\me\.agent",
+            "Remove-Item src\\main.rs",
+            "Remove-Item -Recurse -Force target",
+        ],
+        &[
+            (r"Remove-Item C:\Users\me\.agent\config.yaml", Rule::Delete),
+            (
+                r"Remove-Item -Recurse -Force C:\Users\me\.agent",
+                Rule::Delete,
+            ),
+            (r"Remove-Item c:\users\ME\.AGENT\config.yaml", Rule::Delete),
+            (r"Remove-Item C:/Users/me/.agent/config.yaml", Rule::Delete),
+            (r"Remove-Item $HOME\.agent\config.yaml", Rule::Delete),
+            (r"Remove-Item .agent\rules", Rule::Delete),
+            (r"Remove-Item C:\Users\me\.agent\*", Rule::Delete),
+            (r"'x' > C:\Users\me\.agent\config.yaml", Rule::Overwrite),
+            (r"Set-Content .agent\rules -Value x", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"type C:\Users\me\.agent\config.yaml",
+            r"dir C:\Users\me\.agent",
+            r"del src\main.rs",
+        ],
+        &[
+            (r"del C:\Users\me\.agent\config.yaml", Rule::Delete),
+            (r"del C:\USERS\me\.Agent\config.yaml", Rule::Delete),
+            (r"rd /s /q C:\Users\me\.agent", Rule::Delete),
+            (r"del .agent\rules", Rule::Delete),
+            (r"echo x > C:\Users\me\.agent\config.yaml", Rule::Overwrite),
+            (
+                r"copy x.txt C:\Users\me\.agent\config.yaml",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+    let assessment = classify(
+        r"Remove-Item C:\Users\me\.agent\config.yaml",
+        Shell::PowerShell,
+        &paths,
+    );
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "deletes the agent's settings"
     );
 }

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{check, macos, posix, rules};
-use milo_guards_shell::{classify, Rule, Shell};
+use milo_guards_shell::{classify, Protected, Rule, Shell};
 
 #[test]
 fn everyday_commands_are_safe() {
@@ -1383,5 +1383,141 @@ fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
             ("rm -rf /tmp/*", Rule::Delete),
             ("ls /tmp | xargs rm -rf", Rule::Delete),
         ],
+    );
+}
+
+/// A path the caller protects is its own whatever the line does to it: a
+/// delete, a write or a permission change is a finding, a read is not.
+#[test]
+fn a_protected_path_is_a_finding_to_delete_write_or_chmod() {
+    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cat ~/.agent/config.yaml",
+            "ls -la ~/.agent",
+            "grep -rn model ~/.agent/rules",
+            "cp ~/.agent/config.yaml backup.yaml",
+            "cd ~/.agent && ls",
+            "rm -rf target",
+            "echo x > notes.md",
+            "sed -n s/a/b/p ~/.agent/rules",
+        ],
+        &[
+            ("rm -rf ~/.agent", Rule::Delete),
+            ("rm ~/.agent/config.yaml", Rule::Delete),
+            ("rm -rf $HOME/.agent", Rule::Delete),
+            ("rm -rf /home/me/.agent/rules", Rule::Delete),
+            ("rm ~/.agent/*.yaml", Rule::Delete),
+            ("cd ~/.agent && rm config.yaml", Rule::Delete),
+            ("mv ~/.agent/config.yaml /tmp/x", Rule::Delete),
+            ("find ~/.agent -delete", Rule::Delete),
+            ("ls ~/.agent/*.yaml | xargs rm", Rule::Delete),
+            ("echo x > ~/.agent/config.yaml", Rule::Overwrite),
+            ("echo x >> ~/.agent/rules", Rule::Overwrite),
+            ("sed -i s/a/b/ ~/.agent/rules", Rule::Overwrite),
+            ("cp notes.md ~/.agent/config.yaml", Rule::Overwrite),
+            ("mv notes.md ~/.agent/rules", Rule::Overwrite),
+            ("tee ~/.agent/rules < notes.md", Rule::Overwrite),
+            ("chmod 777 ~/.agent/config.yaml", Rule::Permissions),
+        ],
+    );
+}
+
+/// A protected path inside the workspace is protected, not inside it; the
+/// rest of the workspace stays the agent's own.
+#[test]
+fn a_protected_path_in_the_workspace_wins_over_the_workspace() {
+    let paths = posix().with_protected([
+        Protected::new("/home/me/work/repo/.agent", "the agent's settings"),
+        Protected::new("/home/me/work/repo/settings.yaml", "the agent's settings"),
+    ]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "rm src/main.rs",
+            "rm -rf target",
+            "rm -f *.log",
+            "rm src/set*",
+            "echo x > src/settings.yaml",
+            "sed -i s/a/b/ src/lib.rs",
+            "cat .agent/rules",
+            "cd src && rm -f ../target/x.o",
+        ],
+        &[
+            ("rm .agent/rules", Rule::Delete),
+            ("rm -rf .agent", Rule::Delete),
+            ("rm -rf ./src/../.agent", Rule::Delete),
+            ("rm settings.yaml", Rule::Delete),
+            ("rm set*", Rule::Delete),
+            ("rm *.yaml", Rule::Delete),
+            ("cd .agent && rm rules", Rule::Delete),
+            ("cd src && rm ../.agent/rules", Rule::Delete),
+            ("echo x > .agent/rules", Rule::Overwrite),
+            ("echo x > settings.yaml", Rule::Overwrite),
+            ("sed -i s/a/b/ .agent/rules", Rule::Overwrite),
+            ("chmod 600 .agent/rules", Rule::Permissions),
+            // The workspace itself is still a finding.
+            ("rm -rf *", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_protected_reason_uses_the_callers_words() {
+    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    for (line, rule, reason) in [
+        (
+            "rm ~/.agent/config.yaml",
+            Rule::Delete,
+            "deletes the agent's settings",
+        ),
+        (
+            "rm -rf ~/.agent",
+            Rule::Delete,
+            "deletes the agent's settings",
+        ),
+        (
+            "mv ~/.agent/rules /tmp/x",
+            Rule::Delete,
+            "moves the agent's settings",
+        ),
+        (
+            "echo x > ~/.agent/config.yaml",
+            Rule::Overwrite,
+            "writes to the agent's settings",
+        ),
+        (
+            "sed -i s/a/b/ ~/.agent/rules",
+            Rule::Overwrite,
+            "edits the agent's settings",
+        ),
+        (
+            "chmod 777 ~/.agent/rules",
+            Rule::Permissions,
+            "changes permissions of the agent's settings",
+        ),
+    ] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        let found = assessment
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == rule && finding.reason == reason);
+        assert!(found, "{line}: got {:?}", assessment.findings());
+    }
+    // A sibling of the protected folder is not it.
+    let sibling = classify("rm ~/.agent-old/x", Shell::Posix, &paths);
+    assert_eq!(
+        sibling.findings()[0].reason,
+        "deletes a path outside the workspace"
+    );
+    // Without a protected path the same line is a plain write to the home
+    // directory, with the guard's own words.
+    let bare = classify("rm ~/.agent/config.yaml", Shell::Posix, &posix());
+    assert_eq!(
+        bare.findings()[0].reason,
+        "deletes a path outside the workspace"
     );
 }

@@ -355,6 +355,7 @@ pub struct Resolver {
     workspaces: Vec<Loc>,
     temps: Vec<Loc>,
     sensitive: Vec<(Loc, &'static str)>,
+    protected: Vec<(Loc, &'static str)>,
     system: Vec<Loc>,
 }
 
@@ -406,12 +407,18 @@ impl Resolver {
             .iter()
             .map(|(parts, words)| (home.join(parts), *words))
             .collect();
+        let protected = paths
+            .protected
+            .iter()
+            .map(|entry| (Loc::absolute(&entry.path.to_string_lossy()), entry.words))
+            .collect();
         Self {
             cwd,
             home,
             workspaces,
             temps,
             sensitive,
+            protected,
             system,
         }
     }
@@ -478,6 +485,19 @@ impl Resolver {
             None => false,
         };
         let place = self.judge(&loc, flavour);
+        if pattern
+            && matches!(
+                place,
+                Place::Inside | Place::Workspace { exact: true } | Place::Temp { exact: true }
+            )
+        {
+            // A pattern that picks a protected file by name (`set*` for
+            // `settings.yaml`) is that file, even where the folder before
+            // the pattern is the agent's own.
+            if let Some(words) = self.picks_protected(&loc, tail.as_deref(), flavour, hidden) {
+                return Place::Protected(words);
+            }
+        }
         if pattern && matches!(place, Place::Inside | Place::Workspace { .. }) {
             match glob::shape(text, flavour) {
                 // `.g*`, `*/.git`: can match hidden entries such as `.git`.
@@ -561,6 +581,11 @@ impl Resolver {
                 exact: loc.is(&self.home),
             };
         }
+        // The caller named these on purpose, so they win over the workspace
+        // and a temporary folder they may sit in.
+        if let Some((_, words)) = self.protected.iter().find(|(file, _)| file.holds(loc)) {
+            return Place::Protected(words);
+        }
         for workspace in &self.workspaces {
             if loc.holds(workspace) {
                 return Place::Workspace {
@@ -593,6 +618,38 @@ impl Resolver {
             return Place::Top("a top-level folder");
         }
         Place::Outside
+    }
+}
+
+impl Resolver {
+    /// The words of a protected path that a pattern can pick, by name.
+    /// `folder` is where the pattern starts (the folder before its first
+    /// wildcard part) and `tail` the pattern's parts from there. The
+    /// pattern picks a protected path when its parts match that path's
+    /// names below `folder`, one for one, and it is not shorter than the
+    /// path: one that stops at a folder holding the path is a folder, judged
+    /// as a folder is.
+    fn picks_protected(
+        &self,
+        folder: &Loc,
+        tail: Option<&[String]>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        let tail = tail?;
+        let hidden = hidden || flavour == Flavour::Windows;
+        self.protected.iter().find_map(|(path, words)| {
+            if !folder.holds(path) {
+                return None;
+            }
+            let names = &path.parts[folder.parts.len()..];
+            (tail.len() >= names.len()
+                && names
+                    .iter()
+                    .zip(tail)
+                    .all(|(name, part)| glob::matches(part, name, flavour, hidden)))
+            .then_some(*words)
+        })
     }
 }
 
@@ -698,7 +755,7 @@ fn mark_wildcards(text: &str, flavour: Flavour) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing;
+    use crate::{testing, Protected};
 
     const POSIX: Flavour = Flavour::Posix;
     const WINDOWS: Flavour = Flavour::Windows;
@@ -1304,6 +1361,163 @@ mod tests {
         let posix = testing::posix();
         for path in ["x /y", "x../y", ".../y", "x /.. ", "x:y/z"] {
             assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path:?}");
+        }
+    }
+
+    const SETTINGS: &str = "the agent's settings";
+
+    fn gated(paths: Paths, protected: &[&str]) -> Paths {
+        paths.with_protected(protected.iter().map(|path| Protected::new(*path, SETTINGS)))
+    }
+
+    #[test]
+    fn a_protected_path_and_everything_under_it_is_protected() {
+        let paths = gated(testing::posix(), &["/home/me/.agent"]);
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("/home/me/.agent", protected),
+            ("/home/me/.agent/config.yaml", protected),
+            ("/home/me/.agent/a/../rules", protected),
+            ("/home/me/.agent/*", protected),
+            ("/home/me/.agent/*.yaml", protected),
+            // The folder holding it is not it, and a sibling is not either.
+            ("/home/me", Place::Home { exact: true }),
+            ("/home/me/.agents", Place::Outside),
+            ("/home/me/other", Place::Outside),
+            ("/home/me/.AGENT", Place::Outside),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        let resolver = Resolver::new(&paths);
+        assert_eq!(
+            resolver.place(Spelling::Home(".agent/config.yaml"), POSIX),
+            protected
+        );
+        assert!(!protected.harmless());
+        assert_eq!(protected.words(), SETTINGS);
+    }
+
+    #[test]
+    fn a_protected_path_wins_over_the_workspace_and_a_temporary_folder() {
+        let paths = gated(
+            testing::posix(),
+            &["/home/me/work/repo/.agent", "/tmp/state"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            (".agent", protected),
+            (".agent/rules", protected),
+            ("/home/me/work/repo/.agent/rules", protected),
+            ("src/main.rs", Place::Inside),
+            (".agentrc", Place::Inside),
+            ("/tmp/state/x", protected),
+            ("/tmp/other", Place::Temp { exact: false }),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        // A workspace that is itself protected is protected throughout.
+        let whole = gated(testing::posix(), &["/home/me/work/repo"]);
+        assert_eq!(at(&whole, "src/x", POSIX), protected);
+        assert_eq!(at(&whole, "/home/me", POSIX), Place::Home { exact: true });
+    }
+
+    #[test]
+    fn a_pattern_that_picks_a_protected_file_is_protected() {
+        let paths = gated(
+            testing::posix(),
+            &[
+                "/home/me/work/repo/settings.yaml",
+                "/home/me/work/repo/.agent",
+            ],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("set*", protected),
+            ("*.yaml", protected),
+            ("settings.y?ml", protected),
+            ("[s]ettings.yaml", protected),
+            ("/home/me/work/repo/s*", protected),
+            ("src/*/../../set*", protected),
+            (".a*", protected),
+            (".agent/*", protected),
+            // Below a protected name, whether it is a folder or not.
+            ("set*/x", protected),
+            // What the pattern cannot pick stays the agent's own.
+            ("*.log", Place::Inside),
+            ("src/*.rs", Place::Inside),
+            ("src/set*", Place::Inside),
+            ("S*", Place::Inside),
+            ("sr*/x", Place::Inside),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        // A pattern does not match a leading dot on POSIX unless hidden
+        // names match.
+        let only_hidden = gated(testing::posix(), &["/home/me/work/repo/.agent"]);
+        let resolver = Resolver::new(&only_hidden);
+        let hidden = |path, hidden| resolver.place_hidden(Spelling::Plain(path), POSIX, hidden);
+        assert_eq!(hidden("*gent", false), Place::Inside);
+        assert_eq!(hidden("*gent", true), protected);
+    }
+
+    #[test]
+    fn a_pattern_stopping_at_a_folder_holding_a_protected_path_is_that_folder() {
+        let paths = gated(testing::posix(), &["/home/me/work/repo/conf/app/x.yaml"]);
+        assert_eq!(at(&paths, "c*", POSIX), Place::Inside);
+        assert_eq!(at(&paths, "conf/a*", POSIX), Place::Inside);
+        assert_eq!(
+            at(&paths, "conf/a*/x.yaml", POSIX),
+            Place::Protected(SETTINGS)
+        );
+        assert_eq!(at(&paths, "*/*/*.yaml", POSIX), Place::Protected(SETTINGS));
+    }
+
+    #[test]
+    fn a_windows_protected_path_compares_without_case() {
+        let paths = gated(
+            testing::windows(),
+            &[r"C:\Users\me\.agent", r"C:\Users\me\dev\repo\.agent"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            (r"C:\Users\me\.agent", protected),
+            (r"c:\users\ME\.AGENT\config.yaml", protected),
+            (r"C:/Users/me/.agent/config.yaml", protected),
+            (r"C:\Users\me\.agent.\config.yaml", protected),
+            (r"C:\Users\me\.agent\*", protected),
+            (r".agent\rules", protected),
+            (r"src\main.rs", Place::Inside),
+            (r"C:\Users\me\.agents", Place::Outside),
+            (r"C:\Users\me", Place::Home { exact: true }),
+        ] {
+            assert_eq!(at(&paths, path, WINDOWS), place, "{path}");
+        }
+        let resolver = Resolver::new(&paths);
+        assert_eq!(
+            resolver.place(Spelling::Home(r".agent\config.yaml"), WINDOWS),
+            protected
+        );
+        // A name Windows reads as another is judged as that name.
+        assert_eq!(at(&paths, r".agent\x:stream", WINDOWS), Place::Unknown);
+    }
+
+    #[test]
+    fn protected_paths_are_added_by_each_call() {
+        let paths = testing::posix();
+        assert!(paths.protected.is_empty());
+        let paths = paths
+            .with_protected([Protected::new("/home/me/.a", "one")])
+            .with_protected([Protected::new("/home/me/.b", "two")]);
+        assert_eq!(at(&paths, "/home/me/.a/x", POSIX), Place::Protected("one"));
+        assert_eq!(at(&paths, "/home/me/.b/x", POSIX), Place::Protected("two"));
+    }
+
+    #[test]
+    fn with_no_protected_paths_nothing_changes() {
+        let plain = testing::posix();
+        let empty = testing::posix().with_protected([]);
+        for path in [".agent", "*", "set*", "/home/me/.agent/x", "/tmp/x"] {
+            assert_eq!(at(&plain, path, POSIX), at(&empty, path, POSIX), "{path}");
         }
     }
 }

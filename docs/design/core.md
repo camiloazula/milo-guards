@@ -13,10 +13,21 @@ field added later does not break a caller. The fields stay public to read.
 - `cwd`: where the work happens. Relative paths resolve from here.
 - `home`: the user's home directory.
 - `workspaces`: the folders the agent may change.
+- `protected`: what the caller gates with, such as its own settings and rules.
+  Empty from `Paths::new`; add to it with `Paths::with_protected`, which
+  takes `Protected` values and can be called again to add more.
+
+**`Protected`** is a path and the words a reason calls it by: a plain struct
+`{ path, words }`, built with `Protected::new(path, words)`. `words` is
+`&'static str`, as in `Place::Sensitive`, and follows the verb of a reason
+(`the agent's settings`: "deletes the agent's settings"). A guard never names
+its caller, so the caller passes in the files it gates with, and neither core
+nor any guard knows what they are.
 
 Paths are judged by how they are spelled, so these must be spelled the way the
 paths being judged will be. Give them absolute, and either all canonical or
-all as the user wrote them. A relative `cwd` puts every relative path outside
+all as the user wrote them. A protected path is spelled the same way as the
+workspace. A relative `cwd` puts every relative path outside
 the workspace. So does a `cwd` read through a symlink (`/private/tmp/...`) when
 the workspace is spelled without it (`/tmp/...`). With no workspace at all,
 every path is outside.
@@ -69,13 +80,15 @@ does touching it mean? The answer is a **`Place`**.
 | `Home { exact }` | The home directory itself, or a folder holding it. |
 | `Top(words)` | The root of a disk, a system folder, or a top-level folder. |
 | `Sensitive(words)` | Keys, credentials, shell startup files, the repository's history. |
+| `Protected(words)` | A path the caller named in `Paths::protected`, in the caller's words. |
 | `Disk` | A disk device. |
 | `Registry` | The Windows registry. |
 | `Outside` | Anywhere else beyond the workspace. |
 | `Unknown` | Known only when the input runs. |
 
 `harmless()` says whether touching a place is the agent's own business: inside
-a workspace, a temporary file, or the null device. `words()` gives the place in
+a workspace, a temporary file, or the null device. `Protected` is never
+harmless. `words()` gives the place in
 the words of a reason, so a rule can say `deletes {words}`.
 
 `Place` is `#[non_exhaustive]`: a place may be added, so a `match` on it needs
@@ -117,6 +130,30 @@ itself.
   shell startup files, keychains, the PowerShell profile). A workspace's own
   `.git` is sensitive.
 - Windows paths compare without case. POSIX paths compare with it.
+- A protected path, and anything under it, is `Protected`. **Protected wins over
+  the workspace**, and over a temporary folder: a protected file inside a
+  workspace folder is `Protected`, not `Inside`, because the caller named it on
+  purpose. Only a device and the home directory itself (or a folder holding it)
+  are judged before it. It is its own place, not `Sensitive`, so a guard can
+  tell a caller's own files from keys and a caller can decide differently for
+  each. Like everything here it is spelling alone: the caller spells a
+  protected path the way it spells the workspace, and a symlink to one is
+  judged by its own name.
+  - Only the path itself and what is under it is protected. A folder that
+    holds it is not: `rm -rf ~` is already a delete of the home directory, and
+    a folder between the home directory and a protected file is already beyond
+    the workspace, so no new place says "holds a protected path". The same
+    goes for a folder inside a workspace (`src` holding a protected
+    `src/conf/x.yaml`).
+  - A pattern that picks a protected path by its names is that path. The
+    pattern's parts, from its first wildcard part, are matched against the
+    path's names below the folder the pattern starts in, one for one (`set*`
+    and `*.yaml` pick `repo/settings.yaml`, `.a*` picks `repo/.agent` where
+    wildcards match hidden names), and a pattern at least as long as the path
+    counts: `set*/x` goes below a protected name, which may be a folder. A
+    pattern that stops at a folder holding the path is the folder (`c*` for
+    `repo/conf/app/x.yaml`). Without this a glob inside a workspace would
+    reach a protected file that its spelling does not name.
 - Windows names are normalised before they are compared, so a spelling that
   Windows resolves to a protected name is judged as that name. Core does this
   in the `Windows` flavour only; a POSIX name keeps every character. `.` and

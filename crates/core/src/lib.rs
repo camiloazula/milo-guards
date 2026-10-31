@@ -8,7 +8,8 @@
 //!   [`Risky`](Assessment::Risky) with a [`Finding`] for each reason, and
 //!   each finding names a rule of the guard's own enum, which implements
 //!   [`RuleName`];
-//! - the directories everything is judged against: [`Paths`];
+//! - the directories everything is judged against: [`Paths`], with the
+//!   files the caller gates with ([`Protected`]);
 //! - the path model: [`Resolver`] says where a path spelled out as text
 //!   lands ([`Place`]), by its spelling alone, for POSIX and Windows
 //!   ([`Flavour`]);
@@ -39,7 +40,7 @@ pub mod spelling;
 pub mod testing;
 mod verdict;
 
-pub use paths::Paths;
+pub use paths::{Paths, Protected};
 pub use place::Place;
 pub use resolve::{Flavour, Resolver, Spelling};
 pub use verdict::{Assessment, Finding, RuleName};

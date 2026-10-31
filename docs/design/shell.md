@@ -236,13 +236,13 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive one. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
-| `permissions` | Changes permissions or ownership beyond the workspace, or opens files to everyone. |
+| `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads. |
@@ -305,7 +305,34 @@ a path.
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
-itself, its `.git`, keys and shell startup files.
+itself, its `.git`, keys and shell startup files, and the paths the caller
+protects.
+
+### Protected paths
+
+A caller names what it gates with (its settings, its rules, the folder it keeps
+state in) in `Paths::protected` (see [Core](core.md)), and core answers
+`Place::Protected` with the caller's words for it, even inside a workspace.
+The guard needs no rule of its own: wherever a rule reads a place it takes
+anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
+the caller's words in the reason. Reading is not a finding; what a read of a
+protected file means is not decided here.
+
+With `Protected::new("/home/me/.agent", "the agent's settings")`:
+
+| Line | Rule | Reason |
+| --- | --- | --- |
+| `rm ~/.agent/config.yaml`, `rm -rf ~/.agent` | `delete` | deletes the agent's settings |
+| `mv ~/.agent/rules /tmp/x` | `delete` | moves the agent's settings |
+| `echo x > ~/.agent/config.yaml`, `cp x ~/.agent/rules` | `overwrite` | writes to the agent's settings |
+| `sed -i s/a/b/ ~/.agent/rules` | `overwrite` | edits the agent's settings |
+| `chmod 777 ~/.agent/rules` | `permissions` | changes permissions of the agent's settings |
+| `cat ~/.agent/config.yaml`, `ls ~/.agent` | safe | |
+
+With the same path inside the workspace (`/home/me/work/repo/.agent`), `rm
+.agent/rules` from the repository is a `delete`, `rm src/main.rs` stays safe,
+and `rm -rf *` is still a delete of the whole workspace. A PowerShell or cmd
+line on `C:\Users\me\.agent` is judged the same way, without regard to case.
 
 A wildcard part stands for one entry, so a `..` after it still climbs:
 `src/*/../../../x`. A part that starts with `.` can match `.git`; in PowerShell
