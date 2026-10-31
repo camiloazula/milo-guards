@@ -666,3 +666,56 @@ fn a_script_run_after_a_cd_to_an_unknown_place_needs_a_write_to_be_risky() {
         ],
     );
 }
+
+#[test]
+fn a_posix_wildcard_skips_dot_names_unless_it_starts_with_a_dot() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm -rf *git",
+            "rm -rf ?git",
+            "rm -rf [!x]git",
+            "rm -rf *.tmp",
+            "rm -rf ????",
+        ],
+        &[
+            ("rm -rf .git*", Rule::Delete),
+            ("rm -rf .?it", Rule::Delete),
+            ("rm -rf .[g]it", Rule::Delete),
+            ("rm -rf */.git", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["ls *.bak | xargs rm", "ls -d src/*/../*.o | xargs rm"],
+        &[
+            ("ls -d src/*/../../.g* | xargs rm -rf", Rule::Delete),
+            ("ls -d src/*/../../* | xargs rm -rf", Rule::Delete),
+            ("rm -rf src/*/../../.g*", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm /tmp/*.log",
+            "ls /tmp/*.log | xargs rm",
+            "ls -d /tmp/build-* | xargs rm -rf",
+            "ls /var/tmp/*.log | xargs rm",
+        ],
+        &[
+            ("rm -rf /tmp/*", Rule::Delete),
+            ("ls /tmp | xargs rm -rf", Rule::Delete),
+        ],
+    );
+}

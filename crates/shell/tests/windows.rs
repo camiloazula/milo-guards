@@ -572,3 +572,152 @@ fn a_windows_script_run_after_a_cd_to_an_unknown_place_needs_a_write_to_be_risky
         assert!(!found.contains(&Rule::Unknown), "{line}: {found:?}");
     }
 }
+
+#[test]
+fn a_windows_wildcard_can_match_a_dot_name() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item -Recurse *.tmp",
+            "Remove-Item -Recurse -Force *.TMP",
+            "Remove-Item -Recurse -Force *gitx",
+            "Remove-Item -Recurse -Force ?git2",
+            "Remove-Item -Recurse -Force '[!x]git'",
+            "Remove-Item -Recurse -Force *\\bin, *\\obj",
+            "Remove-Item -Recurse -Force src\\*\\bin",
+            "Remove-Item -Recurse -Force src\\*git",
+            "Remove-Item -Recurse -Force node_modules\\*\\dist",
+            "Remove-Item -Recurse -Force *\\*.o",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force *git", Rule::Delete),
+            ("Remove-Item -Recurse -Force ?git", Rule::Delete),
+            ("Remove-Item -Recurse -Force *GIT", Rule::Delete),
+            ("Remove-Item -Recurse -Force '[!.]git'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '[^.]git'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '`.gi?'", Rule::Delete),
+            ("Remove-Item -Recurse -Force ????", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\objects", Rule::Delete),
+            ("Remove-Item -Recurse -Force ????\\HEAD", Rule::Delete),
+            ("Remove-Item -Recurse -Force *g?t\\objects", Rule::Delete),
+            (
+                "Remove-Item -Recurse -Force *\\bin, *\\objects",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem *git | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem *\\objects | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "rd /s /q *gitx",
+            "del /q *.tmp",
+            "rd /s /q *\\bin",
+            "rd /s /q src\\*\\bin",
+        ],
+        &[
+            ("rd /s /q *git", Rule::Delete),
+            ("rd /s /q ?git", Rule::Delete),
+            ("rd /s /q ?GIT", Rule::Delete),
+            ("rmdir /s /q *g?t", Rule::Delete),
+            ("rd /s /q [.]git", Rule::Delete),
+            ("rd /s /q *\\objects", Rule::Delete),
+            ("rd /s /q ????\\HEAD", Rule::Delete),
+        ],
+    );
+    let finding = classify("rd /s /q *git", Shell::Cmd, &windows());
+    assert_eq!(
+        finding.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+    let quoted = classify(
+        "Remove-Item -Recurse -Force '[!.]git'",
+        Shell::PowerShell,
+        &windows(),
+    );
+    assert_eq!(
+        quoted.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+}
+
+#[test]
+fn star_dot_star_is_every_entry_on_windows() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["del /q build\\*.*"],
+        &[("del /q *", Rule::Delete), ("del /q *.*", Rule::Delete)],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item -Recurse build\\*.*"],
+        &[("Remove-Item -Recurse -Force *.*", Rule::Delete)],
+    );
+    let all = classify("del /q *", Shell::Cmd, &windows());
+    let dotted = classify("del /q *.*", Shell::Cmd, &windows());
+    // Judged alike: the same rule and reason (only the target text differs).
+    assert_eq!(all.findings()[0].rule, dotted.findings()[0].rule);
+    assert_eq!(all.findings()[0].reason, dotted.findings()[0].reason);
+    assert_eq!(dotted.findings()[0].reason, "deletes the whole workspace");
+}
+
+#[test]
+fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem *.log | Remove-Item",
+            "Get-ChildItem -Force x*\\..\\*.tmp | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force *\\bin | Remove-Item -Recurse -Force",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force *\\modules", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\lfs", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\worktrees", Rule::Delete),
+            (
+                "Get-ChildItem -Force x*\\..\\*git | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force x*\\..\\*\\objects | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force src\\*\\..\\..\\*git | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem -Force *git | Remove-Item", Rule::Delete),
+        ],
+    );
+    let listed = classify(
+        "Get-ChildItem -Force *git | Remove-Item",
+        Shell::PowerShell,
+        &windows(),
+    );
+    assert_eq!(
+        listed.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+}
+
+#[test]
+fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files_on_windows() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem C:\\Users\\me\\AppData\\Local\\Temp\\*.log | Remove-Item"],
+        &[(
+            "Remove-Item -Recurse C:\\Users\\me\\AppData\\Local\\Temp\\*",
+            Rule::Delete,
+        )],
+    );
+}

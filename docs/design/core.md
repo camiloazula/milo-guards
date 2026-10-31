@@ -123,6 +123,37 @@ itself.
   much of it: a pattern whose last part is a catch-all (`*`, `?*`, `*/*`)
   takes the whole folder, a pattern that picks names (`*.log`) touches files
   inside it, and a part that starts with `.` can match `.git`.
+
+  A PowerShell or cmd wildcard also matches a name's leading dot, so on the
+  `Windows` flavour a wildcard part directly in a workspace folder can pick
+  `.git` (`*git`, `?git`, `????`), and the resolver answers the repository's
+  history for it. `glob::reaches_git` tells it. The first wildcard part must
+  match `.git`. When it is the last part (and not a catch-all, which is the
+  whole folder) it takes `.git` itself. When more follows, the next part
+  must match one of `.git`'s own entries (`HEAD`, `config`, `index`,
+  `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`, `modules`, `lfs`,
+  `worktrees`, `shallow`, `ORIG_HEAD`, `MERGE_HEAD`, `rebase-merge`,
+  `rebase-apply`, `sequencer`): `*\objects`, `*\modules` and `????\HEAD` reach
+  it, `*\bin` and `*\obj` do not. Only the part after the one that matches
+  `.git` is read, so `*\logs` or `*\config` at the workspace root is judged
+  risky even if the `*` picks a folder of that name that is not `.git`; that
+  is accepted as rare. Deeper than the workspace
+  folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
+  model's to protect, so they stay the agent's. On the `Posix` flavour a
+  wildcard does not match a leading dot, so `*git` and `?git` pass.
+
+  `glob::matches` is the matcher behind it: one pattern part against one name
+  (`*`, `?`, `[...]`, ranges). On `Windows` it reads PowerShell's rules, with
+  no negation in a class (`!` and `^` are members, so `[!.]git` matches
+  `.git`) and a backtick making the next character itself, and compares
+  names without case by the Unicode case of each character, class members
+  included (a dotless `i`
+  counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts. Its
+  `hidden` flag says whether a wildcard may match a leading dot; the resolver
+  sets it on `Windows` only.
+  On `Windows`, `*.*` as a last part is a catch-all like `*`. That is cmd's
+  meaning; in PowerShell it needs a dot in the name, so taking it as every
+  entry is the wider reading.
 - Devices are told by their spelling. On POSIX the path's `.` and `..` are
   applied first, then the name must be exactly one of `/dev/null`,
   `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`, `/dev/random`,
@@ -158,7 +189,8 @@ guard keeps these:
   `Outside`.
 - `$null`, and brace lists such as `{~,x}`, which are `Unknown`.
 - `within`, which joins a path to the folder an earlier `cd` moved to.
-- `listed`, which says what a listing hands on to the next command.
+- `listed`, which says what a listing hands on to the next command: a pattern
+  as written, so it is judged as a delete of it would be.
 
 The seam is the text of a path. Above it is everything the input's syntax
 decides. Below it is only how a path is spelled on a system.
@@ -169,7 +201,8 @@ Some guards need to take a path's spelling apart before they hand it to the
 resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
-(`has_wildcard`, and `shape` with its `Shape`, which is `#[non_exhaustive]`).
+(`has_wildcard`, `matches`, `reaches_git`, and `shape` with its `Shape`, which
+is `#[non_exhaustive]`).
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 

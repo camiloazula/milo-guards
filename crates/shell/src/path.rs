@@ -7,7 +7,7 @@
 //! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
 //! lists, and a `cd` that moved the line.
 
-use milo_guards_core::spelling::glob::{self, Shape};
+use milo_guards_core::spelling::glob;
 use milo_guards_core::{Flavour, Paths, Spelling};
 
 pub(crate) use milo_guards_core::Place;
@@ -226,28 +226,6 @@ fn brace_list(text: &str) -> bool {
     }
 }
 
-/// `text` up to the folder its first wildcard is in: `~/*` is `~`, and
-/// `*.log` is `.`. What a pattern matches lies inside that folder.
-fn before_wildcards(text: &str, shell: Shell) -> String {
-    let Some(at) = text.find(['*', '?', '[']) else {
-        return text.to_string();
-    };
-    let head = &text[..at];
-    let separators = flavour(shell).separators();
-    match head.rfind(separators) {
-        Some(0) => head[..1].to_string(),
-        // `C:\*`: the root of the drive, which `C:` alone is not.
-        Some(end) if head[..end].ends_with(':') => head[..=end].to_string(),
-        Some(end) => head[..end].to_string(),
-        None if head.starts_with('~') => "~".to_string(),
-        // `HKCU:*`, `C:x*`: the drive's own working directory.
-        None => match qualifier(head, shell) {
-            Some((name, _)) => format!("{name}:."),
-            None => ".".to_string(),
-        },
-    }
-}
-
 /// `path` as seen from `dir`, where an earlier `cd` moved: a relative path
 /// is joined to it, and is unknown when where it moved is.
 pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
@@ -281,30 +259,14 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
 }
 
 /// What a listing of `text` hands on, as a path the resolver reads: a
-/// pattern that picks files (`*.bak`, `src/*.o`) or a filtered listing
-/// hands files inside its folder; a folder listed whole (`.`, `*`, `~`)
+/// pattern is handed on as written, so the resolver judges it as it would
+/// judge a delete of it (`..` applied, then what it can match); a filtered
+/// listing hands files inside its folder; a folder listed whole (`.`, `~`)
 /// hands everything in it, which is as much as the folder itself.
-pub(crate) fn listed(text: &str, filtered: bool, shell: Shell) -> String {
-    if !glob::has_wildcard(text) {
-        return if filtered {
-            format!("{text}/x")
-        } else {
-            text.to_string()
-        };
-    }
-    // `Registry::HKEY_CURRENT_USER*`, `Microsoft.PowerShell.Core\FileSystem::C:*`:
-    // the pattern is on the provider's own path, after the `::`.
-    if shell == Shell::PowerShell {
-        if let Some((provider, rest)) = text.split_once("::") {
-            return format!("{provider}::{}", listed(rest, filtered, shell));
-        }
-    }
-    // The drive (`C:`, `HKCU:`) is not part of the pattern.
-    let body = qualifier(text, shell).map_or(text, |(_, rest)| rest);
-    if glob::shape(body, flavour(shell)) == Shape::Entries {
-        format!("{}/x", before_wildcards(text, shell))
+pub(crate) fn listed(text: &str, filtered: bool) -> String {
+    if filtered && !glob::has_wildcard(text) {
+        format!("{text}/x")
     } else {
-        // The whole folder: every entry, or hidden ones such as `.git`.
-        before_wildcards(text, shell)
+        text.to_string()
     }
 }
