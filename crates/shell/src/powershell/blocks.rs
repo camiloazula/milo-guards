@@ -17,6 +17,9 @@ enum Positional {
     /// (`ForEach-Object { begin } { process } { end }`); a plain word is a
     /// member name.
     Every,
+    /// Only the first argument no parameter takes can be a block; a plain
+    /// word there is another parameter's value (`Where-Object Name -eq x`).
+    First,
 }
 
 /// A cmdlet that runs a script block it is given.
@@ -43,7 +46,7 @@ struct Cmdlet {
 /// The cmdlets whose script blocks the guard reads. The ones that register
 /// an event action are read with the events (`Register-ObjectEvent` and the
 /// like), each for its own parameter order.
-const CMDLETS: [Cmdlet; 8] = [
+const CMDLETS: [Cmdlet; 10] = [
     Cmdlet {
         name: "invoke-command",
         blocks: &["scriptblock", "command"],
@@ -165,6 +168,34 @@ const CMDLETS: [Cmdlet; 8] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+    },
+    // The filter runs on every item: `-FilterScript` is the first parameter
+    // by position, and a word there is the `-Property` of the comparison form.
+    Cmdlet {
+        name: "where-object",
+        blocks: &["filterscript"],
+        values: &["inputobject", "property", "value"],
+        positional: Some(Positional::First),
+        slots: &[],
+        lone: true,
+    },
+    // `-Expression` is the second parameter by position, after `-Name`. The
+    // `-Command` it can be given instead runs a command by name, which the
+    // guard does not read either.
+    Cmdlet {
+        name: "trace-command",
+        blocks: &["expression", "command"],
+        values: &[
+            "name",
+            "argumentlist",
+            "filepath",
+            "option",
+            "listeneroption",
+            "inputobject",
+        ],
+        positional: Some(Positional::One),
+        slots: &[&["name"], &["expression", "command"]],
+        lone: false,
     },
 ];
 
@@ -331,6 +362,9 @@ pub(super) fn check(
             // argument after it, whatever its name.
             let for_each = key == "foreach-object";
             let list = for_each && (names(&name, &["argumentlist"]) || names(&name, &["args"]));
+            // A parameter that holds a place by position (`-Name`) leaves
+            // the next place to the arguments that follow.
+            bound.push(name.clone());
             if let Some(value) = iter.next() {
                 if for_each && names(&name, &["membername"]) {
                     members.push(value.arg);
@@ -366,8 +400,11 @@ pub(super) fn check(
                     .iter()
                     .any(|name| slot.iter().any(|full| full.starts_with(name.as_str())))
             });
-            positional.iter().zip(free).any(|(item, (index, _))| {
-                if index == 0 {
+            positional.iter().zip(free).any(|(item, (index, slot))| {
+                // A place for a name (`Register-ScheduledJob`'s) holds no block.
+                if !slot.iter().any(|full| cmdlet.blocks.contains(full)) {
+                    false
+                } else if index == 0 {
                     loose(item)
                 } else {
                     !item.shape.block
@@ -378,6 +415,13 @@ pub(super) fn check(
             !named
                 && !positional.iter().any(|item| item.shape.block)
                 && positional.iter().any(loose)
+        }
+        Some(Positional::First) => {
+            let property = items
+                .iter()
+                .filter_map(|item| parameter(item.arg))
+                .any(|name| names(&name, &["property"]));
+            !named && !property && positional.first().is_some_and(loose)
         }
         None => false,
     };
@@ -474,6 +518,39 @@ fn member_names(
 /// A member name without the quotes it was written in, in lower case.
 pub(super) fn bare(name: &str) -> String {
     name.trim_matches(['\'', '"']).to_ascii_lowercase()
+}
+
+/// The method a call names, in lower case, when the name is written out: a
+/// plain name, or a string with nothing in it that is only known when it runs
+/// (a quoted name, or one with a backtick escape in double quotes). `None`
+/// for a variable, an expression, a block or an expandable string with a `$`
+/// part in it.
+pub(super) fn called(member: Node<'_>, source: &str) -> Option<String> {
+    let name = member.named_child(0)?;
+    match name.kind() {
+        "simple_name" => Some(bare(unit::text(&name, source))),
+        "string_literal" => {
+            let text = unit::text(&name, source);
+            let quote = text.chars().next()?;
+            let inner = text.get(1..text.len().checked_sub(1)?)?;
+            let plain = match name.named_child(0) {
+                Some(part) if part.kind() == "verbatim_string_characters" => quote == '\'',
+                Some(part) if part.kind() == "expandable_string_literal" => {
+                    quote == '"' && part.named_child_count() == 0
+                }
+                _ => false,
+            };
+            plain.then(|| {
+                let inner = if quote == '"' {
+                    super::unescape(inner)
+                } else {
+                    inner.to_string()
+                };
+                inner.to_ascii_lowercase()
+            })
+        }
+        _ => None,
+    }
 }
 
 /// The name of the property or method a member access or call ends in, as

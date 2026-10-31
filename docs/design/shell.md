@@ -328,13 +328,21 @@ A line is never safe because the guard gave up on it. These come back risky:
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
   `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
-  `ForEach-Object`, `New-Module`, `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
+  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module`,
+  `Measure-Command`, `Trace-Command -Expression`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
   `ExpandString`, whose `$( )` subexpressions run). A block
   written out is read where it stands, and so is a string written out as the
   text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
-  method. `ForEach-Object Name` takes a member name, not a block, and what
+  method. A method called by a name only known when it runs
+  (`.$m('…')`, `.($m)('…')`, `."Invoke$x"('…')`) may be any method, `InvokeScript`
+  and `Delete` among them, so it is risky; a property read (`$row.$col`) has no
+  call and is not. `Where-Object Name -eq x` takes a word first as the property
+  of the comparison, so only another first argument that is not a block
+  written out (`? $b`, `Where-Object $prop -eq 1`) is risky, as is
+  `Trace-Command`'s second argument (`Trace-Command Name $b`) or its `-Command`.
+  `ForEach-Object Name` takes a member name, not a block, and what
   follows it is the member's arguments (`$list | % Add $item` is safe), but a
   member name is judged as the call written out is: a method that is
   risky as `.Invoke()` and `.Delete()` are (`% Invoke`, `-MemberName Delete`),

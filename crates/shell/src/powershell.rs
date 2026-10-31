@@ -503,7 +503,17 @@ impl Walker<'_> {
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
             return;
         };
-        let method = blocks::bare(unit::text(member, self.source));
+        // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
+        // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
+        // them: the call is risky wherever it points.
+        let Some(method) = blocks::called(*member, self.source) else {
+            self.split.problem(
+                Rule::Unknown,
+                "calls a method only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+            return;
+        };
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
