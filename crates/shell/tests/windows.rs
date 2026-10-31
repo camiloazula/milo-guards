@@ -347,33 +347,66 @@ fn a_windows_wildcard_can_match_a_dot_name() {
             "Remove-Item -Recurse -Force *.TMP",
             "Remove-Item -Recurse -Force *gitx",
             "Remove-Item -Recurse -Force ?git2",
+            "Remove-Item -Recurse -Force '[!x]git'",
+            "Remove-Item -Recurse -Force *\\bin, *\\obj",
+            "Remove-Item -Recurse -Force src\\*\\bin",
+            "Remove-Item -Recurse -Force src\\*git",
+            "Remove-Item -Recurse -Force node_modules\\*\\dist",
+            "Remove-Item -Recurse -Force *\\*.o",
         ],
         &[
             ("Remove-Item -Recurse -Force *git", Rule::Delete),
             ("Remove-Item -Recurse -Force ?git", Rule::Delete),
             ("Remove-Item -Recurse -Force *GIT", Rule::Delete),
-            ("Remove-Item -Recurse -Force [!x]git", Rule::Delete),
+            ("Remove-Item -Recurse -Force '[!.]git'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '[^.]git'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '`.gi?'", Rule::Delete),
             ("Remove-Item -Recurse -Force ????", Rule::Delete),
             ("Remove-Item -Recurse -Force *\\objects", Rule::Delete),
+            ("Remove-Item -Recurse -Force ????\\HEAD", Rule::Delete),
             ("Remove-Item -Recurse -Force *g?t\\objects", Rule::Delete),
+            (
+                "Remove-Item -Recurse -Force *\\bin, *\\objects",
+                Rule::Delete,
+            ),
             ("Get-ChildItem *git | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem *\\objects | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
         ],
     );
     check(
         Shell::Cmd,
         &windows(),
-        &["rd /s /q *gitx", "del /q *.tmp"],
+        &[
+            "rd /s /q *gitx",
+            "del /q *.tmp",
+            "rd /s /q *\\bin",
+            "rd /s /q src\\*\\bin",
+        ],
         &[
             ("rd /s /q *git", Rule::Delete),
             ("rd /s /q ?git", Rule::Delete),
             ("rd /s /q ?GIT", Rule::Delete),
             ("rmdir /s /q *g?t", Rule::Delete),
             ("rd /s /q [.]git", Rule::Delete),
+            ("rd /s /q *\\objects", Rule::Delete),
+            ("rd /s /q ????\\HEAD", Rule::Delete),
         ],
     );
     let finding = classify("rd /s /q *git", Shell::Cmd, &windows());
     assert_eq!(
         finding.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+    let quoted = classify(
+        "Remove-Item -Recurse -Force '[!.]git'",
+        Shell::PowerShell,
+        &windows(),
+    );
+    assert_eq!(
+        quoted.findings()[0].reason,
         "deletes a hidden file such as the repository's history"
     );
 }

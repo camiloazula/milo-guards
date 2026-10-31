@@ -175,6 +175,18 @@ fn before_wildcards(text: &str, shell: Shell) -> String {
     }
 }
 
+/// Whether the pattern `text` can reach the repository's `.git` or what is
+/// in it from the folder it starts in (see `glob::reaches_git`).
+fn reaches_git(text: &str, shell: Shell) -> bool {
+    let flavour = flavour(shell);
+    let parts: Vec<&str> = text
+        .split(flavour.separators())
+        .skip_while(|part| !glob::has_wildcard(part))
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    glob::reaches_git(&parts, flavour, flavour == Flavour::Windows)
+}
+
 /// `path` as seen from `dir`, where an earlier `cd` moved: a relative path
 /// is joined to it, and is unknown when where it moved is.
 pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
@@ -205,6 +217,10 @@ pub(crate) fn listed(text: &str, filtered: bool, shell: Shell) -> String {
     let pattern = glob::has_wildcard(text);
     if pattern && glob::shape(text, flavour(shell)) != Shape::Entries {
         // The whole folder: every entry, or hidden ones such as `.git`.
+        before_wildcards(text, shell)
+    } else if pattern && reaches_git(text, shell) {
+        // A Windows wildcard such as `*git` or `*\objects` can pick `.git`
+        // or what is in it.
         before_wildcards(text, shell)
     } else if pattern {
         format!("{}/x", before_wildcards(text, shell))

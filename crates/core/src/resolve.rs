@@ -361,7 +361,30 @@ impl Resolver {
         // the folder before its first wildcard part that no `..` cancels.
         let marked = mark_wildcards(text, flavour);
         let mut loc = self.locate(path.with(marked.as_deref().unwrap_or(text)), flavour);
-        let pattern = match loc.parts.iter().position(|part| part == WILDCARD) {
+        // From the first wildcard part on, as the text of each part.
+        let wildcards: Vec<&str> = text
+            .split(flavour.separators())
+            .filter(|part| part.contains(WILDCARDS))
+            .collect();
+        let tail: Option<Vec<String>> = loc
+            .parts
+            .iter()
+            .position(|part| part.starts_with(WILDCARD))
+            .map(|at| {
+                loc.parts[at..]
+                    .iter()
+                    .map(|part| match part.strip_prefix(WILDCARD) {
+                        Some(n) => n
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|n| wildcards.get(n).copied())
+                            .unwrap_or("*")
+                            .to_string(),
+                        None => part.clone(),
+                    })
+                    .collect()
+            });
+        let pattern = match loc.parts.iter().position(|part| part.starts_with(WILDCARD)) {
             Some(at) => {
                 loc.parts.truncate(at);
                 true
@@ -373,10 +396,21 @@ impl Resolver {
             match glob::shape(text, flavour) {
                 // `.g*`, `*/.git`: can match hidden entries such as `.git`.
                 Shape::Hidden => {
-                    return Place::Sensitive("a hidden file such as the repository's history");
+                    return Place::Sensitive(HIDDEN);
                 }
                 // `*.log`, `*/*.o`: picks files inside the folder.
                 Shape::Entries if place == (Place::Workspace { exact: true }) => {
+                    // A PowerShell or cmd wildcard directly in the workspace
+                    // folder can match the dot name `.git`, and reach what is
+                    // in it; deeper down no `.git` is the model's to protect.
+                    let hidden = flavour == Flavour::Windows;
+                    let reaches = tail.is_some_and(|tail| {
+                        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+                        glob::reaches_git(&tail, flavour, hidden)
+                    });
+                    if reaches {
+                        return Place::Sensitive(HIDDEN);
+                    }
                     return Place::Inside;
                 }
                 // `*`, `?*`, `*/*`: every entry, as much as the folder.
@@ -536,23 +570,28 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
     None
 }
 
-/// The part a wildcard part becomes while a path is resolved: no real file
-/// name holds a NUL.
+/// What a wildcard part becomes while a path is resolved, followed by its
+/// number among the wildcard parts: no real file name holds a NUL.
 const WILDCARD: &str = "\u{0}*";
 
-/// `text` with each part that holds a wildcard replaced by [`WILDCARD`];
-/// `None` when it holds none.
+/// What a pattern that can match `.git` is called in a reason.
+const HIDDEN: &str = "a hidden file such as the repository's history";
+
+/// `text` with each part that holds a wildcard replaced by [`WILDCARD`] and
+/// its number; `None` when it holds none.
 fn mark_wildcards(text: &str, flavour: Flavour) -> Option<String> {
     if !glob::has_wildcard(text) {
         return None;
     }
+    let mut count = 0;
     Some(
         text.split(flavour.separators())
             .map(|part| {
                 if part.contains(WILDCARDS) {
-                    WILDCARD
+                    count += 1;
+                    format!("{WILDCARD}{}", count - 1)
                 } else {
-                    part
+                    part.to_string()
                 }
             })
             .collect::<Vec<_>>()
@@ -678,10 +717,18 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_wildcard_can_match_the_repository_history_and_a_posix_one_cannot() {
+    fn a_windows_wildcard_in_the_workspace_folder_can_reach_the_repository_history() {
         let hidden = Place::Sensitive("a hidden file such as the repository's history");
         let posix = testing::posix();
-        for path in ["*git", "?git", "[!x]git", "*.*", "????"] {
+        for path in [
+            "*git",
+            "?git",
+            "[!x]git",
+            "*.*",
+            "????",
+            "*/objects",
+            "????/HEAD",
+        ] {
             assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path}");
         }
         let windows = testing::windows();
@@ -689,23 +736,49 @@ mod tests {
             "*git",
             "?git",
             "*GIT",
-            "[!x]git",
+            "[!.]git",
+            "[^.]git",
+            "`.gi?",
+            "*g\u{131}t",
             "????",
             "*\\objects",
-            "*.*\\x",
+            "*.*\\objects",
+            "????\\HEAD",
+            "*\\*s",
+            "*\\..\\*git",
+            "src\\..\\*git",
+            "*/OBJECTS/pack",
         ] {
             assert_eq!(at(&windows, path, WINDOWS), hidden, "{path}");
         }
-        for path in ["*.tmp", "*gitx", "?git2", "src\\*.obj"] {
+        // Not a name `.git` has, or not directly in the workspace folder.
+        for path in [
+            "*.tmp",
+            "*gitx",
+            "?git2",
+            "[!x]git",
+            "*\\bin",
+            "*\\obj",
+            "*\\*.o",
+            "*\\..\\*.tmp",
+            "src\\*.obj",
+            "src\\*git",
+            "src\\*\\bin",
+            "src\\*\\objects",
+            "src\\*\\..\\*git",
+            "node_modules\\*\\dist",
+        ] {
             assert_eq!(at(&windows, path, WINDOWS), Place::Inside, "{path}");
         }
         // A catch-all takes the folder, as on POSIX; `*.*` is one on Windows.
         assert_eq!(at(&windows, "src\\*.*", WINDOWS), Place::Inside);
-        assert_eq!(
-            at(&windows, "*.*", WINDOWS),
-            Place::Workspace { exact: true }
-        );
-        assert_eq!(at(&windows, "*", WINDOWS), Place::Workspace { exact: true });
+        for path in ["*.*", "*", "*\\*"] {
+            assert_eq!(
+                at(&windows, path, WINDOWS),
+                Place::Workspace { exact: true },
+                "{path}"
+            );
+        }
     }
 
     #[test]

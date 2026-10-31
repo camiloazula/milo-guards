@@ -16,26 +16,46 @@ pub fn has_wildcard(text: &str) -> bool {
     text.contains(WILDCARDS)
 }
 
-/// The hidden names the path model protects inside a workspace: a wildcard
-/// part that can match one of them takes the protected place.
+/// The hidden names the path model protects inside a workspace.
 const PROTECTED: [&str; 1] = [".git"];
+
+/// What a repository's `.git` folder holds at its top level: a pattern that
+/// reaches one of these through `.git` takes the repository's history.
+const GIT_ENTRIES: [&str; 9] = [
+    "HEAD",
+    "config",
+    "index",
+    "objects",
+    "refs",
+    "hooks",
+    "info",
+    "logs",
+    "packed-refs",
+];
 
 /// Whether the pattern part `pattern` matches the file name `name`.
 ///
 /// `*` is any run of characters, `?` is one character, and `[...]` is one
-/// character of a class (`[!x]` or `[^x]` is any other; `a-z` is a range;
-/// a `]` first in the class is itself). A `[` with no `]` after it is just a
-/// `[`. A part never holds a separator, so neither does a name.
+/// character of a class (`a-z` is a range; a `]` first in the class is
+/// itself). A `[` with no `]` after it is just a `[`. A part never holds a
+/// separator, so neither does a name.
 ///
-/// `flavour` says how names compare: a Windows name compares without case.
+/// `flavour` says how the pattern is read and how names compare:
+/// - `Posix`: `[!x]` and `[^x]` are any other character, and names compare
+///   with case.
+/// - `Windows`: PowerShell has no negation, so `!` and `^` are members of the
+///   class; a backtick makes the next character itself (`` `* `` is a star);
+///   names compare without case, by the Unicode lower and upper case of each
+///   character, so that `ı` and `İ` count as an `i`.
+///
 /// `hidden` says whether a wildcard can match a name's leading dot, as
 /// PowerShell and cmd wildcards do. When it is `false`, the POSIX rule holds:
 /// a name that starts with `.` is matched only by a pattern that starts with
-/// a literal `.`. (A POSIX shell with `dotglob` set matches like `true`.)
+/// a literal `.`.
 #[must_use]
 pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
     let fold = flavour == Flavour::Windows;
-    let tokens = tokens(pattern);
+    let tokens = tokens(pattern, flavour);
     let name: Vec<char> = name.chars().collect();
     if !hidden && name.first() == Some(&'.') && tokens.first() != Some(&Token::Literal('.')) {
         return false;
@@ -66,6 +86,35 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
     tokens[at..].iter().all(|token| *token == Token::Star)
 }
 
+/// Whether the pattern, whose first part is directly inside a repository's
+/// folder, can reach `.git`'s own entries: `parts` are the pattern's parts
+/// from its first wildcard part on. That part must match `.git`. If it is
+/// the last part it takes `.git` itself, unless it is a catch-all (the
+/// whole folder is judged then). Otherwise the next part must match one of
+/// `.git`'s own entries (`*\objects` does, `*\bin` does not). A pattern that
+/// still holds a `..` is taken to reach it.
+///
+/// `hidden` is the same as for [`matches()`].
+#[must_use]
+pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
+    let [first, rest @ ..] = parts else {
+        return false;
+    };
+    if !PROTECTED
+        .iter()
+        .any(|name| matches(first, name, flavour, hidden))
+    {
+        return false;
+    }
+    match rest.first() {
+        None => !catch_all(first, flavour),
+        Some(&"..") => true,
+        Some(next) => GIT_ENTRIES
+            .iter()
+            .any(|entry| matches(next, entry, flavour, hidden)),
+    }
+}
+
 /// One step of a pattern part.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
@@ -79,26 +128,33 @@ enum Token {
     },
 }
 
+/// `c` in the cases a Windows name compares by: its first lower and upper
+/// case character.
+fn cases(c: char) -> (char, char) {
+    (
+        c.to_lowercase().next().unwrap_or(c),
+        c.to_uppercase().next().unwrap_or(c),
+    )
+}
+
 impl Token {
     /// Whether the token (not a `*`) takes the one character `c`.
     fn takes(&self, c: char, fold: bool) -> bool {
         let same = |a: char, b: char| {
-            if fold {
-                a.eq_ignore_ascii_case(&b)
-            } else {
-                a == b
-            }
+            a == b || (fold && (cases(a).0 == cases(b).0 || cases(a).1 == cases(b).1))
         };
         match self {
             Self::Star => false,
             Self::Any => true,
             Self::Literal(literal) => same(*literal, c),
             Self::Class { negated, ranges } => {
+                let within = |c: char, low: char, high: char| low <= c && c <= high;
                 let inside = ranges.iter().any(|&(low, high)| {
-                    let within = |c: char| low <= c && c <= high;
-                    within(c)
-                        || (fold
-                            && (within(c.to_ascii_lowercase()) || within(c.to_ascii_uppercase())))
+                    within(c, low, high)
+                        || (fold && {
+                            let (lower, upper) = cases(c);
+                            within(lower, low, high) || within(upper, low, high)
+                        })
                 });
                 inside != *negated
             }
@@ -106,14 +162,22 @@ impl Token {
     }
 }
 
-fn tokens(pattern: &str) -> Vec<Token> {
+fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
+    let windows = flavour == Flavour::Windows;
     let chars: Vec<char> = pattern.chars().collect();
+    // A `[` after the last `]` has nothing to close it: it is a plain `[`.
+    // Finding that once keeps a long run of `[` linear.
+    let last_close = chars.iter().rposition(|c| *c == ']');
     let mut out = Vec::new();
     let mut at = 0;
     while at < chars.len() {
         let c = chars[at];
         at += 1;
         match c {
+            '`' if windows && at < chars.len() => {
+                out.push(Token::Literal(chars[at]));
+                at += 1;
+            }
             '*' => {
                 // `**` is `*`.
                 if out.last() != Some(&Token::Star) {
@@ -121,13 +185,15 @@ fn tokens(pattern: &str) -> Vec<Token> {
                 }
             }
             '?' => out.push(Token::Any),
-            '[' => match class(&chars[at..]) {
-                Some((token, used)) => {
-                    out.push(token);
-                    at += used;
+            '[' if last_close.is_some_and(|close| at <= close) => {
+                match class(&chars[at..], windows) {
+                    Some((token, used)) => {
+                        out.push(token);
+                        at += used;
+                    }
+                    None => out.push(Token::Literal('[')),
                 }
-                None => out.push(Token::Literal('[')),
-            },
+            }
             _ => out.push(Token::Literal(c)),
         }
     }
@@ -135,17 +201,22 @@ fn tokens(pattern: &str) -> Vec<Token> {
 }
 
 /// The class that starts just after a `[`, and how many characters it takes
-/// up to its `]`; `None` when no `]` closes it.
-fn class(chars: &[char]) -> Option<(Token, usize)> {
-    let negated = matches!(chars.first(), Some('!' | '^'));
+/// up to its `]`; `None` when no `]` closes it. On Windows `!` and `^` first
+/// in it are members, and a backtick makes the next character a member.
+fn class(chars: &[char], windows: bool) -> Option<(Token, usize)> {
+    let negated = !windows && matches!(chars.first(), Some('!' | '^'));
     let mut at = usize::from(negated);
     let mut ranges = Vec::new();
     let mut first = true;
     loop {
-        let low = *chars.get(at)?;
+        let mut low = *chars.get(at)?;
         at += 1;
         if low == ']' && !first {
             return Some((Token::Class { negated, ranges }, at));
+        }
+        if windows && low == '`' {
+            low = *chars.get(at)?;
+            at += 1;
         }
         first = false;
         if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|next| *next != ']') {
@@ -178,22 +249,10 @@ pub fn shape(text: &str, flavour: Flavour) -> Shape {
         .skip_while(|part| !has_wildcard(part))
         .filter(|part| !part.is_empty() && *part != ".")
         .collect();
-    // A PowerShell or cmd wildcard matches a leading dot; a POSIX one only
-    // when the pattern starts with it (and that is the first test here). The
-    // last part, when it is a catch-all, is the `All` shape instead: it takes
-    // the whole folder, which holds no `.git` of its own to protect. A
-    // catch-all before the last part still picks a folder, and so can pick
-    // `.git` (`*\objects`).
-    let dots = flavour == Flavour::Windows;
-    let hidden = |at: usize, part: &str| {
-        (part.starts_with('.') && part != "..")
-            || (has_wildcard(part)
-                && !(at + 1 == parts.len() && catch_all(part, flavour))
-                && PROTECTED
-                    .iter()
-                    .any(|name| matches(part, name, flavour, dots)))
-    };
-    if parts.iter().enumerate().any(|(at, part)| hidden(at, part)) {
+    if parts
+        .iter()
+        .any(|part| part.starts_with('.') && *part != "..")
+    {
         Shape::Hidden
     } else if parts.last().is_some_and(|last| catch_all(last, flavour)) {
         Shape::All
@@ -261,16 +320,37 @@ mod tests {
     fn a_windows_wildcard_matches_a_leading_dot() {
         let windows = Flavour::Windows;
         for pattern in [
-            "*git", "?git", "*", ".*", "*.git", "*.*", ".g*", "????", "[.]git", "[!x]git",
-            "*[a-z]t",
+            "*git", "?git", "*", ".*", "*.git", "*.*", ".g*", "????", "[.]git", "[!.]git",
+            "[^.]git", "*[a-z]t",
         ] {
             assert!(matches(pattern, ".git", windows, true), "{pattern}");
         }
         for pattern in [
-            "*.tmp", "?git2", "*x", "git", "???", "[a-z]git", "[!.]git", "*gi", "t*",
+            "*.tmp", "?git2", "*x", "git", "???", "[a-z]git", "[!x]git", "*gi", "t*",
         ] {
             assert!(!matches(pattern, ".git", windows, true), "{pattern}");
         }
+    }
+
+    #[test]
+    fn a_windows_class_has_no_negation_and_a_backtick_escapes() {
+        let windows = Flavour::Windows;
+        // `!` and `^` are members of the class, as in PowerShell.
+        assert!(matches("[!.]git", ".git", windows, true));
+        assert!(matches("[^.]git", ".git", windows, true));
+        assert!(matches("[!x]git", "!git", windows, true));
+        assert!(!matches("[!x]git", "ygit", windows, true));
+        assert!(matches("[a-]", "-", windows, true));
+        // A backtick makes the next character itself.
+        assert!(matches("`.gi?", ".git", windows, true));
+        assert!(matches("`*git", "*git", windows, true));
+        assert!(!matches("`*git", ".git", windows, true));
+        assert!(matches("[`]]x", "]x", windows, true));
+        assert!(matches("a`", "a`", windows, true));
+        // POSIX keeps both as they are.
+        assert!(matches("`a", "`a", Flavour::Posix, false));
+        assert!(!matches("[!.]git", ".git", Flavour::Posix, true));
+        assert!(matches("[!.]git", "xgit", Flavour::Posix, true));
     }
 
     #[test]
@@ -280,8 +360,20 @@ mod tests {
         assert!(matches(".G?T", ".git", windows, true));
         assert!(matches("[A-Z]git", "xgit", windows, true));
         assert!(matches("[a-z]GIT", "Xgit", windows, true));
-        assert!(!matches("[!A-Z]git", "xgit", windows, true));
+        assert!(!matches("[A-Z]git", "!git", windows, true));
         assert!(!matches("*GIT", ".git", Flavour::Posix, true));
+    }
+
+    #[test]
+    fn a_windows_name_compares_by_unicode_case() {
+        let windows = Flavour::Windows;
+        // A dotless `ı` and a dotted `İ` count as an `i`, to be safe.
+        assert!(matches("*g\u{131}t", ".git", windows, true));
+        assert!(matches("*G\u{130}T", ".git", windows, true));
+        assert!(matches(".G\u{130}T", ".git", windows, true));
+        assert!(matches("*\u{212a}", "k", windows, true));
+        assert!(!matches("*g\u{131}t", ".git", Flavour::Posix, true));
+        assert!(!matches("*g\u{e9}t", ".git", windows, true));
     }
 
     #[test]
@@ -338,21 +430,73 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_wildcard_part_that_can_match_git_is_hidden() {
+    fn star_dot_star_is_a_catch_all_on_windows_only() {
         let windows = Flavour::Windows;
-        assert_eq!(shape("*git", windows), Shape::Hidden);
-        assert_eq!(shape("?git", windows), Shape::Hidden);
-        assert_eq!(shape(r"src\*G?T\x", windows), Shape::Hidden);
         assert_eq!(shape("*.*", windows), Shape::All);
         assert_eq!(shape(r"build\*.*", windows), Shape::All);
-        assert_eq!(shape(r"*.*\x", windows), Shape::Hidden);
         assert_eq!(shape("*.*", Flavour::Posix), Shape::Entries);
         assert_eq!(shape("*.tmp", windows), Shape::Entries);
-        assert_eq!(shape("*", windows), Shape::All);
+        assert_eq!(shape("*git", windows), Shape::Entries);
         assert_eq!(shape(r"build\*", windows), Shape::All);
-        // The same patterns on a POSIX shell skip the dot name.
-        assert_eq!(shape("*git", Flavour::Posix), Shape::Entries);
-        assert_eq!(shape("?git", Flavour::Posix), Shape::Entries);
+    }
+
+    #[test]
+    fn a_pattern_in_the_workspace_folder_reaches_git_when_a_wildcard_can_match_it() {
+        let windows = Flavour::Windows;
+        let reaches = |parts: &[&str]| reaches_git(parts, windows, true);
+        // The first part is the last: it must match `.git` and pick names.
+        for parts in [&["*git"][..], &["?git"], &["*GIT"], &["????"], &["[!.]git"]] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        for parts in [&["*"][..], &["*.*"], &["*.tmp"], &["*gitx"], &["?git2"]] {
+            assert!(!reaches(parts), "{parts:?}");
+        }
+        // Otherwise the next part must match an entry of `.git`.
+        for parts in [
+            &["*", "objects"][..],
+            &["*", "OBJECTS", "x"],
+            &["????", "HEAD"],
+            &["*git", "refs"],
+            &["*", "*"],
+            &["*", "*s"],
+            &["*", "pack?d-refs"],
+            &["*", ".."],
+        ] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        for parts in [
+            &["*", "bin"][..],
+            &["*", "obj"],
+            &["*", "*.o"],
+            &["*", "dist", "objects"],
+            &["*tmp", "objects"],
+            &["x*", "HEAD"],
+        ] {
+            assert!(!reaches(parts), "{parts:?}");
+        }
+        assert!(!reaches(&[]));
+    }
+
+    #[test]
+    fn a_posix_pattern_reaches_git_only_with_dotglob() {
+        let posix = Flavour::Posix;
+        assert!(!reaches_git(&["*git"], posix, false));
+        assert!(!reaches_git(&["*", "objects"], posix, false));
+        assert!(reaches_git(&["*git"], posix, true));
+        assert!(reaches_git(&["*", "objects"], posix, true));
+    }
+
+    #[test]
+    fn a_long_run_of_open_brackets_is_read() {
+        let pattern = "[".repeat(60_000);
+        for flavour in [Flavour::Posix, Flavour::Windows] {
+            assert!(!matches(&pattern, ".git", flavour, true));
+            assert_eq!(shape(&pattern, flavour), Shape::Entries);
+        }
+        let closed = format!("{pattern}]");
+        assert!(!matches(&closed, ".git", Flavour::Windows, true));
+        let spaced = "[]".repeat(30_000);
+        assert!(!matches(&spaced, ".git", Flavour::Posix, true));
     }
 
     #[test]

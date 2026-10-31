@@ -136,9 +136,12 @@ own: the home directory, a system folder, the root of a disk, the workspace
 itself, its `.git`, keys and shell startup files.
 
 A wildcard part stands for one entry, so a `..` after it still climbs:
-`src/*/../../../x`. A part that starts with `.` can match `.git`. A pattern
-whose last part is a catch-all (`*`, `?*`, `*/*`) takes the whole folder. One
-that picks names (`*.log`, `*/*.o`) touches files inside it.
+`src/*/../../../x`. A part that starts with `.` can match `.git`; in PowerShell
+and cmd, whose wildcards also match a leading dot, so can a part directly in
+the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
+`*\bin` cannot. A pattern whose last part is a catch-all (`*`, `?*`, `*/*`, and
+`*.*` on Windows) takes the whole folder. One that picks names (`*.log`,
+`*/*.o`) touches files inside it. [Core](core.md) has the rule.
 
 ## What cannot be read is risky
 
