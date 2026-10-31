@@ -721,3 +721,318 @@ fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files_on_window
         )],
     );
 }
+
+#[test]
+fn windows_drops_trailing_dots_and_spaces_from_a_name() {
+    // `.git.` and `.git ` are `.git`; the same names elsewhere are the plain
+    // names they were.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item notes.txt.",
+            "Remove-Item 'build '",
+            "Remove-Item -Recurse 'target. .'",
+            "Remove-Item -Recurse -Force src\\.git.",
+            "Remove-Item -Recurse build",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force .git.", Rule::Delete),
+            ("Remove-Item -Recurse -Force '.git '", Rule::Delete),
+            ("Remove-Item -Recurse -Force '.GIT. .'", Rule::Delete),
+            ("Remove-Item -Recurse -Force .git...", Rule::Delete),
+            (
+                "Remove-Item -Recurse -Force '.\\.git .\\objects'",
+                Rule::Delete,
+            ),
+            ("Remove-Item -Recurse -Force src\\..\\.git.", Rule::Delete),
+            ("Remove-Item -Recurse -Force 'src\\.. \\.git'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '.git.\\config'", Rule::Delete),
+            ("Remove-Item -Recurse -Force ~\\.ssh.", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del notes.txt.",
+            "del /q \"notes.txt \"",
+            "rd /s /q target",
+            "rd /s /q target.",
+            "del /q build\\*.obj.",
+            "del C:\\Users\\me\\dev\\repo\\build.",
+            "del src\\.git.",
+        ],
+        &[
+            ("rd /s /q .git.", Rule::Delete),
+            ("rd /s /q \".git \"", Rule::Delete),
+            ("rd /s /q .git. .", Rule::Delete),
+            ("rd /s /q .git\\objects.", Rule::Delete),
+            ("rd /s /q C:\\Users\\me\\dev\\repo\\.git.", Rule::Delete),
+            ("rd /s /q %USERPROFILE%\\.ssh.", Rule::Delete),
+            ("rd /s /q src\\..\\.git.", Rule::Delete),
+            ("rd /s /q src\\.. ", Rule::Delete),
+            ("echo x > .git.\\config", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_short_name_can_be_the_repository_history() {
+    // `.git` has the short name `GIT~1` (the dot is not kept). A short name
+    // whose name part cannot be that of `.git`, or one not directly in the
+    // workspace folder, is a plain name.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item PROGRA~1.txt",
+            "Remove-Item -Recurse PROGRA~1",
+            "Remove-Item -Recurse GI~1",
+            "Remove-Item -Recurse GITX~",
+            "Remove-Item -Recurse GIT~",
+            "Remove-Item -Recurse GIT~1.txt",
+            "Remove-Item -Recurse GIT~1a",
+            "Remove-Item -Recurse GITIGN~1",
+            "Remove-Item -Recurse GITHUB~1",
+            "Remove-Item -Recurse GI3F2~1",
+            "Remove-Item -Recurse GIZZZZ~1",
+            "Remove-Item -Recurse src\\GIT~1",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force GIT~1", Rule::Delete),
+            ("Remove-Item -Recurse -Force git~2", Rule::Delete),
+            ("Remove-Item -Recurse -Force Git~10", Rule::Delete),
+            ("Remove-Item -Recurse -Force GI3F2A~1", Rule::Delete),
+            (
+                "Remove-Item -Recurse -Force gi3f2a~12\\objects",
+                Rule::Delete,
+            ),
+            ("Remove-Item -Recurse -Force GIT~1\\objects", Rule::Delete),
+            ("Remove-Item -Recurse -Force GIT~1.", Rule::Delete),
+            ("Remove-Item -Recurse -Force src\\..\\GIT~1", Rule::Delete),
+            (
+                "Remove-Item -Recurse -Force C:\\Users\\me\\dev\\repo\\GIT~1",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del PROGRA~1.txt",
+            "rd /s /q PROGRA~1",
+            "rd /s /q GI~1",
+            "rd /s /q GIT~1.txt",
+            "rd /s /q src\\GIT~1",
+            "del /q build\\GIT~1.obj",
+            "del /q GITHUB~1\\workflows\\ci.yml",
+            "del .gitignore GITIGN~1",
+        ],
+        &[
+            ("rd /s /q GIT~1", Rule::Delete),
+            ("rd /s /q git~3", Rule::Delete),
+            ("rd /s /q GI3F2A~1", Rule::Delete),
+            ("del /s /q gi3f2a~1\\objects\\pack", Rule::Delete),
+            ("rd /s /q GIT~1\\", Rule::Delete),
+            ("del /s /q GIT~1\\objects\\pack", Rule::Delete),
+            ("echo x > GIT~1\\config", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_stream_suffix_is_known_only_when_it_runs() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item C:\\Users\\me\\dev\\repo\\build",
+            "Remove-Item FileSystem::.\\build -Recurse",
+        ],
+        &[
+            (
+                "Remove-Item -Recurse -Force .git::$INDEX_ALLOCATION",
+                Rule::Delete,
+            ),
+            (
+                "Remove-Item -Recurse -Force '.git:$I30:$INDEX_ALLOCATION'",
+                Rule::Delete,
+            ),
+            ("Remove-Item notes.txt:stream", Rule::Delete),
+            ("Remove-Item build\\notes.txt:stream", Rule::Delete),
+            (
+                "Remove-Item C:\\Users\\me\\dev\\repo\\notes.txt:stream",
+                Rule::Delete,
+            ),
+            (
+                "Set-Content -Path notes.txt:hidden -Value hi",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del C:\\Users\\me\\dev\\repo\\build\\x.obj",
+            "rd /s /q C:\\Users\\me\\dev\\repo\\target",
+        ],
+        &[
+            ("rd /s /q .git::$INDEX_ALLOCATION", Rule::Delete),
+            ("rd /s /q .git:$I30:$INDEX_ALLOCATION", Rule::Delete),
+            ("del notes.txt:stream", Rule::Delete),
+            ("del build\\notes.txt:stream", Rule::Delete),
+            (
+                "del C:\\Users\\me\\dev\\repo\\notes.txt:stream",
+                Rule::Delete,
+            ),
+            ("del \\\\server\\share\\notes.txt:stream", Rule::Delete),
+            ("echo x > notes.txt:hidden", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_windows_spelling_of_git_says_what_it_deletes() {
+    for line in ["rd /s /q .git.", "rd /s /q \".git \"", "rd /s /q GIT~1"] {
+        let found = classify(line, Shell::Cmd, &windows());
+        assert_eq!(
+            found.findings()[0].reason,
+            "deletes the repository's history",
+            "{line}"
+        );
+    }
+    let found = classify("rd /s /q .git::$INDEX_ALLOCATION", Shell::Cmd, &windows());
+    assert_eq!(
+        found.findings()[0].reason,
+        "deletes a path only known when it runs"
+    );
+}
+
+#[test]
+fn a_part_before_the_last_that_windows_may_trim_is_known_only_when_it_runs() {
+    // Windows reads `.` and `..` first, then drops one trailing dot from a
+    // part, and every dot and space only from the last. A part this does not
+    // read to a name is known only when it runs.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "rd /s /q src.\\build.",
+            "del /q src\\.\\build\\x.obj",
+            "del /q src\\..\\build\\x.obj.",
+        ],
+        &[
+            ("rd /s /q .git\\...\\..\\objects", Rule::Delete),
+            ("rd /s /q \".git\\. \\..\\objects\"", Rule::Delete),
+            ("rd /s /q \".git\\refs\\.. \\..\\heads\"", Rule::Delete),
+            ("rd /s /q \"C:\\Users\\me\\dev\\repo \\x\"", Rule::Delete),
+            ("rd /s /q \"..\\repo.. \\x\"", Rule::Delete),
+            ("rd /s /q \".\\.git .\\objects\"", Rule::Delete),
+            ("rd /s /q \"src\\.. \\.git\"", Rule::Delete),
+            ("rd /s /q \"x \\y\"", Rule::Delete),
+            ("rd /s /q \"src\\.. \"", Rule::Delete),
+            ("rd /s /q ....", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item src.\\build."],
+        &[
+            (
+                "Remove-Item -Recurse -Force '.git\\...\\..\\objects'",
+                Rule::Delete,
+            ),
+            (
+                "Remove-Item -Recurse -Force '.git\\. \\..\\objects'",
+                Rule::Delete,
+            ),
+            (
+                "Remove-Item -Recurse -Force '.git\\refs\\.. \\..\\heads'",
+                Rule::Delete,
+            ),
+            (
+                "Remove-Item -Recurse -Force '.\\.git .\\objects'",
+                Rule::Delete,
+            ),
+            ("Remove-Item -Recurse -Force 'src\\.. \\.git'", Rule::Delete),
+            (
+                "Remove-Item -Recurse 'C:\\Users\\me\\dev\\repo \\x'",
+                Rule::Delete,
+            ),
+        ],
+    );
+    // From a working directory inside `.git`.
+    let inside = Paths::new(
+        "C:\\Users\\me\\dev\\repo\\.git\\hooks",
+        "C:\\Users\\me",
+        ["C:\\Users\\me\\dev\\repo"],
+    );
+    check(
+        Shell::Cmd,
+        &inside,
+        &[],
+        &[
+            ("rd /s /q ...\\..\\..\\objects", Rule::Delete),
+            ("rd /s /q ..\\objects", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn windows_trims_only_the_spaces_it_knows() {
+    // A non-breaking space (U+00A0) or an ideographic one (U+3000) is part of
+    // a name to Windows, so these are plain names.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item -Recurse -Force '.git\u{a0}'",
+            "Remove-Item -Recurse -Force '.git\u{3000}'",
+            "Remove-Item -Recurse -Force '.git\u{a0}\\objects'",
+        ],
+        &[],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "rd /s /q \".git\u{a0}\"",
+            "rd /s /q \".git\u{3000}\"",
+            "rd /s /q \".git\u{3000}.\"",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_long_path_prefix_is_outside_the_workspace() {
+    // `\\?\` is read as a share, which is outside: risky, as it was.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            (
+                "rd /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\.git.",
+                Rule::Delete,
+            ),
+            (
+                "rd /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\GIT~1",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[(
+            "Remove-Item -Recurse -Force '\\\\?\\C:\\Users\\me\\dev\\repo\\.git.'",
+            Rule::Delete,
+        )],
+    );
+}
