@@ -12,6 +12,7 @@ pub(crate) fn quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 8);
     let (mut single, mut double, mut comment) = (false, false, false);
     let mut at = 0;
+    let mut closes = Closes::default();
     while let Some(&c) = chars.get(at) {
         let before = at.checked_sub(1).and_then(|before| chars.get(before));
         out.push(c);
@@ -38,12 +39,21 @@ pub(crate) fn quote(text: &str) -> String {
             && before
                 .is_none_or(|before| before.is_whitespace() || matches!(before, '(' | ',' | ':'))
         {
-            if let Some(end) = variable_path(&chars, at) {
-                out.pop();
-                out.push('"');
-                out.extend(&chars[at - 1..end]);
-                out.push('"');
-                at = end;
+            match variable_path(&chars, at, &mut closes) {
+                Scan::Path(end) => {
+                    out.pop();
+                    out.push('"');
+                    out.extend(&chars[at - 1..end]);
+                    out.push('"');
+                    at = end;
+                }
+                // A `$` further on in the same run ends where this one did,
+                // for the same reason: it is not read again.
+                Scan::Run(end) => {
+                    out.extend(&chars[at..end]);
+                    at = end;
+                }
+                Scan::Not => {}
             }
         }
     }
@@ -53,27 +63,62 @@ pub(crate) fn quote(text: &str) -> String {
     out
 }
 
+/// What reading a word from a `$` found.
+enum Scan {
+    /// A variable that a path follows, ending here.
+    Path(usize),
+    /// A run that holds no such word, ending here: a path that goes on into
+    /// a quote, a subexpression or a block, which are left to the grammar.
+    Run(usize),
+    /// A variable alone, a member access, or a name that does not close.
+    Not,
+}
+
+/// Where each `{` finds its `}`, worked out once: a line of `${ ` repeated
+/// would otherwise search to the end from each one.
+#[derive(Default)]
+struct Closes(Option<Vec<usize>>);
+
+impl Closes {
+    /// The place of the first `}` at or after `from`.
+    fn after(&mut self, chars: &[char], from: usize) -> Option<usize> {
+        let next = self.0.get_or_insert_with(|| {
+            let mut next = vec![usize::MAX; chars.len() + 1];
+            for (at, c) in chars.iter().enumerate().rev() {
+                let after = next.get(at + 1).copied().unwrap_or(usize::MAX);
+                if let Some(slot) = next.get_mut(at) {
+                    *slot = if *c == '}' { at } else { after };
+                }
+            }
+            next
+        });
+        next.get(from).copied().filter(|at| *at != usize::MAX)
+    }
+}
+
 /// Where the word ends, when the `$` before `at` starts a variable that a
-/// path follows: `$HOME\.ssh\id` ends at the end of `id`. `None` for a
-/// variable alone, a member access, or a word that goes on into a quote, a
-/// subexpression or a block, which are left to the grammar.
-fn variable_path(chars: &[char], at: usize) -> Option<usize> {
+/// path follows: `$HOME\.ssh\id` ends at the end of `id`.
+fn variable_path(chars: &[char], at: usize, closes: &mut Closes) -> Scan {
     let mut end = at;
     if chars.get(end) == Some(&'{') {
-        end += chars.get(end..)?.iter().position(|c| *c == '}')? + 1;
+        let Some(close) = closes.after(chars, end) else {
+            return Scan::Not;
+        };
+        end = close + 1;
     } else {
         let name = chars
-            .get(end..)?
+            .get(end..)
+            .unwrap_or_default()
             .iter()
             .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | ':'))
             .count();
         if name == 0 {
-            return None;
+            return Scan::Not;
         }
         end += name;
     }
     if !matches!(chars.get(end), Some('\\' | '/')) {
-        return None;
+        return Scan::Not;
     }
     while chars.get(end).is_some_and(|c| {
         c.is_alphanumeric()
@@ -85,9 +130,11 @@ fn variable_path(chars: &[char], at: usize) -> Option<usize> {
         end += 1;
     }
     match chars.get(end) {
-        None => Some(end),
-        Some(c) if c.is_whitespace() || matches!(c, '|' | ';' | '&' | ')' | ',' | '}') => Some(end),
-        Some(_) => None,
+        None => Scan::Path(end),
+        Some(c) if c.is_whitespace() || matches!(c, '|' | ';' | '&' | ')' | ',' | '}') => {
+            Scan::Path(end)
+        }
+        Some(_) => Scan::Run(end),
     }
 }
 

@@ -84,6 +84,11 @@ const SINKS: &[&str] = &[
     "invoke-restmethod",
 ];
 
+/// Programs beside [`NETWORK`] and [`SINKS`] that this rule sends with: the
+/// cloud copiers, which copy to a bucket, and a TLS client, which sends its
+/// input.
+const COPIERS: &[&str] = &["aws", "gsutil", "openssl"];
+
 /// Programs that name a key or a certificate they use to log in, which they
 /// do not send: `ssh -i ~/.ssh/id_ed25519 host`.
 const KEY_USERS: &[&str] = &[
@@ -188,6 +193,9 @@ struct Hit {
 /// (an index in the split).
 #[derive(Debug, Default)]
 pub(super) struct Flow {
+    /// Whether the line has a unit that can send anything. When none can,
+    /// nothing is followed and nothing is sent.
+    active: bool,
     /// A secret the unit itself reads: an argument that names one, the
     /// environment, a variable that holds one, a file redirected onto it.
     own: Vec<Option<Hit>>,
@@ -202,8 +210,11 @@ pub(super) struct Flow {
     /// Where each unit stands in a pipeline: its own stage, or the one of the
     /// command whose script, substitution or `-exec` it runs for.
     stage_of: Vec<Option<Stage>>,
-    /// For each pipeline, the first stage that reads a secret.
+    /// For each pipeline, the first stage that reads a secret. A secret read
+    /// in a pipeline that runs in a stage of another counts for that stage.
     stage: HashMap<usize, (usize, Hit)>,
+    /// The stage of an outer pipeline that a pipeline runs in.
+    parent: HashMap<usize, Stage>,
 }
 
 impl Flow {
@@ -222,6 +233,22 @@ impl Flow {
     fn stage_of(&self, at: usize) -> Option<Stage> {
         self.stage_of.get(at).copied().flatten()
     }
+
+    /// The secret an earlier stage of the pipeline `stage` is in reads, or
+    /// of a pipeline that one runs in, and so on outwards: what a unit at
+    /// `stage` is handed.
+    fn piped(&self, mut stage: Stage) -> Option<&Hit> {
+        loop {
+            let read = self
+                .stage
+                .get(&stage.pipeline)
+                .filter(|(first, _)| *first < stage.index);
+            if let Some((_, hit)) = read {
+                return Some(hit);
+            }
+            stage = *self.parent.get(&stage.pipeline)?;
+        }
+    }
 }
 
 impl Checker<'_> {
@@ -229,7 +256,12 @@ impl Checker<'_> {
     /// are handed one.
     pub(super) fn trace(&self) -> Flow {
         let units = &self.split.units;
+        if !self.can_send() {
+            return Flow::default();
+        }
         let mut flow = Flow {
+            active: true,
+            parent: self.split.parents.clone(),
             own: vec![None; units.len()],
             fed: vec![None; units.len()],
             stdin: vec![None; units.len()],
@@ -248,6 +280,21 @@ impl Checker<'_> {
                     if let Some(slot) = flow.stage_of.get_mut(at).filter(|slot| slot.is_none()) {
                         *slot = Some(outer);
                     }
+                }
+            }
+        }
+        // A pipeline inside a command that is a stage of another runs in that
+        // stage: the nearest command that holds it says which.
+        for nested in &self.split.nested {
+            let outer = nested
+                .command
+                .clone()
+                .find_map(|at| flow.stage_of.get(at).copied().flatten());
+            let Some(outer) = outer else { continue };
+            for at in nested.inside.clone() {
+                let inner = units.get(at).and_then(|unit| unit.stage);
+                if let Some(inner) = inner.filter(|inner| inner.pipeline > outer.pipeline) {
+                    flow.parent.entry(inner.pipeline).or_insert(outer);
                 }
             }
         }
@@ -327,16 +374,47 @@ impl Checker<'_> {
             else {
                 continue;
             };
-            let first = flow
-                .stage
-                .get(&stage.pipeline)
-                .is_none_or(|(first, _)| stage.index < *first);
-            if first {
-                let hit = hit.clone();
-                flow.stage.insert(stage.pipeline, (stage.index, hit));
+            let hit = hit.clone();
+            // From the stage up through the stages of the pipelines it runs
+            // in, while this is the earliest read: an outer pipeline's
+            // entry is set once for each inner one, so what an earlier
+            // read already set is as far as the walk needs to go.
+            let mut stage = stage;
+            loop {
+                let first = flow
+                    .stage
+                    .get(&stage.pipeline)
+                    .is_none_or(|(first, _)| stage.index < *first);
+                if !first {
+                    break;
+                }
+                flow.stage
+                    .insert(stage.pipeline, (stage.index, hit.clone()));
+                match flow.parent.get(&stage.pipeline) {
+                    Some(outer) => stage = *outer,
+                    None => break,
+                }
             }
         }
         flow
+    }
+
+    /// Whether any unit of the line can send something away: it runs a
+    /// program this rule sends with, or a redirect opens a connection. Then
+    /// no secret it reads goes anywhere, and following them is skipped.
+    fn can_send(&self) -> bool {
+        let program = self.split.units.iter().any(|unit| {
+            unit.key().is_some_and(|key| {
+                let key = key.as_str();
+                NETWORK.contains(&key) || SINKS.contains(&key) || COPIERS.contains(&key)
+            })
+        });
+        program
+            || self.split.redirects.iter().any(|redirect| {
+                !redirect.text
+                    && !redirect.input
+                    && redirect.target.known().is_some_and(network_device)
+            })
     }
 
     /// The variables that hold a secret, by name: one set from a command
@@ -481,6 +559,9 @@ impl Checker<'_> {
     /// machine, a program that sends what it is piped or redirected, and a
     /// sender handed one by a substitution.
     pub(super) fn send(&mut self, at: usize, unit: &Unit, key: &str) {
+        if !self.flow.active {
+            return;
+        }
         for file in uploads(unit, key) {
             if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
                 self.sent(&hit);
@@ -495,13 +576,7 @@ impl Checker<'_> {
             let piped = self
                 .flow
                 .stage_of(at)
-                .and_then(|stage| {
-                    self.flow
-                        .stage
-                        .get(&stage.pipeline)
-                        .filter(|(first, _)| *first < stage.index)
-                })
-                .map(|(_, hit)| hit);
+                .and_then(|stage| self.flow.piped(stage));
             let own = if to_network {
                 self.flow.own(at).or(self.flow.fed(at))
             } else {

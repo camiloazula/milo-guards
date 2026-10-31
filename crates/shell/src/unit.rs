@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::dotglob;
@@ -264,6 +265,9 @@ pub(crate) struct Split {
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
     pipelines: usize,
+    /// The stage of an outer pipeline that a pipeline runs in, when it runs
+    /// in a stage of another: `(a | b) | c` runs `a | b` in the first stage.
+    pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
     /// Variables the line sets, unsets or reads into (lower case): a path
@@ -673,9 +677,13 @@ impl Split {
             .any(|known| known.eq_ignore_ascii_case(name))
     }
 
-    /// A new pipeline's number.
-    pub(crate) fn pipeline(&mut self) -> usize {
+    /// A new pipeline's number; `parent` is the stage of another pipeline it
+    /// runs in.
+    pub(crate) fn pipeline(&mut self, parent: Option<Stage>) -> usize {
         self.pipelines += 1;
+        if let Some(parent) = parent {
+            self.parents.insert(self.pipelines, parent);
+        }
         self.pipelines
     }
 

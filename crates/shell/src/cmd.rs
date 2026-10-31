@@ -60,7 +60,7 @@ impl Walker<'_> {
                 self.children(node, None, level);
             }
             "pipe_stmt" => {
-                let pipeline = self.split.pipeline();
+                let pipeline = self.split.pipeline(stage);
                 self.pipe_in(node, pipeline, 0, level);
             }
             // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the

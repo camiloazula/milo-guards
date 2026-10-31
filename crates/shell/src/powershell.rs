@@ -117,6 +117,9 @@ pub(crate) fn canonical(name: &str) -> &str {
     }
 }
 
+/// What `$null` is as a word: the device. In a longer word it is nothing.
+const NULL: &str = "$null";
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
@@ -134,7 +137,7 @@ impl Walker<'_> {
         }
         match node.kind() {
             "pipeline_chain" => {
-                let pipeline = self.split.pipeline();
+                let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 for (index, child) in node.named_children(&mut cursor).enumerate() {
                     // The first command in a `ForEach-Object` block reads
@@ -403,6 +406,7 @@ impl Walker<'_> {
                 let start = literal.start_byte() + 1;
                 let end = literal.end_byte().saturating_sub(1).max(start);
                 let mut value = String::new();
+                let mut nulls = false;
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
@@ -413,6 +417,9 @@ impl Walker<'_> {
                         return Arg::Unknown(source.to_string());
                     }
                     match self.variable(unit::text(&child, self.source)) {
+                        // Inside a string `$null` is the empty string, so
+                        // `"$null\Windows"` is `\Windows`.
+                        Arg::Known(text) if text == NULL => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
                             return Arg::Unknown(source.to_string())
@@ -421,6 +428,10 @@ impl Walker<'_> {
                     at = child.end_byte();
                 }
                 value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
+                // A string of nothing but `$null` is still the device.
+                if nulls && value.is_empty() {
+                    return Arg::Known(NULL.to_string());
+                }
                 Arg::Known(value.replace("\"\"", "\""))
             }
             "verbatim_here_string_characters" => Arg::Known(
@@ -461,7 +472,7 @@ impl Walker<'_> {
             "env:systemroot" | "env:windir" => "C:\\Windows",
             "env:programfiles" => "C:\\Program Files",
             "env:programdata" => "C:\\ProgramData",
-            "null" => "$null",
+            "null" => NULL,
             _ => return Arg::Unknown(source.to_string()),
         };
         Arg::Known(value.to_string())

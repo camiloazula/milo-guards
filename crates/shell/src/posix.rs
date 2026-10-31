@@ -317,7 +317,7 @@ impl Walker<'_> {
                 self.split.branches -= 1;
             }
             "pipeline" => {
-                let pipeline = self.split.pipeline();
+                let pipeline = self.split.pipeline(stage);
                 self.pipeline_in(node, pipeline, 0, level);
             }
             "file_redirect" => {
@@ -540,7 +540,7 @@ impl Walker<'_> {
         let pipeline = all
             .iter()
             .any(|child| piped_heredoc(*child))
-            .then(|| self.split.pipeline());
+            .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
