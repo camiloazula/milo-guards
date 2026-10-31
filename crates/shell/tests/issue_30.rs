@@ -24,7 +24,7 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             ("del /s /q *git.", Rule::Delete),
             ("del /s /q \"*git \"", Rule::Delete),
             ("del /s /q *git...", Rule::Delete),
-            ("del /s /q ?git. .", Rule::Delete),
+            ("del /s /q \"?git. .\"", Rule::Delete),
             ("del /s /q ????.", Rule::Delete),
             ("del /s /q *git.\\objects", Rule::Delete),
             ("del /s /q *git.\\objects.", Rule::Delete),
