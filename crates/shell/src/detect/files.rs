@@ -2,7 +2,7 @@
 
 use super::{downloads_to, sources_and_destination, Checker};
 use crate::launch::{find_targets, perl_edits};
-use crate::path::Place;
+use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Unit};
 use crate::{Rule, Shell};
@@ -70,7 +70,7 @@ impl Checker<'_> {
                 // whatever it points at.
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 for source in &sources {
-                    let place = self.place(shell, unit.scope(), source);
+                    let place = self.place(shell, unit.scope(), source, Access::Item);
                     if !place.harmless() && !matches!(place, Place::Workspace { exact: true }) {
                         self.add(
                             Rule::Overwrite,
@@ -215,8 +215,14 @@ impl Checker<'_> {
                 } else {
                     "writes to"
                 };
+                // `New-Item NUL` in the registry makes a key of that name.
+                let access = if key == "new-item" {
+                    Access::Item
+                } else {
+                    Access::Content
+                };
                 for target in targets {
-                    self.write(shell, unit.scope(), target, verb);
+                    self.write_as(shell, unit.scope(), target, verb, access);
                 }
             }
             "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
@@ -226,7 +232,7 @@ impl Checker<'_> {
                     targets.extend(params.positional.first().copied());
                 }
                 for target in targets {
-                    self.write(shell, unit.scope(), target, "changes");
+                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
             }
             "dd" => {

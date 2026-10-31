@@ -86,3 +86,70 @@ fn a_posix_device_after_an_unreadable_cd_is_safe() {
         ],
     );
 }
+
+#[test]
+fn a_bare_device_name_after_a_cd_to_another_provider_is_an_item() {
+    // In the registry, `Env:` and the like `NUL` and `CON` are ordinary item
+    // names: deleting, moving or changing one changes that item.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            // A write or a redirect fails there, so it stays harmless.
+            "cd HKCU:\\Software\\Foo; python x.py > NUL",
+            "cd HKCU:\\Software\\Foo; python x.py > $null",
+            "cd HKCU:\\Software\\Foo; python x.py | Out-File NUL",
+            "cd $dir; python x.py > NUL",
+            // After a cd to the file system it is the device.
+            "cd C:\\other; Remove-Item NUL",
+            "cd C:\\other; python x.py > CON",
+            // `$null` is the null value in any provider.
+            "cd HKCU:\\Software\\Foo; Remove-Item $null",
+        ],
+        &[
+            (
+                "cd HKCU:\\Software\\Foo; Remove-Item NUL -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Set-Location HKLM:\\SOFTWARE\\Foo; Remove-Item nul",
+                Rule::SystemSettings,
+            ),
+            (
+                "Push-Location HKCU:\\Software\\Foo; Remove-Item NUL",
+                Rule::SystemSettings,
+            ),
+            ("sl HKCU:\\Software\\Foo; ri NUL", Rule::SystemSettings),
+            (
+                "cd Registry::HKEY_CURRENT_USER\\Software\\Foo; Remove-Item NUL",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; Remove-ItemProperty -Path NUL -Name x",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; Set-ItemProperty -Path NUL -Name x -Value 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; New-Item NUL -Force",
+                Rule::SystemSettings,
+            ),
+            ("cd HKCU:\\Software\\Foo; Move-Item NUL Bar", Rule::Delete),
+            // A place only known when it runs may be a registry key.
+            ("cd $key; Remove-Item NUL -Recurse", Rule::Delete),
+            ("cd $key; Remove-Item NUL", Rule::Delete),
+            ("cd $dir; ri nul -r", Rule::Delete),
+            ("cd $dir; rm -r -fo CON", Rule::Delete),
+            (
+                "cd $dir; Remove-Item -LiteralPath NUL -Recurse",
+                Rule::Delete,
+            ),
+            ("cd Env:; Remove-Item NUL", Rule::Delete),
+            ("cd Variable:; Remove-Item NUL", Rule::Delete),
+            ("cd Function:; Remove-Item CON", Rule::Delete),
+            ("cd Cert:\\CurrentUser\\My; Remove-Item NUL", Rule::Delete),
+        ],
+    );
+}

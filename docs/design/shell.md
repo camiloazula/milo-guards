@@ -72,6 +72,17 @@ so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
 overwrite of a file only known when it runs.
 
+In PowerShell a bare `NUL` or `CON` is the device only on the file system.
+After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
+a place only known when it runs (it may be a registry key), it is an ordinary
+item name there, so deleting, moving or changing it (`Remove-Item NUL`,
+`Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
+that name, and a bare name is joined to where the `cd` went like any other.
+Writes and redirects to it (`> NUL`, `Out-File NUL`, `Set-Content NUL`) fail in
+such a provider and stay harmless. `$null` is the null value in any provider.
+After a `cd` to a known place on the file system, the device is read as
+written for every command. cmd and POSIX have no other provider.
+
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 
@@ -226,7 +237,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device, in any folder (see "Where a line is").
+- `$null` and `NUL` are the null device, in any folder (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).

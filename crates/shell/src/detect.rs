@@ -2,7 +2,7 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{find_targets, INTERPRETERS, SHELLS};
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 
 use std::collections::HashMap;
@@ -206,7 +206,7 @@ impl Checker<'_> {
                 ..unit.scope()
             };
             for arg in found {
-                match self.place(unit.shell, scope, &arg) {
+                match self.place(unit.shell, scope, &arg, Access::Item) {
                     place if place.harmless() => {}
                     Place::Registry => {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
@@ -227,7 +227,7 @@ impl Checker<'_> {
     /// `rm -rf /tmp/x` deletes it).
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
         for source in sources {
-            let place = self.place(unit.shell, unit.scope(), source);
+            let place = self.place(unit.shell, unit.scope(), source, Access::Item);
             if !place.harmless() {
                 self.add(
                     Rule::Delete,
@@ -239,12 +239,25 @@ impl Checker<'_> {
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
-    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
-        self.resolver.place(scope.dir, arg, shell, scope.hidden)
+    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
+        self.resolver
+            .place(scope.dir, arg, shell, scope.hidden, access)
     }
 
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
-        match self.place(shell, scope, target) {
+        self.write_as(shell, scope, target, verb, Access::Content);
+    }
+
+    /// A write of `target`, by how it reaches it (see [`Access`]).
+    fn write_as(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        access: Access,
+    ) {
+        match self.place(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),
@@ -269,7 +282,7 @@ impl Checker<'_> {
 
     fn permissions(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
         for target in targets {
-            match self.place(unit.shell, unit.scope(), target) {
+            match self.place(unit.shell, unit.scope(), target, Access::Item) {
                 place if place.harmless() => {}
                 Place::Workspace { exact: true } => {}
                 Place::Registry => {

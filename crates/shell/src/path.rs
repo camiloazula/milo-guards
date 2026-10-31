@@ -171,9 +171,21 @@ impl Resolver {
     /// Where `arg` lands when `shell` runs it from `dir`, where an earlier
     /// `cd` moved; `hidden` says a wildcard in it may match a leading dot
     /// (`dotglob`). A device is the same in any folder, so it is read as
-    /// written, before `arg` is joined to `dir`.
-    pub(crate) fn place(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell, hidden: bool) -> Place {
-        if let Some(device) = arg.known().and_then(|text| device(text, shell)) {
+    /// written, before `arg` is joined to `dir`; in PowerShell only where
+    /// that holds (see [`Access`]).
+    pub(crate) fn place(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        access: Access,
+    ) -> Place {
+        if let Some(device) = arg
+            .known()
+            .filter(|text| device_in_any_folder(text, dir, shell, access))
+            .and_then(|text| device(text, shell))
+        {
             return device;
         }
         let arg = &within(dir, arg, shell);
@@ -228,6 +240,51 @@ impl Resolver {
             Start::Unknown => Place::Unknown,
         }
     }
+}
+
+/// What a command does with a path it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Writes the content of a file: a redirect, `Out-File`, `Set-Content`, a
+    /// copy's destination. It fails in a PowerShell provider that is not the
+    /// file system, so a device name there is never a harmful one.
+    Content,
+    /// Deletes, moves, changes permissions or properties of, or creates the
+    /// item itself. In a provider other than the file system `NUL` and `CON`
+    /// are ordinary item names there (a registry key, a variable), so a
+    /// device is read only where the folder is the file system.
+    Item,
+}
+
+/// Whether `text`, written from `dir`, is a device wherever `dir` is: in
+/// cmd and POSIX a `cd` is always to the file system. In PowerShell `$null`
+/// is the null value in any provider, and a bare `NUL` or `CON` is the device
+/// for a content write (which fails elsewhere) or after a `cd` to the file
+/// system; after a `cd` to the registry, `Env:` or a place only known when
+/// it runs, it is an item's name, so it joins to where the `cd` went.
+fn device_in_any_folder(text: &str, dir: Option<&Arg>, shell: Shell, access: Access) -> bool {
+    if shell != Shell::PowerShell || text.eq_ignore_ascii_case("$null") || access == Access::Content
+    {
+        return true;
+    }
+    match dir {
+        None => true,
+        Some(Arg::Known(dir)) => on_file_system(dir),
+        Some(_) => false,
+    }
+}
+
+/// Whether a PowerShell location is on the file system: a path with no
+/// provider, or one the file system provider names.
+fn on_file_system(dir: &str) -> bool {
+    if let Some((qualifier, _)) = dir.split_once("::") {
+        let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+        return provider.eq_ignore_ascii_case("filesystem");
+    }
+    !matches!(
+        start(dir, Shell::PowerShell),
+        Start::Provider(..) | Start::Unknown
+    )
 }
 
 /// A device a path names: the core's, and PowerShell's and cmd's `$null`.
