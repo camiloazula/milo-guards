@@ -5,7 +5,7 @@
 
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
-use milo_guards_shell::{classify, Paths, Rule, Shell};
+use milo_guards_shell::{classify, effect, Effect, Paths, Rule, Shell};
 
 /// The rules a line breaks, in order.
 pub fn rules(command: &str, shell: Shell, paths: &Paths) -> Vec<Rule> {
@@ -13,7 +13,59 @@ pub fn rules(command: &str, shell: Shell, paths: &Paths) -> Vec<Rule> {
 }
 
 /// Every `safe` line is safe and every `risky` line breaks its rule; the
-/// rows that do not are named together.
+/// rows that do not are named together. Every row also goes through
+/// [`effect`], whose answer must agree with `classify`'s: see
+/// [`disagreements`].
 pub fn check(shell: Shell, paths: &Paths, safe: &[&str], risky: &[(&str, Rule)]) {
+    let rows = safe
+        .iter()
+        .copied()
+        .chain(risky.iter().map(|(line, _)| *line));
+    let wrong = disagreements(shell, paths, rows);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     testing::check(safe, risky, |line| classify(line, shell, paths));
+}
+
+/// The lines of `rows` that `classify` finds risky for anything but running
+/// as root (a delete, an overwrite, a disk wipe, a discard of git work, a
+/// script it does not read, ...) and that `effect` nevertheless calls
+/// reads-only. There must be none: a line the guard flags is not one that
+/// only reads. (`sudo cat` is `Elevated` and reads only, so an elevation
+/// alone does not count.)
+pub fn disagreements<'a>(
+    shell: Shell,
+    paths: &Paths,
+    rows: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    rows.into_iter()
+        .filter_map(|line| {
+            let assessment = classify(line, shell, paths);
+            let flagged: Vec<Rule> = assessment
+                .findings()
+                .iter()
+                .map(|finding| finding.rule)
+                .filter(|rule| *rule != Rule::Elevated)
+                .collect();
+            (!flagged.is_empty() && effect(line, shell, paths) == Effect::ReadsOnly)
+                .then(|| format!("reads only, but classify finds {flagged:?}: {line}"))
+        })
+        .collect()
+}
+
+/// `effect` of each `lines` row is `expected`; the rows that are not are
+/// named together.
+pub fn check_effect(shell: Shell, paths: &Paths, expected: Effect, lines: &[&str]) {
+    let wrong: Vec<String> = lines
+        .iter()
+        .filter_map(|line| {
+            let got = effect(line, shell, paths);
+            (got != expected).then(|| format!("expected {expected:?}: {line}\n    got {got:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }

@@ -30,6 +30,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     });
     for name in names {
         split.reassign(&name);
+        split.set(&name);
     }
     Walker {
         source: text,
@@ -171,6 +172,9 @@ impl Walker<'_> {
                 self.children(node, None, level);
             }
             "invokation_expression" => {
+                // A method call is no unit, and the rules know only some of
+                // them: `effect` cannot say what it does.
+                self.split.opaque();
                 self.dotnet(node);
                 self.children(node, stage, level);
             }

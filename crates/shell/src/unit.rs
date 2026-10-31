@@ -251,6 +251,16 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// The variables the line sets or unsets, as written (`PATH`,
+    /// `env:TEMP`): `effect` reads them, since one can change which program
+    /// runs or what it does.
+    pub(crate) sets: Vec<String>,
+    /// The variables of `for` loops that could be one of those: a loop's
+    /// own variable is only a name for each of its words.
+    pub(crate) loops: Vec<String>,
+    /// Whether the line holds something that runs or changes without being
+    /// a unit (a method call in PowerShell), which `effect` cannot judge.
+    pub(crate) opaque: bool,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -559,6 +569,22 @@ impl Split {
         self.moves = place.moves;
     }
 
+    /// Record that the line sets or unsets the variable `name`, for `effect`.
+    pub(crate) fn set(&mut self, name: &str) {
+        self.sets.push(name.to_string());
+    }
+
+    /// Record the variable of a `for` loop, for `effect`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        self.loops.push(name.to_string());
+    }
+
+    /// Record that the line runs or changes something that is not a unit,
+    /// for `effect`.
+    pub(crate) fn opaque(&mut self) {
+        self.opaque = true;
+    }
+
     /// Record that the line sets the variable `name`.
     pub(crate) fn reassign(&mut self, name: &str) {
         let name = name.to_ascii_lowercase();
@@ -590,7 +616,7 @@ impl Split {
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
-fn moves_to(unit: &Unit) -> Option<Arg> {
+pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not

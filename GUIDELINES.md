@@ -55,7 +55,9 @@ crates depend on each other and how that is enforced is in
   rather than renaming one. [Core](docs/design/core.md)
 - **A guard's `Rule` enum is exhaustive**, never `#[non_exhaustive]`: a new
   rule must break each caller's `match` at compile time, so the caller decides
-  what to do with it. [Shell](docs/design/shell.md)
+  what to do with it. The shell guard's `Effect` (the answer of `effect`:
+  reads only, changes, unknown) is exhaustive for the same reason.
+  [Shell](docs/design/shell.md)
 - **Reasons are a few plain words a permission prompt can show**, such as
   `deletes your home directory`. [Core](docs/design/core.md)
 

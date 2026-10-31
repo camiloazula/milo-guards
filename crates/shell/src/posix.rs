@@ -17,6 +17,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in assigned(tree.root_node(), text) {
         split.reassign(&name);
     }
+    environment(split, tree.root_node(), text);
     Walker {
         source: text,
         depth,
@@ -176,6 +177,47 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
     names
 }
 
+/// The variables the line sets or unsets, for `effect`: assignments (also
+/// in front of a command, and after `export` or `local`, quoted or not),
+/// `unset`, and the variable of a `for` loop, which is kept apart.
+fn environment(split: &mut Split, root: Node<'_>, source: &str) {
+    unit::for_each_node(root, |node| match node.kind() {
+        "variable_assignment" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                split.set(unit::text(&name, source));
+            }
+        }
+        // `export "PATH=."`: a quoted assignment is a string, not an
+        // assignment node.
+        "declaration_command" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_assignment" {
+                    let text = unit::text(&child, source).trim_matches(['"', '\'']);
+                    if let Some((name, _)) = text.split_once('=') {
+                        split.set(name);
+                    }
+                }
+            }
+        }
+        "unset_command" => {
+            let mut cursor = node.walk();
+            for name in node.named_children(&mut cursor) {
+                let name = unit::text(&name, source);
+                if !name.starts_with('-') {
+                    split.set(name);
+                }
+            }
+        }
+        "for_statement" => {
+            if let Some(name) = node.child_by_field_name("variable") {
+                split.loop_variable(unit::text(&name, source));
+            }
+        }
+        _ => {}
+    });
+}
+
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
@@ -321,6 +363,24 @@ impl Walker<'_> {
             "file_redirect" => {
                 self.redirect(node);
                 self.children(node, None, level);
+            }
+            // The grammar reads `$(…)` in a here-document's body but not a
+            // backtick substitution, which the shell runs when the delimiter
+            // is not quoted: `effect` cannot say what the line does then.
+            "heredoc_redirect" => {
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+                let quoted = children.iter().any(|child| {
+                    child.kind() == "heredoc_start"
+                        && unit::text(child, self.source).contains(['\'', '"', '\\'])
+                });
+                let backtick = children.iter().any(|child| {
+                    child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
+                });
+                if backtick && !quoted {
+                    self.split.opaque();
+                }
+                self.children(node, stage, level);
             }
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
