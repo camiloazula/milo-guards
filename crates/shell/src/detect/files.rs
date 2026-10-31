@@ -229,7 +229,16 @@ impl Checker<'_> {
                 } else {
                     Access::Item
                 };
-                for target in targets {
+                let mut targets: Vec<Arg> = targets.into_iter().cloned().collect();
+                if key == "new-item" {
+                    // With `-Name` the path is optional: no path, or a `$null`
+                    // one, makes the item in the folder the line is in.
+                    targets = targets.iter().map(or_here).collect();
+                    if targets.is_empty() {
+                        targets.push(Arg::Known(".".to_string()));
+                    }
+                }
+                for target in &targets {
                     self.write_as(shell, unit.scope(), target, verb, access);
                 }
             }

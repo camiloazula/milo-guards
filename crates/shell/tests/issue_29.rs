@@ -304,3 +304,131 @@ fn a_content_write_that_a_provider_takes_is_an_item() {
         ],
     );
 }
+
+#[test]
+fn a_rooted_path_after_a_cd_stays_on_the_drive_of_that_cd() {
+    // `cd \` is the root of the current drive: after a `cd` to the registry,
+    // `Function:` or a place only known when it runs, that is not the file
+    // system, so `NUL` there is an item.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "cd Function:; cd \\; cd C:\\x; Remove-Item NUL",
+            "cd C:\\x; cd \\; Remove-Item NUL",
+            "cd \\; Remove-Item NUL",
+            "cd C:\\x; cd /; Remove-Item NUL",
+            "cd Function:; cd C:\\x; Remove-Item NUL",
+        ],
+        &[
+            (
+                "cd Function:; cd \\; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL",
+                Rule::Overwrite,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; cd \\; Remove-Item NUL -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; cd \\Software\\Foo; Set-ItemProperty NUL -Name x -Value 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; Set-Location \\; New-Item NUL -Force",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKCU:\\Software\\Foo; pushd \\Software; Remove-Item NUL -Recurse",
+                Rule::SystemSettings,
+            ),
+            ("cd Function:; cd /; Set-Content NUL x", Rule::Overwrite),
+            ("cd $key; cd \\; Remove-Item NUL -Recurse", Rule::Delete),
+            ("cd $key; cd \\Software; New-Item NUL -Force", Rule::Overwrite),
+            // A provider path with no drive has no root to read.
+            (
+                "cd Registry::HKEY_CURRENT_USER\\Software\\Foo; cd \\; Remove-Item NUL",
+                Rule::Delete,
+            ),
+            // A rooted path written after the `cd` is rooted on its drive too.
+            (
+                "cd HKCU:\\Software\\Foo; Remove-Item \\Software\\Run -Recurse",
+                Rule::SystemSettings,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_dollar_null_path_of_new_item_is_the_folder_the_line_is_in() {
+    // With `-Name` the path is optional: without a value the item is made in
+    // the current location, so `$null` there is not the null device.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "New-Item -Path $null -Name x",
+            "New-Item -Path $null -Name x -ItemType File",
+            "New-Item -Name x -ItemType File",
+        ],
+        &[
+            (
+                "cd ~\\.ssh; New-Item -Path $null -Name authorized_keys -ItemType File -Value x -Force",
+                Rule::Overwrite,
+            ),
+            (
+                "cd ~\\.ssh; ni $null -Name authorized_keys -Value x",
+                Rule::Overwrite,
+            ),
+            // No path at all is the folder the line is in, too.
+            (
+                "cd ~\\.ssh; New-Item -Name authorized_keys -ItemType File -Value x",
+                Rule::Overwrite,
+            ),
+            (
+                "cd C:\\Windows\\System32; New-Item -Path $null -Name evil.dll -Force",
+                Rule::Overwrite,
+            ),
+            (
+                "cd HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; New-Item $null -Name Evil -Value calc",
+                Rule::SystemSettings,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_single_letter_drive_is_a_disk_unless_the_line_makes_a_drive() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "cd D:; Remove-Item NUL",
+            "cd D:\\x; Remove-Item NUL",
+            "cd C:\\x; Set-Content NUL x",
+            // A drive that is made, but never entered.
+            "New-PSDrive -Name X -PSProvider Registry -Root HKCU:\\Software; Remove-Item NUL",
+        ],
+        &[
+            (
+                "New-PSDrive -Name X -PSProvider Function -Root \\; cd X:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL",
+                Rule::Overwrite,
+            ),
+            (
+                "New-PSDrive -Name X -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd X:; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "ndr -Name X -PSProvider Registry -Root HKCU:\\Software; cd X:\\Foo; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "mount X Registry HKCU:\\Software; Set-Location X:; Remove-Item NUL",
+                Rule::Delete,
+            ),
+            (
+                "New-PSDrive -Name X -PSProvider Function -Root \\; pushd X:\\; Set-Content NUL x",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}

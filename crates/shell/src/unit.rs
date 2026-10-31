@@ -199,6 +199,10 @@ pub(crate) struct Split {
     pipelines: usize,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
+    /// `mount`): a single letter in a later `cd` may be one of another
+    /// provider, not a disk.
+    psdrive: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -253,8 +257,19 @@ impl Split {
         if self.bodies > 0 {
             self.in_body.push(self.units.len());
         }
+        if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
+            self.psdrive = true;
+        }
         if let Some(target) = moves_to(&unit) {
-            self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
+            let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
+            // Once the line makes a drive, a drive letter may name it: the
+            // place is only known when it runs.
+            self.dir = Some(match dir {
+                Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
+                    Arg::Unknown(text)
+                }
+                dir => dir,
+            });
         }
         self.units.push(unit);
     }

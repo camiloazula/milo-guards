@@ -89,7 +89,17 @@ Writes by a file system path (`> NUL`, `Out-File NUL`, `Tee-Object NUL`,
 and they are judged as an item of the folder like a delete. So is the
 destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
 A `$null` destination of those is no destination, so the item goes to the
-folder the line is in. `$null` is the null value in any provider.
+folder the line is in. So does a `$null` or missing path of `New-Item` (with
+`-Name` the path is optional). `$null` is the null value in any provider.
+
+In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
+drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
+system only when the folder before it is (a disk, or no earlier `cd` at all).
+When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
+so is the rooted path. Once the line makes a drive (`New-PSDrive`, `ndr`,
+`mount`), a single letter in a later `cd` (`cd X:`) may be that drive and not a
+disk, so the place is only known when it runs. Without one, a letter is a disk.
 After a `cd` to a known place on the file system, the device is read as
 written for every command. cmd and POSIX have no other provider.
 

@@ -92,7 +92,7 @@ fn start(text: &str, shell: Shell) -> Start<'_> {
 }
 
 /// The drive letter a working directory is on (`C` for `C:\Users\me`).
-fn drive_of(dir: &str) -> Option<char> {
+pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
@@ -317,6 +317,16 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
     let (Some(dir), Arg::Known(text)) = (dir, path) else {
         return path.clone();
     };
+    // In PowerShell a rooted path with no drive (`\x`, `/x`) is the root of
+    // the drive the folder before it is on, which after a `cd` to another
+    // provider is that provider's, not the file system's.
+    if shell == Shell::PowerShell && rooted(text) {
+        return match root_of(dir) {
+            Root::Plain => path.clone(),
+            Root::Drive(drive) => Arg::Known(format!("{drive}{text}")),
+            Root::Unknown => Arg::Unknown(text.clone()),
+        };
+    }
     let drive =
         text.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && text[1..].starts_with(':');
     let absolute = text.starts_with(['/', '~'])
@@ -340,6 +350,48 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         }
         Arg::Known(dir) => Arg::Known(format!("{dir}/{text}")),
         _ => Arg::Unknown(text.clone()),
+    }
+}
+
+/// Whether `text` is a path rooted at the current drive, with no drive of its
+/// own: `\x` or `/x`, but not a UNC path (`\\server\share`).
+fn rooted(text: &str) -> bool {
+    text.starts_with(['\\', '/']) && !text[1..].starts_with(['\\', '/'])
+}
+
+/// The drive a PowerShell folder is on, as its root is read.
+enum Root {
+    /// The file system's current drive: no earlier folder, or one that names
+    /// no drive.
+    Plain,
+    /// A drive of its own: `HKCU:`, `Function:`, `C:`.
+    Drive(String),
+    /// Only known when it runs, or a provider path with no drive.
+    Unknown,
+}
+
+/// The drive the folder `dir` is on.
+fn root_of(dir: &Arg) -> Root {
+    match dir {
+        Arg::Known(dir) => root_of_text(dir),
+        _ => Root::Unknown,
+    }
+}
+
+fn root_of_text(dir: &str) -> Root {
+    // `FileSystem::C:\x` is the file system's own path, and any other
+    // provider's `Provider::path` has no drive to take the root of.
+    if let Some((qualifier, rest)) = dir.split_once("::") {
+        let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+        return if provider.eq_ignore_ascii_case("filesystem") {
+            root_of_text(rest)
+        } else {
+            Root::Unknown
+        };
+    }
+    match qualifier(dir, Shell::PowerShell) {
+        Some((name, _)) => Root::Drive(format!("{name}:")),
+        None => Root::Plain,
     }
 }
 
