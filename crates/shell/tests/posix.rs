@@ -642,3 +642,80 @@ fn a_shell_is_known_by_its_program() {
     );
     assert_eq!(Shell::for_program("/usr/local/bin/fish"), None);
 }
+
+#[test]
+fn a_script_run_after_a_cd_to_an_unknown_place_needs_a_write_to_be_risky() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd \"$(git rev-parse --show-toplevel)\" && bash scripts/check.sh",
+            "cd \"$(dirname \"$0\")\" && bash x.sh",
+            "cd $DIR && bash x.sh",
+            "cd \"$DIR\" && node build.js",
+            "cd - && bash x.sh",
+            "cd $DIR && bash x.sh 2>/dev/null",
+            "cd $DIR && bash x.sh > /dev/null 2>&1",
+            "cd $DIR && ./run.sh",
+        ],
+        &[
+            ("cd $DIR && echo x > i.sh && bash i.sh", Rule::Unknown),
+            ("echo x > i.sh; cd $DIR; bash ../i.sh", Rule::Unknown),
+            ("cd $DIR; bash x.sh > $OUT", Rule::Unknown),
+            ("cd $DIR; echo x | tee i.sh; bash i.sh", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_posix_wildcard_skips_dot_names_unless_it_starts_with_a_dot() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm -rf *git",
+            "rm -rf ?git",
+            "rm -rf [!x]git",
+            "rm -rf *.tmp",
+            "rm -rf ????",
+        ],
+        &[
+            ("rm -rf .git*", Rule::Delete),
+            ("rm -rf .?it", Rule::Delete),
+            ("rm -rf .[g]it", Rule::Delete),
+            ("rm -rf */.git", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["ls *.bak | xargs rm", "ls -d src/*/../*.o | xargs rm"],
+        &[
+            ("ls -d src/*/../../.g* | xargs rm -rf", Rule::Delete),
+            ("ls -d src/*/../../* | xargs rm -rf", Rule::Delete),
+            ("rm -rf src/*/../../.g*", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm /tmp/*.log",
+            "ls /tmp/*.log | xargs rm",
+            "ls -d /tmp/build-* | xargs rm -rf",
+            "ls /var/tmp/*.log | xargs rm",
+        ],
+        &[
+            ("rm -rf /tmp/*", Rule::Delete),
+            ("ls /tmp | xargs rm -rf", Rule::Delete),
+        ],
+    );
+}

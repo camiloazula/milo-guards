@@ -116,3 +116,36 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         );
     }
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn a_long_run_of_open_brackets_is_read_quickly() {
+    // A `[` with no `]` after it is a plain character; reading each one must
+    // not scan to the end of the line again.
+    let brackets = "[".repeat(60_000);
+    for (shell, line, paths) in [
+        (
+            Shell::PowerShell,
+            format!("Remove-Item -Recurse '{brackets}'"),
+            windows(),
+        ),
+        (Shell::Cmd, format!("rd /s /q {brackets}"), windows()),
+        (Shell::Posix, format!("rm -rf '{brackets}'"), posix()),
+        (
+            Shell::PowerShell,
+            format!("Remove-Item -Recurse '{brackets}]'"),
+            windows(),
+        ),
+    ] {
+        let started = std::time::Instant::now();
+        let _ = classify(&line, shell, &paths);
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(200),
+            "{shell:?} took {took:?}"
+        );
+    }
+}
