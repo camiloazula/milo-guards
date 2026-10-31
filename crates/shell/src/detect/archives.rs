@@ -1,18 +1,22 @@
-//! The rules about unpacking archives: an archive unpacked into a folder is
-//! a write into that folder, judged like the destination of `cp`. With no
-//! folder given it unpacks into the working directory. The paths stored in
-//! the archive cannot be seen from the line and are not read.
+//! The rules about archives. One unpacked into a folder is a write into that
+//! folder, judged like the destination of `cp`; with no folder given it
+//! unpacks into the working directory, and the paths stored in the archive
+//! cannot be seen from the line and are not read. One packed with an option
+//! that removes what it packs (`tar --remove-files`, `zip -m`, `7z a -sdel`)
+//! deletes the members named on the line, judged like the operands of `rm`.
 
 use super::Checker;
+use crate::path::within;
 use crate::powershell::Params;
 use crate::unit::{Arg, Unit};
+use crate::Shell;
 
 impl Checker<'_> {
     /// `tar -x`, `unzip`, `7z x`, `Expand-Archive`.
     pub(super) fn unpack(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
         let folders = match key {
-            "tar" | "gtar" | "bsdtar" => tar(args),
+            "tar" | "gtar" | "bsdtar" => tar(args, unit.shell).unpacks_into(),
             "unzip" => unzip(args),
             "7z" | "7za" | "7zr" | "7zz" => seven_zip(args),
             "expand-archive" => Some(expand_archive(args)),
@@ -22,6 +26,27 @@ impl Checker<'_> {
             self.write_folder(unit.shell, unit.scope(), &folder, "unpacks into");
         }
     }
+
+    /// `tar -c --remove-files`, `zip -m`, `7z a -sdel`: the program deletes
+    /// each file it packs once it has packed it.
+    pub(super) fn pack_and_remove(&mut self, unit: &Unit, key: &str) {
+        let args = unit.args.as_slice();
+        let (members, matched) = match key {
+            "tar" | "gtar" | "bsdtar" => (tar(args, unit.shell).removed(), false),
+            "zip" => (zip(args), true),
+            "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args), true),
+            _ => return,
+        };
+        // `zip` and `7z` match a wildcard themselves, quoted or not, with
+        // names that start with a dot among the matches; a line cannot show
+        // which, so it is judged as the program would.
+        self.delete_matching(
+            unit,
+            &members.iter().collect::<Vec<_>>(),
+            "deletes",
+            matched,
+        );
+    }
 }
 
 /// Whether `name`, a long option as written, is `full` or a prefix of it of
@@ -30,26 +55,141 @@ fn long_option(name: &str, full: &str, least: usize) -> bool {
     name.len() >= least && full.starts_with(name)
 }
 
-/// The folders `tar` unpacks into, when it extracts: `-C dir` (`-Cdir`,
-/// `--directory dir`, `--directory=dir`, wherever it stands), or the
-/// working directory. A mode that only the line's run shows (`tar "$mode"
-/// -f x.tar`) counts as extracting.
-fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
+/// What a `tar` line does, as far as its arguments show.
+struct Tar {
+    /// Whether it extracts to the disk: `-x`, `--extract`, `--get` and no
+    /// other mode and no `-O`; or a mode only known when it runs that no mode
+    /// letter rules out.
+    unpacks: bool,
+    /// Whether `--remove-files` is given to a mode that makes or adds to an
+    /// archive (`-c`, `-r`, `-u`), or to one only known when it runs that
+    /// no mode letter rules out.
+    removes: bool,
+    /// The folders `-C`, `--directory` and `--one-top-level` name, in order.
+    folders: Vec<Arg>,
+    /// The files and folders it is asked to pack, each as seen from where
+    /// the line runs (a member after `-C dir` is under `dir`).
+    members: Vec<Arg>,
+}
+
+impl Tar {
+    /// The folders `tar` unpacks into: `-C dir` (`-Cdir`, `--directory dir`,
+    /// `--directory=dir`, wherever it stands), or the working directory.
+    fn unpacks_into(mut self) -> Option<Vec<Arg>> {
+        if !self.unpacks {
+            return None;
+        }
+        if self.folders.is_empty() {
+            self.folders.push(Arg::Known(".".to_string()));
+        }
+        Some(self.folders)
+    }
+
+    /// The members `--remove-files` deletes after packing them.
+    fn removed(self) -> Vec<Arg> {
+        if self.removes {
+            self.members
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// The long options of `tar` that take a value, which stands in the next
+/// argument when it is not attached with `=`. The ones that name members
+/// are read apart, and the one-letter forms are in [`tar`].
+const TAR_LONG_VALUES: &[&str] = &[
+    "after-date",
+    "blocking-factor",
+    "checkpoint-action",
+    "exclude",
+    "exclude-from",
+    "exclude-ignore",
+    "exclude-ignore-recursive",
+    "exclude-tag",
+    "exclude-tag-all",
+    "exclude-tag-under",
+    "file",
+    "format",
+    "group",
+    "group-map",
+    "hole-detection",
+    "index-file",
+    "info-script",
+    "label",
+    "level",
+    "listed-incremental",
+    "mode",
+    "mtime",
+    "new-volume-script",
+    "newer",
+    "newer-mtime",
+    "owner",
+    "owner-map",
+    "pax-option",
+    "quote-chars",
+    "quoting-style",
+    "record-size",
+    "rmt-command",
+    "rsh-command",
+    "sort",
+    "sparse-version",
+    "starting-file",
+    "strip-components",
+    "suffix",
+    "tape-length",
+    "to-command",
+    "transform",
+    "use-compress-program",
+    "volno-file",
+    "warning",
+    "xattrs-exclude",
+    "xattrs-include",
+    "xform",
+    "include",
+    "options",
+    "newer-than",
+    "newer-mtime-than",
+    "gid",
+    "gname",
+    "uid",
+    "uname",
+    "passphrase",
+];
+
+/// Long options of `tar` that are a prefix of one that takes a value, and
+/// take none (`--sparse`, `--checkpoint[=N]`, `--xattrs`).
+const TAR_LONG_FLAGS: [&str; 3] = ["sparse", "checkpoint", "xattrs"];
+
+/// What `tar` is asked to do. A mode that only the line's run shows (`tar
+/// "$mode" -f x.tar`) counts as extracting, and as packing.
+fn tar(args: &[Arg], shell: Shell) -> Tar {
     // Short options that take a value, whose bundle ends with it.
     const VALUES: &str = "CfbILKNTXFgHV";
     let mut extract = false;
     let mut other_mode = false;
+    let mut pack = false;
     let mut to_stdout = false;
+    let mut removes_files = false;
     // An argument only known when it runs, which may hold the mode.
     let mut unknown = false;
     let mut folders = Vec::new();
+    // Where `-C` moved the members that follow: relative to the line's own
+    // folder, and to the `-C` before it.
+    let mut under: Option<Arg> = None;
+    let mut members = Vec::new();
     let mut iter = args.iter().enumerate();
     while let Some((at, arg)) = iter.next() {
         let Some(text) = arg.known() else {
             unknown |= arg.is_unknown();
+            members.push(within(under.as_ref(), arg, shell));
             continue;
         };
         if text == "--" {
+            members.extend(
+                iter.by_ref()
+                    .map(|(_, arg)| within(under.as_ref(), arg, shell)),
+            );
             break;
         }
         if let Some(long) = text.strip_prefix("--") {
@@ -62,22 +202,47 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
             let is = |full: &str| long_option(name, full, 3);
             if name == "get" || is("extract") {
                 extract = true;
-            } else if [
-                "create", "list", "append", "update", "diff", "compare", "delete",
-            ]
-            .iter()
-            .any(|mode| is(mode))
+            } else if ["create", "append", "update"].iter().any(|mode| is(mode)) {
+                other_mode = true;
+                pack = true;
+            } else if ["list", "diff", "compare", "delete"]
+                .iter()
+                .any(|mode| is(mode))
             {
                 other_mode = true;
             } else if long_option(name, "to-stdout", 4) {
                 to_stdout = true;
+            } else if is("remove-files") {
+                removes_files = true;
             } else if long_option(name, "one-top-level", 7) {
                 folders.extend(attached.map(|folder| Arg::Known(folder.to_string())));
             } else if is("directory") {
-                match attached {
-                    Some(folder) => folders.push(Arg::Known(folder.to_string())),
-                    None => folders.extend(iter.next().map(|(_, folder)| folder.clone())),
+                let folder = match attached {
+                    Some(folder) => Some(Arg::Known(folder.to_string())),
+                    None => iter.next().map(|(_, folder)| folder.clone()),
+                };
+                if let Some(folder) = folder {
+                    under = Some(within(under.as_ref(), &folder, shell));
+                    folders.push(folder);
                 }
+            } else if is("add-file") {
+                // A member, named as the value of the option.
+                let member = match attached {
+                    Some(member) => Some(Arg::Known(member.to_string())),
+                    None => iter.next().map(|(_, member)| member.clone()),
+                };
+                members.extend(member.map(|member| within(under.as_ref(), &member, shell)));
+            } else if long_option(name, "files-from", 5) {
+                // The members are in a file the line does not show.
+                if attached.is_none() {
+                    iter.next();
+                }
+                members.push(Arg::Unknown("<files from a list>".to_string()));
+            } else if attached.is_none()
+                && !TAR_LONG_FLAGS.contains(&name)
+                && TAR_LONG_VALUES.iter().any(|full| is(full))
+            {
+                iter.next();
             }
             continue;
         }
@@ -85,6 +250,7 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
         // whose valued letters take the arguments after it, in order.
         let old_style = at == 0 && !text.starts_with('-');
         if !old_style && !text.starts_with('-') {
+            members.push(within(under.as_ref(), arg, shell));
             continue;
         }
         let letters = text.strip_prefix('-').unwrap_or(text);
@@ -99,8 +265,14 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
                 } else {
                     iter.next().map(|(_, value)| value.clone())
                 };
-                if letter == 'C' {
-                    folders.extend(value);
+                match (letter, value) {
+                    ('C', Some(folder)) => {
+                        under = Some(within(under.as_ref(), &folder, shell));
+                        folders.push(folder);
+                    }
+                    // The members are in a file the line does not show.
+                    ('T', _) => members.push(Arg::Unknown("<files from a list>".to_string())),
+                    _ => {}
                 }
                 if !old_style {
                     break;
@@ -109,22 +281,25 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
             }
             match letter {
                 'x' => extract = true,
-                'c' | 't' | 'r' | 'u' | 'A' | 'd' => other_mode = true,
+                'c' | 'r' | 'u' => {
+                    other_mode = true;
+                    pack = true;
+                }
+                't' | 'A' | 'd' => other_mode = true,
                 'O' => to_stdout = true,
                 _ => {}
             }
         }
     }
     // With no mode read, an argument that is only known when it runs may be
-    // `-x`.
-    extract |= unknown && !other_mode;
-    if !extract || other_mode || to_stdout {
-        return None;
+    // `-x`, or `-c`.
+    let mode_unknown = unknown && !other_mode && !extract;
+    Tar {
+        unpacks: (extract || mode_unknown) && !other_mode && !to_stdout,
+        removes: removes_files && (pack || mode_unknown),
+        folders,
+        members,
     }
-    if folders.is_empty() {
-        folders.push(Arg::Known(".".to_string()));
-    }
-    Some(folders)
 }
 
 /// The folder `unzip` unpacks into: `-d dir` (`-ddir`, in a bundle such as
@@ -227,4 +402,197 @@ fn expand_archive(args: &[Arg]) -> Vec<Arg> {
         .get(usize::from(!path_named))
         .map_or_else(|| Arg::Known(".".to_string()), |folder| (*folder).clone());
     vec![folder]
+}
+
+/// What the arguments of `zip` after the archive's name stand for, while
+/// they are read.
+#[derive(Clone, Copy, PartialEq)]
+enum ZipList {
+    /// Files that stay out (`-x`, `--exclude`).
+    Exclude,
+    /// Patterns that choose among the files (`-i`, `--include`).
+    Include,
+}
+
+/// The long options of `zip` that take a value in the next argument.
+const ZIP_LONG_VALUES: &[&str] = &[
+    "temp-path",
+    "suffixes",
+    "from-date",
+    "before-date",
+    "output-file",
+    "password",
+    "split-size",
+    "compression-method",
+    "test-command",
+    "dot-size",
+    "log-file",
+];
+
+/// The files `zip` deletes after adding them, which `-m` (or `--move`) asks
+/// for: the operands after the archive's name, and the names it reads from
+/// its input (`-@`). The patterns that follow `-x` stay; those that follow
+/// `-i` only choose among the operands, and stand in for them when none is
+/// given.
+fn zip(args: &[Arg]) -> Vec<Arg> {
+    let mut moves = false;
+    let mut from_input = false;
+    let mut positional = Vec::new();
+    let mut included = Vec::new();
+    let mut list = None;
+    let mut options_done = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let option = arg
+            .known()
+            .filter(|text| !options_done && text.starts_with('-') && text.len() > 1);
+        let Some(text) = option else {
+            match list {
+                Some(ZipList::Exclude) => {}
+                Some(ZipList::Include) => included.push(arg.clone()),
+                None => positional.push(arg.clone()),
+            }
+            continue;
+        };
+        list = None;
+        if text == "--" {
+            options_done = true;
+            continue;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, attached) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            let is = |full: &str| long_option(name, full, 3);
+            if is("move") {
+                moves = true;
+            } else if is("names-stdin") {
+                from_input = true;
+            } else if is("exclude") {
+                list = Some(ZipList::Exclude);
+            } else if is("include") {
+                list = Some(ZipList::Include);
+            } else if attached.is_none()
+                && name != "test"
+                && ZIP_LONG_VALUES.iter().any(|full| is(full))
+            {
+                iter.next();
+            }
+            continue;
+        }
+        let letters = &text[1..];
+        for (at, letter) in letters.char_indices() {
+            let rest = &letters[at + letter.len_utf8()..];
+            // A value stands in the next argument when nothing follows its
+            // letter, and ends the bundle.
+            let separate = match letter {
+                'm' => {
+                    moves = true;
+                    false
+                }
+                '@' => {
+                    from_input = true;
+                    false
+                }
+                'x' => {
+                    list = Some(ZipList::Exclude);
+                    false
+                }
+                'i' => {
+                    list = Some(ZipList::Include);
+                    false
+                }
+                'b' | 'O' | 'P' | 'Z' => rest.is_empty(),
+                // `-t date` and `-tt date`, `-TT command`.
+                't' => rest.is_empty() || rest == "t",
+                'T' => rest == "T",
+                // `-s size` (`-sf` and its kin are flags), `-ds size`,
+                // `-lf file`, `-n suffixes` (`-nw` is a flag).
+                's' | 'n' => rest.is_empty(),
+                'd' => rest == "s",
+                'l' => rest == "f",
+                _ => false,
+            };
+            if separate {
+                iter.next();
+            }
+            if separate || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
+                break;
+            }
+        }
+    }
+    if !moves {
+        return Vec::new();
+    }
+    // The first operand is the archive, unless it is not known which it is.
+    let skip = usize::from(
+        positional
+            .first()
+            .is_some_and(|first| first.known().is_some()),
+    );
+    let mut members: Vec<Arg> = positional.split_off(skip.min(positional.len()));
+    if members.is_empty() {
+        members = included;
+    }
+    if from_input {
+        members.push(Arg::Unknown("<names read from input>".to_string()));
+    }
+    members
+}
+
+/// The files `7z a` and `7z u` delete after adding them, which `-sdel`
+/// asks for: the operands after the archive's name, the patterns of `-i`,
+/// and the lists named with `@`.
+fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
+    let list = || Arg::Unknown("<files from a list>".to_string());
+    let mut deletes = false;
+    let mut adds = false;
+    let mut positional = 0;
+    let mut members = Vec::new();
+    let mut options_done = false;
+    for arg in args {
+        let switch = arg
+            .known()
+            .filter(|text| !options_done && text.starts_with('-') && text.len() > 1);
+        let Some(text) = switch else {
+            positional += 1;
+            match positional {
+                // The command: one that is not known may add.
+                1 => {
+                    adds = arg
+                        .known()
+                        .is_none_or(|text| matches!(text.to_ascii_lowercase().as_str(), "a" | "u"));
+                }
+                2 => {}
+                _ => members.push(match arg.known() {
+                    Some(text) if text.starts_with('@') => list(),
+                    _ => arg.clone(),
+                }),
+            }
+            continue;
+        };
+        if text == "--" {
+            options_done = true;
+        } else if text.eq_ignore_ascii_case("-sdel") {
+            deletes = true;
+        } else if text
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("-i"))
+        {
+            // `-i!pattern`, `-ir!pattern`, `-ir0!pattern`, `-i@list`.
+            let rest = text[2..]
+                .trim_start_matches(|c: char| matches!(c, 'r' | 'R' | '-') || c.is_ascii_digit());
+            if let Some(pattern) = rest.strip_prefix('!') {
+                members.push(Arg::Known(pattern.to_string()));
+            } else if rest.starts_with('@') {
+                members.push(list());
+            }
+        }
+    }
+    if deletes && adds {
+        members
+    } else {
+        Vec::new()
+    }
 }

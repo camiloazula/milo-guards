@@ -211,10 +211,16 @@ impl Checker<'_> {
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        self.delete_matching(unit, targets, verb, false);
+    }
+
+    /// [`Checker::delete`], where `hidden` says the program matches the
+    /// wildcards itself, with names that start with a dot among them.
+    fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
-                hidden: unit.hidden || listed_hidden,
+                hidden: unit.hidden || listed_hidden || hidden,
                 ..unit.scope()
             };
             for arg in found {

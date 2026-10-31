@@ -236,7 +236,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive one; unpacks an archive into such a folder. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
@@ -421,6 +421,38 @@ read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
 The reasons say `unpacks into your home directory`, `unpacks into a folder
 outside the workspace`, `unpacks into a folder only known when it runs`. A
 folder that is the workspace, inside it or a temporary file is not risky.
+
+### Archiving that removes what it archives
+
+Three options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+members named on the line are judged as the operands of `rm` are (see
+Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
+your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
+and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
+Packing without the option deletes nothing and is safe whatever it packs
+(`tar -cf x.tar ~`).
+
+| Program | Option | Members |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow `-x`/`--exclude`; with none, the patterns that follow `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show |
+
+A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
+--remove-files`) is judged as if it packed. A `tar` option that takes a value
+in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
+a member. An operand only known when it runs is a member known only when it
+runs; with `zip`, so is a first operand that is, since it may be the archive
+and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
+the files the stage before it lists.
+
+`zip` and `7z` match a wildcard themselves, quoted or not, and a name that
+starts with a dot is among the matches, so their members are judged with the
+wildcards matching such names: `zip -mr x.zip '*git'` deletes `.git`, and so
+does the unquoted `zip -mr x.zip *git`, which the guard cannot tell apart and
+judges the same. `tar` is given the names the shell expands, so `tar -cf x.tar
+*git --remove-files` leaves `.git` as `rm -rf *git` does.
 
 ### Git tags and submodules
 

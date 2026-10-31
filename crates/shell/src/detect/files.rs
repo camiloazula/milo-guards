@@ -167,9 +167,15 @@ impl Checker<'_> {
                 }
             }
 
-            // Unpacking an archive writes into the folder it unpacks to.
-            "tar" | "gtar" | "bsdtar" | "unzip" | "7z" | "7za" | "7zr" | "7zz"
-            | "expand-archive" => self.unpack(unit, key),
+            // Unpacking an archive writes into the folder it unpacks to;
+            // packing one with `--remove-files`, `-m` or `-sdel` deletes
+            // what it packs.
+            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "unzip" | "expand-archive" => self.unpack(unit, key),
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {
