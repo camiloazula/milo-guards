@@ -690,16 +690,21 @@ mod tests {
             "?git",
             "*GIT",
             "[!x]git",
-            "*.*",
             "????",
             "*\\objects",
+            "*.*\\x",
         ] {
             assert_eq!(at(&windows, path, WINDOWS), hidden, "{path}");
         }
         for path in ["*.tmp", "*gitx", "?git2", "src\\*.obj"] {
             assert_eq!(at(&windows, path, WINDOWS), Place::Inside, "{path}");
         }
-        // A catch-all takes the folder, as on POSIX.
+        // A catch-all takes the folder, as on POSIX; `*.*` is one on Windows.
+        assert_eq!(at(&windows, "src\\*.*", WINDOWS), Place::Inside);
+        assert_eq!(
+            at(&windows, "*.*", WINDOWS),
+            Place::Workspace { exact: true }
+        );
         assert_eq!(at(&windows, "*", WINDOWS), Place::Workspace { exact: true });
     }
 
