@@ -128,7 +128,10 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
         };
         [part, named]
     };
-    let reaches = |at: usize, names: &[&str]| {
+    // `short` is set for the first part only: it is read against `.git`
+    // itself, so its short name counts. The part after is read against
+    // `.git`'s own entries, which have no short name here.
+    let reaches = |at: usize, names: &[&str], short: bool| {
         let [written, named] = read(at);
         // The trimmed form only when trimming changed something.
         let forms = [Some(written), (named != written).then_some(named)];
@@ -136,10 +139,10 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
             names
                 .iter()
                 .any(|name| matches(pattern, name, flavour, hidden))
-                || (windows && matches_short_git(pattern, flavour))
+                || (short && windows && matches_short_git(pattern, flavour))
         })
     };
-    if parts.is_empty() || !reaches(0, &PROTECTED) {
+    if parts.is_empty() || !reaches(0, &PROTECTED, true) {
         return false;
     }
     match parts.get(1) {
@@ -148,7 +151,7 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
         // resolver read the pattern as written.
         None => !catch_all(read(0)[0], flavour),
         Some(&"..") => true,
-        Some(_) => reaches(1, &GIT_ENTRIES),
+        Some(_) => reaches(1, &GIT_ENTRIES, false),
     }
 }
 
@@ -652,6 +655,16 @@ mod tests {
         // On POSIX a dot is part of the name.
         assert!(!reaches_git(&["*git."], Flavour::Posix, true));
         assert!(!reaches_git(&["*", "objects."], Flavour::Posix, true));
+    }
+
+    #[test]
+    fn the_part_after_git_is_not_read_as_a_short_name() {
+        // `GIT~1` is not an entry of `.git`, so the part after the one that
+        // matches `.git` never reaches it by a short name.
+        assert!(!reaches_git(&["*", "GIT~1"], Flavour::Windows, true));
+        assert!(!reaches_git(&["*", "G*"], Flavour::Windows, true));
+        assert!(!reaches_git(&["*", "*1"], Flavour::Windows, true));
+        assert!(reaches_git(&["*", "obj*"], Flavour::Windows, true));
     }
 
     #[test]

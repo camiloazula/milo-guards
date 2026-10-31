@@ -18,6 +18,10 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             "del /s /q src\\*git.",
             "rd /s /q *\\bin.",
             "del /s /q *git.\\bin",
+            // The part after `.git`'s own is no short name of an entry.
+            "del /s /q *\\GIT~1",
+            "del /s /q *\\G*",
+            "del /s /q *\\*1",
         ],
         &[
             ("del /s /q *git.", Rule::Delete),
@@ -27,8 +31,8 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             ("del /s /q ????.", Rule::Delete),
             ("del /s /q *git.\\objects", Rule::Delete),
             ("del /s /q *git.\\objects.", Rule::Delete),
-            ("del /s /q *\\objects.", Rule::Delete),
-            ("del /s /q \"*\\objects \"", Rule::Delete),
+            ("del /s /q *\\obj*s.", Rule::Delete),
+            ("del /s /q \"*\\HEA? \"", Rule::Delete),
             // Only the trimming of a wildcard part makes these reach `.git`.
             ("del /s /q *.", Rule::Delete),
             ("del *.", Rule::Delete),
@@ -49,12 +53,14 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             "Remove-Item -Recurse -Force *gitx.",
             "Remove-Item -Recurse -Force 'src\\*git.'",
             "Remove-Item -Recurse -Force *\\bin.",
+            "Remove-Item -Recurse -Force *\\G*",
+            "Remove-Item -Recurse -Force *\\GIT~1",
         ],
         &[
             ("Remove-Item -Recurse -Force *git.", Rule::Delete),
             ("Remove-Item -Recurse -Force '*git '", Rule::Delete),
             ("Remove-Item -Recurse -Force *git.\\objects", Rule::Delete),
-            ("Remove-Item -Recurse -Force *\\objects.", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\obj*s.", Rule::Delete),
             ("Remove-Item -Recurse -Force *.", Rule::Delete),
             ("Remove-Item -Recurse -Force *\\obj*.", Rule::Delete),
         ],
