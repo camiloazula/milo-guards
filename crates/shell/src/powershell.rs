@@ -8,6 +8,9 @@ use crate::unit::{self, Arg, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
+    // `$HOME\.ssh\id` is one word to PowerShell, which the grammar cannot read.
+    let quoted = crate::variable_path::quote(text);
+    let text = quoted.as_str();
     let language = tree_sitter_powershell::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
@@ -144,7 +147,9 @@ impl Walker<'_> {
                 }
             }
             "command" => {
+                let first = self.split.units.len();
                 let key = self.command(node, stage);
+                let own = first..self.split.units.len();
                 let outer = self.item;
                 if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
                     self.item = stage;
@@ -159,6 +164,9 @@ impl Walker<'_> {
                     self.split.end_later(began, false);
                 }
                 self.item = outer;
+                // What a sub-expression in its arguments runs is handed to it.
+                self.split
+                    .nest(own.clone(), own.end..self.split.units.len());
             }
             // `trap { … }`: its block runs on a terminating error, later.
             "trap_statement" => {

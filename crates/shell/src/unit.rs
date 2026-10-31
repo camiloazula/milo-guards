@@ -1,6 +1,8 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::ops::Range;
+
 use crate::dotglob;
 use crate::{Finding, Rule, Shell};
 
@@ -198,11 +200,45 @@ impl Hidden {
     }
 }
 
+/// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
+#[derive(Debug, Clone)]
+pub(crate) struct Redirect {
+    /// The units it applies to, by index in [`Split::units`].
+    pub(crate) units: Range<usize>,
+    pub(crate) target: Arg,
+    /// Whether it feeds the units' input (`<`), and not their output.
+    pub(crate) input: bool,
+}
+
+/// Units a command is handed the result of: what runs in its `$(…)` and
+/// `<(…)`, in its here-document, in the value of an argument.
+#[derive(Debug, Clone)]
+pub(crate) struct Nested {
+    /// The command's own units, by index in [`Split::units`].
+    pub(crate) command: Range<usize>,
+    /// The units that run for it.
+    pub(crate) inside: Range<usize>,
+}
+
+/// A variable set from what a substitution prints: `k=$(cat f)`.
+#[derive(Debug, Clone)]
+pub(crate) struct Assigned {
+    pub(crate) name: String,
+    pub(crate) inside: Range<usize>,
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The redirects of files onto units, for the rules that follow a
+    /// secret from a file to where it is sent.
+    pub(crate) redirects: Vec<Redirect>,
+    /// What runs for a command inside its own arguments.
+    pub(crate) nested: Vec<Nested>,
+    /// The variables set from a substitution.
+    pub(crate) assigned: Vec<Assigned>,
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
@@ -277,8 +313,8 @@ pub(crate) struct Place {
 /// ended.
 #[derive(Debug)]
 struct Later {
-    units: std::ops::Range<usize>,
-    writes: std::ops::Range<usize>,
+    units: Range<usize>,
+    writes: Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -329,6 +365,33 @@ impl Split {
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
         self.units.push(unit);
+    }
+
+    /// Note that `inside`, a run of units, ran for the command whose own units
+    /// are `command`.
+    pub(crate) fn nest(&mut self, command: Range<usize>, inside: Range<usize>) {
+        if !inside.is_empty() && !command.is_empty() {
+            self.nested.push(Nested { command, inside });
+        }
+    }
+
+    /// Note that the file `target` is redirected onto `units`.
+    pub(crate) fn redirect(&mut self, units: Range<usize>, target: Arg, input: bool) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input,
+        });
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside`.
+    pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>) {
+        if !inside.is_empty() {
+            self.assigned.push(Assigned {
+                name: name.to_string(),
+                inside,
+            });
+        }
     }
 
     /// Add a redirect's write, made where the line has moved to.

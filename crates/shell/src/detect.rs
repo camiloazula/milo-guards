@@ -12,6 +12,7 @@ use crate::{Finding, Rule, Shell};
 
 mod code;
 mod files;
+mod send;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -50,6 +51,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
     // scans of every unit.
@@ -77,8 +79,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
-    for unit in &split.units {
-        checker.unit(unit);
+    checker.flow = checker.trace();
+    for (at, unit) in split.units.iter().enumerate() {
+        checker.unit(at, unit);
     }
     for write in &split.writes {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
@@ -103,6 +106,9 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Where secrets are read and where they go, for the rule that finds
+    /// them sent away.
+    flow: send::Flow,
 }
 
 impl Checker<'_> {
@@ -123,7 +129,7 @@ impl Checker<'_> {
         });
     }
 
-    fn unit(&mut self, unit: &Unit) {
+    fn unit(&mut self, at: usize, unit: &Unit) {
         let Some(key) = unit.key() else {
             return;
         };
@@ -131,6 +137,7 @@ impl Checker<'_> {
         self.reads(unit);
         self.write_then_run(unit, &key);
         self.files(unit, &key);
+        self.send(at, unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }

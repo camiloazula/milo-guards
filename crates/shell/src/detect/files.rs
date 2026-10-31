@@ -320,7 +320,7 @@ fn sed_files(args: &[Arg]) -> Vec<&Arg> {
 }
 
 /// An rsync `host:path` destination, which is not on this machine.
-fn remote(arg: &Arg) -> bool {
+pub(super) fn remote(arg: &Arg) -> bool {
     arg.known().is_some_and(|text| {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))

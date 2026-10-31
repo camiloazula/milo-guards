@@ -210,22 +210,14 @@ impl Walker<'_> {
         match node.kind() {
             // The assignments in front of a command are that command's, which
             // `command` reads; what they hold is still walked.
-            "command" => {
-                self.command(node, stage);
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "variable_assignment" {
-                        self.children(child, None, level + 1);
-                    } else {
-                        self.walk(child, None, level + 1);
-                    }
-                }
-            }
+            "command" => self.command_node(node, stage, level),
+            // `cmd < f`, `cmd > f`, `cmd <<EOF`.
+            "redirected_statement" => self.redirected(node, stage, level),
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
                 self.assignment(node);
-                self.children(node, None, level);
+                self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
             "list" => {
@@ -261,6 +253,7 @@ impl Walker<'_> {
                         self.split.hide();
                     }
                 }
+                self.declared(node, stage);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE=1 ))`
@@ -343,6 +336,7 @@ impl Walker<'_> {
             }
             // A subshell's `cd` does not move the rest of the line.
             "subshell" | "command_substitution" | "process_substitution" => {
+                self.substituted(node);
                 let outer = self.split.dir_snapshot();
                 let hidden = self.split.hidden_snapshot();
                 self.children(node, stage, level);
@@ -463,6 +457,119 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+    }
+
+    /// A command and what it holds. What its substitutions run is handed to
+    /// it, and a redirect in front of it (`< f cat`) feeds it.
+    fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        self.command(node, stage);
+        let own = first..self.split.units.len();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variable_assignment" {
+                self.children(child, None, level + 1);
+            } else {
+                self.walk(child, None, level + 1);
+            }
+        }
+        self.split
+            .nest(own.clone(), own.end..self.split.units.len());
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some((target, input)) = self.file_redirect(child) {
+                self.split.redirect(own.clone(), target, input);
+            }
+        }
+    }
+
+    /// A statement with redirects: they belong to its body, whose input and
+    /// output they are, and what runs in a here-document is handed to it.
+    fn redirected(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let body = node.child_by_field_name("body").map(|body| body.id());
+        let mut cursor = node.walk();
+        let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        let mut own = 0..0;
+        let mut after = Vec::new();
+        for child in &all {
+            let first = self.split.units.len();
+            self.walk(*child, stage, level + 1);
+            let range = first..self.split.units.len();
+            if Some(child.id()) == body {
+                own = range;
+            } else {
+                after.push((*child, range));
+            }
+        }
+        for (child, inside) in after {
+            if let Some((target, input)) = self.file_redirect(child) {
+                self.split.redirect(own.clone(), target, input);
+            }
+            self.split.nest(own.clone(), inside);
+        }
+    }
+
+    /// `name=value`: what runs in the value is what the variable holds.
+    fn assigned(&mut self, node: Node<'_>, level: usize) {
+        let first = self.split.units.len();
+        self.children(node, None, level);
+        if let Some(name) = node.child_by_field_name("name") {
+            let name = unit::text(&name, self.source);
+            let name = name.split('[').next().unwrap_or(name);
+            self.split.assign(name, first..self.split.units.len());
+        }
+    }
+
+    /// `export -p` and `declare -x` print the environment: they are programs
+    /// the line runs like any other.
+    fn declared(&mut self, node: Node<'_>, stage: Option<Stage>) {
+        let Some(keyword) = node.child(0).filter(|keyword| !keyword.is_named()) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let args = node
+            .named_children(&mut cursor)
+            .map(|child| match child.kind() {
+                "variable_assignment" => Arg::Unknown(unit::text(&child, self.source).to_string()),
+                _ => self.arg(child),
+            })
+            .collect();
+        let program = Arg::Known(unit::text(&keyword, self.source).to_string());
+        self.split
+            .push(Unit::new(Shell::Posix, program, args, stage));
+    }
+
+    /// `$(<file)` prints the file, as `cat file` does.
+    fn substituted(&mut self, node: Node<'_>) {
+        if node.kind() != "command_substitution" {
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some((target, true)) = self.file_redirect(child) {
+                let cat = Arg::Known("cat".to_string());
+                self.split
+                    .push(Unit::new(Shell::Posix, cat, vec![target], None));
+            }
+        }
+    }
+
+    /// The file a redirect names, and whether it feeds input (`<`) rather
+    /// than taking output; `None` for any other node, or a descriptor.
+    fn file_redirect(&self, node: Node<'_>) -> Option<(Arg, bool)> {
+        if node.kind() != "file_redirect" {
+            return None;
+        }
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| !child.is_named())
+            .map(|child| unit::text(&child, self.source));
+        if operator == Some("<&") {
+            return None;
+        }
+        let destination = node.child_by_field_name("destination")?;
+        Some((self.arg(destination), matches!(operator, Some("<" | "<>"))))
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
