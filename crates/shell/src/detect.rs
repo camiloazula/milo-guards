@@ -466,7 +466,9 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             params
                 .values(&["destination"])
                 .first()
-                .map_or_else(Vec::new, |destination| into_folder(destination, &sources))
+                .map_or_else(Vec::new, |destination| {
+                    into_folder(&or_here(destination), &sources)
+                })
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
@@ -482,6 +484,15 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .map(|file| Arg::Known(file.to_string()))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// A `$null` destination of `Copy-Item` or `Move-Item` is no destination, so
+/// the item goes to the folder the line is in.
+fn or_here(destination: &Arg) -> Arg {
+    match destination {
+        Arg::Null => Arg::Known(".".to_string()),
+        other => other.clone(),
     }
 }
 

@@ -1,6 +1,6 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, sources_and_destination, Checker};
+use super::{downloads_to, or_here, sources_and_destination, Checker};
 use crate::launch::{find_targets, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::Params;
@@ -163,7 +163,11 @@ impl Checker<'_> {
                     .first()
                     .or(positional.first())
                 {
-                    self.write(shell, unit.scope(), destination, "writes to");
+                    // A `$null` destination is no destination: the item goes
+                    // to the folder the line is in. In the registry the
+                    // destination is a key, so it is an item.
+                    let destination = or_here(destination);
+                    self.write_as(shell, unit.scope(), &destination, "writes to", Access::Item);
                 }
             }
 
@@ -215,11 +219,15 @@ impl Checker<'_> {
                 } else {
                     "writes to"
                 };
-                // `New-Item NUL` in the registry makes a key of that name.
-                let access = if key == "new-item" {
-                    Access::Item
-                } else {
+                // `Out-File` and `Tee-Object` need a file system path. `New-Item`
+                // makes a key in the registry, and `Set-Content`, `Add-Content`
+                // and `Clear-Content` take an item of the `Env:`, `Variable:`,
+                // `Function:` and `Alias:` providers (`Set-Content NUL ...`
+                // in `Function:` defines a function named NUL).
+                let access = if matches!(key, "out-file" | "tee-object") {
                     Access::Content
+                } else {
+                    Access::Item
                 };
                 for target in targets {
                     self.write_as(shell, unit.scope(), target, verb, access);

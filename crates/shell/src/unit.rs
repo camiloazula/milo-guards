@@ -14,13 +14,18 @@ pub(crate) enum Arg {
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
+    /// PowerShell's `$null`, the null value: handed to a file parameter it is
+    /// the null device, or no value at all. Its own form, since no quoted
+    /// literal (`'$null'`, a file named that) is it, and in cmd and a POSIX
+    /// shell it is nothing special.
+    Null,
 }
 
 impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
-            Self::Unknown(_) | Self::Input => None,
+            Self::Unknown(_) | Self::Input | Self::Null => None,
         }
     }
 
@@ -29,6 +34,7 @@ impl Arg {
         match self {
             Self::Known(text) | Self::Unknown(text) => text,
             Self::Input => "<input>",
+            Self::Null => "$null",
         }
     }
 }

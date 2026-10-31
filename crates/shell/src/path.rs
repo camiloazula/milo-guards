@@ -4,8 +4,8 @@
 //! The path model itself is [`milo_guards_core::Resolver`], which takes a
 //! path spelled out as text. What is left here is what only a shell's
 //! syntax gives a path a meaning for: `~` and `~user`, PowerShell's
-//! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
-//! lists, and a `cd` that moved the line.
+//! provider paths (`HKLM:\Software`, `FileSystem::C:\x`), PowerShell's
+//! `$null`, brace lists, and a `cd` that moved the line.
 
 use milo_guards_core::spelling::glob;
 use milo_guards_core::{Flavour, Paths, Spelling};
@@ -125,10 +125,7 @@ impl Resolver {
     /// not one definite file (a device, a wildcard, a brace list, unknown).
     pub(crate) fn file_key(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<String> {
         // A device is the same in any folder: read it before the join.
-        if arg
-            .known()
-            .is_some_and(|text| device(text, shell).is_some())
-        {
+        if is_device(arg, shell) {
             return None;
         }
         let arg = within(dir, arg, shell);
@@ -159,10 +156,7 @@ impl Resolver {
     /// Whether `arg`, written from `dir`, is a file that cannot be placed:
     /// not a device, and unknown by itself or by where `dir` moved to.
     pub(crate) fn unplaced(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
-        if arg
-            .known()
-            .is_some_and(|text| device(text, shell).is_some())
-        {
+        if is_device(arg, shell) {
             return false;
         }
         matches!(within(dir, arg, shell), Arg::Unknown(_))
@@ -181,9 +175,12 @@ impl Resolver {
         hidden: bool,
         access: Access,
     ) -> Place {
+        if matches!(arg, Arg::Null) {
+            return Place::Null;
+        }
         if let Some(device) = arg
             .known()
-            .filter(|text| device_in_any_folder(text, dir, shell, access))
+            .filter(|_| device_in_any_folder(dir, shell, access))
             .and_then(|text| device(text, shell))
         {
             return device;
@@ -245,26 +242,30 @@ impl Resolver {
 /// What a command does with a path it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
-    /// Writes the content of a file: a redirect, `Out-File`, `Set-Content`, a
-    /// copy's destination. It fails in a PowerShell provider that is not the
-    /// file system, so a device name there is never a harmful one.
+    /// Writes a file by its file system path: a redirect, `Out-File`,
+    /// `Tee-Object -FilePath`, `Invoke-WebRequest -OutFile`. These fail in a
+    /// PowerShell provider that is not the file system, so a device name
+    /// there is never a harmful one.
     Content,
-    /// Deletes, moves, changes permissions or properties of, or creates the
-    /// item itself. In a provider other than the file system `NUL` and `CON`
-    /// are ordinary item names there (a registry key, a variable), so a
-    /// device is read only where the folder is the file system.
+    /// Reaches the item itself, in whatever provider the folder is: deletes,
+    /// moves, changes permissions or properties of, or creates it, and
+    /// `Set-Content`, `Add-Content`, `Clear-Content` and a copy or move's
+    /// destination, which the `Env:`, `Variable:`, `Function:` and `Alias:`
+    /// providers (content) and the registry (a key) take. In a provider other
+    /// than the file system `NUL` and `CON` are ordinary item names there, so
+    /// a device is read only where the folder is the file system.
     Item,
 }
 
-/// Whether `text`, written from `dir`, is a device wherever `dir` is: in
-/// cmd and POSIX a `cd` is always to the file system. In PowerShell `$null`
-/// is the null value in any provider, and a bare `NUL` or `CON` is the device
-/// for a content write (which fails elsewhere) or after a `cd` to the file
-/// system; after a `cd` to the registry, `Env:` or a place only known when
-/// it runs, it is an item's name, so it joins to where the `cd` went.
-fn device_in_any_folder(text: &str, dir: Option<&Arg>, shell: Shell, access: Access) -> bool {
-    if shell != Shell::PowerShell || text.eq_ignore_ascii_case("$null") || access == Access::Content
-    {
+/// Whether a device spelling written from `dir` is a device wherever `dir`
+/// is: in cmd and POSIX a `cd` is always to the file system. In PowerShell a bare
+/// `NUL` or `CON` is the device for a content write (which fails elsewhere)
+/// or after a `cd` to the file system; after a `cd` to the registry, `Env:`,
+/// or a place only known when it runs, it is an item's name, so it joins to
+/// where the `cd` went. PowerShell's `$null` is not a spelling at all (see
+/// [`Arg::Null`]).
+fn device_in_any_folder(dir: Option<&Arg>, shell: Shell, access: Access) -> bool {
+    if shell != Shell::PowerShell || access == Access::Content {
         return true;
     }
     match dir {
@@ -287,11 +288,18 @@ fn on_file_system(dir: &str) -> bool {
     )
 }
 
-/// A device a path names: the core's, and PowerShell's and cmd's `$null`.
+/// Whether `arg` is a device wherever it is written from: PowerShell's
+/// `$null` value, or a spelling [`device`] reads. `$null` is a file name in
+/// cmd and a POSIX shell, and so is a quoted `'$null'` in PowerShell.
+fn is_device(arg: &Arg, shell: Shell) -> bool {
+    matches!(arg, Arg::Null)
+        || arg
+            .known()
+            .is_some_and(|text| device(text, shell).is_some())
+}
+
+/// A device a path names, by its spelling: the core's.
 fn device(text: &str, shell: Shell) -> Option<Place> {
-    if shell != Shell::Posix && text.eq_ignore_ascii_case("$null") {
-        return Some(Place::Null);
-    }
     milo_guards_core::spelling::device(text, flavour(shell))
 }
 

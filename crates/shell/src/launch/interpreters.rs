@@ -60,7 +60,7 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
         (true, Some(script)) => Launch::Script(Shell::Posix, script.clone()),
         (true, None) => Launch::Itself,
         (false, Some(Arg::Known(script))) if !stdin && !is_stdin(script) => Launch::Itself,
-        (false, Some(script @ (Arg::Unknown(_) | Arg::Input))) if !stdin => {
+        (false, Some(script @ (Arg::Unknown(_) | Arg::Input | Arg::Null))) if !stdin => {
             Launch::Script(Shell::Posix, script.clone())
         }
         _ => Launch::Reads(Reads::Shell),

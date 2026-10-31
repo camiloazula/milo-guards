@@ -491,7 +491,9 @@ impl Walker<'_> {
                 for part in node.named_children(&mut cursor) {
                     match self.arg(part) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 Arg::Known(value)
@@ -525,7 +527,9 @@ impl Walker<'_> {
                 "simple_expansion" | "expansion" => {
                     match self.variable(unit::text(&child, self.source)) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 _ => return Arg::Unknown(source.to_string()),

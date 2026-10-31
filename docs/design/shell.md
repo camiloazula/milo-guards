@@ -70,7 +70,10 @@ unknown when its target is, and then so is every relative path after it.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
-overwrite of a file only known when it runs.
+overwrite of a file only known when it runs. `$null` is the device only in
+PowerShell, and only as the null value itself: in cmd and a POSIX shell, and
+quoted in PowerShell (`'$null'`), it is a file name like any other, joined to
+where the `cd` went.
 
 In PowerShell a bare `NUL` or `CON` is the device only on the file system.
 After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
@@ -78,8 +81,15 @@ a place only known when it runs (it may be a registry key), it is an ordinary
 item name there, so deleting, moving or changing it (`Remove-Item NUL`,
 `Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
 that name, and a bare name is joined to where the `cd` went like any other.
-Writes and redirects to it (`> NUL`, `Out-File NUL`, `Set-Content NUL`) fail in
-such a provider and stay harmless. `$null` is the null value in any provider.
+Writes by a file system path (`> NUL`, `Out-File NUL`, `Tee-Object NUL`,
+`Invoke-WebRequest -OutFile NUL`) fail in such a provider and stay harmless.
+`Set-Content`, `Add-Content` and `Clear-Content` do not: the `Env:`,
+`Variable:`, `Function:` and `Alias:` providers take content, so
+`cd Function:; Set-Content NUL ...; NUL` defines and runs a function named `NUL`,
+and they are judged as an item of the folder like a delete. So is the
+destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
+A `$null` destination of those is no destination, so the item goes to the
+folder the line is in. `$null` is the null value in any provider.
 After a `cd` to a known place on the file system, the device is read as
 written for every command. cmd and POSIX have no other provider.
 
@@ -237,7 +247,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device, in any folder (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system.
+- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In cmd and a POSIX shell `$null` is a file name.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).

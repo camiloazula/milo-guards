@@ -254,7 +254,9 @@ impl Walker<'_> {
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                     at = child.end_byte();
                 }
@@ -287,6 +289,9 @@ impl Walker<'_> {
             .and_then(|rest| rest.strip_suffix('}'))
             .or_else(|| lower.strip_prefix('$'))
             .unwrap_or_default();
+        if name == "null" {
+            return Arg::Null;
+        }
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
@@ -299,7 +304,6 @@ impl Walker<'_> {
             "env:systemroot" | "env:windir" => "C:\\Windows",
             "env:programfiles" => "C:\\Program Files",
             "env:programdata" => "C:\\ProgramData",
-            "null" => "$null",
             _ => return Arg::Unknown(source.to_string()),
         };
         Arg::Known(value.to_string())
