@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{check, windows};
+use common::{check, rules, windows};
 use milo_guards_shell::{classify, Paths, Rule, Shell};
 
 #[test]
@@ -538,4 +538,37 @@ fn a_script_run_from_a_place_the_guard_cannot_read_is_risky() {
         &[],
         &[("cd C: & echo x > i.sh & bash C:i.sh", Rule::Unknown)],
     );
+}
+
+#[test]
+fn a_windows_script_run_after_a_cd_to_an_unknown_place_needs_a_write_to_be_risky() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Set-Location $PSScriptRoot; python x.py",
+            "cd $dir; bash x.sh 2>$null",
+        ],
+        &[
+            ("cd $dir; 'x' > i.sh; bash i.sh", Rule::Unknown),
+            ("'x' > i.sh; cd $dir; bash ..\\i.sh", Rule::Unknown),
+            ("cd $dir; bash x.sh > $out", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["cd %X% & python run.py"],
+        &[("cd %X% & echo x > i.sh & bash i.sh", Rule::Unknown)],
+    );
+    // A device is no write that could be a script: only the unplaceable
+    // `cd` is found for it, never an unknown script.
+    for (shell, line) in [
+        (Shell::PowerShell, "cd $dir; bash x.sh > $null"),
+        (Shell::PowerShell, "cd $dir; python x.py > NUL"),
+        (Shell::Cmd, "cd %X% & bash x.sh > nul"),
+    ] {
+        let found = rules(line, shell, &windows());
+        assert!(!found.contains(&Rule::Unknown), "{line}: {found:?}");
+    }
 }

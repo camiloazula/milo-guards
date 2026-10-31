@@ -178,8 +178,10 @@ Some risks only show when units are read together.
   written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
   `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `run_downloaded`. The guard
   matches the two by the file they name (core's `key`).
-  A script whose path cannot be placed (after a `cd` to somewhere unknown, or
+  When the line writes a file (a device such as `/dev/null` does not count),
+  a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
+  A line that writes nothing has no such script.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the

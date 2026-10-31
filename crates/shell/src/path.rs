@@ -149,6 +149,18 @@ impl Resolver {
         }
     }
 
+    /// Whether `arg`, written from `dir`, is a file that cannot be placed:
+    /// not a device, and unknown by itself or by where `dir` moved to.
+    pub(crate) fn unplaced(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
+        if arg
+            .known()
+            .is_some_and(|text| device(text, shell).is_some())
+        {
+            return false;
+        }
+        matches!(within(dir, arg, shell), Arg::Unknown(_))
+    }
+
     /// Where `arg` lands when `shell` runs it.
     pub(crate) fn place(&self, arg: &Arg, shell: Shell) -> Place {
         match arg.known() {
