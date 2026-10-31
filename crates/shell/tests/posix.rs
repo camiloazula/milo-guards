@@ -1390,7 +1390,8 @@ fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
 /// delete, a write or a permission change is a finding, a read is not.
 #[test]
 fn a_protected_path_is_a_finding_to_delete_write_or_chmod() {
-    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
     check(
         Shell::Posix,
         &paths,
@@ -1430,8 +1431,8 @@ fn a_protected_path_is_a_finding_to_delete_write_or_chmod() {
 #[test]
 fn a_protected_path_in_the_workspace_wins_over_the_workspace() {
     let paths = posix().with_protected([
-        Protected::new("/home/me/work/repo/.agent", "the agent's settings"),
-        Protected::new("/home/me/work/repo/settings.yaml", "the agent's settings"),
+        Protected::folder("/home/me/work/repo/.agent", "the agent's settings"),
+        Protected::file("/home/me/work/repo/settings.yaml", "the agent's settings"),
     ]);
     check(
         Shell::Posix,
@@ -1467,7 +1468,8 @@ fn a_protected_path_in_the_workspace_wins_over_the_workspace() {
 
 #[test]
 fn a_protected_reason_uses_the_callers_words() {
-    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
     for (line, rule, reason) in [
         (
             "rm ~/.agent/config.yaml",
@@ -1527,7 +1529,7 @@ fn a_protected_reason_uses_the_callers_words() {
 /// the protected path, stay the agent's own.
 #[test]
 fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
-    let paths = posix().with_protected([Protected::new(
+    let paths = posix().with_protected([Protected::file(
         "/home/me/work/repo/conf/app/x.yaml",
         "the agent's settings",
     )]);
@@ -1549,6 +1551,9 @@ fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
             "cd conf && touch new.txt",
             "rm -f *.log conf/*.log",
             "rm -rf conf/o*",
+            "rm -rf **/y.yaml",
+            "rm -rf **/*.rs",
+            "rm **/*.pyc",
         ],
         &[
             ("rm -rf conf", Rule::Delete),
@@ -1561,7 +1566,6 @@ fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
             ("rm -rf c*", Rule::Delete),
             ("rm -rf conf/a*", Rule::Delete),
             ("rm -rf **/x.yaml", Rule::Delete),
-            ("rm -rf **/y.yaml", Rule::Delete),
             ("rm conf/**/x.yaml", Rule::Delete),
             ("rm -rf conf/**", Rule::Delete),
             ("rm -rf */*/x.yaml", Rule::Delete),
@@ -1603,7 +1607,7 @@ fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
 /// Names compare without case on every host, a macOS file system included.
 #[test]
 fn a_protected_path_is_the_same_whatever_its_case() {
-    let paths = macos().with_protected([Protected::new(
+    let paths = macos().with_protected([Protected::folder(
         "/Users/me/dev/repo/.agent",
         "the agent's settings",
     )]);
@@ -1625,7 +1629,7 @@ fn a_protected_path_is_the_same_whatever_its_case() {
 /// pattern that picks it is not either.
 #[test]
 fn a_protected_path_in_a_temporary_folder_is_protected() {
-    let paths = posix().with_protected([Protected::new("/tmp/state/x", "the agent's settings")]);
+    let paths = posix().with_protected([Protected::file("/tmp/state/x", "the agent's settings")]);
     check(
         Shell::Posix,
         &paths,
@@ -1650,7 +1654,8 @@ fn a_protected_path_in_a_temporary_folder_is_protected() {
 /// not that it is the home directory.
 #[test]
 fn a_pattern_picking_a_protected_path_in_the_home_directory_says_so() {
-    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
     for line in ["rm -rf ~/.agent*", "rm -rf ~/.a*", "rm -rf ~/.agent/"] {
         let assessment = classify(line, Shell::Posix, &paths);
         assert_eq!(
@@ -1671,7 +1676,7 @@ fn a_pattern_picking_a_protected_path_in_the_home_directory_says_so() {
 /// does not.
 #[test]
 fn a_copy_into_a_protected_files_folder_by_its_name_replaces_it() {
-    let paths = posix().with_protected([Protected::new(
+    let paths = posix().with_protected([Protected::file(
         "/home/me/work/repo/conf/app/x.yaml",
         "the agent's settings",
     )]);
@@ -1730,7 +1735,7 @@ fn a_copy_into_a_protected_files_folder_by_its_name_replaces_it() {
 /// replace anything below it.
 #[test]
 fn a_recursive_copy_into_a_folder_holding_a_protected_path_is_a_finding() {
-    let paths = posix().with_protected([Protected::new(
+    let paths = posix().with_protected([Protected::file(
         "/home/me/work/repo/conf/app/x.yaml",
         "the agent's settings",
     )]);
@@ -1768,5 +1773,48 @@ fn a_recursive_copy_into_a_folder_holding_a_protected_path_is_a_finding() {
     assert_eq!(
         assessment.findings()[0].reason,
         "writes to your home directory"
+    );
+}
+
+/// Whether a protected path is a file or a folder says how far a pattern is
+/// read: only a folder has something below its name.
+#[test]
+fn only_a_protected_folder_lets_a_pattern_go_below_its_name() {
+    let file = posix().with_protected([Protected::file(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &file,
+        &[
+            "rm -rf **/y.yaml",
+            "rm -rf **/*.rs",
+            "rm **/*.pyc",
+            "rm -rf src/**/z",
+        ],
+        &[
+            ("rm -rf **/x.yaml", Rule::Delete),
+            ("rm -rf conf", Rule::Delete),
+            ("rm -rf conf/app", Rule::Delete),
+            ("rm conf/app/x.yaml", Rule::Delete),
+            ("rm -rf conf/**", Rule::Delete),
+        ],
+    );
+    let folder = posix().with_protected([Protected::folder(
+        "/home/me/work/repo/cfg",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &folder,
+        &["rm -rf src/**/z", "rm -rf src"],
+        &[
+            ("rm -rf **/rules", Rule::Delete),
+            ("rm **/*.yaml", Rule::Delete),
+            ("rm -rf **/*.rs", Rule::Delete),
+            ("rm -rf cfg", Rule::Delete),
+            ("rm cfg/rules", Rule::Delete),
+        ],
     );
 }

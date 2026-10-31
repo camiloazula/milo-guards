@@ -17,8 +17,12 @@ field added later does not break a caller. The fields stay public to read.
   Empty from `Paths::new`; add to it with `Paths::with_protected`, which
   takes `Protected` values and can be called again to add more.
 
-**`Protected`** is a path and the words a reason calls it by: a plain struct
-`{ path, words }`, built with `Protected::new(path, words)`. `words` is
+**`Protected`** is a path, the words a reason calls it by, and whether it is a
+file or a folder (`kind`, a `ProtectedKind`): a plain struct
+`{ path, words, kind }`, built with `Protected::file(path, words)` or
+`Protected::folder(path, words)`. The caller knows which it protects, and that
+costs the guard no I/O; only a folder has something below its name, which is
+what a pattern is read by (below). `words` is
 `&'static str`, as in `Place::Sensitive`, and follows the verb of a reason
 (`the agent's settings`: "deletes the agent's settings"). A guard never names
 its caller, so the caller passes in the files it gates with, and neither core
@@ -178,15 +182,23 @@ itself.
     against the path's names below the folder the pattern starts in, one for
     one, without case (`set*` and `*.yaml` pick `repo/settings.yaml`, `.a*`
     picks `repo/.agent` where wildcards match hidden names, `AGENT~*` picks
-    `.agent` on Windows). A pattern that reaches the path, or goes below it
-    (`set*/x`: the name may be a folder), picks it, and wins over any place
+    `.agent` on Windows). A pattern that reaches the path, or goes below a
+    protected folder (`cfg*/x`), picks it, and wins over any place
     but the workspace or a temporary folder itself. One that stops at a folder
     holding it picks that folder (`c*` for `repo/conf/app/x.yaml`), which
     counts only where the verdict would be harmless. A part of two or more
     stars alone may stand for any number of names a `*` could match, the
     protected name itself included, and all the rest when it is the last part
-    (`**/x.yaml`, `conf/**`): `**/*.rs` goes below a protected `cfg`, since
-    the stars can take `cfg`. A catch-all at the workspace root is
+    (`**/x.yaml`, `conf/**`). **Only a folder lets a pattern go below the
+    protected name**: the stars can take a protected folder `cfg` and what
+    follows goes into it, so `**/*.rs` and `**/rules` are protected, and so is
+    `*/x` for a protected folder `conf`; a protected file is matched only as
+    the last part, so with a protected file `conf/app/x.yaml`, `**/x.yaml` and
+    `conf` are protected but `**/y.yaml`, `**/*.rs` and `**/*.pyc` are not.
+    The holding rule (ancestor folders) and the landing rule for a copy apply
+    to both kinds. This is why the caller says which it protects, and why
+    there is no constructor that does not: without it every `**/<name>` would
+    be a finding wherever a protected file exists. A catch-all at the workspace root is
     still the workspace. Without this a glob inside a workspace would reach a
     protected file that its spelling does not name.
 - Windows names are normalised before they are compared, so a spelling that

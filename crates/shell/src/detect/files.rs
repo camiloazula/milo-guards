@@ -185,19 +185,23 @@ impl Checker<'_> {
             }
             "copy-item" | "move-item" => {
                 let params = Params::read(args);
-                let mut positional = params.positional.clone();
-                let mut sources = params.values(&["path", "literalpath"]);
-                if sources.is_empty() && !positional.is_empty() {
-                    sources.push(positional.remove(0));
-                }
+                // A comma list of sources is flattened into the arguments,
+                // so what is positional is every operand the parameters did
+                // not take: the sources, then the destination unless
+                // `-Destination` names it.
+                let named = params.values(&["destination"]).first().copied();
+                let mut operands = params.values(&["path", "literalpath"]);
+                operands.extend(params.positional.iter().copied());
+                let destination = match named {
+                    Some(destination) => Some(destination),
+                    None if operands.len() >= 2 => operands.pop(),
+                    None => None,
+                };
+                let sources = operands;
                 if key == "move-item" {
                     self.move_away(unit, &sources);
                 }
-                if let Some(destination) = params
-                    .values(&["destination"])
-                    .first()
-                    .or(positional.first())
-                {
+                if let Some(destination) = destination {
                     let recursive = key == "copy-item"
                         && params
                             .named
@@ -379,14 +383,26 @@ fn leaves(sources: &[&Arg], shell: Shell) -> Vec<String> {
     };
     sources
         .iter()
-        .filter_map(|source| {
+        .flat_map(|source| {
             let Some(text) = source.known() else {
-                return Some("*".to_string());
+                return vec![Some("*".to_string())];
             };
-            match text.trim_end_matches(separators).rsplit(separators).next() {
-                None | Some("" | "." | ".." | "~") => None,
-                Some(name) => Some(name.to_string()),
-            }
+            // cmd's `copy a+b dest` joins files into one named like the first.
+            let texts: Vec<&str> = if shell == Shell::Cmd {
+                text.split('+').collect()
+            } else {
+                vec![text]
+            };
+            texts
+                .into_iter()
+                .map(
+                    |text| match text.trim_end_matches(separators).rsplit(separators).next() {
+                        None | Some("" | "." | ".." | "~") => None,
+                        Some(name) => Some(name.to_string()),
+                    },
+                )
+                .collect()
         })
+        .flatten()
         .collect()
 }

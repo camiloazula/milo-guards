@@ -44,12 +44,22 @@ pub struct Paths {
 /// it sits in. The resolver answers `Place::Protected` with the caller's
 /// words for it.
 ///
+/// The caller says whether it protects a file or a folder, which costs the
+/// guard no I/O and lets a pattern be read the right way: only a folder can
+/// have more below it, so `**/*.rs` goes into a protected folder and not past
+/// a protected file. Build one with [`Protected::file`] or
+/// [`Protected::folder`].
+///
 /// ```
 /// use milo_guards_core::{Paths, Protected};
 ///
 /// let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
-///     .with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+///     .with_protected([
+///         Protected::folder("/home/me/.agent", "the agent's settings"),
+///         Protected::file("/home/me/work/repo/rules.yaml", "the agent's rules"),
+///     ]);
 /// assert_eq!(paths.protected[0].words, "the agent's settings");
+/// assert_eq!(paths.protected[1].kind, milo_guards_core::ProtectedKind::File);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Protected {
@@ -58,15 +68,37 @@ pub struct Protected {
     /// What a reason calls it, such as `the agent's settings`: it follows
     /// `deletes` or `writes to` in the reason.
     pub words: &'static str,
+    /// Whether it is a file or a folder.
+    pub kind: ProtectedKind,
+}
+
+/// Whether a [`Protected`] path is a file or a folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedKind {
+    /// A file: nothing below it, so a pattern is read only as far as its name.
+    File,
+    /// A folder: what is under it is protected, and a pattern can go below it.
+    Folder,
 }
 
 impl Protected {
-    /// A protected path and the words a reason calls it by.
+    /// A protected file and the words a reason calls it by.
     #[must_use]
-    pub fn new(path: impl Into<PathBuf>, words: &'static str) -> Self {
+    pub fn file(path: impl Into<PathBuf>, words: &'static str) -> Self {
         Self {
             path: path.into(),
             words,
+            kind: ProtectedKind::File,
+        }
+    }
+
+    /// A protected folder and the words a reason calls it by.
+    #[must_use]
+    pub fn folder(path: impl Into<PathBuf>, words: &'static str) -> Self {
+        Self {
+            path: path.into(),
+            words,
+            kind: ProtectedKind::Folder,
         }
     }
 }

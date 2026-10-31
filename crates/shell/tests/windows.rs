@@ -1207,8 +1207,8 @@ fn a_long_path_prefix_is_outside_the_workspace() {
 #[test]
 fn a_protected_path_is_a_finding_on_windows_too() {
     let paths = windows().with_protected([
-        Protected::new(r"C:\Users\me\.agent", "the agent's settings"),
-        Protected::new(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+        Protected::folder(r"C:\Users\me\.agent", "the agent's settings"),
+        Protected::folder(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
     ]);
     check(
         Shell::PowerShell,
@@ -1270,8 +1270,8 @@ fn a_protected_path_is_a_finding_on_windows_too() {
 #[test]
 fn a_windows_short_name_and_a_holding_folder_are_protected() {
     let paths = windows().with_protected([
-        Protected::new(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
-        Protected::new(
+        Protected::folder(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+        Protected::file(
             r"C:\Users\me\dev\repo\conf\app\x.yaml",
             "the agent's settings",
         ),
@@ -1319,7 +1319,7 @@ fn a_windows_short_name_and_a_holding_folder_are_protected() {
 /// it, in every shell; a recursive copy into a folder holding one can.
 #[test]
 fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
-    let paths = windows().with_protected([Protected::new(
+    let paths = windows().with_protected([Protected::file(
         r"C:\Users\me\dev\repo\conf\app\x.yaml",
         "the agent's settings",
     )]);
@@ -1333,6 +1333,8 @@ fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
             r"Copy-Item -Recurse src dist",
             r"Copy-Item -Recurse -Force src conf\other",
             r"Copy-Item *.txt conf\app",
+            r"Copy-Item a.txt,b.txt conf\app",
+            r"Move-Item -Path a.txt,b.txt -Destination conf\app",
         ],
         &[
             (r"Copy-Item x.yaml conf\app", Rule::Overwrite),
@@ -1346,6 +1348,16 @@ fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
             (r"Copy-Item -Recurse -Force src conf", Rule::Overwrite),
             (r"Copy-Item -Recurse src conf\app", Rule::Overwrite),
             (r"Copy-Item -Recurse app conf", Rule::Overwrite),
+            // A comma list of sources.
+            (r"Copy-Item y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml, y.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml,y.yaml conf\app\", Rule::Overwrite),
+            (r"Move-Item y,x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item -Path y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (
+                r"Copy-Item -Path a,x.yaml -Destination conf\app",
+                Rule::Overwrite,
+            ),
         ],
     );
     check(
@@ -1353,6 +1365,8 @@ fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
         &paths,
         &[
             r"copy a.txt conf\app",
+            r"copy a.txt,b.txt conf\app",
+            r"copy /b a.txt+b.txt conf\app",
             r"move /y a.txt conf\app",
             r"xcopy /y a.txt conf\app",
             r"robocopy src dist /E",
@@ -1361,6 +1375,9 @@ fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
         ],
         &[
             (r"copy /y x.yaml conf\app", Rule::Overwrite),
+            (r"copy y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (r"copy /b y.yaml+x.yaml conf\app", Rule::Overwrite),
+            (r"copy x.yaml+y.yaml conf\app\", Rule::Overwrite),
             (r"copy x.yaml conf\app\", Rule::Overwrite),
             (r"move /y x.yaml conf\app", Rule::Overwrite),
             (r"xcopy /y x.yaml conf\app", Rule::Overwrite),

@@ -318,7 +318,7 @@ anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
 the caller's words in the reason. Reading is not a finding; what a read of a
 protected file means is not decided here.
 
-With `Protected::new("/home/me/.agent", "the agent's settings")`:
+With `Protected::folder("/home/me/.agent", "the agent's settings")`:
 
 | Line | Rule | Reason |
 | --- | --- | --- |
@@ -337,15 +337,16 @@ line on `C:\Users\me\.agent` is judged the same way, without regard to case
 protected name too.
 
 A folder that holds a protected path is protected as well, so the whole folder
-cannot be deleted or moved. With `Protected::new("/home/me/work/repo/conf/app/x.yaml", ..)`:
+cannot be deleted or moved. With `Protected::file("/home/me/work/repo/conf/app/x.yaml", ..)`:
 
 | Line | Verdict |
 | --- | --- |
 | `rm -rf conf`, `cd conf && rm -rf app`, `mv conf /tmp/x`, `rm -rf c*`, `rm -rf **/x.yaml` | `delete`, in the caller's words |
 | `Remove-Item -Recurse conf`, `rd /s /q conf` | `delete`, in the caller's words |
 | `touch conf/new.txt`, `rm conf/other.txt`, `rm -rf src`, `cp a.txt conf/`, `cp a.txt conf/app`, `mkdir -p conf/app` | safe: a write into a folder is not a write of it |
-| `cp x.yaml conf/app/`, `cp -t conf/app x.yaml`, `mv x.yaml conf/app`, `install x.yaml conf/app/`, `ln -sf other/x.yaml conf/app/`, `cp *.yaml conf/app/`, `Copy-Item x.yaml conf\app`, `copy /y x.yaml conf\app` | `overwrite`: the file lands at its own name, which is the protected one |
+| `cp x.yaml conf/app/`, `cp -t conf/app x.yaml`, `mv x.yaml conf/app`, `install x.yaml conf/app/`, `ln -sf other/x.yaml conf/app/`, `cp *.yaml conf/app/`, `Copy-Item x.yaml conf\app`, `Copy-Item y.yaml,x.yaml conf\app`, `copy /y x.yaml conf\app`, `copy y.yaml+x.yaml conf\app` | `overwrite`: the file lands at its own name, which is the protected one |
 | `cp -r other/. conf`, `cp -a app conf`, `rsync -a src/ conf/`, `Copy-Item -Recurse src conf`, `robocopy src conf /E`, `xcopy /s /y src conf` | `overwrite`: a recursive copy can replace anything below the folder |
+| `rm -rf **/y.yaml`, `rm -rf **/*.rs` | safe: a protected file has nothing below its name (with a protected folder `cfg` they are `delete`) |
 | `rm -rf .`, `rm -rf ~` | the workspace, the home directory: a risky place keeps its own words |
 
 A wildcard part stands for one entry, so a `..` after it still climbs:

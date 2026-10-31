@@ -4,7 +4,7 @@
 //! Nothing reads the file system, so a symlink is judged by its own name.
 
 use crate::spelling::glob::{self, Shape, WILDCARDS};
-use crate::{Paths, Place};
+use crate::{Paths, Place, ProtectedKind};
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -407,7 +407,8 @@ pub struct Resolver {
     workspaces: Vec<Loc>,
     temps: Vec<Loc>,
     sensitive: Vec<(Loc, &'static str)>,
-    protected: Vec<(Loc, &'static str)>,
+    /// Each protected path, its words, and whether it is a folder.
+    protected: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
 }
 
@@ -462,7 +463,13 @@ impl Resolver {
         let protected = paths
             .protected
             .iter()
-            .map(|entry| (Loc::absolute(&entry.path.to_string_lossy()), entry.words))
+            .map(|entry| {
+                (
+                    Loc::absolute(&entry.path.to_string_lossy()),
+                    entry.words,
+                    entry.kind == ProtectedKind::Folder,
+                )
+            })
             .collect();
         Self {
             cwd,
@@ -659,12 +666,12 @@ impl Resolver {
                 exact: loc.is(&self.home),
             };
         }
-        if let Some((_, words)) = self.protected.iter().find(|(file, _)| below(loc, file)) {
+        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(loc, file)) {
             return Place::Protected(words);
         }
         let place = self.judge_plain(loc, flavour);
         if holding && place.harmless() {
-            if let Some((_, words)) = self.protected.iter().find(|(file, _)| above(loc, file)) {
+            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(loc, file)) {
                 return Place::Protected(words);
             }
         }
@@ -742,7 +749,7 @@ impl Resolver {
         }
         let hidden = hidden || flavour == Flavour::Windows;
         let folders = holding && place.harmless();
-        self.protected.iter().find_map(|(path, words)| {
+        self.protected.iter().find_map(|(path, words, is_folder)| {
             if !above(folder, path) {
                 return None;
             }
@@ -750,7 +757,7 @@ impl Resolver {
             let windows = path.windows();
             let reach = |whole: bool| {
                 let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
-                picks(&tail, names, whole, &|part, name| {
+                picks(&tail, names, whole, *is_folder, &|part, name| {
                     pattern_matches(part, name, flavour, hidden, windows)
                 })
             };
@@ -798,16 +805,23 @@ fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windo
     fold(part, name) || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
 }
 
+/// Whether a pattern part is nothing but two or more stars.
+fn is_globstar(part: &str) -> bool {
+    part.len() >= 2 && part.bytes().all(|b| b == b'*')
+}
+
 /// Whether the pattern parts `tail` pick the names `names` in order. A part
 /// that is nothing but two or more stars may stand for any number of names
 /// (a shell with `globstar`) that a `*` could match, all the rest of them
 /// when it is the last, and the last name itself too. `whole` asks that every name be reached; when
 /// it is not, a pattern that ends first picks the folder holding the rest.
-/// The pattern going on past the last name is below it, which counts.
+/// The pattern going on past the last name is below it, which counts only
+/// when `below` says the last name is a folder.
 fn picks(
     tail: &[&str],
     names: &[String],
     whole: bool,
+    below: bool,
     matches: &dyn Fn(&str, &str) -> bool,
 ) -> bool {
     // `reach[j]`: parts `i..` pick names `j..`, built from the end.
@@ -816,10 +830,12 @@ fn picks(
         let mut row = vec![false; names.len() + 1];
         for j in (0..=names.len()).rev() {
             row[j] = if j == names.len() {
-                true
+                // Every name reached: more of the pattern goes below the
+                // last one, which only a folder has.
+                below || tail[i..].iter().all(|part| is_globstar(part))
             } else if i == tail.len() {
                 !whole
-            } else if tail[i].len() >= 2 && tail[i].bytes().all(|b| b == b'*') {
+            } else if is_globstar(tail[i]) {
                 // As many names as it takes, the last one included: a name
                 // the stars take is what a part after them goes below.
                 i + 1 == tail.len()
@@ -936,7 +952,7 @@ fn mark_wildcards(text: &str, flavour: Flavour) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{testing, Protected};
+    use crate::{testing, Protected, ProtectedKind};
 
     const POSIX: Flavour = Flavour::Posix;
     const WINDOWS: Flavour = Flavour::Windows;
@@ -1547,8 +1563,23 @@ mod tests {
 
     const SETTINGS: &str = "the agent's settings";
 
+    /// `paths` with protected folders.
     fn gated(paths: Paths, protected: &[&str]) -> Paths {
-        paths.with_protected(protected.iter().map(|path| Protected::new(*path, SETTINGS)))
+        kinds(paths, &[], protected)
+    }
+
+    /// `paths` with protected files and folders.
+    fn kinds(paths: Paths, files: &[&str], folders: &[&str]) -> Paths {
+        paths.with_protected(
+            files
+                .iter()
+                .map(|path| Protected::file(*path, SETTINGS))
+                .chain(
+                    folders
+                        .iter()
+                        .map(|path| Protected::folder(*path, SETTINGS)),
+                ),
+        )
     }
 
     #[test]
@@ -1614,7 +1645,11 @@ mod tests {
 
     #[test]
     fn a_folder_holding_a_protected_path_is_protected_when_it_would_be_harmless() {
-        let paths = gated(testing::posix(), &["/home/me/work/repo/conf/app/x.yaml"]);
+        let paths = kinds(
+            testing::posix(),
+            &["/home/me/work/repo/conf/app/x.yaml"],
+            &[],
+        );
         let protected = Place::Protected(SETTINGS);
         for (path, place) in [
             ("conf", protected),
@@ -1655,13 +1690,13 @@ mod tests {
 
     #[test]
     fn a_pattern_that_picks_a_protected_path_or_its_folder_is_protected() {
-        let paths = gated(
+        let paths = kinds(
             testing::posix(),
             &[
                 "/home/me/work/repo/settings.yaml",
-                "/home/me/work/repo/.agent",
                 "/home/me/work/repo/conf/app/x.yaml",
             ],
+            &["/home/me/work/repo/.agent"],
         );
         let protected = Place::Protected(SETTINGS);
         for (path, place) in [
@@ -1674,8 +1709,11 @@ mod tests {
             ("src/*/../../set*", protected),
             (".a*", protected),
             (".agent/*", protected),
-            // Below a protected name, whether it is a folder or not.
-            ("set*/x", protected),
+            // A protected file has nothing below it.
+            ("set*/x", Place::Inside),
+            ("**/y.yaml", Place::Inside),
+            ("**/*.rs", Place::Inside),
+            ("**/conf/*/y*", Place::Inside),
             // A pattern that picks the folder holding one.
             ("c*", protected),
             ("conf/a*", protected),
@@ -1686,10 +1724,6 @@ mod tests {
             ("conf/**", protected),
             ("conf/**/x.yaml", protected),
             ("**/**/x.yaml", protected),
-            // The stars can take the protected name, and what follows goes
-            // below it.
-            ("**/y.yaml", protected),
-            ("**/*.rs", protected),
             // What the pattern cannot pick stays the agent's own.
             ("*.log", Place::Inside),
             ("src/*.rs", Place::Inside),
@@ -1729,6 +1763,37 @@ mod tests {
         assert_eq!(at(&home, "/home/me/.a*", POSIX), protected);
         assert_eq!(at(&home, "/home/me/*", POSIX), Place::Home { exact: true });
         assert_eq!(at(&home, "/home/me/x*", POSIX), Place::Home { exact: true });
+    }
+
+    #[test]
+    fn only_a_protected_folder_has_something_below_a_pattern_part() {
+        let protected = Place::Protected(SETTINGS);
+        let file = kinds(
+            testing::posix(),
+            &["/home/me/work/repo/conf/app/x.yaml"],
+            &[],
+        );
+        for (path, place) in [
+            ("**/x.yaml", protected),
+            ("**/x.*", protected),
+            ("conf/**", protected),
+            ("conf/*/x.yaml", protected),
+            ("conf", protected),
+            ("conf/app/x.yaml", protected),
+            ("**/y.yaml", Place::Inside),
+            ("**/*.rs", Place::Inside),
+            ("**/*.pyc", Place::Inside),
+            ("*/*/x.yaml/z", Place::Inside),
+            ("conf/app/x.yaml/*", protected),
+        ] {
+            assert_eq!(at(&file, path, POSIX), place, "{path}");
+        }
+        let folder = gated(testing::posix(), &["/home/me/work/repo/conf/app/x.yaml"]);
+        for path in ["**/y.yaml", "**/*.rs", "conf/*/x.yaml/z", "conf/app/x*/z"] {
+            assert_eq!(at(&folder, path, POSIX), protected, "{path}");
+        }
+        assert_eq!(Protected::file("/a", "x").kind, ProtectedKind::File);
+        assert_eq!(Protected::folder("/a", "x").kind, ProtectedKind::Folder);
     }
 
     #[test]
@@ -1803,12 +1868,10 @@ mod tests {
 
     #[test]
     fn a_windows_short_name_is_the_protected_name() {
-        let paths = gated(
+        let paths = kinds(
             testing::windows(),
-            &[
-                r"C:\Users\me\dev\repo\.agent",
-                r"C:\Users\me\dev\repo\conf\settings.yaml",
-            ],
+            &[r"C:\Users\me\dev\repo\conf\settings.yaml"],
+            &[r"C:\Users\me\dev\repo\.agent"],
         );
         let protected = Place::Protected(SETTINGS);
         for (path, place) in [
@@ -1858,8 +1921,8 @@ mod tests {
         let paths = testing::posix();
         assert!(paths.protected.is_empty());
         let paths = paths
-            .with_protected([Protected::new("/home/me/.a", "one")])
-            .with_protected([Protected::new("/home/me/.b", "two")]);
+            .with_protected([Protected::folder("/home/me/.a", "one")])
+            .with_protected([Protected::folder("/home/me/.b", "two")]);
         assert_eq!(at(&paths, "/home/me/.a/x", POSIX), Place::Protected("one"));
         assert_eq!(at(&paths, "/home/me/.b/x", POSIX), Place::Protected("two"));
     }

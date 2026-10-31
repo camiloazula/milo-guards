@@ -40,7 +40,7 @@ pub mod spelling;
 pub mod testing;
 mod verdict;
 
-pub use paths::{Paths, Protected};
+pub use paths::{Paths, Protected, ProtectedKind};
 pub use place::Place;
 pub use resolve::{Flavour, Resolver, Spelling};
 pub use verdict::{Assessment, Finding, RuleName};

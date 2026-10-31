@@ -16,8 +16,8 @@
 //! - [`Paths`]: the directories a guard judges paths against, built with
 //!   [`Paths::new`]. A caller names what it gates with (its settings, its
 //!   rules) as [`Protected`] paths, through [`Paths::with_protected`].
-//! - [`Protected`]: a path the caller treats as its own, with the words a
-//!   reason calls it by. Touching one is a finding, even inside the workspace.
+//! - [`Protected`]: a file or folder the caller treats as its own, with the
+//!   words a reason calls it by (`Protected::file`, `Protected::folder`). Touching one is a finding, even inside the workspace.
 //! - [`Assessment`]: [`Safe`](Assessment::Safe), or
 //!   [`Risky`](Assessment::Risky) with a [`Finding`] for each reason.
 //! - [`Finding`]: the rule that found it, a reason a prompt can show, and
@@ -64,7 +64,7 @@
 //! use milo_local_guards::{Paths, Protected};
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
-//!     .with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+//!     .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
 //!
 //! let assessment = classify("rm ~/.agent/config.yaml", Shell::Posix, &paths);
 //! assert_eq!(assessment.findings()[0].rule, Rule::Delete);
@@ -73,7 +73,7 @@
 //! # }
 //! ```
 
-pub use milo_guards_core::{Assessment, Finding, Paths, Protected, RuleName};
+pub use milo_guards_core::{Assessment, Finding, Paths, Protected, ProtectedKind, RuleName};
 
 #[cfg(feature = "shell")]
 pub use milo_guards_shell as shell;
