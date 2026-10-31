@@ -297,7 +297,9 @@ a path.
   `Set-Item` or `Clear-Item` on another drive (`Env:`, `Variable:`) is
   `overwrite`, as writing to it is. `Rename-Item src\a.rs b.rs` is safe. With
   no path, the four that act on an item work on what the stage before lists (or `$_`), except that a
-  listing of the whole workspace is its contents, not the workspace itself.
+  listing of the whole workspace by `Get-ChildItem`, `ls` or `dir`, or a
+  `Get-Item` pattern such as `Get-Item *`, is its contents, not the workspace
+  itself; `Get-Item .` or `Get-Item D:\ws2` hands on that folder, as written.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is

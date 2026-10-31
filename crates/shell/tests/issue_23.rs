@@ -5,7 +5,7 @@
 mod common;
 
 use common::{check, windows};
-use milo_guards_shell::{Rule, Shell};
+use milo_guards_shell::{Paths, Rule, Shell};
 
 #[test]
 fn item_cmdlets_on_the_registry_change_the_system() {
@@ -260,5 +260,70 @@ fn a_name_with_a_separator_a_wildcard_or_a_dot_is_not_a_drive() {
             ("Remove-Item -Recurse a*:b", Rule::Delete),
             ("Remove-Item -Recurse 'a?:b'", Rule::Delete),
         ],
+    );
+}
+
+fn two_workspaces() -> Paths {
+    Paths::new(
+        r"C:\Users\me\dev\repo",
+        r"C:\Users\me",
+        [r"C:\Users\me\dev\repo", r"D:\ws2"],
+    )
+}
+
+#[test]
+fn get_item_hands_on_the_workspace_itself() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            ("Rename-Item . old", Rule::Delete),
+            ("Get-Item . | Rename-Item -NewName old", Rule::Delete),
+            ("gi . | ren -NewName old", Rule::Delete),
+            (
+                "cd ~; Get-Item C:\\Users\\me\\dev\\repo | Rename-Item -NewName old",
+                Rule::Delete,
+            ),
+            (
+                "Get-Item C:\\Users\\me\\dev\\repo | Move-Item -Destination src\\old",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &two_workspaces(),
+        &[],
+        &[
+            ("Rename-Item D:\\ws2 old", Rule::Delete),
+            (
+                "Move-Item D:\\ws2 C:\\Users\\me\\dev\\repo\\old",
+                Rule::Delete,
+            ),
+            (
+                "Get-Item D:\\ws2 | ForEach-Object { Rename-Item $_ old }",
+                Rule::Delete,
+            ),
+            (
+                "Get-Item D:\\ws2 | Move-Item -Destination C:\\Users\\me\\dev\\repo\\old",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn what_get_item_and_listings_hand_on_inside_the_workspace_stays_safe() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
+            "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
+            "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
+            "Get-Item src | Rename-Item -NewName old",
+        ],
+        &[],
     );
 }

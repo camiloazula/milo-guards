@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
+use milo_guards_core::spelling::glob;
 
 mod code;
 mod files;
@@ -263,7 +264,10 @@ impl Checker<'_> {
     }
 
     /// `arg`, or the places the stage before lists when it is the pipeline's
-    /// input, less the workspace itself.
+    /// input. A listing (`Get-ChildItem`, `ls`, `dir`) of the whole workspace
+    /// hands on what is inside it, so that place is dropped; `Get-Item` hands
+    /// on the item itself, so only a pattern of its (`Get-Item *`) is dropped
+    /// and a workspace root named as written is kept.
     fn listed_items(&self, unit: &Unit, arg: &Arg) -> Vec<Arg> {
         if *arg != Arg::Input {
             return vec![arg.clone()];
@@ -273,13 +277,22 @@ impl Checker<'_> {
             hidden: unit.hidden || hidden,
             ..unit.scope()
         };
+        let item = unit
+            .stage
+            .filter(|stage| stage.index > 0)
+            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
+            .and_then(|&at| self.split.units.get(at))
+            .and_then(Unit::key)
+            .is_some_and(|key| key.as_str() == "get-item");
         found
             .into_iter()
             .filter(|arg| {
-                !matches!(
-                    self.place(unit.shell, scope, arg),
-                    Place::Workspace { exact: true }
-                )
+                let named = item && !matches!(arg, Arg::Known(text) if glob::has_wildcard(text));
+                named
+                    || !matches!(
+                        self.place(unit.shell, scope, arg),
+                        Place::Workspace { exact: true }
+                    )
             })
             .collect()
     }
