@@ -179,7 +179,7 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
-const OPAQUE: &str = "$__v";
+pub(crate) const OPAQUE: &str = "$__v";
 
 struct Walker<'a> {
     source: &'a str,

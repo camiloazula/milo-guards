@@ -576,6 +576,14 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             "trap 'rm -f lock' EXIT; (cd sub && make)",
             "trap 'rm -f lock' EXIT; bash -c 'cd sub && make'",
             "trap 'rm -f lock' EXIT; echo $(cd sub && pwd)",
+            "trap 'rm -rf build' EXIT; (cd /; false)",
+            "trap 'rm -rf build' EXIT; x=$(cd /; true)",
+            // The ordinary signals are reset in a subshell.
+            "trap 'rm -rf build' INT TERM HUP 15; (cd /; sleep 1)",
+            // `eval` as a stage of a pipeline runs in a subshell.
+            "eval 'cd /' | cat; rm -rf build",
+            "eval 'cd src'; rm -rf build",
+            "bash -c 'cd /'; rm -rf build",
         ],
         &[
             ("trap 'rm -rf out' EXIT; cd ~", Rule::Delete),
@@ -584,6 +592,32 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             ("trap 'rm -rf out' EXIT; pushd ~", Rule::Delete),
             ("trap 'rm -rf out' EXIT; cd /", Rule::Delete),
             ("trap 'rm -rf out' DEBUG; cd ~", Rule::Delete),
+            // A subshell copies `ERR`, `DEBUG` and `RETURN` traps (zsh also
+            // `ZERR`; bash with `set -E` and `set -T`), so they run from where
+            // the subshell has moved to too.
+            ("trap 'rm -rf build' ZERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' DEBUG; (cd /; true)", Rule::Delete),
+            (
+                "set -E; trap 'rm -rf build' ERR; (cd /; false)",
+                Rule::Delete,
+            ),
+            (
+                "set -T; trap 'rm -rf build' DEBUG; x=$(cd /; true)",
+                Rule::Delete,
+            ),
+            ("trap 'rm -rf build' RETURN; (cd /; true)", Rule::Delete),
+            ("trap 'rm -rf build' SIGERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' err; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' EXIT ERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' NOSUCH; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' \"$sig\"; (cd /; false)", Rule::Delete),
+            // `eval` runs in this shell: its `cd` moves the line, and so
+            // the trap's paths, and the paths after it.
+            ("trap 'rm -rf build' EXIT; eval 'cd /'", Rule::Delete),
+            ("trap 'rm -rf build' ERR; eval 'cd ~'", Rule::Delete),
+            ("eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd ..'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' && rm -rf build", Rule::Delete),
             // A trap set in a subshell runs from where the subshell ends up.
             ("(trap 'rm -rf out' EXIT; cd ~)", Rule::Delete),
             ("(trap 'rm -rf out' EXIT; cd ~); cd src", Rule::Delete),
@@ -663,6 +697,22 @@ fn a_trap_says_what_its_action_does() {
         .collect();
     assert!(reasons.contains(&"deletes a path only known when it runs"));
     assert!(reasons.contains(&"runs a script only known when it runs"));
+    // An expansion in a double-quoted action is a placeholder in the text
+    // the action is read from, which a finding never shows: it names the
+    // action as written.
+    for line in [
+        "trap \"rm -rf $d\" EXIT",
+        "trap \"rm -rf $d/x\" EXIT",
+        "trap \"$x\" EXIT",
+        "trap \"echo hi > $f\" EXIT",
+        "trap 'a'\"$x\" EXIT",
+    ] {
+        for finding in classify(line, Shell::Posix, &paths).findings() {
+            let target = finding.target.as_deref().unwrap_or_default();
+            assert!(!target.contains("__v"), "{line}: {finding:?}");
+            assert!(line.contains(target), "{line}: {finding:?}");
+        }
+    }
     // A trap nested past the depth limit is unreadable, not safe.
     let mut line = "rm -rf ~".to_string();
     for _ in 0..12 {

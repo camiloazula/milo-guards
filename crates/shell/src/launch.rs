@@ -14,7 +14,7 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
-use interpreters::{interpreter, shell, trap};
+use interpreters::{interpreter, shell, trap, trap_inherited};
 pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
 use wrappers::{cmd, env, powershell, rsh, start, start_process, tmux, xargs};
 
@@ -86,18 +86,24 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     && shell == Shell::Posix
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
+                let inherited = key == "trap" && trap_inherited(&unit.args);
                 split.push(unit);
                 // A `trap` action in double quotes is expanded when the trap
                 // is set and its result read as code when it runs, as
                 // `eval "…"` does: whatever an expansion holds becomes code.
                 // The text around the expansions is still read.
+                let mut source = None;
                 let script = match script {
-                    Arg::Template { text, source } if key == "trap" => {
+                    Arg::Template {
+                        text,
+                        source: written,
+                    } if key == "trap" => {
                         split.problem(
                             Rule::Unknown,
                             "runs a script only known when it runs",
-                            Some(&source),
+                            Some(&written),
                         );
+                        source = Some(written);
                         Arg::Known(text)
                     }
                     other => other,
@@ -124,11 +130,17 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                             split.bodies += 1;
                             split.begin_later()
                         });
-                        unit::script(split, &text, shell, depth + 1);
+                        // `eval` runs in this shell, unless it is a stage of a
+                        // pipeline: a `cd` in it moves the rest of the line.
+                        let here = key == "eval" && stage.is_none();
+                        unit::script_in(split, &text, shell, depth + 1, here);
                         if let Some(began) = later {
                             split.branches -= 1;
                             split.bodies -= 1;
-                            split.end_later(began);
+                            if let Some(source) = &source {
+                                split.show_source(began, source);
+                            }
+                            split.end_later(began, inherited);
                         }
                         if !matches!(key.as_str(), "eval" | "trap") {
                             split.restore_hidden(outer);

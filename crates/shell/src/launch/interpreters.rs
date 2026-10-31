@@ -69,9 +69,16 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
 
 /// `trap ACTION SIGNAL…`: the action is a script that runs later, in this
 /// shell. `trap -p` and `trap -l` print, `trap - SIGNAL` puts the default
-/// back and `trap '' SIGNAL` ignores the signal: none runs anything. The
-/// signals are not read, since the action runs for any of them.
+/// back and `trap '' SIGNAL` ignores the signal: none runs anything.
 pub(super) fn trap(args: &[Arg]) -> Launch {
+    match trap_operands(args) {
+        None => Launch::Itself,
+        Some((action, _)) => Launch::Script(Shell::Posix, action.clone()),
+    }
+}
+
+/// The action of a `trap` and its signals, when the command sets one.
+fn trap_operands(args: &[Arg]) -> Option<(&Arg, &[Arg])> {
     let mut rest = args;
     if let Some(Arg::Known(first)) = rest.first() {
         if first == "--" {
@@ -82,17 +89,47 @@ pub(super) fn trap(args: &[Arg]) -> Launch {
                 .chars()
                 .all(|letter| matches!(letter, 'p' | 'l' | 'P'))
         {
-            return Launch::Itself;
+            return None;
         }
     }
-    match rest.first() {
-        None => Launch::Itself,
-        Some(Arg::Known(action)) if action == "-" => Launch::Itself,
-        // The action itself is read by the caller: a template (`"rm -rf
-        // $d"`) is read as the text around its expansions, and is unknown
-        // too.
-        Some(action) => Launch::Script(Shell::Posix, action.clone()),
+    match rest.split_first() {
+        Some((Arg::Known(action), _)) if action == "-" => None,
+        Some((action, signals)) => Some((action, signals)),
+        None => None,
     }
+}
+
+/// Whether a subshell may copy the trap: zsh copies `ERR` (`ZERR`) and
+/// `DEBUG`, bash `ERR` with `set -E` and `DEBUG` and `RETURN` with `set -T`,
+/// also in `$(…)`. Then it runs from where a subshell has moved to as well.
+/// A signal the guard does not know, or one only known when it runs, counts
+/// as one that is. `EXIT` and the ordinary signals are reset in a subshell.
+pub(super) fn trap_inherited(args: &[Arg]) -> bool {
+    let Some((_, signals)) = trap_operands(args) else {
+        return false;
+    };
+    if signals.is_empty() {
+        return true;
+    }
+    signals.iter().any(|signal| {
+        let Some(name) = signal.known() else {
+            return true;
+        };
+        let upper = name.to_ascii_uppercase();
+        let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+        let real = name == "EXIT"
+            || name.chars().all(|c| c.is_ascii_digit()) && !name.is_empty()
+            || [
+                "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "IOT", "BUS", "FPE", "KILL", "USR1",
+                "SEGV", "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CLD", "CONT", "STOP",
+                "TSTP", "TTIN", "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO",
+                "POLL", "PWR", "SYS", "EMT", "INFO", "LOST", "THR", "LIBRT",
+            ]
+            .contains(&name)
+            || name.starts_with("RTMIN")
+            || name.starts_with("RTMAX");
+        !real
+    })
 }
 
 /// An interpreter runs code the guard does not read when it is given code inline

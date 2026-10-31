@@ -114,7 +114,18 @@ line leaves things, whichever is more conservative and needs the least state:
   line has moved. A `cd` in a subshell, `$(…)` or a script in a process of
   its own is not a move of this shell, as it is not for any later path, so
   `trap 'rm -f lock' EXIT; (cd sub && make)` still runs `rm -f lock` from
-  where it was set.
+  where it was set. `eval` runs in this shell, so its `cd` is a move.
+  The exception is a trap a subshell copies: `ERR` and `DEBUG` (zsh also
+  `ZERR`) in zsh, `ERR` with `set -E` and `DEBUG` and `RETURN` with `set -T` in
+  bash, also in `$(…)`. It runs from where the subshell has moved to as
+  well, so for these (and for a signal the guard does not know, or one known
+  only when it runs) any `cd` after the `trap` counts, subshell or not:
+  `trap 'rm -rf build' DEBUG; (cd /; true)` is a delete of a path known only
+  when it runs. `EXIT` and the ordinary signals are reset in a subshell and
+  keep the rule above.
+- **Names in a finding.** A double-quoted action is read from its text with
+  each expansion replaced by a placeholder variable; a finding about it names
+  the action as written, never the placeholder.
 - **Hidden names.** The action is a body (see Bodies below): when the line
   turns `dotglob` on anywhere, even after the `trap`, its wildcards match
   hidden names. An off switch inside it changes nothing for the rest of the
@@ -128,7 +139,9 @@ line leaves things, whichever is more conservative and needs the least state:
 
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
-nested script does not reach the rest of the line. Where a `cd` went is
+nested script in a process of its own does not reach the rest of the line;
+`eval` runs in this shell, so its `cd` does (a stage of a pipeline runs in a
+subshell). Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it

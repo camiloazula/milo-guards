@@ -258,6 +258,7 @@ pub(crate) struct Split {
 pub(crate) struct Began {
     units: usize,
     writes: usize,
+    findings: usize,
     moved: usize,
 }
 
@@ -278,7 +279,24 @@ pub(crate) struct Place {
 struct Later {
     units: std::ops::Range<usize>,
     writes: std::ops::Range<usize>,
+    /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
+    moved: usize,
+    /// Whether a subshell copies it (`ERR`, `DEBUG`, `RETURN`): then it also
+    /// runs from where a subshell moved to, so any `cd` counts.
+    inherited: bool,
+}
+
+impl Later {
+    /// Whether a `cd` has come since, given how many the shell has run and
+    /// how many the walk has read.
+    fn moved_since(&self, moves: usize, moved: usize) -> bool {
+        if self.inherited {
+            self.moved != moved
+        } else {
+            self.moves != moves
+        }
+    }
 }
 
 impl Split {
@@ -437,6 +455,7 @@ impl Split {
         Began {
             units: self.units.len(),
             writes: self.writes.len(),
+            findings: self.findings.len(),
             moved: self.moved,
         }
     }
@@ -447,7 +466,7 @@ impl Split {
     /// not known, which [`Split::settle_later`] says once the line is read.
     /// A `cd` in the action itself may run before any of the line, so the
     /// rest of the line is read from somewhere unknown.
-    pub(crate) fn end_later(&mut self, began: Began) {
+    pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
         if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
         }
@@ -455,6 +474,8 @@ impl Split {
             units: began.units..self.units.len(),
             writes: began.writes..self.writes.len(),
             moves: self.moves,
+            moved: self.moved,
+            inherited,
         });
     }
 
@@ -463,8 +484,35 @@ impl Split {
     /// paths are known only when it runs.
     fn settle_later(&mut self) {
         for later in std::mem::take(&mut self.later) {
-            if later.moves != self.moves {
+            if later.moved_since(self.moves, self.moved) {
                 self.move_later(&later);
+            }
+        }
+    }
+
+    /// An action read from text with its expansions replaced by a
+    /// placeholder shows `source`, as written, wherever the placeholder
+    /// would be the name of what a finding is about.
+    pub(crate) fn show_source(&mut self, began: Began, source: &str) {
+        let shown = |arg: &mut Arg| {
+            if arg.text().contains(crate::posix::OPAQUE) {
+                *arg = Arg::Unknown(source.to_string());
+            }
+        };
+        for unit in self.units.get_mut(began.units..).unwrap_or_default() {
+            shown(&mut unit.program);
+            unit.args.iter_mut().for_each(shown);
+        }
+        for write in self.writes.get_mut(began.writes..).unwrap_or_default() {
+            shown(&mut write.target);
+        }
+        for finding in self.findings.get_mut(began.findings..).unwrap_or_default() {
+            if finding
+                .target
+                .as_deref()
+                .is_some_and(|target| target.contains(crate::posix::OPAQUE))
+            {
+                finding.target = Some(source.to_string());
             }
         }
     }
@@ -500,11 +548,11 @@ impl Split {
     pub(crate) fn restore_dir(&mut self, place: Place) {
         let inside = self.later.split_off(place.later);
         for mut later in inside {
-            if later.moves == self.moves {
+            if later.moved_since(self.moves, self.moved) {
+                self.move_later(&later);
+            } else {
                 later.moves = place.moves;
                 self.later.push(later);
-            } else {
-                self.move_later(&later);
             }
         }
         self.dir = place.dir;
@@ -641,6 +689,12 @@ pub(crate) fn split(command: &str, shell: Shell) -> Split {
 
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
+    script_in(split, text, shell, depth, false);
+}
+
+/// As [`script`]; `here` says the script runs in this shell, as `eval`'s
+/// does, so what it does to the working directory stays.
+pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
     if depth > MAX_DEPTH {
         split.problem(
             Rule::Unreadable,
@@ -661,14 +715,16 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
         }
     }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
-    // does not move the line that started it.
+    // does not move the line that started it. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
     }
-    split.restore_dir(outer);
+    if !here {
+        split.restore_dir(outer);
+    }
 }
 
 /// Parse `text` with `language`; `None` (and a finding) when the parser

@@ -156,7 +156,7 @@ impl Walker<'_> {
                     .then(|| self.split.begin_later());
                 self.children(node, None, level);
                 if let Some(began) = later {
-                    self.split.end_later(began);
+                    self.split.end_later(began, false);
                 }
                 self.item = outer;
             }
@@ -164,7 +164,7 @@ impl Walker<'_> {
             "trap_statement" => {
                 let began = self.split.begin_later();
                 self.children(node, stage, level);
-                self.split.end_later(began);
+                self.split.end_later(began, false);
             }
             "redirection" => {
                 self.redirect(node);
