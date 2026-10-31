@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use crate::dotglob::{self, Change};
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -64,6 +65,18 @@ pub(crate) struct Unit {
     /// Where an earlier `cd` in the line moved to, when one did: relative
     /// paths resolve from there.
     pub(crate) dir: Option<Arg>,
+    /// Whether an earlier unit in the line turned on a shell option that
+    /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
+    /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
+    pub(crate) hidden: bool,
+}
+
+/// Where and how a unit's paths are read: the folder an earlier `cd` moved
+/// to, and whether its wildcards match hidden names.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Scope<'a> {
+    pub(crate) dir: Option<&'a Arg>,
+    pub(crate) hidden: bool,
 }
 
 impl Unit {
@@ -76,6 +89,14 @@ impl Unit {
             stage,
             reads: Reads::Nothing,
             dir: None,
+            hidden: false,
+        }
+    }
+
+    pub(crate) fn scope(&self) -> Scope<'_> {
+        Scope {
+            dir: self.dir.as_ref(),
+            hidden: self.hidden,
         }
     }
 
@@ -112,6 +133,17 @@ pub(crate) struct Write {
     pub(crate) target: Arg,
     /// As [`Unit::dir`].
     pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
+}
+
+impl Write {
+    pub(crate) fn scope(&self) -> Scope<'_> {
+        Scope {
+            dir: self.dir.as_ref(),
+            hidden: self.hidden,
+        }
+    }
 }
 
 /// Everything a line was split into.
@@ -128,12 +160,40 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Whether the shell reading the line has turned on a option that lets a
+    /// wildcard match a leading dot. Once on it stays on, except that a
+    /// subshell or a script in a process of its own gives it back as it was,
+    /// and only a certain `shopt -u dotglob` turns it off.
+    dotglob: bool,
+    /// Whether the command being added hands the option to a shell it
+    /// starts, and not to itself: `GLOBIGNORE=x bash -c '…'`. The shell that
+    /// expands the command's own wildcards has run them before it applies.
+    scoped_dotglob: bool,
+    /// How deep the line is inside something that may not run, or runs in
+    /// a process of its own: the right side of `&&` and `||`, a branch, a
+    /// loop, a function body, a background command.
+    pub(crate) branches: usize,
 }
 
 impl Split {
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
+        unit.hidden = self.hidden();
+        if let Some(change) = unit
+            .key()
+            .filter(|_| unit.shell == Shell::Posix)
+            .and_then(|key| dotglob::change(&key, &unit.args))
+        {
+            // A pipeline stage runs in a subshell and a branch may not run:
+            // neither can be counted on to turn the option off.
+            let certain = unit.stage.is_none() && self.branches == 0;
+            match change {
+                Change::On => self.dotglob = true,
+                Change::Off if certain => self.dotglob = false,
+                Change::Off => {}
+            }
+        }
         if let Some(target) = moves_to(&unit) {
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
@@ -143,7 +203,52 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to.
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
-        self.writes.push(Write { shell, target, dir });
+        let hidden = self.hidden();
+        self.writes.push(Write {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
+    }
+
+    /// Whether a wildcard in what comes next may match a leading dot.
+    pub(crate) fn hidden(&self) -> bool {
+        self.dotglob
+    }
+
+    /// Whether the command being added hands the option to a shell it
+    /// starts.
+    pub(crate) fn scoped_hidden(&self) -> bool {
+        self.scoped_dotglob
+    }
+
+    /// The option as the shell has it, to put back after a subshell or a
+    /// script in a process of its own, whose change must not reach the rest
+    /// of the line.
+    pub(crate) fn hidden_snapshot(&self) -> bool {
+        self.dotglob
+    }
+
+    pub(crate) fn restore_hidden(&mut self, hidden: bool) {
+        self.dotglob = hidden;
+    }
+
+    /// Turn the option on for the rest of the shell.
+    pub(crate) fn hide(&mut self) {
+        self.dotglob = true;
+    }
+
+    /// Say the command being added hands the option on when `on`, and say
+    /// what it was, for [`Split::unscope_hidden`] to put back.
+    pub(crate) fn scope_hidden(&mut self, on: bool) -> bool {
+        let outer = self.scoped_dotglob;
+        self.scoped_dotglob |= on;
+        outer
+    }
+
+    pub(crate) fn unscope_hidden(&mut self, outer: bool) {
+        self.scoped_dotglob = outer;
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested

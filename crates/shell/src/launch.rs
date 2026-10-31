@@ -3,6 +3,7 @@
 //! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`,
 //! `Invoke-Expression`) has that script split in its own grammar.
 
+use crate::dotglob;
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
@@ -43,8 +44,18 @@ pub(super) enum Launch {
     Reads(Reads),
 }
 
-pub(crate) fn add(split: &mut Split, mut unit: Unit, depth: usize) {
+pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
+    let outer = split.scope_hidden(false);
+    add_unit(split, unit, depth);
+    split.unscope_hidden(outer);
+}
+
+fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
     for _ in 0..MAX_WRAPPERS {
+        // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
+        if unit.args.iter().any(dotglob::assigns_globignore) {
+            split.scope_hidden(true);
+        }
         let Some(key) = unit.key() else {
             split.problem(
                 Rule::Unknown,
@@ -71,7 +82,20 @@ pub(crate) fn add(split: &mut Split, mut unit: Unit, depth: usize) {
             Launch::Script(shell, script) => {
                 split.push(unit);
                 match script {
-                    Arg::Known(text) => unit::script(split, &text, shell, depth + 1),
+                    Arg::Known(text) => {
+                        // A script in a process of its own sets its options
+                        // for itself; `eval` runs in this shell. A
+                        // `GLOBIGNORE` in front of either is in its
+                        // environment.
+                        let outer = split.hidden_snapshot();
+                        if split.scoped_hidden() {
+                            split.hide();
+                        }
+                        unit::script(split, &text, shell, depth + 1);
+                        if key != "eval" {
+                            split.restore_hidden(outer);
+                        }
+                    }
                     other => split.problem(
                         Rule::Unknown,
                         "runs a script only known when it runs",
@@ -149,6 +173,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stage,
         reads: Reads::Nothing,
         dir: None,
+        hidden: false,
     }
 }
 

@@ -71,6 +71,49 @@ unknown when its target is, and then so is every relative path after it.
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 
+### Hidden names
+
+A POSIX wildcard skips a name that starts with a dot, so `rm -rf *git` leaves
+`.git` alone. A line can switch that off, and then `*git` takes `.git`: bash's
+`shopt -s dotglob`, zsh's `setopt globdots`, `set -o globdots`, and a
+non-empty `GLOBIGNORE` (bash turns `dotglob` on for it). Once a POSIX line
+has turned one on, every later pattern in that shell is judged as core judges a
+PowerShell or cmd wildcard: it can match a leading dot (see
+[Core](core.md)). Each unit and each redirect carries the flag, like the
+folder a `cd` moved to.
+
+- `shopt -s dotglob` (also `shopt -s dotglob nullglob`, `-sq`), `setopt
+  globdots`, `setopt GLOB_DOTS` and `setopt glob_dots` (zsh ignores case and
+  underscores), `unsetopt noglobdots` and `set -o globdots` turn it on. The
+  option name or the flag only known when it runs counts as on.
+- `GLOBIGNORE=x` turns it on as a statement, after `export` or `declare`, as
+  `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or as
+  `+=`. An empty value turns nothing on. In front of a command
+  (`GLOBIGNORE=x rm *git`) or after `env`, the shell has already expanded the
+  command's own wildcards, so only a script it starts (`GLOBIGNORE=x bash -c
+  '…'`) is judged with it on.
+- `shopt -u dotglob`, `unsetopt globdots` and `set +o globdots` turn it off,
+  but only where the line is sure to run them in this shell. In a pipeline,
+  after `&`, on the right of `&&` or `||`, in an `if`, `case`, loop or
+  function body, they change nothing: the line may not run them, or runs them
+  in a subshell, so the rest stays judged with the option on.
+- It stays on for the rest of the line. A subshell, `$(…)`, and a script in a
+  process of its own (`bash -c '…'`) give it back as it was: an option set
+  inside `bash -c 'shopt -s dotglob'` does not reach the units after it. A
+  script started while it is on inherits it, since an exported `GLOBIGNORE`
+  would reach it. `eval` runs in this shell, so its change stays.
+- A function body or a loop that names an option (`dotglob`, `globdots`, a
+  `GLOBIGNORE` assignment) anywhere is judged with it on, since a command
+  in it may run after the option is on: `f() { rm -rf *git; }; shopt -s dotglob;
+  f`.
+- A listing hands its pattern on with the flag it was written under, so `shopt
+  -s dotglob; ls -d *git | xargs rm -rf` is the delete of `*git` with hidden
+  names matching.
+
+Not read: a `GLOBIGNORE` set by `${GLOBIGNORE:=x}` or `(( … ))`, and an option
+a sourced file turns on, which the guard cannot read anyway. zsh's `(D)`
+qualifier (`rm -rf *git(D)`) is not read either.
+
 ## The rules
 
 A rule reads a unit's program, its flags, its operands and its redirects. It

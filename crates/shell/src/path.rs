@@ -161,15 +161,16 @@ impl Resolver {
         matches!(within(dir, arg, shell), Arg::Unknown(_))
     }
 
-    /// Where `arg` lands when `shell` runs it.
-    pub(crate) fn place(&self, arg: &Arg, shell: Shell) -> Place {
+    /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
+    /// it may match a leading dot (`dotglob`).
+    pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
         match arg.known() {
-            Some(text) => self.place_of(text, shell),
+            Some(text) => self.place_of(text, shell, hidden),
             None => Place::Unknown,
         }
     }
 
-    fn place_of(&self, text: &str, shell: Shell) -> Place {
+    fn place_of(&self, text: &str, shell: Shell, hidden: bool) -> Place {
         // A brace list (`{~,x}`, `x{,/../..}`) expands to paths its spelling
         // does not show, so it is checked before the text is taken for a
         // device.
@@ -189,7 +190,7 @@ impl Resolver {
                     .unwrap_or(qualifier)
                     .to_ascii_lowercase();
                 return match provider.as_str() {
-                    "filesystem" => self.place_of(rest, shell),
+                    "filesystem" => self.place_of(rest, shell, hidden),
                     "registry" => Place::Registry,
                     _ => Place::Outside,
                 };
@@ -197,12 +198,18 @@ impl Resolver {
         }
         let flavour = flavour(shell);
         match start(text, shell) {
-            Start::Plain => self.core.place(Spelling::Plain(text), flavour),
-            Start::Home(rest) => self.core.place(Spelling::Home(rest), flavour),
+            Start::Plain => self
+                .core
+                .place_hidden(Spelling::Plain(text), flavour, hidden),
+            Start::Home(rest) => self
+                .core
+                .place_hidden(Spelling::Home(rest), flavour, hidden),
             Start::Provider(name, _) if REGISTRY.contains(&name.as_str()) => Place::Registry,
             Start::Provider(..) => Place::Outside,
             Start::DriveRelative(letter, rest) => match self.on_cwd_drive(letter, rest) {
-                Some(rest) => self.core.place(Spelling::Plain(rest), flavour),
+                Some(rest) => self
+                    .core
+                    .place_hidden(Spelling::Plain(rest), flavour, hidden),
                 None => Place::Outside,
             },
             Start::Unknown => Place::Unknown,

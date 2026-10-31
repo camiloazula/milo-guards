@@ -688,6 +688,166 @@ fn a_posix_wildcard_skips_dot_names_unless_it_starts_with_a_dot() {
     );
 }
 
+/// A line that turns on globbing of hidden names (`dotglob`, `globdots`, a
+/// non-empty `GLOBIGNORE`) makes the wildcards after it able to match `.git`.
+#[test]
+fn a_wildcard_matches_hidden_names_once_the_line_turns_that_on() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Without the option a wildcard skips dot names.
+            "rm -rf *git",
+            "shopt -s dotglob; rm -rf build/*",
+            "shopt -s dotglob; rm -f *.o",
+            "shopt -s dotglob; rm -rf src/*git",
+            "shopt -s dotglob; cd src; rm -rf *git",
+            "shopt -s dotglob; rm -rf src/*/../*git",
+            "shopt -s dotglob; shopt -u dotglob && rm -rf *git",
+            "shopt -s nullglob; rm -rf *git",
+            "shopt -q dotglob; rm -rf *git",
+            "setopt extendedglob; rm -rf *git",
+            "setopt globdots; rm -f *.o",
+            // Turned off again, or never on for what follows.
+            "shopt -s dotglob; shopt -u dotglob; rm -rf *git",
+            "shopt -s dotglob nullglob; shopt -u dotglob; rm -rf *git",
+            "shopt -s dotglob; { shopt -u dotglob; }; rm -rf *git",
+            "setopt globdots; unsetopt globdots; rm -rf *git",
+            "setopt GLOB_DOTS; setopt noglobdots; rm -rf *git",
+            "setopt globdots; unsetopt GLOB_DOTS; rm -rf *git",
+            "unsetopt noglobdots; unsetopt globdots; rm -rf *git",
+            "set -o globdots; set +o globdots; rm -rf *git",
+            "rm -rf *git; shopt -s dotglob",
+            "GLOBIGNORE=; rm -rf *git",
+            "GLOBIGNORE=''; rm -rf *git",
+            // A change in a subshell or a script of its own stays there.
+            "bash -c 'shopt -s dotglob'; rm -rf *git",
+            "sh -c 'shopt -s dotglob; true'; rm -rf *git",
+            "(shopt -s dotglob); rm -rf *git",
+            "echo $(shopt -s dotglob); rm -rf *git",
+            "setopt globdots | cat; rm -rf src/*git",
+            "bash -c 'rm -rf *git'",
+            "bash -c 'shopt -s dotglob; shopt -u dotglob; rm -rf *git'",
+            // `GLOBIGNORE` in front of a command is read after the shell
+            // has expanded that command's own wildcards.
+            "GLOBIGNORE=x rm -rf *git",
+            "env GLOBIGNORE=x rm -rf *git",
+        ],
+        &[
+            ("shopt -s dotglob; rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob; rm -rf ./*git", Rule::Delete),
+            ("shopt -s dotglob; rm -rf ?git", Rule::Delete),
+            ("shopt -s dotglob; rm -rf *.*", Rule::Delete),
+            ("shopt -s dotglob; rm -rf */objects", Rule::Delete),
+            ("shopt -s dotglob nullglob; rm -rf *git", Rule::Delete),
+            ("shopt -s nullglob dotglob; rm -rf *git", Rule::Delete),
+            ("shopt -sq dotglob; rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob && rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob\nrm -rf *git", Rule::Delete),
+            ("shopt -s dotglob; sudo rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob; mv *git /tmp/old", Rule::Delete),
+            ("builtin shopt -s dotglob; rm -rf *git", Rule::Delete),
+            ("command shopt -s dotglob; rm -rf *git", Rule::Delete),
+            ("shopt -s $option; rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob; ls -d *git | xargs rm -rf", Rule::Delete),
+            ("shopt -s dotglob; ls -d * | xargs rm -rf", Rule::Delete),
+            (
+                "shopt -s dotglob; ls -d *git | xargs -n1 rm -rf",
+                Rule::Delete,
+            ),
+            ("shopt -s dotglob; rm -rf src/*/../../*git", Rule::Delete),
+            ("setopt globdots; rm -rf *git", Rule::Delete),
+            ("setopt GLOB_DOTS; rm -rf *git", Rule::Delete),
+            ("setopt glob_dots; rm -rf *git", Rule::Delete),
+            ("setopt GlobDots; rm -rf *git", Rule::Delete),
+            ("setopt extendedglob globdots; rm -rf *git", Rule::Delete),
+            ("setopt $option; rm -rf *git", Rule::Delete),
+            ("unsetopt noglobdots; rm -rf *git", Rule::Delete),
+            ("unsetopt NO_GLOB_DOTS; rm -rf *git", Rule::Delete),
+            ("setopt globdots; ls -d *git | xargs rm -rf", Rule::Delete),
+            ("set -o globdots; rm -rf *git", Rule::Delete),
+            ("set -eo globdots; rm -rf *git", Rule::Delete),
+            ("set +o noglobdots; rm -rf *git", Rule::Delete),
+            ("GLOBIGNORE=x; rm -rf *git", Rule::Delete),
+            ("GLOBIGNORE=x\nrm -rf *git", Rule::Delete),
+            ("GLOBIGNORE+=x; rm -rf *git", Rule::Delete),
+            ("GLOBIGNORE=$IGNORE; rm -rf *git", Rule::Delete),
+            ("GLOBIGNORE=x; ls -d *git | xargs rm -rf", Rule::Delete),
+            ("export GLOBIGNORE=x; rm -rf *git", Rule::Delete),
+            ("declare -x GLOBIGNORE=x; rm -rf *git", Rule::Delete),
+            ("read GLOBIGNORE; rm -rf *git", Rule::Delete),
+            ("printf -v GLOBIGNORE x; rm -rf *git", Rule::Delete),
+            // A script that runs in this shell, or inherits the option.
+            ("eval 'shopt -s dotglob'; rm -rf *git", Rule::Delete),
+            ("eval shopt -s dotglob; rm -rf *git", Rule::Delete),
+            ("shopt -s dotglob; bash -c 'rm -rf *git'", Rule::Delete),
+            ("bash -c 'shopt -s dotglob; rm -rf *git'", Rule::Delete),
+            ("sh -c 'GLOBIGNORE=x; rm -rf *git'", Rule::Delete),
+            ("GLOBIGNORE=x bash -c 'rm -rf *git'", Rule::Delete),
+            ("env GLOBIGNORE=x bash -c 'rm -rf *git'", Rule::Delete),
+            ("export GLOBIGNORE=x; bash -c 'rm -rf *git'", Rule::Delete),
+            ("(shopt -s dotglob; rm -rf *git)", Rule::Delete),
+            ("{ shopt -s dotglob; rm -rf *git; }", Rule::Delete),
+            // An off switch that may not run, or runs in a process of its own.
+            (
+                "shopt -s dotglob; true || shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; false && shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob && shopt -u dotglob && rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; if x; then shopt -u dotglob; fi; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; case x in x) shopt -u dotglob;; esac; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; for x in a; do shopt -u dotglob; done; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; shopt -u dotglob & rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; shopt -u dotglob | cat; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; bash -c 'shopt -u dotglob'; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; (shopt -u dotglob); rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; f() { shopt -u dotglob; }; rm -rf *git",
+                Rule::Delete,
+            ),
+            // A body that runs after the option is on.
+            ("f() { rm -rf *git; }; shopt -s dotglob; f", Rule::Delete),
+            (
+                "for x in 1 2; do rm -rf *git; shopt -s dotglob; done",
+                Rule::Delete,
+            ),
+            (
+                "while true; do rm -rf *git; GLOBIGNORE=x; done",
+                Rule::Delete,
+            ),
+            ("for GLOBIGNORE in x; do rm -rf *git; done", Rule::Delete),
+        ],
+    );
+}
+
 #[test]
 fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
     check(
