@@ -356,16 +356,37 @@ impl Walker<'_> {
         }
     }
 
-    /// The stages of `node`, numbered from `first` in `pipeline`.
-    fn pipeline_in(&mut self, node: Node<'_>, pipeline: usize, first: usize, level: usize) {
-        let mut cursor = node.walk();
-        for (index, child) in node.named_children(&mut cursor).enumerate() {
-            let stage = Stage {
-                pipeline,
-                index: first + index,
-            };
-            self.walk(child, Some(stage), level + 1);
+    /// The stages of `node`, numbered from `first` in `pipeline`, and the
+    /// number after the last. A child that is itself a pipeline (the grammar
+    /// nests the rest of a pipeline that follows a here-document) is part of
+    /// the same pipeline, its stages numbered on from the ones before it.
+    fn pipeline_in(
+        &mut self,
+        node: Node<'_>,
+        pipeline: usize,
+        first: usize,
+        level: usize,
+    ) -> usize {
+        if level > unit::MAX_TREE_DEPTH {
+            self.split
+                .problem(Rule::Unreadable, "nests too deeply to read", None);
+            return first;
         }
+        let mut next = first;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipeline" {
+                next = self.pipeline_in(child, pipeline, next, level + 1);
+            } else {
+                let stage = Stage {
+                    pipeline,
+                    index: next,
+                };
+                self.walk(child, Some(stage), level + 1);
+                next += 1;
+            }
+        }
+        next
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -519,11 +540,23 @@ impl Walker<'_> {
             .then(|| self.split.pipeline());
         let mut own = 0..0;
         let mut after = Vec::new();
+        // The stages the body takes in that pipeline: the here-document's
+        // own come after them.
+        let mut next = 1;
         for child in &all {
             let first = self.split.units.len();
             if Some(child.id()) == body {
-                let stage = pipeline.map_or(stage, |pipeline| Some(Stage { pipeline, index: 0 }));
-                self.walk(*child, stage, level + 1);
+                match pipeline {
+                    // `echo hi | cat .env <<EOF | nc host 1`: the body is
+                    // itself a pipeline, whose stages come first.
+                    Some(pipeline) if child.kind() == "pipeline" => {
+                        next = self.pipeline_in(*child, pipeline, 0, level + 1);
+                    }
+                    Some(pipeline) => {
+                        self.walk(*child, Some(Stage { pipeline, index: 0 }), level + 1);
+                    }
+                    None => self.walk(*child, stage, level + 1),
+                }
                 own = first..self.split.units.len();
             } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
                 // What the redirect's own parts run is handed to the body,
@@ -533,7 +566,7 @@ impl Walker<'_> {
                 for part in child.named_children(&mut cursor) {
                     let first = self.split.units.len();
                     if part.kind() == "pipeline" {
-                        self.pipeline_in(part, pipeline, 1, level + 1);
+                        self.pipeline_in(part, pipeline, next, level + 1);
                     } else {
                         self.walk(part, None, level + 1);
                         inside.push(first..self.split.units.len());

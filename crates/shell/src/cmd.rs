@@ -61,10 +61,7 @@ impl Walker<'_> {
             }
             "pipe_stmt" => {
                 let pipeline = self.split.pipeline();
-                let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
-                    self.walk(child, Some(Stage { pipeline, index }), level + 1);
-                }
+                self.pipe_in(node, pipeline, 0, level);
             }
             // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
             // command's input feeds the units it runs.
@@ -98,6 +95,32 @@ impl Walker<'_> {
             "comment" => self.comment(node),
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// The stages of `node`, numbered from `first` in `pipeline`, and the
+    /// number after the last. The grammar nests `a | b | c` as
+    /// `(a | b) | c`: the inner pipe is part of the same pipeline.
+    fn pipe_in(&mut self, node: Node<'_>, pipeline: usize, first: usize, level: usize) -> usize {
+        if level > unit::MAX_TREE_DEPTH {
+            self.split
+                .problem(Rule::Unreadable, "nests too deeply to read", None);
+            return first;
+        }
+        let mut next = first;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipe_stmt" {
+                next = self.pipe_in(child, pipeline, next, level + 1);
+            } else {
+                let stage = Stage {
+                    pipeline,
+                    index: next,
+                };
+                self.walk(child, Some(stage), level + 1);
+                next += 1;
+            }
+        }
+        next
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {

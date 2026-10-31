@@ -8,6 +8,7 @@
 //! machine is nothing; only sending it is.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use milo_guards_core::spelling::glob;
 use milo_guards_core::Flavour;
@@ -197,7 +198,7 @@ pub(super) struct Flow {
     stdin: Vec<Option<Hit>>,
     /// Units whose output a redirect sends to the network
     /// (`> /dev/tcp/host/1`).
-    to_network: HashSet<usize>,
+    to_network: Vec<bool>,
     /// Where each unit stands in a pipeline: its own stage, or the one of the
     /// command whose script, substitution or `-exec` it runs for.
     stage_of: Vec<Option<Stage>>,
@@ -232,6 +233,7 @@ impl Checker<'_> {
             own: vec![None; units.len()],
             fed: vec![None; units.len()],
             stdin: vec![None; units.len()],
+            to_network: vec![false; units.len()],
             stage_of: units.iter().map(|unit| unit.stage).collect(),
             ..Flow::default()
         };
@@ -249,21 +251,31 @@ impl Checker<'_> {
                 }
             }
         }
+        // A redirect opens before its units run: its target is read once,
+        // from where its first unit starts, and the hit goes to them all.
         for redirect in self
             .split
             .redirects
             .iter()
             .filter(|redirect| !redirect.text)
         {
-            for at in redirect.units.clone() {
-                let Some(unit) = units.get(at) else { continue };
-                if redirect.input {
-                    let hit = self.secret(unit, &redirect.target, false, true);
-                    if let Some(slot) = flow.stdin.get_mut(at).filter(|_| hit.is_some()) {
-                        *slot = hit;
+            let Some(first) = units.get(redirect.units.start) else {
+                continue;
+            };
+            if redirect.input {
+                let Some(hit) = self.secret(first, &redirect.target, false, true) else {
+                    continue;
+                };
+                for at in redirect.units.clone() {
+                    if let Some(slot) = flow.stdin.get_mut(at).filter(|slot| slot.is_none()) {
+                        *slot = Some(hit.clone());
                     }
-                } else if redirect.target.known().is_some_and(network_device) {
-                    flow.to_network.insert(at);
+                }
+            } else if redirect.target.known().is_some_and(network_device) {
+                for at in redirect.units.clone() {
+                    if let Some(slot) = flow.to_network.get_mut(at) {
+                        *slot = true;
+                    }
                 }
             }
         }
@@ -334,8 +346,7 @@ impl Checker<'_> {
     fn held(&self, flow: &Flow) -> HashMap<String, Hit> {
         let units = &self.split.units;
         let assigned = &self.split.assigned;
-        // The names a unit reads: in its arguments, and in a here-string or
-        // here-document fed to it.
+        // The names a unit reads in its arguments.
         let mut reads: Vec<Vec<String>> = vec![Vec::new(); units.len()];
         for (at, unit) in units.iter().enumerate() {
             if let Some(names) = reads.get_mut(at) {
@@ -347,18 +358,26 @@ impl Checker<'_> {
                 );
             }
         }
+        // The names a here-string or here-document reads, once for each, and
+        // the units it feeds as a range: not copied into every one of them.
+        let mut fed_names: HashMap<String, Vec<&Range<usize>>> = HashMap::new();
         for redirect in self.split.redirects.iter().filter(|redirect| redirect.text) {
-            for at in redirect.units.clone() {
-                if let Some(names) = reads.get_mut(at) {
-                    names.extend(referenced(redirect.target.text()));
-                }
+            let names: HashSet<String> = referenced(redirect.target.text()).into_iter().collect();
+            for name in names {
+                fed_names.entry(name).or_default().push(&redirect.units);
             }
         }
         let mut readers: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut work: Vec<(usize, Hit)> = Vec::new();
+        // Each assignment is handed work once: a name is settled by the
+        // first, and whoever reads it is told then.
+        let mut queued = vec![false; assigned.len()];
         for (at, one) in assigned.iter().enumerate() {
             let direct = one.inside.clone().find_map(|unit| flow.own(unit).cloned());
-            work.extend(direct.map(|hit| (at, hit)));
+            if let Some(hit) = direct {
+                queued[at] = true;
+                work.push((at, hit));
+            }
             let inside = one.inside.clone().filter_map(|unit| reads.get(unit));
             for name in inside.flatten().chain(&one.uses) {
                 readers.entry(name).or_default().push(at);
@@ -373,8 +392,26 @@ impl Checker<'_> {
                 continue;
             }
             held.insert(one.name.clone(), hit.clone());
-            for reader in readers.get(one.name.as_str()).into_iter().flatten() {
-                work.push((*reader, hit.clone()));
+            let in_arguments = readers.get(one.name.as_str()).into_iter().flatten();
+            // An assignment reads what a here-document feeds any unit in its
+            // value.
+            let in_text = fed_names
+                .get(one.name.as_str())
+                .into_iter()
+                .flatten()
+                .flat_map(|fed| {
+                    assigned.iter().enumerate().filter(move |(_, other)| {
+                        other.inside.start < fed.end
+                            && fed.start < other.inside.end
+                            && other.inside.start < other.inside.end
+                    })
+                })
+                .map(|(reader, _)| reader);
+            for reader in in_arguments.copied().chain(in_text) {
+                if let Some(slot) = queued.get_mut(reader).filter(|slot| !**slot) {
+                    *slot = true;
+                    work.push((reader, hit.clone()));
+                }
             }
         }
         held
@@ -451,7 +488,7 @@ impl Checker<'_> {
         }
         self.copy(unit, key);
         let network = NETWORK.contains(&key);
-        let to_network = self.flow.to_network.contains(&at);
+        let to_network = self.flow.to_network.get(at).copied().unwrap_or(false);
         let sink =
             takes_input(unit, key) || to_network || (network && unit.args.contains(&Arg::Input));
         if sink {

