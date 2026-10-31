@@ -1,0 +1,118 @@
+//! Whatever the text, classifying it ends, never panics, and never calls
+//! a line it could not read safe.
+
+mod common;
+
+use common::{posix, windows};
+use milo_guards_shell::{classify, Rule, Shell};
+
+/// Pieces of shell syntax, joined at random into lines no grammar expects.
+const PIECES: [&str; 40] = [
+    "rm",
+    "-rf",
+    "~",
+    "/",
+    "\"",
+    "'",
+    "`",
+    "$(",
+    ")",
+    "${",
+    "}",
+    "|",
+    "&&",
+    "||",
+    ";",
+    "&",
+    "\n",
+    "<<EOF",
+    "EOF",
+    ">",
+    ">>",
+    "2>&1",
+    "(",
+    "{",
+    "[[",
+    "]]",
+    "%X%",
+    "^",
+    "$_",
+    "-Recurse",
+    "C:\\",
+    "\\\\.\\PhysicalDrive0",
+    "cmd /c",
+    "powershell -c",
+    "bash -c",
+    "sudo",
+    "xargs",
+    "find . -exec",
+    "@'",
+    "é",
+];
+
+/// A small deterministic generator, so a failure names its seed.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) as usize
+    }
+}
+
+#[test]
+fn random_lines_never_panic() {
+    let mut random = Lcg(7);
+    for _ in 0..3_000 {
+        let length = random.next() % 24;
+        let line: Vec<&str> = (0..length)
+            .map(|_| PIECES[random.next() % PIECES.len()])
+            .collect();
+        let line = line.join(if random.next().is_multiple_of(2) {
+            " "
+        } else {
+            ""
+        });
+        for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+            let paths = if shell == Shell::Posix {
+                posix()
+            } else {
+                windows()
+            };
+            let _ = classify(&line, shell, &paths);
+        }
+    }
+}
+
+#[test]
+fn a_line_too_long_or_too_nested_is_not_read() {
+    let long = "echo x; ".repeat(10_000);
+    assert!(classify(&long, Shell::Posix, &posix())
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable));
+    // Deep enough to overflow the stack if the walk had no limit.
+    for (open, close, shell) in [
+        ("(", ")", Shell::Posix),
+        ("$(", ")", Shell::Posix),
+        ("(", ")", Shell::PowerShell),
+        ("(", ")", Shell::Cmd),
+    ] {
+        let nested = open.repeat(30_000) + "echo" + &close.repeat(30_000);
+        let paths = if shell == Shell::Posix {
+            posix()
+        } else {
+            windows()
+        };
+        assert!(
+            classify(&nested, shell, &paths)
+                .findings()
+                .iter()
+                .any(|finding| finding.rule == Rule::Unreadable),
+            "{shell:?} {open}"
+        );
+    }
+}

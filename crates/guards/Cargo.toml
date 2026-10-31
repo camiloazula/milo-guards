@@ -1,0 +1,22 @@
+[package]
+publish = false
+name = "milo-local-guards"
+description = "Guards for AI coding agents on your own machine: each reads what an agent is about to do and says whether it is safe without asking, or risky and why."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["shell"]
+# Judges a shell line: POSIX shell, PowerShell or cmd.
+shell = ["dep:milo-guards-shell"]
+
+[dependencies]
+milo-guards-core.workspace = true
+milo-guards-shell = { workspace = true, optional = true }

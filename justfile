@@ -1,0 +1,68 @@
+# Run `just <target>`. Install just with `brew install just`.
+#
+# Every recipe that builds builds the whole workspace with the one Rust in
+# rust-toolchain.toml. This is a library and ships no binary, so there are no
+# notices recipes: a binary's third-party notices travel with the binary, in
+# the programs that use these crates.
+
+# Plain `just` lists the available recipes.
+_default:
+    @just --list --unsorted
+
+# The gate, and the only one (CONTRIBUTING.md). It compiles twice: clippy's
+# check pass, and one instrumented build of every test, which runs them and
+# measures coverage. Advisories are not part of it: they change without a
+# commit, so they are their own recipe and their own CI job.
+# Every check: format, clippy, tests with coverage, doctests, rustdoc, dependencies.
+verify: format-check lint coverage doc-test doc deny
+
+# The `cargo lint` alias in .cargo/config.toml runs the same.
+# Clippy on the whole workspace, warnings denied.
+lint:
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+# Fail if anything isn't rustfmt-clean.
+format-check:
+    cargo fmt --all --check
+
+# Apply rustfmt in place.
+format:
+    cargo fmt --all
+
+# `just verify` runs them again in its one instrumented build, apart from
+# the doctests, which `just doc-test` runs. `--locked`: fail if Cargo.lock
+# would need updating.
+# Every test, without coverage: quicker while working.
+test:
+    cargo test --workspace --all-features --locked
+
+# Raise the floor as coverage lands, never lower it to pass. A failing test
+# fails it too. Only the last run's coverage data is removed, not the build
+# (`--no-clean`): cargo rebuilds what changed, so a run after a small change
+# does not compile the whole workspace again. cargo-llvm-cov does not run
+# doctests, so `doc-test` does.
+# Every test, run once in an instrumented build, with the line-coverage floor.
+coverage:
+    cargo llvm-cov clean --profraw-only
+    cargo llvm-cov --no-clean --workspace --all-features --locked --fail-under-lines 90
+
+# The examples in the documentation and the README, compiled and run.
+# Every doctest.
+doc-test:
+    cargo test --doc --workspace --all-features --locked
+
+# A broken link or a bare URL in the documentation fails the build.
+# rustdoc on the whole workspace, warnings denied.
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+# Metadata only, no build.
+# Dependency gates (deny.toml): bans, licences and sources.
+deny:
+    cargo deny check bans licenses sources
+
+# Needs the network (the RustSec database), and the answer changes without a
+# commit, so `just verify` does not run it; CI runs it as its own job.
+# Dependency advisories (deny.toml): RustSec and yanked crates.
+advisories:
+    cargo deny check advisories

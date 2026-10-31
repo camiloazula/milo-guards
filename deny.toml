@@ -1,0 +1,60 @@
+# cargo-deny configuration. `just deny` checks bans, licences and sources,
+# and is part of `just verify`; `just advisories` checks the RustSec
+# database and runs as its own CI job (CONTRIBUTING.md).
+#
+# Policy: every dependency must offer a permissive licence. No GPL, LGPL,
+# AGPL, MPL or source-available licence is in the build. cargo-deny parses
+# full SPDX expressions, so a crate offered under a choice of licences passes
+# via its permissive branch. Crates come from crates.io only. This library
+# ships no binary, so it ships no notices file: the notices travel with the
+# binaries of the programs that use it.
+
+# Audit the platforms a caller builds for. A platform's own dependencies are
+# pulled in only for these targets, so a platform left out is not audited.
+[graph]
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+# Only the licences the dependency graph uses today. A new licence is added
+# deliberately, in the pull request that brings in the crate that needs it,
+# with that crate named in a comment beside the line. `cargo deny check
+# licenses` warns about a line nothing uses: remove it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Zlib",
+    "Unlicense",
+]
+# Per-crate exceptions. Keep this list empty unless a line is justified.
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"   # transitive duplicates are upstream's call
+wildcards = "deny"
+allow-wildcard-paths = true   # internal path deps in [workspace.dependencies]
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+version = 2
+db-path = "$CARGO_HOME/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+# Unmaintained or unfixable advisories that cannot be removed from the tree
+# would go here, one line each with the reason. None today.
+ignore = []

@@ -1,0 +1,127 @@
+# The minimum supported Rust version is `rust-version` in Cargo.toml, which
+# clippy reads: it stops clippy suggesting APIs newer than that version, and
+# `incompatible_msrv` fails on any it finds.
+
+# unwrap/expect/panic are idiomatic inside tests; only flag them in
+# production code paths.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# The contract (docs/design/architecture.md): a guard does no I/O, reads no
+# environment, starts nothing, keeps no clock and writes nowhere, so the same
+# input gives the same answer on every machine. These lists make clippy refuse
+# the calls; `crates/guards/tests/contract.rs` scans the source for the same
+# uses as a second check. A test that must read a file allows the lint at the
+# top of its own file, with a reason.
+disallowed-methods = [
+    # The file system.
+    { path = "std::path::Path::exists", reason = "a guard does no I/O: judge a path by its spelling" },
+    { path = "std::path::Path::try_exists", reason = "a guard does no I/O" },
+    { path = "std::path::Path::is_file", reason = "a guard does no I/O" },
+    { path = "std::path::Path::is_dir", reason = "a guard does no I/O" },
+    { path = "std::path::Path::is_symlink", reason = "a guard does no I/O" },
+    { path = "std::path::Path::canonicalize", reason = "a guard does no I/O: it never follows a symlink" },
+    { path = "std::path::Path::read_dir", reason = "a guard does no I/O" },
+    { path = "std::path::Path::read_link", reason = "a guard does no I/O" },
+    { path = "std::path::Path::metadata", reason = "a guard does no I/O" },
+    { path = "std::path::Path::symlink_metadata", reason = "a guard does no I/O" },
+    { path = "std::fs::read", reason = "a guard does no I/O" },
+    { path = "std::fs::read_to_string", reason = "a guard does no I/O" },
+    { path = "std::fs::read_dir", reason = "a guard does no I/O" },
+    { path = "std::fs::read_link", reason = "a guard does no I/O" },
+    { path = "std::fs::metadata", reason = "a guard does no I/O" },
+    { path = "std::fs::symlink_metadata", reason = "a guard does no I/O" },
+    { path = "std::fs::canonicalize", reason = "a guard does no I/O: it never follows a symlink" },
+    { path = "std::fs::exists", reason = "a guard does no I/O" },
+    { path = "std::fs::write", reason = "a guard does no I/O" },
+    { path = "std::fs::copy", reason = "a guard does no I/O" },
+    { path = "std::fs::rename", reason = "a guard does no I/O" },
+    { path = "std::fs::hard_link", reason = "a guard does no I/O" },
+    { path = "std::fs::create_dir", reason = "a guard does no I/O" },
+    { path = "std::fs::create_dir_all", reason = "a guard does no I/O" },
+    { path = "std::fs::remove_file", reason = "a guard does no I/O" },
+    { path = "std::fs::remove_dir", reason = "a guard does no I/O" },
+    { path = "std::fs::remove_dir_all", reason = "a guard does no I/O" },
+    { path = "std::fs::set_permissions", reason = "a guard does no I/O" },
+    { path = "std::fs::File::open", reason = "a guard does no I/O" },
+    { path = "std::fs::File::create", reason = "a guard does no I/O" },
+    { path = "std::fs::File::create_new", reason = "a guard does no I/O" },
+    { path = "std::fs::File::options", reason = "a guard does no I/O" },
+    { path = "std::fs::OpenOptions::open", reason = "a guard does no I/O" },
+    # The environment.
+    { path = "std::env::var", reason = "a guard reads no environment: the caller passes what it needs in `Paths`" },
+    { path = "std::env::var_os", reason = "a guard reads no environment" },
+    { path = "std::env::vars", reason = "a guard reads no environment" },
+    { path = "std::env::vars_os", reason = "a guard reads no environment" },
+    { path = "std::env::args", reason = "a guard reads no environment" },
+    { path = "std::env::args_os", reason = "a guard reads no environment" },
+    { path = "std::env::current_dir", reason = "a guard reads no environment: the caller passes the working directory in `Paths`" },
+    { path = "std::env::current_exe", reason = "a guard reads no environment" },
+    { path = "std::env::home_dir", reason = "a guard reads no environment: the caller passes the home directory in `Paths`" },
+    { path = "std::env::temp_dir", reason = "a guard reads no environment" },
+    { path = "std::env::set_var", reason = "a guard changes no environment" },
+    { path = "std::env::remove_var", reason = "a guard changes no environment" },
+    { path = "std::env::set_current_dir", reason = "a guard changes no environment" },
+    # Processes, threads and the network.
+    { path = "std::process::exit", reason = "a guard never ends the caller's process" },
+    { path = "std::process::abort", reason = "a guard never ends the caller's process" },
+    { path = "std::process::id", reason = "a guard reads no process state" },
+    { path = "std::thread::spawn", reason = "a guard starts no threads" },
+    { path = "std::thread::scope", reason = "a guard starts no threads" },
+    { path = "std::thread::sleep", reason = "a guard keeps no clock" },
+    { path = "std::thread::yield_now", reason = "a guard keeps no clock and starts no threads" },
+    { path = "std::thread::park", reason = "a guard starts no threads" },
+    { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "a guard uses no network, name lookups included" },
+    # The clock.
+    { path = "std::time::Instant::now", reason = "a guard keeps no clock: the same input gives the same answer" },
+    { path = "std::time::Instant::elapsed", reason = "a guard keeps no clock" },
+    { path = "std::time::SystemTime::now", reason = "a guard keeps no clock: the same input gives the same answer" },
+    { path = "std::time::SystemTime::elapsed", reason = "a guard keeps no clock" },
+    # The terminal.
+    { path = "std::io::stdin", reason = "a guard reads from no terminal" },
+    { path = "std::io::stdout", reason = "a guard writes to no terminal" },
+    { path = "std::io::stderr", reason = "a guard writes to no terminal" },
+    # The operating system, where it is spelled the same on every host this
+    # builds on: the Unix-only calls are a way round the lists above.
+    { path = "std::os::unix::fs::symlink", reason = "a guard does no I/O" },
+    { path = "std::os::unix::fs::chown", reason = "a guard does no I/O" },
+    { path = "std::os::unix::fs::lchown", reason = "a guard does no I/O" },
+    { path = "std::os::unix::fs::chroot", reason = "a guard does no I/O" },
+    { path = "std::os::unix::process::parent_id", reason = "a guard reads no process state" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "a guard does no I/O" },
+    { path = "std::fs::OpenOptions", reason = "a guard does no I/O" },
+    { path = "std::fs::ReadDir", reason = "a guard does no I/O" },
+    { path = "std::fs::DirEntry", reason = "a guard does no I/O" },
+    { path = "std::fs::Metadata", reason = "a guard does no I/O" },
+    { path = "std::process::Command", reason = "a guard starts no process" },
+    { path = "std::process::Child", reason = "a guard starts no process" },
+    { path = "std::process::Stdio", reason = "a guard starts no process" },
+    { path = "std::net::TcpStream", reason = "a guard uses no network" },
+    { path = "std::net::TcpListener", reason = "a guard uses no network" },
+    { path = "std::net::UdpSocket", reason = "a guard uses no network" },
+    { path = "std::thread::Builder", reason = "a guard starts no threads" },
+    { path = "std::io::Stdin", reason = "a guard reads from no terminal" },
+    { path = "std::io::Stdout", reason = "a guard writes to no terminal" },
+    { path = "std::io::Stderr", reason = "a guard writes to no terminal" },
+    { path = "std::os::unix::net::UnixStream", reason = "a guard uses no network" },
+    { path = "std::os::unix::net::UnixListener", reason = "a guard uses no network" },
+    { path = "std::os::unix::net::UnixDatagram", reason = "a guard uses no network" },
+    { path = "std::os::unix::process::CommandExt", reason = "a guard starts no process" },
+]
+
+disallowed-macros = [
+    { path = "std::println", reason = "a guard writes to no terminal: report a finding instead" },
+    { path = "std::print", reason = "a guard writes to no terminal: report a finding instead" },
+    { path = "std::eprintln", reason = "a guard writes to no terminal: report a finding instead" },
+    { path = "std::eprint", reason = "a guard writes to no terminal: report a finding instead" },
+    { path = "std::dbg", reason = "no leftover debugging" },
+    { path = "core::env", reason = "a guard reads no environment, at build time either" },
+    { path = "core::option_env", reason = "a guard reads no environment, at build time either" },
+    { path = "core::include", reason = "a guard does no I/O, at build time either" },
+    { path = "core::include_str", reason = "a guard does no I/O, at build time either" },
+    { path = "core::include_bytes", reason = "a guard does no I/O, at build time either" },
+]

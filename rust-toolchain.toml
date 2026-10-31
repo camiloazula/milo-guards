@@ -1,0 +1,12 @@
+# The one Rust this repo builds with, everywhere: every `cargo` and `just`
+# here, the gates, and CI (which sets `RUSTUP_TOOLCHAIN` to the same version in
+# .github/workflows/ci.yml, because the install action's `rustup default`
+# would otherwise outrank this file). It is also the minimum supported version
+# (`rust-version` in Cargo.toml), so no gate needs a second compiler. Bump all
+# of them together, to the newest stable.
+#
+# Note: a Homebrew-installed rustc/cargo earlier on PATH ignores this file;
+# rustup's ~/.cargo/bin must come first for the pin to take effect.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

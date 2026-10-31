@@ -1,0 +1,90 @@
+# One job that runs the gate the way it runs locally: `just verify` (format,
+# clippy, every test with coverage, doctests, rustdoc and the dependency
+# gates for bans, licences and sources), over the whole workspace. The crates
+# are plain Rust with no platform code, so the job runs on Linux. This is a
+# library: nothing here builds for a platform or produces an artefact.
+# Advisories are their own job, running `just advisories`, because they change
+# without a commit and must not be confused with a code failure; the verify
+# job does not run them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch cancels the run still going for the old one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: no job writes to the repo.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Outranks rust-toolchain.toml, which the install action's `rustup default`
+  # would otherwise silently lose. Keep this, the `toolchain:` input of each
+  # Rust install step and rust-toolchain.toml on the same version (a test
+  # checks all of them).
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  # No debuginfo: linking every test binary with full debuginfo starves the
+  # runner on cold builds. Test failures still name the assertion.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Actions are pinned to commit SHAs so a moved tag cannot change what
+      # runs here; dtolnay/rust-toolchain therefore needs the explicit
+      # `toolchain:` input.
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov and cargo-deny
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
+        with:
+          tool: cargo-llvm-cov,cargo-deny
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: "epoch-${{ vars.RUST_CACHE_EPOCH || '1' }}"
+          cache-on-failure: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      - run: just verify
+        timeout-minutes: 50
+
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # cargo-deny reads the dependency graph through cargo, so it needs the
+      # same pinned Rust as the verify job.
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
+        with:
+          tool: cargo-deny
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      - run: just advisories

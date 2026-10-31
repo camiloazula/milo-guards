@@ -1,0 +1,6 @@
+[alias]
+# The clippy gate, in one place. Lint *levels* live in [workspace.lints]
+# (Cargo.toml) + clippy.toml; this alias only promotes every warning to a hard
+# error (`-D warnings`). No lint is allowed through; nothing is hidden.
+# `just lint` runs the same check on the same packages, so the bar never drifts.
+lint = "clippy --workspace --all-targets --all-features --locked -- -D warnings"

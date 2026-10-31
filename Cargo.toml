@@ -1,0 +1,83 @@
+[workspace.lints.rust]
+# `unsafe_code = forbid`: no guard needs unsafe, and a crate that ever does
+# must downgrade this consciously rather than slip it in.
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+elided_lifetimes_in_paths = "allow"  # part of rust_2018_idioms; pure style, very noisy, no bug value
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+# Strict-but-sensible bar across the workspace. `pedantic` catches "you
+# should know better as a Rust dev" issues; a hand-picked slice of
+# `restriction` catches leftover scaffolding (todo/dbg) and forces a
+# conscious choice around panicking APIs. The whole `restriction` and
+# `nursery` groups stay off (too many false positives for a stable bar).
+pedantic = { level = "warn", priority = -1 }
+# The one nursery lint with clear value.
+redundant_clone = "warn"
+module_name_repetitions = "allow"   # `shell::Shell` style is fine
+missing_errors_doc = "allow"         # we don't doc internal error variants
+missing_panics_doc = "allow"         # we don't doc internal panic conditions
+must_use_candidate = "allow"         # noisy on small accessors
+return_self_not_must_use = "allow"   # noisy for builder methods
+similar_names = "allow"              # `arg` / `args`, `dir` / `dirs`, etc.
+too_many_lines = "allow"             # a rule's table reads clearer in one place
+unused_self = "allow"                # often intentional for trait-shaped methods
+match_same_arms = "allow"            # explicit arms aid readability over fall-through
+items_after_statements = "allow"     # localised helper fns inside callers are fine
+match_wildcard_for_single_variants = "allow"  # forwards-compat against new variants
+assert_is_empty = "allow"            # new in 1.99: `assert!(v.is_empty())` would become `assert_eq!(v, [] as [T; 0])`, which reads worse
+needless_continue = "allow"          # explicit `continue` reads cleaner in long loops
+needless_pass_by_value = "allow"     # owned data passed in by design
+struct_field_names = "allow"         # repeated prefixes match domain vocabulary
+
+# --- hand-picked `restriction` lints (NOT the whole group) ---
+# Leftover scaffolding that must never reach a release build.
+dbg_macro = "deny"
+todo = "warn"                        # flag but don't block work-in-progress
+unimplemented = "deny"
+# Panicking APIs: force a conscious choice. A guard runs on every command an
+# agent sends, so a panic there fails the caller's turn. Tests are exempt via
+# `allow-{unwrap,expect,panic}-in-tests` in clippy.toml.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+# Misc correctness/clarity hardening with low false-positive rates.
+mem_forget = "deny"
+exit = "deny"                        # a library never ends the caller's process
+
+[workspace]
+resolver = "2"
+# `crates/core` is what every guard builds on, one crate per guard beside it,
+# and `crates/guards` is the one crate a caller depends on: it re-exports
+# each guard behind a feature. Package names carry the `milo-guards-` prefix;
+# folders drop it.
+members = [
+    "crates/core",
+    "crates/shell",
+    "crates/guards",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Camilo Azula"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/camiloazula/milo-local-guards"
+rust-version = "1.99"
+
+[workspace.dependencies]
+milo-guards-core  = { path = "crates/core" }
+milo-guards-shell = { path = "crates/shell" }
+
+# tree-sitter's `links` key allows one version of the runtime in a whole
+# lockfile, ours and every caller's. Callers that also parse with
+# tree-sitter hold it at 0.26, so it stays on 0.26 until they move: a bump
+# here is a bump there.
+# The grammars depend on `tree-sitter-language` only, so any release built
+# for that runtime fits.
+tree-sitter            = "0.26"
+tree-sitter-bash       = "0.25"
+tree-sitter-powershell = "0.26"
+tree-sitter-batch      = "0.11"

@@ -1,0 +1,161 @@
+# Architecture
+
+This page says what the crates are, which way they point, what every guard
+promises, and how to add a guard.
+
+## The crates
+
+There are three kinds of crate.
+
+| Folder | Package | What it is |
+| --- | --- | --- |
+| `crates/core` | `milo-guards-core` | What every guard shares: `Paths`, the verdict types, the path model, the test kit. [Core](core.md). |
+| `crates/shell` | `milo-guards-shell` | The shell guard. [Shell](shell.md). |
+| `crates/guards` | `milo-local-guards` | The front door. The one crate a caller depends on. |
+
+Package names start with `milo-guards-`. Folder names drop the prefix.
+
+The front door has no logic of its own. It re-exports the types every guard
+shares: `Paths`, `Assessment`, `Finding` and the trait `RuleName`. It does not
+re-export `Place`: a caller reads a finding's rule and reason, never where a
+path landed. It re-exports each guard as a module behind a cargo feature:
+`shell` is `milo_local_guards::shell`, and it is on by default. A caller who
+wants one guard switches the rest off.
+
+Core's trait is called `RuleName`, not `Rule`, because each guard names its own
+enum of rules `Rule` (`shell::Rule`), and the front door's root and a guard's
+module would otherwise show two different things under one name. The trait is
+for code that handles any guard's rules alike; a caller that holds a guard's
+`Rule` reads its wire name with the enum's own `name` method and imports
+nothing.
+
+## Which way they point
+
+```text
+milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
+        │                                              ▲
+        └──────────────────────────────────────────────┘
+```
+
+- A guard depends on `milo-guards-core` and on its own parsers. Nothing else.
+- A guard never depends on another guard. If two guards need the same thing,
+  that thing moves into core.
+- Core depends on nothing but `std`.
+- The front door depends on core and on every guard, behind features.
+- Nothing depends on the front door.
+
+A guard that needs another guard's answer is not a guard. The caller asks both
+and combines the answers, because deciding what to do with them is the
+caller's job.
+
+`crates/guards/tests/contract.rs` reads every `Cargo.toml` and fails when a
+guard depends on another guard, or when core depends on anything. It reads
+`package = "..."` and `path = "..."` values too, and the root manifest's
+`[workspace.dependencies]`, so a renamed dependency, a path dependency or a
+renamed workspace dependency on another guard is caught as well.
+
+## The contract
+
+Every guard keeps these five promises.
+
+1. **No I/O, no environment.** A guard never reads a file, a variable, the
+   clock or the network. It never starts a process or a thread and never
+   writes to the terminal. It takes text and the `Paths` it is given, and it
+   returns an answer. Paths are judged by how they are spelled, never by what
+   is on disk, so a Windows line is judged the same on every host.
+2. **Deterministic.** The same input gives the same answer, on every run and
+   on every machine.
+3. **No policy.** A guard says what it found. It never decides to ask, to
+   refuse or to allow, and it has no modes. What to do with a risky answer is
+   the caller's choice, and the caller can choose a different one for each
+   rule.
+4. **What cannot be read is risky.** A program that is only known when it runs,
+   a script a guard does not read, a line the grammar cannot parse, input that
+   is too deep or too long: all come back risky, with a reason. A guard never
+   answers safe because it gave up.
+5. **Never panics.** Whatever the input, a guard returns. A guard runs on every
+   action an agent takes, and a panic there would fail the agent's turn.
+   `unwrap`, `expect` and `panic!` are warned about in the code and allowed in
+   tests.
+
+What enforces each promise, and where:
+
+| Promise | Enforced by |
+| --- | --- |
+| No I/O, no environment | `contract.rs` and the `disallowed-*` lists in `clippy.toml` |
+| Dependency direction | `contract.rs` |
+| Never panics | each guard's `tests/robust.rs`; clippy warns on `unwrap`, `expect` and `panic!` outside tests |
+| What cannot be read is risky | each guard's `tests/robust.rs` for a line that is too long or too deeply nested; the guard's own tables of risky lines for the rest |
+| Deterministic | no test of its own: it follows from the first promise |
+| No policy | no test of its own: a guard's API only reports findings |
+
+The contract test reads the source of every crate under `crates/`, and each
+crate's `build.rs` if it has one, and fails on any use of `std::fs`,
+`std::env`, `std::process`, `std::net`, `std::thread`, `std::os`,
+`std::time::SystemTime`, `std::time::Instant`, `std::io::stdin`,
+`std::io::stdout`, `std::io::stderr`, or a print macro. It reads the code, not
+the comments or strings. It also catches grouped imports such as
+`use std::{env, fs};`, and `self` in a group (`use std::io::{self}`), which
+imports a module that holds a forbidden item as a whole. It is a text scan,
+the backstop; clippy is the first line. `clippy.toml` lists the disallowed
+methods, types and macros by what they resolve to, so a renamed import does
+not get past it: the file-system, environment, process, network, thread,
+clock, terminal and Unix `std::os` calls, and the `println!`, `dbg!`, `env!`,
+`option_env!` and `include*!` macros. A test that must read a file allows the
+lint at the top of its own file, with a reason.
+
+Each guard's tests run random lines through every grammar and check that it
+returns without a panic. A line that is too long or too deeply nested must
+come back risky and unreadable.
+
+The workspace also forbids `unsafe`, and the dependency check allows only
+permissive licences.
+
+## Why tree-sitter is held at 0.26
+
+The shell guard parses with tree-sitter. Cargo lets a lockfile hold one
+version of a crate that has a `links` key, and tree-sitter's runtime has one.
+So the version the guard uses is the version of every caller that also parses
+with tree-sitter. A caller that holds it at 0.26 cannot take a guard that
+needs 0.27.
+
+For that reason the workspace holds tree-sitter at 0.26 and moves it only when
+the callers move. The grammars depend only on `tree-sitter-language`, so any
+grammar release built for the 0.26 runtime fits. The pins live in the root
+`Cargo.toml`, with the reason beside them.
+
+## Adding a guard
+
+A new guard is a new crate. Follow these steps.
+
+1. **Write the crate.** Make `crates/<name>` with package `milo-guards-<name>`.
+   Depend on `milo-guards-core` and on the parsers it needs, using
+   `workspace = true`. Add it to `members` and to `[workspace.dependencies]`
+   in the root `Cargo.toml`.
+2. **Name the rules.** Write one enum of rules, named `Rule`, and implement
+   core's `RuleName` for it. Give it an inherent `pub const fn name(self)` (the
+   trait delegates to it) and a `pub const ALL` listing every rule. Give each
+   rule a wire name in `snake_case`. The name never changes once a caller uses
+   it. Keep the enum exhaustive: do not mark it `#[non_exhaustive]`.
+3. **Judge.** Write one public function that takes what the agent wants to do,
+   plus `&Paths` when paths matter, and returns `Assessment<YourRule>`. Export
+   type aliases `Assessment` and `Finding` for your rule, as the shell guard
+   does, so a caller does not write the type parameter.
+4. **Keep the contract.** What cannot be read is risky. Read structure, not raw
+   text. Reasons are a few plain words a permission prompt can show.
+5. **Test it.** Use core's `testing` module as a dev-dependency with the
+   `testing` feature: a table of safe inputs, and a table of risky inputs each
+   with the rule it must break. Add a test that walks `Rule::ALL` and checks
+   the wire names are what you documented. Add a `robust.rs` that feeds it
+   noise and checks that it never panics.
+6. **Add it to the front door.** In `crates/guards/Cargo.toml` add an optional
+   dependency and a feature (`<name> = ["dep:milo-guards-<name>"]`), add it to
+   `default` if it should be on by default, and re-export it in `src/lib.rs`
+   behind the feature: `pub use milo_guards_<name> as <name>;`. Do not name a
+   module `core`.
+7. **Write its page.** Add `docs/design/<name>.md`, and list the guard in the
+   README.
+
+The contract test finds the new crate by itself. Nothing there needs editing.
+The README's example is compiled as a doctest in `crates/guards`; if it shows
+the new guard, it is checked there too.

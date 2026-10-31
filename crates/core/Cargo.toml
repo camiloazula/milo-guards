@@ -1,0 +1,17 @@
+[package]
+publish = false
+name = "milo-guards-core"
+description = "What every guard shares: the verdict types, the path model and the test kit."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The table checker and the sample directories guards test themselves with.
+testing = []

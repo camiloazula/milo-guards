@@ -1,0 +1,25 @@
+[package]
+publish = false
+name = "milo-guards-shell"
+description = "Reads a shell command line (POSIX shell, PowerShell or cmd) and says whether it is safe to run without asking, or risky and why."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+milo-guards-core.workspace = true
+# The grammars and the runtime they share: the workspace manifest holds the
+# runtime at 0.26 and says why.
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-powershell.workspace = true
+tree-sitter-batch.workspace = true
+
+[dev-dependencies]
+milo-guards-core = { workspace = true, features = ["testing"] }

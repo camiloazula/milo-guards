@@ -1,0 +1,90 @@
+# Guidelines
+
+`milo-local-guards` is a set of guards for AI agents working on your own
+machine, written in Rust. A guard reads what an agent is about to do and says
+whether it is safe to do without asking, or risky and why. Guards are built
+for small local models: offline, deterministic, no model calls.
+
+This page is the short version of how the code is organised and the rules that
+keep it that way. Each rule links to the page that explains it. These rules win
+on any conflict with other guidance. How to build, test and submit a change is
+in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## How it fits together
+
+The workspace has three kinds of crate:
+
+- `crates/core` (`milo-guards-core`) - what every guard shares: the `Paths` a
+  command is judged against, the verdict types (`Assessment`, `Finding`, the
+  `RuleName` trait with its stable wire names), the path model, and a test kit
+  behind the `testing` feature. [Its design](docs/design/core.md).
+- `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
+  parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
+  and redirects. [Its design](docs/design/shell.md).
+- `crates/guards` (`milo-local-guards`) - the one crate a caller depends on.
+  It re-exports each guard behind a feature.
+
+A caller hands a guard what the agent wants to do and the places it may work
+in, and gets an assessment back. What to do with it is the caller's. How the
+crates depend on each other and how that is enforced is in
+[docs/design/architecture.md](docs/design/architecture.md).
+
+## Rules
+
+### The contract
+
+- **Every guard keeps the contract**: no I/O and no environment reads,
+  deterministic, no policy, what cannot be read is risky, never panics. No
+  I/O and the direction of the dependencies are enforced by `contract.rs` and
+  clippy; never panics and unreadable-is-risky by each guard's `robust.rs`.
+  [Architecture](docs/design/architecture.md)
+- **Policy stays with the caller.** A guard reports findings; it never decides
+  to ask, refuse or allow, and has no modes.
+  [Architecture](docs/design/architecture.md)
+- **What cannot be read is risky**, never safe by default.
+  [Architecture](docs/design/architecture.md)
+
+### Structure
+
+- **A guard depends on `core` and its own parsers only**, never on another
+  guard. A caller gets them together through `crates/guards`.
+  [Architecture](docs/design/architecture.md)
+- **Every rule reads structure, never raw text**: the program, its flags,
+  operands and redirects, and where each path lands. [Shell](docs/design/shell.md)
+- **A rule's wire name never changes once a caller uses it.** Add a new rule
+  rather than renaming one. [Core](docs/design/core.md)
+- **A guard's `Rule` enum is exhaustive**, never `#[non_exhaustive]`: a new
+  rule must break each caller's `match` at compile time, so the caller decides
+  what to do with it. [Shell](docs/design/shell.md)
+- **Reasons are a few plain words a permission prompt can show**, such as
+  `deletes your home directory`. [Core](docs/design/core.md)
+
+### Dependencies
+
+- **No `unsafe`.** The workspace forbids it. [Architecture](docs/design/architecture.md)
+- **Permissive dependencies only** (MIT, Apache-2.0, BSD and the like); no GPL,
+  AGPL, LGPL or source-available licence, and `just deny` fails on one.
+  [Architecture](docs/design/architecture.md)
+- **tree-sitter moves only with its callers.** Its `links` key allows one
+  version in a lockfile, so a caller that also links it holds it to the same
+  version; a bump here is a bump there. [Architecture](docs/design/architecture.md)
+- **Rust only.** Checks and tools are Rust tests or binaries, never scripts in
+  another language. [Architecture](docs/design/architecture.md)
+
+### Tests
+
+- **A new rule comes with table tests of safe and risky lines**, each line
+  with the verdict and the reason it should get. [Shell](docs/design/shell.md)
+- **Do not re-enable the disabled clippy lints**, and gate a deliberate panic
+  behind `#[allow(..., reason = "...")]`.
+  [Architecture](docs/design/architecture.md)
+- **The coverage floor never goes down.**
+  [CONTRIBUTING.md](CONTRIBUTING.md#the-gates)
+
+## Where to look
+
+- Design pages: [docs/design/](docs/design/). [Architecture](docs/design/architecture.md),
+  [core](docs/design/core.md) and [shell](docs/design/shell.md).
+- What belongs here: only what the code and `cargo`/`clippy` cannot tell you.
+- A convention a coding agent gets wrong: add the fix here, as one line, with
+  its detail on a design page.
