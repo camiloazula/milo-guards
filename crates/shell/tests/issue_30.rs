@@ -15,7 +15,6 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             "del *.obj",
             "del /q build\\*.*",
             "del /s /q *gitx.",
-            "del /s /q *.",
             "del /s /q src\\*git.",
             "rd /s /q *\\bin.",
             "del /s /q *git.\\bin",
@@ -29,7 +28,17 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             ("del /s /q *git.\\objects", Rule::Delete),
             ("del /s /q *git.\\objects.", Rule::Delete),
             ("del /s /q *\\objects.", Rule::Delete),
-            ("del /s /q *\\objects ", Rule::Delete),
+            ("del /s /q \"*\\objects \"", Rule::Delete),
+            // Only the trimming of a wildcard part makes these reach `.git`.
+            ("del /s /q *.", Rule::Delete),
+            ("del *.", Rule::Delete),
+            ("del /s /q ?*.", Rule::Delete),
+            ("del /s /q *.*.", Rule::Delete),
+            ("del /s /q \"*.* \"", Rule::Delete),
+            ("del /s /q *\\obj*.", Rule::Delete),
+            ("del /s /q \"*\\H?AD \"", Rule::Delete),
+            ("del /s /q *.\\objects", Rule::Delete),
+            ("del /s /q *gi?.\\objects", Rule::Delete),
             ("rd /s /q *git.", Rule::Delete),
         ],
     );
@@ -46,6 +55,8 @@ fn a_wildcard_part_is_trimmed_like_a_last_part() {
             ("Remove-Item -Recurse -Force '*git '", Rule::Delete),
             ("Remove-Item -Recurse -Force *git.\\objects", Rule::Delete),
             ("Remove-Item -Recurse -Force *\\objects.", Rule::Delete),
+            ("Remove-Item -Recurse -Force *.", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\obj*.", Rule::Delete),
         ],
     );
 }
@@ -74,6 +85,10 @@ fn a_pattern_can_match_the_short_name_of_git() {
             "del /s /q GI??~1",
             "del /s /q GI?????~1",
             "del /s /q GI[g-z]???~1",
+            // No `~`, so no hashed short name: these are ordinary patterns.
+            "del /s /q *2024*",
+            "del /s /q *a*",
+            "del /s /q *cafe*",
         ],
         &[
             ("del /s /q GIT~?", Rule::Delete),
@@ -101,6 +116,9 @@ fn a_pattern_can_match_the_short_name_of_git() {
         &[
             "Remove-Item -Recurse -Force PROGRA~?",
             "Remove-Item -Recurse -Force src\\GIT~?",
+            "Remove-Item -Recurse -Force *2024*",
+            "Remove-Item -Recurse -Force *a*",
+            "Remove-Item -Recurse -Force *cafe*",
         ],
         &[
             ("Remove-Item -Recurse -Force GIT~?", Rule::Delete),

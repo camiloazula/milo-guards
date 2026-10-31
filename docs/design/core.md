@@ -131,8 +131,10 @@ itself.
     reach `.git` (see `glob::reaches_git` below): there it is also trimmed
     like any other part, the last part of all losing every trailing dot and
     space (`*git.` and `'*git '` are `*git`) and one before it one dot. A
-    trimmed part that is a catch-all (`*.` is `*`) stays as written, so
-    `del *.` is not every entry.
+    part that only trimming makes a catch-all (`*.` is `*`) is not taken as
+    the whole folder, which the resolver judges for a catch-all as written:
+    it matches `.git`, so `del *.` and `del /s /q "*.* "` are judged as
+    taking the repository's history.
   - **Short names.** A part directly in a workspace folder that is `GIT~N`, or
     `GI`, four hex digits and `~N` (the form Windows hashes a name to once
     names collide), may be the 8.3 short name of `.git`, which drops the dot.
@@ -164,8 +166,8 @@ itself.
   `Windows` flavour a wildcard part directly in a workspace folder can pick
   `.git` (`*git`, `?git`, `????`), and the resolver answers the repository's
   history for it. `glob::reaches_git` tells it. The first wildcard part must
-  match `.git`. When it is the last part (and not a catch-all, which is the
-  whole folder) it takes `.git` itself. When more follows, the next part
+  match `.git`. When it is the last part (and not a catch-all as written, which is
+  the whole folder) it takes `.git` itself. When more follows, the next part
   must match one of `.git`'s own entries (`HEAD`, `config`, `index`,
   `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`, `modules`, `lfs`,
   `worktrees`, `shallow`, `ORIG_HEAD`, `MERGE_HEAD`, `rebase-merge`,
@@ -179,7 +181,11 @@ itself.
   counts as matching `.git` (`GIT~?`, `*~1`, `GI????~1`; `PROGRA~?` and
   `GITHUB~?` do not): cmd matches short names, PowerShell does not, but the
   resolver does not know the shell, and a literal `GIT~1` is judged
-  the same way. Deeper than the workspace
+  the same way. The hashed form (`GI`, four hex digits, `~N`) exists only
+  once `GIT~1` to `GIT~4` are taken, so a pattern matches it only when it
+  holds a literal `~` (`GI????~1`, `*~1`); `*2024*`, `*a*` and `*cafe*` stay
+  ordinary patterns. A pattern with no `~` still matches `GIT~1` to `GIT~4`
+  (`GI*`, `*1`). Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
   wildcard does not match a leading dot, so `*git` and `?git` pass, unless

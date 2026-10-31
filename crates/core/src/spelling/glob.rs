@@ -100,7 +100,7 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 /// folder, can reach `.git`'s own entries: `parts` are the pattern's parts
 /// from its first wildcard part on, to the end of the path. That part must
 /// match `.git`. If it is the last part it takes `.git` itself, unless it is
-/// a catch-all (the whole folder is judged then). Otherwise the next part
+/// a catch-all as written (the whole folder is judged then). Otherwise the next part
 /// must match one of `.git`'s own entries (`*\objects` does, `*\bin` does
 /// not). A pattern that still holds a `..` is taken to reach it.
 ///
@@ -108,9 +108,11 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 /// loses every trailing dot and space and a part before it one trailing dot,
 /// so `*git.` and `'*git '` are `*git`; the pattern as written is tried too.
 /// A part also reaches `.git` when it can match its 8.3 short name, which
-/// drops the dot: `GIT~N`, or `GI`, four hex digits and `~N` (`GIT~?`, `*~1`).
-/// A trimmed last part that is a catch-all (`*.` is `*`) is not taken as
-/// every entry, since the resolver read the pattern as written.
+/// drops the dot: `GIT~N`, or `GI`, four hex digits and `~N` (`GIT~?`, `*~1`);
+/// the hashed form only for a pattern that holds a literal `~`, so `*2024*`
+/// is not one. A part that only trimming makes a catch-all (`*.` is `*`) is
+/// not the whole folder, which the caller judges for a catch-all as written:
+/// it matches `.git`, so it reaches it.
 ///
 /// `hidden` is the same as for [`matches()`].
 #[must_use]
@@ -127,7 +129,10 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
         [part, named]
     };
     let reaches = |at: usize, names: &[&str]| {
-        read(at).iter().any(|pattern| {
+        let [written, named] = read(at);
+        // The trimmed form only when trimming changed something.
+        let forms = [Some(written), (named != written).then_some(named)];
+        forms.iter().flatten().any(|pattern| {
             names
                 .iter()
                 .any(|name| matches(pattern, name, flavour, hidden))
@@ -138,26 +143,62 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
         return false;
     }
     match parts.get(1) {
-        None => !catch_all(read(0)[1], flavour),
+        // A catch-all as written is the whole folder, judged by its caller;
+        // one that only trimming makes (`*.` is `*`) is not, since the
+        // resolver read the pattern as written.
+        None => !catch_all(read(0)[0], flavour),
         Some(&"..") => true,
         Some(_) => reaches(1, &GIT_ENTRIES),
     }
 }
 
-/// Whether the pattern `part` can match the 8.3 short name of `.git`: `git`
-/// or `gi` and four hex digits, then `~` and one or more digits. A name
-/// compares without case, as on Windows.
+/// The characters a short name of `.git` is made of, in the order of the
+/// bits of a [`Takes`]: `g`, `i`, `t`, `~`, `0` to `9`, `a` to `f`.
+const SHORT_CHARS: [char; 20] = [
+    'g', 'i', 't', '~', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e',
+    'f',
+];
+
+/// Which of [`SHORT_CHARS`] a set holds, one bit each.
+type Takes = u32;
+
+/// The bits of the characters of [`SHORT_CHARS`] that `holds` accepts, asked
+/// only of those whose bit is in `of`.
+fn bits(of: Takes, holds: impl Fn(char) -> bool) -> Takes {
+    SHORT_CHARS
+        .iter()
+        .enumerate()
+        .filter(|(at, c)| of & (1 << at) != 0 && holds(**c))
+        .fold(0, |all, (at, _)| all | 1 << at)
+}
+
+/// Whether the pattern `part` can match the 8.3 short name of `.git`: `git`,
+/// then `~` and a number; or, once names collide, `gi` and four hex digits,
+/// then `~` and a number. A name compares without case, as on Windows.
+///
+/// A pattern that writes the `~` takes a number of any length and may match
+/// the hashed form. One that does not (`*2024*`, `*cafe*`, `GI*`) matches
+/// only `GIT~1` to `GIT~4`: a hashed name exists only once those are taken,
+/// and every `*a*` would match it.
 fn matches_short_git(part: &str, flavour: Flavour) -> bool {
-    const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-    const HEX: &[char] = &[
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-    ];
-    let forms: [Vec<&[char]>; 2] = [
-        vec![&['g'], &['i'], &['t'], &['~']],
-        vec![&['g'], &['i'], HEX, HEX, HEX, HEX, &['~']],
-    ];
     let tokens = tokens(part, flavour);
-    forms.iter().any(|form| {
+    // What each token takes of the characters asked about so far: those
+    // asked about, and which of them it takes. Each is worked out once and
+    // not again for each state (a class can hold many members).
+    let mut takes: Vec<(Takes, Takes)> = vec![(0, 0); tokens.len()];
+    let one = |wanted: char| bits(!0, |c| c == wanted);
+    let hex = bits(!0, |c| c.is_ascii_hexdigit());
+    let digits = bits(!0, |c| c.is_ascii_digit());
+    let first_four = bits(!0, |c| ('1'..='4').contains(&c));
+    let plain = vec![one('g'), one('i'), one('t'), one('~')];
+    let hashed = vec![one('g'), one('i'), hex, hex, hex, hex, one('~')];
+    // Each form, the number after it, and whether that has any length.
+    let forms = if tokens.contains(&Token::Literal('~')) {
+        vec![(plain, digits, true), (hashed, digits, true)]
+    } else {
+        vec![(plain, first_four, false)]
+    };
+    forms.iter().any(|(form, number, long)| {
         // A state is a token and how much of the name is taken: a place in
         // `form`, then `form.len()` (no digit yet) and one past it (a digit
         // or more, where the name may end).
@@ -172,7 +213,9 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
             let Some(token) = tokens.get(at) else {
                 continue;
             };
-            let allowed = form.get(taken).copied().unwrap_or(DIGITS);
+            let allowed = form.get(taken).copied().unwrap_or(*number);
+            // A number of one digit takes nothing more once it has one.
+            let more = taken < last || *long;
             let next = (taken + 1).min(last);
             let mut go = |at: usize, taken: usize| {
                 if !seen[at][taken] {
@@ -182,9 +225,17 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
             };
             if *token == Token::Star {
                 go(at + 1, taken);
-                go(at, next);
-            } else if allowed.iter().any(|c| token.takes(*c, true)) {
-                go(at + 1, next);
+                if more {
+                    go(at, next);
+                }
+            } else if more {
+                let (asked, taken_by) = &mut takes[at];
+                let new = allowed & !*asked;
+                *asked |= new;
+                *taken_by |= bits(new, |c| token.takes(c, true));
+                if *taken_by & allowed != 0 {
+                    go(at + 1, next);
+                }
             }
         }
         false
@@ -216,24 +267,28 @@ fn cases(c: char) -> (char, char) {
 impl Token {
     /// Whether the token (not a `*`) takes the one character `c`.
     fn takes(&self, c: char, fold: bool) -> bool {
-        let same = |a: char, b: char| {
-            a == b || (fold && (cases(a).0 == cases(b).0 || cases(a).1 == cases(b).1))
+        // The cases of `c`, worked out once and not for each member.
+        let (lower, upper) = cases(c);
+        let same = |a: char| {
+            a == c
+                || (fold && {
+                    let (a_lower, a_upper) = cases(a);
+                    a_lower == lower || a_upper == upper
+                })
         };
         match self {
             Self::Star => false,
             Self::Any => true,
-            Self::Literal(literal) => same(*literal, c),
+            Self::Literal(literal) => same(*literal),
             Self::Class { negated, ranges } => {
                 let within = |c: char, low: char, high: char| low <= c && c <= high;
                 let inside = ranges.iter().any(|&(low, high)| {
                     within(c, low, high)
-                        || (fold && {
-                            let (lower, upper) = cases(c);
-                            within(lower, low, high)
+                        || (fold
+                            && (within(lower, low, high)
                                 || within(upper, low, high)
                                 // A lone member compares like a literal.
-                                || (low == high && same(low, c))
-                        })
+                                || (low == high && same(low))))
                 });
                 inside != *negated
             }
@@ -585,14 +640,13 @@ mod tests {
         ] {
             assert!(reaches(parts), "{parts:?}");
         }
-        // A trimmed part is not a catch-all, and a name stays a name.
-        for parts in [
-            &["*."][..],
-            &["*. "],
-            &["*gitx."],
-            &["*git.", "bin"],
-            &["*", "bin."],
-        ] {
+        // A part that only trimming makes a catch-all is not the whole folder:
+        // it matches `.git` and takes it.
+        for parts in [&["*."][..], &["*. "], &["?*."], &["*.*."], &["*.* "]] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        // A name stays a name.
+        for parts in [&["*gitx."][..], &["*git.", "bin"], &["*", "bin."]] {
             assert!(!reaches(parts), "{parts:?}");
         }
         // On POSIX a dot is part of the name.
@@ -618,6 +672,10 @@ mod tests {
             &["GI3f2?~?"],
             &["GI[A-F]???~1"],
             &["GI*~1"],
+            &["GI3F2A~*"],
+            // A pattern with no `~` still takes `GIT~1` to `GIT~4`.
+            &["GI*"],
+            &["*1"],
             &["*GIT~1"],
             &["GIT~?.", "objects"],
             &["GIT~?", "HEAD"],
@@ -646,6 +704,11 @@ mod tests {
             &["GIT~1.txt"],
             &["GIT~?", "bin"],
             &["*~1", "bin"],
+            // The hashed form needs a literal `~`.
+            &["*2024*"],
+            &["*a*"],
+            &["*e*"],
+            &["*cafe*"],
         ] {
             assert!(!reaches(parts), "{parts:?}");
         }
