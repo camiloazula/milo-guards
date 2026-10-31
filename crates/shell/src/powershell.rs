@@ -1,6 +1,8 @@
 //! Splitting a PowerShell line with tree-sitter-powershell, PowerShell's
 //! aliases, and how a cmdlet's parameters are read.
 
+use std::collections::HashSet;
+
 use tree_sitter::Node;
 
 use crate::detect::DOWNLOADERS;
@@ -32,13 +34,15 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in names {
         split.reassign(&name);
     }
-    Walker {
+    let mut walker = Walker {
         source: text,
         depth,
         split,
         item: None,
-    }
-    .walk(tree.root_node(), None, 0);
+        holds: HashSet::new(),
+    };
+    walker.mark_listings(tree.root_node());
+    walker.walk(tree.root_node(), None, 0);
 }
 
 /// The cmdlets that register a script block to run when an event happens:
@@ -122,6 +126,10 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// Inside a `ForEach-Object` block: the stage whose input `$_` is.
     item: Option<Stage>,
+    /// The nodes with a `Get-Process` somewhere below them, worked out once
+    /// for the whole tree so that each `Stop-Process` reads only the nodes
+    /// that lead to a listing.
+    holds: HashSet<usize>,
 }
 
 impl Walker<'_> {
@@ -374,63 +382,153 @@ impl Walker<'_> {
             .map(|program| unit::key(program, Shell::PowerShell))
     }
 
-    /// Every `Get-Process` written under `node`, with what follows it.
-    fn listings(&self, node: Node<'_>) -> Vec<Listing> {
-        let mut commands = Vec::new();
-        unit::for_each_node(node, |inner| {
-            if inner.kind() == "command"
-                && self.command_key(inner).as_deref() == Some("get-process")
+    /// Mark every node that has a `Get-Process` below it. Each climb stops at
+    /// a node already marked, so the marking is linear in the tree; the path
+    /// is kept by the walk, because asking a node for its parent costs the
+    /// depth of the tree.
+    fn mark_listings(&mut self, root: Node<'_>) {
+        let mut holds = HashSet::new();
+        let mut path: Vec<usize> = Vec::new();
+        let mut cursor = root.walk();
+        loop {
+            let node = cursor.node();
+            if node.kind() == "command" && self.command_key(node).as_deref() == Some("get-process")
             {
-                commands.push(inner);
-            }
-        });
-        commands
-            .into_iter()
-            .map(|command| self.listing(command, node))
-            .collect()
-    }
-
-    /// One `Get-Process` under `top`: its arguments, the stages after it in
-    /// its pipeline, and anything else around it that picks from what it
-    /// lists (`(Get-Process).Where{…}`).
-    fn listing(&self, command: Node<'_>, top: Node<'_>) -> Listing {
-        let mut between = Vec::new();
-        let mut up = command.parent();
-        if let Some(chain) = up.filter(|parent| parent.kind() == "pipeline_chain") {
-            let mut cursor = chain.walk();
-            let mut after = false;
-            for stage in chain.named_children(&mut cursor) {
-                if stage.id() == command.id() {
-                    after = true;
-                } else if after {
-                    between.push(self.stage(stage));
-                } else {
-                    between.push(Between::Other);
+                for id in path.iter().rev() {
+                    if !holds.insert(*id) {
+                        break;
+                    }
                 }
             }
-            up = chain.parent();
-        }
-        while let Some(parent) = up.filter(|parent| parent.id() != top.id()) {
-            if !matches!(
-                parent.kind(),
-                "pipeline"
-                    | "pipeline_chain"
-                    | "parenthesized_expression"
-                    | "sub_expression"
-                    | "statement_list"
-                    | "member_access"
-                    | "array_literal_expression"
-                    | "unary_expression"
-            ) {
-                between.push(Between::Other);
-                break;
+            if cursor.goto_first_child() {
+                path.push(node.id());
+                continue;
             }
-            up = parent.parent();
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    self.holds = holds;
+                    return;
+                }
+                path.pop();
+            }
         }
-        Listing {
+    }
+
+    /// The `Get-Process` listings a `Stop-Process`'s arguments (`elements`)
+    /// hand it: each one that nothing but a pipeline, parentheses and the
+    /// members `Id`, `Name` and `ProcessName` lie between it and the
+    /// arguments, with what follows it in its pipeline. A listing anywhere
+    /// else is one more listing, `Between::Other`, however many there are:
+    /// the walk goes in one pass, never below a command, and reads only the
+    /// nodes that lead to a `Get-Process`.
+    fn listings(&self, elements: Node<'_>) -> Vec<Listing> {
+        let mut found = Vec::new();
+        let mut other = false;
+        let mut stack: Vec<(Node<'_>, Node<'_>)> = Vec::new();
+        self.push_towards_listings(elements, &mut stack);
+        while let Some((node, parent)) = stack.pop() {
+            if node.kind() == "command" {
+                if self.command_key(node).as_deref() == Some("get-process") {
+                    match self.listing(node, parent) {
+                        Some(listing) => found.push(listing),
+                        None => other = true,
+                    }
+                }
+                // A `Get-Process` below a command (in its arguments, or in
+                // a block it runs) is not what this `Stop-Process` is handed.
+                other |= self.holds.contains(&node.id());
+            } else if self.passes(node) {
+                self.push_towards_listings(node, &mut stack);
+            } else {
+                // It holds a listing, which it may change.
+                other = true;
+            }
+        }
+        if other {
+            found.push(Listing {
+                args: Vec::new(),
+                between: vec![Between::Other],
+            });
+        }
+        found
+    }
+
+    /// Push the children of `node` that can lead to a listing, each with
+    /// `node`, the last first so that they are read in order.
+    fn push_towards_listings<'tree>(
+        &self,
+        node: Node<'tree>,
+        stack: &mut Vec<(Node<'tree>, Node<'tree>)>,
+    ) {
+        let mut cursor = node.walk();
+        let from = stack.len();
+        for child in node.named_children(&mut cursor) {
+            if self.holds.contains(&child.id()) || child.kind() == "command" {
+                stack.push((child, node));
+            }
+        }
+        stack[from..].reverse();
+    }
+
+    /// Whether a node between a `Get-Process` and the arguments of the
+    /// `Stop-Process` hands on the processes the listing gives: a pipeline,
+    /// parentheses, and a member that is a process's own (`.Id`, `.Name`,
+    /// `.ProcessName`), not one that leads to others (`.Parent`, `.Threads`).
+    fn passes(&self, node: Node<'_>) -> bool {
+        match node.kind() {
+            "pipeline"
+            | "pipeline_chain"
+            | "parenthesized_expression"
+            | "sub_expression"
+            | "statement_list"
+            | "array_literal_expression"
+            | "unary_expression" => true,
+            // The grammar wraps an expression in a layer for each operator
+            // that binds looser; one with no operand but its own is only
+            // that wrapping (`((Get-Process node).Id)`).
+            "logical_expression"
+            | "bitwise_expression"
+            | "comparison_expression"
+            | "additive_expression"
+            | "multiplicative_expression"
+            | "format_expression"
+            | "range_expression" => node.named_child_count() == 1,
+            "member_access" => {
+                let mut cursor = node.walk();
+                let member = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "member_name")
+                    .map(|member| unit::text(&member, self.source));
+                member.is_some_and(|member| {
+                    ["id", "name", "processname"]
+                        .iter()
+                        .any(|own| member.eq_ignore_ascii_case(own))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// One `Get-Process` that starts at the arguments: its own arguments and
+    /// the stages after it in its pipeline. None when something comes before
+    /// it in the pipeline, which may hand it other processes.
+    fn listing(&self, command: Node<'_>, parent: Node<'_>) -> Option<Listing> {
+        let mut between = Vec::new();
+        if parent.kind() == "pipeline_chain" {
+            let mut cursor = parent.walk();
+            let mut stages = parent.named_children(&mut cursor);
+            if stages.next()?.id() != command.id() {
+                return None;
+            }
+            between = stages.map(|stage| self.stage(stage)).collect();
+        }
+        Some(Listing {
             args: self.plain_args(command, Some("get-process")),
             between,
-        }
+        })
     }
 
     /// A stage that follows a listing.

@@ -391,10 +391,11 @@ pub(super) fn matches_any(pattern: &str, names: &[&str], exact: bool, ignore_cas
 
 /// Whether the regular expression, searched for in a whole command line as
 /// `pkill -f` does, can match the command line of a process that starts as
-/// one of `programs` (their paths) and is given arguments that are not
-/// known: a match that began in the path and can go on into a space and the
-/// arguments counts. A `/` is a plain character here, since the
-/// program is not what the expression is compared with. An expression that
+/// one of `programs` (their paths, with the arguments they usually start
+/// with) and is given arguments that are not known: a match that began in
+/// the path and can go on into a space and the arguments counts. A `/` is a
+/// plain character here, since the program is not what the expression is
+/// compared with. An expression that
 /// cannot be read counts as matching.
 pub(super) fn matches_command_line(
     pattern: &str,

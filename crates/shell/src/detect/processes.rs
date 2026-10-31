@@ -58,14 +58,17 @@ const SYSTEM_PROCESSES: [&str; 15] = [
     "svchost",
 ];
 
-/// The command lines the system processes usually start with, as far as the
-/// program: what is given to them after it is not known. `pkill -f` searches
+/// The command lines the system processes usually start with: the program
+/// and the arguments they are started with, where there are any (launchd's
+/// job for `loginwindow` runs it as `loginwindow console` and the one for
+/// `WindowServer` as `WindowServer -daemon`); a match that goes on past the
+/// end is read as more arguments, which are not known. `pkill -f` searches
 /// these as a whole, so a pattern that is part of one (`/System/Library`,
-/// `WindowServer -daemon`) stops the process.
+/// `console`, `-daemon`) stops the process.
 const SYSTEM_COMMAND_LINES: [&str; 6] = [
     "/sbin/launchd",
-    "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
-    "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+    "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console",
+    "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon",
     "/sbin/init",
     "/lib/systemd/systemd",
     "/usr/lib/systemd/systemd",
@@ -549,7 +552,7 @@ impl<'a> Options<'a> {
         let mut reading = true;
         while let Some(arg) = iter.next() {
             let Some(text) = arg.known().filter(|_| reading) else {
-                options.operands.push(arg);
+                options.operand(arg, iter.as_slice());
                 continue;
             };
             if text == "--" {
@@ -588,10 +591,22 @@ impl<'a> Options<'a> {
             } else if text.len() > 1 && text.starts_with('-') {
                 options.bundle(&text[1..], short_values, &mut iter);
             } else {
-                options.operands.push(arg);
+                options.operand(arg, iter.as_slice());
             }
         }
         options
+    }
+
+    /// The first operand, and every word after it: macOS and BSD `killall`
+    /// and `pkill` stop reading options at the first name, so each later
+    /// word (a `-u` and its user included) is a name there, while GNU
+    /// `pkill` reads on and takes them as options. The words are options
+    /// here too, so that both readings are judged and the riskier counts.
+    fn operand(&mut self, arg: &'a Arg, rest: &'a [Arg]) {
+        if self.operands.is_empty() {
+            self.operands.push(arg);
+            self.operands.extend(rest);
+        }
     }
 
     /// The letters after one `-`.

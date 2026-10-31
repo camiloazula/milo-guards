@@ -1209,12 +1209,30 @@ fn the_process_rules_read_long_patterns_quickly() {
         format!("gps{}", "|kill".repeat(12_000)),
         format!("Get-Process{}", " | Stop-Process".repeat(4_000)),
     ];
+    // Listings written inside the arguments of a `Stop-Process`, nested: each
+    // is read once, and nothing below another command is read again.
+    let listings = [
+        listing_chain(50),
+        listing_chain(300),
+        listing_chain(1_600),
+        format!(
+            "Stop-Process -InputObject {}x{}",
+            "(Get-Process ".repeat(2_000),
+            ")".repeat(2_000)
+        ),
+        format!(
+            "Stop-Process -InputObject {}x{}",
+            "(Get-Process | ".repeat(1_600),
+            ")".repeat(1_600)
+        ),
+    ];
     let limits = lines
         .iter()
         .map(|(shell, line, paths)| (*shell, line, *paths, slow))
         .chain(
             pipelines
                 .iter()
+                .chain(&listings)
                 .map(|line| (Shell::PowerShell, line, &windows, slow * 8)),
         );
     for (shell, line, paths, limit) in limits {
@@ -1224,6 +1242,16 @@ fn the_process_rules_read_long_patterns_quickly() {
         let took = started.elapsed();
         assert!(took < limit, "{shell:?} {} bytes took {took:?}", line.len());
     }
+}
+
+/// `ps || Stop-Process -Id (Get-Process | Stop-Process -Id ×n x )×n`: a
+/// listing in the arguments of a `Stop-Process`, `n` deep.
+fn listing_chain(n: usize) -> String {
+    format!(
+        "ps || Stop-Process -Id {}x{}",
+        "(Get-Process | Stop-Process -Id ".repeat(n),
+        ")".repeat(n)
+    )
 }
 
 /// `f(){ OPEN×depth f; ×calls CLOSE×depth }`: a body nested `depth` deep.
@@ -1659,5 +1687,161 @@ fn a_wildcard_longer_than_every_name_matches_none_of_them() {
         &windows(),
         &["taskkill /IM node???????????????????.exe"],
         &[("taskkill /IM l???n*", Rule::StopSystem)],
+    );
+}
+
+// ---- Review follow-up: the fifth review of the process rules ----
+
+#[test]
+fn options_after_the_first_name_are_names_too_on_macos_and_bsd() {
+    // macOS `killall` and `pkill` stop reading options at the first name, so
+    // every later word is a name; GNU `pkill` reads on. Both are judged and
+    // the riskier counts.
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "killall node -s HUP",
+            "killall -9 node nginx",
+            "pkill node -f",
+            "pkill vite -9",
+            "pkill -f vite --signal HUP",
+            "pkill -u me node",
+            "pkill -fu me node",
+            "killall -v node -u me",
+        ],
+        &[
+            ("killall node -u loginwindow", Rule::StopSystem),
+            ("killall node -s WindowServer", Rule::StopSystem),
+            ("killall node -t loginwindow", Rule::StopSystem),
+            ("killall -v node -s loginwindow", Rule::StopSystem),
+            ("pkill node -u launchd", Rule::StopSystem),
+            ("pkill node -t loginwindow", Rule::StopSystem),
+            ("pkill node -P loginwindow", Rule::StopSystem),
+            ("pkill node -G launchd", Rule::StopSystem),
+            ("pkill node -- launchd", Rule::StopSystem),
+            ("pkill -- node launchd", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_member_read_off_a_listing_is_the_listing_only_for_id_and_name() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Stop-Process -Id (Get-Process node).Id",
+            "Stop-Process -Id (Get-Process node).ID",
+            "Stop-Process -Id ((Get-Process node).Id)",
+            "Stop-Process -InputObject (Get-Process node).Name",
+            "Stop-Process -InputObject ((Get-Process node).ProcessName)",
+            "Stop-Process -Id (Get-Process -Id $PID).Id",
+        ],
+        &[
+            (
+                "Stop-Process -InputObject (Get-Process notepad).Parent",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -InputObject (Get-Process -Id $PID).Parent",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Process node).Parent.Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -InputObject ((Get-Process node).Parent)",
+                Rule::StopSystem,
+            ),
+            ("(Get-Process node).Parent | Stop-Process", Rule::StopSystem),
+            (
+                "Stop-Process -Id (Get-Process node | Select-Object -ExpandProperty Parent).Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id ((Get-Process node).Parent.Id)",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Process node).Threads.Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Process node).ParentX",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Process -Id (Get-Process explorer).Id).Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Content pid.txt | % { (Get-Process $_).Parent.Id })",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_nested_listing_is_one_finding_and_a_command_with_none_is_not_one() {
+    let windows = windows();
+    let line = listing_chain(40);
+    let findings = classify(&line, Shell::PowerShell, &windows);
+    let stops: Vec<_> = findings
+        .findings()
+        .iter()
+        .filter(|finding| finding.rule == Rule::StopSystem)
+        .collect();
+    assert!(!stops.is_empty(), "{line}");
+    check(
+        Shell::PowerShell,
+        &windows,
+        &[
+            "Stop-Process -Id (Get-Content pid.txt)",
+            "Stop-Process -Id (cat pid.txt | Select-Object -First 1)",
+        ],
+        &[(
+            "Stop-Process -Id (Foo (Get-Process explorer).Id)",
+            Rule::StopSystem,
+        )],
+    );
+    for line in [
+        listing_chain(100),
+        format!(
+            "Stop-Process -InputObject {}x{}",
+            "(Get-Process ".repeat(300),
+            ")".repeat(300)
+        ),
+    ] {
+        assert!(
+            !classify(&line, Shell::PowerShell, &windows).is_safe(),
+            "{} bytes",
+            line.len()
+        );
+    }
+}
+
+#[test]
+fn pkill_f_reads_the_usual_arguments_of_the_system_processes() {
+    // launchd runs `loginwindow console` and `WindowServer -daemon`.
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "pkill -f 'rails console'",
+            "pkill -f 'node console.js'",
+            "pkill -f 'node server.js'",
+        ],
+        &[
+            ("pkill -f console", Rule::StopSystem),
+            ("pkill -f -- -daemon", Rule::StopSystem),
+            ("pkill -f daemon", Rule::StopSystem),
+            ("pkill -f 'loginwindow console'", Rule::StopSystem),
+            ("pkill -f 'WindowServer -daemon'", Rule::StopSystem),
+            ("pkill -f 'WindowServer.*daemon'", Rule::StopSystem),
+            ("pkill -f /System/Library", Rule::StopSystem),
+        ],
     );
 }

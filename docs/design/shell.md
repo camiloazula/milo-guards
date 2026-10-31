@@ -318,14 +318,17 @@ the same line. It is `stop_system` when the line stops more than a name:
   a folder, so what follows it is the name (`pkill '/sbin/[i]nit'`); `-f`
   matches the whole command line, so there the pattern is also searched, `/`
   and all, in the usual command lines of the system processes
-  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow`,
-  the `WindowServer` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
-  `/usr/lib/systemd/systemd`), and a match that is still going at the end of
-  the path and can go on into a space counts, since the arguments are not
-  known: `pkill -f /System/Library`, `pkill -f System`, `pkill -f
-  'WindowServer -daemon'` and `pkill -f 'systemd --user'` are `stop_system`
-  while `pkill -f 'node server.js'`, `pkill -f vite` and `pkill -f
-  ./target/debug/myapp` are not. `killall` without
+  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
+  the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
+  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
+  two with (its jobs for them run `loginwindow console` and `WindowServer
+  -daemon`), and a match that is still going at the end of the line and can
+  go on into a space counts, since any further arguments are not known:
+  `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
+  -f -- -daemon`, `pkill -f 'WindowServer -daemon'` and `pkill -f 'systemd
+  --user'` are `stop_system` while `pkill -f 'node server.js'`, `pkill -f
+  vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
+  not. `killall` without
   `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
   matches one is the same (`Stop-Process -Name s*`).
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
@@ -356,7 +359,17 @@ the same line. It is `stop_system` when the line stops more than a name:
   `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
   of a pipeline that starts with `Get-Process`. Any other `-Id` or
   `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
-  processes the guard does not read and is safe.
+  processes the guard does not read and is safe. Only a member that is the
+  process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
+  any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
+  as `-ExpandProperty` does, and is any other stage: `Stop-Process
+  -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
+  an app's usual parent, and is `stop_system` as `((Get-Process
+  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. A
+  `Get-Process` anywhere else in the arguments, inside another command or a
+  block, is read as one such listing, once, however many there are: the
+  arguments are read in one pass that never goes below a command, so the time
+  is the line's length however deeply they nest.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
   `stop_system` however it is called, even when the line only defines it, and
@@ -371,7 +384,15 @@ the same line. It is `stop_system` when the line stops more than a name:
 `-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
 and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
 (`--pa 1` is `--parent 1`; a prefix that fits several is read as the
-riskier). `pgrep` stops nothing and is safe.
+riskier). Options written after the first name are read both ways, because
+the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
+and `pkill` stop reading options at the first name, so every later word is a
+name too, a `-u` and its user included. Every word after the first name is
+therefore also a name, with the value an option takes, and the options are
+read as well, so the riskier reading counts: `killall node -u loginwindow`,
+`killall node -s WindowServer` and `pkill node -u launchd` are `stop_system`
+(the names `loginwindow`, `WindowServer` and `launchd`), while `killall node -s
+HUP` and `pkill vite -9` are not. `pgrep` stops nothing and is safe.
 
 A caller that used to stop on `killall node` stops seeing it: it was
 `stop_system` ("stops every process with a name") and is now safe.
