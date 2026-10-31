@@ -128,9 +128,14 @@ a path.
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
-  from that drive's own working directory. On the drive the working directory
-  is on, it is relative to it; on any other drive it is outside the
-  workspace. After a `cd` it is unknown.
+  from that drive's own working directory, and so is a bare `C:`. On the drive
+  the working directory is on, it is relative to it; on any other drive it is
+  outside the workspace. After a `cd` it is unknown, except that after `cd C:`
+  a relative path is `C:x`, a path on that drive.
+- A listing reads the same way: the drive is not part of the pattern
+  (`Get-ChildItem C:* | Remove-Item` takes the whole working directory), and
+  a provider-qualified one (`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER*`)
+  keeps its qualifier, so the pattern is judged on the provider's own path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.

@@ -400,6 +400,18 @@ fn a_drive_relative_path_is_from_its_drives_own_directory() {
         &[
             ("Remove-Item -Recurse C:*", Rule::Delete),
             ("Remove-Item -Recurse C:..\\..", Rule::Delete),
+            ("Get-ChildItem C:* | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem -Path C:* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem C:?* | Remove-Item -Recurse", Rule::Delete),
+            ("Get-ChildItem C:.g* | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem -Force C:.* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            ("Remove-Item -Recurse C:", Rule::Delete),
             ("Remove-Item -Recurse D:target", Rule::Delete),
             ("'x' > C:i.sh; bash i.sh", Rule::Unknown),
             // A `cd` moves where `C:x` lands.
@@ -408,4 +420,68 @@ fn a_drive_relative_path_is_from_its_drives_own_directory() {
             ("cd C:..\\..\\..; Remove-Item -Recurse x", Rule::Delete),
         ],
     );
+}
+
+#[test]
+fn a_provider_qualified_listing_is_judged_by_its_provider() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::*.log | Remove-Item"],
+        &[
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER* | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\Registry::* | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::C:* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem Registry::HKEY_CURRENT_USER*.x | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem FileSystem::D:\\data\\* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_bare_drive_is_that_drives_working_directory() {
+    // The working directory is on D:, with a second workspace on C:.
+    let paths = Paths::new(r"D:\work\repo", r"D:\Users\me", [r"D:\work\repo", r"C:\ws"]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "Remove-Item -Recurse target",
+            "Remove-Item -Recurse D:target",
+        ],
+        &[
+            ("cd C:; Remove-Item -Recurse ws\\sub", Rule::Delete),
+            ("cd C:; Remove-Item -Recurse ..\\ws\\sub", Rule::Delete),
+            ("C:; Remove-Item -Recurse ws\\sub", Rule::Delete),
+            ("Remove-Item -Recurse C:", Rule::Delete),
+            ("cd C:x; Remove-Item -Recurse ws", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &["rd /s /q target"],
+        &[
+            ("C: & rd /s /q ws\\sub", Rule::Delete),
+            ("rd /s /q C:", Rule::Delete),
+        ],
+    );
+    // On C:, the bare drive is the working directory, the workspace itself.
+    let finding = classify("Remove-Item -Recurse C:", Shell::PowerShell, &windows());
+    assert_eq!(finding.findings()[0].reason, "deletes the whole workspace");
 }

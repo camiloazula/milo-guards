@@ -67,8 +67,12 @@ fn start(text: &str, shell: Shell) -> Start<'_> {
         if name.len() > 1 {
             return Start::Provider(name.to_ascii_lowercase(), rest);
         }
-        if !rest.is_empty() && !rest.starts_with(separators) {
-            let letter = name.chars().next().unwrap_or_default();
+        let letter = name.chars().next().unwrap_or_default();
+        // `C:` alone is the drive's working directory.
+        if rest.is_empty() {
+            return Start::DriveRelative(letter, ".");
+        }
+        if !rest.starts_with(separators) {
             return Start::DriveRelative(letter, rest);
         }
         return Start::Plain;
@@ -252,6 +256,11 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         return path.clone();
     }
     match dir {
+        // After `cd C:` a path is on the drive's working directory (`C:x`),
+        // not at the drive's root (`C:/x`).
+        Arg::Known(dir) if shell != Shell::Posix && drive_of(dir).is_some() && dir.len() == 2 => {
+            Arg::Known(format!("{dir}{text}"))
+        }
         Arg::Known(dir) => Arg::Known(format!("{dir}/{text}")),
         _ => Arg::Unknown(text.clone()),
     }
@@ -262,15 +271,26 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
 /// hands files inside its folder; a folder listed whole (`.`, `*`, `~`)
 /// hands everything in it, which is as much as the folder itself.
 pub(crate) fn listed(text: &str, filtered: bool, shell: Shell) -> String {
-    let pattern = glob::has_wildcard(text);
-    if pattern && glob::shape(text, flavour(shell)) != Shape::Entries {
+    if !glob::has_wildcard(text) {
+        return if filtered {
+            format!("{text}/x")
+        } else {
+            text.to_string()
+        };
+    }
+    // `Registry::HKEY_CURRENT_USER*`, `Microsoft.PowerShell.Core\FileSystem::C:*`:
+    // the pattern is on the provider's own path, after the `::`.
+    if shell == Shell::PowerShell {
+        if let Some((provider, rest)) = text.split_once("::") {
+            return format!("{provider}::{}", listed(rest, filtered, shell));
+        }
+    }
+    // The drive (`C:`, `HKCU:`) is not part of the pattern.
+    let body = qualifier(text, shell).map_or(text, |(_, rest)| rest);
+    if glob::shape(body, flavour(shell)) == Shape::Entries {
+        format!("{}/x", before_wildcards(text, shell))
+    } else {
         // The whole folder: every entry, or hidden ones such as `.git`.
         before_wildcards(text, shell)
-    } else if pattern {
-        format!("{}/x", before_wildcards(text, shell))
-    } else if filtered {
-        format!("{text}/x")
-    } else {
-        text.to_string()
     }
 }
