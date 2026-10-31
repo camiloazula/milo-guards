@@ -173,6 +173,15 @@ pub(crate) struct Split {
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
     pub(crate) branches: usize,
+    /// How deep the line is inside a function body or a loop, whose
+    /// commands may run after the line has turned the option on.
+    pub(crate) bodies: usize,
+    /// Whether the line ever turned the option on, in this shell or in a
+    /// script it ran, even if it turned it off again.
+    ever_dotglob: bool,
+    /// The units and redirect writes added inside a function body or a loop.
+    in_body: Vec<usize>,
+    write_in_body: Vec<usize>,
 }
 
 impl Split {
@@ -185,14 +194,16 @@ impl Split {
             .filter(|_| unit.shell == Shell::Posix)
             .and_then(|key| dotglob::change(&key, &unit.args))
         {
-            // A pipeline stage runs in a subshell and a branch may not run:
-            // neither can be counted on to turn the option off.
-            let certain = unit.stage.is_none() && self.branches == 0;
+            // Behind `env` or `nohup` a builtin runs in a process of its own.
+            let own = dotglob::in_shell(&unit.wrappers);
             match change {
-                Change::On => self.dotglob = true,
-                Change::Off if certain => self.dotglob = false,
+                Change::On => self.hide(),
+                Change::Off if own => self.show(unit.stage.is_none()),
                 Change::Off => {}
             }
+        }
+        if self.bodies > 0 {
+            self.in_body.push(self.units.len());
         }
         if let Some(target) = moves_to(&unit) {
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
@@ -204,6 +215,9 @@ impl Split {
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
         let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.write_in_body.push(self.writes.len());
+        }
         self.writes.push(Write {
             shell,
             target,
@@ -237,6 +251,41 @@ impl Split {
     /// Turn the option on for the rest of the shell.
     pub(crate) fn hide(&mut self) {
         self.dotglob = true;
+        self.ever_dotglob = true;
+    }
+
+    /// Turn the option on for a script started with it, which is not this
+    /// shell's own.
+    pub(crate) fn hide_for_script(&mut self) {
+        self.dotglob = true;
+    }
+
+    /// Turn the option off, when the line is `certain` to run that in this
+    /// shell: a pipeline stage runs in a subshell and a branch may not run,
+    /// so neither can be counted on to.
+    pub(crate) fn show(&mut self, certain: bool) {
+        if certain && self.branches == 0 {
+            self.dotglob = false;
+        }
+    }
+
+    /// After the walk: a function body or a loop may run after the line has
+    /// turned the option on, so when it ever did, what they hold is judged
+    /// with it on.
+    fn hide_bodies(&mut self) {
+        if !self.ever_dotglob {
+            return;
+        }
+        for &at in &self.in_body {
+            if let Some(unit) = self.units.get_mut(at) {
+                unit.hidden = true;
+            }
+        }
+        for &at in &self.write_in_body {
+            if let Some(write) = self.writes.get_mut(at) {
+                write.hidden = true;
+            }
+        }
     }
 
     /// Say the command being added hands the option on when `on`, and say
@@ -378,6 +427,7 @@ const MAX_LEN: usize = 64 * 1024;
 pub(crate) fn split(command: &str, shell: Shell) -> Split {
     let mut split = Split::default();
     script(&mut split, command, shell, 0);
+    split.hide_bodies();
     split
 }
 

@@ -149,3 +149,37 @@ fn a_long_run_of_open_brackets_is_read_quickly() {
         );
     }
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
+    // Each loop body is judged with hidden names matching when the line ever
+    // turns that on; that must not scan every loop's text again.
+    let mut line = "while x; do ".repeat(130);
+    line.push_str(&"echo a; ".repeat(7_800));
+    line.push_str("rm -rf *git; shopt -s dotglob; ");
+    line.push_str(&"done; ".repeat(130));
+    assert!(
+        line.len() > 62_000 && line.len() <= 64 * 1024,
+        "{}",
+        line.len()
+    );
+    let started = std::time::Instant::now();
+    let assessment = classify(&line, Shell::Posix, &posix());
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(200),
+        "took {took:?}"
+    );
+    assert_eq!(
+        assessment
+            .findings()
+            .iter()
+            .map(|finding| finding.rule)
+            .collect::<Vec<_>>(),
+        [Rule::Delete]
+    );
+}

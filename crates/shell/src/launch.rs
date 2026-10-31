@@ -53,7 +53,7 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
     for _ in 0..MAX_WRAPPERS {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
-        if unit.args.iter().any(dotglob::assigns_globignore) {
+        if unit.args.iter().any(dotglob::assigns_hiding) {
             split.scope_hidden(true);
         }
         let Some(key) = unit.key() else {
@@ -80,20 +80,30 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             }
             Launch::Replace(replacement) => unit = *replacement,
             Launch::Script(shell, script) => {
+                // A shell started with the option on (`bash -O dotglob -c`,
+                // `zsh -o globdots -c`) runs its script with it on.
+                let starts_hidden = SHELLS.contains(&key.as_str())
+                    && shell == Shell::Posix
+                    && dotglob::starts_with(&unit.args);
+                let stage = unit.stage;
                 split.push(unit);
                 match script {
                     Arg::Known(text) => {
                         // A script in a process of its own sets its options
-                        // for itself; `eval` runs in this shell. A
-                        // `GLOBIGNORE` in front of either is in its
+                        // for itself; `eval` runs in this shell, or in a
+                        // subshell when it is a stage of a pipeline, which
+                        // can turn the option on but not off. A
+                        // `GLOBIGNORE` in front of any is in its
                         // environment.
                         let outer = split.hidden_snapshot();
-                        if split.scoped_hidden() {
-                            split.hide();
+                        if starts_hidden || split.scoped_hidden() {
+                            split.hide_for_script();
                         }
                         unit::script(split, &text, shell, depth + 1);
                         if key != "eval" {
                             split.restore_hidden(outer);
+                        } else if stage.is_some() {
+                            split.restore_hidden(outer || split.hidden_snapshot());
                         }
                     }
                     other => split.problem(

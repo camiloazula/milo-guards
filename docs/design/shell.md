@@ -75,44 +75,68 @@ once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 
 A POSIX wildcard skips a name that starts with a dot, so `rm -rf *git` leaves
 `.git` alone. A line can switch that off, and then `*git` takes `.git`: bash's
-`shopt -s dotglob`, zsh's `setopt globdots`, `set -o globdots`, and a
-non-empty `GLOBIGNORE` (bash turns `dotglob` on for it). Once a POSIX line
-has turned one on, every later pattern in that shell is judged as core judges a
-PowerShell or cmd wildcard: it can match a leading dot (see
-[Core](core.md)). Each unit and each redirect carries the flag, like the
+`shopt -s dotglob`, zsh's `setopt globdots` (also spelled `dotglob`),
+`set -o globdots`, and a non-empty `GLOBIGNORE` (bash turns `dotglob` on for
+it). Once a POSIX line has turned one on, every later pattern in that shell is
+judged as core judges a PowerShell or cmd wildcard: it can match a leading dot
+(see [Core](core.md)). Each unit and each redirect carries the flag, like the
 folder a `cd` moved to.
 
-- `shopt -s dotglob` (also `shopt -s dotglob nullglob`, `-sq`), `setopt
-  globdots`, `setopt GLOB_DOTS` and `setopt glob_dots` (zsh ignores case and
-  underscores), `unsetopt noglobdots` and `set -o globdots` turn it on. The
-  option name or the flag only known when it runs counts as on.
-- `GLOBIGNORE=x` turns it on as a statement, after `export` or `declare`, as
-  `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or as
-  `+=`. An empty value turns nothing on. In front of a command
-  (`GLOBIGNORE=x rm *git`) or after `env`, the shell has already expanded the
-  command's own wildcards, so only a script it starts (`GLOBIGNORE=x bash -c
-  '…'`) is judged with it on.
-- `shopt -u dotglob`, `unsetopt globdots` and `set +o globdots` turn it off,
-  but only where the line is sure to run them in this shell. In a pipeline,
-  after `&`, on the right of `&&` or `||`, in an `if`, `case`, loop or
-  function body, they change nothing: the line may not run them, or runs them
-  in a subshell, so the rest stays judged with the option on.
-- It stays on for the rest of the line. A subshell, `$(…)`, and a script in a
-  process of its own (`bash -c '…'`) give it back as it was: an option set
-  inside `bash -c 'shopt -s dotglob'` does not reach the units after it. A
-  script started while it is on inherits it, since an exported `GLOBIGNORE`
-  would reach it. `eval` runs in this shell, so its change stays.
-- A function body or a loop that names an option (`dotglob`, `globdots`, a
-  `GLOBIGNORE` assignment) anywhere is judged with it on, since a command
-  in it may run after the option is on: `f() { rm -rf *git; }; shopt -s dotglob;
-  f`.
-- A listing hands its pattern on with the flag it was written under, so `shopt
-  -s dotglob; ls -d *git | xargs rm -rf` is the delete of `*git` with hidden
-  names matching.
+- **On.** `shopt -s dotglob` (also with `nullglob` and the like, `-sq`);
+  zsh's `setopt globdots`, `GLOB_DOTS`, `glob_dots`, `dotglob` and `DOT_GLOB`
+  (zsh ignores case and underscores), `unsetopt noglobdots` and `unsetopt
+  nodotglob`; `set -o globdots`, `set -o dotglob`; zsh's flag `-4` for
+  `set` and `setopt` (`+4` undoes it); `setopt -m` and `unsetopt -m` with any
+  pattern, which may name it. An option name or flag only known when it runs
+  counts as on.
+- **`GLOBIGNORE`** turns it on when it is not empty: as `GLOBIGNORE=x` on a
+  line of its own, after `export`, `declare`, `typeset`, `local` or `readonly`
+  (quoted too: `export "GLOBIGNORE=x"`), with `+=`, as `let GLOBIGNORE=1` or
+  `(( GLOBIGNORE=1 ))`, as `read GLOBIGNORE` or `printf -v GLOBIGNORE`, or as
+  a `for` variable. An empty value turns nothing on. A command with
+  `GLOBIGNORE=x` in front of it, or after `env`, was expanded by the shell
+  before the variable applies, so only a script it starts (`GLOBIGNORE=x bash
+  -c '…'`) is judged with it on. `BASHOPTS=dotglob` does the same for the bash
+  it starts; as a statement it counts as on.
+- **A shell's own start-up options** turn it on for the script that shell runs:
+  `bash -O dotglob -c '…'`, `zsh -o globdots -c '…'`, `zsh -o dotglob`, `zsh -4`,
+  `zsh --globdots`, and a name only known when it runs.
+- **`source` and `.`** run a file the guard cannot read, which may turn it on,
+  so a line that sources one is judged with it on afterwards.
+- **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
+  `unset GLOBIGNORE` turn it off, but only where the line is sure to run them in
+  this shell. They count when the unit is reached directly or through
+  `command`, `builtin`, `time`, `!` or `eval`. Behind `env`, `nohup`,
+  `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
+  their own and change nothing. In a pipeline, after `&`, on the right of `&&`
+  or `||`, in an `if`, `case`, loop or function body, they change nothing
+  either: the line may not run them, or runs them in a subshell, so the rest
+  stays judged with the option on.
+- **Where it reaches.** It stays on for the rest of the line. A subshell,
+  `$(…)`, and a script in a process of its own (`bash -c '…'`) give it back as
+  it was: an option set inside `bash -c 'shopt -s dotglob'` does not reach the
+  units after it. A script started while it is on inherits it, since an
+  exported `GLOBIGNORE` would reach it. `eval` runs in this shell, so its change
+  stays, except that an `eval` that is a stage of a pipeline runs in a subshell
+  and can turn the option on but not off. An on switch in any pipeline stage
+  reaches the units after it, which is conservative: zsh runs the last stage in
+  the current shell, so `setopt globdots | cat; rm -rf *git` is risky.
+- **Bodies.** A function body or a loop may run after the option is on, whenever
+  it is called or comes round again. The guard records the units and redirects
+  in them, and after the whole line is read, if the line ever turned the option
+  on (anywhere, a script it ran included, even if it turned it off again), it
+  judges them with it on: `f() { rm -rf *git; }; eval 'shopt -s dotglob'; f`. A
+  line that never turns it on is not changed by a body that only mentions the
+  name (`echo dotglob`).
+- **Listings.** A listing hands its pattern on with the flag it was written
+  under, so `shopt -s dotglob; ls -d *git | xargs rm -rf` is the delete of
+  `*git` with hidden names matching.
 
-Not read: a `GLOBIGNORE` set by `${GLOBIGNORE:=x}` or `(( … ))`, and an option
-a sourced file turns on, which the guard cannot read anyway. zsh's `(D)`
-qualifier (`rm -rf *git(D)`) is not read either.
+Not read, so the caller has to account for them: an option set by `~/.zshenv`
+or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
+from the environment the guard's caller runs in, and a `GLOBIGNORE` set by
+`${GLOBIGNORE:=x}`. zsh's `(D)` glob qualifier (`rm -rf *git(D)`) is not read
+either.
 
 ## The rules
 
