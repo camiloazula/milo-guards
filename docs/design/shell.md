@@ -173,7 +173,8 @@ Some risks only show when units are read together.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
-  folder.
+  folder. A listed pattern is judged as the delete of that pattern is, `..`
+  and all: `ls -d src/*/../../.g* | xargs rm -rf` is risky.
 - **`find`.** It acts on the folder it searches when its name filter can match
   `.git`, or when it negates or alternates its filters (`!`, `-not`, `-o`).
 - **Git config that makes git run a command.** `-c alias.x=!...`,

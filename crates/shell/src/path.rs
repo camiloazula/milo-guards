@@ -7,7 +7,7 @@
 //! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
 //! lists, and a `cd` that moved the line.
 
-use milo_guards_core::spelling::glob::{self, Shape};
+use milo_guards_core::spelling::glob;
 use milo_guards_core::{Flavour, Paths, Spelling};
 
 pub(crate) use milo_guards_core::Place;
@@ -159,34 +159,6 @@ fn brace_list(text: &str) -> bool {
     }
 }
 
-/// `text` up to the folder its first wildcard is in: `~/*` is `~`, and
-/// `*.log` is `.`. What a pattern matches lies inside that folder.
-fn before_wildcards(text: &str, shell: Shell) -> String {
-    let Some(at) = text.find(['*', '?', '[']) else {
-        return text.to_string();
-    };
-    let head = &text[..at];
-    let separators = flavour(shell).separators();
-    match head.rfind(separators) {
-        Some(0) => head[..1].to_string(),
-        Some(end) => head[..end].to_string(),
-        None if head.starts_with('~') => "~".to_string(),
-        None => ".".to_string(),
-    }
-}
-
-/// Whether the pattern `text` can reach the repository's `.git` or what is
-/// in it from the folder it starts in (see `glob::reaches_git`).
-fn reaches_git(text: &str, shell: Shell) -> bool {
-    let flavour = flavour(shell);
-    let parts: Vec<&str> = text
-        .split(flavour.separators())
-        .skip_while(|part| !glob::has_wildcard(part))
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect();
-    glob::reaches_git(&parts, flavour, flavour == Flavour::Windows)
-}
-
 /// `path` as seen from `dir`, where an earlier `cd` moved: a relative path
 /// is joined to it, and is unknown when where it moved is.
 pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
@@ -210,21 +182,12 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
 }
 
 /// What a listing of `text` hands on, as a path the resolver reads: a
-/// pattern that picks files (`*.bak`, `src/*.o`) or a filtered listing
-/// hands files inside its folder; a folder listed whole (`.`, `*`, `~`)
+/// pattern is handed on as written, so the resolver judges it as it would
+/// judge a delete of it (`..` applied, then what it can match); a filtered
+/// listing hands files inside its folder; a folder listed whole (`.`, `~`)
 /// hands everything in it, which is as much as the folder itself.
-pub(crate) fn listed(text: &str, filtered: bool, shell: Shell) -> String {
-    let pattern = glob::has_wildcard(text);
-    if pattern && glob::shape(text, flavour(shell)) != Shape::Entries {
-        // The whole folder: every entry, or hidden ones such as `.git`.
-        before_wildcards(text, shell)
-    } else if pattern && reaches_git(text, shell) {
-        // A Windows wildcard such as `*git` or `*\objects` can pick `.git`
-        // or what is in it.
-        before_wildcards(text, shell)
-    } else if pattern {
-        format!("{}/x", before_wildcards(text, shell))
-    } else if filtered {
+pub(crate) fn listed(text: &str, filtered: bool) -> String {
+    if filtered && !glob::has_wildcard(text) {
         format!("{text}/x")
     } else {
         text.to_string()

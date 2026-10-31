@@ -326,15 +326,15 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     } else {
         places
     };
-    Some(found_by(unit, places, filtered))
+    Some(found_by(places, filtered))
 }
 
 /// What a listing of `places` finds, as paths the resolver reads.
-fn found_by(unit: &Unit, places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
+fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
     places
         .into_iter()
         .map(|place| match place {
-            Arg::Known(text) => Arg::Known(path::listed(&text, filtered, unit.shell)),
+            Arg::Known(text) => Arg::Known(path::listed(&text, filtered)),
             other => other,
         })
         .collect()

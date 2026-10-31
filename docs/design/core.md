@@ -131,8 +131,13 @@ itself.
   match `.git`. When it is the last part (and not a catch-all, which is the
   whole folder) it takes `.git` itself. When more follows, the next part
   must match one of `.git`'s own entries (`HEAD`, `config`, `index`,
-  `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`): `*\objects` and
-  `????\HEAD` reach it, `*\bin` and `*\obj` do not. Deeper than the workspace
+  `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`, `modules`, `lfs`,
+  `worktrees`, `shallow`, `ORIG_HEAD`, `MERGE_HEAD`, `rebase-merge`,
+  `rebase-apply`, `sequencer`): `*\objects`, `*\modules` and `????\HEAD` reach
+  it, `*\bin` and `*\obj` do not. Only the part after the one that matches
+  `.git` is read, so `*\logs` or `*\config` at the workspace root is judged
+  risky even if the `*` picks a folder of that name that is not `.git`; that
+  is accepted as rare. Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
   wildcard does not match a leading dot, so `*git` and `?git` pass.
@@ -141,7 +146,8 @@ itself.
   (`*`, `?`, `[...]`, ranges). On `Windows` it reads PowerShell's rules, with
   no negation in a class (`!` and `^` are members, so `[!.]git` matches
   `.git`) and a backtick making the next character itself, and compares
-  names without case by the Unicode case of each character (a dotless `i`
+  names without case by the Unicode case of each character, class members
+  included (a dotless `i`
   counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts. Its
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
   sets it on `Windows` only.
@@ -194,7 +200,8 @@ Some guards need to take a path's spelling apart before they hand it to the
 resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
-(`has_wildcard`, and `shape` with its `Shape`, which is `#[non_exhaustive]`).
+(`has_wildcard`, `matches`, `reaches_git`, and `shape` with its `Shape`, which
+is `#[non_exhaustive]`).
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 

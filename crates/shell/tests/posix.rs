@@ -663,3 +663,17 @@ fn a_posix_wildcard_skips_dot_names_unless_it_starts_with_a_dot() {
         ],
     );
 }
+
+#[test]
+fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["ls *.bak | xargs rm", "ls -d src/*/../*.o | xargs rm"],
+        &[
+            ("ls -d src/*/../../.g* | xargs rm -rf", Rule::Delete),
+            ("ls -d src/*/../../* | xargs rm -rf", Rule::Delete),
+            ("rm -rf src/*/../../.g*", Rule::Delete),
+        ],
+    );
+}

@@ -432,3 +432,43 @@ fn star_dot_star_is_every_entry_on_windows() {
     assert_eq!(all.findings()[0].reason, dotted.findings()[0].reason);
     assert_eq!(dotted.findings()[0].reason, "deletes the whole workspace");
 }
+
+#[test]
+fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem *.log | Remove-Item",
+            "Get-ChildItem -Force x*\\..\\*.tmp | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force *\\bin | Remove-Item -Recurse -Force",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force *\\modules", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\lfs", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\worktrees", Rule::Delete),
+            (
+                "Get-ChildItem -Force x*\\..\\*git | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force x*\\..\\*\\objects | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force src\\*\\..\\..\\*git | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem -Force *git | Remove-Item", Rule::Delete),
+        ],
+    );
+    let listed = classify(
+        "Get-ChildItem -Force *git | Remove-Item",
+        Shell::PowerShell,
+        &windows(),
+    );
+    assert_eq!(
+        listed.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+}

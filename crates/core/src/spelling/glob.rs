@@ -21,7 +21,7 @@ const PROTECTED: [&str; 1] = [".git"];
 
 /// What a repository's `.git` folder holds at its top level: a pattern that
 /// reaches one of these through `.git` takes the repository's history.
-const GIT_ENTRIES: [&str; 9] = [
+const GIT_ENTRIES: [&str; 18] = [
     "HEAD",
     "config",
     "index",
@@ -31,6 +31,15 @@ const GIT_ENTRIES: [&str; 9] = [
     "info",
     "logs",
     "packed-refs",
+    "modules",
+    "lfs",
+    "worktrees",
+    "shallow",
+    "ORIG_HEAD",
+    "MERGE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
 ];
 
 /// Whether the pattern part `pattern` matches the file name `name`.
@@ -153,7 +162,10 @@ impl Token {
                     within(c, low, high)
                         || (fold && {
                             let (lower, upper) = cases(c);
-                            within(lower, low, high) || within(upper, low, high)
+                            within(lower, low, high)
+                                || within(upper, low, high)
+                                // A lone member compares like a literal.
+                                || (low == high && same(low, c))
                         })
                 });
                 inside != *negated
@@ -374,6 +386,11 @@ mod tests {
         assert!(matches("*\u{212a}", "k", windows, true));
         assert!(!matches("*g\u{131}t", ".git", Flavour::Posix, true));
         assert!(!matches("*g\u{e9}t", ".git", windows, true));
+        // A class member folds too.
+        assert!(matches("*g[\u{131}]t", ".git", windows, true));
+        assert!(matches("*g[x\u{130}]t", ".git", windows, true));
+        assert!(!matches("*g[x\u{e9}]t", ".git", windows, true));
+        assert!(!matches("*g[\u{131}]t", ".git", Flavour::Posix, true));
     }
 
     #[test]
@@ -460,6 +477,14 @@ mod tests {
             &["*", "*"],
             &["*", "*s"],
             &["*", "pack?d-refs"],
+            &["*", "modules"],
+            &["*", "LFS"],
+            &["*", "worktrees"],
+            &["*", "shallow"],
+            &["*", "ORIG_HEAD"],
+            &["*", "MERGE_HEAD"],
+            &["*", "rebase-*"],
+            &["*", "sequencer"],
             &["*", ".."],
         ] {
             assert!(reaches(parts), "{parts:?}");
