@@ -237,11 +237,20 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
-    /// How many `cd`s the walk has read, wherever they are: a later one
-    /// means an action that runs later may run from somewhere else.
+    /// How many `cd`s this shell has run so far: a later one means an action
+    /// that runs later may run from somewhere else. A subshell or a script
+    /// in a process of its own gives the count back as it was, as it does
+    /// the directory.
     moves: usize,
+    /// How many `cd`s the walk has read in all, in a subshell or not, which
+    /// nothing gives back: how an action that runs later tells it holds one.
+    moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// How much nested script text has been read, in bytes (and one for
+    /// each script): a line that makes the same script be read again and
+    /// again must come back unreadable, not take forever.
+    nested_read: usize,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -249,7 +258,16 @@ pub(crate) struct Split {
 pub(crate) struct Began {
     units: usize,
     writes: usize,
+    moved: usize,
+}
+
+/// Where the line was, to put back after a subshell or a nested script
+/// whose `cd` must not reach the rest of the line.
+#[derive(Debug, Clone)]
+pub(crate) struct Place {
+    dir: Option<Arg>,
     moves: usize,
+    later: usize,
 }
 
 /// An action that runs later, in this shell, from wherever the line has
@@ -289,6 +307,7 @@ impl Split {
         }
         if let Some(target) = moves_to(&unit) {
             self.moves += 1;
+            self.moved += 1;
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
         self.units.push(unit);
@@ -418,7 +437,7 @@ impl Split {
         Began {
             units: self.units.len(),
             writes: self.writes.len(),
-            moves: self.moves,
+            moved: self.moved,
         }
     }
 
@@ -429,7 +448,7 @@ impl Split {
     /// A `cd` in the action itself may run before any of the line, so the
     /// rest of the line is read from somewhere unknown.
     pub(crate) fn end_later(&mut self, began: Began) {
-        if self.moves != began.moves {
+        if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
         }
         self.later.push(Later {
@@ -443,28 +462,53 @@ impl Split {
     /// where the line ends up, so when a `cd` came after it, its relative
     /// paths are known only when it runs.
     fn settle_later(&mut self) {
-        let moved = Arg::Unknown("where the line moves to".to_string());
         for later in std::mem::take(&mut self.later) {
-            if later.moves == self.moves {
-                continue;
+            if later.moves != self.moves {
+                self.move_later(&later);
             }
-            for unit in self.units.get_mut(later.units).unwrap_or_default() {
-                unit.dir = Some(moved.clone());
-            }
-            for write in self.writes.get_mut(later.writes).unwrap_or_default() {
-                write.dir = Some(moved.clone());
-            }
+        }
+    }
+
+    /// Read an action that runs later from somewhere unknown.
+    fn move_later(&mut self, later: &Later) {
+        let moved = Arg::Unknown("where the line moves to".to_string());
+        for unit in self.units.get_mut(later.units.clone()).unwrap_or_default() {
+            unit.dir = Some(moved.clone());
+        }
+        for write in self
+            .writes
+            .get_mut(later.writes.clone())
+            .unwrap_or_default()
+        {
+            write.dir = Some(moved.clone());
         }
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested
     /// script whose `cd` must not reach the rest of the line.
-    pub(crate) fn dir_snapshot(&self) -> Option<Arg> {
-        self.dir.clone()
+    pub(crate) fn dir_snapshot(&self) -> Place {
+        Place {
+            dir: self.dir.clone(),
+            moves: self.moves,
+            later: self.later.len(),
+        }
     }
 
-    pub(crate) fn restore_dir(&mut self, dir: Option<Arg>) {
-        self.dir = dir;
+    /// Put the line back where it was. An action that runs later, set inside
+    /// what ended, is settled by the `cd`s inside it, and the rest of the
+    /// line counts against it as it would against one set before.
+    pub(crate) fn restore_dir(&mut self, place: Place) {
+        let inside = self.later.split_off(place.later);
+        for mut later in inside {
+            if later.moves == self.moves {
+                later.moves = place.moves;
+                self.later.push(later);
+            } else {
+                self.move_later(&later);
+            }
+        }
+        self.dir = place.dir;
+        self.moves = place.moves;
     }
 
     /// Record that the line sets the variable `name`.
@@ -581,6 +625,12 @@ pub(crate) const MAX_TREE_DEPTH: usize = 400;
 /// The longest line read: past it, the line is not read at all.
 const MAX_LEN: usize = 64 * 1024;
 
+/// The most nested script text read for one line, in bytes: past it, the
+/// line is unreadable. A nested script is read once for each time the line
+/// starts it, so this bounds the work whatever the nesting does. It is a
+/// few times the longest line, which a plain line never nears.
+const MAX_NESTED_READ: usize = 4 * MAX_LEN;
+
 pub(crate) fn split(command: &str, shell: Shell) -> Split {
     let mut split = Split::default();
     script(&mut split, command, shell, 0);
@@ -602,6 +652,13 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
     if text.len() > MAX_LEN {
         split.problem(Rule::Unreadable, "is too long to read", None);
         return;
+    }
+    if depth > 0 {
+        split.nested_read += text.len() + 1;
+        if split.nested_read > MAX_NESTED_READ {
+            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
+            return;
+        }
     }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
     // does not move the line that started it.

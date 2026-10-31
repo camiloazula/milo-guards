@@ -176,6 +176,11 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
     names
 }
 
+/// What stands for an expansion in a template: a variable the guard cannot
+/// name, so a script read from the template finds a value known only when it
+/// runs where the expansion was.
+const OPAQUE: &str = "$__v";
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
@@ -365,10 +370,30 @@ impl Walker<'_> {
         };
         let program = self.arg(name);
         let mut cursor = node.walk();
-        let args: Vec<Arg> = node
+        let nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
-            .map(|arg| self.arg(arg))
             .collect();
+        let mut args = Vec::with_capacity(nodes.len());
+        let mut nodes = nodes.into_iter().peekable();
+        while let Some(arg) = nodes.next() {
+            // `$"text"` is a locale-translated string: its `$` comes apart
+            // from the string, and the word is only known when it runs.
+            let translated = !arg.is_named()
+                && unit::text(&arg, self.source) == "$"
+                && nodes
+                    .peek()
+                    .is_some_and(|next| next.start_byte() == arg.end_byte());
+            if let (true, Some(string)) = (translated, nodes.peek().copied()) {
+                nodes.next();
+                let word = self
+                    .source
+                    .get(arg.start_byte()..string.end_byte())
+                    .unwrap_or_default();
+                args.push(Arg::Unknown(word.to_string()));
+            } else {
+                args.push(self.arg(arg));
+            }
+        }
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.
@@ -510,7 +535,7 @@ impl Walker<'_> {
                             ) =>
                         {
                             partial = true;
-                            template.push_str(unit::text(&part, self.source));
+                            template.push_str(OPAQUE);
                         }
                         Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
                     }
@@ -535,8 +560,10 @@ impl Walker<'_> {
 
     /// A double-quoted string: its text with the variables the guard can name
     /// put in. Anything else expanded inside makes it a template: the text
-    /// with each expansion as written, which is not a value but can be read
-    /// as a script.
+    /// with each such expansion replaced by an opaque variable, which is not
+    /// a value but can be read as a script. The expansion's own source is not
+    /// kept: a `$(…)` in it is read where it stands, and reading it again in
+    /// the script would double the work at each level of nesting.
     fn string(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         let start = node.start_byte() + 1;
@@ -557,16 +584,19 @@ impl Walker<'_> {
                     value.push_str(&text);
                     template.push_str(&text);
                 }
-                "simple_expansion" | "expansion" => {
-                    match self.variable(written) {
-                        Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => partial = true,
+                "simple_expansion" | "expansion" => match self.variable(written) {
+                    Arg::Known(text) => {
+                        value.push_str(&text);
+                        template.push_str(&text);
                     }
-                    template.push_str(written);
-                }
+                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                        partial = true;
+                        template.push_str(OPAQUE);
+                    }
+                },
                 _ => {
                     partial = true;
-                    template.push_str(written);
+                    template.push_str(OPAQUE);
                 }
             }
             at = child.end_byte();

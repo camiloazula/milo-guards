@@ -67,6 +67,23 @@ fn is_script_block(node: Node<'_>) -> bool {
     }
 }
 
+/// Whether `node` is a splat (`@args`), however the grammar wraps it.
+fn is_splat(node: Node<'_>, source: &str) -> bool {
+    let mut node = node;
+    loop {
+        match node.kind() {
+            "variable" => return unit::text(&node, source).starts_with('@'),
+            "array_literal_expression" | "unary_expression" if node.named_child_count() == 1 => {
+                match node.named_child(0) {
+                    Some(only) => node = only,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// The cmdlet an alias stands for, in lower case; any other name as given.
 pub(crate) fn canonical(name: &str) -> &str {
     match name {
@@ -174,26 +191,9 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
-        // What an event cmdlet's `-Action` is: a script block written out
-        // (`Some(true)`), which the walk reads in place, or anything else.
-        let mut action = None;
-        let mut after_action = false;
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
-                match element.kind() {
-                    "command_argument_sep" | "comment" | "redirection" => {}
-                    "command_parameter" => {
-                        let name = unit::text(&element, self.source).trim_start_matches('-');
-                        after_action =
-                            !name.is_empty() && "action".starts_with(&name.to_ascii_lowercase());
-                    }
-                    _ if after_action => {
-                        action = Some(is_script_block(element));
-                        after_action = false;
-                    }
-                    _ => {}
-                }
                 // `--%` passes the rest verbatim, but only up to a `|`: the
                 // grammar runs it to the end of the line, so what follows the
                 // pipe is read again as the next command.
@@ -230,17 +230,102 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
-        // A block known only when it runs (`-Action $block`) is a script the
-        // guard cannot read, run by the event.
-        if action == Some(false) && key.as_deref().is_some_and(|key| EVENTS.contains(&key)) {
-            self.split.problem(
-                Rule::Unknown,
-                "runs an event action only known when it runs",
-                Some(unit::text(&node, self.source)),
-            );
+        // A block known only when it runs (`-Action $block`, an action given
+        // by position or in a splat) is a script the guard cannot read, run
+        // by the event.
+        if let Some(key) = key.as_deref().filter(|key| EVENTS.contains(key)) {
+            if self.action_unread(node, key) {
+                self.split.problem(
+                    Rule::Unknown,
+                    "runs an event action only known when it runs",
+                    Some(unit::text(&node, self.source)),
+                );
+            }
         }
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// Whether the action of a `Register-*Event` command is not a script
+    /// block written out, which the walk reads where it stands. The action is
+    /// the `-Action` parameter or, by position, the last of the parameters
+    /// the command's names leave to be given by position (the docs' order:
+    /// `Register-EngineEvent` takes its source then its action;
+    /// `Register-ObjectEvent` the object, its event, the source, then the
+    /// action; the others a class or query, the source, then the action). A
+    /// splat (`@p`) may hold any of them.
+    fn action_unread(&self, node: Node<'_>, key: &str) -> bool {
+        let Some(elements) = node.child_by_field_name("command_elements") else {
+            return false;
+        };
+        let slots: &[&[&str]] = match key {
+            "register-engineevent" => &[&["sourceidentifier"], &["action"]],
+            "register-objectevent" => &[
+                &["inputobject"],
+                &["eventname"],
+                &["sourceidentifier"],
+                &["action"],
+            ],
+            "register-wmievent" => &[&["class", "query"], &["sourceidentifier"], &["action"]],
+            _ => &[&["classname", "query"], &["sourceidentifier"], &["action"]],
+        };
+        let mut bound = vec![false; slots.len()];
+        // Parameters that take a value but are not given by position.
+        let named = [
+            "messagedata",
+            "maxtriggercount",
+            "namespace",
+            "computername",
+            "credential",
+            "timeout",
+            "operationtimeoutsec",
+            "cimsession",
+            "querydialect",
+        ];
+        let mut named_action = None;
+        let mut positional = Vec::new();
+        // What the next value belongs to: `Some(true)` the action,
+        // `Some(false)` another parameter.
+        let mut takes: Option<bool> = None;
+        let mut cursor = elements.walk();
+        for element in elements.named_children(&mut cursor) {
+            match element.kind() {
+                "command_argument_sep" | "comment" | "redirection" => continue,
+                "command_parameter" => {
+                    let name = unit::text(&element, self.source)
+                        .trim_start_matches('-')
+                        .to_ascii_lowercase();
+                    let slot = slots
+                        .iter()
+                        .position(|names| names.iter().any(|full| full.starts_with(&name)));
+                    takes = match slot {
+                        _ if name.is_empty() => None,
+                        Some(slot) if slot + 1 == slots.len() => Some(true),
+                        Some(slot) => {
+                            bound[slot] = true;
+                            Some(false)
+                        }
+                        None if named.iter().any(|full| full.starts_with(&name)) => Some(false),
+                        None => None,
+                    };
+                    continue;
+                }
+                _ => {}
+            }
+            if is_splat(element, self.source) {
+                return true;
+            }
+            match takes.take() {
+                Some(true) => named_action = Some(is_script_block(element)),
+                Some(false) => {}
+                None => positional.push(is_script_block(element)),
+            }
+        }
+        if let Some(block) = named_action {
+            return !block;
+        }
+        let place = bound.iter().filter(|bound| !**bound).count() - 1;
+        positional.get(place).is_some_and(|block| !block)
     }
 
     fn name(&self, node: Node<'_>) -> Arg {

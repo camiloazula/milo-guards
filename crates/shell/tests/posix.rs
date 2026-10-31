@@ -551,6 +551,7 @@ fn a_trap_action_is_a_script_that_runs_later() {
             ("trap \"${x:-rm}\" EXIT", Rule::Unknown),
             ("trap -- \"$x\" EXIT", Rule::Unknown),
             ("trap $'rm -rf ~' EXIT", Rule::Unknown),
+            ("trap $\"rm -rf ~\" EXIT", Rule::Unknown),
             ("trap \"$x $y\" EXIT", Rule::Unknown),
         ],
     );
@@ -569,6 +570,12 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             "trap 'rm -rf out' EXIT; (echo hi)",
             "trap 'cd src && rm -rf out' EXIT; cargo build",
             "bash -c 'cd build'; trap 'rm -rf out' EXIT",
+            // A `cd` in a subshell or a child shell after the `trap` does not
+            // move this shell, so the action still runs from where it was.
+            "trap 'rm -rf out' EXIT; (cd ~)",
+            "trap 'rm -f lock' EXIT; (cd sub && make)",
+            "trap 'rm -f lock' EXIT; bash -c 'cd sub && make'",
+            "trap 'rm -f lock' EXIT; echo $(cd sub && pwd)",
         ],
         &[
             ("trap 'rm -rf out' EXIT; cd ~", Rule::Delete),
@@ -577,7 +584,11 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             ("trap 'rm -rf out' EXIT; pushd ~", Rule::Delete),
             ("trap 'rm -rf out' EXIT; cd /", Rule::Delete),
             ("trap 'rm -rf out' DEBUG; cd ~", Rule::Delete),
-            ("trap 'rm -rf out' EXIT; (cd ~)", Rule::Delete),
+            // A trap set in a subshell runs from where the subshell ends up.
+            ("(trap 'rm -rf out' EXIT; cd ~)", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT; cd ~); cd src", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT); cd src", Rule::Delete),
+            ("eval \"trap 'rm -rf out' EXIT\"; cd ~", Rule::Delete),
             ("trap 'echo x > out' EXIT; cd ~", Rule::Overwrite),
             // A `cd` the action itself runs may come before the next command.
             ("trap 'cd ~' DEBUG; rm -rf out", Rule::Delete),
@@ -632,6 +643,12 @@ fn a_trap_says_what_its_action_does() {
         [Rule::Delete]
     );
     assert!(classify("trap 'echo $d' EXIT", Shell::Posix, &paths).is_safe());
+    // A locale-translated action is reported as the whole word.
+    let assessment = classify("trap $\"rm -rf ~\" EXIT", Shell::Posix, &paths);
+    let [finding] = assessment.findings() else {
+        panic!("one finding");
+    };
+    assert_eq!(finding.target.as_deref(), Some("$\"rm -rf ~\""));
     let assessment = classify("trap 'rm -rf ~' EXIT", Shell::Posix, &paths);
     let [finding] = assessment.findings() else {
         panic!("one finding");

@@ -59,7 +59,9 @@ Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
-counts as far as a depth limit. Past it, the line is unreadable.
+counts as far as a depth limit, and the text of all the nested scripts read
+for one line as far as a budget a few times the longest line. Past either, the
+line is unreadable.
 
 ### Actions that run later
 
@@ -88,10 +90,15 @@ and its findings are the line's, since the shell runs it as the same user.
   `-Action` to `Register-EngineEvent`, `Register-ObjectEvent`,
   `Register-WmiEvent` and `Register-CimIndicationEvent`. The grammar reads a
   block in place, so its commands are judged as if they stood on the line,
-  and a `-Action` whose value is not a block written out (`-Action $block`,
-  `-Action ([scriptblock]::Create($t))`) is a script known only when it runs,
-  which is `unknown`. An action given as a bare variable in the position
-  where a block goes (`Register-EngineEvent X $block`) is not recognised.
+  and an action that is not a block written out is a script known only when
+  it runs, which is `unknown`: `-Action $block`, `-Action ([scriptblock]::Create($t))`,
+  an action given by position (`Register-EngineEvent X $block`) and any splat
+  (`Register-EngineEvent @p`). By position, the action is the last of the
+  parameters the command's names leave to be given by position, in the docs'
+  order: source then action for `Register-EngineEvent`; object, event, source
+  then action for `Register-ObjectEvent`; class or query, source then action
+  for `Register-WmiEvent` and `Register-CimIndicationEvent`.
+  `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
 - cmd has nothing like it.
 
 The action runs in this shell, later: after the line's last command, or
@@ -104,13 +111,18 @@ line leaves things, whichever is more conservative and needs the least state:
   build' EXIT; cd ~` deletes a path known only when it runs. A `cd` inside
   the action may run before the next command, so the rest of the line is read
   from somewhere unknown too. An absolute path or `~` is the same wherever the
-  line has moved.
+  line has moved. A `cd` in a subshell, `$(…)` or a script in a process of
+  its own is not a move of this shell, as it is not for any later path, so
+  `trap 'rm -f lock' EXIT; (cd sub && make)` still runs `rm -f lock` from
+  where it was set.
 - **Hidden names.** The action is a body (see Bodies below): when the line
   turns `dotglob` on anywhere, even after the `trap`, its wildcards match
   hidden names. An off switch inside it changes nothing for the rest of the
   line, and an on switch inside it stays on.
 - **Nesting.** A `trap` inside a script, a `bash -c` or another `trap` counts
-  as far as the depth limit.
+  as far as the depth limit. A `$(…)` in a double-quoted action is read where
+  it stands, when the trap is set, and is a placeholder variable in the text
+  the action is read from, so it is not read twice.
 
 ### Where a line is
 
