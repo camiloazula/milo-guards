@@ -66,7 +66,31 @@ impl Walker<'_> {
                     self.walk(child, Some(Stage { pipeline, index }), level + 1);
                 }
             }
-            "redirection" => self.redirect(node),
+            // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
+            // command's input feeds the units it runs.
+            "redirect_stmt" => {
+                let mut cursor = node.walk();
+                let mut inputs = Vec::new();
+                let mut own: Option<std::ops::Range<usize>> = None;
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "redirection" {
+                        inputs.extend(self.redirect(child));
+                    } else {
+                        let first = self.split.units.len();
+                        self.walk(child, stage, level + 1);
+                        let range = first..self.split.units.len();
+                        own = Some(own.map_or(range.clone(), |own| own.start..range.end));
+                    }
+                }
+                if let Some(own) = own {
+                    for target in inputs {
+                        self.split.redirect(own.clone(), target, true);
+                    }
+                }
+            }
+            "redirection" => {
+                self.redirect(node);
+            }
             "variable_assignment" => {
                 self.assignment(node);
                 self.children(node, stage, level);
@@ -197,25 +221,29 @@ impl Walker<'_> {
     }
 
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
-    /// (`2>&1`) writes nothing.
-    fn redirect(&mut self, node: Node<'_>) {
+    /// (`2>&1`) writes nothing. Returns the files it reads (`<`).
+    fn redirect(&mut self, node: Node<'_>) -> Vec<Arg> {
         let mut cursor = node.walk();
-        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-        let operator = children
-            .iter()
-            .find(|child| child.kind() == "redirect_op")
-            .map(|op| unit::text(op, self.source));
-        let Some(target) = children
-            .iter()
-            .find(|child| child.kind() == "redirect_target")
-        else {
-            return;
-        };
-        let writes = operator.is_some_and(|op| op.contains('>') && !op.ends_with('&'));
-        let target_text = unit::text(target, self.source);
-        if writes && !target_text.starts_with('&') {
-            self.split.write(Shell::Cmd, self.value(&[*target]));
+        let mut operator = None;
+        let mut inputs = Vec::new();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "redirect_op" => operator = Some(unit::text(&child, self.source)),
+                "redirect_target" => {
+                    let target_text = unit::text(&child, self.source);
+                    let duplicates = operator.is_some_and(|op| op.ends_with('&'));
+                    let writes = operator.is_some_and(|op| op.contains('>') && !duplicates);
+                    if writes && !target_text.starts_with('&') {
+                        self.split.write(Shell::Cmd, self.value(&[child]));
+                    }
+                    if !duplicates && operator.is_some_and(|op| op.contains('<')) {
+                        inputs.push(self.value(&[child]));
+                    }
+                }
+                _ => {}
+            }
         }
+        inputs
     }
 
     /// The grammar reads `set X=1 && del y` as one assignment whose value

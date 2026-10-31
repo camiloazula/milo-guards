@@ -208,6 +208,9 @@ pub(crate) struct Redirect {
     pub(crate) target: Arg,
     /// Whether it feeds the units' input (`<`), and not their output.
     pub(crate) input: bool,
+    /// Whether the target is the text fed, a here-string or a
+    /// here-document, and not a file.
+    pub(crate) text: bool,
 }
 
 /// Units a command is handed the result of: what runs in its `$(…)` and
@@ -225,6 +228,24 @@ pub(crate) struct Nested {
 pub(crate) struct Assigned {
     pub(crate) name: String,
     pub(crate) inside: Range<usize>,
+    /// The variables the value names itself: `j=$k`, `j="$k-x"`.
+    pub(crate) uses: Vec<String>,
+}
+
+/// The variables `text` names, as `$k`, `${k}` and `${k:-x}` do (`$key` is
+/// not `k`).
+pub(crate) fn referenced(text: &str) -> Vec<String> {
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let end = piece
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(piece.len());
+            piece.get(..end).filter(|name| !name.is_empty())
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// Everything a line was split into.
@@ -381,15 +402,30 @@ impl Split {
             units,
             target,
             input,
+            text: false,
         });
     }
 
-    /// Note that the variable `name` is set from what runs in `inside`.
-    pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>) {
-        if !inside.is_empty() {
+    /// Note that the text `target` (a here-string, a here-document) is fed
+    /// to `units`.
+    pub(crate) fn feed(&mut self, units: Range<usize>, target: Arg) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input: true,
+            text: true,
+        });
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `value` names.
+    pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
+        let uses = referenced(value);
+        if !inside.is_empty() || !uses.is_empty() {
             self.assigned.push(Assigned {
                 name: name.to_string(),
                 inside,
+                uses,
             });
         }
     }

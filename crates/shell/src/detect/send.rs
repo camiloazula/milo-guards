@@ -15,12 +15,14 @@ use milo_guards_core::Flavour;
 use super::files::remote;
 use super::Checker;
 use crate::path::Place;
-use crate::unit::{has_flag, operands, Arg, Stage, Unit};
+use crate::unit::{has_flag, operands, referenced, Arg, Stage, Unit};
 use crate::{Rule, Shell};
 
 const ENVIRONMENT: &str = "your environment variables";
 const DOTENV: &str = "an .env file";
 const HOME: &str = "your home directory";
+/// What core calls the root of a disk, which holds the home directory.
+const ROOT: &str = "the root of the disk";
 /// What core calls the repository's own history: sensitive to lose, not a
 /// secret to send.
 const HISTORY: &str = "the repository's history";
@@ -247,11 +249,16 @@ impl Checker<'_> {
                 }
             }
         }
-        for redirect in &self.split.redirects {
+        for redirect in self
+            .split
+            .redirects
+            .iter()
+            .filter(|redirect| !redirect.text)
+        {
             for at in redirect.units.clone() {
                 let Some(unit) = units.get(at) else { continue };
                 if redirect.input {
-                    let hit = self.secret(unit, &redirect.target, false);
+                    let hit = self.secret(unit, &redirect.target, false, true);
                     if let Some(slot) = flow.stdin.get_mut(at).filter(|_| hit.is_some()) {
                         *slot = hit;
                     }
@@ -268,26 +275,7 @@ impl Checker<'_> {
         }
         // A variable set from what a secret-reading command prints holds
         // the secret, and so does one set from that.
-        let mut held: Vec<(String, Hit)> = Vec::new();
-        loop {
-            let before = held.len();
-            for assigned in &self.split.assigned {
-                if held.iter().any(|(name, _)| *name == assigned.name) {
-                    continue;
-                }
-                let hit = assigned.inside.clone().find_map(|at| {
-                    flow.own(at)
-                        .cloned()
-                        .or_else(|| units.get(at).and_then(|unit| mentions(unit, &held)))
-                });
-                if let Some(hit) = hit {
-                    held.push((assigned.name.clone(), hit));
-                }
-            }
-            if held.len() == before {
-                break;
-            }
-        }
+        let held = self.held(&flow);
         for (at, unit) in units.iter().enumerate() {
             if let Some(hit) = mentions(unit, &held) {
                 if let Some(slot) = flow.fed.get_mut(at) {
@@ -295,6 +283,20 @@ impl Checker<'_> {
                 }
                 if let Some(slot) = flow.own.get_mut(at).filter(|slot| slot.is_none()) {
                     *slot = Some(hit);
+                }
+            }
+        }
+        // A here-string or here-document that expands one is its input.
+        for redirect in self.split.redirects.iter().filter(|redirect| redirect.text) {
+            let Some(hit) = text_mentions(redirect.target.text(), &held) else {
+                continue;
+            };
+            for at in redirect.units.clone() {
+                if let Some(slot) = flow.stdin.get_mut(at).filter(|slot| slot.is_none()) {
+                    *slot = Some(hit.clone());
+                }
+                if let Some(slot) = flow.own.get_mut(at).filter(|slot| slot.is_none()) {
+                    *slot = Some(hit.clone());
                 }
             }
         }
@@ -325,6 +327,59 @@ impl Checker<'_> {
         flow
     }
 
+    /// The variables that hold a secret, by name: one set from a command
+    /// that reads a secret, or from a variable that holds one. Each name is
+    /// settled once, from the variables read to set it, whatever the order
+    /// the line sets them in (a loop or a function runs them again).
+    fn held(&self, flow: &Flow) -> HashMap<String, Hit> {
+        let units = &self.split.units;
+        let assigned = &self.split.assigned;
+        // The names a unit reads: in its arguments, and in a here-string or
+        // here-document fed to it.
+        let mut reads: Vec<Vec<String>> = vec![Vec::new(); units.len()];
+        for (at, unit) in units.iter().enumerate() {
+            if let Some(names) = reads.get_mut(at) {
+                names.extend(
+                    unit.args
+                        .iter()
+                        .filter(|arg| arg.is_unknown())
+                        .flat_map(|arg| referenced(arg.text())),
+                );
+            }
+        }
+        for redirect in self.split.redirects.iter().filter(|redirect| redirect.text) {
+            for at in redirect.units.clone() {
+                if let Some(names) = reads.get_mut(at) {
+                    names.extend(referenced(redirect.target.text()));
+                }
+            }
+        }
+        let mut readers: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut work: Vec<(usize, Hit)> = Vec::new();
+        for (at, one) in assigned.iter().enumerate() {
+            let direct = one.inside.clone().find_map(|unit| flow.own(unit).cloned());
+            work.extend(direct.map(|hit| (at, hit)));
+            let inside = one.inside.clone().filter_map(|unit| reads.get(unit));
+            for name in inside.flatten().chain(&one.uses) {
+                readers.entry(name).or_default().push(at);
+            }
+        }
+        let mut held: HashMap<String, Hit> = HashMap::new();
+        while let Some((at, hit)) = work.pop() {
+            let Some(one) = assigned.get(at) else {
+                continue;
+            };
+            if held.contains_key(&one.name) {
+                continue;
+            }
+            held.insert(one.name.clone(), hit.clone());
+            for reader in readers.get(one.name.as_str()).into_iter().flatten() {
+                work.push((*reader, hit.clone()));
+            }
+        }
+        held
+    }
+
     /// A secret the unit itself reads: the environment, a file it is given
     /// or has on its input.
     fn secret_read(&self, unit: &Unit, stdin: Option<&Hit>) -> Option<Hit> {
@@ -341,17 +396,25 @@ impl Checker<'_> {
         }
         candidates(unit, &key)
             .iter()
-            .find_map(|arg| self.secret(unit, arg, false))
+            .find_map(|arg| self.secret(unit, arg, false, true))
             .or_else(|| stdin.cloned())
     }
 
     /// The secret `arg` names, when it names one: `home` also counts the
-    /// home directory itself, which holds them, for what copies a folder.
-    fn secret(&self, unit: &Unit, arg: &Arg, home: bool) -> Option<Hit> {
+    /// home directory itself and any folder holding it, which hold them, for
+    /// what copies a folder. `glob` says whether the shell expands a wildcard
+    /// in it: it does for a word of its own, not for a part of one (`@f`).
+    fn secret(&self, unit: &Unit, arg: &Arg, home: bool, glob: bool) -> Option<Hit> {
         let text = arg.known().filter(|text| *text != "-")?;
+        // A wildcard in the name of a file the shell does not expand is a
+        // letter: it names no secret.
+        let named = text.rsplit(['/', '\\']).next().unwrap_or(text);
+        if !glob && glob::has_wildcard(named) {
+            return None;
+        }
         let words = if is_environ(text) {
             ENVIRONMENT
-        } else if dotenv(text, unit.shell, unit.hidden) {
+        } else if dotenv(text, unit.shell, unit.hidden, glob) {
             DOTENV
         } else if public_key(text) {
             return None;
@@ -359,6 +422,7 @@ impl Checker<'_> {
             match self.place(unit.shell, unit.scope(), arg) {
                 Place::Sensitive(words) if words != HISTORY => words,
                 Place::Home { .. } if home => HOME,
+                Place::Top(ROOT) if home => HOME,
                 _ => return None,
             }
         };
@@ -381,7 +445,7 @@ impl Checker<'_> {
     /// sender handed one by a substitution.
     pub(super) fn send(&mut self, at: usize, unit: &Unit, key: &str) {
         for file in uploads(unit, key) {
-            if let Some(hit) = self.secret(unit, &file, false) {
+            if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
                 self.sent(&hit);
             }
         }
@@ -452,7 +516,7 @@ impl Checker<'_> {
             if to_other_machine(source, false) {
                 continue;
             }
-            if let Some(hit) = self.secret(unit, source, true) {
+            if let Some(hit) = self.secret(unit, source, true, true) {
                 self.sent(&hit);
             }
         }
@@ -460,32 +524,27 @@ impl Checker<'_> {
 }
 
 /// A secret a variable the unit's arguments mention holds.
-fn mentions(unit: &Unit, held: &[(String, Hit)]) -> Option<Hit> {
-    unit.args.iter().find_map(|arg| {
-        if !arg.is_unknown() {
-            return None;
-        }
-        held.iter()
-            .find(|(name, _)| names(arg.text(), name))
-            .map(|(_, hit)| hit.clone())
-    })
+fn mentions(unit: &Unit, held: &HashMap<String, Hit>) -> Option<Hit> {
+    unit.args
+        .iter()
+        .filter(|arg| arg.is_unknown())
+        .find_map(|arg| text_mentions(arg.text(), held))
 }
 
-/// Whether `text`, an expansion the guard cannot resolve, names the
-/// variable: `$k`, `"$k"`, `${k}`, but not `$key`.
-fn names(text: &str, name: &str) -> bool {
-    ["$", "${"].iter().any(|prefix| {
-        let word = format!("{prefix}{name}");
-        text.match_indices(&word).any(|(at, _)| {
-            !text[at + word.len()..]
-                .chars()
-                .next()
-                .is_some_and(|next| next.is_alphanumeric() || next == '_')
-        })
-    })
+/// A secret a variable `text`, an expansion the guard cannot resolve,
+/// names holds: `$k`, `"$k"`, `${k}`, but not `$key`.
+fn text_mentions(text: &str, held: &HashMap<String, Hit>) -> Option<Hit> {
+    if held.is_empty() {
+        return None;
+    }
+    referenced(text)
+        .iter()
+        .find_map(|name| held.get(name).cloned())
 }
 
-/// Whether the path is a network connection bash opens as a file.
+/// Whether the path is a network connection bash opens in its own
+/// redirects (`> /dev/tcp/host/1`); a program that opens it as a path finds
+/// no such file.
 fn network_device(text: &str) -> bool {
     text.starts_with("/dev/tcp/") || text.starts_with("/dev/udp/")
 }
@@ -570,9 +629,10 @@ fn public_key(text: &str) -> bool {
 }
 
 /// Whether `text` names an `.env` file (`.env`, `.env.local`,
-/// `config/.env.production`) or a pattern that can: not a folder, and not
-/// a template such as `.env.example`.
-fn dotenv(text: &str, shell: Shell, hidden: bool) -> bool {
+/// `config/.env.production`) or, when the shell expands it (`glob`), a
+/// pattern that can: not a folder, and not a template such as
+/// `.env.example`.
+fn dotenv(text: &str, shell: Shell, hidden: bool, glob: bool) -> bool {
     let windows = shell != Shell::Posix;
     let separators: &[char] = if windows { &['/', '\\'] } else { &['/'] };
     if text.ends_with(separators) {
@@ -589,6 +649,10 @@ fn dotenv(text: &str, shell: Shell, hidden: bool) -> bool {
         name
     };
     if glob::has_wildcard(name) {
+        // A wildcard in a name the shell does not expand is a letter.
+        if !glob {
+            return false;
+        }
         let flavour = if windows {
             Flavour::Windows
         } else {
@@ -608,9 +672,17 @@ fn dotenv(text: &str, shell: Shell, hidden: bool) -> bool {
     }
 }
 
-/// The files a unit uploads, named in its own arguments (`-` stands for
-/// its input).
-fn uploads(unit: &Unit, key: &str) -> Vec<Arg> {
+/// A file a unit uploads: `-` stands for its input.
+struct Upload {
+    arg: Arg,
+    /// Whether it is a word of its own, which the shell expands when it is a
+    /// pattern (`-T .env*`), and not a part of one (`-d @.env*`, where the
+    /// pattern is the whole word and the program reads the name as written).
+    word: bool,
+}
+
+/// The files a unit uploads, named in its own arguments.
+fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
     match key {
         "curl" => curl_files(&unit.args),
         "wget" => wget_files(&unit.args),
@@ -620,30 +692,37 @@ fn uploads(unit: &Unit, key: &str) -> Vec<Arg> {
             .filter_map(Arg::known)
             .filter(|text| !text.starts_with('-'))
             .filter_map(item_file)
-            .map(named)
+            .map(|file| named(file, false))
             .collect(),
-        "invoke-webrequest" | "invoke-restmethod" => parameter(&unit.args, "infile"),
+        "invoke-webrequest" | "invoke-restmethod" => parameter(&unit.args, "infile")
+            .into_iter()
+            .map(|arg| Upload { arg, word: true })
+            .collect(),
         _ => Vec::new(),
     }
 }
 
-/// A file argument; a device that is the input is `-`.
-fn named(text: &str) -> Arg {
+/// A file named in text; a device that is the input is `-`.
+fn named(text: &str, word: bool) -> Upload {
     let stdin = matches!(text, "/dev/stdin" | "/dev/fd/0");
-    Arg::Known(if stdin { "-" } else { text }.to_string())
+    Upload {
+        arg: Arg::Known(if stdin { "-" } else { text }.to_string()),
+        word,
+    }
 }
 
 /// What `curl` takes from a file: `-d @f` (also `--data`, `--data-binary`,
 /// `--data-ascii`, `--json`), `--data-urlencode name@f`, `-F name=@f` or
 /// `name=<f`, `-T f` and `-H @f`.
-fn curl_files(args: &[Arg]) -> Vec<Arg> {
+fn curl_files(args: &[Arg]) -> Vec<Upload> {
     let mut files = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
-        let mut take = |kind: char, value: Option<Arg>| {
+        // `attached` says the value is a part of the option's word.
+        let mut take = |kind: char, value: Option<Arg>, attached: bool| {
             if let Some(Arg::Known(value)) = value {
-                files.extend(curl_file(kind, &value));
+                files.extend(curl_file(kind, &value, !attached));
             }
         };
         if let Some(long) = text.strip_prefix("--") {
@@ -662,7 +741,7 @@ fn curl_files(args: &[Arg]) -> Vec<Arg> {
                 Some(value) => Some(Arg::Known(value.to_string())),
                 None => iter.next().cloned(),
             };
-            take(kind, value);
+            take(kind, value, attached.is_some());
         } else if let Some(bundle) = text.strip_prefix('-') {
             for (at, letter) in bundle.char_indices() {
                 let value = |rest: &str, iter: &mut std::slice::Iter<'_, Arg>| {
@@ -674,7 +753,7 @@ fn curl_files(args: &[Arg]) -> Vec<Arg> {
                 };
                 let rest = bundle.get(at + letter.len_utf8()..).unwrap_or_default();
                 if matches!(letter, 'd' | 'F' | 'T' | 'H') {
-                    take(letter, value(rest, &mut iter));
+                    take(letter, value(rest, &mut iter), !rest.is_empty());
                     break;
                 }
                 if CURL_VALUES.contains(letter) {
@@ -689,14 +768,18 @@ fn curl_files(args: &[Arg]) -> Vec<Arg> {
 
 /// The files one `curl` option's value names, by the option's kind: `d`
 /// data, `u` `--data-urlencode`, `F` a form field, `T` an upload, `H` a
-/// header.
-fn curl_file(kind: char, value: &str) -> Vec<Arg> {
+/// header. Only `-T f` names its file as a word of its own (`word`).
+fn curl_file(kind: char, value: &str, word: bool) -> Vec<Upload> {
     match kind {
-        'd' | 'H' => value.strip_prefix('@').map(named).into_iter().collect(),
+        'd' | 'H' => value
+            .strip_prefix('@')
+            .map(|path| named(path, false))
+            .into_iter()
+            .collect(),
         'u' => value
             .split_once('@')
             .filter(|(name, _)| !name.contains('='))
-            .map(|(_, path)| named(path))
+            .map(|(_, path)| named(path, false))
             .into_iter()
             .collect(),
         'F' => value
@@ -708,17 +791,17 @@ fn curl_file(kind: char, value: &str) -> Vec<Arg> {
                     .next()
                     .unwrap_or(field)
                     .split(',')
-                    .map(named)
+                    .map(|path| named(path, false))
                     .collect()
             })
             .unwrap_or_default(),
         // `-T .` uploads what is on the input.
-        _ => vec![named(if value == "." { "-" } else { value })],
+        _ => vec![named(if value == "." { "-" } else { value }, word)],
     }
 }
 
 /// What `wget` posts from a file: `--post-file f`, `--body-file f`.
-fn wget_files(args: &[Arg]) -> Vec<Arg> {
+fn wget_files(args: &[Arg]) -> Vec<Upload> {
     let mut files = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -736,7 +819,7 @@ fn wget_files(args: &[Arg]) -> Vec<Arg> {
             Some(value) => Some(value),
             None => iter.next().and_then(Arg::known),
         };
-        files.extend(value.map(named));
+        files.extend(value.map(|file| named(file, attached.is_none())));
     }
     files
 }
@@ -776,7 +859,7 @@ fn parameter(args: &[Arg], name: &str) -> Vec<Arg> {
 /// given, or one given an option that reads its body from the input.
 fn takes_input(unit: &Unit, key: &str) -> bool {
     let args = unit.args.as_slice();
-    let stdin = |files: Vec<Arg>| files.iter().any(|file| file.known() == Some("-"));
+    let stdin = |files: Vec<Upload>| files.iter().any(|file| file.arg.known() == Some("-"));
     match key {
         "curl" => stdin(curl_files(args)),
         "wget" => stdin(wget_files(args)),
@@ -793,13 +876,6 @@ fn takes_input(unit: &Unit, key: &str) -> bool {
                     .iter()
                     .any(|arg| to_other_machine(arg, false))
         }
-        "tee" => operands(args, &[])
-            .iter()
-            .any(|arg| arg.known().is_some_and(network_device)),
-        "dd" => args
-            .iter()
-            .filter_map(Arg::known)
-            .any(|text| text.strip_prefix("of=").is_some_and(network_device)),
         _ => SINKS.contains(&key),
     }
 }

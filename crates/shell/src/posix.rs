@@ -139,6 +139,18 @@ fn join_continuations(text: &str) -> String {
     joined
 }
 
+/// Whether `node` is a here-document's redirect that holds the rest of its
+/// pipeline: `<<EOF | nc host 1`.
+fn piped_heredoc(node: Node<'_>) -> bool {
+    node.kind() == "heredoc_redirect" && {
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|part| part.kind() == "pipeline");
+        found
+    }
+}
+
 /// The variables the line sets anywhere: assignments (also after `export`
 /// or `local`), `for` variables, `unset` and `read`.
 fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
@@ -306,10 +318,7 @@ impl Walker<'_> {
             }
             "pipeline" => {
                 let pipeline = self.split.pipeline();
-                let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
-                    self.walk(child, Some(Stage { pipeline, index }), level + 1);
-                }
+                self.pipeline_in(node, pipeline, 0, level);
             }
             "file_redirect" => {
                 self.redirect(node);
@@ -344,6 +353,18 @@ impl Walker<'_> {
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// The stages of `node`, numbered from `first` in `pipeline`.
+    fn pipeline_in(&mut self, node: Node<'_>, pipeline: usize, first: usize, level: usize) {
+        let mut cursor = node.walk();
+        for (index, child) in node.named_children(&mut cursor).enumerate() {
+            let stage = Stage {
+                pipeline,
+                index: first + index,
+            };
+            self.walk(child, Some(stage), level + 1);
         }
     }
 
@@ -479,6 +500,8 @@ impl Walker<'_> {
         for child in node.named_children(&mut cursor) {
             if let Some((target, input)) = self.file_redirect(child) {
                 self.split.redirect(own.clone(), target, input);
+            } else if let Some(text) = self.fed_text(child) {
+                self.split.feed(own.clone(), text);
             }
         }
     }
@@ -489,23 +512,49 @@ impl Walker<'_> {
         let body = node.child_by_field_name("body").map(|body| body.id());
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // In `cat <<EOF | nc host 1` the grammar holds the rest of the
+        // pipeline in the here-document's redirect: the body is its first
+        // stage.
+        let pipeline = (stage.is_none() && all.iter().any(|child| piped_heredoc(*child)))
+            .then(|| self.split.pipeline());
         let mut own = 0..0;
         let mut after = Vec::new();
         for child in &all {
             let first = self.split.units.len();
-            self.walk(*child, stage, level + 1);
-            let range = first..self.split.units.len();
             if Some(child.id()) == body {
-                own = range;
+                let stage = pipeline.map_or(stage, |pipeline| Some(Stage { pipeline, index: 0 }));
+                self.walk(*child, stage, level + 1);
+                own = first..self.split.units.len();
+            } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
+                // What the redirect's own parts run is handed to the body,
+                // and what the rest of the pipeline runs is not.
+                let mut inside = Vec::new();
+                let mut cursor = child.walk();
+                for part in child.named_children(&mut cursor) {
+                    let first = self.split.units.len();
+                    if part.kind() == "pipeline" {
+                        self.pipeline_in(part, pipeline, 1, level + 1);
+                    } else {
+                        self.walk(part, None, level + 1);
+                        inside.push(first..self.split.units.len());
+                    }
+                }
+                after.push((*child, inside));
             } else {
-                after.push((*child, range));
+                self.walk(*child, stage, level + 1);
+                let whole = first..self.split.units.len();
+                after.push((*child, std::iter::once(whole).collect()));
             }
         }
         for (child, inside) in after {
             if let Some((target, input)) = self.file_redirect(child) {
                 self.split.redirect(own.clone(), target, input);
+            } else if let Some(text) = self.fed_text(child) {
+                self.split.feed(own.clone(), text);
             }
-            self.split.nest(own.clone(), inside);
+            for inside in inside {
+                self.split.nest(own.clone(), inside);
+            }
         }
     }
 
@@ -516,7 +565,12 @@ impl Walker<'_> {
         if let Some(name) = node.child_by_field_name("name") {
             let name = unit::text(&name, self.source);
             let name = name.split('[').next().unwrap_or(name);
-            self.split.assign(name, first..self.split.units.len());
+            let value = node
+                .child_by_field_name("value")
+                .map(|value| unit::text(&value, self.source))
+                .unwrap_or_default();
+            self.split
+                .assign(name, first..self.split.units.len(), value);
         }
     }
 
@@ -570,6 +624,32 @@ impl Walker<'_> {
         }
         let destination = node.child_by_field_name("destination")?;
         Some((self.arg(destination), matches!(operator, Some("<" | "<>"))))
+    }
+
+    /// The text a here-string or an unquoted here-document feeds when it
+    /// holds an expansion, as the source writes it: `<<< "$k"`, `<<EOF` with
+    /// `$k` in its body. What a substitution in it runs is a unit of its own.
+    fn fed_text(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        let text = match node.kind() {
+            "herestring_redirect" => {
+                let arg = self.arg(node.named_children(&mut cursor).next()?);
+                return arg.is_unknown().then_some(arg);
+            }
+            "heredoc_redirect" => {
+                let body = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "heredoc_body")?;
+                let mut cursor = body.walk();
+                body.named_children(&mut cursor)
+                    .filter(|part| matches!(part.kind(), "simple_expansion" | "expansion"))
+                    .map(|part| unit::text(&part, self.source))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+            _ => return None,
+        };
+        (!text.is_empty()).then_some(Arg::Unknown(text))
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
