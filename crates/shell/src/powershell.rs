@@ -705,9 +705,17 @@ impl<'a> Params<'a> {
             // A value is taken only by a parameter that names a value one
             // and no switch: an unknown or ambiguous one (`-rf` to a native
             // `rm`, `-f`) leaves the next argument where a rule sees it.
+            // The common parameters take one too (`-ErrorAction 0`), or its
+            // value would be read as the path; `-Args` is left out, as it
+            // is a cmdlet's own.
+            let fulls = || {
+                VALUES
+                    .iter()
+                    .chain(blocks::SHARED_VALUES.iter().filter(|full| **full != "args"))
+            };
             let takes_value = colon
-                || VALUES.contains(&name.as_str())
-                || (VALUES.iter().any(|full| full.starts_with(&name))
+                || fulls().any(|full| *full == name)
+                || (fulls().any(|full| full.starts_with(&name))
                     && !SWITCHES.iter().any(|full| full.starts_with(&name)));
             let value = if takes_value
                 && iter

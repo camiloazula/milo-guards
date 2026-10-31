@@ -181,7 +181,7 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.items(unit, &Params::read(args)) {
+                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
                     self.write(shell, unit.scope(), &target, verb);
                 }
             }

@@ -254,6 +254,33 @@ impl Checker<'_> {
         if paths.is_empty() {
             paths.extend(params.positional.first().copied());
         }
+        self.listed_paths(unit, paths)
+    }
+
+    /// The items `Clear-Item` and `Set-Item` act on: every `-Path` and
+    /// `-LiteralPath` value and every positional, as `Remove-Item` reads
+    /// them, since both take a list of paths. With no path named and no
+    /// `-Value`, `Set-Item` takes its value as the last positional, which is
+    /// not a path (unless it is the only one). With a path named, a
+    /// positional may be the rest of the list (`-Path a,b`), so each is
+    /// judged.
+    fn list_items(&self, unit: &Unit, params: &Params<'_>, value_last: bool) -> Vec<Arg> {
+        let mut paths = params.values(&["path", "literalpath"]);
+        let positional = &params.positional;
+        let value_named = params
+            .named
+            .iter()
+            .any(|(name, _)| "value".starts_with(name.as_str()));
+        let count = if value_last && !value_named && paths.is_empty() && positional.len() > 1 {
+            positional.len() - 1
+        } else {
+            positional.len()
+        };
+        paths.extend(positional.iter().take(count).copied());
+        self.listed_paths(unit, paths)
+    }
+
+    fn listed_paths(&self, unit: &Unit, paths: Vec<&Arg>) -> Vec<Arg> {
         if paths.is_empty() && unit.stage.is_some_and(|stage| stage.index > 0) {
             return self.listed_items(unit, &Arg::Input);
         }

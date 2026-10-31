@@ -327,3 +327,100 @@ fn what_get_item_and_listings_hand_on_inside_the_workspace_stays_safe() {
         &[],
     );
 }
+
+#[test]
+fn a_common_parameter_before_the_path_does_not_hide_it() {
+    let mut risky: Vec<(String, Rule)> = Vec::new();
+    for common in [
+        "-ErrorAction SilentlyContinue",
+        "-ea 0",
+        "-OutVariable o",
+        "-OutBuffer 1",
+        "-WarningAction 0",
+        "-InformationAction 0",
+        "-ProgressAction 0",
+        "-ErrorVariable e",
+        "-PipelineVariable p",
+    ] {
+        for line in [
+            format!("Clear-Item {common} HKCU:\\Software\\x"),
+            format!("Rename-Item {common} HKCU:\\Software\\x y"),
+            format!("Set-Item {common} HKCU:\\Software\\x -Value 1"),
+        ] {
+            risky.push((line, Rule::SystemSettings));
+        }
+    }
+    for line in [
+        "New-Item -ErrorAction 0 HKCU:\\Software\\x -Force",
+        "Copy-Item -ErrorAction 0 src\\x HKCU:\\y -Force",
+    ] {
+        risky.push((line.to_owned(), Rule::SystemSettings));
+    }
+    risky.push((
+        "Set-Content -ErrorAction Stop C:\\Windows\\x y".to_owned(),
+        Rule::Overwrite,
+    ));
+    risky.push((
+        "Remove-Item -ErrorAction SilentlyContinue C:\\Windows\\x".to_owned(),
+        Rule::Delete,
+    ));
+    risky.push((
+        "Remove-Item -ea 0 -Recurse -Force C:\\Windows\\x".to_owned(),
+        Rule::Delete,
+    ));
+    let rows: Vec<(&str, Rule)> = risky
+        .iter()
+        .map(|(line, rule)| (line.as_str(), *rule))
+        .collect();
+    check(Shell::PowerShell, &windows(), &[], &rows);
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Clear-Item -ErrorAction SilentlyContinue src\\x",
+            "Rename-Item -ea 0 src\\x y",
+            "Set-Item -ea 0 src\\x -Value 1",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn clear_item_and_set_item_judge_every_path_of_a_list() {
+    let many = format!("Clear-Item src\\x, {}HKCU:\\y", "src\\x, ".repeat(5000));
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Clear-Item src\\a, src\\b",
+            "Set-Item src\\a, src\\b -Value 1",
+            "Set-Item src\\a, src\\b 1",
+            "Set-Item src\\a 1",
+            "Set-Item src\\a",
+            "Set-Item -Path src\\a 1",
+        ],
+        &[
+            (
+                "Clear-Item src\\a, HKCU:\\Software\\y",
+                Rule::SystemSettings,
+            ),
+            (
+                "Clear-Item -Path src\\a,HKCU:\\Software\\y",
+                Rule::SystemSettings,
+            ),
+            (
+                "Clear-Item -LiteralPath src\\a,HKCU:\\Software\\y",
+                Rule::SystemSettings,
+            ),
+            ("Set-Item src\\a,HKLM:\\x -Value 1", Rule::SystemSettings),
+            (
+                "Set-Item -Path src\\a,HKLM:\\x -Value 1",
+                Rule::SystemSettings,
+            ),
+            ("Set-Item src\\a,HKLM:\\x 1", Rule::SystemSettings),
+            ("Set-Item -Path src\\a,HKLM:\\x 1", Rule::SystemSettings),
+            ("Set-Item src\\a, HKLM:\\x, 1", Rule::SystemSettings),
+            (many.as_str(), Rule::SystemSettings),
+        ],
+    );
+}

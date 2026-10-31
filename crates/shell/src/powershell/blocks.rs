@@ -171,7 +171,7 @@ const CMDLETS: [Cmdlet; 8] = [
 /// The parameters every cmdlet here takes a value for, and which are never a
 /// block: the common parameters with their aliases, and `-Args`, the alias of
 /// `-ArgumentList`. A prefix names one.
-const SHARED_VALUES: [&str; 20] = [
+pub(super) const SHARED_VALUES: [&str; 20] = [
     "erroraction",
     "ea",
     "errorvariable",
