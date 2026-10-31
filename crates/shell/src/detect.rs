@@ -302,10 +302,7 @@ impl Checker<'_> {
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.
         if (!self.written.is_empty() || self.unplaced_write)
-            && matches!(
-                path::within(unit.dir.as_ref(), script, unit.shell),
-                Arg::Unknown(_)
-            )
+            && path::within(unit.dir.as_ref(), script, unit.shell).is_unknown()
         {
             self.add(
                 Rule::Unknown,

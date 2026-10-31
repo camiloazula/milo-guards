@@ -201,6 +201,171 @@ fn risky_powershell() {
 }
 
 #[test]
+fn a_powershell_trap_and_event_action_run_later() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "trap { Remove-Item build }",
+            "trap { Write-Error $_; continue }",
+            "trap [System.Exception] { Remove-Item .\\build -Recurse }",
+            "Register-EngineEvent PowerShell.Exiting -Action { Remove-Item build }",
+            "Register-ObjectEvent $watcher Changed -Action { Write-Host $Event.SourceEventArgs.Name }",
+            "Register-EngineEvent -SourceIdentifier PowerShell.Exiting",
+            "Register-ObjectEvent $timer Elapsed",
+            "Register-ObjectEvent $timer Elapsed -SourceIdentifier X",
+            "Register-ObjectEvent $timer Elapsed X",
+            "Register-ObjectEvent -InputObject $o -EventName E $source",
+            "Register-EngineEvent PowerShell.Exiting -MessageData $m",
+            "Register-EngineEvent PowerShell.Exiting -SupportEvent",
+            "Register-EngineEvent X { Remove-Item build }",
+            "Register-ObjectEvent $o E X { Remove-Item build }",
+            "Register-CimIndicationEvent -ClassName C -SourceIdentifier X",
+            "Unregister-Event Cleanup",
+        ],
+        &[
+            ("trap { Remove-Item -Recurse -Force ~ }", Rule::Delete),
+            ("trap { Remove-Item -Recurse -Force C:\\ }", Rule::Delete),
+            (
+                "trap [Exception] { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Remove-Item x; trap { Remove-Item -Recurse -Force ~; continue }",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action:{ Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-ObjectEvent $o Exited -Action { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-ObjectEvent -InputObject $o -EventName Exited -Action { rm -r -fo ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-WmiEvent -Class Win32_ProcessStartTrace -Action { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-CimIndicationEvent -ClassName X -Action { Remove-Item -Recurse -Force ~ }",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action { Set-Content ~\\.bashrc x }",
+                Rule::Overwrite,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action { Restart-Computer }",
+                Rule::StopSystem,
+            ),
+            // A block known only when it runs is a script the guard cannot read.
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action $block",
+                Rule::Unknown,
+            ),
+            (
+                "Register-ObjectEvent $o Exited -Action $block",
+                Rule::Unknown,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action ([scriptblock]::Create($text))",
+                Rule::Unknown,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action (Get-Content cleanup.ps1 -Raw)",
+                Rule::Unknown,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action:$block",
+                Rule::Unknown,
+            ),
+            // An action given by position or in a splat is as unknown as one
+            // given by name: the position is the last of the parameters the
+            // names leave, per the cmdlet's docs.
+            (
+                "$b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Register-EngineEvent PowerShell.Exiting $b",
+                Rule::Unknown,
+            ),
+            (
+                "Register-EngineEvent -SourceIdentifier X $b",
+                Rule::Unknown,
+            ),
+            ("Register-ObjectEvent $t Elapsed X $b", Rule::Unknown),
+            (
+                "Register-ObjectEvent -InputObject $t -EventName Elapsed -SourceIdentifier X $b",
+                Rule::Unknown,
+            ),
+            ("Register-ObjectEvent $t Elapsed -MessageData $m X $b", Rule::Unknown),
+            ("Register-WmiEvent -Class C X $b", Rule::Unknown),
+            ("Register-WmiEvent C X $b", Rule::Unknown),
+            ("Register-CimIndicationEvent -ClassName C X $b", Rule::Unknown),
+            ("Register-CimIndicationEvent -Query Q X (Get-Block)", Rule::Unknown),
+            (
+                "$p=@{SourceIdentifier='X'; Action=$b}; Register-EngineEvent @p",
+                Rule::Unknown,
+            ),
+            ("Register-ObjectEvent @p", Rule::Unknown),
+            ("Register-EngineEvent X -Verbose @p", Rule::Unknown),
+            // The action runs after the line has moved.
+            (
+                "trap { Remove-Item build }; Set-Location ~",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent PowerShell.Exiting -Action { Remove-Item build }; cd ..",
+                Rule::Delete,
+            ),
+            (
+                "Register-EngineEvent X -Action { Set-Location ~ }; Remove-Item build",
+                Rule::Delete,
+            ),
+            (
+                "pwsh -Command \"trap { Remove-Item -Recurse -Force ~ }\"",
+                Rule::Delete,
+            ),
+        ],
+    );
+    // Where the line is when the action is registered holds until it moves.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Set-Location build; trap { Remove-Item out }",
+            "trap { Remove-Item out }; Get-ChildItem",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn cmd_has_nothing_that_runs_later() {
+    // cmd has no `trap`: the word is a program, and what follows are its
+    // arguments.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["trap 'rd /s /q C:\\Users' EXIT"],
+        &[],
+    );
+}
+
+#[test]
 fn everyday_cmd_is_safe() {
     check(
         Shell::Cmd,
