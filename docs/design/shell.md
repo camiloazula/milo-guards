@@ -67,6 +67,10 @@ A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
 nested script does not reach the rest of the line. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
+so it is read as written, before the path is joined to where a `cd` moved:
+`cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
+overwrite of a file only known when it runs.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
@@ -222,7 +226,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device.
+- `$null` and `NUL` are the null device, in any folder (see "Where a line is").
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).

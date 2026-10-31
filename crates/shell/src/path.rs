@@ -124,6 +124,13 @@ impl Resolver {
     /// A key for the single file `arg` names from `dir`; `None` when it is
     /// not one definite file (a device, a wildcard, a brace list, unknown).
     pub(crate) fn file_key(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<String> {
+        // A device is the same in any folder: read it before the join.
+        if arg
+            .known()
+            .is_some_and(|text| device(text, shell).is_some())
+        {
+            return None;
+        }
         let arg = within(dir, arg, shell);
         let text = arg.known()?;
         if brace_list(text) || device(text, shell).is_some() || glob::has_wildcard(text) {
@@ -161,9 +168,15 @@ impl Resolver {
         matches!(within(dir, arg, shell), Arg::Unknown(_))
     }
 
-    /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
-    /// it may match a leading dot (`dotglob`).
-    pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+    /// Where `arg` lands when `shell` runs it from `dir`, where an earlier
+    /// `cd` moved; `hidden` says a wildcard in it may match a leading dot
+    /// (`dotglob`). A device is the same in any folder, so it is read as
+    /// written, before `arg` is joined to `dir`.
+    pub(crate) fn place(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+        if let Some(device) = arg.known().and_then(|text| device(text, shell)) {
+            return device;
+        }
+        let arg = &within(dir, arg, shell);
         match arg.known() {
             Some(text) => self.place_of(text, shell, hidden),
             None => Place::Unknown,

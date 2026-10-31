@@ -240,8 +240,7 @@ impl Checker<'_> {
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
     fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
-        self.resolver
-            .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+        self.resolver.place(scope.dir, arg, shell, scope.hidden)
     }
 
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
