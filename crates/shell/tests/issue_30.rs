@@ -95,6 +95,14 @@ fn a_pattern_can_match_the_short_name_of_git() {
             "del /s /q *2024*",
             "del /s /q *a*",
             "del /s /q *cafe*",
+            // No literal `~`: `cmd` skips a folder a wildcard matches.
+            "del /s /q git*",
+            "del /s /q G*",
+            "del /s /q *1",
+            "del /s /q *2",
+            "del /s /q Git*",
+            "del /s /q ?????",
+            "del /s /q git*\\objects",
         ],
         &[
             ("del /s /q GIT~?", Rule::Delete),
@@ -125,6 +133,13 @@ fn a_pattern_can_match_the_short_name_of_git() {
             "Remove-Item -Recurse -Force *2024*",
             "Remove-Item -Recurse -Force *a*",
             "Remove-Item -Recurse -Force *cafe*",
+            // No literal `~`: PowerShell matches no short name.
+            "Remove-Item -Recurse -Force git*",
+            "Remove-Item -Recurse -Force G*",
+            "Remove-Item -Recurse -Force *1",
+            "Remove-Item -Recurse -Force *2",
+            "Remove-Item -Recurse -Force Git*",
+            "Remove-Item -Recurse -Force git*\\objects",
         ],
         &[
             ("Remove-Item -Recurse -Force GIT~?", Rule::Delete),

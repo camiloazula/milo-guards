@@ -109,8 +109,9 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 /// so `*git.` and `'*git '` are `*git`; the pattern as written is tried too.
 /// A part also reaches `.git` when it can match its 8.3 short name, which
 /// drops the dot: `GIT~N`, or `GI`, four hex digits and `~N` (`GIT~?`, `*~1`);
-/// the hashed form only for a pattern that holds a literal `~`, so `*2024*`
-/// is not one. A part that only trimming makes a catch-all (`*.` is `*`) is
+/// but only for a pattern that holds a literal `~`, so `*2024*`, `git*`
+/// and `*1` are not short names (PowerShell matches none, and `cmd` skips a
+/// folder a wildcard matches). A part that only trimming makes a catch-all (`*.` is `*`) is
 /// not the whole folder, which the caller judges for a catch-all as written:
 /// it matches `.git`, so it reaches it.
 ///
@@ -179,12 +180,18 @@ fn bits(of: Takes, holds: impl Fn(char) -> bool) -> Takes {
 /// then `~` and a number; or, once names collide, `gi` and four hex digits,
 /// then `~` and a number. A name compares without case, as on Windows.
 ///
-/// A pattern that writes the `~` takes a number of any length and may match
-/// the hashed form. One that does not (`*2024*`, `*cafe*`, `GI*`) matches
-/// only `GIT~1` to `GIT~4`: a hashed name exists only once those are taken,
-/// and every `*a*` would match it.
+/// Only a pattern that writes the `~` can match one: it takes a number of
+/// any length and may match the hashed form. One that does not (`*2024*`,
+/// `*cafe*`, `GI*`, `git*`, `*1`) is an ordinary pattern. A hashed name
+/// exists only once `GIT~1` to `GIT~4` are taken and every `*a*` would match
+/// it; and `git*` or `*1` matching `GIT~1` is no reason to judge the line
+/// risky, since PowerShell does not match short names and `cmd` skips a
+/// folder a wildcard matches.
 fn matches_short_git(part: &str, flavour: Flavour) -> bool {
     let tokens = tokens(part, flavour);
+    if !tokens.contains(&Token::Literal('~')) {
+        return false;
+    }
     // What each token takes of the characters asked about so far: those
     // asked about, and which of them it takes. Each is worked out once and
     // not again for each state (a class can hold many members).
@@ -192,16 +199,11 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
     let one = |wanted: char| bits(!0, |c| c == wanted);
     let hex = bits(!0, |c| c.is_ascii_hexdigit());
     let digits = bits(!0, |c| c.is_ascii_digit());
-    let first_four = bits(!0, |c| ('1'..='4').contains(&c));
     let plain = vec![one('g'), one('i'), one('t'), one('~')];
     let hashed = vec![one('g'), one('i'), hex, hex, hex, hex, one('~')];
-    // Each form, the number after it, and whether that has any length.
-    let forms = if tokens.contains(&Token::Literal('~')) {
-        vec![(plain, digits, true), (hashed, digits, true)]
-    } else {
-        vec![(plain, first_four, false)]
-    };
-    forms.iter().any(|(form, number, long)| {
+    // Each form; the number after it has any length.
+    let forms = [plain, hashed];
+    forms.iter().any(|form| {
         // A state is a token and how much of the name is taken: a place in
         // `form`, then `form.len()` (no digit yet) and one past it (a digit
         // or more, where the name may end).
@@ -216,9 +218,7 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
             let Some(token) = tokens.get(at) else {
                 continue;
             };
-            let allowed = form.get(taken).copied().unwrap_or(*number);
-            // A number of one digit takes nothing more once it has one.
-            let more = taken < last || *long;
+            let allowed = form.get(taken).copied().unwrap_or(digits);
             let next = (taken + 1).min(last);
             let mut go = |at: usize, taken: usize| {
                 if !seen[at][taken] {
@@ -228,10 +228,8 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
             };
             if *token == Token::Star {
                 go(at + 1, taken);
-                if more {
-                    go(at, next);
-                }
-            } else if more {
+                go(at, next);
+            } else {
                 let (asked, taken_by) = &mut takes[at];
                 let new = allowed & !*asked;
                 *asked |= new;
@@ -686,9 +684,6 @@ mod tests {
             &["GI[A-F]???~1"],
             &["GI*~1"],
             &["GI3F2A~*"],
-            // A pattern with no `~` still takes `GIT~1` to `GIT~4`.
-            &["GI*"],
-            &["*1"],
             &["*GIT~1"],
             &["GIT~?.", "objects"],
             &["GIT~?", "HEAD"],
@@ -717,6 +712,14 @@ mod tests {
             &["GIT~1.txt"],
             &["GIT~?", "bin"],
             &["*~1", "bin"],
+            // No literal `~`: an ordinary pattern, though it matches `GIT~1`.
+            &["GI*"],
+            &["*1"],
+            &["git*"],
+            &["G*"],
+            &["*2"],
+            &["?????"],
+            &["Git*", "objects"],
             // The hashed form needs a literal `~`.
             &["*2024*"],
             &["*a*"],
