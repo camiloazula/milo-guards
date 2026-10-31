@@ -386,30 +386,51 @@ pub(super) fn matches_any(pattern: &str, names: &[&str], exact: bool, ignore_cas
     let Some(re) = parse(pattern, true) else {
         return true;
     };
+    search(&re, names, (exact, ignore_case, false))
+}
+
+/// Whether the regular expression, searched for in a whole command line as
+/// `pkill -f` does, can match the command line of a process that starts as
+/// one of `programs` (their paths) and is given arguments that are not
+/// known: a match that began in the path and can go on into a space and the
+/// arguments counts. A `/` is a plain character here, since the
+/// program is not what the expression is compared with. An expression that
+/// cannot be read counts as matching.
+pub(super) fn matches_command_line(
+    pattern: &str,
+    programs: &[&str],
+    exact: bool,
+    ignore_case: bool,
+) -> bool {
+    let Some(re) = parse(pattern, false) else {
+        return true;
+    };
+    search(&re, programs, (exact, ignore_case, true))
+}
+
+/// Whether the expression can match any of `names`; `flags` are `exact`,
+/// `ignore_case` and `open` (see `run`).
+fn search(re: &Re, names: &[&str], flags: (bool, bool, bool)) -> bool {
     let mut program = Vec::new();
-    compile(&re, &mut program);
+    compile(re, &mut program);
     program.push(Inst::Match);
     let mut seen = vec![0_u32; program.len()];
     let mut generation = 0;
     names.iter().any(|name| {
         let name: Vec<char> = name.chars().collect();
-        run(
-            &program,
-            &name,
-            (exact, ignore_case),
-            &mut seen,
-            &mut generation,
-        )
+        run(&program, &name, flags, &mut seen, &mut generation)
     })
 }
 
 /// Run the program over `name`, in time proportional to the program's size
 /// times the name's length: the places it can be at after each character are
-/// kept as a set, never followed one by one.
+/// kept as a set, never followed one by one. With `open`, the name is only
+/// the start of what is searched: a match that began in it and can go on into a
+/// space and what follows counts.
 fn run(
     program: &[Inst<'_>],
     name: &[char],
-    (exact, ignore_case): (bool, bool),
+    (exact, ignore_case, open): (bool, bool, bool),
     seen: &mut [u32],
     generation: &mut u32,
 ) -> bool {
@@ -417,12 +438,17 @@ fn run(
     let mut stack = Vec::new();
     for at in 0..=name.len() {
         // A search starts anywhere; an exact match only at the start.
+        let carried = entering.len();
         if at == 0 || !exact {
             entering.push(0);
         }
         *generation += 1;
         let mut threads = Vec::new();
-        for &start in &entering {
+        let mut going = 0;
+        for (index, &start) in entering.iter().enumerate() {
+            if index == carried {
+                going = threads.len();
+            }
             stack.push(start);
             while let Some(pc) = stack.pop() {
                 if seen[pc] == *generation {
@@ -449,6 +475,19 @@ fn run(
                 }
             }
         }
+        if carried == entering.len() {
+            going = threads.len();
+        }
+        // A match that began in the name and goes on past it: a command line
+        // is the name, a space, and arguments that are not known.
+        if open
+            && at == name.len()
+            && threads[..going]
+                .iter()
+                .any(|&pc| takes(program, pc, ' ', ignore_case))
+        {
+            return true;
+        }
         if (!exact || at == name.len())
             && threads.iter().any(|&pc| matches!(program[pc], Inst::Match))
         {
@@ -459,16 +498,19 @@ fn run(
         };
         entering = threads
             .into_iter()
-            .filter(|&pc| match program[pc] {
-                Inst::Char(wanted) => {
-                    wanted == c || (ignore_case && wanted.eq_ignore_ascii_case(&c))
-                }
-                Inst::Any => true,
-                Inst::Set(set) => set.matches(c, ignore_case),
-                _ => false,
-            })
+            .filter(|&pc| takes(program, pc, c, ignore_case))
             .map(|pc| pc + 1)
             .collect();
     }
     false
+}
+
+/// Whether the instruction at `pc` reads the character `c`.
+fn takes(program: &[Inst<'_>], pc: usize, c: char, ignore_case: bool) -> bool {
+    match program[pc] {
+        Inst::Char(wanted) => wanted == c || (ignore_case && wanted.eq_ignore_ascii_case(&c)),
+        Inst::Any => true,
+        Inst::Set(set) => set.matches(c, ignore_case),
+        _ => false,
+    }
 }

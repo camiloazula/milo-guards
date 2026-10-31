@@ -58,7 +58,6 @@ fn stopping_a_process_by_a_plain_name_is_safe() {
             "pkill 'a{0'",
             "pkill 'ab{2}'",
             "pkill -P 1234",
-            "pkill -t pts/1",
             "pgrep node",
             "pgrep -f .",
             "pgrep -u me",
@@ -1223,6 +1222,16 @@ fn the_process_rules_read_long_patterns_quickly() {
     }
 }
 
+/// `f(){ OPEN×depth f; ×calls CLOSE×depth }`: a body nested `depth` deep.
+fn nested(open: &str, close: &str, depth: usize, calls: usize) -> String {
+    format!(
+        "f(){{ {}{}{} }}",
+        open.repeat(depth),
+        "f; ".repeat(calls),
+        close.repeat(depth)
+    )
+}
+
 #[test]
 #[allow(
     clippy::disallowed_methods,
@@ -1231,7 +1240,7 @@ fn the_process_rules_read_long_patterns_quickly() {
 fn the_fork_bomb_scan_reads_nested_functions_quickly() {
     let linux = posix();
     let slow = std::time::Duration::from_millis(500);
-    for line in [
+    let lines = [
         format!("{}f & {}", "f(){ ".repeat(390), "; }".repeat(390)),
         format!("{}{}", "f(){ f & ".repeat(390), "}; ".repeat(390)),
         format!("{}f; {}", "f(){ ".repeat(1_000), "; }".repeat(1_000)),
@@ -1241,11 +1250,25 @@ fn the_fork_bomb_scan_reads_nested_functions_quickly() {
             "echo x; ".repeat(2_500)
         ),
         format!("f() {{ {}{}f & }}", "{ ".repeat(1_500), "f; ".repeat(5_000)),
-    ] {
+    ];
+    // A body of balanced `if`, `while` and `( )` nested near the depth limit,
+    // with thousands of calls to the function inside it. A read that climbs
+    // from each call takes minutes; the limit is loose so that a slow or
+    // busy machine does not trip it.
+    let deep = [
+        nested("if true; then ", "fi; ", 390, 15_000),
+        nested("while true; do ", "done; ", 390, 15_000),
+        nested("( ", ") ", 390, 15_000),
+    ];
+    let limits = lines
+        .iter()
+        .map(|line| (line, slow))
+        .chain(deep.iter().map(|line| (line, slow * 8)));
+    for (line, limit) in limits {
         let started = std::time::Instant::now();
-        let _ = classify(&line, Shell::Posix, &linux);
+        let _ = classify(line, Shell::Posix, &linux);
         let took = started.elapsed();
-        assert!(took < slow, "{} bytes took {took:?}", line.len());
+        assert!(took < limit, "{} bytes took {took:?}", line.len());
     }
 }
 
@@ -1397,6 +1420,94 @@ fn select_object_that_hands_on_other_objects_is_not_a_narrowing() {
                 "Get-Process node | select -exp Parent | Select-Object -First 1 | kill",
                 Rule::StopSystem,
             ),
+        ],
+    );
+}
+
+// ---- Review follow-up: the third review of the process rules ----
+
+#[test]
+fn pkill_f_searches_the_whole_command_line_of_a_system_process() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill -f 'node server.js'",
+            "pkill -f vite",
+            "pkill -f 'npm run dev'",
+            "pkill -f ./target/debug/myapp",
+            "pkill -9 -f 'python -m http.server'",
+            "pkill --full 'java -jar app.jar'",
+        ],
+        &[
+            ("pkill -f /System/Library", Rule::StopSystem),
+            ("pkill -f System", Rule::StopSystem),
+            ("pkill -f 'WindowServer -daemon'", Rule::StopSystem),
+            ("pkill -f 'loginwindow console'", Rule::StopSystem),
+            ("pkill -f 'systemd --user'", Rule::StopSystem),
+            ("pkill --full /lib/systemd", Rule::StopSystem),
+            ("pkill -f '^/sbin/init'", Rule::StopSystem),
+            ("pkill -fx '/sbin/launchd'", Rule::StopSystem),
+            ("pkill -f 'launchd -x'", Rule::StopSystem),
+            ("sudo pkill -f '/usr/lib/systemd'", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn pkill_without_f_does_not_search_the_command_line() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["pkill 'WindowServer -daemon'", "pkill 'systemd --user'"],
+        &[],
+    );
+}
+
+#[test]
+fn killall_c_is_a_name_and_t_picks_a_terminal() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &["killall -c node", "killall -t ttys000 node"],
+        &[
+            ("killall -c loginwindow", Rule::StopSystem),
+            ("killall -c WindowServer", Rule::StopSystem),
+            ("killall -m -c .", Rule::StopSystem),
+            ("killall -t ttys000", Rule::StopSystem),
+            ("killall -cloginwindow", Rule::StopSystem),
+            ("killall -c $NAME", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn pkill_given_only_a_selection_stops_everything_it_picks() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill -P $$",
+            "pkill -F pids.txt",
+            "pkill -P 1 node",
+            "pkill -P 1234",
+            "pkill -P 12,34",
+            "pkill -t pts/1 node",
+        ],
+        &[
+            ("pkill -P 1", Rule::StopSystem),
+            ("pkill -P 0", Rule::StopSystem),
+            ("pkill -P 1,1234", Rule::StopSystem),
+            ("pkill --parent 1", Rule::StopSystem),
+            ("pkill --parent=1", Rule::StopSystem),
+            ("pkill --older 1", Rule::StopSystem),
+            ("pkill --runstates S", Rule::StopSystem),
+            ("pkill --cgroup /user.slice", Rule::StopSystem),
+            ("pkill --ns 1", Rule::StopSystem),
+            ("pkill --env HOME", Rule::StopSystem),
+            ("pkill -t ttys000", Rule::StopSystem),
+            ("pkill -t pts/1", Rule::StopSystem),
+            ("pkill --terminal pts/1", Rule::StopSystem),
         ],
     );
 }

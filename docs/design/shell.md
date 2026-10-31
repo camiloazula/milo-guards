@@ -270,9 +270,17 @@ the same line. It is `stop_system` when the line stops more than a name:
   and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
   after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
   process but the ones named) are always `stop_system`.
-- **Every process of a user or a group.** `pkill -u me`, `-U`, `-G`,
-  `killall -u me`, `taskkill /FI "USERNAME eq me"`, given no name. With a name
-  (`pkill -u me node`) it is the name that is judged.
+- **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
+  `-G`, `killall -u me`, `killall -t ttys000`, `taskkill /FI "USERNAME eq me"`,
+  given no name. With a name (`pkill -u me node`) it is the name that is
+  judged. `killall -c name` is a name too, judged as the operands are
+  (`killall -c loginwindow`, `killall -m -c .`).
+- **Every process a selection picks.** `pkill` given no pattern stops whatever
+  its selection picks: `-P`/`--parent` of 0 or 1 (every child of `launchd` or
+  `init`, which is every app and daemon, `pkill -P 1`), and `--older`,
+  `--runstates`, `--cgroup`, `--ns`, `--env`, `-t`/`--terminal` with any value
+  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$`, `pkill -F pids.txt`
+  and `pkill -P 1 node` (the name is judged) are not.
 - **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
   `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
   "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
@@ -300,8 +308,18 @@ the same line. It is `stop_system` when the line stops more than a name:
   (an escape, a collating element, `\b`, a back reference) it is read as
   matching more, so `pkill '[l]aunchd'`, `pkill 'log.n'`, `pkill 'login(window)?'`,
   `pkill 'a+'` and `pkill '[[:alpha:]]x'` are `stop_system` while `pkill
-  '[n]ode'` and `pkill -f 'node.*server'` are not. A `/` ends a folder, so
-  what follows it is the name (`pkill -f '/sbin/[i]nit'`). `killall` without
+  '[n]ode'` and `pkill -f 'node.*server'` are not. Without `-f` a `/` ends
+  a folder, so what follows it is the name (`pkill '/sbin/[i]nit'`); `-f`
+  matches the whole command line, so there the pattern is also searched, `/`
+  and all, in the usual command lines of the system processes
+  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow`,
+  the `WindowServer` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
+  `/usr/lib/systemd/systemd`), and a match that is still going at the end of
+  the path and can go on into a space counts, since the arguments are not
+  known: `pkill -f /System/Library`, `pkill -f System`, `pkill -f
+  'WindowServer -daemon'` and `pkill -f 'systemd --user'` are `stop_system`
+  while `pkill -f 'node server.js'`, `pkill -f vite` and `pkill -f
+  ./target/debug/myapp` are not. `killall` without
   `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
   matches one is the same (`Stop-Process -Name s*`).
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,

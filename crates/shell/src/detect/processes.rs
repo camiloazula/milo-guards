@@ -26,8 +26,13 @@ enum Names {
     Literal,
     /// As a regular expression, searched for in each name: `pkill node`.
     /// `exact` is `pkill -x`, which wants the whole name to match;
-    /// `ignore_case` is `pkill -i` and `killall -I`.
-    Regex { exact: bool, ignore_case: bool },
+    /// `ignore_case` is `pkill -i` and `killall -I`; `full` is `pkill -f`,
+    /// which searches the whole command line, not only the name.
+    Regex {
+        exact: bool,
+        ignore_case: bool,
+        full: bool,
+    },
     /// With the wildcards `*`, `?` and `[a-z]`: `Stop-Process -Name node*`,
     /// `taskkill /IM node*`.
     Wildcard,
@@ -51,6 +56,19 @@ const SYSTEM_PROCESSES: [&str; 15] = [
     "smss",
     "services",
     "svchost",
+];
+
+/// The command lines the system processes usually start with, as far as the
+/// program: what is given to them after it is not known. `pkill -f` searches
+/// these as a whole, so a pattern that is part of one (`/System/Library`,
+/// `WindowServer -daemon`) stops the process.
+const SYSTEM_COMMAND_LINES: [&str; 6] = [
+    "/sbin/launchd",
+    "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
+    "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+    "/sbin/init",
+    "/lib/systemd/systemd",
+    "/usr/lib/systemd/systemd",
 ];
 
 /// `Stop-Process`'s own parameters.
@@ -83,12 +101,22 @@ impl Checker<'_> {
             Names::Regex {
                 exact: false,
                 ignore_case: options.has("I") || options.has("ignore-case"),
+                full: false,
             }
         } else {
             Names::Literal
         };
-        let user = options.has_value("u") || options.has_value("user");
-        self.stop_all(&options.operands, kind, user);
+        // `-c name` is a name too, judged as the operands are.
+        let mut names = options.operands.clone();
+        names.extend(options.values("c"));
+        let picks = if ["u", "user"].iter().any(|name| options.has_value(name)) {
+            Some("stops every process of a user")
+        } else if options.has_value("t") {
+            Some("stops every process on a terminal")
+        } else {
+            None
+        };
+        self.stop_all(&names, kind, picks);
     }
 
     /// `pkill`: regular expressions, searched for in each name.
@@ -111,16 +139,27 @@ impl Checker<'_> {
         let kind = Names::Regex {
             exact: options.has("x") || options.has("exact"),
             ignore_case: options.has("i") || options.has("ignore-case"),
+            full: options.has("f") || options.has("full"),
         };
-        self.stop_all(&options.operands, kind, user);
+        // Given no pattern, a selection stops everything it picks: a user's
+        // processes, the children of `init`, every process older than a
+        // second, a terminal's.
+        let picks = if user {
+            Some("stops every process of a user")
+        } else if picks_without_pattern(&options) {
+            Some("stops every process a filter picks")
+        } else {
+            None
+        };
+        self.stop_all(&options.operands, kind, picks);
     }
 
-    /// The names a stop is given, or every process of a user when it is
-    /// given a user and no name.
-    fn stop_all(&mut self, names: &[&Arg], kind: Names, user: bool) {
+    /// The names a stop is given, or what a selection stops when it is given
+    /// no name (`picks` says what it picks).
+    fn stop_all(&mut self, names: &[&Arg], kind: Names, picks: Option<&str>) {
         if names.is_empty() {
-            if user {
-                self.add(Rule::StopSystem, "stops every process of a user", None);
+            if let Some(reason) = picks {
+                self.add(Rule::StopSystem, reason, None);
             }
             return;
         }
@@ -490,9 +529,9 @@ impl Long {
 /// a signal (`-9`, `-HUP`), and long options that may be abbreviated.
 struct Options<'a> {
     operands: Vec<&'a Arg>,
-    /// Every option given, by its short letter or full long name, and
-    /// whether it was given a value.
-    given: Vec<(String, bool)>,
+    /// Every option given, by its short letter or full long name, and the
+    /// value it was given, if any.
+    given: Vec<(String, Option<Arg>)>,
 }
 
 impl<'a> Options<'a> {
@@ -511,10 +550,7 @@ impl<'a> Options<'a> {
             if text == "--" {
                 reading = false;
             } else if let Some(long) = text.strip_prefix("--") {
-                let (name, attached) = match long.split_once('=') {
-                    Some((name, _)) => (name, true),
-                    None => (long, false),
-                };
+                let name = long.split_once('=').map_or(long, |(name, _)| name);
                 // A long option may be abbreviated to three letters.
                 let found = longs.iter().find(|full| full.name == name).or_else(|| {
                     longs
@@ -523,11 +559,14 @@ impl<'a> Options<'a> {
                 });
                 match found {
                     Some(full) if full.value => {
-                        let valued = attached || iter.next().is_some();
-                        options.given.push((full.name.to_string(), valued));
+                        let value = match long.split_once('=') {
+                            Some((_, value)) => Some(Arg::Known(value.to_string())),
+                            None => iter.next().cloned(),
+                        };
+                        options.given.push((full.name.to_string(), value));
                     }
-                    Some(full) => options.given.push((full.name.to_string(), false)),
-                    None => options.given.push((name.to_string(), false)),
+                    Some(full) => options.given.push((full.name.to_string(), None)),
+                    None => options.given.push((name.to_string(), None)),
                 }
             } else if text.len() > 1 && text.starts_with('-') {
                 options.bundle(&text[1..], short_values, &mut iter);
@@ -552,11 +591,15 @@ impl<'a> Options<'a> {
         for (at, letter) in letters.char_indices() {
             if short_values.contains(letter) {
                 let rest = &letters[at + letter.len_utf8()..];
-                let valued = !rest.is_empty() || iter.next().is_some();
-                self.given.push((letter.to_string(), valued));
+                let value = if rest.is_empty() {
+                    iter.next().cloned()
+                } else {
+                    Some(Arg::Known(rest.to_string()))
+                };
+                self.given.push((letter.to_string(), value));
                 return;
             }
-            self.given.push((letter.to_string(), false));
+            self.given.push((letter.to_string(), None));
         }
     }
 
@@ -568,8 +611,35 @@ impl<'a> Options<'a> {
     fn has_value(&self, name: &str) -> bool {
         self.given
             .iter()
-            .any(|(given, valued)| given == name && *valued)
+            .any(|(given, value)| given == name && value.is_some())
     }
+
+    /// The values an option was given, each time it was.
+    fn values(&self, name: &str) -> Vec<&Arg> {
+        self.given
+            .iter()
+            .filter(|(given, _)| given == name)
+            .filter_map(|(_, value)| value.as_ref())
+            .collect()
+    }
+}
+
+/// Whether a `pkill` given the selections in `options` and no pattern stops
+/// every process they pick: the children of `init` or of nothing (`-P 1`),
+/// the processes older than a time, in a state, a control group, a namespace
+/// or with a variable, and a terminal's.
+fn picks_without_pattern(options: &Options<'_>) -> bool {
+    let init = ["P", "parent"].iter().any(|name| {
+        options.values(name).iter().any(|value| {
+            value.known().is_some_and(|text| {
+                text.split(',')
+                    .any(|id| matches!(id.trim().parse::<u64>(), Ok(0 | 1)))
+            })
+        })
+    });
+    init || ["older", "runstates", "cgroup", "ns", "env", "t", "terminal"]
+        .iter()
+        .any(|name| options.has(name))
 }
 
 /// The name as a process is known: lower case, without `.exe`.
@@ -590,7 +660,11 @@ fn names_system_process(text: &str, kind: Names) -> bool {
                 .iter()
                 .any(|system| process_name(system) == process_name(name))
         }
-        Names::Regex { exact, ignore_case } => {
+        Names::Regex {
+            exact,
+            ignore_case,
+            full,
+        } => {
             // Each alternative of a pattern, without its anchors and
             // brackets, and its folder when it is a command line's program,
             // compared whole (`Explorer`, `explorer.exe`); and the
@@ -602,6 +676,15 @@ fn names_system_process(text: &str, kind: Names) -> bool {
                     .iter()
                     .any(|system| process_name(system) == process_name(name))
             }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case)
+                // `-f` searches the whole command line, whose program is not
+                // the last part of a path the pattern spells.
+                || (full
+                    && regex::matches_command_line(
+                        text,
+                        &SYSTEM_COMMAND_LINES,
+                        exact,
+                        ignore_case,
+                    ))
         }
         Names::Wildcard => {
             let pieces = wildcard_pieces(&process_name(text));

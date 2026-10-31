@@ -1,6 +1,6 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
-use tree_sitter::Node;
+use tree_sitter::{Node, TreeCursor};
 
 use crate::dotglob;
 use crate::launch;
@@ -362,33 +362,37 @@ impl Walker<'_> {
             return;
         };
         // A function defined inside is judged when the walk reaches it, so
-        // its commands are not read again here: each node is read once.
+        // its commands are not read again here: each node is read once. Each
+        // level of the walk says whether what it holds runs apart, so the
+        // scan never climbs back up: it is linear in the nodes.
         let mut cursor = body.walk();
+        let mut stack = vec![Level::of(body, false, &mut cursor)];
         let mut bomb = false;
-        'walk: loop {
-            let inner = cursor.node();
-            let nested = inner.kind() == "function_definition";
-            if !nested
+        while let Some(level) = stack.last_mut() {
+            let Some(&inner) = level.children.get(level.at) else {
+                stack.pop();
+                continue;
+            };
+            let apart = level.apart
+                || level.staged
+                || level
+                    .children
+                    .get(level.at + 1)
+                    .is_some_and(|next| next.kind() == "&");
+            level.at += 1;
+            if inner.kind() == "function_definition" {
+                continue;
+            }
+            if apart
                 && inner.kind() == "command"
                 && inner
                     .child_by_field_name("name")
                     .is_some_and(|called| self.arg(called).known() == Some(name))
-                && starts_apart(inner, body)
             {
                 bomb = true;
                 break;
             }
-            if !nested && cursor.goto_first_child() {
-                continue;
-            }
-            loop {
-                if cursor.goto_next_sibling() {
-                    break;
-                }
-                if !cursor.goto_parent() {
-                    break 'walk;
-                }
-            }
+            stack.push(Level::of(inner, apart, &mut cursor));
         }
         if bomb {
             self.split.problem(
@@ -678,25 +682,27 @@ impl Walker<'_> {
     }
 }
 
-/// Whether `call`, inside `body`, runs as a process of its own: followed by
-/// `&`, or a stage of a pipeline. A function defined in between ends the
-/// climb: what is inside it is that function's own.
-fn starts_apart(call: Node<'_>, body: Node<'_>) -> bool {
-    let mut at = call;
-    loop {
-        if at.next_sibling().is_some_and(|next| next.kind() == "&") {
-            return true;
+/// One node of the fork-bomb scan, with its children still to read.
+struct Level<'t> {
+    children: Vec<Node<'t>>,
+    /// The next child to read.
+    at: usize,
+    /// Whether the node, or one it is inside (up to the function's body), is
+    /// followed by `&` or is a stage of a pipeline: what it holds runs as a
+    /// process of its own.
+    apart: bool,
+    /// Whether the children are the stages of a pipeline of more than one.
+    staged: bool,
+}
+
+impl<'t> Level<'t> {
+    fn of(node: Node<'t>, apart: bool, cursor: &mut TreeCursor<'t>) -> Self {
+        Self {
+            children: node.children(cursor).collect(),
+            at: 0,
+            apart,
+            staged: node.kind() == "pipeline" && node.named_child_count() > 1,
         }
-        let Some(parent) = at.parent() else {
-            return false;
-        };
-        if parent.kind() == "pipeline" && parent.named_child_count() > 1 {
-            return true;
-        }
-        if parent.id() == body.id() || parent.kind() == "function_definition" {
-            return false;
-        }
-        at = parent;
     }
 }
 
