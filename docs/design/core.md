@@ -189,7 +189,8 @@ guard keeps these:
   `Outside`.
 - `$null`, and brace lists such as `{~,x}`, which are `Unknown`.
 - `within`, which joins a path to the folder an earlier `cd` moved to.
-- `listed`, which says what a listing hands on to the next command.
+- `listed`, which says what a listing hands on to the next command: a pattern
+  as written, so it is judged as a delete of it would be.
 
 The seam is the text of a path. Above it is everything the input's syntax
 decides. Below it is only how a path is spelled on a system.

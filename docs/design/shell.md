@@ -125,7 +125,19 @@ a path.
   does not say, so it is unknown.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.
 - A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
-  `Env:`, is outside the workspace.
+  `Env:`, is outside the workspace. The drive is read before a wildcard, so
+  `HKCU:*` is the registry like `HKCU:\*`.
+- A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
+  from that drive's own working directory, and so is a bare `C:`. On the drive
+  the working directory is on, it is relative to it; on any other drive it is
+  outside the workspace. After a `cd` it is unknown, except that after `cd C:`
+  a relative path is `C:x`, a path on that drive.
+- A listing hands its pattern on as written, so it is read the same way: the
+  drive is not part of the pattern (`Get-ChildItem C:* | Remove-Item` takes the
+  whole working directory), and a provider-qualified one
+  (`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER*`) is judged on the
+  provider's own path.
+  A drive's root listed (`C:\*`) is the root, not the drive's working directory.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
@@ -170,6 +182,10 @@ Some risks only show when units are read together.
   written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
   `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `run_downloaded`. The guard
   matches the two by the file they name (core's `key`).
+  When the line writes a file (a device such as `/dev/null` does not count),
+  a script whose path cannot be placed (after a `cd` to somewhere unknown, or
+  `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
+  A line that writes nothing has no such script.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the

@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{check, windows};
-use milo_guards_shell::{classify, Rule, Shell};
+use common::{check, rules, windows};
+use milo_guards_shell::{classify, Paths, Rule, Shell};
 
 #[test]
 fn everyday_powershell_is_safe() {
@@ -335,6 +335,242 @@ fn dev_is_a_real_folder_on_windows() {
             ("rd /s /q /dev/./null", Rule::Delete),
         ],
     );
+}
+
+#[test]
+fn a_provider_is_read_before_a_wildcard() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item *.log", "Remove-Item build\\*.obj"],
+        &[
+            ("Remove-Item -Recurse -Force HKCU:*", Rule::SystemSettings),
+            ("Remove-Item -Recurse -Force HKLM:*", Rule::SystemSettings),
+            ("Remove-Item -Recurse -Force HKCU:\\*", Rule::SystemSettings),
+            ("Remove-Item -Recurse hklm:Software*", Rule::SystemSettings),
+            ("Remove-Item -Recurse Cert:*", Rule::Delete),
+            ("Remove-Item -Recurse Env:*", Rule::Delete),
+            (
+                "Get-ChildItem HKCU:*.x | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            ("Get-ChildItem Cert:* | Remove-Item", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_drive_relative_path_is_from_its_drives_own_directory() {
+    // The working directory is on D:, so `C:` is a drive it is not on.
+    let on_d = Paths::new(r"D:\work\repo", r"D:\Users\me", [r"D:\work\repo"]);
+    check(
+        Shell::PowerShell,
+        &on_d,
+        &["Remove-Item *.log", "Remove-Item D:*.log"],
+        &[
+            ("Remove-Item -Recurse C:*", Rule::Delete),
+            ("Remove-Item -Recurse c:build", Rule::Delete),
+            ("Remove-Item -Recurse C:..", Rule::Delete),
+            ("Remove-Item -Recurse D:*", Rule::Delete),
+            ("Get-ChildItem C:*.log | Remove-Item", Rule::Delete),
+            (
+                "Remove-Item -Recurse C:*; Remove-Item -Recurse D:",
+                Rule::Delete,
+            ),
+            ("cd D:\\work; Remove-Item -Recurse C:*", Rule::Delete),
+            ("'x' > C:i.sh; bash c:i.sh", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &on_d,
+        &["del *.obj", "del D:*.obj"],
+        &[("del /q C:*", Rule::Delete), ("rd /s /q C:x", Rule::Delete)],
+    );
+    // On C:, `C:x` is `x` from the working directory.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item C:*.log",
+            "Remove-Item -Recurse c:target",
+            "Remove-Item -Recurse C:build\\*.obj",
+            "Get-ChildItem C:*.log | Remove-Item",
+        ],
+        &[
+            ("Remove-Item -Recurse C:*", Rule::Delete),
+            ("Remove-Item -Recurse C:..\\..", Rule::Delete),
+            ("Get-ChildItem C:* | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem -Path C:* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem C:?* | Remove-Item -Recurse", Rule::Delete),
+            ("Get-ChildItem C:.g* | Remove-Item -Recurse", Rule::Delete),
+            (
+                "Get-ChildItem -Force C:.* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            ("Remove-Item -Recurse C:", Rule::Delete),
+            ("Remove-Item -Recurse D:target", Rule::Delete),
+            ("'x' > C:i.sh; bash i.sh", Rule::Unknown),
+            // A `cd` moves where `C:x` lands.
+            ("cd C:..; Remove-Item -Recurse C:x", Rule::Delete),
+            ("cd ..\\..; Remove-Item -Recurse C:x", Rule::Delete),
+            ("cd C:..\\..\\..; Remove-Item -Recurse x", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_provider_qualified_listing_is_judged_by_its_provider() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::*.log | Remove-Item"],
+        &[
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER* | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\Registry::* | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::C:* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem Registry::HKEY_CURRENT_USER*.x | Remove-Item -Recurse",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem FileSystem::D:\\data\\* | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_bare_drive_is_that_drives_working_directory() {
+    // The working directory is on D:, with a second workspace on C:.
+    let paths = Paths::new(r"D:\work\repo", r"D:\Users\me", [r"D:\work\repo", r"C:\ws"]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "Remove-Item -Recurse target",
+            "Remove-Item -Recurse D:target",
+        ],
+        &[
+            ("cd C:; Remove-Item -Recurse ws\\sub", Rule::Delete),
+            ("cd C:; Remove-Item -Recurse ..\\ws\\sub", Rule::Delete),
+            ("C:; Remove-Item -Recurse ws\\sub", Rule::Delete),
+            ("Remove-Item -Recurse C:", Rule::Delete),
+            ("cd C:x; Remove-Item -Recurse ws", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &["rd /s /q target"],
+        &[
+            ("C: & rd /s /q ws\\sub", Rule::Delete),
+            ("rd /s /q C:", Rule::Delete),
+        ],
+    );
+    // On C:, the bare drive is the working directory, the workspace itself.
+    let finding = classify("Remove-Item -Recurse C:", Shell::PowerShell, &windows());
+    assert_eq!(finding.findings()[0].reason, "deletes the whole workspace");
+}
+
+#[test]
+fn a_listing_of_a_drives_root_is_the_root() {
+    let lines = [
+        "Get-ChildItem C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem -Path C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem C:/* | Remove-Item -Recurse",
+        "Get-ChildItem -Force C:\\.* | Remove-Item -Recurse",
+        "Get-ChildItem -Recurse C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem FileSystem::C:\\* | Remove-Item -Recurse",
+        "Get-ChildItem Microsoft.PowerShell.Core\\FileSystem::C:\\* | Remove-Item -Recurse",
+    ];
+    // From the workspace and from a folder inside it.
+    let inside = Paths::new(
+        r"C:\Users\me\dev\repo\app",
+        r"C:\Users\me",
+        [r"C:\Users\me\dev\repo"],
+    );
+    for paths in [windows(), inside] {
+        let rows: Vec<_> = lines.iter().map(|line| (*line, Rule::Delete)).collect();
+        check(Shell::PowerShell, &paths, &[], &rows);
+        for line in lines {
+            let found = classify(line, Shell::PowerShell, &paths);
+            assert_eq!(
+                found.findings()[0].reason,
+                "deletes the root of the disk",
+                "{line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_script_run_from_a_place_the_guard_cannot_read_is_risky() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "cd sub; cargo test",
+            "cd C:\\Users\\me\\dev\\repo\\sub; bash C:\\Users\\me\\dev\\repo\\sub\\x.sh",
+        ],
+        &[
+            ("cd C:; 'x' > i.sh; bash C:i.sh", Rule::Unknown),
+            ("cd sub; 'x' > i.sh; bash C:i.sh", Rule::Unknown),
+            ("cd $x; 'x' > i.sh; bash i.sh", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[("cd C: & echo x > i.sh & bash C:i.sh", Rule::Unknown)],
+    );
+}
+
+#[test]
+fn a_windows_script_run_after_a_cd_to_an_unknown_place_needs_a_write_to_be_risky() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Set-Location $PSScriptRoot; python x.py",
+            "cd $dir; bash x.sh 2>$null",
+        ],
+        &[
+            ("cd $dir; 'x' > i.sh; bash i.sh", Rule::Unknown),
+            ("'x' > i.sh; cd $dir; bash ..\\i.sh", Rule::Unknown),
+            ("cd $dir; bash x.sh > $out", Rule::Unknown),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["cd %X% & python run.py"],
+        &[("cd %X% & echo x > i.sh & bash i.sh", Rule::Unknown)],
+    );
+    // A device is no write that could be a script: only the unplaceable
+    // `cd` is found for it, never an unknown script.
+    for (shell, line) in [
+        (Shell::PowerShell, "cd $dir; bash x.sh > $null"),
+        (Shell::PowerShell, "cd $dir; python x.py > NUL"),
+        (Shell::Cmd, "cd %X% & bash x.sh > nul"),
+    ] {
+        let found = rules(line, shell, &windows());
+        assert!(!found.contains(&Rule::Unknown), "{line}: {found:?}");
+    }
 }
 
 #[test]
