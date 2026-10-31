@@ -103,7 +103,7 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                         if key != "eval" {
                             split.restore_hidden(outer);
                         } else if stage.is_some() {
-                            split.restore_hidden(outer || split.hidden_snapshot());
+                            split.restore_hidden(outer.or(split.hidden_snapshot()));
                         }
                     }
                     other => split.problem(

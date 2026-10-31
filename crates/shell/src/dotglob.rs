@@ -9,11 +9,49 @@
 
 use crate::unit::Arg;
 
-/// What a unit does to the option.
+/// What a unit does to the option. A shell has two of them, bash's and zsh's,
+/// and an off switch of one shell is an error in the other, so each is kept
+/// apart: `Some(true)` turns a flag on, `Some(false)` off, `None` leaves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Change {
-    On,
-    Off,
+pub(crate) struct Change {
+    pub(crate) bash: Option<bool>,
+    pub(crate) zsh: Option<bool>,
+}
+
+impl Change {
+    pub(crate) const BASH_ON: Self = Self::new(Some(true), None);
+    pub(crate) const BASH_OFF: Self = Self::new(Some(false), None);
+    pub(crate) const ZSH_ON: Self = Self::new(None, Some(true));
+    #[cfg(test)]
+    pub(crate) const ZSH_OFF: Self = Self::new(None, Some(false));
+    /// What a name or file only known when it runs may do.
+    pub(crate) const BOTH_ON: Self = Self::new(Some(true), Some(true));
+
+    const fn new(bash: Option<bool>, zsh: Option<bool>) -> Self {
+        Self { bash, zsh }
+    }
+
+    /// `zsh_on` for zsh's flag.
+    const fn zsh(on: bool) -> Self {
+        Self::new(None, Some(on))
+    }
+
+    /// Both changes at once, on winning for each flag.
+    fn and(self, other: Self) -> Self {
+        fn flag(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+            match (a, b) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (None, None) => None,
+            }
+        }
+        Self::new(flag(self.bash, other.bash), flag(self.zsh, other.zsh))
+    }
+}
+
+/// `change` with one more result folded in.
+fn fold(change: Option<Change>, one: Change) -> Change {
+    change.map_or(one, |change| change.and(one))
 }
 
 /// The variable whose value, when not empty, turns `dotglob` on.
@@ -71,16 +109,17 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
     hides(name, Some(&value))
 }
 
-/// What the builtin `key` does to the option when run with `args`. A name
-/// only known when it runs is taken to switch it on. `source` and `.` run a
-/// file the guard cannot read, which may.
+/// What the builtin `key` does to the option when run with `args`: `shopt`
+/// is bash's, `setopt`, `unsetopt` and `set` are zsh's. A name only known when
+/// it runs is taken to switch both on. `source` and `.` run a file the guard
+/// cannot read, which may switch either on.
 pub(crate) fn change(key: &str, args: &[Arg]) -> Option<Change> {
     match key {
         "shopt" => shopt(args),
         "setopt" => options(args, true),
         "unsetopt" => options(args, false),
         "set" => set(args),
-        "source" | "." => Some(Change::On),
+        "source" | "." => Some(Change::BOTH_ON),
         _ => None,
     }
 }
@@ -148,8 +187,8 @@ pub(crate) fn starts_with(args: &[Arg]) -> bool {
     false
 }
 
-/// `shopt -s dotglob` turns it on, `shopt -u dotglob` off. Any `-s`, or an
-/// argument only known when it runs, counts as on.
+/// `shopt -s dotglob` turns bash's flag on, `shopt -u dotglob` off. An
+/// argument only known when it runs counts as both on.
 fn shopt(args: &[Arg]) -> Option<Change> {
     let (mut set, mut unset, mut unknown, mut named) = (false, false, false, false);
     let mut options = true;
@@ -164,47 +203,49 @@ fn shopt(args: &[Arg]) -> Option<Change> {
             None => unknown = true,
         }
     }
-    if unknown || (set && named) {
-        Some(Change::On)
+    if unknown {
+        Some(Change::BOTH_ON)
+    } else if set && named {
+        Some(Change::BASH_ON)
     } else if unset && named {
-        Some(Change::Off)
+        Some(Change::BASH_OFF)
     } else {
         None
     }
 }
 
-/// `setopt globdots` turns it on and `unsetopt globdots` off; `noglobdots`
-/// is the other way round, and `dotglob` is another name for `globdots`. On
-/// wins when a line names it both ways. `-4` is the flag for it (`+4` undoes
-/// it) and a `-m` pattern may name it, so both count as on.
+/// `setopt globdots` turns zsh's flag on and `unsetopt globdots` off;
+/// `noglobdots` is the other way round, and `dotglob` is another name for
+/// `globdots`. On wins when a line names it both ways. `-4` is the flag for
+/// it (`+4` undoes it) and a `-m` pattern may name it, so both count as on. A
+/// name only known when it runs counts as both flags on.
 fn options(args: &[Arg], setting: bool) -> Option<Change> {
     let mut change = None;
     for arg in args {
-        let on = match arg.known() {
+        let one = match arg.known() {
             Some(flags) if flags.starts_with(['-', '+']) && flags.len() > 1 => {
-                let minus = flags.starts_with('-');
                 if flags.contains('m') {
-                    true
+                    Change::ZSH_ON
                 } else if flags.contains('4') {
-                    minus == setting
+                    Change::zsh(flags.starts_with('-') == setting)
                 } else {
                     continue;
                 }
             }
             Some(name) => match zsh(name) {
-                Some(on) => on == setting,
+                Some(on) => Change::zsh(on == setting),
                 None => continue,
             },
-            None => true,
+            None => Change::BOTH_ON,
         };
-        change = Some(merge(change, on));
+        change = Some(fold(change, one));
     }
     change
 }
 
-/// `set -o globdots` turns it on and `set +o globdots` off, `set -4` and
-/// `set +4` likewise. The option name is the argument after a bundle holding
-/// `o` (`-o`, `-eo`).
+/// `set -o globdots` turns zsh's flag on and `set +o globdots` off, `set -4`
+/// and `set +4` likewise. The option name is the argument after a bundle
+/// holding `o` (`-o`, `-eo`).
 fn set(args: &[Arg]) -> Option<Change> {
     let mut change = None;
     let mut iter = args.iter();
@@ -220,30 +261,22 @@ fn set(args: &[Arg]) -> Option<Change> {
             continue;
         }
         if text.contains('4') {
-            change = Some(merge(change, sign == '-'));
+            change = Some(fold(change, Change::zsh(sign == '-')));
         }
         if !text.contains('o') {
             continue;
         }
-        let on = match iter.next().map(|name| name.known()) {
+        let one = match iter.next().map(|name| name.known()) {
             Some(Some(name)) => match zsh(name) {
-                Some(on) => on == (sign == '-'),
+                Some(on) => Change::zsh(on == (sign == '-')),
                 None => continue,
             },
-            Some(None) => true,
+            Some(None) => Change::BOTH_ON,
             None => continue,
         };
-        change = Some(merge(change, on));
+        change = Some(fold(change, one));
     }
     change
-}
-
-/// `change` with one more result: on wins.
-fn merge(change: Option<Change>, on: bool) -> Change {
-    match (change, on) {
-        (Some(Change::On), _) | (_, true) => Change::On,
-        (_, false) => Change::Off,
-    }
 }
 
 #[cfg(test)]
@@ -264,17 +297,18 @@ mod tests {
     }
 
     #[test]
-    fn shopt_changes_dotglob_only() {
-        let on = Some(Change::On);
-        let off = Some(Change::Off);
+    fn shopt_changes_bashs_flag_only() {
+        let on = Some(Change::BASH_ON);
+        let off = Some(Change::BASH_OFF);
+        let both = Some(Change::BOTH_ON);
         for (words, want) in [
             (&["-s", "dotglob"][..], on),
             (&["-s", "dotglob", "nullglob"], on),
             (&["-s", "nullglob", "dotglob"], on),
             (&["-sq", "dotglob"], on),
             (&["-s", "--", "dotglob"], on),
-            (&["-s", "$option"], on),
-            (&["$flag", "dotglob"], on),
+            (&["-s", "$option"], both),
+            (&["$flag", "dotglob"], both),
             (&["-u", "dotglob"], off),
             (&["-u", "nullglob", "dotglob"], off),
             (&["-s", "nullglob"], None),
@@ -290,8 +324,9 @@ mod tests {
 
     #[test]
     fn zsh_options_ignore_case_and_underscores() {
-        let on = Some(Change::On);
-        let off = Some(Change::Off);
+        let on = Some(Change::ZSH_ON);
+        let off = Some(Change::ZSH_OFF);
+        let both = Some(Change::BOTH_ON);
         for (key, words, want) in [
             ("setopt", &["globdots"][..], on),
             ("setopt", &["GLOB_DOTS"], on),
@@ -303,7 +338,7 @@ mod tests {
             ("setopt", &["noglobdots"], off),
             ("setopt", &["NO_GLOB_DOTS"], off),
             ("setopt", &["nodotglob"], off),
-            ("setopt", &["$option"], on),
+            ("setopt", &["$option"], both),
             ("setopt", &["-4"], on),
             ("setopt", &["+4"], off),
             ("setopt", &["-m", "*dots"], on),
@@ -315,7 +350,7 @@ mod tests {
             ("unsetopt", &["dotglob"], off),
             ("unsetopt", &["noglobdots"], on),
             ("unsetopt", &["nodotglob"], on),
-            ("unsetopt", &["$option"], on),
+            ("unsetopt", &["$option"], both),
             ("unsetopt", &["-4"], off),
             ("unsetopt", &["-m", "*dots"], on),
             ("unsetopt", &["extendedglob"], None),
@@ -327,7 +362,7 @@ mod tests {
             ("set", &["-o", "noglobdots"], off),
             ("set", &["+o", "noglobdots"], on),
             ("set", &["-o", "nodotglob"], off),
-            ("set", &["-o", "$option"], on),
+            ("set", &["-o", "$option"], both),
             ("set", &["-4"], on),
             ("set", &["+4"], off),
             ("set", &["-e4"], on),
@@ -336,11 +371,28 @@ mod tests {
             ("set", &["-e", "--", "-o", "globdots"], None),
             ("set", &[], None),
             ("echo", &["globdots"], None),
-            ("source", &["./env.sh"], on),
-            (".", &["./env.sh"], on),
+            ("source", &["./env.sh"], both),
+            (".", &["./env.sh"], both),
         ] {
             assert_eq!(change(key, &args(words)), want, "{key} {words:?}");
         }
+    }
+
+    #[test]
+    fn changes_to_both_flags_combine_with_on_winning() {
+        assert_eq!(
+            options(&args(&["globdots", "-4"]), false),
+            Some(Change::ZSH_OFF)
+        );
+        assert_eq!(
+            options(&args(&["globdots", "noglobdots"]), true),
+            Some(Change::ZSH_ON)
+        );
+        assert_eq!(
+            Change::BASH_ON.and(Change::ZSH_OFF),
+            Change::new(Some(true), Some(false))
+        );
+        assert_eq!(Change::BASH_OFF.and(Change::BASH_ON), Change::BASH_ON);
     }
 
     #[test]

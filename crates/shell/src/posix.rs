@@ -4,7 +4,7 @@ use tree_sitter::Node;
 
 use crate::dotglob;
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -231,14 +231,19 @@ impl Walker<'_> {
                     self.split.branches -= usize::from(at > 0);
                 }
             }
-            // `unset GLOBIGNORE` turns the option off as `shopt -u` does.
+            // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
+            // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
                 let mut cursor = node.walk();
-                let unsets = node
+                let names: Vec<&str> = node
                     .named_children(&mut cursor)
-                    .any(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE);
-                if unsets {
-                    self.split.show(stage.is_none());
+                    .map(|name| unit::text(&name, self.source))
+                    .collect();
+                let function = names.iter().any(|name| {
+                    name.starts_with('-') && !name.starts_with("--") && name.contains('f')
+                });
+                if !function && names.contains(&dotglob::GLOBIGNORE) {
+                    self.split.show(Flag::Bash, stage.is_none());
                 }
                 self.children(node, stage, level);
             }
@@ -288,6 +293,12 @@ impl Walker<'_> {
                         .is_some_and(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE)
                 {
                     self.split.hide();
+                }
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .filter(|_| node.kind() == "function_definition")
+                {
+                    self.split.define_function(unit::text(&name, self.source));
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
@@ -385,6 +396,15 @@ impl Walker<'_> {
             .children(&mut cursor)
             .filter(|child| child.kind() == "variable_assignment")
             .any(|assignment| self.sets_hiding(assignment));
+        // In front of a call to a function the line defines, it is set while
+        // the body runs.
+        if prefixed
+            && program
+                .known()
+                .is_some_and(|name| self.split.defines_function(name))
+        {
+            self.split.hide_functions();
+        }
         let outer = self.split.scope_hidden(prefixed);
         launch::add(
             self.split,

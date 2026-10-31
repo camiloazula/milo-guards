@@ -727,6 +727,13 @@ fn a_wildcard_matches_hidden_names_once_the_line_turns_that_on() {
             "echo $(shopt -s dotglob); rm -rf *git",
             "bash -c 'rm -rf *git'",
             "bash -c 'shopt -s dotglob; shopt -u dotglob; rm -rf *git'",
+            // Each shell's flag turned off by its own switch.
+            "shopt -s dotglob; setopt globdots; shopt -u dotglob; unsetopt globdots; rm -rf *git",
+            "GLOBIGNORE=x; set -o globdots; unset GLOBIGNORE; set +o globdots; rm -rf *git",
+            // A `GLOBIGNORE` that is empty, or only in front of a command that
+            // is not a call to a function the line defines.
+            "f() { rm -rf *git; }; GLOBIGNORE= f",
+            "f() { rm -rf *git; }; GLOBIGNORE=x ls; f",
             // Everyday commands with the option on.
             "shopt -s dotglob; cp -r src/* dist/",
             "shopt -s dotglob; mv build/* out/",
@@ -905,6 +912,63 @@ fn a_wildcard_matches_hidden_names_once_the_line_turns_that_on() {
                 "shopt -s dotglob; eval 'shopt -u dotglob' | cat; rm -rf *git",
                 Rule::Delete,
             ),
+            // An off switch of the other shell is an error there, so it
+            // clears nothing: each shell's option has its own.
+            (
+                "setopt globdots; shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; unset GLOBIGNORE; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; set +o globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            ("shopt -s dotglob; set +4; rm -rf *git", Rule::Delete),
+            ("GLOBIGNORE=x; unsetopt globdots; rm -rf *git", Rule::Delete),
+            (
+                "shopt -s dotglob; unsetopt dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; unsetopt noglobdots; shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; setopt $option; shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; . ./env.sh; shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            // `unset -f` removes a function, not the variable.
+            (
+                "shopt -s dotglob; unset -f GLOBIGNORE; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "GLOBIGNORE=x; unset -f GLOBIGNORE; rm -rf *git",
+                Rule::Delete,
+            ),
+            // A function exported to a shell started with the option on, or
+            // called with `GLOBIGNORE` in front of it.
+            (
+                "f() { rm -rf *git; }; export -f f; bash -O dotglob -c f",
+                Rule::Delete,
+            ),
+            (
+                "f() { rm -rf *git; }; export -f f; GLOBIGNORE=x bash -c f",
+                Rule::Delete,
+            ),
+            ("f() { rm -rf *git; }; GLOBIGNORE=x f", Rule::Delete),
+            ("f() { rm -rf *git; }; BASHOPTS=dotglob f", Rule::Delete),
             // A zsh pipeline's last stage runs in this shell, so an on switch
             // in any stage reaches the units after it.
             ("setopt globdots | cat; rm -rf *git", Rule::Delete),

@@ -103,9 +103,19 @@ folder a `cd` moved to.
   `zsh --globdots`, and a name only known when it runs.
 - **`source` and `.`** run a file the guard cannot read, which may turn it on,
   so a line that sources one is judged with it on afterwards.
+- **Two flags.** The guard keeps bash's option and zsh's apart, and hidden
+  names match when either is on. Bash's is turned on by `shopt -s`,
+  `GLOBIGNORE` and `BASHOPTS`, and off by `shopt -u` and `unset GLOBIGNORE`
+  (`unset -f GLOBIGNORE` removes a function and changes nothing). zsh's is
+  turned on by `setopt`, `unsetopt no…`, `set -o globdots` or `dotglob`, and
+  `-4`, and off by their opposites. `source`, a shell started with the option
+  on, and a name only known when it runs turn both on. An off switch clears only
+  its own flag, since in the other shell it is an error: `setopt globdots;
+  shopt -u dotglob; rm -rf *git` and `shopt -s dotglob; unsetopt globdots; rm
+  -rf *git` are still risky.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
-  `unset GLOBIGNORE` turn it off, but only where the line is sure to run them in
-  this shell. They count when the unit is reached directly or through
+  `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
+  them in this shell. They count when the unit is reached directly or through
   `command`, `builtin`, `time`, `!` or `eval`. Behind `env`, `nohup`,
   `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
   their own and change nothing. In a pipeline, after `&`, on the right of `&&`
@@ -125,7 +135,11 @@ folder a `cd` moved to.
   it is called or comes round again. The guard records the units and redirects
   in them, and after the whole line is read, if the line ever turned the option
   on (anywhere, a script it ran included, even if it turned it off again), it
-  judges them with it on: `f() { rm -rf *git; }; eval 'shopt -s dotglob'; f`. A
+  judges them with it on: `f() { rm -rf *git; }; eval 'shopt -s dotglob'; f`.
+  A script started with the option on (`bash -O dotglob -c f`, `GLOBIGNORE=x
+  bash -c f`) counts, since the line may have exported a function to it, and so
+  does a `GLOBIGNORE=x` in front of a call to a function the line defines
+  (`GLOBIGNORE=x f`), which sets it while the body runs. A
   line that never turns it on is not changed by a body that only mentions the
   name (`echo dotglob`).
 - **Listings.** A listing hands its pattern on with the flag it was written
