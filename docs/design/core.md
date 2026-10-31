@@ -184,8 +184,9 @@ itself.
   the same way. The hashed form (`GI`, four hex digits, `~N`) exists only
   once `GIT~1` to `GIT~4` are taken, so a pattern matches it only when it
   holds a literal `~` (`GI????~1`, `*~1`); `*2024*`, `*a*` and `*cafe*` stay
-  ordinary patterns. A pattern with no `~` still matches `GIT~1` to `GIT~4`
-  (`GI*`, `*1`). Deeper than the workspace
+  ordinary patterns. A pattern with no `~` (`GI*`, `git*`, `*1`) matches no
+  short name: PowerShell has none, and `cmd` skips a folder that a wildcard
+  matches. Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
   wildcard does not match a leading dot, so `*git` and `?git` pass, unless
