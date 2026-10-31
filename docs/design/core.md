@@ -123,13 +123,20 @@ itself.
   much of it: a pattern whose last part is a catch-all (`*`, `?*`, `*/*`)
   takes the whole folder, a pattern that picks names (`*.log`) touches files
   inside it, and a part that starts with `.` can match `.git`.
-- Devices are told by their spelling, after `.` and `..` are applied:
-  `/dev/null`, `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`,
-  `/dev/random` and `/dev/urandom`, `/dev/fd/<digits>` and nothing else under
-  `/dev/fd`, disks under `/dev`, and on Windows `NUL`, `CON` and `\\.\`. A
-  path that climbs out of a device is no device: `/dev/fd/../../Users/me` is
-  the home directory, and is judged as such. The `\\.\` namespace is a root
-  that `..` cannot leave, so everything spelled below it is a disk.
+- Devices are told by their spelling. On POSIX the path's `.` and `..` are
+  applied first, then the name must be exactly one of `/dev/null`,
+  `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`, `/dev/random`,
+  `/dev/urandom`, `/dev/fd/<digits>` (and nothing else under `/dev/fd`), or a
+  disk under `/dev`. A path that climbs out of a device is no device:
+  `/dev/fd/../../Users/me` is the home directory, and is judged as such. A
+  name followed by `/` or `/.` is no device either, since descriptor 3 could
+  be a folder. On Windows, `/dev` is a real folder on the current drive, so
+  only the plain `/`-separated spellings above count, never normalised
+  (`/dev\null` and `/dev/./null` are files), plus `NUL`, `CON` and `\\.\`;
+  the `\\.\` namespace is a root that `..` cannot leave, so everything
+  spelled below it is a disk. A text with a `{` can expand to paths it does
+  not show, so it is never a device; the shell guard checks for a brace list
+  before it asks whether a path is a device.
 - Nothing reads the file system. A symlink is judged by its own name.
 
 Core never answers `Unknown` or `Registry`. A path spelled out as text is a

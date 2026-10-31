@@ -309,3 +309,30 @@ fn windows_paths_compare_without_case() {
     let finding = classify("rd /s /q c:\\USERS\\me", Shell::Cmd, &windows());
     assert_eq!(finding.findings()[0].reason, "deletes your home directory");
 }
+
+#[test]
+fn dev_is_a_real_folder_on_windows() {
+    // Only the plain `/dev/null` and `/dev/fd/<digits>` spellings are devices;
+    // the others name files on the current drive.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Remove-Item -Recurse -Force /dev/null"],
+        &[
+            ("Remove-Item -Recurse -Force '/dev\\null'", Rule::Delete),
+            ("Remove-Item -Recurse -Force '/dev\\fd\\1'", Rule::Delete),
+            ("Remove-Item -Recurse -Force /dev/./null", Rule::Delete),
+            ("Remove-Item -Recurse -Force //dev/null", Rule::Delete),
+            ("Remove-Item -Recurse -Force /dev/fd/../fd/1", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["rd /s /q /dev/null"],
+        &[
+            ("rd /s /q \\dev\\null", Rule::Delete),
+            ("rd /s /q /dev/./null", Rule::Delete),
+        ],
+    );
+}

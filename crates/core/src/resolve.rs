@@ -477,12 +477,19 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
 /// and the disks under `/dev` on either flavour, and on Windows also `NUL`,
 /// `CON` and the `\\.\` device namespace.
 ///
-/// An absolute path is judged where it lands, with `.` and `..` applied, so
-/// `/dev/./null` is the null device and `/dev/fd/../../etc` is not a device
-/// at all: it is `/etc`. A name that is not exactly a device (`/dev/fd`,
-/// `/dev/fd/3/x`, `NUL/..`) is not one.
+/// On POSIX an absolute path is judged where it lands, with `.` and `..`
+/// applied, so `/dev/./null` is the null device and `/dev/fd/../../etc` is
+/// not a device at all: it is `/etc`. A name that is not exactly a device
+/// (`/dev/fd`, `/dev/fd/3/x`), or that ends in `/` or `/.` (descriptor 3
+/// could be a folder), is not one. On Windows `/dev/...` is a real folder on
+/// the current drive, so only the plain spellings count there, split at `/`
+/// and never normalised. A text with a `{` can expand to paths its spelling
+/// does not show, so it is never a device.
 #[must_use]
 pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
+    if text.contains('{') {
+        return None;
+    }
     let lower = text.to_ascii_lowercase();
     if flavour == Flavour::Windows {
         if matches!(lower.as_str(), "nul" | "nul:" | "con" | "con:") {
@@ -494,11 +501,21 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
             return Some(Place::Disk);
         }
     }
-    if !lower.starts_with('/') {
-        return None;
-    }
-    let parts = parts(&lower, flavour);
-    let [dev, name @ ..] = parts.as_slice() else {
+    let rest = lower.strip_prefix('/')?;
+    let name: Vec<String> = if flavour == Flavour::Windows {
+        let plain: Vec<&str> = rest.split('/').collect();
+        if plain.iter().any(|part| matches!(*part, "" | "." | "..")) {
+            return None;
+        }
+        plain.into_iter().map(str::to_string).collect()
+    } else {
+        // A folder spelling (`/dev/fd/3/`, `/dev/fd/3/.`) is not a device.
+        if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
+            return None;
+        }
+        parts(&lower, flavour)
+    };
+    let [dev, name @ ..] = name.as_slice() else {
         return None;
     };
     if dev != "dev" {
@@ -788,7 +805,23 @@ mod tests {
             ("//./C:/../x", WINDOWS, Some(Place::Disk)),
             (r"\\.", WINDOWS, None),
             (r"/dev\fd\..\..\etc", WINDOWS, None),
-            (r"/dev\fd\3", WINDOWS, Some(Place::Null)),
+            // On Windows `/dev` is a real folder: only the plain spellings count.
+            ("/dev/null", WINDOWS, Some(Place::Null)),
+            ("/dev/fd/1", WINDOWS, Some(Place::Null)),
+            (r"/dev\null", WINDOWS, None),
+            (r"/dev\fd\1", WINDOWS, None),
+            ("/dev/./null", WINDOWS, None),
+            ("//dev/null", WINDOWS, None),
+            ("/dev/fd/../fd/1", WINDOWS, None),
+            // A folder spelling or a brace list is no device.
+            ("/dev/fd/3/", POSIX, None),
+            ("/dev/fd/3/.", POSIX, None),
+            ("/dev/fd/3/..", POSIX, None),
+            ("/dev/null/", POSIX, None),
+            ("/dev/sda/", POSIX, None),
+            ("/dev/fd/{0,1}", POSIX, None),
+            ("/dev/{null,sda}", POSIX, None),
+            ("{/dev/null}", POSIX, None),
         ] {
             assert_eq!(device(text, flavour), found, "{text}");
         }
