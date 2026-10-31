@@ -47,6 +47,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         resolver,
         found: split.findings.clone(),
         written: Vec::new(),
+        unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
     };
@@ -70,15 +71,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
                 .or_insert(at);
         }
         for target in written_by(unit) {
-            checker
-                .written
-                .extend(resolver.file_key(unit.dir.as_ref(), &target, unit.shell));
+            checker.written(unit.dir.as_ref(), &target, unit.shell);
         }
     }
     for write in &split.writes {
-        checker
-            .written
-            .extend(resolver.file_key(write.dir.as_ref(), &write.target, write.shell));
+        checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
     for unit in &split.units {
         checker.unit(unit);
@@ -98,6 +95,10 @@ struct Checker<'a> {
     /// Every file the line writes, by [`Resolver::file_key`]: redirects,
     /// downloads, copies, `tee`, `dd`.
     written: Vec<String>,
+    /// Whether the line writes a file it cannot place (a target known only
+    /// when it runs, or after a `cd` to such a place): it has no key, but
+    /// may be a script the line runs.
+    unplaced_write: bool,
     /// For each pipeline, the first stage that downloads.
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
@@ -105,6 +106,15 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    /// Note a file the line writes, from `dir`.
+    fn written(&mut self, dir: Option<&Arg>, target: &Arg, shell: Shell) {
+        if let Some(key) = self.resolver.file_key(dir, target, shell) {
+            self.written.push(key);
+        } else if self.resolver.unplaced(dir, target, shell) {
+            self.unplaced_write = true;
+        }
+    }
+
     fn add(&mut self, rule: Rule, reason: impl Into<String>, target: Option<&Arg>) {
         self.found.push(Finding {
             rule,
@@ -279,6 +289,22 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
+        // A script path the guard cannot place (after a `cd` to somewhere
+        // unknown, or on a drive whose directory is) may be the one the line
+        // writes; a line that writes nothing has no script to be.
+        if (!self.written.is_empty() || self.unplaced_write)
+            && matches!(
+                path::within(unit.dir.as_ref(), script, unit.shell),
+                Arg::Unknown(_)
+            )
+        {
+            self.add(
+                Rule::Unknown,
+                "runs a script only known when it runs",
+                Some(script),
+            );
+            return;
+        }
         let Some(wanted) = self
             .resolver
             .file_key(unit.dir.as_ref(), script, unit.shell)
