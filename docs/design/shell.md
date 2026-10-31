@@ -140,8 +140,8 @@ line leaves things, whichever is more conservative and needs the least state:
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
 nested script in a process of its own does not reach the rest of the line;
-`eval` runs in this shell, so its `cd` does (a stage of a pipeline runs in a
-subshell). Where a `cd` went is
+`eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
+last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it

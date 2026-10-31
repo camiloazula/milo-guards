@@ -580,8 +580,9 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             "trap 'rm -rf build' EXIT; x=$(cd /; true)",
             // The ordinary signals are reset in a subshell.
             "trap 'rm -rf build' INT TERM HUP 15; (cd /; sleep 1)",
-            // `eval` as a stage of a pipeline runs in a subshell.
-            "eval 'cd /' | cat; rm -rf build",
+            // `eval` in a subshell or a substitution does not move this shell.
+            "x=$(eval 'cd /'); rm -rf build",
+            "(eval 'cd /'); rm -rf build",
             "eval 'cd src'; rm -rf build",
             "bash -c 'cd /'; rm -rf build",
         ],
@@ -618,6 +619,11 @@ fn a_trap_action_reads_the_line_as_it_ends() {
             ("eval 'cd /'; rm -rf build", Rule::Delete),
             ("eval 'cd ..'; rm -rf build", Rule::Delete),
             ("eval 'cd /' && rm -rf build", Rule::Delete),
+            // zsh runs the last stage of a pipeline in the current shell; as
+            // for a `cd`, any stage counts.
+            ("true | eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' | cat; rm -rf build", Rule::Delete),
+            ("trap 'rm -rf build' EXIT; true | eval 'cd /'", Rule::Delete),
             // A trap set in a subshell runs from where the subshell ends up.
             ("(trap 'rm -rf out' EXIT; cd ~)", Rule::Delete),
             ("(trap 'rm -rf out' EXIT; cd ~); cd src", Rule::Delete),

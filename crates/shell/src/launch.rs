@@ -130,9 +130,10 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                             split.bodies += 1;
                             split.begin_later()
                         });
-                        // `eval` runs in this shell, unless it is a stage of a
-                        // pipeline: a `cd` in it moves the rest of the line.
-                        let here = key == "eval" && stage.is_none();
+                        // `eval` runs in this shell: a `cd` in it moves the rest
+                        // of the line. In a pipeline only zsh's last stage
+                        // does, but as for a `cd` the guard counts any stage.
+                        let here = key == "eval";
                         unit::script_in(split, &text, shell, depth + 1, here);
                         if let Some(began) = later {
                             split.branches -= 1;
