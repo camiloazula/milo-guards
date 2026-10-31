@@ -309,3 +309,44 @@ fn windows_paths_compare_without_case() {
     let finding = classify("rd /s /q c:\\USERS\\me", Shell::Cmd, &windows());
     assert_eq!(finding.findings()[0].reason, "deletes your home directory");
 }
+
+#[test]
+fn a_windows_wildcard_can_match_a_dot_name() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Remove-Item -Recurse *.tmp",
+            "Remove-Item -Recurse -Force *.TMP",
+            "Remove-Item -Recurse -Force *gitx",
+            "Remove-Item -Recurse -Force ?git2",
+        ],
+        &[
+            ("Remove-Item -Recurse -Force *git", Rule::Delete),
+            ("Remove-Item -Recurse -Force ?git", Rule::Delete),
+            ("Remove-Item -Recurse -Force *GIT", Rule::Delete),
+            ("Remove-Item -Recurse -Force [!x]git", Rule::Delete),
+            ("Remove-Item -Recurse -Force ????", Rule::Delete),
+            ("Remove-Item -Recurse -Force *\\objects", Rule::Delete),
+            ("Remove-Item -Recurse -Force *g?t\\objects", Rule::Delete),
+            ("Get-ChildItem *git | Remove-Item -Recurse", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["rd /s /q *gitx", "del /q *.tmp"],
+        &[
+            ("rd /s /q *git", Rule::Delete),
+            ("rd /s /q ?git", Rule::Delete),
+            ("rd /s /q ?GIT", Rule::Delete),
+            ("rmdir /s /q *g?t", Rule::Delete),
+            ("rd /s /q [.]git", Rule::Delete),
+        ],
+    );
+    let finding = classify("rd /s /q *git", Shell::Cmd, &windows());
+    assert_eq!(
+        finding.findings()[0].reason,
+        "deletes a hidden file such as the repository's history"
+    );
+}

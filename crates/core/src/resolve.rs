@@ -640,6 +640,32 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_wildcard_can_match_the_repository_history_and_a_posix_one_cannot() {
+        let hidden = Place::Sensitive("a hidden file such as the repository's history");
+        let posix = testing::posix();
+        for path in ["*git", "?git", "[!x]git", "*.*", "????"] {
+            assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path}");
+        }
+        let windows = testing::windows();
+        for path in [
+            "*git",
+            "?git",
+            "*GIT",
+            "[!x]git",
+            "*.*",
+            "????",
+            "*\\objects",
+        ] {
+            assert_eq!(at(&windows, path, WINDOWS), hidden, "{path}");
+        }
+        for path in ["*.tmp", "*gitx", "?git2", "src\\*.obj"] {
+            assert_eq!(at(&windows, path, WINDOWS), Place::Inside, "{path}");
+        }
+        // A catch-all takes the folder, as on POSIX.
+        assert_eq!(at(&windows, "*", WINDOWS), Place::Workspace { exact: true });
+    }
+
+    #[test]
     fn a_wildcard_part_stands_for_one_entry() {
         let paths = testing::posix();
         for (path, place) in [
