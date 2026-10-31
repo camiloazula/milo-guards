@@ -5,6 +5,7 @@
 //! wildcard; [`shape`] says how much of that folder the pattern takes, and
 //! [`matches()`] tells whether one pattern part can match one name.
 
+use crate::resolve::windows_name;
 use crate::Flavour;
 
 /// The characters that make a path part a pattern.
@@ -97,31 +98,97 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 
 /// Whether the pattern, whose first part is directly inside a repository's
 /// folder, can reach `.git`'s own entries: `parts` are the pattern's parts
-/// from its first wildcard part on. That part must match `.git`. If it is
-/// the last part it takes `.git` itself, unless it is a catch-all (the
-/// whole folder is judged then). Otherwise the next part must match one of
-/// `.git`'s own entries (`*\objects` does, `*\bin` does not). A pattern that
-/// still holds a `..` is taken to reach it.
+/// from its first wildcard part on, to the end of the path. That part must
+/// match `.git`. If it is the last part it takes `.git` itself, unless it is
+/// a catch-all (the whole folder is judged then). Otherwise the next part
+/// must match one of `.git`'s own entries (`*\objects` does, `*\bin` does
+/// not). A pattern that still holds a `..` is taken to reach it.
+///
+/// On `Windows` each part is also read as Windows names it: the last part
+/// loses every trailing dot and space and a part before it one trailing dot,
+/// so `*git.` and `'*git '` are `*git`; the pattern as written is tried too.
+/// A part also reaches `.git` when it can match its 8.3 short name, which
+/// drops the dot: `GIT~N`, or `GI`, four hex digits and `~N` (`GIT~?`, `*~1`).
+/// A trimmed last part that is a catch-all (`*.` is `*`) is not taken as
+/// every entry, since the resolver read the pattern as written.
 ///
 /// `hidden` is the same as for [`matches()`].
 #[must_use]
 pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
-    let [first, rest @ ..] = parts else {
-        return false;
+    let windows = flavour == Flavour::Windows;
+    // The part as written, and as Windows names it.
+    let read = |at: usize| {
+        let part = parts[at];
+        let named = if windows {
+            windows_name(part, at + 1 == parts.len())
+        } else {
+            part
+        };
+        [part, named]
     };
-    if !PROTECTED
-        .iter()
-        .any(|name| matches(first, name, flavour, hidden))
-    {
+    let reaches = |at: usize, names: &[&str]| {
+        read(at).iter().any(|pattern| {
+            names
+                .iter()
+                .any(|name| matches(pattern, name, flavour, hidden))
+                || (windows && matches_short_git(pattern, flavour))
+        })
+    };
+    if parts.is_empty() || !reaches(0, &PROTECTED) {
         return false;
     }
-    match rest.first() {
-        None => !catch_all(first, flavour),
+    match parts.get(1) {
+        None => !catch_all(read(0)[1], flavour),
         Some(&"..") => true,
-        Some(next) => GIT_ENTRIES
-            .iter()
-            .any(|entry| matches(next, entry, flavour, hidden)),
+        Some(_) => reaches(1, &GIT_ENTRIES),
     }
+}
+
+/// Whether the pattern `part` can match the 8.3 short name of `.git`: `git`
+/// or `gi` and four hex digits, then `~` and one or more digits. A name
+/// compares without case, as on Windows.
+fn matches_short_git(part: &str, flavour: Flavour) -> bool {
+    const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const HEX: &[char] = &[
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
+    let forms: [Vec<&[char]>; 2] = [
+        vec![&['g'], &['i'], &['t'], &['~']],
+        vec![&['g'], &['i'], HEX, HEX, HEX, HEX, &['~']],
+    ];
+    let tokens = tokens(part, flavour);
+    forms.iter().any(|form| {
+        // A state is a token and how much of the name is taken: a place in
+        // `form`, then `form.len()` (no digit yet) and one past it (a digit
+        // or more, where the name may end).
+        let last = form.len() + 1;
+        let mut seen = vec![vec![false; last + 1]; tokens.len() + 1];
+        let mut todo = vec![(0, 0)];
+        seen[0][0] = true;
+        while let Some((at, taken)) = todo.pop() {
+            if taken == last && tokens[at..].iter().all(|token| *token == Token::Star) {
+                return true;
+            }
+            let Some(token) = tokens.get(at) else {
+                continue;
+            };
+            let allowed = form.get(taken).copied().unwrap_or(DIGITS);
+            let next = (taken + 1).min(last);
+            let mut go = |at: usize, taken: usize| {
+                if !seen[at][taken] {
+                    seen[at][taken] = true;
+                    todo.push((at, taken));
+                }
+            };
+            if *token == Token::Star {
+                go(at + 1, taken);
+                go(at, next);
+            } else if allowed.iter().any(|c| token.takes(*c, true)) {
+                go(at + 1, next);
+            }
+        }
+        false
+    })
 }
 
 /// One step of a pattern part.
@@ -500,6 +567,103 @@ mod tests {
             assert!(!reaches(parts), "{parts:?}");
         }
         assert!(!reaches(&[]));
+    }
+
+    #[test]
+    fn a_windows_part_is_trimmed_before_it_is_matched() {
+        let windows = Flavour::Windows;
+        let reaches = |parts: &[&str]| reaches_git(parts, windows, true);
+        // The last part loses every trailing dot and space.
+        for parts in [&["*git."][..], &["*git "], &["*git. . "], &["????."]] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        // A part before the last loses one trailing dot.
+        for parts in [
+            &["*git.", "objects"][..],
+            &["*", "objects."],
+            &["*", "objects. "],
+        ] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        // A trimmed part is not a catch-all, and a name stays a name.
+        for parts in [
+            &["*."][..],
+            &["*. "],
+            &["*gitx."],
+            &["*git.", "bin"],
+            &["*", "bin."],
+        ] {
+            assert!(!reaches(parts), "{parts:?}");
+        }
+        // On POSIX a dot is part of the name.
+        assert!(!reaches_git(&["*git."], Flavour::Posix, true));
+        assert!(!reaches_git(&["*", "objects."], Flavour::Posix, true));
+    }
+
+    #[test]
+    fn a_pattern_reaches_git_by_its_short_name_on_windows() {
+        let reaches = |parts: &[&str]| reaches_git(parts, Flavour::Windows, true);
+        for parts in [
+            &["GIT~1"][..],
+            &["git~*"],
+            &["GIT~?"],
+            &["GIT~[0-9]"],
+            &["GIT~??"],
+            &["G?T~1"],
+            &["*~1"],
+            &["*~?"],
+            &["*T~1"],
+            &["GI????~1"],
+            &["GI3F2A~1"],
+            &["GI3f2?~?"],
+            &["GI[A-F]???~1"],
+            &["GI*~1"],
+            &["*GIT~1"],
+            &["GIT~?.", "objects"],
+            &["GIT~?", "HEAD"],
+            &["*~1", "objects"],
+        ] {
+            assert!(reaches(parts), "{parts:?}");
+        }
+        for parts in [
+            &["GIT~"][..],
+            &["GIT~x"],
+            &["GIT~1x"],
+            &["GIT~?x"],
+            &["GI~?"],
+            &["GI??~1"],
+            &["GI?????~1"],
+            &["GI[g-z]???~1"],
+            &["GIT?~1"],
+            &["GITX~?"],
+            &["PROGRA~?"],
+            &["GITHUB~?"],
+            &["GITIGN~?"],
+            &["*~x"],
+            &["*~"],
+            &["~1"],
+            &["~*"],
+            &["GIT~1.txt"],
+            &["GIT~?", "bin"],
+            &["*~1", "bin"],
+        ] {
+            assert!(!reaches(parts), "{parts:?}");
+        }
+        // A POSIX name has no short name.
+        assert!(!reaches_git(&["GIT~?"], Flavour::Posix, true));
+        assert!(!reaches_git(&["*~1"], Flavour::Posix, true));
+    }
+
+    #[test]
+    fn a_long_short_name_pattern_is_read_in_linear_time() {
+        // The number after the `~` has any length, so a long run of `?` fits.
+        let pattern = "*~1".to_string() + &"?".repeat(2000);
+        assert!(reaches_git(&[&pattern], Flavour::Windows, true));
+        // A name before the `~` is six characters at most.
+        let pattern = "?*".repeat(2000) + "~1";
+        assert!(!reaches_git(&[&pattern], Flavour::Windows, true));
+        let pattern = "[".repeat(5000) + "~1";
+        assert!(!reaches_git(&[&pattern], Flavour::Windows, true));
     }
 
     #[test]

@@ -184,7 +184,7 @@ impl Loc {
 /// and `.git ` are `.git`. A part before it loses one trailing dot only, and
 /// a run of dots is a name; a part that still ends in a dot or a space is
 /// not one this reads, and [`unreadable_name`] says so.
-fn windows_name(part: &str, last: bool) -> &str {
+pub(crate) fn windows_name(part: &str, last: bool) -> &str {
     if matches!(part, "" | "." | "..") {
         part
     } else if last {
