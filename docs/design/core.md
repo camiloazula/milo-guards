@@ -119,22 +119,33 @@ itself.
 - Windows paths compare without case. POSIX paths compare with it.
 - Windows names are normalised before they are compared, so a spelling that
   Windows resolves to a protected name is judged as that name. Core does this
-  in the `Windows` flavour only; a POSIX name keeps every character.
-  - **Trailing dots and spaces.** Windows drops them from a name, so `.git.`
-    and `.git ` are `.git`, and `notes.txt.` is `notes.txt`. A part of only
-    dots and spaces is the folder itself, except `.. `, which is read as `..`
-    so that it never climbs less than Windows might.
-  - **Short names.** A part of letters or digits, a `~` and digits (`GIT~1`)
-    directly in a workspace folder may be the 8.3 short name of `.git`, which
-    drops the dot. It is judged as the repository's history when its name
-    part starts with `GIT`, ignoring case. Any other `NAME~N` is a plain name
-    (`PROGRA~1`), as is a `GIT~1` deeper down, like a `.git` there.
-  - **Streams.** A `:` in a part below the drive or share (`x.txt:stream`,
-    `.git::$INDEX_ALLOCATION`) names a stream of a file or folder, which the
-    spelling does not say: the path is `Unknown`. The drive (`C:`), the share
-    and the devices (`NUL:`) are read first; a shell's own provider prefix
-    (`HKLM:`) is the shell's, read before the path reaches core. One letter
-    and a colon (`x:stream`) is a drive, as Windows reads it.
+  in the `Windows` flavour only; a POSIX name keeps every character. `.` and
+  `..` are applied first, as Windows does, and then:
+  - **The last part** loses every trailing dot and space, so `.git.` and
+    `.git ` are `.git`, and `notes.txt.` is `notes.txt`. Only a plain space
+    (U+0020) counts: a no-break space (U+00A0) or an ideographic one (U+3000)
+    is part of the name.
+  - **A part before the last** loses one trailing dot, and nothing else, so
+    `.git.\objects` is `.git\objects`.
+  - **Short names.** A part directly in a workspace folder that is `GIT~N`, or
+    `GI`, four hex digits and `~N` (the form Windows hashes a name to once
+    names collide), may be the 8.3 short name of `.git`, which drops the dot.
+    It is judged as the repository's history. Any other `NAME~N` is a plain
+    name (`PROGRA~1`, `GITHUB~1`), as is a `GIT~1` deeper down, like a `.git`
+    there.
+  - **Known only when it runs.** The path is `Unknown`, since the spelling
+    does not say which name it is, when a part:
+    - holds a `:` below the drive or share: a stream of a file or folder
+      (`x.txt:stream`, `.git::$INDEX_ALLOCATION`). The drive (`C:`), the share
+      and the devices (`NUL:`) are read first; a shell's own provider prefix
+      (`HKLM:`) is the shell's, read before the path reaches core. One letter
+      and a colon (`x:stream`) is a drive, as Windows reads it;
+    - is nothing but dots and spaces, and not exactly `.` or `..`
+      (`...`, `. `, `.. `), wherever it is;
+    - is before the last and still ends in a dot or a space once its one
+      trailing dot is gone (`x `, `x..`, `x .`, `repo \x`). A path that ends
+      in a separator has its last name before the last part, so `.git \` is
+      one of these.
 - A part with a wildcard (`*`, `?`, `[`) stands for one entry, so a `..` after
   it still climbs: `src/*/../../x` is outside `src`. What a pattern matches
   lies in the folder before its first wildcard part. `glob::shape` says how
@@ -159,8 +170,8 @@ itself.
 
 Core never answers `Registry`. A path spelled out as text is a file path. A
 guard that reads the syntax around it says when a path is not one. Core
-answers `Unknown` for one spelling only: a Windows stream, under "What core
-judges".
+answers `Unknown` for the Windows spellings it cannot read to a name, listed
+under "What core judges".
 
 ### What the guard keeps
 

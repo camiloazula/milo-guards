@@ -143,9 +143,10 @@ impl Loc {
 
     /// Apply `rest`, split at the separators of `flavour`, to this location.
     fn walk(mut self, rest: &str, flavour: Flavour) -> Self {
-        for part in rest.split(flavour.separators()) {
+        let names: Vec<&str> = rest.split(flavour.separators()).collect();
+        for (at, part) in names.iter().enumerate() {
             let part = if flavour == Flavour::Windows {
-                windows_name(part)
+                windows_name(part, at + 1 == names.len())
             } else {
                 part
             };
@@ -178,37 +179,55 @@ impl Loc {
     }
 }
 
-/// A part of a Windows path as Windows names it: it drops the dots and
-/// spaces a name ends in, so `.git.` and `.git ` are `.git`. A part that is
-/// nothing but dots and spaces names the folder itself, except `.. `, which
-/// is read as `..` so that it can only climb further, never less.
-fn windows_name(part: &str) -> &str {
-    let spaced = part.trim_end_matches(' ');
-    if matches!(spaced, "." | "..") {
-        return spaced;
+/// A part of a Windows path as Windows names it. `.` and `..` are read
+/// first. The last part then loses every trailing dot and space, so `.git.`
+/// and `.git ` are `.git`. A part before it loses one trailing dot only, and
+/// a run of dots is a name; a part that still ends in a dot or a space is
+/// not one this reads, and [`unreadable_name`] says so.
+fn windows_name(part: &str, last: bool) -> &str {
+    if matches!(part, "" | "." | "..") {
+        part
+    } else if last {
+        part.trim_end_matches(['.', ' '])
+    } else if part.bytes().all(|b| b == b'.') {
+        part
+    } else {
+        part.strip_suffix('.').unwrap_or(part)
     }
-    part.trim_end_matches(['.', ' '])
 }
 
-/// Whether a Windows part could be the 8.3 short name of `.git`: letters or
-/// digits, a `~`, and digits, with the name part starting `GIT` (the dot of
-/// `.git` is not kept in a short name). Any other `NAME~N` is a plain name.
+/// Whether a Windows part is one [`windows_name`] cannot say the name of: it
+/// is nothing but dots and spaces (and not `.` or `..`), or a part before the
+/// last still ends in a dot or a space once its one trailing dot is gone.
+fn unreadable_name(part: &str, last: bool) -> bool {
+    if matches!(part, "" | "." | "..") {
+        return false;
+    }
+    part.bytes().all(|b| matches!(b, b'.' | b' '))
+        || (!last && part.strip_suffix('.').unwrap_or(part).ends_with([' ', '.']))
+}
+
+/// Whether `part` could be the 8.3 short name of `.git`, which drops the dot:
+/// `GIT~1`, or `GI`, four hex digits and `~1` once names collide. Any other
+/// `NAME~N` is a plain name.
 fn short_git(part: &str) -> bool {
     let Some((name, number)) = part.split_once('~') else {
         return false;
     };
-    name.len() >= 3
-        && name.bytes().all(|b| b.is_ascii_alphanumeric())
-        && name[..3].eq_ignore_ascii_case("git")
+    let hashed = name.len() == 6
+        && name.is_char_boundary(2)
+        && name[..2].eq_ignore_ascii_case("gi")
+        && name[2..].bytes().all(|b| b.is_ascii_hexdigit());
+    (name.eq_ignore_ascii_case("git") || hashed)
         && !number.is_empty()
         && number.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Whether a Windows path names a stream of a file or folder (`x:stream`,
-/// `.git::$INDEX_ALLOCATION`): a part below the drive or share holds a `:`.
-/// What a stream is the stream of is not in the spelling, so it is known
-/// only when it runs.
-fn names_stream(path: Spelling<'_>, flavour: Flavour) -> bool {
+/// Whether a Windows path is known only when it runs, because the spelling
+/// does not say which name it is: a stream (`x.txt:stream`,
+/// `.git::$INDEX_ALLOCATION`, a `:` in a part below the drive or share), or a
+/// part [`unreadable_name`] cannot read.
+fn known_when_run(path: Spelling<'_>, flavour: Flavour) -> bool {
     if flavour != Flavour::Windows {
         return false;
     }
@@ -219,7 +238,11 @@ fn names_stream(path: Spelling<'_>, flavour: Flavour) -> bool {
             (None, None) => text,
         },
     };
-    rest.contains(':')
+    let names: Vec<&str> = rest.split(flavour.separators()).collect();
+    names
+        .iter()
+        .enumerate()
+        .any(|(at, part)| part.contains(':') || unreadable_name(part, at + 1 == names.len()))
 }
 
 /// `C:` and what follows it, for a path that starts with a drive letter.
@@ -396,7 +419,8 @@ impl Resolver {
     /// Where `path` lands. It never answers [`Place::Registry`]: a path this
     /// spelled out is a file path, and the guard that reads the syntax around
     /// it says when it is not. It answers [`Place::Unknown`] only for a
-    /// Windows stream (`x.txt:stream`), whose target is not in the spelling.
+    /// Windows spelling that does not say which name it is (a stream such as
+    /// `x.txt:stream`, or a part before the last that ends in a space).
     #[must_use]
     pub fn place(&self, path: Spelling<'_>, flavour: Flavour) -> Place {
         let text = path.text();
@@ -405,7 +429,7 @@ impl Resolver {
                 return device;
             }
         }
-        if names_stream(path, flavour) {
+        if known_when_run(path, flavour) {
             return Place::Unknown;
         }
         // Each part holding a wildcard stands for one entry, so a `..` after
@@ -919,10 +943,11 @@ mod tests {
             ("notes.txt ", Place::Inside),
             ("build...", Place::Inside),
             (r"C:\Users\me\dev\repo.", Place::Workspace { exact: true }),
-            // Nothing but dots and spaces is the folder; `.. ` still climbs.
-            ("... ", Place::Workspace { exact: true }),
-            (".. ", Place::Workspace { exact: false }),
-            (r"src\.. ", Place::Workspace { exact: true }),
+            // A non-breaking or ideographic space is not a space to Windows.
+            (".git\u{a0}", Place::Inside),
+            (".git\u{3000}", Place::Inside),
+            (".git\u{a0}\\objects", Place::Inside),
+            (".git\u{3000}.", Place::Inside),
             // Only a name's end is dropped.
             (" .git", Place::Inside),
             (".git.x", Place::Inside),
@@ -935,8 +960,8 @@ mod tests {
         for path in [".git.", ".git ", "notes.txt."] {
             assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path:?}");
         }
-        assert_eq!(parts("a./b /.. ", WINDOWS), ["a"]);
-        assert_eq!(parts("a./b /.. ", POSIX), ["a.", "b ", ".. "]);
+        assert_eq!(parts("a./b./c. .", WINDOWS), ["a", "b", "c"]);
+        assert_eq!(parts("a./b./c. .", POSIX), ["a.", "b.", "c. ."]);
         let resolver = Resolver::new(&paths);
         let key = |path| resolver.key(Spelling::Plain(path), WINDOWS);
         assert_eq!(key("run.cmd."), key("RUN.cmd"));
@@ -951,13 +976,22 @@ mod tests {
             ("GIT~1", history),
             ("git~2", history),
             ("Git~10", history),
-            ("GITIGN~1", history),
+            ("GI3F2A~1", history),
+            ("gi3f2a~2", history),
+            ("GIabcd~1", history),
             ("GIT~1.", history),
             ("GIT~1 ", history),
             (r"GIT~1\objects\pack", history),
             (r"src\..\GIT~1", history),
             (r"C:\Users\me\dev\repo\GIT~1", history),
             // Not a short form of `.git`, or not a short name at all.
+            ("GITIGN~1", Place::Inside),
+            ("GITHUB~1", Place::Inside),
+            ("GIT123~1", Place::Inside),
+            ("GI3F2~1", Place::Inside),
+            ("GI3F2A5~1", Place::Inside),
+            ("GIZZZZ~1", Place::Inside),
+            ("G\u{130}T~1", Place::Inside),
             ("PROGRA~1", Place::Inside),
             ("PROGRA~1.txt", Place::Inside),
             ("GI~1", Place::Inside),
@@ -1020,5 +1054,58 @@ mod tests {
         let key = |path| resolver.key(Spelling::Plain(path), WINDOWS);
         assert_eq!(key("run.cmd:s"), key("RUN.cmd:S"));
         assert_ne!(key("run.cmd:s"), key("run.cmd"));
+    }
+
+    #[test]
+    fn a_windows_part_that_cannot_be_read_is_known_only_when_it_runs() {
+        let paths = testing::windows();
+        let history = Place::Sensitive("the repository's history");
+        for path in [
+            // Before the last: only dots and spaces, but not `.` or `..`.
+            r".git\...\..\objects",
+            r".git\. \..\objects",
+            r".git\refs\.. \..\heads",
+            r"... \x",
+            r"...\x",
+            // Before the last: still ends in a dot or a space after one dot.
+            r"C:\Users\me\dev\repo \x",
+            r"..\repo.. \x",
+            r"x..\y",
+            r"x .\y",
+            r"x \y",
+            r".git .\objects",
+            // The last part: only dots and spaces, but not `.` or `..`.
+            "... ",
+            ".. ",
+            r"src\.. ",
+            "....",
+        ] {
+            assert_eq!(at(&paths, path, WINDOWS), Place::Unknown, "{path:?}");
+        }
+        // A part before the last loses one dot, the last part all of them.
+        for (path, place) in [
+            (r".git.\objects", history),
+            (r"src\..\.git.", history),
+            (r".\.git.\.", history),
+            (r".git\", history),
+            (r"src.\x.\y.. .", Place::Inside),
+            (r"src\.\x", Place::Inside),
+            (r"src\..\x", Place::Inside),
+        ] {
+            assert_eq!(at(&paths, path, WINDOWS), place, "{path:?}");
+        }
+        // From a working directory inside `.git`.
+        let inside = Paths::new(
+            r"C:\Users\me\dev\repo\.git\hooks",
+            r"C:\Users\me",
+            [r"C:\Users\me\dev\repo"],
+        );
+        assert_eq!(at(&inside, r"...\..\..\objects", WINDOWS), Place::Unknown);
+        assert_eq!(at(&inside, r"..\objects", WINDOWS), history);
+        // None of it is a POSIX name's business.
+        let posix = testing::posix();
+        for path in ["x /y", "x../y", ".../y", "x /.. ", "x:y/z"] {
+            assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path:?}");
+        }
     }
 }
