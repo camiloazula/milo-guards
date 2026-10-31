@@ -286,6 +286,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         hidden: false,
         downloaded: false,
+        listings: Vec::new(),
     }))
 }
 

@@ -5,8 +5,8 @@
 //! system needs, stops the system.
 
 use super::Checker;
-use crate::powershell::Params;
-use crate::unit::{Arg, Unit};
+use crate::powershell::{Param, Params};
+use crate::unit::{Arg, Between, Unit};
 use crate::Rule;
 
 /// How a program reads the name it is given.
@@ -15,21 +15,23 @@ enum Names {
     /// As written: `killall node`.
     Literal,
     /// As a regular expression, searched for in each name: `pkill node`.
-    Regex,
+    /// `exact` is `pkill -x`, which wants the whole name to match;
+    /// `ignore_case` is `pkill -i` and `killall -I`.
+    Regex { exact: bool, ignore_case: bool },
     /// With the wildcards `*`, `?` and `[a-z]`: `Stop-Process -Name node*`,
     /// `taskkill /IM node*`.
     Wildcard,
 }
 
-/// Processes the system needs, in lower case and without `.exe`: stopping
+/// Processes the system needs, as they are named without `.exe`: stopping
 /// one logs you out, freezes the screen or takes the machine down.
-const SYSTEM_PROCESSES: [&str; 14] = [
+const SYSTEM_PROCESSES: [&str; 15] = [
     "launchd",
     "systemd",
     "init",
     "kernel_task",
     "kthreadd",
-    "windowserver",
+    "WindowServer",
     "loginwindow",
     "explorer",
     "csrss",
@@ -38,6 +40,29 @@ const SYSTEM_PROCESSES: [&str; 14] = [
     "lsass",
     "smss",
     "services",
+    "svchost",
+];
+
+/// `Stop-Process`'s own parameters.
+const STOP_PROCESS: [Param; 7] = [
+    Param::value("name", &["processname"]),
+    Param::value("id", &[]),
+    Param::value("inputobject", &[]),
+    Param::switch("passthru", &[]),
+    Param::switch("force", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// `Get-Process`'s own parameters.
+const GET_PROCESS: [Param; 7] = [
+    Param::value("name", &["processname"]),
+    Param::value("id", &["pid"]),
+    Param::value("inputobject", &[]),
+    Param::value("computername", &["cn"]),
+    Param::switch("module", &[]),
+    Param::switch("fileversioninfo", &[]),
+    Param::switch("includeusername", &[]),
 ];
 
 /// The longest regular expression nesting read; deeper is treated as
@@ -49,7 +74,10 @@ impl Checker<'_> {
     pub(super) fn killall(&mut self, args: &[Arg]) {
         let options = Options::read(args, "suyoZctn", &KILLALL_LONGS);
         let kind = if options.has("r") || options.has("m") || options.has("regexp") {
-            Names::Regex
+            Names::Regex {
+                exact: false,
+                ignore_case: options.has("I") || options.has("ignore-case"),
+            }
         } else {
             Names::Literal
         };
@@ -74,7 +102,11 @@ impl Checker<'_> {
             }
             return;
         }
-        self.stop_all(&options.operands, Names::Regex, user);
+        let kind = Names::Regex {
+            exact: options.has("x") || options.has("exact"),
+            ignore_case: options.has("i") || options.has("ignore-case"),
+        };
+        self.stop_all(&options.operands, kind, user);
     }
 
     /// The names a stop is given, or every process of a user when it is
@@ -103,7 +135,7 @@ impl Checker<'_> {
         };
         let everything = match kind {
             Names::Literal => false,
-            Names::Regex => !needs_literal(text),
+            Names::Regex { .. } => !needs_literal(text),
             Names::Wildcard => !wildcard_needs_literal(&process_name(text)),
         };
         if everything {
@@ -131,10 +163,24 @@ impl Checker<'_> {
                         self.stop_named(name, Names::Wildcard);
                     }
                 }
+                // Stopping by id: the processes are named, whichever they are.
+                "/pid" | "-pid" => {
+                    named = true;
+                    iter.next();
+                }
                 "/fi" | "-fi" => filters.extend(iter.next()),
                 _ => {}
             }
         }
+        // A filter on the image name names the process; any other filter
+        // narrows what it names.
+        let named = named
+            || filters.iter().any(|filter| {
+                let mut words = filter.known().unwrap_or_default().split_whitespace();
+                let field = words.next().map(str::to_ascii_lowercase);
+                let operator = words.next().map(str::to_ascii_lowercase);
+                (field.as_deref(), operator.as_deref()) == (Some("imagename"), Some("eq"))
+            });
         for filter in filters {
             let Some(text) = filter.known() else {
                 if !named {
@@ -171,15 +217,26 @@ impl Checker<'_> {
                         Some(filter),
                     );
                 }
+                // The programs that hang: what `taskkill` is everyday for.
+                (Some("status"), Some("eq")) if value.eq_ignore_ascii_case("not responding") => {}
+                // Without a name or an id, whatever the filter picks is
+                // stopped; with one, a filter only narrows what is named.
+                _ if !named => {
+                    self.add(
+                        Rule::StopSystem,
+                        "stops every process a filter picks",
+                        Some(filter),
+                    );
+                }
                 _ => {}
             }
         }
     }
 
-    /// `Stop-Process -Name name`, and `Get-Process … | Stop-Process`, which
-    /// stops what the listing names (every process when it names none).
+    /// `Stop-Process -Name name`, and the processes a `Get-Process` listing
+    /// hands it, which it stops (every process when the listing names none).
     pub(super) fn stop_process(&mut self, unit: &Unit) {
-        let params = Params::read(&unit.args);
+        let params = Params::cmdlet(&unit.args, &STOP_PROCESS);
         let names = params.values(&["name"]);
         if !names.is_empty() {
             // `-Name a,b` gives the second name as a positional argument.
@@ -192,39 +249,153 @@ impl Checker<'_> {
             }
             return;
         }
-        let selected = !params.values(&["id", "inputobject"]).is_empty()
-            || !params.positional.is_empty()
-            || params
-                .named
-                .iter()
-                .any(|(name, _)| "inputobject".starts_with(name.as_str()));
-        let Some(stage) = unit.stage.filter(|stage| stage.index > 0 && !selected) else {
+        if params.has(&["id", "inputobject"]) || !params.positional.is_empty() {
+            // Picked by id or by object: judged by what they hold, a
+            // listing written in the argument or `$_` in a block that is a
+            // stage after one.
+            for listing in &unit.listings {
+                self.judge_listing(&listing.args, &listing.between);
+            }
+            let item = params
+                .values(&["id", "inputobject"])
+                .into_iter()
+                .chain(params.positional.iter().copied())
+                .any(|arg| *arg == Arg::Input);
+            if let Some((listing, between)) = unit
+                .stage
+                .filter(|stage| item && stage.index > 0)
+                .and_then(|stage| self.listing_before(stage))
+            {
+                self.judge_listing(&listing, &between);
+            }
+            return;
+        }
+        let Some(stage) = unit.stage.filter(|stage| stage.index > 0) else {
             return;
         };
-        // What the pipeline's first stage lists.
-        let first = self
-            .producers
-            .get(&(stage.pipeline, 0))
-            .and_then(|&at| self.split.units.get(at));
-        let Some(listing) = first.filter(|first| first.key().as_deref() == Some("get-process"))
-        else {
+        match self.listing_before(stage) {
+            Some((listing, between)) => self.judge_listing(&listing, &between),
+            None => self.add(
+                Rule::StopSystem,
+                "stops processes only known when it runs",
+                None,
+            ),
+        }
+    }
+
+    /// The `Get-Process` that starts the pipeline a stage is in, with its
+    /// arguments and what stands between it and the stage.
+    fn listing_before(&self, stage: crate::unit::Stage) -> Option<(Vec<Arg>, Vec<Between>)> {
+        let at = |index: usize| {
+            self.producers
+                .get(&(stage.pipeline, index))
+                .and_then(|&at| self.split.units.get(at))
+        };
+        let first = at(0).filter(|first| first.key().as_deref() == Some("get-process"))?;
+        let between = (1..stage.index)
+            .map(|index| at(index).map_or(Between::Other, between))
+            .collect();
+        Some((first.args.clone(), between))
+    }
+
+    /// Judge what `Get-Process` lists, narrowed by the stages after it, as
+    /// a `Stop-Process` stops it.
+    fn judge_listing(&mut self, listing: &[Arg], between: &[Between]) {
+        // A stage that may hand on processes the listing did not.
+        if between.iter().any(|stage| matches!(stage, Between::Other)) {
             self.add(
                 Rule::StopSystem,
                 "stops processes only known when it runs",
                 None,
             );
             return;
-        };
-        let listed = Params::read(&listing.args);
-        let mut listed_names = listed.values(&["name"]);
-        listed_names.extend(listed.positional.iter().copied());
-        if listed_names.is_empty() {
-            self.add(Rule::StopSystem, "stops every process", None);
         }
-        for name in listed_names {
-            self.stop_named(name, Names::Wildcard);
+        let params = Params::cmdlet(listing, &GET_PROCESS);
+        let mut names = params.values(&["name"]);
+        names.extend(params.positional.iter().copied());
+        // Named by the listing: what follows can only narrow it.
+        if !names.is_empty() {
+            for name in names {
+                self.stop_named(name, Names::Wildcard);
+            }
+            return;
+        }
+        // Picked by id or by object.
+        if params.has(&["id", "inputobject"]) {
+            return;
+        }
+        if between.is_empty() {
+            self.add(Rule::StopSystem, "stops every process", None);
+            return;
+        }
+        // Every process, narrowed: by a name that a filter spells out, or by
+        // one the guard cannot read.
+        let mut read = false;
+        for stage in between {
+            if let Between::Where(args) = stage {
+                if let Some(name) = filter_name(args) {
+                    read = true;
+                    self.stop_named(name, Names::Wildcard);
+                }
+            }
+        }
+        if !read {
+            self.add(
+                Rule::StopSystem,
+                "stops processes picked by a filter only known when it runs",
+                None,
+            );
         }
     }
+}
+
+/// What a stage between a listing and a stop does to the processes.
+fn between(unit: &Unit) -> Between {
+    match unit.key().as_deref() {
+        Some("where-object") => Between::Where(unit.args.clone()),
+        Some("select-object" | "select" | "sort-object" | "sort") => Between::Narrows,
+        _ => Between::Other,
+    }
+}
+
+/// The name a `Where-Object` stage picks processes by, when it is only a
+/// comparison of `Name` or `ProcessName` with `-eq` or `-like`:
+/// `Where-Object Name -eq node`, `-Property ProcessName -Like -Value 'node*'`
+/// (a block of the same is read into this form by the splitter).
+fn filter_name(args: &[Arg]) -> Option<&Arg> {
+    let mut property = None;
+    let mut value = None;
+    let mut positional = Vec::new();
+    let mut compares = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(name) = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic()))
+        else {
+            positional.push(arg);
+            continue;
+        };
+        let name = name.trim_end_matches(':').to_ascii_lowercase();
+        let abbreviates = |full: &str| name.len() >= 3 && full.starts_with(name.as_str());
+        match name.as_str() {
+            "eq" | "ieq" | "ceq" | "like" | "ilike" | "clike" => compares = true,
+            _ if abbreviates("property") => property = iter.next(),
+            _ if abbreviates("value") => value = iter.next(),
+            _ if abbreviates("filterscript") => {}
+            _ => return None,
+        }
+    }
+    let mut positional = positional.into_iter();
+    let property = property.or_else(|| positional.next())?;
+    let value = value.or_else(|| positional.next())?;
+    let property = property.known()?.to_ascii_lowercase();
+    (compares
+        && positional.next().is_none()
+        && matches!(property.as_str(), "name" | "processname")
+        && value.known().is_some())
+    .then_some(value)
 }
 
 /// killall's options with a long form.
@@ -381,53 +552,167 @@ fn process_name(name: &str) -> String {
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
 
-/// Whether `text` names a process the system needs, or (for a wildcard)
-/// matches one.
+/// Whether `text` names a process the system needs, or (for a wildcard
+/// or a regular expression) matches one.
 fn names_system_process(text: &str, kind: Names) -> bool {
     match kind {
-        Names::Literal => SYSTEM_PROCESSES.contains(&process_name(text).as_str()),
-        // Each alternative of a pattern, without its anchors and brackets,
-        // and its folder when it is a command line's program.
-        Names::Regex => text.split('|').any(|alternative| {
-            let alternative = alternative.trim_matches(['^', '$', '(', ')']);
-            let name = alternative.rsplit('/').next().unwrap_or(alternative);
-            SYSTEM_PROCESSES.contains(&process_name(name).as_str())
-        }),
-        Names::Wildcard => {
-            let pattern = process_name(text);
+        Names::Literal => SYSTEM_PROCESSES
+            .iter()
+            .any(|system| process_name(system) == process_name(text)),
+        Names::Regex { exact, ignore_case } => text.split('|').any(|alternative| {
+            // Each alternative of a pattern, without its anchors and
+            // brackets, and its folder when it is a command line's program,
+            // compared whole.
+            let bare = alternative.trim_matches(['^', '$', '(', ')']);
+            let name = bare.rsplit('/').next().unwrap_or(bare);
             SYSTEM_PROCESSES
                 .iter()
-                .any(|system| wildcard_matches(&pattern, system))
+                .any(|system| process_name(system) == process_name(name))
+                || inside_system_name(alternative, exact, ignore_case)
+        }),
+        Names::Wildcard => {
+            let pieces = wildcard_pieces(&process_name(text));
+            SYSTEM_PROCESSES.iter().any(|system| {
+                let name: Vec<char> = process_name(system).chars().collect();
+                wildcard_matches(&pieces, &name)
+            })
         }
     }
 }
 
-/// Whether the wildcard `pattern` matches `name`; a `[…]` set counts as
-/// any one character, which can only make a pattern match more.
-fn wildcard_matches(pattern: &str, name: &str) -> bool {
-    fn matches(pattern: &[char], name: &[char]) -> bool {
-        match pattern.split_first() {
-            None => name.is_empty(),
-            Some(('*', rest)) => (0..=name.len()).any(|skip| matches(rest, &name[skip..])),
-            Some(('?', rest)) => name
-                .split_first()
-                .is_some_and(|(_, tail)| matches(rest, tail)),
-            Some(('[', rest)) => {
-                let close = rest.iter().position(|c| *c == ']');
-                match (close, name.split_first()) {
-                    (Some(close), Some((_, tail))) => matches(&rest[close + 1..], tail),
-                    (None, Some((c, tail))) => *c == '[' && matches(rest, tail),
-                    (_, None) => false,
-                }
-            }
-            Some((c, rest)) => name
-                .split_first()
-                .is_some_and(|(first, tail)| first == c && matches(rest, tail)),
+/// Whether a regular expression that is a plain literal (with anchors, and
+/// `.*` at either end) is found in a system process's name. The expression
+/// is searched for in the name, so `login` is in `loginwindow`; `^` wants
+/// the name to start with it and `$` to end with it, and `-x` both. Names
+/// are compared as they are written (`WindowServer`) unless the case is
+/// ignored.
+fn inside_system_name(alternative: &str, exact: bool, ignore_case: bool) -> bool {
+    let (mut start, mut end) = (exact, exact);
+    let mut rest = alternative;
+    loop {
+        if let Some(inner) = rest.strip_prefix(['(', ')']) {
+            rest = inner;
+        } else if let Some(inner) = rest.strip_prefix('^') {
+            (start, rest) = (true, inner);
+        } else if let Some(inner) = rest.strip_prefix(".*") {
+            (start, rest) = (false, inner);
+        } else {
+            break;
         }
     }
-    let pattern: Vec<char> = pattern.chars().collect();
-    let name: Vec<char> = name.chars().collect();
-    matches(&pattern, &name)
+    loop {
+        if let Some(inner) = rest.strip_suffix(['(', ')']) {
+            rest = inner;
+        } else if let Some(inner) = rest.strip_suffix('$') {
+            (end, rest) = (true, inner);
+        } else if let Some(inner) = rest.strip_suffix(".*") {
+            (end, rest) = (false, inner);
+        } else {
+            break;
+        }
+    }
+    // A command line's program starts where its folder ends.
+    if let Some(slash) = rest.rfind('/') {
+        (start, rest) = (true, &rest[slash + 1..]);
+    }
+    if rest.is_empty()
+        || rest.contains([
+            '.', '[', ']', '(', ')', '*', '+', '?', '{', '}', '\\', '^', '$',
+        ])
+    {
+        return false;
+    }
+    let literal = if ignore_case {
+        rest.to_ascii_lowercase()
+    } else {
+        rest.to_string()
+    };
+    SYSTEM_PROCESSES.iter().any(|system| {
+        let system = if ignore_case {
+            system.to_ascii_lowercase()
+        } else {
+            (*system).to_string()
+        };
+        match (start, end) {
+            (true, true) => system == literal,
+            (true, false) => system.starts_with(&literal),
+            (false, true) => system.ends_with(&literal),
+            (false, false) => system.contains(&literal),
+        }
+    })
+}
+
+/// One piece of a wildcard.
+#[derive(Clone, Copy)]
+enum Piece {
+    /// `*`: any run of characters. Runs of them are one.
+    Star,
+    /// `?`, or a `[…]` set, which counts as any one character (that can only
+    /// make a pattern match more).
+    One,
+    Char(char),
+}
+
+/// A wildcard as pieces. A `[` with no `]` after it is a plain character.
+fn wildcard_pieces(pattern: &str) -> Vec<Piece> {
+    let chars: Vec<char> = pattern.chars().collect();
+    // A `[` has a `]` after it only before the last one, so the scan for
+    // its close runs only when there is one and the set is skipped.
+    let last_close = chars.iter().rposition(|c| *c == ']');
+    let mut pieces = Vec::new();
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        at += 1;
+        match c {
+            '*' => {
+                if !matches!(pieces.last(), Some(Piece::Star)) {
+                    pieces.push(Piece::Star);
+                }
+            }
+            '?' => pieces.push(Piece::One),
+            '[' if last_close.is_some_and(|close| close >= at) => {
+                if let Some(close) = chars[at..].iter().position(|c| *c == ']') {
+                    at += close + 1;
+                }
+                pieces.push(Piece::One);
+            }
+            c => pieces.push(Piece::Char(c)),
+        }
+    }
+    pieces
+}
+
+/// Whether the wildcard `pieces` match `name`, in time proportional to
+/// their number times the name's length.
+fn wildcard_matches(pieces: &[Piece], name: &[char]) -> bool {
+    // The positions in `pieces` the matching can be at, after the name so
+    // far; a star can also match nothing.
+    let spread = |at: &mut Vec<bool>| {
+        for index in 0..pieces.len() {
+            if at[index] && matches!(pieces[index], Piece::Star) {
+                at[index + 1] = true;
+            }
+        }
+    };
+    let mut at = vec![false; pieces.len() + 1];
+    at[0] = true;
+    spread(&mut at);
+    for &c in name {
+        let mut next = vec![false; pieces.len() + 1];
+        for (index, piece) in pieces.iter().enumerate() {
+            if !at[index] {
+                continue;
+            }
+            match piece {
+                Piece::Star => next[index] = true,
+                Piece::One => next[index + 1] = true,
+                Piece::Char(p) => next[index + 1] |= *p == c,
+            }
+        }
+        spread(&mut next);
+        at = next;
+    }
+    at[pieces.len()]
 }
 
 /// Whether a wildcard holds a letter or digit outside its `[…]` sets: with
@@ -555,18 +840,19 @@ fn quantifiers(chars: &[char], at: &mut usize) -> bool {
             }
             Some('+') => *at += 1,
             Some('{') => {
-                let Some(len) = chars[*at..].iter().position(|c| *c == '}') else {
-                    return optional;
-                };
-                let bound: String = chars[*at + 1..*at + len].iter().collect();
-                let valid =
-                    !bound.is_empty() && bound.chars().all(|c| c.is_ascii_digit() || c == ',');
-                if !valid {
+                // `{2}`, `{0,3}`: digits and commas up to a `}`. Only those
+                // are scanned, so a run of `{` is read in linear time.
+                let width = chars[*at + 1..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_digit() || **c == ',')
+                    .count();
+                if width == 0 || chars.get(*at + 1 + width) != Some(&'}') {
                     return optional;
                 }
+                let bound: String = chars[*at + 1..*at + 1 + width].iter().collect();
                 let least = bound.split(',').next().unwrap_or_default();
                 optional |= least.chars().all(|c| c == '0');
-                *at += len + 1;
+                *at += width + 2;
             }
             _ => return optional,
         }

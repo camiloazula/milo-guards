@@ -361,15 +361,35 @@ impl Walker<'_> {
         let Some(body) = function.child_by_field_name("body") else {
             return;
         };
-        let source = self.source;
+        // A function defined inside is judged when the walk reaches it, so
+        // its commands are not read again here: each node is read once.
+        let mut cursor = body.walk();
         let mut bomb = false;
-        unit::for_each_node(body, |inner| {
-            bomb |= inner.kind() == "command"
+        'walk: loop {
+            let inner = cursor.node();
+            let nested = inner.kind() == "function_definition";
+            if !nested
+                && inner.kind() == "command"
                 && inner
                     .child_by_field_name("name")
-                    .is_some_and(|called| unit::text(&called, source) == name)
-                && starts_apart(inner, body);
-        });
+                    .is_some_and(|called| unit::text(&called, self.source) == name)
+                && starts_apart(inner, body)
+            {
+                bomb = true;
+                break;
+            }
+            if !nested && cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
         if bomb {
             self.split.problem(
                 Rule::StopSystem,
@@ -658,10 +678,9 @@ impl Walker<'_> {
     }
 }
 
-/// A bare word as the program receives it: a backslash keeps the next
-/// character (`\rm` is `rm`).
 /// Whether `call`, inside `body`, runs as a process of its own: followed by
-/// `&`, or a stage of a pipeline.
+/// `&`, or a stage of a pipeline. A function defined in between ends the
+/// climb: what is inside it is that function's own.
 fn starts_apart(call: Node<'_>, body: Node<'_>) -> bool {
     let mut at = call;
     loop {
@@ -674,13 +693,15 @@ fn starts_apart(call: Node<'_>, body: Node<'_>) -> bool {
         if parent.kind() == "pipeline" && parent.named_child_count() > 1 {
             return true;
         }
-        if parent.id() == body.id() {
+        if parent.id() == body.id() || parent.kind() == "function_definition" {
             return false;
         }
         at = parent;
     }
 }
 
+/// A bare word as the program receives it: a backslash keeps the next
+/// character (`\rm` is `rm`).
 fn unescape(word: &str) -> String {
     let mut value = String::with_capacity(word.len());
     let mut chars = word.chars();

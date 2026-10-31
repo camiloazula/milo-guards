@@ -273,24 +273,60 @@ the same line. It is `stop_system` when the line stops more than a name:
 - **Every process of a user or a group.** `pkill -u me`, `-U`, `-G`,
   `killall -u me`, `taskkill /FI "USERNAME eq me"`, given no name. With a name
   (`pkill -u me node`) it is the name that is judged.
+- **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
+  `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
+  "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
+  `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
+  stops the programs that hang, are read; with `/IM`, `/PID` or an
+  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
+  names are judged.
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
-  `wininit`, `lsass`, `smss` and `services`, in any case and with `.exe` or a
-  folder in front. A regular expression is compared whole, without its anchors
-  (`^init$`, `/sbin/init`), per alternative; a PowerShell or `taskkill`
-  wildcard that matches one is the same (`Stop-Process -Name s*`).
+  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `.exe` or a folder in front. `pkill` and `killall -r`/`-m` search their
+  regular expression in the name, so it is compared two ways, per
+  alternative, without its anchors and brackets: whole (`^init$`,
+  `/sbin/init`), and, unless `-x`/`--exact` is given, as a plain literal
+  found inside a system name: `pkill login`, `pkill launch` and `pkill
+  Window` stop `loginwindow`, `launchd` and `WindowServer`. A leading `^`
+  wants the name to start with it, a trailing `$` to end with it, `-x` both,
+  and `.*` at either end drops that anchor (`pkill 'login.*'`). The literal
+  is compared with the names as they are written, so `pkill -f server` is not
+  `WindowServer`, unless the case is ignored (`pkill -i`, `killall -I`). A
+  literal with any other regular expression syntax in it is not read this
+  way. `killall` without `-r` compares whole names only. A PowerShell or
+  `taskkill` wildcard that matches one is the same (`Stop-Process -Name s*`).
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
   `xargs pkill`.
-- **A pipeline into `Stop-Process`.** With no `-Name`, `-Id` or `-InputObject`,
-  it stops what the first stage lists: `Get-Process node | Stop-Process` is the
-  name `node`, `Get-Process | Stop-Process` is every process (a filter in
-  between, such as `Where-Object`, is not read), and any other first stage
-  (`$procs | Stop-Process`) is known only when it runs. `-Id` and
-  `-InputObject` are not read.
+- **A listing into `Stop-Process`.** `Stop-Process` is read by its own
+  parameters: `-Name` and its alias `-ProcessName`, `-Id`, `-InputObject`,
+  `-Force`, `-PassThru`, `-WhatIf`, `-Confirm` and the common ones, each
+  written in full or as any prefix that is not another's (`-N`, `-Proc`).
+  With no `-Name`, `-Id` or `-InputObject`, it stops what the first stage
+  lists: `Get-Process node | Stop-Process` is the name `node`, and any other
+  first stage (`$procs | Stop-Process`) is known only when it runs. A
+  `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
+  `Stop-Process -Id` does, and is safe; one given no name lists every
+  process. A stage between the listing and `Stop-Process` is never "every
+  process": `Where-Object` is read when it only compares `Name` or
+  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `Select-Object` and `Sort-Object` keep some of the same processes; any
+  other filter is "picked by a filter only known when it runs", and any other
+  stage, which may hand on other processes, is known only when it runs.
+  What follows a named listing can only narrow it, so the names are judged.
+  The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
+  `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
+  `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
+  of a pipeline that starts with `Get-Process`. Any other `-Id` or
+  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
+  processes the guard does not read and is safe.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
   `stop_system` however it is called, even when the line only defines it. A
-  bomb split over two functions that call each other is not read.
+  function defined inside another is judged on its own, by its own name, and
+  its commands are not also read as the outer one's. A bomb split over two
+  functions that call each other is not read.
 
 `killall`'s and `pkill`'s options are read as they read them: bundled letters,
 `-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`), long
@@ -313,6 +349,13 @@ stored inside the archive are not in the line and are not read.
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
 
+`tar` takes a long option written as a unique prefix, which the guard reads
+for the modes and `--to-stdout` as well as `--directory`: `--ext` and `--extr`
+are `--extract` (at least three letters; `--to-s` is `--to-stdout`). A tar line
+whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
+-C ~`) is judged as if it extracted, unless a mode letter or long mode is
+read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
+
 The reasons say `unpacks into your home directory`, `unpacks into a folder
 outside the workspace`, `unpacks into a folder only known when it runs`. A
 folder that is the workspace, inside it or a temporary file is not risky.
@@ -331,7 +374,9 @@ git refuses when there are some. Deleting a tag on a remote (`git push
 `Invoke-Expression` (`iex`) is given a download when one of its arguments holds
 a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
 `curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
-(`(New-Object Net.WebClient).DownloadString(…)`), and then it is not also
+(`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
+(`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
+bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
 `unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
 `unknown`.
 

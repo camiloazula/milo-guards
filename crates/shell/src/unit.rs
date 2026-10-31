@@ -88,6 +88,29 @@ pub(crate) struct Unit {
     /// Whether the script it runs is a download (`Invoke-Expression` given
     /// `(iwr url)`), which only runs when it does.
     pub(crate) downloaded: bool,
+    /// The `Get-Process` listings written inside the arguments of a
+    /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
+    pub(crate) listings: Vec<Listing>,
+}
+
+/// A `Get-Process` written inside an argument: its own arguments, and what
+/// follows it before the value is used.
+#[derive(Debug, Clone)]
+pub(crate) struct Listing {
+    pub(crate) args: Vec<Arg>,
+    pub(crate) between: Vec<Between>,
+}
+
+/// A stage between a `Get-Process` listing and the `Stop-Process` it feeds.
+#[derive(Debug, Clone)]
+pub(crate) enum Between {
+    /// `Where-Object`, with its arguments (a block that is a simple
+    /// comparison is read into `Name -eq value`).
+    Where(Vec<Arg>),
+    /// `Select-Object` and `Sort-Object`: some of the same processes.
+    Narrows,
+    /// Anything else, which may hand on processes the listing did not.
+    Other,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -110,6 +133,7 @@ impl Unit {
             dir: None,
             hidden: false,
             downloaded: false,
+            listings: Vec::new(),
         }
     }
 

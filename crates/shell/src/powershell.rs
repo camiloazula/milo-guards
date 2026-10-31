@@ -5,7 +5,7 @@ use tree_sitter::Node;
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, Between, Listing, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -195,6 +195,9 @@ impl Walker<'_> {
         let mut args = Vec::new();
         // Whether an argument is a download, as `iex (iwr url)` runs one.
         let mut downloads = false;
+        let program_key = program
+            .known()
+            .map(|program| unit::key(program, Shell::PowerShell));
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -212,21 +215,17 @@ impl Walker<'_> {
                 match element.kind() {
                     "command_argument_sep" => {
                         if unit::text(&element, self.source).contains(':') {
-                            if let Some(Arg::Known(param)) = args.last_mut() {
-                                if param.starts_with('-') && !param.ends_with(':') {
-                                    param.push(':');
-                                }
-                            }
+                            attach_colon(&mut args);
                         }
                     }
                     "redirection" | "comment" => {}
                     "array_literal_expression" => {
                         let mut items = element.walk();
                         for item in element.named_children(&mut items) {
-                            args.push(self.expr(item));
+                            args.extend(self.element_args(item, program_key.as_deref()));
                         }
                     }
-                    _ => args.push(self.expr(element)),
+                    _ => args.extend(self.element_args(element, program_key.as_deref())),
                 }
             }
         }
@@ -236,6 +235,13 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
         unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
+        // The processes a `Stop-Process` is handed by a listing in its own
+        // arguments: `-InputObject (Get-Process)`.
+        if key.as_deref() == Some("stop-process") {
+            if let Some(elements) = node.child_by_field_name("command_elements") {
+                unit.listings = self.listings(elements);
+            }
+        }
         // A block known only when it runs (`-Action $block`, an action given
         // by position or in a splat) is a script the guard cannot read, run
         // by the event.
@@ -250,6 +256,193 @@ impl Walker<'_> {
         }
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// The arguments an element stands for: one, or three when it is the
+    /// block of a `Where-Object` that only compares a process's name
+    /// (`{ $_.ProcessName -eq 'node' }`), read as `ProcessName -eq node`.
+    fn element_args(&self, element: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+        if program == Some("where-object") && is_script_block(element) {
+            if let Some(filter) = self.name_filter(element) {
+                return filter.to_vec();
+            }
+        }
+        vec![self.expr(element)]
+    }
+
+    /// `{ $_.Name -eq 'x' }`: the property, the operator and the value of a
+    /// block that is only a comparison of a process's name, with `-eq` or
+    /// `-like` (and their case-sensitive and -insensitive spellings).
+    fn name_filter(&self, block: Node<'_>) -> Option<[Arg; 3]> {
+        // The block's one statement, through the grammar's layers.
+        let mut node = block;
+        for kind in [
+            "script_block_expression",
+            "script_block",
+            "script_block_body",
+            "statement_list",
+        ] {
+            while node.kind() != kind {
+                node = only_child(node)?;
+            }
+            node = only_child(node)?;
+        }
+        while node.kind() != "comparison_expression" {
+            node = only_child(node)?;
+        }
+        let mut cursor = node.walk();
+        let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        let [left, operator, right] = parts.as_slice() else {
+            return None;
+        };
+        let operator = unit::text(operator, self.source).to_ascii_lowercase();
+        if !matches!(
+            operator.as_str(),
+            "-eq" | "-ieq" | "-ceq" | "-like" | "-ilike" | "-clike"
+        ) {
+            return None;
+        }
+        let mut member = *left;
+        while member.kind() != "member_access" {
+            member = only_child(member)?;
+        }
+        let mut cursor = member.walk();
+        let parts: Vec<Node<'_>> = member.named_children(&mut cursor).collect();
+        let [item, property] = parts.as_slice() else {
+            return None;
+        };
+        if item.kind() != "variable"
+            || !matches!(
+                unit::text(item, self.source).to_ascii_lowercase().as_str(),
+                "$_" | "$psitem"
+            )
+            || property.kind() != "member_name"
+        {
+            return None;
+        }
+        let property = unit::text(property, self.source).to_ascii_lowercase();
+        if !matches!(property.as_str(), "name" | "processname") {
+            return None;
+        }
+        let mut value = *right;
+        while value.kind() != "string_literal" {
+            value = only_child(value)?;
+        }
+        let Arg::Known(value) = self.expr(value) else {
+            return None;
+        };
+        Some([
+            Arg::Known(property),
+            Arg::Known(operator),
+            Arg::Known(value),
+        ])
+    }
+
+    /// The arguments of a command as its rules read them, with no side
+    /// effects.
+    fn plain_args(&self, command: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+        let mut args = Vec::new();
+        let Some(elements) = command.child_by_field_name("command_elements") else {
+            return args;
+        };
+        let mut cursor = elements.walk();
+        for element in elements.named_children(&mut cursor) {
+            match element.kind() {
+                "command_argument_sep" => {
+                    if unit::text(&element, self.source).contains(':') {
+                        attach_colon(&mut args);
+                    }
+                }
+                "redirection" | "comment" => {}
+                "array_literal_expression" => {
+                    let mut items = element.walk();
+                    for item in element.named_children(&mut items) {
+                        args.extend(self.element_args(item, program));
+                    }
+                }
+                _ => args.extend(self.element_args(element, program)),
+            }
+        }
+        args
+    }
+
+    /// The key of a command node's program, when it is written out.
+    fn command_key(&self, command: Node<'_>) -> Option<String> {
+        let name = command.child_by_field_name("command_name")?;
+        let name = self.name(name);
+        name.known()
+            .map(|program| unit::key(program, Shell::PowerShell))
+    }
+
+    /// Every `Get-Process` written under `node`, with what follows it.
+    fn listings(&self, node: Node<'_>) -> Vec<Listing> {
+        let mut commands = Vec::new();
+        unit::for_each_node(node, |inner| {
+            if inner.kind() == "command"
+                && self.command_key(inner).as_deref() == Some("get-process")
+            {
+                commands.push(inner);
+            }
+        });
+        commands
+            .into_iter()
+            .map(|command| self.listing(command, node))
+            .collect()
+    }
+
+    /// One `Get-Process` under `top`: its arguments, the stages after it in
+    /// its pipeline, and anything else around it that picks from what it
+    /// lists (`(Get-Process).Where{…}`).
+    fn listing(&self, command: Node<'_>, top: Node<'_>) -> Listing {
+        let mut between = Vec::new();
+        let mut up = command.parent();
+        if let Some(chain) = up.filter(|parent| parent.kind() == "pipeline_chain") {
+            let mut cursor = chain.walk();
+            let mut after = false;
+            for stage in chain.named_children(&mut cursor) {
+                if stage.id() == command.id() {
+                    after = true;
+                } else if after {
+                    between.push(self.stage(stage));
+                } else {
+                    between.push(Between::Other);
+                }
+            }
+            up = chain.parent();
+        }
+        while let Some(parent) = up.filter(|parent| parent.id() != top.id()) {
+            if !matches!(
+                parent.kind(),
+                "pipeline"
+                    | "pipeline_chain"
+                    | "parenthesized_expression"
+                    | "sub_expression"
+                    | "statement_list"
+                    | "member_access"
+                    | "array_literal_expression"
+                    | "unary_expression"
+            ) {
+                between.push(Between::Other);
+                break;
+            }
+            up = parent.parent();
+        }
+        Listing {
+            args: self.plain_args(command, Some("get-process")),
+            between,
+        }
+    }
+
+    /// A stage that follows a listing.
+    fn stage(&self, stage: Node<'_>) -> Between {
+        if stage.kind() != "command" {
+            return Between::Other;
+        }
+        match self.command_key(stage).as_deref() {
+            Some("where-object") => Between::Where(self.plain_args(stage, Some("where-object"))),
+            Some("select-object" | "select" | "sort-object" | "sort") => Between::Narrows,
+            _ => Between::Other,
+        }
     }
 
     /// Whether the code under `node` downloads: a download cmdlet or a .NET
@@ -273,9 +466,10 @@ impl Walker<'_> {
                     .named_children(&mut cursor)
                     .find(|child| child.kind() == "member_name")
                     .map(|member| unit::text(&member, self.source).to_ascii_lowercase());
+                // `GetString` decodes bytes (`Encoding.GetString`) and
+                // downloads nothing; `HttpClient.GetStringAsync` does.
                 found |= member.is_some_and(|member| {
-                    member.starts_with("download")
-                        || matches!(member.as_str(), "getstring" | "getstringasync")
+                    member.starts_with("download") || member == "getstringasync"
                 });
             }
             _ => {}
@@ -586,6 +780,23 @@ impl Walker<'_> {
     }
 }
 
+/// The one named child of `node`, when it has just one.
+fn only_child(node: Node<'_>) -> Option<Node<'_>> {
+    (node.named_child_count() == 1)
+        .then(|| node.named_child(0))
+        .flatten()
+}
+
+/// A colon right after a parameter (`-Name:value`) binds the next argument
+/// to it: the parameter ends in `:`.
+fn attach_colon(args: &mut [Arg]) {
+    if let Some(Arg::Known(param)) = args.last_mut() {
+        if param.starts_with('-') && !param.ends_with(':') {
+            param.push(':');
+        }
+    }
+}
+
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
@@ -694,6 +905,48 @@ impl<'a> Params<'a> {
         params
     }
 
+    /// One cmdlet's arguments, read by its own parameters: each name given
+    /// is resolved to the parameter it names (its name or alias, or a prefix
+    /// of one), and only a parameter that takes a value takes the next
+    /// argument. A name that fits several is read as the first of them in
+    /// `own`, then the common parameters, so a cmdlet's own parameters win
+    /// and what the cmdlet might take as a value is not left for a rule to
+    /// see as something else. A name that fits none takes no value.
+    pub(crate) fn cmdlet(args: &'a [Arg], own: &[Param]) -> Self {
+        let mut params = Self::default();
+        let mut iter = args.iter().peekable();
+        while let Some(arg) = iter.next() {
+            let Some(name) = parameter(arg) else {
+                params.positional.push(arg);
+                continue;
+            };
+            let colon = name.ends_with(':');
+            let typed = name.trim_end_matches(':').to_ascii_lowercase();
+            let found = Param::resolve(&typed, own);
+            let takes_value = colon || found.is_some_and(|param| param.value);
+            let value = if takes_value
+                && iter
+                    .peek()
+                    .is_some_and(|next| parameter(next).is_none() || colon)
+            {
+                iter.next()
+            } else {
+                None
+            };
+            let name = found.map_or(typed, |param| param.name.to_string());
+            params.named.push((name, value));
+        }
+        params
+    }
+
+    /// Whether any of the parameters `fulls` was given, by a name that
+    /// [`Params::cmdlet`] resolved to it.
+    pub(crate) fn has(&self, fulls: &[&str]) -> bool {
+        self.named
+            .iter()
+            .any(|(name, _)| fulls.contains(&name.as_str()))
+    }
+
     /// The values of the parameters that abbreviate one of `fulls`.
     pub(crate) fn values(&self, fulls: &[&str]) -> Vec<&'a Arg> {
         self.named
@@ -703,6 +956,67 @@ impl<'a> Params<'a> {
             .collect()
     }
 }
+
+/// A cmdlet's parameter, for [`Params::cmdlet`].
+pub(crate) struct Param {
+    /// Its name, in lower case.
+    pub(crate) name: &'static str,
+    /// The other names it answers to.
+    pub(crate) aliases: &'static [&'static str],
+    /// Whether it takes a value, or is a switch.
+    pub(crate) value: bool,
+}
+
+impl Param {
+    pub(crate) const fn value(name: &'static str, aliases: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            aliases,
+            value: true,
+        }
+    }
+
+    pub(crate) const fn switch(name: &'static str, aliases: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            aliases,
+            value: false,
+        }
+    }
+
+    /// Whether `typed` is a prefix of the parameter's name or an alias.
+    fn starts_with(&self, typed: &str) -> bool {
+        self.name.starts_with(typed) || self.aliases.iter().any(|alias| alias.starts_with(typed))
+    }
+
+    /// The parameter `typed` names: an exact name or alias first, then a
+    /// prefix of one, the first that fits.
+    fn resolve<'p>(typed: &str, own: &'p [Param]) -> Option<&'p Param> {
+        if typed.is_empty() {
+            return None;
+        }
+        let all = || own.iter().chain(COMMON.iter());
+        all()
+            .find(|param| param.name == typed || param.aliases.contains(&typed))
+            .or_else(|| all().find(|param| param.starts_with(typed)))
+    }
+}
+
+/// The parameters every cmdlet takes.
+const COMMON: [Param; 12] = [
+    Param::switch("verbose", &["vb"]),
+    Param::switch("debug", &["db"]),
+    Param::value("erroraction", &["ea"]),
+    Param::value("warningaction", &["wa"]),
+    Param::value("informationaction", &["infa", "ia"]),
+    Param::value("progressaction", &["proga"]),
+    Param::value("errorvariable", &["ev"]),
+    Param::value("warningvariable", &["wv"]),
+    Param::value("informationvariable", &["iv"]),
+    Param::value("outvariable", &["ov"]),
+    Param::value("outbuffer", &["ob"]),
+    Param::value("pipelinevariable", &["pv"]),
+];
 
 /// A parameter's name with its `-`, when `arg` is one.
 fn parameter(arg: &Arg) -> Option<&str> {

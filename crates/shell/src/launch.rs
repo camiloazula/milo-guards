@@ -235,6 +235,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         dir: None,
         hidden: false,
         downloaded: false,
+        listings: Vec::new(),
     }
 }
 

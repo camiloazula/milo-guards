@@ -24,19 +24,31 @@ impl Checker<'_> {
     }
 }
 
+/// Whether `name`, a long option as written, is `full` or a prefix of it of
+/// at least `least` letters: GNU tar and bsdtar take a unique prefix.
+fn long_option(name: &str, full: &str, least: usize) -> bool {
+    name.len() >= least && full.starts_with(name)
+}
+
 /// The folders `tar` unpacks into, when it extracts: `-C dir` (`-Cdir`,
 /// `--directory dir`, `--directory=dir`, wherever it stands), or the
-/// working directory.
+/// working directory. A mode that only the line's run shows (`tar "$mode"
+/// -f x.tar`) counts as extracting.
 fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
     // Short options that take a value, whose bundle ends with it.
     const VALUES: &str = "CfbILKNTXFgHV";
     let mut extract = false;
     let mut other_mode = false;
     let mut to_stdout = false;
+    // An argument only known when it runs, which may hold the mode.
+    let mut unknown = false;
     let mut folders = Vec::new();
     let mut iter = args.iter().enumerate();
     while let Some((at, arg)) = iter.next() {
-        let Some(text) = arg.known() else { continue };
+        let Some(text) = arg.known() else {
+            unknown |= arg.is_unknown();
+            continue;
+        };
         if text == "--" {
             break;
         }
@@ -45,21 +57,27 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
-            match name {
-                "extract" | "get" => extract = true,
-                "create" | "list" | "append" | "update" | "diff" | "compare" | "delete" => {
-                    other_mode = true;
-                }
-                "to-stdout" => to_stdout = true,
-                "one-top-level" => {
-                    folders.extend(attached.map(|folder| Arg::Known(folder.to_string())));
-                }
-                // `--dir` is enough: no other option starts like it.
-                name if name.len() >= 3 && "directory".starts_with(name) => match attached {
+            // Each option may be written as a prefix of it, of at least three
+            // letters (`--ext`, `--dir`), as the programs take the unique one.
+            let is = |full: &str| long_option(name, full, 3);
+            if name == "get" || is("extract") {
+                extract = true;
+            } else if [
+                "create", "list", "append", "update", "diff", "compare", "delete",
+            ]
+            .iter()
+            .any(|mode| is(mode))
+            {
+                other_mode = true;
+            } else if long_option(name, "to-stdout", 4) {
+                to_stdout = true;
+            } else if long_option(name, "one-top-level", 7) {
+                folders.extend(attached.map(|folder| Arg::Known(folder.to_string())));
+            } else if is("directory") {
+                match attached {
                     Some(folder) => folders.push(Arg::Known(folder.to_string())),
                     None => folders.extend(iter.next().map(|(_, folder)| folder.clone())),
-                },
-                _ => {}
+                }
             }
             continue;
         }
@@ -97,6 +115,9 @@ fn tar(args: &[Arg]) -> Option<Vec<Arg>> {
             }
         }
     }
+    // With no mode read, an argument that is only known when it runs may be
+    // `-x`.
+    extract |= unknown && !other_mode;
     if !extract || other_mode || to_stdout {
         return None;
     }
