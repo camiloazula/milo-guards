@@ -502,7 +502,7 @@ impl Walker<'_> {
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
             return;
         };
-        let method = unit::text(member, self.source).to_ascii_lowercase();
+        let method = blocks::bare(unit::text(member, self.source));
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
@@ -524,8 +524,10 @@ impl Walker<'_> {
         blocks::hook_call(self.split, &method, &children, node, self.source);
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
-        if matches!(method.as_str(), "newscriptblock" | "invokescript")
-            || (method == "create" && object.contains("scriptblock"))
+        if matches!(
+            method.as_str(),
+            "newscriptblock" | "invokescript" | "expandstring"
+        ) || (method == "create" && object.contains("scriptblock"))
         {
             self.split.problem(
                 Rule::Unknown,
@@ -538,33 +540,8 @@ impl Walker<'_> {
             }
             return;
         }
-        let (rule, reason) = match method.as_str() {
-            "invoke" | "invokereturnasis" | "invokewithcontext" => {
-                (Rule::Unknown, "invokes code the guard does not read")
-            }
-            "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
-                (Rule::Delete, "calls .NET to delete or move files")
-            }
-            "move" if file_like => (Rule::Delete, "calls .NET to delete or move files"),
-            "writealltext" | "writeallbytes" | "writealllines" | "appendalltext"
-            | "appendalllines" | "createtext" | "appendtext" | "appendallbytes"
-            | "downloadfile" => (Rule::Overwrite, "calls .NET to write files"),
-            "copy" | "open" | "openwrite" | "create" | "createnew" | "opentext" | "replace"
-                if file_like =>
-            {
-                (Rule::Overwrite, "calls .NET to write or open files")
-            }
-            "setaccesscontrol" if file_like => {
-                (Rule::Permissions, "calls .NET to change permissions")
-            }
-            "setenvironmentvariable" => (
-                Rule::SystemSettings,
-                "calls .NET to change environment variables",
-            ),
-            "start" if object.contains("process") => {
-                (Rule::Unknown, "calls .NET to start a program")
-            }
-            _ => return,
+        let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
+            return;
         };
         self.split
             .problem(rule, reason, Some(unit::text(&node, self.source)));
@@ -597,6 +574,38 @@ impl Walker<'_> {
             );
         self.split.write(Shell::PowerShell, target);
     }
+}
+
+/// What a .NET method does to files or the system, by its lower-case name:
+/// `object` is the lower-case text it is called on, and `file_like` whether
+/// that is a type that touches the file system, registry or network. Also what
+/// `ForEach-Object` calls when it is given the method's name.
+fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'static str)> {
+    Some(match method {
+        "invoke" | "invokereturnasis" | "invokewithcontext" => {
+            (Rule::Unknown, "invokes code the guard does not read")
+        }
+        "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
+            (Rule::Delete, "calls .NET to delete or move files")
+        }
+        "move" if file_like => (Rule::Delete, "calls .NET to delete or move files"),
+        "writealltext" | "writeallbytes" | "writealllines" | "appendalltext" | "appendalllines"
+        | "createtext" | "appendtext" | "appendallbytes" | "downloadfile" => {
+            (Rule::Overwrite, "calls .NET to write files")
+        }
+        "copy" | "open" | "openwrite" | "create" | "createnew" | "opentext" | "replace"
+            if file_like =>
+        {
+            (Rule::Overwrite, "calls .NET to write or open files")
+        }
+        "setaccesscontrol" if file_like => (Rule::Permissions, "calls .NET to change permissions"),
+        "setenvironmentvariable" => (
+            Rule::SystemSettings,
+            "calls .NET to change environment variables",
+        ),
+        "start" if object.contains("process") => (Rule::Unknown, "calls .NET to start a program"),
+        _ => return None,
+    })
 }
 
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.

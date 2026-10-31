@@ -330,13 +330,20 @@ A line is never safe because the guard gave up on it. These come back risky:
   `-Process`/`-Begin`/`-End` and the first block of `ForEach-Object`, `New-Module`,
   `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
-  from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`). A block
+  from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
+  `ExpandString`, whose `$( )` subexpressions run). A block
   written out is read where it stands, and so is a string written out as the
-  text of the code; `ForEach-Object Name` takes a member name, not a block.
-  `Start-Job` takes `-InitializationScript` by position after the block, so
-  `Start-Job { … } $init` is risky, and a splat (`@p`) on these cmdlets may hold a
+  text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
+  method. `ForEach-Object Name` takes a member name, not a block, but a member
+  name that is a method judged as `.Invoke()` and `.Delete()` are is
+  (`% Invoke`, `-MemberName Delete`). `Start-Job` takes `-InitializationScript`
+  by position after the block, so `Start-Job { … } $init` is risky, and a named
+  `-InitializationScript` on `Start-ThreadJob` or `Register-ScheduledJob` does not
+  make a block given by position safe. A splat (`@p`) on these cmdlets may hold a
   block, so it is risky unless the cmdlet runs one block only and one is written
-  out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`).
+  out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`),
+  and so does the argument after a parameter written with a colon
+  (`-Confirm:$false`), a common parameter (`-ErrorAction Stop`) and `-Args`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer

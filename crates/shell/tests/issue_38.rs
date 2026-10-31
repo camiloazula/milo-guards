@@ -264,3 +264,156 @@ fn every_hook_on_invoke_command_is_read_set_or_called() {
     .map(|line| (line, Rule::Unknown));
     check(Shell::PowerShell, &windows(), &[], &risky);
 }
+
+#[test]
+fn a_named_initialization_script_leaves_the_positional_block_to_be_read() {
+    let risky = [
+        "Start-ThreadJob -InitializationScript { Import-Module x } $b",
+        "Start-ThreadJob -Init { 1 } (Get-Block)",
+        "Register-ScheduledJob -InitializationScript { 1 } nightly $b",
+        "Register-ScheduledJob -Name nightly -InitializationScript { 1 } $b",
+        "Register-ScheduledJob nightly $b",
+        "Start-ThreadJob $b",
+    ]
+    .map(|line| (line, Rule::Unknown));
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Start-ThreadJob -InitializationScript { 1 } { cargo build }",
+            "Start-ThreadJob -InitializationScript { 1 } -ScriptBlock { cargo build }",
+            "Start-ThreadJob { cargo build } -Name build",
+            "Register-ScheduledJob nightly { cargo build }",
+            "Register-ScheduledJob -InitializationScript { 1 } nightly { cargo build }",
+            "Register-ScheduledJob -Name nightly -InitializationScript { 1 } { cargo build }",
+            "Register-ScheduledJob -Name nightly -InitializationScript { 1 } -ScriptBlock { cargo build }",
+        ],
+        &risky,
+    );
+}
+
+#[test]
+fn a_method_name_in_quotes_is_the_method() {
+    let paths = windows();
+    let risky = [
+        "$ExecutionContext.InvokeCommand.'InvokeScript'('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"InvokeScript\"('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"NewScriptBlock\"($code)",
+        "[scriptblock]::'Create'('Remove-Item -Recurse -Force ~')",
+        "[scriptblock]::\"Create\"($code)",
+        "$ExecutionContext.InvokeCommand.'set_CommandNotFoundAction'($b)",
+        "$ExecutionContext.InvokeCommand.'ExpandString'($s)",
+        "$b.'Invoke'()",
+    ]
+    .map(|line| (line, Rule::Unknown));
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[],
+        &[
+            risky.as_slice(),
+            &[("(Get-Item ~).'Delete'()", Rule::Delete)],
+        ]
+        .concat(),
+    );
+    for line in [
+        "$ExecutionContext.InvokeCommand.'InvokeScript'('Remove-Item -Recurse -Force ~')",
+        "[scriptblock]::'Create'('Remove-Item -Recurse -Force ~')",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(found.contains(&Rule::Delete), "{line}: {found:?}");
+    }
+}
+
+#[test]
+fn expand_string_runs_the_subexpressions_in_its_text() {
+    let paths = windows();
+    for line in [
+        "$ExecutionContext.InvokeCommand.ExpandString('$(Remove-Item -Recurse -Force ~)')",
+        "$ExecutionContext.SessionState.InvokeCommand.ExpandString('a $(Remove-Item -Recurse -Force ~)')",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(found.contains(&Rule::Delete), "{line}: {found:?}");
+        assert!(found.contains(&Rule::Unknown), "{line}: {found:?}");
+    }
+    let risky = [
+        "$ExecutionContext.InvokeCommand.ExpandString($s)",
+        "$ExecutionContext.InvokeCommand.ExpandString('plain text')",
+    ]
+    .map(|line| (line, Rule::Unknown));
+    check(Shell::PowerShell, &paths, &[], &risky);
+}
+
+#[test]
+fn a_member_name_that_runs_code_or_deletes_is_the_method_called() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem | ForEach-Object Name",
+            "Get-ChildItem | % FullName",
+            "Get-ChildItem | % -MemberName Length",
+            "'a' | % ToUpper",
+            "'a' | % -MemberName Replace -ArgumentList 'a', 'b'",
+        ],
+        &[
+            ("$b | ForEach-Object Invoke", Rule::Unknown),
+            ("$b | % -MemberName Invoke", Rule::Unknown),
+            ("$b | % -MemberName:Invoke", Rule::Unknown),
+            ("$b | ForEach-Object InvokeReturnAsIs", Rule::Unknown),
+            ("$b | % InvokeWithContext", Rule::Unknown),
+            ("$b | % 'Invoke'", Rule::Unknown),
+            ("$b | % -Mem Invoke", Rule::Unknown),
+            ("$b | % -MemberName $m", Rule::Unknown),
+            ("Get-ChildItem | % Delete", Rule::Delete),
+            (
+                "Get-ChildItem | % -MemberName MoveTo -ArgumentList x",
+                Rule::Delete,
+            ),
+            ("Get-Item HKCU:\\x | % DeleteSubKeyTree", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn common_parameters_and_args_take_their_value() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Start-Job { npm test } -ErrorAction Stop",
+            "Start-Job { npm test } -EA Stop",
+            "Start-Job -ScriptBlock { npm test } -OutVariable j",
+            "Start-Job -ScriptBlock { npm test } -OV j",
+            "Start-Job -ErrorAction:Stop -ScriptBlock { npm test }",
+            "Start-Job { param($a) $a } -Args $x",
+            "Start-Job { npm test } -ErrorVariable e -WarningAction Ignore -WarningVariable w",
+            "Start-Job { npm test } -InformationAction Ignore -InformationVariable i -ProgressAction SilentlyContinue",
+            "Start-Job { npm test } -OutBuffer 2 -PipelineVariable p",
+            "Start-ThreadJob { npm test } -ErrorAction Stop",
+            "Start-ThreadJob -ScriptBlock { npm test } -EV e",
+            "Register-ScheduledJob -Name nightly -ScriptBlock { npm test } -ErrorAction Stop",
+            "Register-ScheduledJob nightly { npm test } -WA Ignore",
+            "Invoke-Command { Get-Date } -ErrorAction Stop",
+            "Invoke-Command -ErrorAction Stop { Get-Date }",
+            "Invoke-Command { param($a) $a } -Args $x",
+            "New-Module { function f { 1 } } -ErrorAction Stop",
+            "Measure-Command { cargo build } -ErrorAction Stop",
+            "1..3 | ForEach-Object { $_ } -Args $x",
+            "1..3 | ForEach-Object { $_ } -ErrorAction Stop",
+            "1..3 | ForEach-Object { $_ } -Confirm:$false",
+            "1..3 | ForEach-Object -Confirm:$false { $_ }",
+            "Start-Job { npm test } -Confirm:$false",
+            "Start-Job -Confirm:$false { npm test }",
+            "Invoke-Command { Get-Date } -Whatever:$x",
+            "Set-PSBreakpoint -Script build.ps1 -Line 3 -Action { break } -ErrorAction Stop",
+        ],
+        &[
+            // The value after a parameter is not hidden by what it follows.
+            ("Start-Job { npm test } -ErrorAction Stop $i", Rule::Unknown),
+            ("Start-Job -ErrorAction:Stop $b", Rule::Unknown),
+            ("Start-ThreadJob -ErrorAction Stop $b", Rule::Unknown),
+            ("1..3 | ForEach-Object -Confirm:$false $b", Rule::Unknown),
+        ],
+    );
+}
