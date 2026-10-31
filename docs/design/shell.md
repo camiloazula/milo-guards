@@ -248,6 +248,14 @@ A line is never safe because the guard gave up on it. These come back risky:
 - Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
+- PowerShell code known only when it runs: a script block that is not written
+  out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
+  `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
+  `-Process`/`-Begin`/`-End` and the first block of `ForEach-Object`, `New-Module`,
+  `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand`, and code built
+  from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`). A block
+  written out is read where it stands, and so is a string written out as the
+  text of the code; `ForEach-Object Name` takes a member name, not a block.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer

@@ -3,6 +3,8 @@
 
 use tree_sitter::Node;
 
+mod blocks;
+
 use crate::launch;
 use crate::unit::{self, Arg, Split, Stage, Unit};
 use crate::{Rule, Shell};
@@ -58,6 +60,8 @@ pub(crate) fn canonical(name: &str) -> &str {
         "irm" => "invoke-restmethod",
         "iex" => "invoke-expression",
         "icm" => "invoke-command",
+        "sajb" => "start-job",
+        "sbp" => "set-psbreakpoint",
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
         "%" | "foreach" => "foreach-object",
@@ -116,6 +120,10 @@ impl Walker<'_> {
                 self.dotnet(node);
                 self.children(node, stage, level);
             }
+            "assignment_expression" => {
+                blocks::hook(self.split, node, self.source);
+                self.children(node, stage, level);
+            }
             _ => self.children(node, stage, level),
         }
     }
@@ -166,6 +174,10 @@ impl Walker<'_> {
                     _ => args.push(self.expr(element)),
                 }
             }
+        }
+        if let Some(program) = program.known() {
+            let key = unit::key(program, Shell::PowerShell);
+            blocks::check(self.split, &key, &args, unit::text(&node, self.source));
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
@@ -334,6 +346,22 @@ impl Walker<'_> {
         ]
         .iter()
         .any(|kind| object.contains(kind));
+        // Code built from text, or run from it: the guard reads the text
+        // when it is written out, and the call is risky wherever it points.
+        if matches!(method.as_str(), "newscriptblock" | "invokescript")
+            || (method == "create" && object.contains("scriptblock"))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "builds or runs code the guard does not read",
+                Some(unit::text(&node, self.source)),
+            );
+            if let Some(Arg::Known(code)) = blocks::first_string(&children).map(|n| self.string(n))
+            {
+                unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
+            }
+            return;
+        }
         let (rule, reason) = match method.as_str() {
             "invoke" | "invokereturnasis" | "invokewithcontext" => {
                 (Rule::Unknown, "invokes code the guard does not read")
