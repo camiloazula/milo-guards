@@ -417,3 +417,115 @@ fn common_parameters_and_args_take_their_value() {
         ],
     );
 }
+
+#[test]
+fn remaining_scripts_is_a_block_parameter() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }",
+            "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, { 3 }",
+        ],
+        &[
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts $b",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts:$b",
+                Rule::Unknown,
+            ),
+            ("1 | ForEach-Object -Process { 1 } -Rem:$b", Rule::Unknown),
+            (
+                "1 | ForEach-Object -Process { 1 } -Remaining:$b",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts:$b, $c",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, $c",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_member_name_that_builds_code_or_sets_a_hook_is_judged() {
+    let paths = windows();
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction",
+            "$ExecutionContext.InvokeCommand | % CommandNotFoundAction",
+            "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList { 1 }",
+            "$ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList { 1 }",
+            "$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction { 1 }",
+        ],
+        &[
+            ("$ExecutionContext.InvokeCommand | % InvokeScript $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % NewScriptBlock $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % ExpandString $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % 'InvokeScript' 'Get-Date'", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList $s",
+                Rule::Unknown,
+            ),
+            ("$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction $b", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % set_LocationChangedAction $b", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList $b",
+                Rule::Unknown,
+            ),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList $b",
+                Rule::Unknown,
+            ),
+            ("$ExecutionContext.InvokeCommand | % CommandNotFoundAction $b", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName PreCommandLookupAction -Args $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+    // The text given as the code is read, whichever way it is written out.
+    for line in [
+        "$ExecutionContext.InvokeCommand | % InvokeScript 'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList 'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % -MemberName:InvokeScript -ArgumentList:'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % ExpandString '$(Remove-Item -Recurse -Force ~)'",
+        "$ExecutionContext.InvokeCommand | % NewScriptBlock 'Remove-Item -Recurse -Force ~'",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(found.contains(&Rule::Delete), "{line}: {found:?}");
+        assert!(found.contains(&Rule::Unknown), "{line}: {found:?}");
+    }
+}
+
+#[test]
+fn what_follows_a_member_name_is_its_arguments() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "$list | % Add $item",
+            "$s | % Substring 1 $n",
+            "1 | ForEach-Object -MemberName Name $b",
+            "$s | % -MemberName Substring -ArgumentList $a, $b",
+            "$s | % 'Substring' $a $b",
+        ],
+        &[
+            ("1 | ForEach-Object $b", Rule::Unknown),
+            ("1 | ForEach-Object { 1 } $b", Rule::Unknown),
+            ("1 | % { 1 } , $b", Rule::Unknown),
+            ("1 | % $b Name", Rule::Unknown),
+            ("$list | % Delete $item", Rule::Delete),
+            ("1 | % Add -Process $b", Rule::Unknown),
+        ],
+    );
+}

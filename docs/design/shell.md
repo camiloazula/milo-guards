@@ -344,17 +344,21 @@ A line is never safe because the guard gave up on it. These come back risky:
 - PowerShell code known only when it runs: a script block that is not written
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
-  `-Process`/`-Begin`/`-End` and the first block of `ForEach-Object`, `New-Module`,
-  `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
+  `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
+  `ForEach-Object`, `New-Module`, `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
   `ExpandString`, whose `$( )` subexpressions run). A block
   written out is read where it stands, and so is a string written out as the
   text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
-  method. `ForEach-Object Name` takes a member name, not a block, but a member
-  name that is a method judged as `.Invoke()` and `.Delete()` are is
-  (`% Invoke`, `-MemberName Delete`). `Start-Job` takes `-InitializationScript`
-  by position after the block, so `Start-Job { … } $init` is risky, and a named
+  method. `ForEach-Object Name` takes a member name, not a block, and what
+  follows it is the member's arguments (`$list | % Add $item` is safe), but a
+  member name is judged as the call written out is: a method that is
+  risky as `.Invoke()` and `.Delete()` are (`% Invoke`, `-MemberName Delete`),
+  `InvokeScript`, `NewScriptBlock` and `ExpandString` (their text is read when
+  written out, positionally or after `-ArgumentList`), and a hook set by
+  `set_` or by its property given an argument. `Start-Job` takes
+  `-InitializationScript` by position after the block, so `Start-Job { … } $init` is risky, and a named
   `-InitializationScript` on `Start-ThreadJob` or `Register-ScheduledJob` does not
   make a block given by position safe. A splat (`@p`) on these cmdlets may hold a
   block, so it is risky unless the cmdlet runs one block only and one is written
