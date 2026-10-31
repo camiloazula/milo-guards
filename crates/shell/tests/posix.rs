@@ -642,3 +642,24 @@ fn a_shell_is_known_by_its_program() {
     );
     assert_eq!(Shell::for_program("/usr/local/bin/fish"), None);
 }
+
+#[test]
+fn a_posix_wildcard_skips_dot_names_unless_it_starts_with_a_dot() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm -rf *git",
+            "rm -rf ?git",
+            "rm -rf [!x]git",
+            "rm -rf *.tmp",
+            "rm -rf ????",
+        ],
+        &[
+            ("rm -rf .git*", Rule::Delete),
+            ("rm -rf .?it", Rule::Delete),
+            ("rm -rf .[g]it", Rule::Delete),
+            ("rm -rf */.git", Rule::Delete),
+        ],
+    );
+}
