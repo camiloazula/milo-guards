@@ -1521,3 +1521,147 @@ fn a_protected_reason_uses_the_callers_words() {
         "deletes a path outside the workspace"
     );
 }
+
+/// A folder that holds a protected path is protected when it would be
+/// harmless, so the whole folder cannot go; a write into it, and work beside
+/// the protected path, stay the agent's own.
+#[test]
+fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
+    let paths = posix().with_protected([Protected::new(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "touch conf/new.txt",
+            "rm conf/other.txt",
+            "rm -rf src",
+            "rm conf/app/y.yaml",
+            "cp a.txt conf/",
+            "cp a.txt conf/app",
+            "mkdir -p conf/app",
+            "echo x > conf/new.txt",
+            "cat conf/app/x.yaml",
+            "ls conf",
+            "cd conf && ls",
+            "cd conf && touch new.txt",
+            "rm -f *.log conf/*.log",
+            "rm -rf **/y.yaml",
+            "rm -rf conf/o*",
+        ],
+        &[
+            ("rm -rf conf", Rule::Delete),
+            ("rm -rf conf/", Rule::Delete),
+            ("rm -rf ./conf/app", Rule::Delete),
+            ("cd conf && rm -rf app", Rule::Delete),
+            ("cd conf/app && rm x.yaml", Rule::Delete),
+            ("mv conf /tmp/x", Rule::Delete),
+            ("mv conf/app /tmp/x", Rule::Delete),
+            ("rm -rf c*", Rule::Delete),
+            ("rm -rf conf/a*", Rule::Delete),
+            ("rm -rf **/x.yaml", Rule::Delete),
+            ("rm conf/**/x.yaml", Rule::Delete),
+            ("rm -rf conf/**", Rule::Delete),
+            ("rm -rf */*/x.yaml", Rule::Delete),
+            ("find conf -delete", Rule::Delete),
+            ("ls conf | xargs rm -rf", Rule::Delete),
+            ("echo x > conf/app/x.yaml", Rule::Overwrite),
+            ("cp a.txt conf/app/x.yaml", Rule::Overwrite),
+            ("cp a.txt conf/app/x*", Rule::Overwrite),
+            ("chmod -R 777 conf", Rule::Permissions),
+        ],
+    );
+    // The reason is the caller's words.
+    for line in ["rm -rf conf", "rm -rf c*", "mv conf /tmp/x"] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert!(
+            assessment
+                .findings()
+                .iter()
+                .any(|finding| finding.reason.ends_with("the agent's settings")),
+            "{line}: {:?}",
+            assessment.findings()
+        );
+    }
+    // A verdict that is already risky keeps its own words.
+    for (line, reason) in [
+        ("rm -rf .", "deletes the whole workspace"),
+        ("rm -rf *", "deletes the whole workspace"),
+        ("rm -rf ~", "deletes your home directory"),
+        (
+            "rm -rf /home/me/work",
+            "deletes a folder holding the workspace",
+        ),
+    ] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert_eq!(assessment.findings()[0].reason, reason, "{line}");
+    }
+}
+
+/// Names compare without case on every host, a macOS file system included.
+#[test]
+fn a_protected_path_is_the_same_whatever_its_case() {
+    let paths = macos().with_protected([Protected::new(
+        "/Users/me/dev/repo/.agent",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &["rm -rf .agents", "cat .AGENT/rules", "rm src/main.rs"],
+        &[
+            ("rm -rf .AGENT", Rule::Delete),
+            ("rm .Agent/rules", Rule::Delete),
+            ("rm -rf .agent", Rule::Delete),
+            ("echo x > .AGENT/rules", Rule::Overwrite),
+            ("rm -rf .AGE*", Rule::Delete),
+        ],
+    );
+}
+
+/// A protected path in a temporary folder is not a temporary file, and a
+/// pattern that picks it is not either.
+#[test]
+fn a_protected_path_in_a_temporary_folder_is_protected() {
+    let paths = posix().with_protected([Protected::new("/tmp/state/x", "the agent's settings")]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "rm /tmp/other",
+            "rm /tmp/state/y",
+            "rm /tmp/state/y*",
+            "rm /tmp/*.log",
+        ],
+        &[
+            ("rm /tmp/state/x", Rule::Delete),
+            ("rm /tmp/state/*", Rule::Delete),
+            ("rm /tmp/state/x*", Rule::Delete),
+            ("rm -rf /tmp/state", Rule::Delete),
+            ("rm /tmp/*/x", Rule::Delete),
+            ("echo x > /tmp/state/x", Rule::Overwrite),
+        ],
+    );
+}
+
+/// A pattern that picks the protected path in the home directory says so,
+/// not that it is the home directory.
+#[test]
+fn a_pattern_picking_a_protected_path_in_the_home_directory_says_so() {
+    let paths = posix().with_protected([Protected::new("/home/me/.agent", "the agent's settings")]);
+    for line in ["rm -rf ~/.agent*", "rm -rf ~/.a*", "rm -rf ~/.agent/"] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert_eq!(
+            assessment.findings()[0].reason,
+            "deletes the agent's settings",
+            "{line}"
+        );
+    }
+    let assessment = classify("rm -rf ~", Shell::Posix, &paths);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "deletes your home directory"
+    );
+}

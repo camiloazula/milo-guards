@@ -129,7 +129,8 @@ itself.
   sensitive places under the home directory (SSH keys, cloud credentials,
   shell startup files, keychains, the PowerShell profile). A workspace's own
   `.git` is sensitive.
-- Windows paths compare without case. POSIX paths compare with it.
+- Windows paths compare without case. POSIX paths compare with it, except
+  protected paths, which compare without case on every host.
 - A protected path, and anything under it, is `Protected`. **Protected wins over
   the workspace**, and over a temporary folder: a protected file inside a
   workspace folder is `Protected`, not `Inside`, because the caller named it on
@@ -139,21 +140,44 @@ itself.
   each. Like everything here it is spelling alone: the caller spells a
   protected path the way it spells the workspace, and a symlink to one is
   judged by its own name.
-  - Only the path itself and what is under it is protected. A folder that
-    holds it is not: `rm -rf ~` is already a delete of the home directory, and
-    a folder between the home directory and a protected file is already beyond
-    the workspace, so no new place says "holds a protected path". The same
-    goes for a folder inside a workspace (`src` holding a protected
-    `src/conf/x.yaml`).
-  - A pattern that picks a protected path by its names is that path. The
-    pattern's parts, from its first wildcard part, are matched against the
-    path's names below the folder the pattern starts in, one for one (`set*`
-    and `*.yaml` pick `repo/settings.yaml`, `.a*` picks `repo/.agent` where
-    wildcards match hidden names), and a pattern at least as long as the path
-    counts: `set*/x` goes below a protected name, which may be a folder. A
-    pattern that stops at a folder holding the path is the folder (`c*` for
-    `repo/conf/app/x.yaml`). Without this a glob inside a workspace would
-    reach a protected file that its spelling does not name.
+  - **A verdict that would otherwise be harmless is checked again against the
+    protected paths**, and a protected path wins when the path holds one (is
+    an ancestor folder of it) as well as when it is one or under one: a
+    delete of `conf` is a delete of the protected `conf/app/x.yaml`. A verdict
+    that is already risky keeps its own place and words, so `rm -rf ~` still
+    says it deletes the home directory and `rm -rf .` at the workspace root
+    says the workspace; a path that is a protected one, or under it, is the
+    exception, since it is the caller's file whatever else it is (a protected
+    file in the home directory is `Protected`, not `Outside`). This
+    replaces an earlier choice not to cover a folder holding a protected path.
+  - **A write into a folder is not a write of what it holds.**
+    `Resolver::place_into` is `place_hidden` without the holding rule, for a
+    path something is written into (a copy's destination, a redirect's
+    target): `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
+    beside a protected `conf/app/x.yaml`, while a write to the protected path
+    or a pattern that picks it is still protected. The shell guard asks it for
+    writes and `place_hidden` for everything else. A recursive copy onto an
+    existing folder is not read further.
+  - **Names compare without case on every host**, not only Windows: a macOS
+    or Windows file system ignores it, and the caller names a path as it
+    knows it. A protected name is also matched, on Windows, by its 8.3 short
+    name (`AGENT~1` for `.agent`, `SETTIN~1.YAM` for `settings.yaml`, or two
+    characters, four hex digits and `~1`), the way a workspace's `.git` is,
+    from one rule for both. A POSIX name has no short form.
+  - **A pattern that can pick a protected path or a folder holding it is
+    protected.** The pattern's parts, from its first wildcard part, are matched
+    against the path's names below the folder the pattern starts in, one for
+    one, without case (`set*` and `*.yaml` pick `repo/settings.yaml`, `.a*`
+    picks `repo/.agent` where wildcards match hidden names, `AGENT~*` picks
+    `.agent` on Windows). A pattern that reaches the path, or goes below it
+    (`set*/x`: the name may be a folder), picks it, and wins over any place
+    but the workspace or a temporary folder itself. One that stops at a folder
+    holding it picks that folder (`c*` for `repo/conf/app/x.yaml`), which
+    counts only where the verdict would be harmless. A part of two or more
+    stars alone may stand for any number of names, all the rest when it is the
+    last part (`**/x.yaml`, `conf/**`). A catch-all at the workspace root is
+    still the workspace. Without this a glob inside a workspace would reach a
+    protected file that its spelling does not name.
 - Windows names are normalised before they are compared, so a spelling that
   Windows resolves to a protected name is judged as that name. Core does this
   in the `Windows` flavour only; a POSIX name keeps every character. `.` and

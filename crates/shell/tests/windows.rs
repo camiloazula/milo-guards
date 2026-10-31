@@ -1264,3 +1264,53 @@ fn a_protected_path_is_a_finding_on_windows_too() {
         "deletes the agent's settings"
     );
 }
+
+/// The 8.3 short name of a protected name is the protected name, and a
+/// folder holding a protected path cannot be deleted whole.
+#[test]
+fn a_windows_short_name_and_a_holding_folder_are_protected() {
+    let paths = windows().with_protected([
+        Protected::new(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+        Protected::new(
+            r"C:\Users\me\dev\repo\conf\app\x.yaml",
+            "the agent's settings",
+        ),
+    ]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Remove-Item AGEN~1\rules",
+            r"Remove-Item OTHER~1\rules",
+            r"Remove-Item conf\other.txt",
+            r"Remove-Item src -Recurse",
+            r"Copy-Item a.txt conf\",
+            r"New-Item -ItemType Directory conf\app",
+        ],
+        &[
+            (r"Remove-Item AGENT~1\rules", Rule::Delete),
+            (r"Remove-Item -Recurse agent~1", Rule::Delete),
+            (r"Remove-Item -Recurse conf", Rule::Delete),
+            (r"Remove-Item -Recurse conf\app", Rule::Delete),
+            (r"Remove-Item -Recurse c*", Rule::Delete),
+            (r"Remove-Item conf\app\x.yaml", Rule::Delete),
+            (r"Remove-Item -Recurse AGENT~*", Rule::Delete),
+            (r"'x' > AGENT~1\rules", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"del AGEN~1\rules",
+            r"del conf\other.txt",
+            r"copy a.txt conf\",
+        ],
+        &[
+            (r"del AGENT~1\rules", Rule::Delete),
+            (r"rd /s /q conf", Rule::Delete),
+            (r"rd /s /q AGENT~1", Rule::Delete),
+            (r"echo x > AGENT~1\rules", Rule::Overwrite),
+        ],
+    );
+}

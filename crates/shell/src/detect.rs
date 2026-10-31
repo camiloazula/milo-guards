@@ -244,8 +244,14 @@ impl Checker<'_> {
             .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
     }
 
+    /// As [`place`](Self::place), for a path something is written into.
+    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+        self.resolver
+            .place_into(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+    }
+
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
-        match self.place(shell, scope, target) {
+        match self.place_into(shell, scope, target) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),

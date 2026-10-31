@@ -165,12 +165,28 @@ impl Resolver {
     /// it may match a leading dot (`dotglob`).
     pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
         match arg.known() {
-            Some(text) => self.place_of(text, shell, hidden),
+            Some(text) => self.place_of(text, shell, hidden, true),
             None => Place::Unknown,
         }
     }
 
-    fn place_of(&self, text: &str, shell: Shell, hidden: bool) -> Place {
+    /// As [`place`](Self::place), for a path something is written into: a
+    /// folder that only holds a protected path is not a write of it.
+    pub(crate) fn place_into(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+        match arg.known() {
+            Some(text) => self.place_of(text, shell, hidden, false),
+            None => Place::Unknown,
+        }
+    }
+
+    fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        let place_core = |spelling, flavour| {
+            if holding {
+                self.core.place_hidden(spelling, flavour, hidden)
+            } else {
+                self.core.place_into(spelling, flavour, hidden)
+            }
+        };
         // A brace list (`{~,x}`, `x{,/../..}`) expands to paths its spelling
         // does not show, so it is checked before the text is taken for a
         // device.
@@ -190,7 +206,7 @@ impl Resolver {
                     .unwrap_or(qualifier)
                     .to_ascii_lowercase();
                 return match provider.as_str() {
-                    "filesystem" => self.place_of(rest, shell, hidden),
+                    "filesystem" => self.place_of(rest, shell, hidden, holding),
                     "registry" => Place::Registry,
                     _ => Place::Outside,
                 };
@@ -198,18 +214,12 @@ impl Resolver {
         }
         let flavour = flavour(shell);
         match start(text, shell) {
-            Start::Plain => self
-                .core
-                .place_hidden(Spelling::Plain(text), flavour, hidden),
-            Start::Home(rest) => self
-                .core
-                .place_hidden(Spelling::Home(rest), flavour, hidden),
+            Start::Plain => place_core(Spelling::Plain(text), flavour),
+            Start::Home(rest) => place_core(Spelling::Home(rest), flavour),
             Start::Provider(name, _) if REGISTRY.contains(&name.as_str()) => Place::Registry,
             Start::Provider(..) => Place::Outside,
             Start::DriveRelative(letter, rest) => match self.on_cwd_drive(letter, rest) {
-                Some(rest) => self
-                    .core
-                    .place_hidden(Spelling::Plain(rest), flavour, hidden),
+                Some(rest) => place_core(Spelling::Plain(rest), flavour),
                 None => Place::Outside,
             },
             Start::Unknown => Place::Unknown,
