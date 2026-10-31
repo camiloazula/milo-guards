@@ -117,6 +117,24 @@ itself.
   shell startup files, keychains, the PowerShell profile). A workspace's own
   `.git` is sensitive.
 - Windows paths compare without case. POSIX paths compare with it.
+- Windows names are normalised before they are compared, so a spelling that
+  Windows resolves to a protected name is judged as that name. Core does this
+  in the `Windows` flavour only; a POSIX name keeps every character.
+  - **Trailing dots and spaces.** Windows drops them from a name, so `.git.`
+    and `.git ` are `.git`, and `notes.txt.` is `notes.txt`. A part of only
+    dots and spaces is the folder itself, except `.. `, which is read as `..`
+    so that it never climbs less than Windows might.
+  - **Short names.** A part of letters or digits, a `~` and digits (`GIT~1`)
+    directly in a workspace folder may be the 8.3 short name of `.git`, which
+    drops the dot. It is judged as the repository's history when its name
+    part starts with `GIT`, ignoring case. Any other `NAME~N` is a plain name
+    (`PROGRA~1`), as is a `GIT~1` deeper down, like a `.git` there.
+  - **Streams.** A `:` in a part below the drive or share (`x.txt:stream`,
+    `.git::$INDEX_ALLOCATION`) names a stream of a file or folder, which the
+    spelling does not say: the path is `Unknown`. The drive (`C:`), the share
+    and the devices (`NUL:`) are read first; a shell's own provider prefix
+    (`HKLM:`) is the shell's, read before the path reaches core. One letter
+    and a colon (`x:stream`) is a drive, as Windows reads it.
 - A part with a wildcard (`*`, `?`, `[`) stands for one entry, so a `..` after
   it still climbs: `src/*/../../x` is outside `src`. What a pattern matches
   lies in the folder before its first wildcard part. `glob::shape` says how
@@ -139,9 +157,10 @@ itself.
   before it asks whether a path is a device.
 - Nothing reads the file system. A symlink is judged by its own name.
 
-Core never answers `Unknown` or `Registry`. A path spelled out as text is a
-file path. A guard that reads the syntax around it says when a path is not
-one.
+Core never answers `Registry`. A path spelled out as text is a file path. A
+guard that reads the syntax around it says when a path is not one. Core
+answers `Unknown` for one spelling only: a Windows stream, under "What core
+judges".
 
 ### What the guard keeps
 
