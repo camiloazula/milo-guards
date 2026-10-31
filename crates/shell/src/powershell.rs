@@ -246,6 +246,7 @@ impl Walker<'_> {
                 &args,
                 &shapes,
                 unit::text(&node, self.source),
+                self.depth,
             );
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
