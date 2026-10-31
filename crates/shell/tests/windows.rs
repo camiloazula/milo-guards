@@ -472,3 +472,16 @@ fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
         "deletes a hidden file such as the repository's history"
     );
 }
+
+#[test]
+fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files_on_windows() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem C:\\Users\\me\\AppData\\Local\\Temp\\*.log | Remove-Item"],
+        &[(
+            "Remove-Item -Recurse C:\\Users\\me\\AppData\\Local\\Temp\\*",
+            Rule::Delete,
+        )],
+    );
+}

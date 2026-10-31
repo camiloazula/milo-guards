@@ -677,3 +677,21 @@ fn a_listing_is_judged_as_the_delete_of_its_pattern_is() {
         ],
     );
 }
+
+#[test]
+fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rm /tmp/*.log",
+            "ls /tmp/*.log | xargs rm",
+            "ls -d /tmp/build-* | xargs rm -rf",
+            "ls /var/tmp/*.log | xargs rm",
+        ],
+        &[
+            ("rm -rf /tmp/*", Rule::Delete),
+            ("ls /tmp | xargs rm -rf", Rule::Delete),
+        ],
+    );
+}

@@ -417,6 +417,14 @@ impl Resolver {
                 Shape::Entries | Shape::All => {}
             }
         }
+        // `/tmp/*.log`, `/tmp/build-*`: picks files inside a temporary
+        // folder, which are temporary files; `/tmp/*` is still the folder.
+        if pattern
+            && place == (Place::Temp { exact: true })
+            && glob::shape(text, flavour) == Shape::Entries
+        {
+            return Place::Temp { exact: false };
+        }
         place
     }
 
@@ -779,6 +787,34 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn a_pattern_that_picks_names_in_a_temporary_folder_picks_temporary_files() {
+        let posix = testing::posix();
+        for path in ["/tmp/*.log", "/tmp/build-*", "/var/tmp/*.log"] {
+            assert_eq!(
+                at(&posix, path, POSIX),
+                Place::Temp { exact: false },
+                "{path}"
+            );
+        }
+        for path in ["/tmp/*", "/tmp/?*", "/tmp"] {
+            assert_eq!(
+                at(&posix, path, POSIX),
+                Place::Temp { exact: true },
+                "{path}"
+            );
+        }
+        let windows = testing::windows();
+        assert_eq!(
+            at(&windows, r"C:\Users\me\AppData\Local\Temp\*.log", WINDOWS),
+            Place::Temp { exact: false }
+        );
+        assert_eq!(
+            at(&windows, r"C:\Users\me\AppData\Local\Temp\*", WINDOWS),
+            Place::Temp { exact: true }
+        );
     }
 
     #[test]
