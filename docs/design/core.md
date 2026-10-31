@@ -206,7 +206,9 @@ itself.
   not on descriptor 1), and so is one with any part after `fd/<name>` (a
   wildcard that expands to digits, any name) or after `stdin`, `stdout` or
   `stderr` (links to the same descriptors); only `fd/..` climbs out of `fd`
-  itself, so `/dev/fd/../null` is still the null device. On Windows, `/dev`
+  itself, so `/dev/fd/../null` is still the null device. A wildcard part with
+  more parts after it is no device either, since it can match `stdout` and be
+  a folder (`/dev/std*/../null` and `/dev/*/../null` land beside it). On Windows, `/dev`
   is a real folder on the current drive, so only the plain `/`-separated
   spellings above count, never normalised (`/dev\null` and `/dev/./null` are
   files), plus `NUL`, `CON` and `\\.\`; the `\\.\` namespace is a root that

@@ -616,8 +616,11 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
 /// a wildcard, any name) and any part after `stdin`, `stdout` or `stderr`
 /// (links to the same descriptors), as in `/dev/fd/3*/../1` and
 /// `/dev/stdout/../null`; only `fd/..` climbs out of `fd` itself, so
-/// `/dev/fd/../null` is the null device. A name that ends in `/`, `/.` or
-/// `/..` is no device either, for the same reason. On Windows `/dev/...` is a real folder on
+/// `/dev/fd/../null` is the null device. A wildcard part with more parts
+/// after it is no device either, since it can match `stdout` and be a
+/// folder: `/dev/std*/../null` and `/dev/*/../null` land beside it, not on
+/// `/dev/null`. A name that ends in `/`, `/.` or `/..` is no device
+/// either, for the same reason. On Windows `/dev/...` is a real folder on
 /// the current drive, so only the plain spellings count there, split at `/`
 /// and never normalised. A text with a `{` can expand to paths its spelling
 /// does not show, so it is never a device.
@@ -662,6 +665,15 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
             .filter(|part| !part.is_empty() && *part != ".")
             .collect();
         if raw.windows(3).any(|w| w[0] == "fd" && w[1] != "..") {
+            return None;
+        }
+        // A wildcard part with more parts after it can expand to a folder
+        // (`std*` and `*` match `stdout`), so a `..` after it lands beside
+        // that folder's parent, whatever the pattern is spelled as.
+        if raw
+            .split_last()
+            .is_some_and(|(_, init)| init.iter().any(|part| glob::has_wildcard(part)))
+        {
             return None;
         }
         if let Some(at) = raw
@@ -1114,6 +1126,16 @@ mod tests {
             ("/dev/fd/[0-9]/../1", POSIX, None),
             ("/dev/fd/x/../1", POSIX, None),
             ("/dev/fd/./3*/../1", POSIX, None),
+            // A wildcard part followed by more parts can match a folder.
+            ("/dev/std*/../null", POSIX, None),
+            ("/dev/stdou?/../null", POSIX, None),
+            ("/dev/[s]tdout/../null", POSIX, None),
+            ("/dev/*/../null", POSIX, None),
+            ("/dev/*/../stdout", POSIX, None),
+            ("/dev/fd/../std*/../null", POSIX, None),
+            ("/dev//std*//../null", POSIX, None),
+            ("/dev/fd/../std*", POSIX, None),
+            ("/dev/fd/../null", POSIX, Some(Place::Null)),
             ("/dev/stdout/../null", POSIX, None),
             ("/dev/stderr/../null", POSIX, None),
             ("/dev/stdin/../null", POSIX, None),
