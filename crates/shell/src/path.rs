@@ -83,7 +83,7 @@ impl Resolver {
     pub(crate) fn file_key(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<String> {
         let arg = within(dir, arg, shell);
         let text = arg.known()?;
-        if device(text, shell).is_some() || brace_list(text) || glob::has_wildcard(text) {
+        if brace_list(text) || device(text, shell).is_some() || glob::has_wildcard(text) {
             return None;
         }
         let flavour = flavour(shell);
@@ -107,13 +107,14 @@ impl Resolver {
     }
 
     fn place_of(&self, text: &str, shell: Shell) -> Place {
-        if let Some(device) = device(text, shell) {
-            return device;
-        }
         // A brace list (`{~,x}`, `x{,/../..}`) expands to paths its spelling
-        // does not show.
+        // does not show, so it is checked before the text is taken for a
+        // device.
         if brace_list(text) {
             return Place::Unknown;
+        }
+        if let Some(device) = device(text, shell) {
+            return device;
         }
         // `Microsoft.PowerShell.Core\FileSystem::C:\x`: a provider-qualified
         // path is the provider's own path.

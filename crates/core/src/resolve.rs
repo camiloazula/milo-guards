@@ -473,27 +473,65 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
     Loc::at(Root::Unix).walk(path, flavour.separators()).parts
 }
 
-/// A device a path names, by its spelling: `/dev/null` and the disks under
-/// `/dev` on either flavour, and on Windows also `NUL`, `CON` and the
-/// `\\.\` device namespace.
+/// A device a path names, by its spelling: `/dev/null`, `/dev/fd/<digits>`
+/// and the disks under `/dev` on either flavour, and on Windows also `NUL`,
+/// `CON` and the `\\.\` device namespace.
+///
+/// On POSIX an absolute path is judged where it lands, with `.` and `..`
+/// applied, so `/dev/./null` is the null device and `/dev/fd/../../etc` is
+/// not a device at all: it is `/etc`. A name that is not exactly a device
+/// (`/dev/fd`, `/dev/fd/3/x`), or that ends in `/` or `/.` (descriptor 3
+/// could be a folder), is not one. On Windows `/dev/...` is a real folder on
+/// the current drive, so only the plain spellings count there, split at `/`
+/// and never normalised. A text with a `{` can expand to paths its spelling
+/// does not show, so it is never a device.
 #[must_use]
 pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
+    if text.contains('{') {
+        return None;
+    }
     let lower = text.to_ascii_lowercase();
-    if NULL_DEVICES.contains(&lower.as_str()) || lower.starts_with("/dev/fd/") {
-        return Some(Place::Null);
-    }
-    if let Some(name) = lower.strip_prefix("/dev/") {
-        if DISK_DEVICES.iter().any(|disk| name.starts_with(disk)) {
-            return Some(Place::Disk);
-        }
-    }
     if flavour == Flavour::Windows {
         if matches!(lower.as_str(), "nul" | "nul:" | "con" | "con:") {
             return Some(Place::Null);
         }
+        // The device namespace is the root of what follows: `..` cannot
+        // climb out of it.
         if lower.starts_with("\\\\.\\") || lower.starts_with("//./") {
             return Some(Place::Disk);
         }
+    }
+    let rest = lower.strip_prefix('/')?;
+    let name: Vec<String> = if flavour == Flavour::Windows {
+        let plain: Vec<&str> = rest.split('/').collect();
+        if plain.iter().any(|part| matches!(*part, "" | "." | "..")) {
+            return None;
+        }
+        plain.into_iter().map(str::to_string).collect()
+    } else {
+        // A folder spelling (`/dev/fd/3/`, `/dev/fd/3/.`) is not a device.
+        if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
+            return None;
+        }
+        parts(&lower, flavour)
+    };
+    let [dev, name @ ..] = name.as_slice() else {
+        return None;
+    };
+    if dev != "dev" {
+        return None;
+    }
+    if let [fd, number] = name {
+        if fd == "fd" && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+            return Some(Place::Null);
+        }
+    }
+    let name = name.join("/");
+    if NULL_DEVICES.contains(&format!("/dev/{name}").as_str()) {
+        return Some(Place::Null);
+    }
+    if DISK_DEVICES.iter().any(|disk| name.starts_with(disk)) {
+        return Some(Place::Disk);
     }
     None
 }
@@ -724,5 +762,89 @@ mod tests {
         assert_eq!(device("NUL", POSIX), None);
         assert_eq!(device("NUL", WINDOWS), Some(Place::Null));
         assert_eq!(device("src/null", WINDOWS), None);
+    }
+
+    #[test]
+    fn only_a_real_device_path_is_a_device() {
+        for (text, flavour, found) in [
+            ("/dev/fd/0", POSIX, Some(Place::Null)),
+            ("/dev/fd/12", POSIX, Some(Place::Null)),
+            ("/dev/stdout", POSIX, Some(Place::Null)),
+            ("/dev/stderr", POSIX, Some(Place::Null)),
+            ("/dev/./null", POSIX, Some(Place::Null)),
+            ("/dev//fd/../null", POSIX, Some(Place::Null)),
+            ("/../dev/null", POSIX, Some(Place::Null)),
+            ("/dev/mapper/vg-root", POSIX, Some(Place::Disk)),
+            ("/dev/disk0", WINDOWS, Some(Place::Disk)),
+            // A climb out of a device lands somewhere else.
+            ("/dev/fd/../../Users/me", POSIX, None),
+            ("/dev/fd/..", POSIX, None),
+            ("/dev/fd/3/../../../etc/sudoers", POSIX, None),
+            ("/dev/null/../../etc", POSIX, None),
+            ("/dev/stderr/../x", POSIX, None),
+            ("/dev/sda/../../etc", POSIX, None),
+            ("/dev/disk0/..", POSIX, None),
+            ("/dev/fd/../../dev/sda", POSIX, Some(Place::Disk)),
+            // Names that are not exactly a device.
+            ("/dev/fd", POSIX, None),
+            ("/dev/fd/", POSIX, None),
+            ("/dev/fd/x", POSIX, None),
+            ("/dev/fd/3x", POSIX, None),
+            ("/dev/fd/3/x", POSIX, None),
+            ("/dev/fd/*", POSIX, None),
+            ("/dev/nulls", POSIX, None),
+            ("dev/null", POSIX, None),
+            // Windows spellings: a name is exact, the namespace is a root.
+            ("NUL", WINDOWS, Some(Place::Null)),
+            ("con:", WINDOWS, Some(Place::Null)),
+            (r"NUL\..\x", WINDOWS, None),
+            ("NUL/x", WINDOWS, None),
+            (r"CON\..\..", WINDOWS, None),
+            (r"\\.\PhysicalDrive0", WINDOWS, Some(Place::Disk)),
+            (r"\\.\C:\..\..\x", WINDOWS, Some(Place::Disk)),
+            ("//./C:/../x", WINDOWS, Some(Place::Disk)),
+            (r"\\.", WINDOWS, None),
+            (r"/dev\fd\..\..\etc", WINDOWS, None),
+            // On Windows `/dev` is a real folder: only the plain spellings count.
+            ("/dev/null", WINDOWS, Some(Place::Null)),
+            ("/dev/fd/1", WINDOWS, Some(Place::Null)),
+            (r"/dev\null", WINDOWS, None),
+            (r"/dev\fd\1", WINDOWS, None),
+            ("/dev/./null", WINDOWS, None),
+            ("//dev/null", WINDOWS, None),
+            ("/dev/fd/../fd/1", WINDOWS, None),
+            // A folder spelling or a brace list is no device.
+            ("/dev/fd/3/", POSIX, None),
+            ("/dev/fd/3/.", POSIX, None),
+            ("/dev/fd/3/..", POSIX, None),
+            ("/dev/null/", POSIX, None),
+            ("/dev/sda/", POSIX, None),
+            ("/dev/fd/{0,1}", POSIX, None),
+            ("/dev/{null,sda}", POSIX, None),
+            ("{/dev/null}", POSIX, None),
+        ] {
+            assert_eq!(device(text, flavour), found, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_path_climbing_out_of_a_device_is_judged_where_it_lands() {
+        let paths = testing::macos();
+        for (path, place) in [
+            ("/dev/fd/../../Users/me", Place::Home { exact: true }),
+            ("/dev/fd/../..", Place::Top("the root of the disk")),
+            ("/dev/fd/../../etc/sudoers", Place::Top("a system folder")),
+            ("/dev/fd/../../Users", Place::Home { exact: false }),
+            ("/dev/fd/2", Place::Null),
+            ("/dev/./fd/2", Place::Null),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        let resolver = Resolver::new(&paths);
+        assert_eq!(resolver.key(Spelling::Plain("/dev/fd/2"), POSIX), None);
+        assert_eq!(
+            resolver.key(Spelling::Plain("/dev/fd/../../Users/me/x"), POSIX),
+            resolver.key(Spelling::Plain("/Users/me/x"), POSIX),
+        );
     }
 }

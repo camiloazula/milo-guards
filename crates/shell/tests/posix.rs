@@ -490,6 +490,51 @@ fn a_finding_says_what_and_where() {
 }
 
 #[test]
+fn a_path_that_climbs_out_of_a_device_is_judged_where_it_lands() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "echo x > /dev/fd/2",
+            "cat /dev/fd/0",
+            "echo x > /dev/./null",
+            "echo x > /dev/fd/../null",
+            "echo x > /dev/fd/../../dev/null",
+            "echo x > /dev/fd/3",
+        ],
+        &[
+            ("rm -rf /dev/fd/../../Users/me", Rule::Delete),
+            ("cd /dev/fd/../.. && rm -rf Users", Rule::Delete),
+            ("cp evil /dev/fd/../../etc/sudoers", Rule::Overwrite),
+            ("rm -rf /dev/fd/3/../../../Users/me", Rule::Delete),
+            ("rm -rf /dev/stderr/../../Users/me", Rule::Delete),
+            ("cp evil /dev/null/../../etc/sudoers", Rule::Overwrite),
+            ("cp evil /dev/sda/../../etc/sudoers", Rule::Overwrite),
+            ("echo x > /dev/fd/../../etc/sudoers", Rule::Overwrite),
+            ("echo x > /dev/fd/", Rule::Overwrite),
+            ("echo x > /dev/fd/x", Rule::Overwrite),
+            // A brace list can expand to paths its text does not show.
+            (
+                "rm -rf /Users/me/{x,y/../../../,z}/../dev/fd/0",
+                Rule::Delete,
+            ),
+            (
+                "cp evil /Users/me/{x,y/../../../,z}/../dev/fd/0",
+                Rule::Overwrite,
+            ),
+            (
+                "echo x > /Users/me/{x,y/../../../,z}/../dev/fd/0",
+                Rule::Overwrite,
+            ),
+            ("echo x > /dev/fd/{0,1}", Rule::Overwrite),
+            // A folder spelling: descriptor 3 could be a folder.
+            ("rm -rf /dev/fd/3/", Rule::Delete),
+            ("chmod -R 777 /dev/fd/3/.", Rule::Permissions),
+        ],
+    );
+}
+
+#[test]
 fn macos_paths_are_judged_like_any_other() {
     check(
         Shell::Posix,
