@@ -284,6 +284,20 @@ a path.
 - A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
+  A drive's name is whatever comes before the first `:` when that holds no
+  separator, no wildcard and no `.`, so a drive made with `New-PSDrive`
+  (`my_drive:*`, `my-drive:\*`) is a drive, outside the workspace, and
+  `x.txt:stream` is a file's stream, not a drive.
+- The item cmdlets are judged by where their path lands, as `Remove-Item` is:
+  `Clear-Item`, `Rename-Item`, `Set-Item`, `New-Item`, `Move-Item`,
+  `Copy-Item` (its destination), the `-ItemProperty` cmdlets and their
+  aliases. A registry place is `system_settings`: `Clear-Item HKCU:\Software\x`,
+  `Rename-Item HKCU:\Software\x y`, `Set-Item HKLM:\SYSTEM\x -Value 1`. A
+  rename or move of what lies beyond the workspace is `delete`, and a
+  `Set-Item` or `Clear-Item` on another drive (`Env:`, `Variable:`) is
+  `overwrite`, as writing to it is. `Rename-Item src\a.rs b.rs` is safe. With
+  no path, the four that act on an item work on what the stage before lists (or `$_`), except that a
+  listing of the whole workspace is its contents, not the workspace itself.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is

@@ -46,17 +46,26 @@ enum Start<'a> {
 }
 
 /// The `name:` a path starts with, and what follows it: a disk's drive
-/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`). Read before
-/// anything else, since a wildcard after it (`HKCU:*`) does not change what
-/// it names.
+/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, a drive made
+/// with `New-PSDrive`: `my_drive:`, `my-drive:`). Read before anything else,
+/// since a wildcard after it (`HKCU:*`) does not change what it names. A
+/// drive's name holds no separator, no wildcard and no `.` (`x.txt:stream`
+/// is a file's stream, not a drive).
 fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
     if shell == Shell::Posix {
         return None;
     }
     let (name, rest) = text.split_once(':')?;
-    let named = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric());
-    let drive = name.len() == 1 && name.chars().all(|c| c.is_ascii_alphabetic());
-    (named && (drive || (shell == Shell::PowerShell && name.len() > 1))).then_some((name, rest))
+    if name.len() == 1 {
+        return name
+            .starts_with(|c: char| c.is_ascii_alphabetic())
+            .then_some((name, rest));
+    }
+    let named = !name.is_empty()
+        && !name.contains(flavour(shell).separators())
+        && !glob::has_wildcard(name)
+        && !name.contains('.');
+    (named && shell == Shell::PowerShell).then_some((name, rest))
 }
 
 /// Read what `text` starts from. The drive is read first; then a first part
@@ -245,7 +254,8 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         || (shell != Shell::Posix && text.starts_with('\\'))
         || (shell != Shell::Posix && drive)
         || (shell == Shell::PowerShell
-            && text.split_once(':').is_some_and(|(name, _)| name.len() > 1));
+            && (text.contains("::")
+                || qualifier(text, shell).is_some_and(|(name, _)| name.len() > 1)));
     if absolute {
         // A path on a drive's own working directory (`C:x`) is not where a
         // `cd` on another drive, or this one, left it.

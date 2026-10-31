@@ -91,6 +91,13 @@ pub(crate) fn canonical(name: &str) -> &str {
     match name {
         "rm" | "ri" | "del" | "erase" | "rd" | "rmdir" => "remove-item",
         "cp" | "copy" | "cpi" => "copy-item",
+        "ren" | "rni" => "rename-item",
+        "si" => "set-item",
+        "cli" => "clear-item",
+        "clp" => "clear-itemproperty",
+        "rnp" => "rename-itemproperty",
+        "cpp" => "copy-itemproperty",
+        "mp" => "move-itemproperty",
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
@@ -646,10 +653,11 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 25] = [
+const VALUES: [&str; 26] = [
     "path",
     "literalpath",
     "destination",
+    "newname",
     "filepath",
     "argumentlist",
     "verb",

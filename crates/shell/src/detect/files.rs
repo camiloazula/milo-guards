@@ -49,7 +49,7 @@ impl Checker<'_> {
             // Moving and copying: what is moved away, and where it lands.
             "mv" if shell != Shell::PowerShell => {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
-                self.move_away(unit, &sources);
+                self.move_away(unit, &sources, "moves");
                 if let Some(destination) = destination {
                     self.write(shell, unit.scope(), &destination, "writes to");
                 }
@@ -87,7 +87,7 @@ impl Checker<'_> {
                 let operands = builtin(&plain(args));
                 let operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
-                    self.move_away(unit, &operands[..operands.len() - 1]);
+                    self.move_away(unit, &operands[..operands.len() - 1], "moves");
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
@@ -156,7 +156,14 @@ impl Checker<'_> {
                     sources.push(positional.remove(0));
                 }
                 if key == "move-item" {
-                    self.move_away(unit, &sources);
+                    // With no path, what the stage before lists is moved.
+                    let piped = if sources.is_empty() {
+                        self.items(unit, &params)
+                    } else {
+                        Vec::new()
+                    };
+                    let moved: Vec<&Arg> = sources.iter().copied().chain(piped.iter()).collect();
+                    self.move_away(unit, &moved, "moves");
                 }
                 if let Some(destination) = params
                     .values(&["destination"])
@@ -164,6 +171,33 @@ impl Checker<'_> {
                     .or(positional.first())
                 {
                     self.write(shell, unit.scope(), destination, "writes to");
+                }
+            }
+            // A registry key or an item of another provider: judged by where
+            // its path lands, as `Remove-Item` is.
+            "clear-item" | "set-item" => {
+                let verb = if key == "clear-item" {
+                    "clears"
+                } else {
+                    "changes"
+                };
+                for target in self.items(unit, &Params::read(args)) {
+                    self.write(shell, unit.scope(), &target, verb);
+                }
+            }
+            "rename-item" => {
+                let params = Params::read(args);
+                let items = self.items(unit, &params);
+                self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
+                // The new name is a name, not a path; one that holds a
+                // separator is a place the item is moved to.
+                for name in params.values(&["newname"]) {
+                    if name
+                        .known()
+                        .is_some_and(|name| name.contains(['\\', '/', ':']))
+                    {
+                        self.write(shell, unit.scope(), name, "renames to");
+                    }
                 }
             }
 
@@ -219,12 +253,26 @@ impl Checker<'_> {
                     self.write(shell, unit.scope(), target, verb);
                 }
             }
-            "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
+            "set-itemproperty"
+            | "new-itemproperty"
+            | "remove-itemproperty"
+            | "clear-itemproperty"
+            | "rename-itemproperty" => {
                 let params = Params::read(args);
                 let mut targets = params.values(&["path", "literalpath"]);
                 if targets.is_empty() {
                     targets.extend(params.positional.first().copied());
                 }
+                for target in targets {
+                    self.write(shell, unit.scope(), target, "changes");
+                }
+            }
+            // A value moved or copied between keys: the path, the destination and
+            // any argument that may stand for either are judged.
+            "copy-itemproperty" | "move-itemproperty" => {
+                let params = Params::read(args);
+                let mut targets = params.values(&["path", "literalpath", "destination"]);
+                targets.extend(params.positional.iter().copied());
                 for target in targets {
                     self.write(shell, unit.scope(), target, "changes");
                 }

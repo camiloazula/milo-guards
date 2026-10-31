@@ -224,18 +224,64 @@ impl Checker<'_> {
 
     /// Sources a move takes away: anything beyond the workspace and its
     /// temporary files is lost where it was (`mv ~/x /tmp` and then
-    /// `rm -rf /tmp/x` deletes it).
-    fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
+    /// `rm -rf /tmp/x` deletes it). A registry key moved is a registry
+    /// change.
+    fn move_away(&mut self, unit: &Unit, sources: &[&Arg], verb: &str) {
         for source in sources {
             let place = self.place(unit.shell, unit.scope(), source);
-            if !place.harmless() {
-                self.add(
+            match place {
+                place if place.harmless() => {}
+                Place::Registry => {
+                    self.add(Rule::SystemSettings, "changes the registry", Some(source));
+                }
+                place => self.add(
                     Rule::Delete,
-                    format!("moves {}", place.words()),
+                    format!("{verb} {}", place.words()),
                     Some(source),
-                );
+                ),
             }
         }
+    }
+
+    /// The items a PowerShell item cmdlet works on: its `-Path` or
+    /// `-LiteralPath`, else its first positional argument, else what the
+    /// stage before it lists; `$_` in a `ForEach-Object` block is that too.
+    /// A listing that takes in the whole workspace hands on what is inside
+    /// it, so those are not the workspace itself.
+    fn items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
+        let mut paths = params.values(&["path", "literalpath"]);
+        if paths.is_empty() {
+            paths.extend(params.positional.first().copied());
+        }
+        if paths.is_empty() && unit.stage.is_some_and(|stage| stage.index > 0) {
+            return self.listed_items(unit, &Arg::Input);
+        }
+        paths
+            .into_iter()
+            .flat_map(|arg| self.listed_items(unit, arg))
+            .collect()
+    }
+
+    /// `arg`, or the places the stage before lists when it is the pipeline's
+    /// input, less the workspace itself.
+    fn listed_items(&self, unit: &Unit, arg: &Arg) -> Vec<Arg> {
+        if *arg != Arg::Input {
+            return vec![arg.clone()];
+        }
+        let (found, hidden) = self.expand(unit, arg);
+        let scope = Scope {
+            hidden: unit.hidden || hidden,
+            ..unit.scope()
+        };
+        found
+            .into_iter()
+            .filter(|arg| {
+                !matches!(
+                    self.place(unit.shell, scope, arg),
+                    Place::Workspace { exact: true }
+                )
+            })
+            .collect()
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
