@@ -467,6 +467,267 @@ fn nested_shells_are_read_in_their_own_grammar() {
 }
 
 #[test]
+fn a_trap_action_is_a_script_that_runs_later() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "trap 'rm -rf build' EXIT",
+            "trap \"rm -rf build\" EXIT",
+            "trap -- 'rm -f target/tmp.lock' INT TERM",
+            "trap 'echo cleaning up' EXIT",
+            "trap 'kill 0' INT",
+            "trap '' INT",
+            "trap \"\" INT TERM",
+            "trap - EXIT",
+            "trap -- - INT",
+            "trap - 0 1 2 15",
+            "trap -p",
+            "trap -p EXIT",
+            "trap -l",
+            "trap",
+            "trap 0",
+            "trap 'rm -rf build' EXIT; cargo build",
+            "trap 'rm -rf *git' EXIT",
+            "trap \"echo $HOME\" EXIT",
+            "trap 'echo $d' EXIT",
+            "trap 'echo \"$d\"' EXIT",
+            "trap 'echo $(date)' EXIT",
+            "builtin trap 'rm -rf build' EXIT",
+            "cd src && trap 'rm -rf ../build' EXIT",
+        ],
+        &[
+            ("trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("trap 'rm -rf /' EXIT", Rule::Delete),
+            ("trap \"rm -rf ~\" EXIT", Rule::Delete),
+            ("trap -- 'rm -rf ~' EXIT", Rule::Delete),
+            ("trap -- \"rm -rf ~\" EXIT", Rule::Delete),
+            ("trap 'rm -rf ~' 0", Rule::Delete),
+            ("trap 'rm -rf ~' INT", Rule::Delete),
+            ("trap 'rm -rf ~' TERM", Rule::Delete),
+            ("trap 'rm -rf ~' ERR", Rule::Delete),
+            ("trap 'rm -rf ~' DEBUG", Rule::Delete),
+            ("trap 'rm -rf ~' RETURN", Rule::Delete),
+            ("trap 'rm -rf ~' HUP", Rule::Delete),
+            ("trap 'rm -rf ~' EXIT INT TERM HUP 1 2", Rule::Delete),
+            ("trap 'rm -rf $HOME' EXIT", Rule::Delete),
+            ("trap 'cd / && rm -rf usr' EXIT", Rule::Delete),
+            ("trap 'rm -rf build; rm -rf ~' EXIT", Rule::Delete),
+            ("trap 'git reset --hard' EXIT", Rule::GitDiscard),
+            ("trap 'echo x > ~/.bashrc' EXIT", Rule::Overwrite),
+            ("trap 'rm -rf ~' EXIT; echo done", Rule::Delete),
+            ("builtin trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("command trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("bash -c \"trap 'rm -rf ~' EXIT\"", Rule::Delete),
+            ("eval \"trap 'rm -rf ~' EXIT\"", Rule::Delete),
+            ("trap 'trap \"rm -rf ~\" EXIT' EXIT", Rule::Delete),
+            ("trap 'sh -c \"rm -rf ~\"' EXIT", Rule::Delete),
+            ("make | trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("echo hi && trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("f() { trap 'rm -rf ~' EXIT; }; f", Rule::Delete),
+            ("trap 'rm -rf '\"$d\" EXIT", Rule::Delete),
+            // Only known when it runs: a path, a variable, a substitution.
+            ("trap \"rm -rf $d\" EXIT", Rule::Delete),
+            ("trap \"rm -rf $d/x\" EXIT", Rule::Delete),
+            ("trap \"rm -rf ${d:-x}\" EXIT", Rule::Delete),
+            ("trap \"rm -rf $(mktemp -d)\" EXIT", Rule::Delete),
+            ("trap 'rm -rf $d' EXIT", Rule::Delete),
+            ("trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
+            ("tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
+            // Expanded when the trap is set, read as code when it runs, as
+            // `eval "…"` is: what the expansion holds becomes code.
+            ("trap \"echo $d\" EXIT", Rule::Unknown),
+            ("trap \"echo ${d}\" EXIT", Rule::Unknown),
+            ("trap \"echo $(date)\" EXIT", Rule::Unknown),
+            ("trap \"echo `date`\" EXIT", Rule::Unknown),
+            ("trap 'echo '\"$d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d/x\" EXIT", Rule::Unknown),
+            ("trap 'rm -rf \"$d\"' EXIT", Rule::Delete),
+            ("trap \"$x\" EXIT", Rule::Unknown),
+            ("trap $x EXIT", Rule::Unknown),
+            ("trap \"$(cat f)\" EXIT", Rule::Unknown),
+            ("trap \"`cat f`\" EXIT", Rule::Unknown),
+            ("trap \"${x:-rm}\" EXIT", Rule::Unknown),
+            ("trap -- \"$x\" EXIT", Rule::Unknown),
+            ("trap $'rm -rf ~' EXIT", Rule::Unknown),
+            ("trap $\"rm -rf ~\" EXIT", Rule::Unknown),
+            ("trap \"$x $y\" EXIT", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_trap_action_reads_the_line_as_it_ends() {
+    // The action runs after the line's last command, or between its
+    // commands, so a `cd` after the `trap` means its relative paths are
+    // known only when it runs; before the `trap` the path is where it was.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd build && trap 'rm -rf out' EXIT",
+            "trap 'rm -rf out' EXIT; (echo hi)",
+            "trap 'cd src && rm -rf out' EXIT; cargo build",
+            "bash -c 'cd build'; trap 'rm -rf out' EXIT",
+            // A `cd` in a subshell or a child shell after the `trap` does not
+            // move this shell, so the action still runs from where it was.
+            "trap 'rm -rf out' EXIT; (cd ~)",
+            "trap 'rm -f lock' EXIT; (cd sub && make)",
+            "trap 'rm -f lock' EXIT; bash -c 'cd sub && make'",
+            "trap 'rm -f lock' EXIT; echo $(cd sub && pwd)",
+            "trap 'rm -rf build' EXIT; (cd /; false)",
+            "trap 'rm -rf build' EXIT; x=$(cd /; true)",
+            // The ordinary signals are reset in a subshell.
+            "trap 'rm -rf build' INT TERM HUP 15; (cd /; sleep 1)",
+            // `eval` in a subshell or a substitution does not move this shell.
+            "x=$(eval 'cd /'); rm -rf build",
+            "(eval 'cd /'); rm -rf build",
+            "eval 'cd src'; rm -rf build",
+            "bash -c 'cd /'; rm -rf build",
+        ],
+        &[
+            ("trap 'rm -rf out' EXIT; cd ~", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd src", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd src; cd ..", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; pushd ~", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd /", Rule::Delete),
+            ("trap 'rm -rf out' DEBUG; cd ~", Rule::Delete),
+            // A subshell copies `ERR`, `DEBUG` and `RETURN` traps (zsh also
+            // `ZERR`; bash with `set -E` and `set -T`), so they run from where
+            // the subshell has moved to too.
+            ("trap 'rm -rf build' ZERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' DEBUG; (cd /; true)", Rule::Delete),
+            (
+                "set -E; trap 'rm -rf build' ERR; (cd /; false)",
+                Rule::Delete,
+            ),
+            (
+                "set -T; trap 'rm -rf build' DEBUG; x=$(cd /; true)",
+                Rule::Delete,
+            ),
+            ("trap 'rm -rf build' RETURN; (cd /; true)", Rule::Delete),
+            ("trap 'rm -rf build' SIGERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' err; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' EXIT ERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' NOSUCH; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' \"$sig\"; (cd /; false)", Rule::Delete),
+            // `eval` runs in this shell: its `cd` moves the line, and so
+            // the trap's paths, and the paths after it.
+            ("trap 'rm -rf build' EXIT; eval 'cd /'", Rule::Delete),
+            ("trap 'rm -rf build' ERR; eval 'cd ~'", Rule::Delete),
+            ("eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd ..'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' && rm -rf build", Rule::Delete),
+            // zsh runs the last stage of a pipeline in the current shell; as
+            // for a `cd`, any stage counts.
+            ("true | eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' | cat; rm -rf build", Rule::Delete),
+            ("trap 'rm -rf build' EXIT; true | eval 'cd /'", Rule::Delete),
+            // A trap set in a subshell runs from where the subshell ends up.
+            ("(trap 'rm -rf out' EXIT; cd ~)", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT; cd ~); cd src", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT); cd src", Rule::Delete),
+            ("eval \"trap 'rm -rf out' EXIT\"; cd ~", Rule::Delete),
+            ("trap 'echo x > out' EXIT; cd ~", Rule::Overwrite),
+            // A `cd` the action itself runs may come before the next command.
+            ("trap 'cd ~' DEBUG; rm -rf out", Rule::Delete),
+            ("trap 'cd /' EXIT; rm -rf out", Rule::Delete),
+            // An absolute path is the same wherever the line has moved.
+            ("trap 'rm -rf /' EXIT; cd src", Rule::Delete),
+            ("trap 'rm -rf ~' EXIT; cd src", Rule::Delete),
+        ],
+    );
+    // The action runs with the options the line ends with.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "trap 'rm -rf *git' EXIT",
+            "trap 'shopt -u dotglob; rm -rf *git' EXIT",
+        ],
+        &[
+            ("trap 'rm -rf *git' EXIT; shopt -s dotglob", Rule::Delete),
+            ("shopt -s dotglob; trap 'rm -rf *git' EXIT", Rule::Delete),
+            (
+                "shopt -s dotglob; trap 'shopt -u dotglob' EXIT; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; trap 'shopt -u dotglob; rm -rf *git' EXIT",
+                Rule::Delete,
+            ),
+            ("trap 'shopt -s dotglob' DEBUG; rm -rf *git", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_trap_says_what_its_action_does() {
+    let paths = posix();
+    assert_eq!(
+        rules("trap 'rm -rf ~' EXIT", Shell::Posix, &paths),
+        [Rule::Delete]
+    );
+    // Expanded when set, read as code when it runs: unknown, and the text
+    // around the expansion is still read, so both findings.
+    let both = rules("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
+    assert!(both.contains(&Rule::Delete) && both.contains(&Rule::Unknown));
+    assert_eq!(
+        rules("trap \"echo $d\" EXIT", Shell::Posix, &paths),
+        [Rule::Unknown]
+    );
+    // Single quotes are not expanded when set.
+    assert_eq!(
+        rules("trap 'rm -rf \"$d\"' EXIT", Shell::Posix, &paths),
+        [Rule::Delete]
+    );
+    assert!(classify("trap 'echo $d' EXIT", Shell::Posix, &paths).is_safe());
+    // A locale-translated action is reported as the whole word.
+    let assessment = classify("trap $\"rm -rf ~\" EXIT", Shell::Posix, &paths);
+    let [finding] = assessment.findings() else {
+        panic!("one finding");
+    };
+    assert_eq!(finding.target.as_deref(), Some("$\"rm -rf ~\""));
+    let assessment = classify("trap 'rm -rf ~' EXIT", Shell::Posix, &paths);
+    let [finding] = assessment.findings() else {
+        panic!("one finding");
+    };
+    assert_eq!(finding.reason, "deletes your home directory");
+    assert_eq!(finding.target.as_deref(), Some("~"));
+    let assessment = classify("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
+    let reasons: Vec<&str> = assessment
+        .findings()
+        .iter()
+        .map(|finding| finding.reason.as_str())
+        .collect();
+    assert!(reasons.contains(&"deletes a path only known when it runs"));
+    assert!(reasons.contains(&"runs a script only known when it runs"));
+    // An expansion in a double-quoted action is a placeholder in the text
+    // the action is read from, which a finding never shows: it names the
+    // action as written.
+    for line in [
+        "trap \"rm -rf $d\" EXIT",
+        "trap \"rm -rf $d/x\" EXIT",
+        "trap \"$x\" EXIT",
+        "trap \"echo hi > $f\" EXIT",
+        "trap 'a'\"$x\" EXIT",
+    ] {
+        for finding in classify(line, Shell::Posix, &paths).findings() {
+            let target = finding.target.as_deref().unwrap_or_default();
+            assert!(!target.contains("__v"), "{line}: {finding:?}");
+            assert!(line.contains(target), "{line}: {finding:?}");
+        }
+    }
+    // A trap nested past the depth limit is unreadable, not safe.
+    let mut line = "rm -rf ~".to_string();
+    for _ in 0..12 {
+        line = format!("trap '{}' EXIT", line.replace('\'', "'\\''"));
+    }
+    assert!(!classify(&line, Shell::Posix, &paths).is_safe());
+}
+
+#[test]
 fn a_finding_says_what_and_where() {
     let assessment = classify("rm -rf ~ && git push --force", Shell::Posix, &posix());
     let findings = assessment.findings();

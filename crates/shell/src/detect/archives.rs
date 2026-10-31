@@ -161,7 +161,7 @@ fn seven_zip(args: &[Arg]) -> Option<Vec<Arg>> {
     while let Some(arg) = iter.next() {
         let (text, known) = match arg {
             Arg::Known(text) => (text, true),
-            Arg::Unknown(text) => (text, false),
+            Arg::Unknown(text) | Arg::Template { source: text, .. } => (text, false),
             Arg::Input => continue,
         };
         // Switches are not case-sensitive; `-ao` is another switch.
