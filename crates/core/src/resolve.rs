@@ -643,6 +643,13 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
             return None;
         }
+        // Nor is a spelling that goes on past `fd/<digits>`: descriptor 3
+        // could be a folder, and a `..` after it lands beside that folder's
+        // parent, not on `/dev/fd`.
+        let raw: Vec<&str> = lower.split('/').collect();
+        if raw.windows(3).any(|w| w[0] == "fd" && is_digits(w[1])) {
+            return None;
+        }
         parts(&lower, flavour)
     };
     let [dev, name @ ..] = name.as_slice() else {
@@ -652,7 +659,7 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         return None;
     }
     if let [fd, number] = name {
-        if fd == "fd" && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+        if fd == "fd" && is_digits(number) {
             return Some(Place::Null);
         }
     }
@@ -664,6 +671,11 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         return Some(Place::Disk);
     }
     None
+}
+
+/// Whether `text` is a descriptor number: one or more ASCII digits.
+fn is_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// What a wildcard part becomes while a path is resolved, followed by its
@@ -1067,6 +1079,10 @@ mod tests {
             ("/dev/fd/x", POSIX, None),
             ("/dev/fd/3x", POSIX, None),
             ("/dev/fd/3/x", POSIX, None),
+            // A part after the descriptor makes it a folder, `..` or not.
+            ("/dev/fd/3/../1", POSIX, None),
+            ("/dev/fd/0/./../1", POSIX, None),
+            ("/dev/fd/3/../null", POSIX, None),
             ("/dev/fd/*", POSIX, None),
             ("/dev/nulls", POSIX, None),
             ("dev/null", POSIX, None),

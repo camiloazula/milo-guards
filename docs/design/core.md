@@ -201,7 +201,9 @@ itself.
   disk under `/dev`. A path that climbs out of a device is no device:
   `/dev/fd/../../Users/me` is the home directory, and is judged as such. A
   name followed by `/` or `/.` is no device either, since descriptor 3 could
-  be a folder. On Windows, `/dev` is a real folder on the current drive, so
+  be a folder; for the same reason a spelling with any part after
+  `fd/<digits>` is none (`/dev/fd/3/../1` lands beside that folder's parent,
+  not on descriptor 1). On Windows, `/dev` is a real folder on the current drive, so
   only the plain `/`-separated spellings above count, never normalised
   (`/dev\null` and `/dev/./null` are files), plus `NUL`, `CON` and `\\.\`;
   the `\\.\` namespace is a root that `..` cannot leave, so everything
