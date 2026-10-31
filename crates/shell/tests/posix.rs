@@ -325,7 +325,7 @@ fn permissions_root_and_the_system_are_risky() {
             ("systemctl poweroff", Rule::StopSystem),
             ("kill -9 -1", Rule::StopSystem),
             ("kill 1", Rule::StopSystem),
-            ("killall node", Rule::StopSystem),
+            ("killall WindowServer", Rule::StopSystem),
         ],
     );
 }

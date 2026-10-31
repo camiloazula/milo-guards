@@ -10,8 +10,10 @@ use std::collections::HashMap;
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
+mod archives;
 mod code;
 mod files;
+mod processes;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -28,7 +30,7 @@ const ELEVATORS: [&str; 8] = [
 
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
-const DOWNLOADERS: [&str; 10] = [
+pub(crate) const DOWNLOADERS: [&str; 10] = [
     "curl",
     "wget",
     "fetch",
@@ -245,6 +247,16 @@ impl Checker<'_> {
     }
 
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        self.write_to(shell, scope, target, verb, "a file");
+    }
+
+    /// A write into a folder, as an archive unpacked into it makes.
+    fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        self.write_to(shell, scope, target, verb, "a folder");
+    }
+
+    /// A write to `target`, which is a `what` in the words of a reason.
+    fn write_to(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str, what: &str) {
         match self.place(shell, scope, target) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
@@ -252,12 +264,12 @@ impl Checker<'_> {
             Place::Registry => self.add(Rule::SystemSettings, "changes the registry", Some(target)),
             Place::Outside => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file outside the workspace"),
+                format!("{verb} {what} outside the workspace"),
                 Some(target),
             ),
             Place::Unknown => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file only known when it runs"),
+                format!("{verb} {what} only known when it runs"),
                 Some(target),
             ),
             place => self.add(

@@ -42,6 +42,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs a script it downloads.
+    Downloaded,
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -123,6 +125,11 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 split.push(unit);
                 return;
             }
+            Launch::Downloaded => {
+                split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.push(unit);
+                return;
+            }
             Launch::Reads(reads) => {
                 unit.reads = reads;
                 split.push(unit);
@@ -184,6 +191,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        downloaded: false,
     }
 }
 
@@ -398,6 +406,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         }
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
+        "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
+            Launch::Downloaded
+        }
         "invoke-expression" if unit.shell == Shell::PowerShell => {
             let params = Params::read(args);
             match params

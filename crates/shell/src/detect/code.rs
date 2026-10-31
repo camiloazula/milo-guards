@@ -218,6 +218,11 @@ impl Checker<'_> {
                 }
             }
             "update-ref" if flag(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
+            // A tag has no reflog to bring it back from.
+            "tag" if flag(Some('d'), Some("delete")) => (Rule::GitDiscard, "deletes a tag"),
+            "submodule" if first == Some("deinit") && flag(Some('f'), Some("force")) => {
+                (Rule::GitDiscard, "throws away a submodule's changes")
+            }
             "worktree" if first == Some("remove") && flag(Some('f'), Some("force")) => {
                 (Rule::GitDiscard, "deletes a worktree with its changes")
             }

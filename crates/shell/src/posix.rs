@@ -298,7 +298,9 @@ impl Walker<'_> {
                     .child_by_field_name("name")
                     .filter(|_| node.kind() == "function_definition")
                 {
-                    self.split.define_function(unit::text(&name, self.source));
+                    let name = unit::text(&name, self.source);
+                    self.split.define_function(name);
+                    self.fork_bomb(node, name);
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
@@ -345,6 +347,30 @@ impl Walker<'_> {
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// A function that starts itself in the background, or as one side of a
+    /// pipeline, starts copies of itself without end: `:(){ :|:& };:`.
+    fn fork_bomb(&mut self, function: Node<'_>, name: &str) {
+        let Some(body) = function.child_by_field_name("body") else {
+            return;
+        };
+        let source = self.source;
+        let mut bomb = false;
+        unit::for_each_node(body, |inner| {
+            bomb |= inner.kind() == "command"
+                && inner
+                    .child_by_field_name("name")
+                    .is_some_and(|called| unit::text(&called, source) == name)
+                && starts_apart(inner, body);
+        });
+        if bomb {
+            self.split.problem(
+                Rule::StopSystem,
+                "starts copies of itself without end",
+                Some(name),
+            );
         }
     }
 
@@ -558,6 +584,27 @@ impl Walker<'_> {
 
 /// A bare word as the program receives it: a backslash keeps the next
 /// character (`\rm` is `rm`).
+/// Whether `call`, inside `body`, runs as a process of its own: followed by
+/// `&`, or a stage of a pipeline.
+fn starts_apart(call: Node<'_>, body: Node<'_>) -> bool {
+    let mut at = call;
+    loop {
+        if at.next_sibling().is_some_and(|next| next.kind() == "&") {
+            return true;
+        }
+        let Some(parent) = at.parent() else {
+            return false;
+        };
+        if parent.kind() == "pipeline" && parent.named_child_count() > 1 {
+            return true;
+        }
+        if parent.id() == body.id() {
+            return false;
+        }
+        at = parent;
+    }
+}
+
 fn unescape(word: &str) -> String {
     let mut value = String::with_capacity(word.len());
     let mut chars = word.chars();

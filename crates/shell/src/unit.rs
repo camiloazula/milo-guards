@@ -69,6 +69,9 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// Whether the script it runs is a download (`Invoke-Expression` given
+    /// `(iwr url)`), which only runs when it does.
+    pub(crate) downloaded: bool,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -90,6 +93,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            downloaded: false,
         }
     }
 
