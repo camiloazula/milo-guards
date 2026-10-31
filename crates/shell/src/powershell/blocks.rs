@@ -5,7 +5,7 @@
 use tree_sitter::Node;
 
 use crate::unit::{self, Arg, Split};
-use crate::Rule;
+use crate::{Rule, Shell};
 
 /// How a cmdlet takes the script block it runs by position.
 #[derive(Clone, Copy)]
@@ -17,6 +17,9 @@ enum Positional {
     /// (`ForEach-Object { begin } { process } { end }`); a plain word is a
     /// member name.
     Every,
+    /// Only the first argument no parameter takes can be a block; a plain
+    /// word there is another parameter's value (`Where-Object Name -eq x`).
+    First,
 }
 
 /// A cmdlet that runs a script block it is given.
@@ -43,7 +46,7 @@ struct Cmdlet {
 /// The cmdlets whose script blocks the guard reads. The ones that register
 /// an event action are read with the events (`Register-ObjectEvent` and the
 /// like), each for its own parameter order.
-const CMDLETS: [Cmdlet; 8] = [
+const CMDLETS: [Cmdlet; 10] = [
     Cmdlet {
         name: "invoke-command",
         blocks: &["scriptblock", "command"],
@@ -75,7 +78,7 @@ const CMDLETS: [Cmdlet; 8] = [
     },
     Cmdlet {
         name: "foreach-object",
-        blocks: &["process", "begin", "end", "parallel"],
+        blocks: &["process", "begin", "end", "parallel", "remainingscripts"],
         values: &[
             "membername",
             "argumentlist",
@@ -165,6 +168,34 @@ const CMDLETS: [Cmdlet; 8] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+    },
+    // The filter runs on every item: `-FilterScript` is the first parameter
+    // by position, and a word there is the `-Property` of the comparison form.
+    Cmdlet {
+        name: "where-object",
+        blocks: &["filterscript"],
+        values: &["inputobject", "property", "value"],
+        positional: Some(Positional::First),
+        slots: &[],
+        lone: true,
+    },
+    // `-Expression` is the second parameter by position, after `-Name`. The
+    // `-Command` it can be given instead runs a command by name, which the
+    // guard does not read either.
+    Cmdlet {
+        name: "trace-command",
+        blocks: &["expression", "command"],
+        values: &[
+            "name",
+            "argumentlist",
+            "filepath",
+            "option",
+            "listeneroption",
+            "inputobject",
+        ],
+        positional: Some(Positional::One),
+        slots: &[&["name"], &["expression", "command"]],
+        lone: false,
     },
 ];
 
@@ -275,7 +306,14 @@ fn names(name: &str, fulls: &[&str]) -> bool {
 
 /// A cmdlet's block that is not written out is code the guard does not read,
 /// and so is what a splat may hold.
-pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape], command: &str) {
+pub(super) fn check(
+    split: &mut Split,
+    key: &str,
+    args: &[Arg],
+    shapes: &[Shape],
+    command: &str,
+    depth: usize,
+) {
     let Some(cmdlet) = CMDLETS.iter().find(|cmdlet| cmdlet.name == key) else {
         return;
     };
@@ -289,8 +327,10 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape]
     let mut written_out = false;
     let mut bound = Vec::new();
     let mut positional = Vec::new();
-    // What `ForEach-Object` is given as a member name by `-MemberName`.
+    // What `ForEach-Object` is given as a member name by `-MemberName`, and
+    // the arguments it is given for the member by `-ArgumentList`.
     let mut members: Vec<&Arg> = Vec::new();
+    let mut arguments: Vec<&Item<'_>> = Vec::new();
     let mut iter = items.iter().peekable();
     while let Some(item) = iter.next() {
         if item.shape.splat {
@@ -320,18 +360,39 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape]
         {
             // A parameter written with a colon (`-Confirm:$false`) takes the
             // argument after it, whatever its name.
+            let for_each = key == "foreach-object";
+            let list = for_each && (names(&name, &["argumentlist"]) || names(&name, &["args"]));
+            // A parameter that holds a place by position (`-Name`) leaves
+            // the next place to the arguments that follow.
+            bound.push(name.clone());
             if let Some(value) = iter.next() {
-                if key == "foreach-object" && names(&name, &["membername"]) {
+                if for_each && names(&name, &["membername"]) {
                     members.push(value.arg);
+                }
+                if list {
+                    arguments.push(value);
                 }
             }
             // A list belongs to the parameter: `-ArgumentList $x, $y`.
-            while iter.next_if(|next| next.shape.joined).is_some() {}
+            while let Some(more) = iter.next_if(|next| next.shape.joined) {
+                if list {
+                    arguments.push(more);
+                }
+            }
         }
     }
     let loose = |item: &&Item<'_>| item.arg.known().is_none() && !item.shape.block;
     written_out |= positional.iter().any(|item| item.shape.block);
+    // `ForEach-Object` calls a member when it is given `-MemberName` or a
+    // word first (a string never converts to a block): what comes after is
+    // the member's arguments, not blocks.
+    let first_word = positional
+        .first()
+        .filter(|item| !item.shape.block && item.arg.known().is_some())
+        .copied();
+    let member_call = key == "foreach-object" && (!members.is_empty() || first_word.is_some());
     unread |= match cmdlet.positional {
+        Some(Positional::Every) if member_call => false,
         Some(Positional::Every) => positional.iter().any(loose),
         Some(Positional::One) if !cmdlet.slots.is_empty() => {
             let free = cmdlet.slots.iter().enumerate().filter(|(_, slot)| {
@@ -339,8 +400,11 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape]
                     .iter()
                     .any(|name| slot.iter().any(|full| full.starts_with(name.as_str())))
             });
-            positional.iter().zip(free).any(|(item, (index, _))| {
-                if index == 0 {
+            positional.iter().zip(free).any(|(item, (index, slot))| {
+                // A place for a name (`Register-ScheduledJob`'s) holds no block.
+                if !slot.iter().any(|full| cmdlet.blocks.contains(full)) {
+                    false
+                } else if index == 0 {
                     loose(item)
                 } else {
                     !item.shape.block
@@ -352,10 +416,25 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape]
                 && !positional.iter().any(|item| item.shape.block)
                 && positional.iter().any(loose)
         }
+        Some(Positional::First) => {
+            let property = items
+                .iter()
+                .filter_map(|item| parameter(item.arg))
+                .any(|name| names(&name, &["property"]));
+            !named && !property && positional.first().is_some_and(loose)
+        }
         None => false,
     };
-    if key == "foreach-object" {
-        member_names(split, &members, &positional, command);
+    if member_call {
+        if members.is_empty() {
+            if let Some(word) = first_word {
+                members.push(word.arg);
+                arguments.extend(positional.iter().skip(1));
+            }
+        } else {
+            arguments.extend(positional.iter());
+        }
+        member_names(split, &members, &arguments, command, depth);
     }
     // A splat holds parameters the line does not write out: a block, or one
     // more than the one written. The cmdlets that run one block only are
@@ -373,22 +452,64 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape]
 }
 
 /// A member name `ForEach-Object` is given (`% Invoke`, `-MemberName Delete`)
-/// is a property or a method it calls on each item: a method that runs code
-/// or deletes is as risky as `.Invoke()` and `.Delete()` written out.
-fn member_names(split: &mut Split, members: &[&Arg], positional: &[&Item<'_>], command: &str) {
-    // By position, a plain word is a member name; what is not known is read
-    // as a block that is not written out, by the caller.
-    let words = positional
-        .iter()
-        .filter(|item| !item.shape.block)
-        .filter_map(|item| item.arg.known());
-    for name in members.iter().map(|arg| arg.known()).chain(words.map(Some)) {
-        let risk = match name {
-            Some(name) => super::dotnet_rule(&bare(name), "", false),
+/// is a property or a method it calls on each item, with `arguments`: a
+/// method that runs code or deletes is as risky as `.Invoke()` and
+/// `.Delete()` written out, and so are the ones that build code from text
+/// and the hooks set by name.
+fn member_names(
+    split: &mut Split,
+    members: &[&Arg],
+    arguments: &[&Item<'_>],
+    command: &str,
+    depth: usize,
+) {
+    for name in members.iter().map(|arg| arg.known()) {
+        let Some(name) = name else {
             // A name only known when it runs may be any method.
-            None => Some((Rule::Unknown, "calls a method only known when it runs")),
+            split.problem(
+                Rule::Unknown,
+                "calls a method only known when it runs",
+                Some(command),
+            );
+            continue;
         };
-        if let Some((rule, reason)) = risk {
+        let name = bare(name);
+        if matches!(
+            name.as_str(),
+            "newscriptblock" | "invokescript" | "expandstring"
+        ) {
+            split.problem(
+                Rule::Unknown,
+                "builds or runs code the guard does not read",
+                Some(command),
+            );
+            // The text, when written out, is read as the call path reads it.
+            for argument in arguments {
+                let text = match argument.arg {
+                    Arg::Known(text) | Arg::Template { text, .. } => text,
+                    Arg::Unknown(_) | Arg::Input => continue,
+                };
+                unit::script(split, text, Shell::PowerShell, depth + 1);
+            }
+            continue;
+        }
+        // A hook is set by its `set_` method, or by its property given one
+        // argument; the block must be written out.
+        let (hook, sets) = match name.strip_prefix("set_") {
+            Some(property) => (HOOKS.contains(&property), true),
+            None => (HOOKS.contains(&name.as_str()), !arguments.is_empty()),
+        };
+        if hook {
+            if sets && !arguments.first().is_some_and(|first| first.shape.block) {
+                split.problem(
+                    Rule::Unknown,
+                    "sets a hook that runs a script block only known when it runs",
+                    Some(command),
+                );
+            }
+            continue;
+        }
+        if let Some((rule, reason)) = super::dotnet_rule(&name, "", false) {
             split.problem(rule, reason, Some(command));
         }
     }
@@ -397,6 +518,39 @@ fn member_names(split: &mut Split, members: &[&Arg], positional: &[&Item<'_>], c
 /// A member name without the quotes it was written in, in lower case.
 pub(super) fn bare(name: &str) -> String {
     name.trim_matches(['\'', '"']).to_ascii_lowercase()
+}
+
+/// The method a call names, in lower case, when the name is written out: a
+/// plain name, or a string with nothing in it that is only known when it runs
+/// (a quoted name, or one with a backtick escape in double quotes). `None`
+/// for a variable, an expression, a block or an expandable string with a `$`
+/// part in it.
+pub(super) fn called(member: Node<'_>, source: &str) -> Option<String> {
+    let name = member.named_child(0)?;
+    match name.kind() {
+        "simple_name" => Some(bare(unit::text(&name, source))),
+        "string_literal" => {
+            let text = unit::text(&name, source);
+            let quote = text.chars().next()?;
+            let inner = text.get(1..text.len().checked_sub(1)?)?;
+            let plain = match name.named_child(0) {
+                Some(part) if part.kind() == "verbatim_string_characters" => quote == '\'',
+                Some(part) if part.kind() == "expandable_string_literal" => {
+                    quote == '"' && part.named_child_count() == 0
+                }
+                _ => false,
+            };
+            plain.then(|| {
+                let inner = if quote == '"' {
+                    super::unescape(inner)
+                } else {
+                    inner.to_string()
+                };
+                inner.to_ascii_lowercase()
+            })
+        }
+        _ => None,
+    }
 }
 
 /// The name of the property or method a member access or call ends in, as

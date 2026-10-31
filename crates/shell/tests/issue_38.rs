@@ -417,3 +417,259 @@ fn common_parameters_and_args_take_their_value() {
         ],
     );
 }
+
+#[test]
+fn remaining_scripts_is_a_block_parameter() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }",
+            "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, { 3 }",
+        ],
+        &[
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts $b",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts:$b",
+                Rule::Unknown,
+            ),
+            ("1 | ForEach-Object -Process { 1 } -Rem:$b", Rule::Unknown),
+            (
+                "1 | ForEach-Object -Process { 1 } -Remaining:$b",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts:$b, $c",
+                Rule::Unknown,
+            ),
+            (
+                "1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, $c",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_member_name_that_builds_code_or_sets_a_hook_is_judged() {
+    let paths = windows();
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction",
+            "$ExecutionContext.InvokeCommand | % CommandNotFoundAction",
+            "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList { 1 }",
+            "$ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList { 1 }",
+            "$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction { 1 }",
+        ],
+        &[
+            ("$ExecutionContext.InvokeCommand | % InvokeScript $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % NewScriptBlock $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % ExpandString $s", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % 'InvokeScript' 'Get-Date'", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList $s",
+                Rule::Unknown,
+            ),
+            ("$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction $b", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % set_CommandNotFoundAction", Rule::Unknown),
+            ("$ExecutionContext.InvokeCommand | % set_LocationChangedAction $b", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList $b",
+                Rule::Unknown,
+            ),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList $b",
+                Rule::Unknown,
+            ),
+            ("$ExecutionContext.InvokeCommand | % CommandNotFoundAction $b", Rule::Unknown),
+            (
+                "$ExecutionContext.InvokeCommand | % -MemberName PreCommandLookupAction -Args $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+    // The text given as the code is read, whichever way it is written out.
+    for line in [
+        "$ExecutionContext.InvokeCommand | % InvokeScript 'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList 'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % -MemberName:InvokeScript -ArgumentList:'Remove-Item -Recurse -Force ~'",
+        "$ExecutionContext.InvokeCommand | % ExpandString '$(Remove-Item -Recurse -Force ~)'",
+        "$ExecutionContext.InvokeCommand | % NewScriptBlock 'Remove-Item -Recurse -Force ~'",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(found.contains(&Rule::Delete), "{line}: {found:?}");
+        assert!(found.contains(&Rule::Unknown), "{line}: {found:?}");
+    }
+}
+
+#[test]
+fn what_follows_a_member_name_is_its_arguments() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "$list | % Add $item",
+            "$s | % Substring 1 $n",
+            "1 | ForEach-Object -MemberName Name $b",
+            "$s | % -MemberName Substring -ArgumentList $a, $b",
+            "$s | % 'Substring' $a $b",
+        ],
+        &[
+            ("1 | ForEach-Object $b", Rule::Unknown),
+            ("1 | ForEach-Object { 1 } $b", Rule::Unknown),
+            ("1 | % { 1 } , $b", Rule::Unknown),
+            ("1 | % $b Name", Rule::Unknown),
+            ("$list | % Delete $item", Rule::Delete),
+            ("1 | % Add -Process $b", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn where_object_runs_its_filter_script() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "1 | Where-Object { $_ -gt 1 }",
+            "1 | ? { $_ -gt 1 }",
+            "1 | where { $_ -gt 1 }",
+            "Get-ChildItem | Where-Object -FilterScript { $_.Length -gt 1 }",
+            "Get-ChildItem | ? -FilterScript:{ $_.Length -gt 1 }",
+            "Get-ChildItem | ? -Filter { $_.Length -gt 1 }",
+            // A word first is the property of the comparison form.
+            "Get-ChildItem | ? Name -like '*.rs'",
+            "Get-ChildItem | Where-Object Name -eq 'a.rs'",
+            "Get-ChildItem | where Length -gt 100",
+            "Get-ChildItem | ? 'Name' -like '*.rs'",
+            "Get-ChildItem | ? -Property Name -Value x -EQ",
+            "Get-ChildItem | ? -Property Name -Value $v -Like",
+            "Get-ChildItem | ? -Property $p -Value $v -EQ",
+            "Get-ChildItem | ? Name -in $names",
+            "Get-ChildItem | ? -InputObject $x { 1 }",
+            "Get-ChildItem | ? Name -ne $x -ErrorAction Stop",
+            "Get-ChildItem | ? -FilterScript { 1 } @p",
+        ],
+        &[
+            ("1 | Where-Object $b", Rule::Unknown),
+            ("1 | ? $b", Rule::Unknown),
+            ("1 | where $b", Rule::Unknown),
+            (
+                "Get-ChildItem | Where-Object -FilterScript $b",
+                Rule::Unknown,
+            ),
+            ("Get-ChildItem | ? -Filter $b", Rule::Unknown),
+            ("Get-ChildItem | ? -FilterScript:$b", Rule::Unknown),
+            ("Get-ChildItem | ? -FilterScript (Get-Block)", Rule::Unknown),
+            ("Get-ChildItem | ? (Get-Block)", Rule::Unknown),
+            ("Get-ChildItem | ? $prop -eq 1", Rule::Unknown),
+            ("Get-ChildItem | ? @p", Rule::Unknown),
+            (
+                "$t=[scriptblock]; $b=$t::Create('Remove-Item -Recurse -Force ~'); 1 | ? $b",
+                Rule::Unknown,
+            ),
+            (
+                "$b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); 1 | Where-Object $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn trace_command_runs_its_expression() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date }",
+            "Trace-Command -Name ParameterBinding -Expression:{ Get-Date }",
+            "Trace-Command ParameterBinding { Get-Date }",
+            "Trace-Command -Name ParameterBinding { Get-Date }",
+            "Trace-Command $name { Get-Date }",
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date } -PSHost",
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date } -FilePath trace.log",
+            "Trace-Command -Name $n -Expression { Get-Date } -Option All",
+        ],
+        &[
+            (
+                "Trace-Command -Name ParameterBinding -Expression $b",
+                Rule::Unknown,
+            ),
+            ("Trace-Command -Name ParameterBinding -Exp $b", Rule::Unknown),
+            ("Trace-Command ParameterBinding $b", Rule::Unknown),
+            ("Trace-Command -Name ParameterBinding $b", Rule::Unknown),
+            ("Trace-Command ParameterBinding Get-Date", Rule::Unknown),
+            (
+                "Trace-Command -Name ParameterBinding -Command Get-Date",
+                Rule::Unknown,
+            ),
+            (
+                "Trace-Command -Name ParameterBinding -Expression { 1 } @p",
+                Rule::Unknown,
+            ),
+            (
+                "$b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Trace-Command ParameterBinding $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_method_called_by_a_name_known_only_when_it_runs_is_unknown() {
+    let paths = windows();
+    let risky = [
+        "$m='InvokeScript'; $ExecutionContext.InvokeCommand.$m('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.($m)('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"$m\"('x')",
+        "$ExecutionContext.InvokeCommand.\"Invoke$('Script')\"('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"Invoke$($m)\"('x')",
+        "$m=\"Delete\"; (Get-Item ~).$m()",
+        "$m='Delete'; (Get-Item ~).$m()",
+        "$m='Delete'; [IO.Directory]::$m('C:\\x', $true)",
+        "$t::$m('x')",
+        "$list.$m(1)",
+        "$list.(Get-Name)(1)",
+        "$list.{ Add }(1)",
+        "$list.[string]$m(1)",
+    ]
+    .map(|line| (line, Rule::Unknown));
+    check(Shell::PowerShell, &paths, &[], &risky);
+    // A name written out stays the method it names: constant strings, with
+    // or without quotes, and the escape in a double-quoted one.
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "$list.Add(1)",
+            "$list.'Add'(1)",
+            "$list.\"Add\"(1)",
+            "$s.Substring(1)",
+            "$s.\"Substring\"(1)",
+            "[Math]::Max(1, 2)",
+            "[Math]::\"Max\"(1, 2)",
+            // A property read has no argument list: a name only known when
+            // it runs is a column, not a call.
+            "$row.$col",
+            "$row.$col.Name",
+            "$row.\"$col\"",
+            "$row.($col)",
+            "$row.$col = 1",
+            "Write-Output $row.$col",
+        ],
+        &[
+            ("$e.InvokeCommand.InvokeScript('x')", Rule::Unknown),
+            ("$e.InvokeCommand.'InvokeScript'('x')", Rule::Unknown),
+            ("$e.InvokeCommand.\"InvokeScript\"('x')", Rule::Unknown),
+            ("$e.InvokeCommand.\"Invoke`Script\"('x')", Rule::Unknown),
+            ("(Get-Item ~).\"Delete\"()", Rule::Delete),
+            ("(Get-Item ~).\"Del`ete\"()", Rule::Delete),
+        ],
+    );
+}
