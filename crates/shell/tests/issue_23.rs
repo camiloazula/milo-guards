@@ -193,6 +193,9 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Get-ChildItem *.txt | ForEach-Object { Rename-Item $_ -NewName x }",
             "Move-Item src\\a src\\b",
             "Get-ChildItem src | Move-Item -Destination old",
+            "gci -Force -Filter '?it' | Move-Item -Destination old",
+            "gci -Force -Include *.log, *.tmp | Move-Item -Destination trash",
+            "gci -Attributes Hidden -Filter *.tmp | Move-Item -Destination trash",
             "Copy-Item src\\a src\\b -Force",
             "New-Item -ItemType Directory build -Force",
             "New-Item -Path build\\out.txt -Force",
@@ -540,6 +543,198 @@ fn a_force_or_hidden_listing_hands_on_the_hidden_files() {
             ),
             ("Move-Item .git old", Rule::Delete),
             ("Rename-Item .git x", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn the_hidden_alias_and_attributes_list_hidden_files_too() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Attributes Directory | Rename-Item -NewName { $_.Name + 1 }",
+            "gci -ad | Rename-Item -NewName { $_.Name + 1 }",
+            "gci -Attributes ReadOnly | Move-Item -Destination old",
+        ],
+        &[
+            ("gci -ah | Rename-Item -NewName x", Rule::Delete),
+            (
+                "gci -ah | ForEach-Object { Rename-Item $_ x }",
+                Rule::Delete,
+            ),
+            ("gci -ah | Move-Item -Destination old", Rule::Delete),
+            (
+                "Get-ChildItem -Attributes Hidden | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "gci -Attributes h | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Attributes !Directory+Hidden | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Attributes Directory,Hidden | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Attributes $a | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Attributes:Hidden | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_depth_listing_is_not_read_as_a_listing_of_its_value() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem -Depth 1 | Rename-Item -NewName { $_.Name + 1 }"],
+        &[
+            ("gci -Depth 1 -Force | Rename-Item -NewName x", Rule::Delete),
+            ("gci -Force -Depth 1 | Clear-Item", Rule::Overwrite),
+            (
+                "Get-ChildItem -Depth 1 | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_filtered_force_listing_still_hands_on_the_hidden_files() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "gci -Force -Filter *.tmp | Move-Item -Destination trash",
+            "gci -Hidden -Filter *.tmp | Move-Item -Destination trash",
+            "gci -Force -Include *.tmp | Move-Item -Destination trash",
+            "Get-ChildItem -Filter .git | Move-Item -Destination old",
+            "Get-ChildItem -Filter * | Rename-Item -NewName x",
+            "Get-ChildItem -Force src -Filter .git | Move-Item -Destination old",
+        ],
+        &[
+            (
+                "Get-ChildItem -Force -Filter .git | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Include .git | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Include .git,x | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Include x,.git | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Exclude x | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Filter * | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "gci -Force -Filter *it | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "gci -Force -Filter $f | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Hidden -Filter .g* | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter config | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Depth 2 -Filter config | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Filter .git | Remove-Item -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force ~ -Filter .ssh | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-Item -Force -Filter .git | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_aliases_of_literalpath_name_the_item() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Rename-Item src\\y -LP src\\x",
+            "Rename-Item y -PSPath src\\x",
+            "Set-ItemProperty y -LP src\\x -Value 1",
+        ],
+        &[
+            ("Rename-Item y -PSPath $p", Rule::Delete),
+            ("Rename-Item y -LP $p", Rule::Delete),
+            ("Rename-Item y -psp C:\\Windows\\x", Rule::Delete),
+            ("Rename-Item y -LP (Get-Item C:\\Windows\\x)", Rule::Delete),
+            ("Rename-Item y -LP C:\\Windows\\x", Rule::Delete),
+            (
+                "Rename-Item y -PSPath HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            (
+                "Clear-ItemProperty y -PSPath HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            (
+                "Rename-ItemProperty y -PSPath HKCU:\\Software\\x -NewName z",
+                Rule::SystemSettings,
+            ),
+            (
+                "Set-ItemProperty y -LP HKCU:\\Software\\x -Value 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "Clear-ItemProperty y -LP HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_splat_hides_which_argument_is_the_item() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Rename-Item src\\y z"],
+        &[
+            ("Rename-Item y @p", Rule::Delete),
+            ("Rename-Item y @args", Rule::Delete),
+            ("Rename-Item @p y", Rule::Delete),
+            ("Clear-ItemProperty y @p", Rule::Overwrite),
+            ("Rename-ItemProperty y @p", Rule::Overwrite),
         ],
     );
 }

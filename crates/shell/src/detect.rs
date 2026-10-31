@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::spelling::glob;
+use milo_guards_core::Flavour;
 
 mod code;
 mod files;
@@ -405,35 +406,91 @@ impl Checker<'_> {
     }
 }
 
-/// Whether a PowerShell listing is `-Force` or `-Hidden`, which hands on the
-/// hidden files and folders (`.git`) as well.
+/// Whether a PowerShell listing is `-Force` or `-Hidden` (`-ah`), or has an
+/// `-Attributes` value that may name hidden files (any it cannot read does),
+/// which hands on the hidden files and folders (`.git`) as well.
 fn lists_hidden(unit: &Unit) -> bool {
-    unit.shell == Shell::PowerShell
-        && matches!(unit.key().as_deref(), Some("get-childitem" | "get-item"))
-        && Params::read(&unit.args).named.iter().any(|(name, _)| {
-            (name.len() > 1 && "force".starts_with(name.as_str()))
-                || "hidden".starts_with(name.as_str())
-        })
+    if unit.shell != Shell::PowerShell
+        || !matches!(unit.key().as_deref(), Some("get-childitem" | "get-item"))
+    {
+        return false;
+    }
+    let params = Params::read(&unit.args);
+    // The rest of a list (`-Attributes Directory,Hidden`) is a positional.
+    let list_holds = |arg: &Arg| arg.known().is_none_or(holds_hidden);
+    params.named.iter().any(|(name, value)| {
+        (name.len() > 1 && "force".starts_with(name.as_str()))
+            || "hidden".starts_with(name.as_str())
+            || name == "ah"
+            || ("attributes".starts_with(name.as_str())
+                && (value.is_none_or(list_holds)
+                    || params.positional.iter().any(|arg| list_holds(arg))))
+    })
 }
 
-/// The hidden files of a folder a listing hands on whole: the folder's
-/// last part, a wildcard or not, read as `.*`.
-fn hidden_files_of(arg: Arg) -> Arg {
-    let Arg::Known(text) = &arg else {
-        return arg;
-    };
+/// Whether an `-Attributes` value (`Hidden`, `h`, `!Directory+Hidden`,
+/// `Directory,Hidden`) has a term that begins like `Hidden`, in any case.
+fn holds_hidden(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|term| term.starts_with(['h', 'H']))
+}
+
+/// `name` inside the folder a listing of `text` hands on: the folder's last
+/// part, a wildcard or not, is read as the folder itself.
+fn inside(text: &str, name: &str) -> String {
     let last = text.rfind(['/', '\\']).map_or(0, |at| at + 1);
     let folder = if glob::has_wildcard(&text[last..]) {
         &text[..last]
     } else {
-        text.as_str()
+        text
     };
     let separator = if folder.is_empty() || folder.ends_with(['/', '\\']) {
         ""
     } else {
         "/"
     };
-    Arg::Known(format!("{folder}{separator}.*"))
+    format!("{folder}{separator}{name}")
+}
+
+/// The hidden files of a folder a listing hands on whole, read as `.*`.
+fn hidden_files_of(arg: Arg) -> Arg {
+    match &arg {
+        Arg::Known(text) => Arg::Known(inside(text, ".*")),
+        _ => arg,
+    }
+}
+
+/// The hidden files a `-Force` or `-Hidden` listing with a filter hands on:
+/// each pattern as written, `.git` itself when the pattern can match it
+/// (`*`, `.g*`, `.git`), and, when the listing recurses, every hidden folder
+/// of the folder, which is searched too (`config` finds `.git\config`).
+/// What the pattern keeps that is not hidden is judged as written, so
+/// `*.tmp` stays the files of the folder.
+fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg> {
+    let mut found = Vec::new();
+    if patterns.is_empty() {
+        return found;
+    }
+    for place in places {
+        let Arg::Known(folder) = place else {
+            continue;
+        };
+        for pattern in patterns {
+            match pattern {
+                Arg::Known(text) => {
+                    found.push(Arg::Known(inside(folder, text)));
+                    if glob::matches(text, ".git", Flavour::Windows, true) {
+                        found.push(Arg::Known(inside(folder, ".git")));
+                    }
+                }
+                other => found.push((*other).clone()),
+            }
+        }
+        if recurses {
+            found.push(Arg::Known(inside(folder, ".*")));
+        }
+    }
+    found
 }
 
 /// The paths a listing stage hands on.
@@ -441,7 +498,10 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     if unit.key()?.as_str() == "find" && unit.shell == Shell::Posix {
         return Some(find_targets(&unit.args));
     }
-    let (places, filtered) = match unit.key()?.as_str() {
+    // What a hidden listing's filter may name, and whether it recurses.
+    let mut patterns: Vec<Arg> = Vec::new();
+    let mut recurses = false;
+    let (mut places, filtered): (Vec<Arg>, bool) = match unit.key()?.as_str() {
         "ls" if unit.shell != Shell::PowerShell => (
             operands(&unit.args, &[]).into_iter().cloned().collect(),
             false,
@@ -456,18 +516,51 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
                 .into_iter()
                 .cloned()
                 .collect();
+            let has_path = !places.is_empty();
             places.extend(params.positional.iter().map(|arg| (*arg).clone()));
-            let filtered = !params.values(&["filter", "include", "exclude"]).is_empty();
+            let include = params.values(&["include"]);
+            patterns.extend(params.values(&["filter"]).into_iter().cloned());
+            patterns.extend(include.iter().map(|arg| (*arg).clone()));
+            let mut filtered = !patterns.is_empty();
+            if lists_hidden(unit) {
+                // `-Include a,b` and `-Attributes Directory,Hidden` leave
+                // `b` among the positionals: it is not known to be a place,
+                // so the folder listed is a place too, and what is left of
+                // an `-Include` list is a pattern as well.
+                let list = !include.is_empty()
+                    || params
+                        .named
+                        .iter()
+                        .any(|(name, _)| "attributes".starts_with(name.as_str()));
+                if list && !has_path && !params.positional.is_empty() {
+                    places.push(Arg::Known(".".to_string()));
+                }
+                if !include.is_empty() {
+                    patterns.extend(params.positional.iter().map(|arg| (*arg).clone()));
+                }
+            } else {
+                // A listing that hands on no hidden file keeps its reading:
+                // a filter or `-Exclude` narrows it to files inside the
+                // folder, which `found_by` reads.
+                patterns.clear();
+                filtered |= !params.values(&["exclude"]).is_empty();
+            }
+            recurses = params.named.iter().any(|(name, _)| {
+                "recurse".starts_with(name.as_str())
+                    || "depth".starts_with(name.as_str())
+                    || name == "s"
+            });
             (places, filtered)
         }
         _ => return None,
     };
-    let places = if places.is_empty() {
-        vec![Arg::Known(".".to_string())]
-    } else {
-        places
-    };
-    Some(found_by(places, filtered))
+    if places.is_empty() {
+        places.push(Arg::Known(".".to_string()));
+    }
+    let extra = hidden_matches(&places, &patterns.iter().collect::<Vec<_>>(), recurses);
+    let mut found = found_by(places, filtered);
+    found.extend(extra);
+    Some(found)
 }
 
 /// What a listing of `places` finds, as paths the resolver reads.

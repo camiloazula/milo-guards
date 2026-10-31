@@ -664,7 +664,7 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 26] = [
+const VALUES: [&str; 28] = [
     "path",
     "literalpath",
     "destination",
@@ -691,6 +691,8 @@ const VALUES: [&str; 26] = [
     "itemtype",
     "stream",
     "width",
+    "attributes",
+    "depth",
 ];
 
 /// A cmdlet's arguments read as PowerShell reads them.
@@ -713,6 +715,13 @@ impl<'a> Params<'a> {
             };
             let colon = name.ends_with(':');
             let name = name.trim_end_matches(':').to_ascii_lowercase();
+            // `-LP` and `-PSPath` (and what abbreviates the second) are
+            // aliases of `-LiteralPath`: the item cmdlets read them so.
+            let name = if name == "lp" || (name.len() > 1 && "pspath".starts_with(&name)) {
+                "literalpath".to_string()
+            } else {
+                name
+            };
             // A value is taken only by a parameter that names a value one
             // and no switch: an unknown or ambiguous one (`-rf` to a native
             // `rm`, `-f`) leaves the next argument where a rule sees it.

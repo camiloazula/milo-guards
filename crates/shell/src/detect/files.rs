@@ -191,14 +191,16 @@ impl Checker<'_> {
                 // new name made at run time (`$name`, `($a + 'x')`) after
                 // the first positional is not a place, unless the guard
                 // cannot tell which is which: a bare `-n` (read as a switch,
-                // it leaves its value among the positionals) or a `--`.
+                // it leaves its value among the positionals), a `--`, or a
+                // splat (`@p` may bind `-Path` or `-NewName`).
                 let doubtful =
                     params.named.iter().any(|(name, value)| {
                         value.is_none() && "newname".starts_with(name.as_str())
                     }) || params
                         .positional
                         .iter()
-                        .any(|arg| arg.known() == Some("--"));
+                        .any(|arg| arg.known() == Some("--"))
+                        || splatted(args);
                 let mut paths = params.values(&["path", "literalpath"]);
                 paths.extend(
                     params
@@ -285,6 +287,11 @@ impl Checker<'_> {
                 if targets.is_empty() {
                     targets.extend(params.positional.first().copied());
                 }
+                // A splat may bind `-Path` to any argument's place, so the
+                // first positional is not known to be the path.
+                if splatted(args) {
+                    targets.extend(params.positional.iter().copied());
+                }
                 for target in targets {
                     self.write(shell, unit.scope(), target, "changes");
                 }
@@ -325,6 +332,13 @@ impl Checker<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether an argument is a splat (`@p`): a hashtable of parameters only
+/// known when it runs, which may bind any parameter, a path among them.
+fn splatted(args: &[Arg]) -> bool {
+    args.iter()
+        .any(|arg| matches!(arg, Arg::Unknown(text) if text.starts_with('@')))
 }
 
 /// Whether a PowerShell cmdlet given no path works on its pipeline input.
