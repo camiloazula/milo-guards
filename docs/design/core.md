@@ -123,8 +123,13 @@ itself.
   much of it: a pattern whose last part is a catch-all (`*`, `?*`, `*/*`)
   takes the whole folder, a pattern that picks names (`*.log`) touches files
   inside it, and a part that starts with `.` can match `.git`.
-- Devices are told by their spelling: `/dev/null` and the like, disks under
-  `/dev`, and on Windows `NUL`, `CON` and `\\.\`.
+- Devices are told by their spelling, after `.` and `..` are applied:
+  `/dev/null`, `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`,
+  `/dev/random` and `/dev/urandom`, `/dev/fd/<digits>` and nothing else under
+  `/dev/fd`, disks under `/dev`, and on Windows `NUL`, `CON` and `\\.\`. A
+  path that climbs out of a device is no device: `/dev/fd/../../Users/me` is
+  the home directory, and is judged as such. The `\\.\` namespace is a root
+  that `..` cannot leave, so everything spelled below it is a disk.
 - Nothing reads the file system. A symlink is judged by its own name.
 
 Core never answers `Unknown` or `Registry`. A path spelled out as text is a
