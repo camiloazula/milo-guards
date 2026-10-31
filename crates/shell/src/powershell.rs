@@ -199,6 +199,7 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        let mut shapes = Vec::new();
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -225,17 +226,27 @@ impl Walker<'_> {
                     "redirection" | "comment" => {}
                     "array_literal_expression" => {
                         let mut items = element.walk();
-                        for item in element.named_children(&mut items) {
+                        for (index, item) in element.named_children(&mut items).enumerate() {
                             args.push(self.expr(item));
+                            shapes.push(self.shape(item, index > 0));
                         }
                     }
-                    _ => args.push(self.expr(element)),
+                    _ => {
+                        args.push(self.expr(element));
+                        shapes.push(self.shape(element, false));
+                    }
                 }
             }
         }
         if let Some(program) = program.known() {
             let key = unit::key(program, Shell::PowerShell);
-            blocks::check(self.split, &key, &args, unit::text(&node, self.source));
+            blocks::check(
+                self.split,
+                &key,
+                &args,
+                &shapes,
+                unit::text(&node, self.source),
+            );
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
@@ -338,6 +349,16 @@ impl Walker<'_> {
         }
         let place = bound.iter().filter(|bound| !**bound).count() - 1;
         positional.get(place).is_some_and(|block| !block)
+    }
+
+    /// What the grammar says of an argument: a block written out, a splat,
+    /// and whether it follows a comma.
+    fn shape(&self, node: Node<'_>, joined: bool) -> blocks::Shape {
+        blocks::Shape {
+            block: is_script_block(node),
+            splat: is_splat(node, self.source),
+            joined,
+        }
     }
 
     fn name(&self, node: Node<'_>) -> Arg {
@@ -500,6 +521,7 @@ impl Walker<'_> {
         ]
         .iter()
         .any(|kind| object.contains(kind));
+        blocks::hook_call(self.split, &method, &children, node, self.source);
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
         if matches!(method.as_str(), "newscriptblock" | "invokescript")

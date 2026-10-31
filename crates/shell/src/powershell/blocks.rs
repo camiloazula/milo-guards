@@ -28,6 +28,16 @@ struct Cmdlet {
     /// mistaken for a block given by position.
     values: &'static [&'static str],
     positional: Option<Positional>,
+    /// The parameters a block can also be given by position, in the order
+    /// their positions run, each with the names that bind it (`-Command` is
+    /// an alias of `-ScriptBlock`). A positional argument takes the first
+    /// of them no name has bound, so `Start-Job -ScriptBlock { … } $init`
+    /// hands `$init` to `-InitializationScript`. Empty: the block is the
+    /// only one by position.
+    slots: &'static [&'static [&'static str]],
+    /// Whether one block parameter is all there is to give a block to: a
+    /// splat (`@p`) beside a block written out cannot add another.
+    lone: bool,
 }
 
 /// The cmdlets whose script blocks the guard reads. The ones that register
@@ -36,7 +46,7 @@ struct Cmdlet {
 const CMDLETS: [Cmdlet; 8] = [
     Cmdlet {
         name: "invoke-command",
-        blocks: &["scriptblock"],
+        blocks: &["scriptblock", "command"],
         values: &[
             "computername",
             "session",
@@ -60,6 +70,8 @@ const CMDLETS: [Cmdlet; 8] = [
             "certificatethumbprint",
         ],
         positional: Some(Positional::One),
+        slots: &[],
+        lone: true,
     },
     Cmdlet {
         name: "foreach-object",
@@ -72,10 +84,12 @@ const CMDLETS: [Cmdlet; 8] = [
             "timeoutseconds",
         ],
         positional: Some(Positional::Every),
+        slots: &[],
+        lone: false,
     },
     Cmdlet {
         name: "start-job",
-        blocks: &["scriptblock", "initializationscript"],
+        blocks: &["scriptblock", "command", "initializationscript"],
         values: &[
             "name",
             "argumentlist",
@@ -90,6 +104,8 @@ const CMDLETS: [Cmdlet; 8] = [
             "type",
         ],
         positional: Some(Positional::One),
+        slots: &[&["scriptblock", "command"], &["initializationscript"]],
+        lone: false,
     },
     Cmdlet {
         name: "start-threadjob",
@@ -103,6 +119,8 @@ const CMDLETS: [Cmdlet; 8] = [
             "psversion",
         ],
         positional: Some(Positional::One),
+        slots: &[],
+        lone: false,
     },
     Cmdlet {
         name: "register-scheduledjob",
@@ -118,6 +136,8 @@ const CMDLETS: [Cmdlet; 8] = [
             "runevery",
         ],
         positional: Some(Positional::One),
+        slots: &[],
+        lone: false,
     },
     Cmdlet {
         name: "set-psbreakpoint",
@@ -126,37 +146,92 @@ const CMDLETS: [Cmdlet; 8] = [
             "script", "line", "column", "command", "variable", "mode", "runspace",
         ],
         positional: None,
+        slots: &[],
+        lone: true,
     },
     Cmdlet {
         name: "new-module",
         blocks: &["scriptblock"],
         values: &["name", "function", "cmdlet", "argumentlist"],
         positional: Some(Positional::One),
+        slots: &[],
+        lone: true,
     },
     Cmdlet {
         name: "measure-command",
         blocks: &["expression"],
         values: &["inputobject"],
         positional: Some(Positional::One),
+        slots: &[],
+        lone: true,
     },
 ];
 
 /// The properties of `$ExecutionContext.InvokeCommand` that hold a block
-/// PowerShell runs when a command is looked up or is not found.
-const HOOKS: [&str; 3] = [
+/// PowerShell runs when a command is looked up or is not found, or when the
+/// location changes. Each has a `set_` method that does the same.
+const HOOKS: [&str; 4] = [
     "commandnotfoundaction",
     "precommandlookupaction",
     "postcommandlookupaction",
+    "locationchangedaction",
 ];
 
-/// Whether `arg` is a script block written out: the grammar hands one over
-/// as the source text of the block, `{ … }`.
-fn is_block(arg: &Arg) -> bool {
-    arg.known().is_none() && block_text(arg.text())
+/// What the grammar says of an argument, beside its value: the walk flattens
+/// a comma list into one argument each, and a block or a splat is told by
+/// its node, not by its text.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Shape {
+    /// A script block written out.
+    pub block: bool,
+    /// A splat (`@p`): any parameters at all.
+    pub splat: bool,
+    /// Not the first of a comma list (`-ArgumentList $x, $y`: `$y`), so it
+    /// belongs to what the list belongs to.
+    pub joined: bool,
 }
 
-fn block_text(text: &str) -> bool {
-    text.starts_with('{') && text.ends_with('}')
+/// An argument and its shape.
+struct Item<'a> {
+    arg: &'a Arg,
+    shape: Shape,
+}
+
+/// The nodes the grammar wraps an expression in, each holding one thing when
+/// nothing is applied to it.
+const WRAPPERS: [&str; 19] = [
+    "pipeline",
+    "pipeline_chain",
+    "logical_expression",
+    "bitwise_expression",
+    "comparison_expression",
+    "additive_expression",
+    "multiplicative_expression",
+    "format_expression",
+    "range_expression",
+    "array_literal_expression",
+    "unary_expression",
+    "argument_expression",
+    "logical_argument_expression",
+    "bitwise_argument_expression",
+    "comparison_argument_expression",
+    "additive_argument_expression",
+    "multiplicative_argument_expression",
+    "format_argument_expression",
+    "range_argument_expression",
+];
+
+/// Whether an expression (an assigned value, a method's argument) is a script
+/// block written out, however many nodes the grammar wraps it in.
+fn written(node: Node<'_>) -> bool {
+    let mut node = node;
+    while WRAPPERS.contains(&node.kind()) && node.named_child_count() == 1 {
+        match node.named_child(0) {
+            Some(only) => node = only,
+            None => return false,
+        }
+    }
+    super::is_script_block(node)
 }
 
 /// The name of a parameter (`-Action`, `-Action:`), in lower case.
@@ -171,39 +246,83 @@ fn names(name: &str, fulls: &[&str]) -> bool {
     fulls.iter().any(|full| full.starts_with(name))
 }
 
-/// A cmdlet's block that is not written out is code the guard does not read.
-pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], command: &str) {
+/// A cmdlet's block that is not written out is code the guard does not read,
+/// and so is what a splat may hold.
+pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape], command: &str) {
     let Some(cmdlet) = CMDLETS.iter().find(|cmdlet| cmdlet.name == key) else {
         return;
     };
+    let items: Vec<Item<'_>> = args
+        .iter()
+        .zip(shapes)
+        .map(|(arg, shape)| Item { arg, shape: *shape })
+        .collect();
     let mut unread = false;
     let mut named = false;
+    let mut written_out = false;
+    let mut bound = Vec::new();
     let mut positional = Vec::new();
-    let mut iter = args.iter().peekable();
-    while let Some(arg) = iter.next() {
-        let Some(name) = parameter(arg) else {
-            positional.push(arg);
+    let mut iter = items.iter().peekable();
+    while let Some(item) = iter.next() {
+        if item.shape.splat {
+            continue;
+        }
+        let Some(name) = parameter(item.arg) else {
+            positional.push(item);
             continue;
         };
         if names(&name, cmdlet.blocks) {
             named = true;
+            bound.push(name);
             if let Some(value) = iter.next() {
-                unread |= !is_block(value);
+                unread |= !value.shape.block;
+                written_out |= value.shape.block;
+                // A list of blocks (`-Process { 1 }, { 2 }`) is all blocks.
+                while let Some(more) = iter.next_if(|next| next.shape.joined) {
+                    unread |= !more.shape.block;
+                }
             }
         } else if names(&name, cmdlet.values)
-            && iter.peek().is_some_and(|next| parameter(next).is_none())
+            && iter
+                .peek()
+                .is_some_and(|next| parameter(next.arg).is_none())
         {
             iter.next();
+            // A list belongs to the parameter: `-ArgumentList $x, $y`.
+            while iter.next_if(|next| next.shape.joined).is_some() {}
         }
     }
-    let loose = |arg: &&Arg| arg.known().is_none() && !is_block(arg);
+    let loose = |item: &&Item<'_>| item.arg.known().is_none() && !item.shape.block;
+    written_out |= positional.iter().any(|item| item.shape.block);
     unread |= match cmdlet.positional {
         Some(Positional::Every) => positional.iter().any(loose),
+        Some(Positional::One) if !cmdlet.slots.is_empty() => {
+            let free = cmdlet.slots.iter().enumerate().filter(|(_, slot)| {
+                !bound
+                    .iter()
+                    .any(|name| slot.iter().any(|full| full.starts_with(name.as_str())))
+            });
+            positional.iter().zip(free).any(|(item, (index, _))| {
+                if index == 0 {
+                    loose(item)
+                } else {
+                    !item.shape.block
+                }
+            })
+        }
         Some(Positional::One) => {
-            !named && !positional.iter().any(|arg| is_block(arg)) && positional.iter().any(loose)
+            !named
+                && !positional.iter().any(|item| item.shape.block)
+                && positional.iter().any(loose)
         }
         None => false,
     };
+    // A splat holds parameters the line does not write out: a block, or one
+    // more than the one written. The cmdlets that run one block only are
+    // safe beside a block written out.
+    if items.iter().any(|item| item.shape.splat) && !(cmdlet.lone && written_out) {
+        unread = true;
+    }
     if unread {
         split.problem(
             Rule::Unknown,
@@ -213,21 +332,43 @@ pub(super) fn check(split: &mut Split, key: &str, args: &[Arg], command: &str) {
     }
 }
 
+/// The name of the property or method a member access or call ends in, as
+/// written (`CommandNotFoundAction`, `"CommandNotFoundAction"`), in lower
+/// case.
+fn member(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let name = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "member_name")
+        .last()?;
+    Some(
+        unit::text(&name, source)
+            .trim_matches(['\'', '"'])
+            .to_ascii_lowercase(),
+    )
+}
+
 /// `$ExecutionContext.InvokeCommand.CommandNotFoundAction = $b`: a hook that
 /// runs for every command, a block the guard reads only when it is written
 /// out.
 pub(super) fn hook(split: &mut Split, node: Node<'_>, source: &str) {
-    let Some(left) = node.named_child(0) else {
+    let Some(mut left) = node.named_child(0) else {
         return;
     };
-    let mut cursor = node.walk();
-    let Some(right) = node.named_children(&mut cursor).last() else {
+    let Some(right) = node.child_by_field_name("value") else {
         return;
     };
-    let left = unit::text(&left, source).trim().to_ascii_lowercase();
-    if HOOKS.iter().any(|hook| left.ends_with(hook))
-        && !block_text(unit::text(&right, source).trim())
-    {
+    // The grammar wraps the target in a chain of one-child nodes.
+    while left.kind() != "member_access" && left.named_child_count() == 1 {
+        match left.named_child(0) {
+            Some(only) => left = only,
+            None => return,
+        }
+    }
+    if left.kind() != "member_access" {
+        return;
+    }
+    if member(left, source).is_some_and(|name| HOOKS.contains(&name.as_str())) && !written(right) {
         split.problem(
             Rule::Unknown,
             "sets a hook that runs a script block only known when it runs",
@@ -236,13 +377,44 @@ pub(super) fn hook(split: &mut Split, node: Node<'_>, source: &str) {
     }
 }
 
-/// The string a method call is given first, when it is written out as one
-/// (`Create('…')`); `children` are the call's parts.
-pub(super) fn first_string<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree>> {
+/// `$ExecutionContext.InvokeCommand.set_CommandNotFoundAction($b)`: the same
+/// hook set by its method; `method` is the name called and `children` the
+/// parts of the call.
+pub(super) fn hook_call(
+    split: &mut Split,
+    method: &str,
+    children: &[Node<'_>],
+    node: Node<'_>,
+    source: &str,
+) {
+    let Some(property) = method.strip_prefix("set_") else {
+        return;
+    };
+    if !HOOKS.contains(&property) {
+        return;
+    }
+    if !first_argument(children).is_some_and(written) {
+        split.problem(
+            Rule::Unknown,
+            "sets a hook that runs a script block only known when it runs",
+            Some(unit::text(&node, source)),
+        );
+    }
+}
+
+/// The first argument a method call is given; `children` are the call's
+/// parts.
+fn first_argument<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree>> {
     let list = children
         .iter()
         .find(|child| child.kind() == "argument_list")?;
-    let mut node = list.named_child(0)?.named_child(0)?;
+    list.named_child(0)?.named_child(0)
+}
+
+/// The string a method call is given first, when it is written out as one
+/// (`Create('…')`); `children` are the call's parts.
+pub(super) fn first_string<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree>> {
+    let mut node = first_argument(children)?;
     loop {
         if node.kind() == "string_literal" {
             return Some(node);
