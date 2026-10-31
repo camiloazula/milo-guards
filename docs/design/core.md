@@ -203,13 +203,17 @@ itself.
   name followed by `/` or `/.` is no device either, since descriptor 3 could
   be a folder; for the same reason a spelling with any part after
   `fd/<digits>` is none (`/dev/fd/3/../1` lands beside that folder's parent,
-  not on descriptor 1). On Windows, `/dev` is a real folder on the current drive, so
-  only the plain `/`-separated spellings above count, never normalised
-  (`/dev\null` and `/dev/./null` are files), plus `NUL`, `CON` and `\\.\`;
-  the `\\.\` namespace is a root that `..` cannot leave, so everything
-  spelled below it is a disk. A text with a `{` can expand to paths it does
-  not show, so it is never a device; the shell guard checks for a brace list
-  before it asks whether a path is a device.
+  not on descriptor 1), and so is one with any part after `fd/<name>` (a
+  wildcard that expands to digits, any name) or after `stdin`, `stdout` or
+  `stderr` (links to the same descriptors); only `fd/..` climbs out of `fd`
+  itself, so `/dev/fd/../null` is still the null device. On Windows, `/dev`
+  is a real folder on the current drive, so only the plain `/`-separated
+  spellings above count, never normalised (`/dev\null` and `/dev/./null` are
+  files), plus `NUL`, `CON` and `\\.\`; the `\\.\` namespace is a root that
+  `..` cannot leave, so everything spelled below it is a disk. A text with a
+  `{` can expand to paths it does not show, so it is never a device; the
+  shell guard checks for a brace list before it asks whether a path is a
+  device.
 - Nothing reads the file system. A symlink is judged by its own name.
 
 Core never answers `Registry`. A path spelled out as text is a file path. A

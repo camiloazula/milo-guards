@@ -610,8 +610,14 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
 /// On POSIX an absolute path is judged where it lands, with `.` and `..`
 /// applied, so `/dev/./null` is the null device and `/dev/fd/../../etc` is
 /// not a device at all: it is `/etc`. A name that is not exactly a device
-/// (`/dev/fd`, `/dev/fd/3/x`), or that ends in `/` or `/.` (descriptor 3
-/// could be a folder), is not one. On Windows `/dev/...` is a real folder on
+/// (`/dev/fd`, `/dev/fd/3/x`) is not one. Nor is a spelling with any part
+/// after a descriptor, which could be a folder, so a `..` after it lands
+/// beside that folder's parent: that is any part after `fd/<name>` (digits,
+/// a wildcard, any name) and any part after `stdin`, `stdout` or `stderr`
+/// (links to the same descriptors), as in `/dev/fd/3*/../1` and
+/// `/dev/stdout/../null`; only `fd/..` climbs out of `fd` itself, so
+/// `/dev/fd/../null` is the null device. A name that ends in `/`, `/.` or
+/// `/..` is no device either, for the same reason. On Windows `/dev/...` is a real folder on
 /// the current drive, so only the plain spellings count there, split at `/`
 /// and never normalised. A text with a `{` can expand to paths its spelling
 /// does not show, so it is never a device.
@@ -643,16 +649,28 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
             return None;
         }
-        // Nor is a spelling that goes on past `fd/<digits>`: descriptor 3
-        // could be a folder, and a `..` after it lands beside that folder's
-        // parent, not on `/dev/fd`. The kernel drops `//` and `/.`, so an
-        // empty or `.` part between `fd` and the digits changes nothing.
+        // Nor is a spelling that goes on past a descriptor: `fd/<name>`
+        // (digits, a wildcard that expands to digits, any name) or
+        // `stdin`, `stdout` and `stderr`, which are links to the same
+        // `/proc/self/fd` entries. The descriptor could be a folder, and a
+        // `..` after it lands beside that folder's parent, not on
+        // `/dev/fd`. The kernel drops `//` and `/.`, so an empty or `.`
+        // part before the descriptor changes nothing. Only `fd/..` climbs
+        // out of `fd` itself, so `/dev/fd/../null` stays the null device.
         let raw: Vec<&str> = lower
             .split('/')
             .filter(|part| !part.is_empty() && *part != ".")
             .collect();
-        if raw.windows(3).any(|w| w[0] == "fd" && is_digits(w[1])) {
+        if raw.windows(3).any(|w| w[0] == "fd" && w[1] != "..") {
             return None;
+        }
+        if let Some(at) = raw
+            .iter()
+            .position(|part| matches!(*part, "stdin" | "stdout" | "stderr"))
+        {
+            if at + 1 < raw.len() {
+                return None;
+            }
         }
         parts(&lower, flavour)
     };
@@ -1091,6 +1109,17 @@ mod tests {
             ("/dev/fd/0/./../1", POSIX, None),
             ("/dev/fd/3/../null", POSIX, None),
             ("/dev/fd/*", POSIX, None),
+            ("/dev/fd/3*/../1", POSIX, None),
+            ("/dev/fd/3?/../1", POSIX, None),
+            ("/dev/fd/[0-9]/../1", POSIX, None),
+            ("/dev/fd/x/../1", POSIX, None),
+            ("/dev/fd/./3*/../1", POSIX, None),
+            ("/dev/stdout/../null", POSIX, None),
+            ("/dev/stderr/../null", POSIX, None),
+            ("/dev/stdin/../null", POSIX, None),
+            ("/dev/stdout/x/../../null", POSIX, None),
+            ("/dev//stdout//../null", POSIX, None),
+            ("/dev/fd/../stdout", POSIX, Some(Place::Null)),
             ("/dev/nulls", POSIX, None),
             ("dev/null", POSIX, None),
             // Windows spellings: a name is exact, the namespace is a root.
