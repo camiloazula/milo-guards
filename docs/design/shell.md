@@ -185,6 +185,9 @@ a path.
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
 - `$null` and `NUL` are the null device.
+- In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
+  and `GIT~1` are the repository's history, and `x.txt:stream` is known only
+  when it runs (see [Core](core.md#what-core-judges)).
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
