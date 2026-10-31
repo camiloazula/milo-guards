@@ -424,3 +424,122 @@ fn clear_item_and_set_item_judge_every_path_of_a_list() {
         ],
     );
 }
+
+#[test]
+fn set_item_judges_every_positional_of_a_list() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Set-Item src\\a 1",
+            "Set-Item src\\a, src\\b 1",
+            "Set-Item -Path src\\a -Value 1",
+        ],
+        &[
+            ("Set-Item src\\a, HKLM:\\x", Rule::SystemSettings),
+            ("Set-Item src\\a,HKLM:\\x", Rule::SystemSettings),
+            (
+                "si src\\a,HKCU:\\Software\\Classes\\x",
+                Rule::SystemSettings,
+            ),
+            ("Set-Item src\\a, HKLM:\\x 1", Rule::SystemSettings),
+            ("Set-Item HKLM:\\x", Rule::SystemSettings),
+        ],
+    );
+}
+
+#[test]
+fn rename_item_judges_every_positional_and_path() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Rename-Item src\\a.rs b.rs",
+            "Rename-Item -n y src\\x",
+            "Rename-Item -- src\\x y",
+            "Rename-Item src\\a.rs $name",
+            "Rename-Item src\\a.rs ($x + '.bak')",
+            "Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
+            "Rename-Item -Path src\\a, src\\b -NewName c",
+        ],
+        &[
+            ("Rename-Item -n y HKCU:\\Software\\x", Rule::SystemSettings),
+            ("Rename-Item -N y C:\\Windows\\x", Rule::Delete),
+            ("Rename-Item -- HKCU:\\Software\\x y", Rule::SystemSettings),
+            ("Rename-Item -- C:\\Windows\\x y", Rule::Delete),
+            ("Rename-Item -n y $p", Rule::Delete),
+            ("Rename-Item -- $p y", Rule::Delete),
+            (
+                "Rename-Item -Path src\\a,C:\\Windows\\x -NewName y",
+                Rule::Delete,
+            ),
+            ("Rename-Item src\\a, C:\\Windows\\x y", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn move_item_judges_every_source_of_a_list() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Move-Item -Path src\\a,src\\b -Destination src\\d",
+            "Move-Item src\\a, src\\b -Destination src\\d",
+            "Move-Item -Path src\\a src\\d",
+            "Move-Item src\\a src\\d",
+            "Move-Item -LiteralPath src\\a,src\\b -Destination src\\d",
+        ],
+        &[
+            (
+                "Move-Item -Path src\\a,C:\\Windows\\x -Destination src\\d",
+                Rule::Delete,
+            ),
+            (
+                "Move-Item -Path src\\a,HKCU:\\Software\\x -Destination src\\d",
+                Rule::SystemSettings,
+            ),
+            (
+                "Move-Item src\\a, C:\\Windows\\x -Destination src\\d",
+                Rule::Delete,
+            ),
+            (
+                "Move-Item -LiteralPath src\\a,~\\x -Destination src\\d",
+                Rule::Delete,
+            ),
+            ("Move-Item -Path src\\a,C:\\Windows\\x src\\d", Rule::Delete),
+            ("Move-Item src\\a, C:\\Windows\\x src\\d", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_force_or_hidden_listing_hands_on_the_hidden_files() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }"],
+        &[
+            (
+                "Get-ChildItem -Force | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Hidden | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Delete,
+            ),
+            ("gci -fo | ren -NewName { $_.Name + 1 }", Rule::Delete),
+            (
+                "Get-ChildItem -Force | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            ("ls -Force | mi -Destination old", Rule::Delete),
+            (
+                "Get-ChildItem -Force | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
+                Rule::Delete,
+            ),
+            ("Move-Item .git old", Rule::Delete),
+            ("Rename-Item .git x", Rule::Delete),
+        ],
+    );
+}

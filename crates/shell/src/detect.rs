@@ -196,7 +196,10 @@ impl Checker<'_> {
         let found = producer
             .and_then(listed)
             .unwrap_or_else(|| vec![Arg::Unknown("<input>".to_string())]);
-        (found, producer.is_some_and(|producer| producer.hidden))
+        (
+            found,
+            producer.is_some_and(|producer| producer.hidden || lists_hidden(producer)),
+        )
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
@@ -244,39 +247,19 @@ impl Checker<'_> {
         }
     }
 
-    /// The items a PowerShell item cmdlet works on: its `-Path` or
-    /// `-LiteralPath`, else its first positional argument, else what the
-    /// stage before it lists; `$_` in a `ForEach-Object` block is that too.
-    /// A listing that takes in the whole workspace hands on what is inside
-    /// it, so those are not the workspace itself.
-    fn items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
-        let mut paths = params.values(&["path", "literalpath"]);
-        if paths.is_empty() {
-            paths.extend(params.positional.first().copied());
-        }
-        self.listed_paths(unit, paths)
-    }
-
-    /// The items `Clear-Item` and `Set-Item` act on: every `-Path` and
+    /// The items a PowerShell item cmdlet that takes a list of paths acts on
+    /// (`Clear-Item`, `Set-Item`): every `-Path` and
     /// `-LiteralPath` value and every positional, as `Remove-Item` reads
-    /// them, since both take a list of paths. With no path named and no
-    /// `-Value`, `Set-Item` takes its value as the last positional, which is
-    /// not a path (unless it is the only one). With a path named, a
-    /// positional may be the rest of the list (`-Path a,b`), so each is
-    /// judged.
-    fn list_items(&self, unit: &Unit, params: &Params<'_>, value_last: bool) -> Vec<Arg> {
+    /// them; with none, what the stage before it lists (or `$_` in a
+    /// `ForEach-Object` block). A positional may be the
+    /// rest of a list (`-Path a,b`, `a, b`) or an item that a parameter the
+    /// guard reads as a switch (`-n`) or `--` pushed out of the first place,
+    /// so each is judged; a value or a new name that is a place of its own
+    /// (`Set-Item src\a HKLM:\x`) makes the cmdlet fail,
+    /// so judging it costs only commands that do nothing.
+    fn list_items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
         let mut paths = params.values(&["path", "literalpath"]);
-        let positional = &params.positional;
-        let value_named = params
-            .named
-            .iter()
-            .any(|(name, _)| "value".starts_with(name.as_str()));
-        let count = if value_last && !value_named && paths.is_empty() && positional.len() > 1 {
-            positional.len() - 1
-        } else {
-            positional.len()
-        };
-        paths.extend(positional.iter().take(count).copied());
+        paths.extend(params.positional.iter().copied());
         self.listed_paths(unit, paths)
     }
 
@@ -292,9 +275,11 @@ impl Checker<'_> {
 
     /// `arg`, or the places the stage before lists when it is the pipeline's
     /// input. A listing (`Get-ChildItem`, `ls`, `dir`) of the whole workspace
-    /// hands on what is inside it, so that place is dropped; `Get-Item` hands
-    /// on the item itself, so only a pattern of its (`Get-Item *`) is dropped
-    /// and a workspace root named as written is kept.
+    /// hands on what is inside it, so that place is dropped, unless the
+    /// listing is `-Force` or `-Hidden`, which hands on the hidden files too
+    /// (`.git`): they are kept as the hidden files of the workspace. `Get-Item`
+    /// hands on the item itself, so only a pattern of its (`Get-Item *`) is
+    /// dropped and a workspace root named as written is kept.
     fn listed_items(&self, unit: &Unit, arg: &Arg) -> Vec<Arg> {
         if *arg != Arg::Input {
             return vec![arg.clone()];
@@ -313,13 +298,20 @@ impl Checker<'_> {
             .is_some_and(|key| key.as_str() == "get-item");
         found
             .into_iter()
-            .filter(|arg| {
-                let named = item && !matches!(arg, Arg::Known(text) if glob::has_wildcard(text));
-                named
+            .filter_map(|arg| {
+                let named = item && !matches!(&arg, Arg::Known(text) if glob::has_wildcard(text));
+                if named
                     || !matches!(
-                        self.place(unit.shell, scope, arg),
+                        self.place(unit.shell, scope, &arg),
                         Place::Workspace { exact: true }
                     )
+                {
+                    Some(arg)
+                } else if hidden {
+                    Some(hidden_files_of(arg))
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -411,6 +403,37 @@ impl Checker<'_> {
             );
         }
     }
+}
+
+/// Whether a PowerShell listing is `-Force` or `-Hidden`, which hands on the
+/// hidden files and folders (`.git`) as well.
+fn lists_hidden(unit: &Unit) -> bool {
+    unit.shell == Shell::PowerShell
+        && matches!(unit.key().as_deref(), Some("get-childitem" | "get-item"))
+        && Params::read(&unit.args).named.iter().any(|(name, _)| {
+            (name.len() > 1 && "force".starts_with(name.as_str()))
+                || "hidden".starts_with(name.as_str())
+        })
+}
+
+/// The hidden files of a folder a listing hands on whole: the folder's
+/// last part, a wildcard or not, read as `.*`.
+fn hidden_files_of(arg: Arg) -> Arg {
+    let Arg::Known(text) = &arg else {
+        return arg;
+    };
+    let last = text.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    let folder = if glob::has_wildcard(&text[last..]) {
+        &text[..last]
+    } else {
+        text.as_str()
+    };
+    let separator = if folder.is_empty() || folder.ends_with(['/', '\\']) {
+        ""
+    } else {
+        "/"
+    };
+    Arg::Known(format!("{folder}{separator}.*"))
 }
 
 /// The paths a listing stage hands on.

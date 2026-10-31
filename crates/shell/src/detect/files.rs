@@ -152,24 +152,24 @@ impl Checker<'_> {
                 let params = Params::read(args);
                 let mut positional = params.positional.clone();
                 let mut sources = params.values(&["path", "literalpath"]);
-                if sources.is_empty() && !positional.is_empty() {
-                    sources.push(positional.remove(0));
-                }
+                // `-Destination`, else the last positional after the path:
+                // one that is the only positional and no `-Path` is the path.
+                let destination = if let Some(named) = params.values(&["destination"]).first() {
+                    Some(*named)
+                } else if sources.is_empty() && positional.len() < 2 {
+                    None
+                } else {
+                    positional.pop()
+                };
+                // Every other positional is a source too (`Move-Item a, b
+                // -Destination d`; a comma list is read as separate ones).
+                sources.extend(positional);
                 if key == "move-item" {
                     // With no path, what the stage before lists is moved.
-                    let piped = if sources.is_empty() {
-                        self.items(unit, &params)
-                    } else {
-                        Vec::new()
-                    };
-                    let moved: Vec<&Arg> = sources.iter().copied().chain(piped.iter()).collect();
-                    self.move_away(unit, &moved, "moves");
+                    let moved = self.listed_paths(unit, sources);
+                    self.move_away(unit, &moved.iter().collect::<Vec<_>>(), "moves");
                 }
-                if let Some(destination) = params
-                    .values(&["destination"])
-                    .first()
-                    .or(positional.first())
-                {
+                if let Some(destination) = destination {
                     self.write(shell, unit.scope(), destination, "writes to");
                 }
             }
@@ -181,13 +181,35 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
+                for target in self.list_items(unit, &Params::read(args)) {
                     self.write(shell, unit.scope(), &target, verb);
                 }
             }
             "rename-item" => {
                 let params = Params::read(args);
-                let items = self.items(unit, &params);
+                // Every path and positional is the item or the new name; a
+                // new name made at run time (`$name`, `($a + 'x')`) after
+                // the first positional is not a place, unless the guard
+                // cannot tell which is which: a bare `-n` (read as a switch,
+                // it leaves its value among the positionals) or a `--`.
+                let doubtful =
+                    params.named.iter().any(|(name, value)| {
+                        value.is_none() && "newname".starts_with(name.as_str())
+                    }) || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"));
+                let mut paths = params.values(&["path", "literalpath"]);
+                paths.extend(
+                    params
+                        .positional
+                        .iter()
+                        .filter(|arg| arg.known() != Some("--"))
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| *arg),
+                );
+                let items = self.listed_paths(unit, paths);
                 self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
                 // The new name is a name, not a path; one that holds a
                 // separator is a place the item is moved to.

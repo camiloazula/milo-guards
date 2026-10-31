@@ -300,7 +300,22 @@ a path.
   listing of the whole workspace by `Get-ChildItem`, `ls` or `dir`, or a
   `Get-Item` pattern such as `Get-Item *`, is its contents, not the workspace
   itself; `Get-Item .` or `Get-Item D:\ws2` hands on that folder, as written.
-  `Clear-Item` and `Set-Item` take a list of paths, so each is judged (`Clear-Item src\a, HKCU:\Software\y`; with no `-Value`, the last of `Set-Item`'s positionals is the value); a common parameter's value (`-ErrorAction 0`) is never read as the path.
+  `Clear-Item`, `Set-Item` and `Rename-Item` take a list of paths, so each
+  `-Path`/`-LiteralPath` value and each positional is judged
+  (`Clear-Item src\a, HKCU:\Software\y`, `Set-Item src\a, HKLM:\x`): the
+  value of `Set-Item` and the new name of `Rename-Item` are judged as places
+  too, since one that is a place of its own makes the command fail. The one
+  exception is a new name made at run time (`Rename-Item src\a.rs $name`)
+  after the first positional, unless a bare `-n` or a `--` hides which is the
+  item (`Rename-Item -n y HKCU:\Software\x`). `Move-Item` judges every
+  source: each `-Path`/`-LiteralPath` value and every positional but the
+  destination, which is `-Destination` or else the last positional
+  (`Move-Item -Path src\a,C:\Windows\x -Destination src\d`). A
+  `Get-ChildItem` or `Get-Item` listing that is `-Force` or `-Hidden` hands on
+  the hidden files of the workspace (`.git`) too, so
+  `Get-ChildItem -Force | Rename-Item -NewName x` is a `delete`, as
+  `Rename-Item .git x` is. A common parameter's value (`-ErrorAction 0`) is
+  never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
