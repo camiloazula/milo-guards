@@ -158,7 +158,7 @@ impl Resolver {
         {
             return false;
         }
-        matches!(within(dir, arg, shell), Arg::Unknown(_))
+        within(dir, arg, shell).is_unknown()
     }
 
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in

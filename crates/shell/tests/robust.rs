@@ -183,3 +183,46 @@ fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
         [Rule::Delete]
     );
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
+)]
+fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
+    // A `trap "$(…)"` has its substitution read where it stands; reading it
+    // again inside the trap's script would double the work at each level.
+    let mut deep = "rm -f x".to_string();
+    for _ in 0..26 {
+        deep = format!("trap \"$({deep})\" EXIT");
+    }
+    let mut wide = format!("echo {}", "a".repeat(58_000));
+    for _ in 0..12 {
+        wide = format!("trap \"$({wide})\" EXIT");
+    }
+    assert!(wide.len() <= 64 * 1024, "{}", wide.len());
+    for line in [deep, wide] {
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(200),
+            "took {took:?}"
+        );
+        assert!(!assessment.is_safe());
+    }
+}
+
+#[test]
+fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
+    // Each `eval` reads everything after it as a script, so each of the
+    // seven reads the whole payload: more than the line may have read.
+    let line = format!("{}: {}", "eval ".repeat(7), "a".repeat(58_000));
+    assert!(line.len() <= 64 * 1024, "{}", line.len());
+    assert!(classify(&line, Shell::Posix, &posix())
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable));
+    // A few reads of a short script are fine.
+    assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
+}

@@ -59,13 +59,89 @@ Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
-counts as far as a depth limit. Past it, the line is unreadable.
+counts as far as a depth limit, and the text of all the nested scripts read
+for one line as far as a budget a few times the longest line. Past either, the
+line is unreadable.
+
+### Actions that run later
+
+Some commands only register a script, which runs when something happens
+rather than now. The script is read where it is written, in its own grammar,
+and its findings are the line's, since the shell runs it as the same user.
+
+- **`trap`** in a POSIX shell: `trap 'ACTION' SIGNAL…`, also `trap -- 'ACTION'
+  …`, whichever signal (`EXIT`, `0`, `INT`, `TERM`, `ERR`, `DEBUG`, `RETURN`,
+  `HUP`, a number, several at once). The action is read like an `eval`'s
+  script: `trap 'rm -rf ~' EXIT` deletes the home directory. A double-quoted
+  action is expanded when the trap is set and its result read as code when it
+  runs, as `eval "…"` is, so whatever an expansion holds becomes code: `trap
+  "echo $d" EXIT` is `unknown`, with the reason `runs a script only known when
+  it runs`, like `eval "$x"`, and so is `trap "$x" EXIT`. The text around the
+  expansions is still read, so `trap "rm -rf $d" EXIT` also carries the
+  `delete` of `$d`, a path known only when it runs. `$HOME`, `$PWD` and
+  `$TMPDIR` are the places the guard names and are not counted as
+  expansions. A single-quoted action is not expanded when set and is read as
+  written: `trap 'rm -f "$tmp"' EXIT` is `rm -f "$tmp"`, and `trap 'echo $d'
+  EXIT` is safe.
+- **Nothing runs** for `trap - EXIT` and `trap -- - INT` (put the default
+  back), `trap '' INT` (ignore the signal), `trap -p`, `trap -l` and a bare
+  `trap`.
+- **PowerShell**: the block of `trap { … }`, and the block given with
+  `-Action` to `Register-EngineEvent`, `Register-ObjectEvent`,
+  `Register-WmiEvent` and `Register-CimIndicationEvent`. The grammar reads a
+  block in place, so its commands are judged as if they stood on the line,
+  and an action that is not a block written out is a script known only when
+  it runs, which is `unknown`: `-Action $block`, `-Action ([scriptblock]::Create($t))`,
+  an action given by position (`Register-EngineEvent X $block`) and any splat
+  (`Register-EngineEvent @p`). By position, the action is the last of the
+  parameters the command's names leave to be given by position, in the docs'
+  order: source then action for `Register-EngineEvent`; object, event, source
+  then action for `Register-ObjectEvent`; class or query, source then action
+  for `Register-WmiEvent` and `Register-CimIndicationEvent`.
+  `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
+- cmd has nothing like it.
+
+The action runs in this shell, later: after the line's last command, or
+between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the
+line leaves things, whichever is more conservative and needs the least state:
+
+- **Where it runs.** Its relative paths are judged from where the line was
+  at the `trap`. A `cd` (or `pushd`, `popd`, `Set-Location`) after it, anywhere
+  in the line, makes those paths known only when it runs: `trap 'rm -rf
+  build' EXIT; cd ~` deletes a path known only when it runs. A `cd` inside
+  the action may run before the next command, so the rest of the line is read
+  from somewhere unknown too. An absolute path or `~` is the same wherever the
+  line has moved. A `cd` in a subshell, `$(…)` or a script in a process of
+  its own is not a move of this shell, as it is not for any later path, so
+  `trap 'rm -f lock' EXIT; (cd sub && make)` still runs `rm -f lock` from
+  where it was set. `eval` runs in this shell, so its `cd` is a move.
+  The exception is a trap a subshell copies: `ERR` and `DEBUG` (zsh also
+  `ZERR`) in zsh, `ERR` with `set -E` and `DEBUG` and `RETURN` with `set -T` in
+  bash, also in `$(…)`. It runs from where the subshell has moved to as
+  well, so for these (and for a signal the guard does not know, or one known
+  only when it runs) any `cd` after the `trap` counts, subshell or not:
+  `trap 'rm -rf build' DEBUG; (cd /; true)` is a delete of a path known only
+  when it runs. `EXIT` and the ordinary signals are reset in a subshell and
+  keep the rule above.
+- **Names in a finding.** A double-quoted action is read from its text with
+  each expansion replaced by a placeholder variable; a finding about it names
+  the action as written, never the placeholder.
+- **Hidden names.** The action is a body (see Bodies below): when the line
+  turns `dotglob` on anywhere, even after the `trap`, its wildcards match
+  hidden names. An off switch inside it changes nothing for the rest of the
+  line, and an on switch inside it stays on.
+- **Nesting.** A `trap` inside a script, a `bash -c` or another `trap` counts
+  as far as the depth limit. A `$(…)` in a double-quoted action is read where
+  it stands, when the trap is set, and is a placeholder variable in the text
+  the action is read from, so it is not read twice.
 
 ### Where a line is
 
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
-nested script does not reach the rest of the line. Where a `cd` went is
+nested script in a process of its own does not reach the rest of the line;
+`eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
+last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
@@ -243,7 +319,7 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 
 A line is never safe because the guard gave up on it. These come back risky:
 
-- A program or script known only when it runs: `$CMD`, `eval "$x"`, `iex $s`,
+- A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
   one.

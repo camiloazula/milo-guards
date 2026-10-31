@@ -90,7 +90,9 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
     let text = match arg {
         Arg::Known(text) => text.as_str(),
         // The source text, quotes and all.
-        Arg::Unknown(text) => text.trim_start_matches(['"', '\'']),
+        Arg::Unknown(text) | Arg::Template { source: text, .. } => {
+            text.trim_start_matches(['"', '\''])
+        }
         Arg::Input => return false,
     };
     let Some((name, value)) = text.split_once('=') else {
