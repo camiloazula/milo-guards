@@ -14,6 +14,7 @@ mod archives;
 mod code;
 mod files;
 mod processes;
+mod regex;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -52,6 +53,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        lengths: HashMap::new(),
+        pipelines: HashMap::new(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
     // scans of every unit.
@@ -71,6 +74,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
+            *length = (*length).max(stage.index + 1);
         }
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -105,6 +110,11 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// The number of stages of each pipeline.
+    lengths: HashMap<usize, usize>,
+    /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
+    /// first asks for it.
+    pipelines: HashMap<usize, Option<std::rc::Rc<processes::Pipeline>>>,
 }
 
 impl Checker<'_> {

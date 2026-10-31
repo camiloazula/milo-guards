@@ -283,19 +283,27 @@ the same line. It is `stop_system` when the line stops more than a name:
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
   `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
-  `.exe` or a folder in front. `pkill` and `killall -r`/`-m` search their
-  regular expression in the name, so it is compared two ways, per
-  alternative, without its anchors and brackets: whole (`^init$`,
-  `/sbin/init`), and, unless `-x`/`--exact` is given, as a plain literal
-  found inside a system name: `pkill login`, `pkill launch` and `pkill
-  Window` stop `loginwindow`, `launchd` and `WindowServer`. A leading `^`
-  wants the name to start with it, a trailing `$` to end with it, `-x` both,
-  and `.*` at either end drops that anchor (`pkill 'login.*'`). The literal
-  is compared with the names as they are written, so `pkill -f server` is not
-  `WindowServer`, unless the case is ignored (`pkill -i`, `killall -I`). A
-  literal with any other regular expression syntax in it is not read this
-  way. `killall` without `-r` compares whole names only. A PowerShell or
-  `taskkill` wildcard that matches one is the same (`Stop-Process -Name s*`).
+  `.exe` or a folder in front (`killall /sbin/init` picks the process by its
+  file, so the last part of the name is the name). `pkill` and `killall
+  -r`/`-m` search their regular expression in the name, so it is compared two
+  ways, per alternative: whole, without its anchors and brackets (`^init$`,
+  `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
+  can match a system name at all. A name is searched for in the system name:
+  `pkill login`, `pkill launch` and `pkill Window` stop `loginwindow`,
+  `launchd` and `WindowServer`. A leading `^` wants the name to start with it,
+  a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
+  server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
+  -I`). The expression is read with its syntax, never skipped for having
+  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
+  and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
+  (an escape, a collating element, `\b`, a back reference) it is read as
+  matching more, so `pkill '[l]aunchd'`, `pkill 'log.n'`, `pkill 'login(window)?'`,
+  `pkill 'a+'` and `pkill '[[:alpha:]]x'` are `stop_system` while `pkill
+  '[n]ode'` and `pkill -f 'node.*server'` are not. A `/` ends a folder, so
+  what follows it is the name (`pkill -f '/sbin/[i]nit'`). `killall` without
+  `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
+  matches one is the same (`Stop-Process -Name s*`).
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
   `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -311,10 +319,14 @@ the same line. It is `stop_system` when the line stops more than a name:
   process": `Where-Object` is read when it only compares `Name` or
   `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
   'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
-  `Select-Object` and `Sort-Object` keep some of the same processes; any
-  other filter is "picked by a filter only known when it runs", and any other
-  stage, which may hand on other processes, is known only when it runs.
-  What follows a named listing can only narrow it, so the names are judged.
+  `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
+  `-Property Name`) keep some of the same processes; a `Select-Object` given
+  `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
+  or a script block) hands on other objects, such as a process's parent, and
+  is any other stage. Any other filter is "picked by a filter only known when
+  it runs", and any other stage, which may hand on other processes, is known
+  only when it runs. What follows a named listing, when it only picks from it,
+  can only narrow it, so the names are judged.
   The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
   `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
   `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
@@ -323,7 +335,9 @@ the same line. It is `stop_system` when the line stops more than a name:
   processes the guard does not read and is safe.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
-  `stop_system` however it is called, even when the line only defines it. A
+  `stop_system` however it is called, even when the line only defines it, and
+  however the call is written: `\f`, `"f"` and `'f'` call the function `f`, as
+  `\rm` is read as `rm`. A
   function defined inside another is judged on its own, by its own name, and
   its commands are not also read as the outer one's. A bomb split over two
   functions that call each other is not read.

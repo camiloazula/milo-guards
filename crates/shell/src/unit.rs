@@ -107,10 +107,39 @@ pub(crate) enum Between {
     /// `Where-Object`, with its arguments (a block that is a simple
     /// comparison is read into `Name -eq value`).
     Where(Vec<Arg>),
-    /// `Select-Object` and `Sort-Object`: some of the same processes.
+    /// `Sort-Object`, and a `Select-Object` that only picks (see
+    /// [`Between::select`]): some of the same processes.
     Narrows,
     /// Anything else, which may hand on processes the listing did not.
     Other,
+}
+
+impl Between {
+    /// A `Select-Object` stage given `args`: it keeps some of the same
+    /// processes, unless it is given `-ExpandProperty` (any prefix of three
+    /// letters or more, written `-exp` or `-exp:Parent`) or a calculated
+    /// property (a hashtable or a script block), which hand on other
+    /// objects, such as a process's parent.
+    pub(crate) fn select(args: &[Arg]) -> Self {
+        let hands_on = args.iter().any(|arg| {
+            let text = arg.text().trim_start();
+            if matches!(arg, Arg::Known(_)) {
+                let name = text
+                    .strip_prefix('-')
+                    .and_then(|name| name.split(':').next());
+                name.is_some_and(|name| {
+                    name.len() >= 3 && "expandproperty".starts_with(&name.to_ascii_lowercase())
+                })
+            } else {
+                text.starts_with("@{") || text.starts_with('{')
+            }
+        });
+        if hands_on {
+            Self::Other
+        } else {
+            Self::Narrows
+        }
+    }
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved

@@ -372,7 +372,7 @@ impl Walker<'_> {
                 && inner.kind() == "command"
                 && inner
                     .child_by_field_name("name")
-                    .is_some_and(|called| unit::text(&called, self.source) == name)
+                    .is_some_and(|called| self.arg(called).known() == Some(name))
                 && starts_apart(inner, body)
             {
                 bomb = true;

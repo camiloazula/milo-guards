@@ -440,7 +440,10 @@ impl Walker<'_> {
         }
         match self.command_key(stage).as_deref() {
             Some("where-object") => Between::Where(self.plain_args(stage, Some("where-object"))),
-            Some("select-object" | "select" | "sort-object" | "sort") => Between::Narrows,
+            Some("select-object" | "select") => {
+                Between::select(&self.plain_args(stage, Some("select-object")))
+            }
+            Some("sort-object" | "sort") => Between::Narrows,
             _ => Between::Other,
         }
     }

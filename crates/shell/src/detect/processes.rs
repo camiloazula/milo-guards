@@ -4,10 +4,20 @@
 //! that matches every process, every process of a user, or a process the
 //! system needs, stops the system.
 
+use std::rc::Rc;
+
+use super::regex;
 use super::Checker;
 use crate::powershell::{Param, Params};
 use crate::unit::{Arg, Between, Unit};
 use crate::Rule;
+
+/// A `Get-Process` that starts a pipeline: its arguments, and what each
+/// later stage (the first of them at `between[0]`) does to the processes.
+pub(super) struct Pipeline {
+    args: Vec<Arg>,
+    between: Vec<Between>,
+}
 
 /// How a program reads the name it is given.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,10 +74,6 @@ const GET_PROCESS: [Param; 7] = [
     Param::switch("fileversioninfo", &[]),
     Param::switch("includeusername", &[]),
 ];
-
-/// The longest regular expression nesting read; deeper is treated as
-/// matching everything.
-const MAX_NESTING: usize = 32;
 
 impl Checker<'_> {
     /// `killall`: names as written, or regular expressions with `-r`.
@@ -135,7 +141,7 @@ impl Checker<'_> {
         };
         let everything = match kind {
             Names::Literal => false,
-            Names::Regex { .. } => !needs_literal(text),
+            Names::Regex { .. } => !regex::needs_literal(text),
             Names::Wildcard => !wildcard_needs_literal(&process_name(text)),
         };
         if everything {
@@ -261,41 +267,60 @@ impl Checker<'_> {
                 .into_iter()
                 .chain(params.positional.iter().copied())
                 .any(|arg| *arg == Arg::Input);
-            if let Some((listing, between)) = unit
-                .stage
-                .filter(|stage| item && stage.index > 0)
-                .and_then(|stage| self.listing_before(stage))
-            {
-                self.judge_listing(&listing, &between);
+            if let Some(stage) = unit.stage.filter(|stage| item && stage.index > 0) {
+                self.judge_before(stage);
             }
             return;
         }
         let Some(stage) = unit.stage.filter(|stage| stage.index > 0) else {
             return;
         };
-        match self.listing_before(stage) {
-            Some((listing, between)) => self.judge_listing(&listing, &between),
-            None => self.add(
+        if !self.judge_before(stage) {
+            self.add(
                 Rule::StopSystem,
                 "stops processes only known when it runs",
                 None,
-            ),
+            );
         }
     }
 
-    /// The `Get-Process` that starts the pipeline a stage is in, with its
-    /// arguments and what stands between it and the stage.
-    fn listing_before(&self, stage: crate::unit::Stage) -> Option<(Vec<Arg>, Vec<Between>)> {
+    /// Judge the `Get-Process` that starts the pipeline a stage is in, with
+    /// what stands between it and the stage. False when the pipeline does
+    /// not start with one.
+    fn judge_before(&mut self, stage: crate::unit::Stage) -> bool {
+        let Some(pipeline) = self.pipeline(stage.pipeline) else {
+            return false;
+        };
+        let before = stage.index.saturating_sub(1).min(pipeline.between.len());
+        self.judge_listing(&pipeline.args, &pipeline.between[..before]);
+        true
+    }
+
+    /// The `Get-Process` that starts a pipeline, when one does, and what
+    /// each later stage does to what it lists. Worked out once for the whole
+    /// pipeline, so a long one is read in linear time.
+    fn pipeline(&mut self, id: usize) -> Option<Rc<Pipeline>> {
+        if let Some(known) = self.pipelines.get(&id) {
+            return known.clone();
+        }
         let at = |index: usize| {
             self.producers
-                .get(&(stage.pipeline, index))
+                .get(&(id, index))
                 .and_then(|&at| self.split.units.get(at))
         };
-        let first = at(0).filter(|first| first.key().as_deref() == Some("get-process"))?;
-        let between = (1..stage.index)
-            .map(|index| at(index).map_or(Between::Other, between))
-            .collect();
-        Some((first.args.clone(), between))
+        let stages = self.lengths.get(&id).copied().unwrap_or(0);
+        let pipeline = at(0)
+            .filter(|first| first.key().as_deref() == Some("get-process"))
+            .map(|first| {
+                Rc::new(Pipeline {
+                    args: first.args.clone(),
+                    between: (1..stages)
+                        .map(|index| at(index).map_or(Between::Other, between))
+                        .collect(),
+                })
+            });
+        self.pipelines.insert(id, pipeline.clone());
+        pipeline
     }
 
     /// Judge what `Get-Process` lists, narrowed by the stages after it, as
@@ -353,7 +378,8 @@ impl Checker<'_> {
 fn between(unit: &Unit) -> Between {
     match unit.key().as_deref() {
         Some("where-object") => Between::Where(unit.args.clone()),
-        Some("select-object" | "select" | "sort-object" | "sort") => Between::Narrows,
+        Some("select-object" | "select") => Between::select(&unit.args),
+        Some("sort-object" | "sort") => Between::Narrows,
         _ => Between::Other,
     }
 }
@@ -556,20 +582,27 @@ fn process_name(name: &str) -> String {
 /// or a regular expression) matches one.
 fn names_system_process(text: &str, kind: Names) -> bool {
     match kind {
-        Names::Literal => SYSTEM_PROCESSES
-            .iter()
-            .any(|system| process_name(system) == process_name(text)),
-        Names::Regex { exact, ignore_case } => text.split('|').any(|alternative| {
-            // Each alternative of a pattern, without its anchors and
-            // brackets, and its folder when it is a command line's program,
-            // compared whole.
-            let bare = alternative.trim_matches(['^', '$', '(', ')']);
-            let name = bare.rsplit('/').next().unwrap_or(bare);
+        // `killall` picks a process by its file when the name has a folder in
+        // it (`/sbin/init`): the last part is the name.
+        Names::Literal => {
+            let name = text.rsplit('/').next().unwrap_or(text);
             SYSTEM_PROCESSES
                 .iter()
                 .any(|system| process_name(system) == process_name(name))
-                || inside_system_name(alternative, exact, ignore_case)
-        }),
+        }
+        Names::Regex { exact, ignore_case } => {
+            // Each alternative of a pattern, without its anchors and
+            // brackets, and its folder when it is a command line's program,
+            // compared whole (`Explorer`, `explorer.exe`); and the
+            // expression itself, which may match the name in part.
+            text.split('|').any(|alternative| {
+                let bare = alternative.trim_matches(['^', '$', '(', ')']);
+                let name = bare.rsplit('/').next().unwrap_or(bare);
+                SYSTEM_PROCESSES
+                    .iter()
+                    .any(|system| process_name(system) == process_name(name))
+            }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case)
+        }
         Names::Wildcard => {
             let pieces = wildcard_pieces(&process_name(text));
             SYSTEM_PROCESSES.iter().any(|system| {
@@ -578,68 +611,6 @@ fn names_system_process(text: &str, kind: Names) -> bool {
             })
         }
     }
-}
-
-/// Whether a regular expression that is a plain literal (with anchors, and
-/// `.*` at either end) is found in a system process's name. The expression
-/// is searched for in the name, so `login` is in `loginwindow`; `^` wants
-/// the name to start with it and `$` to end with it, and `-x` both. Names
-/// are compared as they are written (`WindowServer`) unless the case is
-/// ignored.
-fn inside_system_name(alternative: &str, exact: bool, ignore_case: bool) -> bool {
-    let (mut start, mut end) = (exact, exact);
-    let mut rest = alternative;
-    loop {
-        if let Some(inner) = rest.strip_prefix(['(', ')']) {
-            rest = inner;
-        } else if let Some(inner) = rest.strip_prefix('^') {
-            (start, rest) = (true, inner);
-        } else if let Some(inner) = rest.strip_prefix(".*") {
-            (start, rest) = (false, inner);
-        } else {
-            break;
-        }
-    }
-    loop {
-        if let Some(inner) = rest.strip_suffix(['(', ')']) {
-            rest = inner;
-        } else if let Some(inner) = rest.strip_suffix('$') {
-            (end, rest) = (true, inner);
-        } else if let Some(inner) = rest.strip_suffix(".*") {
-            (end, rest) = (false, inner);
-        } else {
-            break;
-        }
-    }
-    // A command line's program starts where its folder ends.
-    if let Some(slash) = rest.rfind('/') {
-        (start, rest) = (true, &rest[slash + 1..]);
-    }
-    if rest.is_empty()
-        || rest.contains([
-            '.', '[', ']', '(', ')', '*', '+', '?', '{', '}', '\\', '^', '$',
-        ])
-    {
-        return false;
-    }
-    let literal = if ignore_case {
-        rest.to_ascii_lowercase()
-    } else {
-        rest.to_string()
-    };
-    SYSTEM_PROCESSES.iter().any(|system| {
-        let system = if ignore_case {
-            system.to_ascii_lowercase()
-        } else {
-            (*system).to_string()
-        };
-        match (start, end) {
-            (true, true) => system == literal,
-            (true, false) => system.starts_with(&literal),
-            (false, true) => system.ends_with(&literal),
-            (false, false) => system.contains(&literal),
-        }
-    })
 }
 
 /// One piece of a wildcard.
@@ -728,133 +699,4 @@ fn wildcard_needs_literal(pattern: &str) -> bool {
         }
     }
     false
-}
-
-/// Whether every match of a regular expression holds a letter or digit the
-/// expression spells out. One that does not matches every process: `.`,
-/// `.*`, `^`, the empty one, `a*`, `(a|)`. What cannot be read as a regular
-/// expression counts as not needing one.
-fn needs_literal(pattern: &str) -> bool {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut at = 0;
-    match alternation(&chars, &mut at, 0) {
-        Some(needs) if at == chars.len() => needs,
-        _ => false,
-    }
-}
-
-/// The branches up to a `)` or the end; whether every one needs a literal.
-fn alternation(chars: &[char], at: &mut usize, depth: usize) -> Option<bool> {
-    if depth > MAX_NESTING {
-        return None;
-    }
-    let mut every = true;
-    loop {
-        every &= branch(chars, at, depth)?;
-        if chars.get(*at) == Some(&'|') {
-            *at += 1;
-        } else {
-            return Some(every);
-        }
-    }
-}
-
-/// One branch: whether it holds a required letter or digit.
-fn branch(chars: &[char], at: &mut usize, depth: usize) -> Option<bool> {
-    let mut needs = false;
-    while let Some(&c) = chars.get(*at) {
-        if c == '|' || c == ')' {
-            break;
-        }
-        *at += 1;
-        let literal = match c {
-            '^' | '$' => continue,
-            // `\d`, `\w`, `\.`: an escape is one character of some kind, not
-            // a letter the expression spells out.
-            '\\' => {
-                chars.get(*at)?;
-                *at += 1;
-                false
-            }
-            '[' => {
-                skip_set(chars, at)?;
-                false
-            }
-            '(' => {
-                let inner = alternation(chars, at, depth + 1)?;
-                if chars.get(*at) != Some(&')') {
-                    return None;
-                }
-                *at += 1;
-                inner
-            }
-            c => c.is_alphanumeric(),
-        };
-        let optional = quantifiers(chars, at);
-        needs |= literal && !optional;
-    }
-    Some(needs)
-}
-
-/// Skip a `[…]` set, whose `]` may be its first character and which may
-/// hold `[:alpha:]`.
-fn skip_set(chars: &[char], at: &mut usize) -> Option<()> {
-    if chars.get(*at) == Some(&'^') {
-        *at += 1;
-    }
-    if chars.get(*at) == Some(&']') {
-        *at += 1;
-    }
-    loop {
-        match chars.get(*at)? {
-            ']' => {
-                *at += 1;
-                return Some(());
-            }
-            '[' if matches!(chars.get(*at + 1), Some(':' | '.' | '=')) => {
-                let kind = chars[*at + 1];
-                *at += 2;
-                loop {
-                    let c = *chars.get(*at)?;
-                    *at += 1;
-                    if c == kind && chars.get(*at) == Some(&']') {
-                        *at += 1;
-                        break;
-                    }
-                }
-            }
-            _ => *at += 1,
-        }
-    }
-}
-
-/// Skip the quantifiers after an atom; whether they let it match nothing
-/// (`*`, `?`, `{0,…}`).
-fn quantifiers(chars: &[char], at: &mut usize) -> bool {
-    let mut optional = false;
-    loop {
-        match chars.get(*at) {
-            Some('*' | '?') => {
-                optional = true;
-                *at += 1;
-            }
-            Some('+') => *at += 1,
-            Some('{') => {
-                // `{2}`, `{0,3}`: digits and commas up to a `}`. Only those
-                // are scanned, so a run of `{` is read in linear time.
-                let width = chars[*at + 1..]
-                    .iter()
-                    .take_while(|c| c.is_ascii_digit() || **c == ',')
-                    .count();
-                if width == 0 || chars.get(*at + 1 + width) != Some(&'}') {
-                    return optional;
-                }
-                let bound: String = chars[*at + 1..*at + 1 + width].iter().collect();
-                let least = bound.split(',').next().unwrap_or_default();
-                optional |= least.chars().all(|c| c == '0');
-                *at += width + 2;
-            }
-            _ => return optional,
-        }
-    }
 }

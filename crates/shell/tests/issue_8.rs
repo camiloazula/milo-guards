@@ -43,7 +43,6 @@ fn stopping_a_process_by_a_plain_name_is_safe() {
             "pkill '^node$'",
             "pkill -f 'node.*server'",
             "pkill '(node|vite)'",
-            "pkill 'a+'",
             "pkill -f \"python -m http.server\"",
             "pkill -u me node",
             "pkill -fu me node",
@@ -54,7 +53,6 @@ fn stopping_a_process_by_a_plain_name_is_safe() {
             "pkill --frobnicate node",
             "pkill -- node",
             "pkill '[n]ode'",
-            "pkill '[[:alpha:]]x'",
             "pkill '[]a]x'",
             "pkill 'a{x}'",
             "pkill 'a{0'",
@@ -1190,6 +1188,31 @@ fn the_process_rules_read_long_patterns_quickly() {
             format!("pkill '{}'", "^(.*".repeat(15_000)),
             &linux,
         ),
+        (
+            Shell::PowerShell,
+            format!("gps{}", "|kill".repeat(12_000)),
+            &windows,
+        ),
+        (
+            Shell::PowerShell,
+            format!("Get-Process{}", " | Stop-Process".repeat(4_000)),
+            &windows,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}'", "[a-z]x?(a|b)+".repeat(4_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}'", "(a|b|c)".repeat(8_000)),
+            &linux,
+        ),
+        (
+            Shell::Posix,
+            format!("pkill '{}x'", "[a]*".repeat(15_000)),
+            &linux,
+        ),
     ];
     for (shell, line, paths) in &lines {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -1224,4 +1247,156 @@ fn the_fork_bomb_scan_reads_nested_functions_quickly() {
         let took = started.elapsed();
         assert!(took < slow, "{} bytes took {took:?}", line.len());
     }
+}
+
+// ---- Review follow-up: the second review of the process rules ----
+
+#[test]
+fn killall_picks_a_process_by_its_file_when_the_name_has_a_folder() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "killall /usr/local/bin/node",
+            "killall /opt/app/server",
+            "killall /sbin/initd",
+        ],
+        &[
+            ("killall /sbin/launchd", Rule::StopSystem),
+            ("killall /usr/lib/systemd/systemd", Rule::StopSystem),
+            (
+                "killall /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
+                Rule::StopSystem,
+            ),
+            ("sudo killall -9 /sbin/init", Rule::StopSystem),
+            ("killall -9 /sbin/init", Rule::StopSystem),
+            ("killall ./launchd", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_regular_expression_with_syntax_is_still_compared_with_the_system_names() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pkill '[n]ode'",
+            "pkill -f 'node.*server'",
+            "pkill -f 'python -m http.server'",
+            "pkill 'login.x'",
+            "pkill -f server",
+            "pkill -x 'login.*x'",
+            "pkill -x 'launch'",
+            "pkill -x '.aunch'",
+            "pkill 'launchdd'",
+            "pkill '[^l]aunchd$'",
+            "pkill '[[:upper:]]aunchd'",
+            "pkill '\\bnode\\b'",
+            "pkill '(node|vite)+'",
+            "pkill 'a{2}b'",
+            "pkill 'init.'",
+            "pkill 'x(a|b)*y'",
+            "killall -r 'node[0-9]+'",
+        ],
+        &[
+            ("pkill '[l]aunchd'", Rule::StopSystem),
+            ("pkill 'log.n'", Rule::StopSystem),
+            ("pkill 'W.ndowServer'", Rule::StopSystem),
+            ("pkill 'launc.'", Rule::StopSystem),
+            ("pkill -x 'launch.'", Rule::StopSystem),
+            ("pkill -x '[l]aunchd'", Rule::StopSystem),
+            ("pkill 'login(window)?'", Rule::StopSystem),
+            ("pkill 'xyz|[l]aunchd'", Rule::StopSystem),
+            ("killall -r 'systemd?'", Rule::StopSystem),
+            ("killall -m '[l]aunchd'", Rule::StopSystem),
+            ("killall -m 'Window.erver'", Rule::StopSystem),
+            ("pkill 'a+'", Rule::StopSystem),
+            ("pkill '[[:alpha:]]x'", Rule::StopSystem),
+            ("pkill '\\blaunchd\\b'", Rule::StopSystem),
+            ("pkill '(log|xyz)in'", Rule::StopSystem),
+            ("pkill 'l(a|b)unchd'", Rule::StopSystem),
+            ("pkill '[[:lower:]]aunchd'", Rule::StopSystem),
+            ("pkill -i 'W.NDOWSERVER'", Rule::StopSystem),
+            ("pkill -i '[W]indowserver'", Rule::StopSystem),
+            ("pkill -f '/sbin/[i]nit'", Rule::StopSystem),
+            ("pkill -f 'node /usr/lib/systemd/syst.md'", Rule::StopSystem),
+            ("pkill -x '(launch|xyz)d'", Rule::StopSystem),
+            ("pkill 'launch\\w'", Rule::StopSystem),
+            ("pkill 'l{1}aunchd'", Rule::StopSystem),
+            ("pkill 'k.*_task'", Rule::StopSystem),
+            ("sudo pkill '[l]aunchd'", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_fork_bomb_is_read_through_quotes_and_escapes() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "f() { 'g' & }; f",
+            "f() { \\g & }; f",
+            "f() { echo \"f\" & }; f",
+        ],
+        &[
+            (":(){ \\:|\\:& };:", Rule::StopSystem),
+            ("f() { \"f\" | \"f\" & }; f", Rule::StopSystem),
+            ("f() { 'f' & }; f", Rule::StopSystem),
+            ("bomb() { b\\omb & }; bomb", Rule::StopSystem),
+            ("bomb() { b\"om\"b | b'omb' & }; bomb", Rule::StopSystem),
+            ("f() { \\f & }; f", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn select_object_that_hands_on_other_objects_is_not_a_narrowing() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-Process node | Select-Object -First 1 | Stop-Process",
+            "Get-Process node | select -Property Name | kill",
+            "Get-Process node | Select-Object Id | Stop-Process",
+            "Get-Process node | Select-Object -Last 2 | Stop-Process",
+            "Get-Process node | Sort-Object CPU | Select-Object -First 1 | kill",
+            "Get-Process node | select -ex 1 | kill",
+        ],
+        &[
+            (
+                "Get-Process node | Select-Object -ExpandProperty Parent | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | select -exp Parent | kill",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | select -ExpandProperty:Parent | kill",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | select -expa Parent | kill",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | select @{n='x';e={$_.Parent}} | kill",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | Select-Object -Property @{Name='P';Expression={$_.Parent}} | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -InputObject (Get-Process node | select -exp Parent)",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | select -exp Parent | Select-Object -First 1 | kill",
+                Rule::StopSystem,
+            ),
+        ],
+    );
 }
