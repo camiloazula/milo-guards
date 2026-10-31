@@ -71,11 +71,16 @@ and its findings are the line's, since the shell runs it as the same user.
   …`, whichever signal (`EXIT`, `0`, `INT`, `TERM`, `ERR`, `DEBUG`, `RETURN`,
   `HUP`, a number, several at once). The action is read like an `eval`'s
   script: `trap 'rm -rf ~' EXIT` deletes the home directory. A double-quoted
-  action is read with each expansion left as written, so `trap "rm -rf $d"
-  EXIT` is `rm -rf $d`, a delete of a path known only when it runs, and
-  `trap "$x" EXIT` or `trap "$(cat f)" EXIT` is a program only known when it
-  runs, which is `unknown`. A script a variable holds is read as the text
-  around it says; what the variable holds when the trap fires is not.
+  action is expanded when the trap is set and its result read as code when it
+  runs, as `eval "…"` is, so whatever an expansion holds becomes code: `trap
+  "echo $d" EXIT` is `unknown`, with the reason `runs a script only known when
+  it runs`, like `eval "$x"`, and so is `trap "$x" EXIT`. The text around the
+  expansions is still read, so `trap "rm -rf $d" EXIT` also carries the
+  `delete` of `$d`, a path known only when it runs. `$HOME`, `$PWD` and
+  `$TMPDIR` are the places the guard names and are not counted as
+  expansions. A single-quoted action is not expanded when set and is read as
+  written: `trap 'rm -f "$tmp"' EXIT` is `rm -f "$tmp"`, and `trap 'echo $d'
+  EXIT` is safe.
 - **Nothing runs** for `trap - EXIT` and `trap -- - INT` (put the default
   back), `trap '' INT` (ignore the signal), `trap -p`, `trap -l` and a bare
   `trap`.

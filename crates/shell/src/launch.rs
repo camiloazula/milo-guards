@@ -87,6 +87,21 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
                 split.push(unit);
+                // A `trap` action in double quotes is expanded when the trap
+                // is set and its result read as code when it runs, as
+                // `eval "…"` does: whatever an expansion holds becomes code.
+                // The text around the expansions is still read.
+                let script = match script {
+                    Arg::Template { text, source } if key == "trap" => {
+                        split.problem(
+                            Rule::Unknown,
+                            "runs a script only known when it runs",
+                            Some(&source),
+                        );
+                        Arg::Known(text)
+                    }
+                    other => other,
+                };
                 match script {
                     Arg::Known(text) => {
                         // A script in a process of its own sets its options

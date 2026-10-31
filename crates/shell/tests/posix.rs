@@ -490,6 +490,9 @@ fn a_trap_action_is_a_script_that_runs_later() {
             "trap 'rm -rf build' EXIT; cargo build",
             "trap 'rm -rf *git' EXIT",
             "trap \"echo $HOME\" EXIT",
+            "trap 'echo $d' EXIT",
+            "trap 'echo \"$d\"' EXIT",
+            "trap 'echo $(date)' EXIT",
             "builtin trap 'rm -rf build' EXIT",
             "cd src && trap 'rm -rf ../build' EXIT",
         ],
@@ -531,6 +534,16 @@ fn a_trap_action_is_a_script_that_runs_later() {
             ("trap 'rm -rf $d' EXIT", Rule::Delete),
             ("trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
             ("tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
+            // Expanded when the trap is set, read as code when it runs, as
+            // `eval "…"` is: what the expansion holds becomes code.
+            ("trap \"echo $d\" EXIT", Rule::Unknown),
+            ("trap \"echo ${d}\" EXIT", Rule::Unknown),
+            ("trap \"echo $(date)\" EXIT", Rule::Unknown),
+            ("trap \"echo `date`\" EXIT", Rule::Unknown),
+            ("trap 'echo '\"$d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d/x\" EXIT", Rule::Unknown),
+            ("trap 'rm -rf \"$d\"' EXIT", Rule::Delete),
             ("trap \"$x\" EXIT", Rule::Unknown),
             ("trap $x EXIT", Rule::Unknown),
             ("trap \"$(cat f)\" EXIT", Rule::Unknown),
@@ -599,20 +612,26 @@ fn a_trap_action_reads_the_line_as_it_ends() {
 }
 
 #[test]
-fn a_trap_is_one_finding_not_two() {
+fn a_trap_says_what_its_action_does() {
     let paths = posix();
     assert_eq!(
         rules("trap 'rm -rf ~' EXIT", Shell::Posix, &paths),
         [Rule::Delete]
     );
+    // Expanded when set, read as code when it runs: unknown, and the text
+    // around the expansion is still read, so both findings.
+    let both = rules("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
+    assert!(both.contains(&Rule::Delete) && both.contains(&Rule::Unknown));
     assert_eq!(
-        rules("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths),
-        [Rule::Delete]
-    );
-    assert_eq!(
-        rules("trap \"$x\" EXIT", Shell::Posix, &paths),
+        rules("trap \"echo $d\" EXIT", Shell::Posix, &paths),
         [Rule::Unknown]
     );
+    // Single quotes are not expanded when set.
+    assert_eq!(
+        rules("trap 'rm -rf \"$d\"' EXIT", Shell::Posix, &paths),
+        [Rule::Delete]
+    );
+    assert!(classify("trap 'echo $d' EXIT", Shell::Posix, &paths).is_safe());
     let assessment = classify("trap 'rm -rf ~' EXIT", Shell::Posix, &paths);
     let [finding] = assessment.findings() else {
         panic!("one finding");
@@ -620,10 +639,13 @@ fn a_trap_is_one_finding_not_two() {
     assert_eq!(finding.reason, "deletes your home directory");
     assert_eq!(finding.target.as_deref(), Some("~"));
     let assessment = classify("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
-    let [finding] = assessment.findings() else {
-        panic!("one finding");
-    };
-    assert_eq!(finding.reason, "deletes a path only known when it runs");
+    let reasons: Vec<&str> = assessment
+        .findings()
+        .iter()
+        .map(|finding| finding.reason.as_str())
+        .collect();
+    assert!(reasons.contains(&"deletes a path only known when it runs"));
+    assert!(reasons.contains(&"runs a script only known when it runs"));
     // A trap nested past the depth limit is unreadable, not safe.
     let mut line = "rm -rf ~".to_string();
     for _ in 0..12 {

@@ -13,8 +13,8 @@ pub(crate) enum Arg {
     Unknown(String),
     /// A string known except for the expansions in it, which stand as they
     /// are written: `"rm -rf $d"` is the text `rm -rf $d` and `"$x"` is
-    /// `$x`. Not a value, but readable as a script, whose own grammar then
-    /// finds what it expands.
+    /// `$x`. Not a value, but its text can be read as a script, whose own
+    /// grammar then finds what it expands.
     Template {
         /// The text, with each expansion as written.
         text: String,
@@ -38,15 +38,6 @@ impl Arg {
     /// text is readable.
     pub(crate) fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown(_) | Self::Template { .. })
-    }
-
-    /// The text to read as a script: the value, or a template's text with
-    /// its expansions as written.
-    pub(crate) fn script(&self) -> Option<&str> {
-        match self {
-            Self::Known(text) | Self::Template { text, .. } => Some(text),
-            Self::Unknown(_) | Self::Input => None,
-        }
     }
 
     /// The value, or the source text of what is only known when it runs.

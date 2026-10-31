@@ -88,12 +88,10 @@ pub(super) fn trap(args: &[Arg]) -> Launch {
     match rest.first() {
         None => Launch::Itself,
         Some(Arg::Known(action)) if action == "-" => Launch::Itself,
-        // `"rm -rf $d"` runs `rm -rf $d`, read as such; a variable or a
-        // substitution alone is a script only known when it runs.
-        Some(action) => match action.script() {
-            Some(text) => Launch::Script(Shell::Posix, Arg::Known(text.to_string())),
-            None => Launch::Script(Shell::Posix, action.clone()),
-        },
+        // The action itself is read by the caller: a template (`"rm -rf
+        // $d"`) is read as the text around its expansions, and is unknown
+        // too.
+        Some(action) => Launch::Script(Shell::Posix, action.clone()),
     }
 }
 
