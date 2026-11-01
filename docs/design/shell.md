@@ -65,8 +65,8 @@ precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
 
 **Package runners** come off too, with each runner's own options skipped:
-`npx`, `npm exec`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, `bunx`,
-`bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
+`npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
+`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
 program the runner names is judged, with a version after the package taken
 off (`npx rimraf@5`). Where the runner names the package apart from the
 program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
@@ -82,8 +82,12 @@ pnpm's is its own string and number settings, `exec`'s `--resume-from`,
 `dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
 the options of `yarn --help` that name a folder, a host, a number or a type;
 bun's is the `--option=<val>` options of `bun --help` that also take the next
-word (not `-c`, `--config` and `--inspect`, whose value only follows `=`:
-`bun -c rimraf a` runs `rimraf`); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
+word (not `-c`, `--config` and `--inspect`, whose value only follows `=`);
+bun itself takes the first word that does not start with a dash as its
+subcommand, before any option reads a value (`bun -c rimraf a` runs `rimraf`,
+`bun -F x echo` runs `bunx echo`, `bun --title repl` opens the REPL), so that
+word is read too, and when it is `x`, `run`, `exec`, `repl` or a delete tool
+both readings are judged and the riskier one counts; deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
 options real uv still takes a value for (`--python-preference`,
 `--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
 (`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
@@ -97,8 +101,14 @@ the end of a bundle (`npx -yc 'cmd'`), spelt `--c`, given its value after `=`
 of any length is read to its end, never given up on as the program. Each is
 read as a script: in cmd where the line is for Windows (npm and pnpm start the system
 shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
-`pnpm`, `yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete
-tool by its name (`pnpm rimraf dist`, `yarn run rimraf dist`). `bun run name`
+`yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete tool by its
+name (`yarn run rimraf dist`). `pnpm NAME` runs the script NAME of the project
+and, with none by that name, the program (pnpm: "will execute the command as a
+shell script"), so it is read as `pnpm exec NAME` unless NAME is a command of
+pnpm, its alias, or an npm command it passes on (`pnpm rm lodash` removes a
+dependency): `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
+the program, `pnpm rimraf dist` is a delete tool, and an unknown script name
+(`pnpm lint`, `pnpm dev`, `pnpm build`) is safe. `bun run name`
 also starts any program on the path when it is no script (`bun run rm -rf
 x` deletes): a word after `bun run` and its options that is no file (no
 folder in it, no extension) is judged as the program, so `bun run build` is

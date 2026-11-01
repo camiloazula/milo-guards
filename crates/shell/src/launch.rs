@@ -49,6 +49,9 @@ pub(super) enum Launch {
     Reads(Reads),
     /// It runs commands the grammar cannot read, said in the reason.
     Opaque(&'static str),
+    /// The line reads two ways and each is judged, so the riskier one
+    /// counts.
+    Either(Box<Launch>, Box<Launch>),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -57,7 +60,14 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     split.unscope_hidden(outer);
 }
 
-fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
+fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
+    add_launched(split, unit, depth, None);
+}
+
+/// [`add_unit`], where the first launch is `given` when there is one (one
+/// reading of a line that [`Launch::Either`] reads two ways).
+fn add_launched(split: &mut Split, mut unit: Unit, depth: usize, given: Option<Launch>) {
+    let mut given = given;
     for _ in 0..MAX_WRAPPERS {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
@@ -84,7 +94,12 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 split.set(&name);
             }
         }
-        match launch(&key, &unit) {
+        match given.take().unwrap_or_else(|| launch(&key, &unit)) {
+            Launch::Either(first, second) => {
+                add_launched(split, unit.clone(), depth, Some(*first));
+                add_launched(split, unit, depth, Some(*second));
+                return;
+            }
             Launch::Itself => {
                 if key == "find" && unit.shell == Shell::Posix {
                     find_exec(split, &unit, depth);
@@ -486,7 +501,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             Some(script) => Launch::Script(Shell::Posix, script.clone()),
         },
         // Package runners start the program they name.
-        "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => runner(key, unit),
+        "npx" | "npm" | "pnpm" | "pnpx" | "pnx" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => {
+            runner(key, unit)
+        }
         "dx" => runner(key, unit),
         "bun" => bun(unit),
         "deno" => deno(unit),

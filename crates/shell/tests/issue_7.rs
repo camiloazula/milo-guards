@@ -1324,3 +1324,147 @@ fn the_parts_of_bun_deno_and_dx_that_start_a_program_are_read_in_cmd_too() {
         );
     }
 }
+
+#[test]
+fn bun_takes_the_first_word_without_a_dash_as_its_subcommand() {
+    // bun picks its subcommand before any option reads a value, so
+    // `bun -F x echo RAN` runs `bunx echo RAN`, and `bun --title repl` opens
+    // the REPL.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "bun -F x echo RAN",
+            "bun --filter x echo RAN",
+            "bun --cwd app run build",
+            "bun -F app run build",
+            "bun --filter app test",
+            "bun --title t run build.ts",
+            "bun -d x:1 run build.ts",
+            "bun -c x vite build",
+        ],
+        &[
+            ("bun -F x rm -rf ~", Rule::Delete),
+            ("bun --filter x rm -rf ~", Rule::Delete),
+            ("bun -d x rm -rf ~", Rule::Delete),
+            ("bun -r x rm -rf ~", Rule::Delete),
+            ("bun --cwd x rm -rf ~", Rule::Delete),
+            ("bun --env-file x rm -rf ~", Rule::Delete),
+            ("bun --title x rm -rf ~", Rule::Delete),
+            ("bun -l x sh -c \"rm -rf ~\"", Rule::Delete),
+            ("bun -F x node -e \"x\"", Rule::Unknown),
+            ("bun -F repl", Rule::Unknown),
+            ("bun --title repl", Rule::Unknown),
+            // Read by the guard's options as well: the riskier reading counts.
+            ("bun -F x run rm -rf ~", Rule::Delete),
+            ("bun -F x exec 'rm -rf ~'", Rule::Delete),
+            ("bun -F x rimraf ~", Rule::Delete),
+            ("bun -c x rimraf ~", Rule::Delete),
+            ("bun -F x bun -F x rm -rf ~", Rule::Delete),
+            (
+                "bun -F x run bun -F x run bun -F x run rm -rf ~",
+                Rule::Delete,
+            ),
+            ("sudo bun -F x rm -rf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn pnpx_and_pnx_are_pnpm_dlx() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pnpx create-vite my-site",
+            "pnpx rimraf dist",
+            "pnx rimraf dist",
+            "pnpx -p typescript tsc --version",
+            "pnpx --version",
+        ],
+        &[
+            ("pnpx rimraf ~", Rule::Delete),
+            ("pnx rimraf ~", Rule::Delete),
+            ("pnpx rimraf@5 ~", Rule::Delete),
+            ("pnpx -p rimraf rimraf ~", Rule::Delete),
+            ("pnpx -c \"rm -rf ~\"", Rule::Delete),
+            ("pnx -c 'rm -rf ~'", Rule::Delete),
+            ("pnpx --shell-mode 'rm -rf ~'", Rule::Delete),
+            ("pnpx sh -c 'rm -rf ~'", Rule::Delete),
+            ("pnpx node -e 'x'", Rule::Unknown),
+            ("sudo pnpx rimraf ~", Rule::Elevated),
+        ],
+    );
+    // What a runner starts is a program, never a builtin of the shell.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["pnpx cd ~ && ls", "pnx cd / && ls"],
+        &[],
+    );
+}
+
+#[test]
+fn a_bare_pnpm_name_runs_a_script_or_else_the_program() {
+    // "If there is no script with the specified name, then pnpm will execute
+    // the command as a shell script": read as `pnpm exec NAME`, unless NAME
+    // is a command of pnpm.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pnpm lint",
+            "pnpm dev",
+            "pnpm build",
+            "pnpm test",
+            "pnpm start",
+            "pnpm format --check",
+            "pnpm --filter app lint",
+            "pnpm -r build",
+            "pnpm rm lodash",
+            "pnpm remove lodash",
+            "pnpm uninstall lodash",
+            "pnpm un lodash",
+            "pnpm add lodash",
+            "pnpm install",
+            "pnpm i",
+            "pnpm up",
+            "pnpm update",
+            "pnpm ls",
+            "pnpm list",
+            "pnpm env use --global lts",
+            "pnpm store prune",
+            "pnpm run build",
+            "pnpm view react version",
+            "pnpm --version",
+            "pnpm rimraf dist",
+            "pnpm echo hi",
+        ],
+        &[
+            ("pnpm sh -c \"rm -rf ~\"", Rule::Delete),
+            ("pnpm bash -c 'rm -rf ~'", Rule::Delete),
+            ("pnpm find ~ -delete", Rule::Delete),
+            ("pnpm shred ~/x", Rule::Delete),
+            ("pnpm git clean -fdx", Rule::GitDiscard),
+            ("pnpm -C app sh -c 'rm -rf ~'", Rule::Delete),
+            ("pnpm --filter app find ~ -delete", Rule::Delete),
+            ("pnpm node -e 'x'", Rule::Unknown),
+            ("pnpm rimraf ~", Rule::Delete),
+            ("sudo pnpm sh -c 'rm -rf ~'", Rule::Elevated),
+        ],
+    );
+}
+
+#[test]
+fn bun_with_an_option_value_is_read_in_cmd_by_both_readings() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["bun -F x echo RAN", "bun --cwd app run build"],
+        &[
+            ("bun -F x rimraf C:\\", Rule::Delete),
+            ("bun -F x run rimraf C:\\", Rule::Delete),
+            ("bun --title x rd /s /q C:\\Users\\me", Rule::Delete),
+        ],
+    );
+}

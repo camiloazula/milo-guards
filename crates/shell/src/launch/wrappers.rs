@@ -353,8 +353,111 @@ pub(super) fn start(args: &[Arg]) -> Launch {
 
 /// The package runners, by the name they stand under in a unit's wrappers.
 /// What a runner starts is a program, never a builtin of the shell.
-pub(crate) const RUNNERS: [&str; 11] = [
-    "npx", "npm", "pnpm", "yarn", "bunx", "bun", "uvx", "uv", "pipx", "deno", "dx",
+pub(crate) const RUNNERS: [&str; 13] = [
+    "npx", "npm", "pnpm", "pnpx", "pnx", "yarn", "bunx", "bun", "uvx", "uv", "pipx", "deno", "dx",
+];
+
+/// The commands of `pnpm` and their aliases (`pnpm --help`, pnpm.io/cli),
+/// with the npm commands it passes on. `pnpm NAME` for any other name runs
+/// NAME as a script of the project or, when there is none, as a program: it
+/// is read as `pnpm exec NAME`.
+const PNPM_COMMANDS: &[&str] = &[
+    "add",
+    "approve-builds",
+    "audit",
+    "bin",
+    "cat-file",
+    "cat-index",
+    "completion",
+    "config",
+    "c",
+    "create",
+    "dedupe",
+    "deploy",
+    "dlx",
+    "doctor",
+    "env",
+    "exec",
+    "fetch",
+    "find-hash",
+    "i",
+    "ignored-builds",
+    "import",
+    "init",
+    "install",
+    "install-test",
+    "it",
+    "licenses",
+    "link",
+    "ln",
+    "list",
+    "ls",
+    "la",
+    "ll",
+    "multi",
+    "m",
+    "outdated",
+    "pack",
+    "patch",
+    "patch-commit",
+    "patch-remove",
+    "prune",
+    "publish",
+    "rb",
+    "rebuild",
+    "recursive",
+    "remove",
+    "restart",
+    "rm",
+    "root",
+    "run",
+    "run-script",
+    "sbom",
+    "self-update",
+    "server",
+    "setup",
+    "start",
+    "stop",
+    "store",
+    "t",
+    "test",
+    "tst",
+    "un",
+    "uninstall",
+    "unlink",
+    "up",
+    "update",
+    "upgrade",
+    "why",
+    // npm commands pnpm passes on.
+    "access",
+    "bugs",
+    "deprecate",
+    "dist-tag",
+    "docs",
+    "edit",
+    "home",
+    "info",
+    "issues",
+    "login",
+    "logout",
+    "owner",
+    "ping",
+    "prefix",
+    "profile",
+    "repo",
+    "search",
+    "set-script",
+    "show",
+    "star",
+    "stars",
+    "team",
+    "token",
+    "unpublish",
+    "v",
+    "version",
+    "view",
+    "whoami",
 ];
 
 /// The delete tools that come as packages: a package runner or a package
@@ -588,8 +691,10 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
         "dx" => Some((0, Opts::List(&DENO_X_VALUES).after(args))),
         // npm reads an abbreviation of a command (`npm exe`) too.
         "npm" => locate(args, &[(Opts::Npm, &["exec", "exe", "x"])], Opts::Npm),
+        // `pnpx` and `pnx` are `pnpm dlx`.
+        "pnpx" | "pnx" => Some((0, Opts::Pnpm.after(args))),
         "pnpm" => locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm)
-            .or_else(|| direct(args, Opts::Pnpm)),
+            .or_else(|| pnpm_direct(args)),
         "yarn" => locate(
             args,
             &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
@@ -664,7 +769,7 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
         }
         // pnpm reads its options wherever they stand: `pnpm -c exec 'cmd'`
         // is shell mode as much as `pnpm exec -c 'cmd'`.
-        "pnpm"
+        "pnpm" | "pnpx" | "pnx"
             if has_flag(
                 &args[..program.unwrap_or(from)],
                 Some('c'),
@@ -743,7 +848,17 @@ pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
     (file || own.iter().filter_map(Arg::known).any(is_flag)).then_some(program)
 }
 
-/// `pnpm rimraf dist` and `yarn rimraf dist`: the project's own delete tool.
+/// `pnpm NAME args` where NAME is no command of pnpm: it runs the script
+/// NAME of the project and, with none by that name, the program (pnpm's
+/// own words: "pnpm will execute the command as a shell script"), so it is
+/// read as `pnpm exec NAME args`. A command of pnpm is its own business.
+fn pnpm_direct(args: &[Arg]) -> Option<(usize, Option<usize>)> {
+    let at = Opts::Pnpm.after(args)?;
+    let name = args.get(at)?.known()?;
+    (!PNPM_COMMANDS.contains(&name)).then_some((at, Some(at)))
+}
+
+/// `yarn rimraf dist`: the project's own delete tool.
 fn direct(args: &[Arg], opts: Opts) -> Option<(usize, Option<usize>)> {
     let at = opts.after(args)?;
     let name = args.get(at)?.known()?;

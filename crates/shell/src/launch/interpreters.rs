@@ -277,6 +277,11 @@ fn perl_substitution(statement: &str) -> bool {
 /// the ones `bun --help` lists as `--option=<val>` that bun also gives the
 /// next word as their value. `-c` and `--config` and `--inspect` are left
 /// out, their value only follows `=` (`bun -c rimraf a` runs `rimraf`).
+///
+/// This is the guard's reading of the options, and bun's own is different:
+/// bun takes the first word that does not start with a dash as its
+/// subcommand, before any option reads its value (`bun -F x echo` runs
+/// `bunx echo`). [`bun_launch`] judges that subcommand as well.
 pub(crate) const BUN_VALUES: [&str; 44] = [
     "--cwd",
     "-r",
@@ -375,7 +380,8 @@ pub(crate) fn after_run<'a>(key: &str, args: &'a [Arg]) -> &'a [Arg] {
 /// or `-p` with the code next or attached (`-e'code'`), also in a bundle of
 /// short options (`-pe`, `-bp`). A short option that takes a value ends the
 /// bundle: the rest of the word is its value (`-dNODE_ENV=x`, and `-ce` takes
-/// `e` as the config file, `-c` taking its value only after `=`).
+/// `e` as the config file: `-c` and `--config` stand out of [`BUN_VALUES`]
+/// because bun finds its subcommand before it reads a value).
 fn bun_inline(text: &str) -> bool {
     let Some(bundle) = text
         .strip_prefix('-')
@@ -409,11 +415,17 @@ pub(super) fn bun(unit: &Unit) -> Launch {
 fn only_runs(unit: &Unit, launch: Launch) -> Launch {
     match launch {
         Launch::Replace(_) => launch,
+        Launch::Either(first, second) => Launch::Either(
+            Box::new(only_runs(unit, *first)),
+            Box::new(only_runs(unit, *second)),
+        ),
         _ if unit.shell != Shell::Cmd => launch,
         _ => Launch::Itself,
     }
 }
 
+/// `bun` read by the guard's options and by bun's own subcommand, the first
+/// word that does not start with a dash.
 fn bun_launch(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let first = after_options(args, &BUN_VALUES);
@@ -427,9 +439,31 @@ fn bun_launch(unit: &Unit) -> Launch {
     if eval {
         return Launch::Reads(Reads::Interpreter);
     }
-    let Some(first) = first else {
-        return Launch::Itself;
+    let by_value = first.map_or(Launch::Itself, |at| bun_subcommand(unit, at));
+    // Bun itself takes the first word that does not start with a dash as the
+    // subcommand, before any option reads its value (`bun -F x echo` runs
+    // `bunx echo`, `bun --title repl` opens the REPL). The options that take
+    // a value are skipped above, so when the two readings differ and bun's
+    // is one that starts a program, both are judged and the riskier counts.
+    let Some(plain) = after_options(args, &[]).filter(|plain| Some(*plain) != first) else {
+        return by_value;
     };
+    let starts_one = args[plain].known().is_some_and(|word| {
+        matches!(word, "x" | "run" | "exec" | "repl") || DELETERS.contains(&word)
+    });
+    if !starts_one {
+        return by_value;
+    }
+    let by_bun = bun_subcommand(unit, plain);
+    match (by_value, by_bun) {
+        (Launch::Itself, other) | (other, Launch::Itself) => other,
+        (value, bun) => Launch::Either(Box::new(value), Box::new(bun)),
+    }
+}
+
+/// What the subcommand of `bun` at `first` does.
+fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
+    let args = unit.args.as_slice();
     let Some(word) = args[first].known() else {
         return Launch::Itself;
     };
