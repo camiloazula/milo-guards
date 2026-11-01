@@ -4,7 +4,7 @@
 use std::fmt;
 
 use crate::detect::Judged;
-use crate::path::{self, Resolver};
+use crate::path::{Access, Resolver};
 use crate::unit::{self, Arg, Split, Unit};
 use crate::{Assessment, Finding, Reading, Shell};
 
@@ -232,11 +232,10 @@ fn resolved(
     into: bool,
 ) -> Option<String> {
     arg.known()?;
-    let arg = path::within(dir, arg, shell);
     let place = if into {
-        resolver.place_into(&arg, shell, hidden)
+        resolver.place_into(dir, arg, shell, hidden, Access::Item)
     } else {
-        resolver.place(&arg, shell, hidden)
+        resolver.place(dir, arg, shell, hidden, Access::Item)
     };
     Some(place.words().to_string())
 }
@@ -257,6 +256,7 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                     Arg::Unknown(_) => ArgKind::Unknown,
                     Arg::Template { .. } => ArgKind::Template,
                     Arg::Input => ArgKind::Input,
+                    Arg::Null => ArgKind::Unknown,
                 },
                 resolved: arg
                     .known()

@@ -113,6 +113,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
+        "ndr" | "mount" => "new-psdrive",
         "ren" | "rni" => "rename-item",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
@@ -135,9 +136,6 @@ pub(crate) fn canonical(name: &str) -> &str {
         name => name,
     }
 }
-
-/// What `$null` is as a word: the device. In a longer word it is nothing.
-const NULL: &str = "$null";
 
 struct Walker<'a> {
     source: &'a str,
@@ -441,7 +439,7 @@ impl Walker<'_> {
                     match self.variable(unit::text(&child, self.source)) {
                         // Inside a string `$null` is the empty string, so
                         // `"$null\Windows"` is `\Windows`.
-                        Arg::Known(text) if text == NULL => nulls = true,
+                        Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
                             return Arg::Unknown(source.to_string())
@@ -450,9 +448,9 @@ impl Walker<'_> {
                     at = child.end_byte();
                 }
                 value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
-                // A string of nothing but `$null` is still the device.
+                // A string of nothing but `$null` is still the null value.
                 if nulls && value.is_empty() {
-                    return Arg::Known(NULL.to_string());
+                    return Arg::Null;
                 }
                 Arg::Known(value.replace("\"\"", "\""))
             }
@@ -482,6 +480,9 @@ impl Walker<'_> {
             .and_then(|rest| rest.strip_suffix('}'))
             .or_else(|| lower.strip_prefix('$'))
             .unwrap_or_default();
+        if name == "null" {
+            return Arg::Null;
+        }
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
@@ -919,7 +920,6 @@ fn place_variable(name: &str) -> Option<&'static str> {
         "env:systemroot" | "env:windir" => "C:\\Windows",
         "env:programfiles" => "C:\\Program Files",
         "env:programdata" => "C:\\ProgramData",
-        "null" => "$null",
         _ => return None,
     })
 }

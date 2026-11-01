@@ -930,7 +930,7 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(&text);
                         }
-                        Arg::Unknown(_) | Arg::Input
+                        Arg::Unknown(_) | Arg::Input | Arg::Null
                             if matches!(
                                 part.kind(),
                                 "simple_expansion" | "expansion" | "command_substitution"
@@ -939,7 +939,9 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(OPAQUE);
                         }
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 if partial {
@@ -991,7 +993,7 @@ impl Walker<'_> {
                         value.push_str(&text);
                         template.push_str(&text);
                     }
-                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
                         template.push_str(OPAQUE);
                     }
