@@ -13,6 +13,7 @@ There are three kinds of crate.
 | `crates/shell` | `milo-guards-shell` | The shell guard. [Shell](shell.md). |
 | `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/url` | `milo-guards-url` | The URL guard. [URL](url.md). |
+| `crates/secrets` | `milo-guards-secrets` | The secrets guard: a text in, what it holds out, masked. [Secrets](secrets.md). |
 | `crates/guards` | `milo-local-guards` | The front door. The one crate a caller depends on. |
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
@@ -22,8 +23,10 @@ shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
-`shell` is `milo_local_guards::shell`, `file` is `milo_local_guards::file` and `url`
-is `milo_local_guards::url`; all three are on by default. A caller who wants one
+`shell` is `milo_local_guards::shell`, `file` is `milo_local_guards::file`, `url`
+is `milo_local_guards::url` and `secrets` is `milo_local_guards::secrets`; the
+first three are on by default and `secrets` is not, because most callers want
+the others and not a table of patterns in their binary. A caller who wants one
 guard switches the rest off.
 
 Core's trait is called `RuleName`, not `Rule`, because each guard names its own
@@ -40,6 +43,7 @@ milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
         │                                              ▲
         ├──►  milo-guards-file  ────────────────────────┤
         ├──►  milo-guards-url  ─────────────────────────┤
+        ├──►  milo-guards-secrets  ─────────────────────┤
         └───────────────────────────────────────────────┘
 ```
 
@@ -113,6 +117,11 @@ lint at the top of its own file, with a reason.
 Each guard's tests run random lines through every grammar and check that it
 returns without a panic. A line that is too long or too deeply nested must
 come back risky and unreadable.
+
+The secrets guard reads any text, so it has no unreadable answer. Its
+`robust.rs` checks instead that a hostile text of a megabyte is read inside a
+bound and in time linear in its length, with the clock in the test and none in
+the crate.
 
 The workspace also forbids `unsafe`, and the dependency check allows only
 permissive licences.

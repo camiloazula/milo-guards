@@ -35,17 +35,28 @@ verdict back in microseconds.
   `http://169.254.169.254/` (a cloud metadata service); a URL with a password
   in it (shown without the password), a `file:` URL and a scheme that is not the
   web are risky too. `https://docs.rs/url` is safe.
+- **secrets** reads a text for what it must not carry: private keys, the keys and
+  tokens of cloud and API providers, JWTs, `Basic` and `Bearer` credentials,
+  passwords in connection strings and URLs, passwords written as `name=value`,
+  card numbers, id numbers, emails, phone numbers and public IP addresses. A
+  finding never holds the secret (`AKIA… (20 chars)`), and `find_spans` gives
+  the byte ranges so a caller can scrub them. It is not in the default
+  features. A commit SHA, a UUID and a lockfile hash are safe; a
+  `postgres://app:fakePass0word1@db/app` string is risky.
 
 More guards will sit beside them.
 
 ## Use
 
 Depend on `milo-local-guards` by git. The `shell`, `file` and `url` features are on by
-default.
+default; `secrets` is opt in, because most callers want the others and not a table of
+patterns in their binary.
 
 ```toml
 [dependencies]
 milo-local-guards = { git = "https://github.com/camiloazula/milo-local-guards", rev = "<commit>" }
+# With the secrets guard as well:
+# milo-local-guards = { git = "…", rev = "<commit>", features = ["secrets"] }
 ```
 
 ```rust
