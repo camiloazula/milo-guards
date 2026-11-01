@@ -13,10 +13,13 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["shell"]
+default = ["shell", "file"]
 # Judges a shell line: POSIX shell, PowerShell or cmd.
 shell = ["dep:milo-guards-shell"]
+# Judges one read or write of a path through a file API.
+file = ["dep:milo-guards-file"]
 
 [dependencies]
 milo-guards-core.workspace = true
 milo-guards-shell = { workspace = true, optional = true }
+milo-guards-file = { workspace = true, optional = true }

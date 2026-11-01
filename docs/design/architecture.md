@@ -11,6 +11,7 @@ There are three kinds of crate.
 | --- | --- | --- |
 | `crates/core` | `milo-guards-core` | What every guard shares: `Paths`, the verdict types, the path model, the test kit. [Core](core.md). |
 | `crates/shell` | `milo-guards-shell` | The shell guard. [Shell](shell.md). |
+| `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/guards` | `milo-local-guards` | The front door. The one crate a caller depends on. |
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
@@ -20,8 +21,9 @@ shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
-`shell` is `milo_local_guards::shell`, and it is on by default. A caller who
-wants one guard switches the rest off.
+`shell` is `milo_local_guards::shell` and `file` is `milo_local_guards::file`,
+and both are on by default. A caller who wants one guard switches the rest
+off.
 
 Core's trait is called `RuleName`, not `Rule`, because each guard names its own
 enum of rules `Rule` (`shell::Rule`), and the front door's root and a guard's
@@ -35,7 +37,8 @@ nothing.
 ```text
 milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
         │                                              ▲
-        └──────────────────────────────────────────────┘
+        ├──►  milo-guards-file  ────────────────────────┤
+        └───────────────────────────────────────────────┘
 ```
 
 - A guard depends on `milo-guards-core` and on its own parsers. Nothing else.

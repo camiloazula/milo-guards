@@ -56,6 +56,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/shell",
+    "crates/file",
     "crates/guards",
 ]
 
@@ -70,6 +71,7 @@ rust-version = "1.99"
 [workspace.dependencies]
 milo-guards-core  = { path = "crates/core" }
 milo-guards-shell = { path = "crates/shell" }
+milo-guards-file  = { path = "crates/file" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with

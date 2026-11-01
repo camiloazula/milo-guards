@@ -72,6 +72,13 @@ name = "milo-guards-core"
 version = "0.1.0"
 
 [[package]]
+name = "milo-guards-file"
+version = "0.1.0"
+dependencies = [
+ "milo-guards-core",
+]
+
+[[package]]
 name = "milo-guards-shell"
 version = "0.1.0"
 dependencies = [
@@ -87,6 +94,7 @@ name = "milo-local-guards"
 version = "0.1.0"
 dependencies = [
  "milo-guards-core",
+ "milo-guards-file",
  "milo-guards-shell",
 ]
 
