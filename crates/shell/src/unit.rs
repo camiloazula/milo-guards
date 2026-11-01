@@ -449,6 +449,15 @@ pub(crate) struct Split {
     /// `mount`) anywhere, before or after a `cd` in its text: a single letter
     /// in a `cd` may be one of another provider, not a disk.
     psdrive: bool,
+    /// How this reading takes a `cd` that may or may not move the line, and
+    /// one with more than one word (see [`Outcome`]).
+    outcome: Outcome,
+    /// Whether a `cd` was read that may or may not have moved the line: the
+    /// line is then judged a second time with each such `cd` as a move.
+    unsure_seen: bool,
+    /// Whether a `cd` with more than one word was read: the line is then
+    /// judged with its target as the words joined, and as the first word.
+    words_seen: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -751,8 +760,11 @@ impl Split {
         if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
             self.psdrive = true;
         }
-        if let Some((target, origin)) = moves_from(&unit) {
-            let effect = match unit.shell {
+        if let Some((target, origin)) = moves_from(&unit, self.outcome) {
+            if joined_words(&unit).is_some() {
+                self.words_seen = true;
+            }
+            let mut effect = match unit.shell {
                 Shell::Cmd => cmd_effect(&unit, (&target, origin), self.drive, self.home_drive),
                 Shell::PowerShell => {
                     ps_effect(&unit, (&target, origin), self.drive, self.home_drive)
@@ -762,6 +774,12 @@ impl Split {
             // Whether the `cd` surely ran in the line's own process: not in
             // a branch (`||`, `&&`, `if`), a pipe stage (cmd runs each in a
             // child) or behind `start` (a new process).
+            if let Effect::Unsure(drive) = effect {
+                self.unsure_seen = true;
+                if self.outcome != Outcome::Stayed {
+                    effect = Effect::Moves(drive, false);
+                }
+            }
             let surely = self.branches == 0 && unit.stage.is_none() && unit.wrappers.is_empty();
             self.maybe_moved |= !surely;
             // A folder that is not known may be on any drive.
@@ -1636,12 +1654,27 @@ fn makes_physical(unit: &Unit) -> bool {
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
-    moves_from(unit).map(|(target, _)| target)
+    moves_from(unit, Outcome::Stayed).map(|(target, _)| target)
+}
+
+/// The target of a cmd `cd` (`chdir`, `pushd`) given more than one plain
+/// word, as cmd reads it: the words joined by a space, without the spaces at
+/// the end. `None` for any other unit, and when a word is not known.
+fn joined_words(unit: &Unit) -> Option<String> {
+    if unit.shell != Shell::Cmd || !matches!(unit.key()?.as_str(), "cd" | "chdir" | "pushd") {
+        return None;
+    }
+    let words = plain(&unit.args);
+    if words.len() < 2 {
+        return None;
+    }
+    let texts: Option<Vec<&str>> = words.iter().map(|word| word.known()).collect();
+    Some(texts?.join(" ").trim_end().to_string())
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one, and
 /// where the target's value came from.
-fn moves_from(unit: &Unit) -> Option<(Arg, Origin)> {
+fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
     let typed = |target: Arg| Some((target, Origin::Typed));
     // What a package runner starts is a program (`npx cd src`), not the
     // shell's builtin: it cannot move the shell.
@@ -1703,6 +1736,16 @@ fn moves_from(unit: &Unit) -> Option<(Arg, Origin)> {
         (Shell::Cmd, "cd" | "chdir" | "pushd") => {
             let words = plain(&unit.args);
             match words.first().copied() {
+                // The other reading: it goes to the words as written, and
+                // Windows drops the spaces at the end of the path.
+                Some(first) if words.len() > 1 && outcome == Outcome::Joined => Some((
+                    Arg::Known(joined_words(unit).unwrap_or_default()),
+                    unit.origin_of(first),
+                )),
+                // Or the first word is the folder, and the rest is noise.
+                Some(first) if words.len() > 1 && outcome == Outcome::First => {
+                    Some((first.clone(), unit.origin_of(first)))
+                }
                 Some(first) if words.len() > 1 => Some((
                     Arg::Unknown(first.text().to_string()),
                     unit.origin_of(first),
@@ -1862,11 +1905,60 @@ pub(crate) fn split(
     home_drive: Option<char>,
     effect: bool,
 ) -> Split {
+    read(command, shell, (drive, home_drive), effect, Outcome::Stayed)
+}
+
+/// How a reading takes a `cd` whose outcome is not known.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// The first reading: a `cd` that may not have moved the line leaves its
+    /// folder unknown, and so does a cmd `cd` with more than one word.
+    #[default]
+    Stayed,
+    /// Each such `cd` moved the line, a cmd `cd` with more than one word to
+    /// the words joined as written (cmd takes the rest of the command as the
+    /// path).
+    Joined,
+    /// As `Joined`, but a cmd `cd` with more than one word went to its first
+    /// word.
+    First,
+}
+
+/// Split `command` again with each `cd` whose outcome is not known taken as a
+/// move (see [`Outcome`]): the line may have left the folder it was in, to a
+/// folder that holds secrets. Empty when the first reading met none.
+pub(crate) fn split_moved(
+    first: &Split,
+    command: &str,
+    shell: Shell,
+    drives: (Option<char>, Option<char>),
+) -> Vec<Split> {
+    let mut outcomes = Vec::new();
+    if first.unsure_seen || first.words_seen {
+        outcomes.push(Outcome::Joined);
+    }
+    if first.words_seen {
+        outcomes.push(Outcome::First);
+    }
+    outcomes
+        .into_iter()
+        .map(|outcome| read(command, shell, drives, false, outcome))
+        .collect()
+}
+
+fn read(
+    command: &str,
+    shell: Shell,
+    (drive, home_drive): (Option<char>, Option<char>),
+    effect: bool,
+    outcome: Outcome,
+) -> Split {
     let fresh = |psdrive: bool| {
         let mut split = Split {
             drive: (drive, drive.is_some()),
             home_drive,
             psdrive,
+            outcome,
             ..Split::default()
         };
         split.kept.on = effect;
