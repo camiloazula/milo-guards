@@ -20,7 +20,8 @@
 //!
 //! [`effect`] answers a second question from the same split and findings:
 //! does the line only read? It is [`Effect::ReadsOnly`] when every unit is a
-//! known reader, [`Effect::Changes`] when one writes, and
+//! known reader, and then says by a [`Reach`] whether what it reads stays in
+//! the workspace; [`Effect::Changes`] when one writes, and
 //! [`Effect::Unknown`] when anything is not understood.
 //!
 //! What cannot be read is risky: a program or a script known only when it
@@ -34,13 +35,17 @@ mod cmd;
 mod detect;
 mod dotglob;
 mod effect;
+mod explain;
 mod launch;
 mod path;
 mod posix;
 mod powershell;
 mod unit;
 
-pub use effect::Effect;
+pub use effect::{Effect, How, Reach, ReadPath};
+pub use explain::{
+    ArgExplanation, ArgKind, Explanation, PipelineStage, RedirectExplanation, UnitExplanation,
+};
 pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
@@ -118,6 +123,14 @@ pub enum Rule {
     /// Changes how the system runs: the registry, boot settings, restore
     /// points, accounts, the firewall, antivirus, script policy.
     SystemSettings,
+    /// Reads a key or a credential: a file a program the guard knows opens,
+    /// or a `<` redirect, that lands on a place core marks as holding one,
+    /// as the file guard's rule of the same name does for the same file; also
+    /// a disk, and what the kernel serves. Not the repository's history, not
+    /// a shell startup file, and not a file named only when the line runs.
+    /// `effect` still calls such a line reads-only, as it does for
+    /// [`Elevated`](Rule::Elevated): the line only reads.
+    ReadSecret,
     /// Runs as root or administrator.
     Elevated,
     /// Runs a script it downloads.
@@ -127,6 +140,8 @@ pub enum Rule {
     RunInput,
     /// Shuts the computer down, restarts it, or stops every process.
     StopSystem,
+    /// Sends a key, a credential or the environment off the machine.
+    SendSecret,
     /// Runs a program or a script known only when it runs.
     Unknown,
     /// The line, or part of it, cannot be read.
@@ -135,7 +150,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -144,10 +159,12 @@ impl Rule {
         Self::GitHistory,
         Self::Permissions,
         Self::SystemSettings,
+        Self::ReadSecret,
         Self::Elevated,
         Self::RunDownloaded,
         Self::RunInput,
         Self::StopSystem,
+        Self::SendSecret,
         Self::Unknown,
         Self::Unreadable,
     ];
@@ -166,10 +183,12 @@ impl Rule {
             Self::GitHistory => "git_history",
             Self::Permissions => "permissions",
             Self::SystemSettings => "system_settings",
+            Self::ReadSecret => "read_secret",
             Self::Elevated => "elevated",
             Self::RunDownloaded => "run_downloaded",
             Self::RunInput => "run_input",
             Self::StopSystem => "stop_system",
+            Self::SendSecret => "send_secret",
             Self::Unknown => "unknown",
             Self::Unreadable => "unreadable",
         }
@@ -183,23 +202,26 @@ impl milo_guards_core::RuleName for Rule {
 }
 
 /// A line read once: split into units and judged by the rules. `effect`
-/// says the split also keeps what only [`effect`] reads. [`classify`]
-/// and [`effect`] each take their answer from it, so they cannot disagree
-/// about what the units are.
+/// says the split also keeps what only [`effect`] reads. [`classify`],
+/// [`effect`] and [`explain`] each take their answer from it, so they cannot
+/// disagree about what the units are or what they found.
 struct Reading {
     split: unit::Split,
-    findings: Vec<Finding>,
+    judged: detect::Judged,
     resolver: path::Resolver,
 }
 
 impl Reading {
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
         let split = unit::split(command, shell, effect);
-        let resolver = path::Resolver::new(paths);
-        let findings = detect::findings(&split, &resolver);
+        let mut resolver = path::Resolver::new(paths);
+        if effect {
+            resolver.keep(paths);
+        }
+        let judged = detect::findings(&split, &resolver);
         Self {
             split,
-            findings,
+            judged,
             resolver,
         }
     }
@@ -208,7 +230,7 @@ impl Reading {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let findings = Reading::new(command, shell, paths, false).findings;
+    let findings = Reading::new(command, shell, paths, false).judged.found;
     if findings.is_empty() {
         Assessment::Safe
     } else {
@@ -221,16 +243,24 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 ///
 /// It is a second answer beside [`classify`], not a rule: safe and reads
 /// only are different things (`mkdir build` is safe and [`Effect::Changes`];
-/// `cat ~/.ssh/id_ed25519` is [`Effect::ReadsOnly`]). It comes from the same
+/// `cat ~/.ssh/id_ed25519` is [`Effect::ReadsOnly`]). A line that only reads
+/// says where it reads: [`Reach::Workspace`] when every place is inside a
+/// workspace folder, a temporary file or the null device, and
+/// [`Reach::Beyond`] when any is not. It comes from the same
 /// split as `classify`, so what is a unit, a wrapper or a nested script is
 /// the same in both, and a caller reads both answers. What cannot be read
 /// is [`Effect::Unknown`], never reads-only.
 ///
 /// ```
-/// use milo_guards_shell::{classify, effect, Effect, Paths, Shell};
+/// use milo_guards_shell::{classify, effect, Effect, Paths, Reach, Shell};
 ///
 /// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
-/// assert_eq!(effect("git status && git diff", Shell::Posix, &paths), Effect::ReadsOnly);
+/// let stays = Effect::ReadsOnly(Reach::Workspace);
+/// assert_eq!(effect("git status && git diff", Shell::Posix, &paths), stays);
+/// // It only reads, and what it reads is not the project.
+/// let beyond = Effect::ReadsOnly(Reach::Beyond);
+/// assert_eq!(effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths), beyond);
+/// assert_eq!(effect("ls", Shell::Posix, &Paths::new("/etc", "/home/me", ["/work/app"])), beyond);
 /// // Safe, and it changes the disk.
 /// assert!(classify("mkdir build", Shell::Posix, &paths).is_safe());
 /// assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
@@ -240,5 +270,123 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
     let reading = Reading::new(command, shell, paths, true);
-    effect::of(&reading.split, &reading.findings, &reading.resolver)
+    effect::of(&reading.split, &reading.judged.found, &reading.resolver)
+}
+
+/// Show how `command`, run by `shell` with the directories in `paths`, was
+/// read: every program it runs as the rules saw it (the program and its
+/// arguments, where each lands, the folder it runs from, the wrappers taken
+/// off, the shell and nesting it came from, its place in a pipeline) and the
+/// findings each produced, beside the line's own.
+///
+/// It is [`classify`] with the reasoning kept: both take their answer from
+/// one reading, so [`Explanation::findings`] is what `classify` reports and
+/// [`Explanation::assessment`] is its answer. `Display` prints a short
+/// indented tree a person can read in a terminal or paste into an issue;
+/// building it prints nothing.
+///
+/// ```
+/// use milo_guards_shell::{explain, Paths, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let explanation = explain("sudo rm -rf ~", Shell::Posix, &paths);
+/// let unit = &explanation.units[0];
+/// assert_eq!(unit.program, "rm");
+/// assert_eq!(unit.wrappers, ["sudo"]);
+/// assert_eq!(unit.args[1].resolved.as_deref(), Some("your home directory"));
+/// assert!(!explanation.assessment().is_safe());
+/// println!("{explanation}");
+/// ```
+#[must_use = "the explanation is the answer: it shows how the line was read"]
+pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
+    let reading = Reading::new(command, shell, paths, false);
+    explain::explanation(command, shell, &reading)
+}
+
+/// The places `command`, run by `shell` with the directories in `paths`,
+/// reads and how each is read, when [`effect`] says it only reads; `None` for
+/// any other line.
+///
+/// A guard never touches the disk, so [`effect`] places each read by how it
+/// is spelled, and a symbolic link in the workspace that points out of it
+/// (`link -> ~/.ssh`, then `cat link/id_rsa`) is [`Reach::Workspace`]. A caller
+/// that can check the disk needs the places the line reads, and how the
+/// program reaches from each: a pattern is expanded by the shell, a recursive
+/// search walks a folder, and either can cross a link that a bare path would
+/// not show. This is the list [`effect`] judged, from the same reading, not a
+/// second one.
+///
+/// What it holds, as [`effect`] reads the line: every file operand and the
+/// source of every `<` redirect, the folder a lister lists, the target of a
+/// `cd`, the working directory when a reader with no file operand reads it
+/// without being told (`ls`, `rg TODO`, `git status`), the root of a deep
+/// read, and for `git` the repository at the working directory or at the
+/// folders `-C` chains. A git revision or pathspec is listed as a path too, as
+/// `effect` places it (`git show HEAD:a.rs` also lists `a.rs`, from the
+/// working directory and from every workspace folder). A line run after a
+/// `cd` reads from where the `cd` went.
+///
+/// Every [`ReadPath::path`] is absolute, spelled as the guard resolves it
+/// (`~` is the home directory, `.` and `..` are applied, a relative path starts
+/// at the working directory or at where a `cd` went), and nothing is read from
+/// the disk, so a link is not followed. The list is sorted and holds each
+/// entry once, so the answer is the same every time. A read that is not a
+/// place on a disk (the null device, a registry hive, a path on another
+/// drive's own working directory) has no path and is not listed; [`effect`]
+/// has judged it by its place. A path in a temporary folder is listed like any
+/// other: it is [`Reach::Workspace`] by that rule, not because it is inside the
+/// workspace.
+///
+/// Each entry says how it is read ([`How`]), which says what a caller checks:
+///
+/// - [`How::Exact`]: one path. Canonicalize it (a path that does not exist is
+///   resolved by its nearest existing ancestor, with the rest of the names put
+///   back).
+/// - [`How::Glob`]: a pattern the shell expands, as the fixed folder and the
+///   rest of the pattern. Expand it on disk the way the shell does, and
+///   canonicalize the folder and every match: the shell crosses a link while it
+///   expands (`cat src/*/x.rs` with `src/a -> ~`).
+/// - [`How::Tree`]: a folder the program walks, or whose names it hands to a
+///   program that opens them (`ls src | xargs cat`, `find src -exec cat {} +`).
+///   Canonicalize the root. When `follows_links` is `false` (`grep -r`, `rg`,
+///   `find`, `ls -R`, `du`, `git`, given only flags known not to follow links)
+///   that is the whole check. When it is `true` (`grep -R`, `rg -L`, `find -L`,
+///   `ls -RL`, `du -L`, a walk whose names are opened, any other flag, any
+///   reader the guard does not know to stay out of links) a link anywhere below the root
+///   can lead out, and a caller may simply treat the line as reading beyond
+///   the workspace.
+///
+/// Treat the line as reading beyond the workspace when anything a check finds
+/// leaves it. The workspace folders are what the caller compares with, after
+/// canonicalizing them too, and the temporary folders [`effect`] allows: on
+/// macOS `/tmp` is `/private/tmp` and `/var/folders` is `/private/var/folders`.
+///
+/// ```
+/// use std::path::PathBuf;
+/// use milo_guards_shell::{effect_paths, How, Paths, ReadPath, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let exact = |path: &str| ReadPath { path: PathBuf::from(path), how: How::Exact };
+/// let read = |line| effect_paths(line, Shell::Posix, &paths);
+/// assert_eq!(read("cat link/id_rsa"), Some(vec![exact("/work/app/link/id_rsa")]));
+/// assert_eq!(read("cat ~/.ssh/config"), Some(vec![exact("/home/me/.ssh/config")]));
+/// // A pattern: the folder it expands in, and the rest of it.
+/// let glob = ReadPath { path: PathBuf::from("/work/app"), how: How::Glob("*.rs".into()) };
+/// assert_eq!(read("cat *.rs"), Some(vec![glob]));
+/// // A walk, and whether it opens what it finds through links.
+/// let walk = |path: &str, follows_links| ReadPath {
+///     path: PathBuf::from(path),
+///     how: How::Tree { follows_links },
+/// };
+/// assert_eq!(read("rg TODO src"), Some(vec![walk("/work/app/src", false)]));
+/// assert_eq!(read("grep -R TODO src"), Some(vec![walk("/work/app/src", true)]));
+/// assert_eq!(read("ls src | xargs cat"), Some(vec![walk("/work/app/src", true)]));
+/// // A line that changes something, or cannot be read, has no list.
+/// assert_eq!(read("mkdir x"), None);
+/// assert_eq!(read("$CMD"), None);
+/// ```
+#[must_use = "the paths are the answer: they are what the line reads"]
+pub fn effect_paths(command: &str, shell: Shell, paths: &Paths) -> Option<Vec<ReadPath>> {
+    let reading = Reading::new(command, shell, paths, true);
+    effect::paths(&reading.split, &reading.judged.found, &reading.resolver)
 }

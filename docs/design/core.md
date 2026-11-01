@@ -104,7 +104,7 @@ tell reading a key from reading a startup file without matching on the words:
 | Kind | What it is | A read | A write |
 | --- | --- | --- | --- |
 | `Secret` | A key or a credential: SSH, GPG, cloud and registry logins, keychains, the system's password hashes and host keys. | Exposes it. | Replaces it. |
-| `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login. | Harmless. | Plants a command. |
+| `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login, and a workspace's own files that a tool runs on its own. | Harmless. | Plants a command. |
 | `History` | The repository's history: a workspace's own `.git`. | The agent's everyday work. | Loses work. |
 
 `Sensitivity` is exhaustive, unlike `Place`: what a read of each kind means is
@@ -174,6 +174,39 @@ itself.
     `System32\config`, the DPAPI keys and `ProgramData\ssh`.
 
   A workspace's own `.git` is `History`.
+  - **A workspace's own files that a tool runs on its own** are `Startup` for a
+    write (see `startup` below), and not for a read or a delete, which stay the
+    agent's own: `.vscode/tasks.json`, `.vscode/launch.json`,
+    `.vscode/mcp.json`, `.vscode/settings.json`, any `*.code-workspace`,
+    `.zed/tasks.json`, `.cursor/mcp.json`, `.mcp.json`, the folder
+    `.idea/runConfigurations`, `.envrc`, `mise.toml`, `.mise.toml`,
+    `mise.local.toml` and `.mise.local.toml`, the folders `.husky` and
+    `.githooks`, `.pre-commit-config.yaml`, `lefthook.yml` and
+    `lefthook.yaml` (also with a leading dot or `-local`), the folders
+    `.github/workflows`, `.github/actions`, `.gitea/workflows`,
+    `.forgejo/workflows`, `.woodpecker`, `.circleci` and `.buildkite`,
+    `.gitlab-ci.yml`, `.woodpecker.yml`, `.travis.yml`, `.drone.yml`,
+    `Jenkinsfile`, `azure-pipelines.yml`, `bitbucket-pipelines.yml`,
+    `.gitpod.yml`, the folder `.devcontainer` and `.devcontainer.json`, and
+    the hook and server configurations of other agent tools that run a command
+    of their own: `.cursor/hooks.json`, `.windsurf/hooks.json`,
+    `.claude/settings.json`, `.claude/settings.local.json`,
+    `.gemini/settings.json`, `.codex/config.toml`, `.roo/mcp.json`,
+    `.amazonq/mcp.json`, `.kiro/settings/mcp.json`, the folders `.kiro/hooks`
+    and `.continue/mcpServers`. Each is found at any depth
+    below a workspace folder, as a `.git` is, and anything below a folder on
+    the list counts. A file that only runs when someone types the command
+    (`Makefile`, `justfile`, `package.json`, `.cargo/config.toml`,
+    `.vscode/extensions.json`) is not on it. A `*.code-workspace` is a suffix,
+    not a name: a name that ends so (by the widest fold, and on Windows by its
+    short name, `PROJ~1.COD`) counts wherever it is. Names compare as the sensitive
+    places do: without case on every host, by the widest fold, and on Windows
+    by short name (`VSCODE~1\TASKS~1.JSO`, `GITHUB~1\WORKFL~1`, `ENVRC~1`,
+    `LEFTHO~1.YML`) and without the trailing dots and spaces Windows drops.
+    They are matched against the whole path, the names above the workspace
+    folder included, as for `.git`. A path that is already something else (the
+    repository's history, a protected path, a key, beyond the workspace, a
+    temporary folder) keeps its own place.
   - **A workspace that holds a sensitive place does not make it the agent's.**
     When the home directory is the workspace (or a folder above it, or
     another user's home), `.ssh/id_rsa` is `Secret` and `.git` stays
@@ -231,7 +264,8 @@ itself.
   - **A write into a folder is not a write of what it holds.**
     `Resolver::place_into` is `place_hidden` without the holding rule, for a
     path something is written into (a copy's destination, a redirect's
-    target): `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
+    target), and it answers `Sensitive` with `Startup` for a workspace's own
+    file that a tool runs on its own, which no other question does: `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
     beside a protected `conf/app/x.yaml`, while a write to the protected path
     or a pattern that picks it is still protected. The shell guard asks it for
     writes and `place_hidden` for everything else. A copy, move or link into a
@@ -289,14 +323,21 @@ itself.
     is part of the name.
   - **A part before the last** loses one trailing dot, and nothing else, so
     `.git.\objects` is `.git\objects`.
-  - **A part with a wildcard** is not trimmed: what a pattern like `.g*.` can
-    match is judged by `glob`, which does not yet read the trailing dot.
+  - **A part with a wildcard** is judged as written, except where it could
+    reach `.git` (see `glob::reaches_git` below): there it is also trimmed
+    like any other part, the last part of all losing every trailing dot and
+    space (`*git.` and `'*git '` are `*git`) and one before it one dot. A
+    part that only trimming makes a catch-all (`*.` is `*`) is not taken as
+    the whole folder, which the resolver judges for a catch-all as written:
+    it matches `.git`, so `del *.` and `del /s /q "*.* "` are judged as
+    taking the repository's history.
   - **Short names.** A part directly in a workspace folder that is `GIT~N`, or
     `GI`, four hex digits and `~N` (the form Windows hashes a name to once
     names collide), may be the 8.3 short name of `.git`, which drops the dot.
     It is judged as the repository's history. Any other `NAME~N` is a plain
     name (`PROGRA~1`, `GITHUB~1`), as is a `GIT~1` deeper down, like a `.git`
-    there.
+    there. A pattern that can match such a name is read the same way (see
+    `glob::reaches_git` below).
   - **Known only when it runs.** The path is `Unknown`, since the spelling
     does not say which name it is, when a part:
     - holds a `:` below the drive or share: a stream of a file or folder
@@ -327,8 +368,8 @@ itself.
   `Windows` flavour a wildcard part directly in a workspace folder can pick
   `.git` (`*git`, `?git`, `????`), and the resolver answers the repository's
   history for it. `glob::reaches_git` tells it. The first wildcard part must
-  match `.git`. When it is the last part (and not a catch-all, which is the
-  whole folder) it takes `.git` itself. When more follows, the next part
+  match `.git`. When it is the last part (and not a catch-all as written, which is
+  the whole folder) it takes `.git` itself. When more follows, the next part
   must match one of `.git`'s own entries (`HEAD`, `config`, `index`,
   `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`, `modules`, `lfs`,
   `worktrees`, `shallow`, `ORIG_HEAD`, `MERGE_HEAD`, `rebase-merge`,
@@ -336,7 +377,18 @@ itself.
   it, `*\bin` and `*\obj` do not. Only the part after the one that matches
   `.git` is read, so `*\logs` or `*\config` at the workspace root is judged
   risky even if the `*` picks a folder of that name that is not `.git`; that
-  is accepted as rare. Deeper than the workspace
+  is accepted as rare. On `Windows` each part read is also trimmed as a
+  name is (the pattern as written is tried too), so `*git.`, `'*git '` and
+  `*\objects.` reach it, and a part that can match `.git`'s 8.3 short name
+  counts as matching `.git` (`GIT~?`, `*~1`, `GI????~1`; `PROGRA~?` and
+  `GITHUB~?` do not): cmd matches short names, PowerShell does not, but the
+  resolver does not know the shell, and a literal `GIT~1` is judged
+  the same way. The hashed form (`GI`, four hex digits, `~N`) exists only
+  once `GIT~1` to `GIT~4` are taken, so a pattern matches it only when it
+  holds a literal `~` (`GI????~1`, `*~1`); `*2024*`, `*a*` and `*cafe*` stay
+  ordinary patterns. A pattern with no `~` (`GI*`, `git*`, `*1`) matches no
+  short name: PowerShell has none, and `cmd` skips a folder that a wildcard
+  matches. Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
   wildcard does not match a leading dot, so `*git` and `?git` pass, unless
@@ -376,13 +428,21 @@ itself.
   disk under `/dev`. A path that climbs out of a device is no device:
   `/dev/fd/../../Users/me` is the home directory, and is judged as such. A
   name followed by `/` or `/.` is no device either, since descriptor 3 could
-  be a folder. On Windows, `/dev` is a real folder on the current drive, so
-  only the plain `/`-separated spellings above count, never normalised
-  (`/dev\null` and `/dev/./null` are files), plus `NUL`, `CON` and `\\.\`;
-  the `\\.\` namespace is a root that `..` cannot leave, so everything
-  spelled below it is a disk. A text with a `{` can expand to paths it does
-  not show, so it is never a device; the shell guard checks for a brace list
-  before it asks whether a path is a device.
+  be a folder; for the same reason a spelling with any part after
+  `fd/<digits>` is none (`/dev/fd/3/../1` lands beside that folder's parent,
+  not on descriptor 1), and so is one with any part after `fd/<name>` (a
+  wildcard that expands to digits, any name) or after `stdin`, `stdout` or
+  `stderr` (links to the same descriptors); only `fd/..` climbs out of `fd`
+  itself, so `/dev/fd/../null` is still the null device. A wildcard part with
+  more parts after it is no device either, since it can match `stdout` and be
+  a folder (`/dev/std*/../null` and `/dev/*/../null` land beside it). On Windows, `/dev`
+  is a real folder on the current drive, so only the plain `/`-separated
+  spellings above count, never normalised (`/dev\null` and `/dev/./null` are
+  files), plus `NUL`, `CON` and `\\.\`; the `\\.\` namespace is a root that
+  `..` cannot leave, so everything spelled below it is a disk. A text with a
+  `{` can expand to paths it does not show, so it is never a device; the
+  shell guard checks for a brace list before it asks whether a path is a
+  device.
 - Nothing reads the file system. A symlink is judged by its own name.
 
 Core never answers `Registry`. A path spelled out as text is a file path. A
@@ -428,7 +488,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Two questions are `Resolver` methods, since a guard needs them resolved: the
+Six questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -441,11 +501,69 @@ path made absolute, with the working directory and `~` applied.
   what is not. It answers `None` on Windows, where the device namespace is a
   `Disk`. It does not change `place`, so the shell guard's verdicts stay
   what they were.
+- `places(path, flavour, hidden)` is every place a path can land: as written,
+  then as each other reading of a POSIX part that can match `..` puts it. `place`
+  is the most serious of them. A guard that asks another question of the places
+  (is it the home directory?) asks of each.
+- `picks_secret(path, flavour, hidden)` is `Some(words)` for a pattern that can
+  name a key or a credential: `~/.s*/id_rsa` picks `~/.ssh/id_rsa`,
+  `/etc/sh*dow` the system's password hashes, `/home/*/.ssh` any user's keys,
+  `~/.*` every dot file in the home directory, the secret ones among them. It
+  reads a pattern as `place` does, by the folder before its first wildcard part
+  and what its parts can match below, one part against one name, as for a
+  protected path; a part matches a name as `glob::matches` says, `hidden`
+  included, and a pattern that stops at a folder holding a secret picks no
+  secret, since it reads that folder's name. Only a `Secret` place counts: a
+  startup file or the history is not one. A POSIX part that can match `..`
+  (`.*`, `.?`, `.[.]`) is also read as `.` and `..`, here and in `place`, where
+  the most serious reading wins. It is `None` for a path with no
+  wildcard (that is `place`'s) and for one known only when it runs. It does not
+  change `place`, so the shell guard's verdicts for deleting and writing stay
+  what they were.
+- `cwd_is_clear()` says whether a path written from the working directory, with
+  no `..`, `~`, drive or variable in it, can only land in the agent's own
+  workspace: the working directory is in a workspace folder that holds no key,
+  startup file or other sensitive place, and is not under `/dev` or `/proc`.
+  Such a path is not a secret, so a guard that asks about every operand of every
+  program (the shell guard's rule about reading a key) skips resolving it.
 - `git(path, flavour)` is `Some(words)` for a path in a git repository's own
   folder at any depth, `vendor/x/.git/hooks/pre-commit` and not only the
   workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the
   repository's history` for the rest. `place` still reads only the
   workspace's own `.git`, so the shell guard's verdicts are unchanged.
+- `startup(path, flavour, hidden)` is `Some(words)` (`a file a tool runs on
+  its own`) for a write to a workspace's own file on the list under "What core
+  judges", at any depth, and for a pattern that can pick one: the pattern's
+  parts are matched against the place's names, from above it (`*/Jenkinsfile`,
+  `**/.envrc`, `*.yml` for `lefthook.yml`) or from where its folder ends
+  (`.vscode/*.json`, `.github/workflows/*`, `.husky/pre-*`); one made of
+  nothing but `*` and `?` that starts above the place (`src/*`) names none,
+  and a wildcard matches a leading dot where `hidden` says so (always on
+  Windows), the pattern that can pick `.git` being the repository's history
+  already. It is `None` for every path that `place` does not call `Inside`,
+  so what is beyond the workspace, the history, a protected path or a key is
+  never changed by it. `startup_below` is the same for a write that can
+  replace anything below the path (a recursive copy): a path that ends in the
+  first names of a place also counts (`.github` holds `.github/workflows`,
+  `.vscode` holds `.vscode/tasks.json`), but a workspace folder or any other
+  folder, which can hold one that a name cannot tell, does not. Both are
+  spelling alone, like everything here.
+- `reaches_secret(path, flavour, hidden, deep)` says whether reading what a
+  path names can reach a secret (`Sensitivity::Secret`) below it, which `place`
+  does not say: `place` says what the path itself is, and a folder or a pattern
+  holds or picks more. With `deep` the path is read with everything below it (a
+  recursive search, a listing), so a folder that holds a secret, another user's
+  home, or a pattern that picks a folder holding one, reaches it; without it
+  only a pattern that picks the secret itself, or goes below it, does. A
+  pattern is read as the shell reads it, `hidden` being a shell whose wildcards
+  match a leading dot (Windows ones always do). A path known only when it runs
+  may reach any, so it does. It does not change `place`.
+- `absolute(path, flavour)` is the absolute path a spelling names, as spelled:
+  `~` and `..` applied and the working directory put in front of a relative
+  path, the links and the case left alone, a Windows long path written as the
+  plain path it names. It is `None` for what is not one place on a disk: a
+  device, or a path on another drive's own working directory. A wildcard is not
+  read; the caller says the folder a pattern expands in.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{check, check_effect, posix};
-use milo_guards_shell::{Effect, Rule, Shell};
+use milo_guards_shell::{Effect, Reach, Rule, Shell};
 
 #[test]
 fn a_modifier_or_coproc_does_not_hide_the_command_it_runs() {
@@ -80,7 +80,7 @@ fn what_they_run_decides_the_effect() {
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &["noglob ls *.txt", "nocorrect ls", "- ls", "coproc cat"],
     );
     check_effect(
@@ -208,7 +208,7 @@ fn a_coproc_assignment_is_a_variable_set_for_effect() {
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &["coproc LANG=C ls", "env LANG=C ls"],
     );
     check_effect(

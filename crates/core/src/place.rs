@@ -58,8 +58,9 @@ pub enum Sensitivity {
     Secret,
     /// A file that runs, or sets how something runs, later: shell startup
     /// files, git's settings, the PowerShell profile, what Windows starts at
-    /// login. Reading one is harmless; writing one is how a command is
-    /// planted.
+    /// login, and a workspace's own files that a tool runs on its own
+    /// (`.envrc`, `.vscode/tasks.json`, a CI workflow). Reading one is
+    /// harmless; writing one is how a command is planted.
     Startup,
     /// The repository's history. Reading it is the agent's everyday work;
     /// changing it loses work.
