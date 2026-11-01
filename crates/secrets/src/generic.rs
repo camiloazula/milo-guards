@@ -30,7 +30,10 @@
 //!   not;
 //! - a value that is no value is not a secret: empty, shorter than six
 //!   characters, a reference to a variable or a template field, a stand-in
-//!   ([`text::is_placeholder`]), a call, an index, or a chain of names;
+//!   ([`text::is_placeholder`]), a call, an index, or a chain of names; the
+//!   value of a cursor of pagination (`next_page_token`); a quoted word of
+//!   a locale file (`"password": "Contraseña"`); a quoted value of under
+//!   eight characters after `token` or `api_key`;
 //! - a quoted value has no space in it; an unquoted one is a secret when the
 //!   name is tied to it (`password=value`, as an environment file, a query
 //!   or a connection string write it), when it has a digit in it
@@ -98,8 +101,13 @@ pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
         let Some(word) = secret_word(name.as_str()) else {
             continue;
         };
+        if is_cursor(name.as_str()) {
+            continue;
+        }
         let gap = read.get(name.end()..whole.end()).unwrap_or_default();
         let tied = !gap.contains([' ', '\t']) && gap.trim_matches(['"', '\'', '\\']) == "=";
+        // A key of data is written in quotes: `"password": "…"`.
+        let key_quoted = gap.trim_start_matches('\\').starts_with(['"', '\'']);
         let from = reading.written_point(whole.end());
         let name_at = reading.written_point(name.start());
         let name_end = reading.written_point(name.end());
@@ -113,7 +121,9 @@ pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
             && lines
                 .get_or_insert_with(|| LineIndex::new(written))
                 .is_env_line(written, name_at);
-        if accept(word, raw, value.quoted, tied, env_file) {
+        // A word of a locale file under a key of data, not a password.
+        let label = value.quoted && key_quoted && is_label(raw);
+        if !label && accept(word, raw, value.quoted, tied, env_file) {
             out.push(Hit {
                 rule: Rule::GenericSecret,
                 reason: "holds a password or secret",
@@ -392,6 +402,45 @@ impl LineIndex {
     }
 }
 
+/// Whether a name is that of a cursor of pagination (`next_page_token`,
+/// `nextToken`, `continuation_token`): an opaque text the server gives back
+/// to ask for the next page, which opens no door.
+fn is_cursor(name: &str) -> bool {
+    const ENDINGS: [&str; 5] = [
+        "pagetoken",
+        "nexttoken",
+        "continuationtoken",
+        "paginationtoken",
+        "cursortoken",
+    ];
+    let squeezed = text::squeezed(name);
+    ENDINGS.iter().any(|ending| squeezed.ends_with(ending))
+}
+
+/// The most letters of a word that is a label and not a password.
+const LABEL_LETTERS: usize = 24;
+
+/// Whether `value` is one word of a language, as a locale file writes the
+/// text of a label: letters only, the first a capital and the rest lower
+/// case (`Contraseña`, `Confirmar`), and one `?` or `!` at its end
+/// (`Forgot?`). A password of letters in any other case is not one.
+fn is_label(value: &str) -> bool {
+    let word = value.strip_suffix(['?', '!']).unwrap_or(value);
+    let mut chars = word.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(char::is_lowercase)
+        && word.chars().count() <= LABEL_LETTERS
+}
+
+/// The names of a machine's key, whose value is never as short as a word:
+/// `token = "abc123"` is a test, not a token.
+fn is_machine_word(word: &str) -> bool {
+    matches!(word, "token" | "apikey")
+}
+
+/// The shortest quoted value read as the value of a machine's key.
+const MIN_MACHINE_VALUE: usize = 8;
+
 /// Whether the value read after a name that ends in `word` is a secret.
 /// `raw` is the value as it was written.
 fn accept(word: &str, raw: &str, quoted: bool, tied: bool, env_file: bool) -> bool {
@@ -418,7 +467,8 @@ fn accept(word: &str, raw: &str, quoted: bool, tied: bool, env_file: bool) -> bo
         return false;
     }
     if quoted {
-        return !raw.contains([' ', '\t']);
+        let machine_short = is_machine_word(word) && value.chars().count() < MIN_MACHINE_VALUE;
+        return !raw.contains([' ', '\t']) && !machine_short;
     }
     if value.contains(['[', ']']) || is_call(whole) || is_chain_of_names(value) {
         return false;

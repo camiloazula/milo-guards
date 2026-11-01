@@ -34,6 +34,25 @@ fn decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Whether `text` is the base64url of a number of 17 to 21 digits and
+/// nothing else: the id of a user, as a Discord bot token begins. The URL-safe
+/// alphabet (`-` and `_`), no padding. A word of code is base64 too, and
+/// decodes to letters; an id decodes to digits only.
+pub(crate) fn is_numeric_id(text: &str) -> bool {
+    let standard: String = text
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    let Some(bytes) = decode(&standard) else {
+        return false;
+    };
+    (17..=21).contains(&bytes.len()) && bytes.iter().all(u8::is_ascii_digit)
+}
+
 /// Whether `text` is the base64 of `user:password`: printable text with a
 /// colon in it. Any word is base64, so this is what tells a credential from
 /// the word after the word "basic".

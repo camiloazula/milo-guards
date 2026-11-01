@@ -267,6 +267,16 @@ fn telegram(candidate: &Candidate<'_>) -> bool {
     left && right && varied(candidate)
 }
 
+/// A Discord bot token: its first part is the base64url of a user's id, and
+/// it varies as a signature does.
+fn discord_bot(candidate: &Candidate<'_>) -> bool {
+    candidate
+        .secret
+        .split_once('.')
+        .is_some_and(|(id, _)| base64::is_numeric_id(id))
+        && varied(candidate)
+}
+
 /// `text` without `word` at its end, whatever the case of the word.
 fn strip_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
     let at = text.len().checked_sub(word.len())?;
@@ -441,15 +451,17 @@ fn secrets() -> Vec<Spec> {
         .check(varied),
         // A Discord bot's token is its id, the age of the token and a
         // signature, three base64url parts; a webhook is a URL with its
-        // token in it.
+        // token in it. The lengths alone are those of a chain of ordinary
+        // identifiers (`Controller.handler.processRequest`): the first part
+        // must decode to the digits of an id.
         Spec::new(
             ApiKey,
             "holds a Discord bot token",
             &["."],
-            r"[MNO][A-Za-z0-9_\-]{23,27}\.[A-Za-z0-9_\-]{6,7}\.[A-Za-z0-9_\-]{27,40}",
+            r"[MNO][A-Za-z0-9_\-]{22,27}\.[A-Za-z0-9_\-]{6,7}\.[A-Za-z0-9_\-]{27,40}",
         )
         .mask(Mask::Length)
-        .check(varied),
+        .check(discord_bot),
         Spec::new(
             ApiKey,
             "holds a Discord webhook URL",
