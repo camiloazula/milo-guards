@@ -1260,9 +1260,10 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
     };
     match read {
         None => split.unread_code(code.pieces.first().map_or("", Arg::text)),
-        // An import looks in the folder the code runs in first, so code that
-        // imports is only read whole there when that folder is the
-        // workspace's, which is judged with the directories.
+        // Python code looks in the folder it runs in first (an import, but
+        // also a traceback or a codec), so it is only read whole there when
+        // that folder is the workspace's, which is judged with the
+        // directories.
         Some(true) => split.imports(code.pieces.first().map_or("", Arg::text)),
         Some(false) => {}
     }

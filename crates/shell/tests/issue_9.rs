@@ -5330,6 +5330,17 @@ fn an_import_looks_in_the_folder_the_code_runs_in_first() {
         "f() { python3 -c 'import json'; }; cd /tmp; f",
         "while true; do python3 -c 'import json'; cd /tmp; done",
         "trap 'python3 -c \"import json\"' EXIT; cd /tmp",
+        // Code with no import loads modules from the folder too: an
+        // uncaught exception imports `traceback`, the `idna` codec imports
+        // `stringprep` and `unicodedata`.
+        "cd /tmp/x && python3 -c 'print(1)'",
+        "cd /tmp/x && python3 -c 'print(1/0)'",
+        "cd /tmp/x && python3 -c 'print(int(\"a\"))'",
+        "cd /tmp/x && python3 -c \"print(open('nothere.txt').read())\"",
+        "cd /tmp/x && python3 -c \"print('a'.encode('idna'))\"",
+        "cd /tmp/x && python3 -c \"print(str(b'a', 'idna'))\"",
+        "cd .. && python3 -c 'print(1/0)'",
+        r#"cd "$X" && python3 -c "print(open('a.txt').read())""#,
     ]);
     check(
         Shell::Posix,
@@ -5341,8 +5352,8 @@ fn an_import_looks_in_the_folder_the_code_runs_in_first() {
             "cd /home/me/work/repo && python3 -c 'import json'",
             "cd /home/me/work/repo/sub && python3 -c 'import json'",
             "cd sub; cd ..; python3 -c 'import json'",
-            // Nothing is imported, or the `cd` is behind or after it.
-            "cd /tmp/x && python3 -c 'print(1)'",
+            // The `cd` is behind or after it.
+            "cd sub && python3 -c 'print(1/0)'",
             "(cd /tmp/x && true); python3 -c 'import json'",
             "python3 -c 'import json' && cd /tmp/x",
             "f() { python3 -c 'import json'; }; f",
@@ -5360,11 +5371,15 @@ fn an_import_in_a_working_directory_outside_the_workspace_is_unknown() {
         Shell::Posix,
         &outside,
         &[
-            "python3 -c 'print(1)'",
             // Moved into the workspace, the folder is its own.
             "cd /home/me/work/repo && python3 -c 'import json'",
+            "cd /home/me/work/repo && python3 -c 'print(1/0)'",
         ],
-        &[("python3 -c 'import json'", Rule::Unknown)],
+        &[
+            ("python3 -c 'import json'", Rule::Unknown),
+            ("python3 -c 'print(1)'", Rule::Unknown),
+            ("python3 -c 'print(1/0)'", Rule::Unknown),
+        ],
     );
 }
 

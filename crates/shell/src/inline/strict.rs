@@ -33,8 +33,9 @@ use tree_sitter::Node;
 use super::{walk, Ancestor, Language};
 
 /// Whether `code` is read whole: nothing in it is outside the subset above.
-/// `None` when it is not; when it is, `Some(true)` if it imports a module,
-/// which looks in the folder the code runs in first.
+/// `None` when it is not; when it is, `Some(true)` if it may load a module,
+/// which looks in the folder the code runs in first (all Python code does,
+/// with or without an `import`).
 pub(super) fn reads_whole(language: Language, code: &str) -> Option<bool> {
     if code.chars().any(|c| {
         (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
@@ -195,7 +196,11 @@ fn python(code: &str) -> Option<bool> {
         whole = python_node(node, field, above, code, &assigned, &imported);
         whole
     });
-    whole.then_some(!imported.is_empty())
+    // Python loads modules from the folder it runs in without an import
+    // statement: an uncaught exception imports `traceback`, the `idna` codec
+    // imports `stringprep` and `unicodedata`. So any Python code read whole
+    // counts as importing.
+    whole.then_some(true)
 }
 
 fn python_node(

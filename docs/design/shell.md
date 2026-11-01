@@ -1350,15 +1350,17 @@ questions are answered apart:
    `print(math.pi)` and `json.dumps(1)` with no import are not read whole
    (they only fail, but the guard does not say so). Python puts the folder
    the code runs in ahead of the standard library, so `import json` loads
-   `./json.py` from it. Code that imports is read whole only when that
+   `./json.py` from it, and so does code with no `import` (an uncaught
+   exception imports `traceback`, the `idna` codec imports `stringprep`).
+   Python code is read whole only when that
    folder is inside a workspace folder, the workspace's own code: the working
    directory, or where the line has moved to by `cd`. After a `cd` out of the
    workspace (`cd /tmp/x && python3 -c 'import json'`, `cd ..`), to a place
    the guard cannot tell (`cd "$X"`, `pushd`, `popd`), or with a working
    directory outside it, the code is not read whole; the same when the code is
    in a function body, a loop or a `trap` and the line moves anywhere, since
-   it runs again after the `cd`. Code that imports nothing does not look in
-   the folder, so `cd /tmp/x && python3 -c 'print(1)'` is read whole.
+   it runs again after the `cd`. So `cd /tmp/x && python3 -c 'print(1)'` is
+   not read whole either.
 
 `python3 -c 'print(1+1)'`, `node -e 'console.log(1)'`,
 `python3 -c "import json,sys; json.load(sys.stdin)"` and
