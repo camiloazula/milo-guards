@@ -822,8 +822,52 @@ fn powershell_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<&'a Arg> {
     let searching = matches!(key, "select-string" | "sls");
     let pattern = params.values(&["pattern"]);
     let skip = usize::from(searching && pattern.is_empty());
-    paths.extend(params.positional.iter().skip(skip).copied());
+    // `Get-ChildItem` takes `-Depth` and `-Attributes` with a value, which is
+    // no place. The shared parameter table does not know them (a name there
+    // would swallow the target of a `Remove-Item -Depth ~`), so a value that
+    // follows one, and is a number or an attribute's name, is left out here.
+    let swallowed: Vec<&Arg> = if key == "get-childitem" {
+        args.windows(2)
+            .filter(|pair| listing_parameter(&pair[0]) && listing_value(&pair[1]))
+            .map(|pair| &pair[1])
+            .collect()
+    } else {
+        Vec::new()
+    };
+    paths.extend(
+        params
+            .positional
+            .iter()
+            .skip(skip)
+            .copied()
+            .filter(|arg| !swallowed.iter().any(|value| std::ptr::eq(*value, *arg))),
+    );
     paths
+}
+
+/// Whether `arg` is `-Depth` or `-Attributes`, or an abbreviation of either
+/// that no other parameter of `Get-ChildItem` shares (two letters at least).
+fn listing_parameter(arg: &Arg) -> bool {
+    let Some(name) = arg.known().and_then(|text| text.strip_prefix('-')) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.len() >= 2
+        && !name.contains(':')
+        && ("depth".starts_with(&name) || "attributes".starts_with(&name))
+}
+
+/// Whether `arg` can be the value of `-Depth` or `-Attributes` and nothing
+/// else: a number, or attribute names (`Hidden`, `!System`, `Hidden+System`)
+/// with no separator, drive or dot in them.
+fn listing_value(arg: &Arg) -> bool {
+    arg.known().is_some_and(|text| {
+        !text.is_empty()
+            && (text.chars().all(|c| c.is_ascii_digit())
+                || text
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic() || matches!(c, '!' | '+' | ',')))
+    })
 }
 
 /// One argument read for its flag: what is known of it up to the first

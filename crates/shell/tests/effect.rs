@@ -2918,3 +2918,37 @@ fn a_windows_wildcard_reaches_a_hidden_folder_that_holds_a_secret() {
         &["findstr x *\\*", "findstr /s x *", "type *\\x", "dir /s"],
     );
 }
+
+#[test]
+fn get_childitem_takes_depth_and_attributes_with_a_value() {
+    // The value is no place, so the folder is the working directory.
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        STAYS,
+        &[
+            "Get-ChildItem -Depth 2",
+            "gci -dep 2",
+            "ls -Attributes Hidden",
+            "dir -at !System",
+            "gci -Attributes Hidden+System src",
+        ],
+    );
+    check_effect(
+        Shell::PowerShell,
+        &windows_in(r"C:\Windows"),
+        BEYOND,
+        &["Get-ChildItem -Depth 2", "gci -Attributes Hidden"],
+    );
+    // A value that is a path is a place.
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        BEYOND,
+        &[
+            "Get-ChildItem -Depth C:\\Windows",
+            "gci -Attributes ~",
+            "gci -at ..\\x",
+        ],
+    );
+}
