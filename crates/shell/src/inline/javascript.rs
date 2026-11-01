@@ -35,7 +35,13 @@ pub(super) fn read(code: &str) -> Reading {
     // The walk stops once the code is found to nest too deeply to read: the
     // line is unreadable whatever else is in it.
     walk(root, |node, field, above| {
+        // A name written with an escape (`\u0072mSync`) is the name it
+        // spells; the reader does not decode it, so it follows none.
+        if node.kind().ends_with("identifier") && reader.text(node).contains('\\') {
+            reader.reading.unread(reader.text(node));
+        }
         match node.kind() {
+            "import_statement" | "export_statement" => reader.module_source(node),
             "call_expression" | "new_expression" => reader.call(node, field, above),
             "member_expression"
             | "identifier"
@@ -69,6 +75,10 @@ enum Kind {
     Chdir,
     /// `fs.openSync(path, flags)`.
     Open,
+    /// `fs.readFileSync(path, options)` and `fs.createReadStream(path,
+    /// options)`: reads, unless a `flag` opens the file for writing (`w`
+    /// truncates it).
+    ReadFile,
     /// `Deno.open(path, options)`.
     DenoOpen,
     /// `Bun.write(path, data)`: the path may be `Bun.file(path)`.
@@ -133,6 +143,8 @@ fn kind(name: &str) -> Option<Kind> {
         (_, "chmod" | "lchmod") => Kind::Chmod,
         (_, "chown" | "lchown") => Kind::Chown,
         (_, "open") => Kind::Open,
+        (_, "readFile" | "createReadStream") => Kind::ReadFile,
+        (true, "readJson" | "readJSON") => Kind::ReadFile,
         _ => return None,
     })
 }
@@ -549,6 +561,20 @@ impl<'s> Reader<'s> {
         name
     }
 
+    /// `import 'data:…'`, `export * from 'data:…'`: the code in a `data:` URL
+    /// runs where it is written, and is not read.
+    fn module_source(&mut self, node: Node<'_>) {
+        let Some(source) = node.child_by_field_name("source") else {
+            return;
+        };
+        if self
+            .literal(source)
+            .is_none_or(|specifier| super::data_url(&specifier))
+        {
+            self.reading.unread(self.text(node));
+        }
+    }
+
     /// Whether `name` is an object that holds calls the reader looks for.
     fn is_module(&self, name: &str) -> bool {
         ROOTS.contains(&name)
@@ -859,6 +885,16 @@ impl<'s> Reader<'s> {
                     self.act(target.map(Act::Write));
                 }
             }
+            Some(Kind::ReadFile) => {
+                let writes_file = match args.get(1) {
+                    Some(node) => self.read_flag_writes(node),
+                    None => args.splat,
+                };
+                if writes_file {
+                    let target = self.target(&args, 0);
+                    self.act(target.map(Act::Write));
+                }
+            }
             Some(Kind::DenoOpen) => {
                 let writes_file = match args.get(1) {
                     Some(node) if node.kind() == "object" => self.options_write(node),
@@ -962,7 +998,12 @@ impl<'s> Reader<'s> {
             let awaited = above
                 .last()
                 .is_some_and(|parent| parent.node.kind() == "await_expression");
-            if !awaited || self.escapes(call, field, above) {
+            // The code in a `data:` URL runs where it is written.
+            let data = args
+                .get(0)
+                .and_then(|node| self.literal(node))
+                .is_some_and(|specifier| super::data_url(&specifier));
+            if !awaited || data || self.escapes(call, field, above) {
                 self.reading.unread(self.text(call));
             }
         }
@@ -1142,6 +1183,55 @@ impl<'s> Reader<'s> {
             (pair.kind() == "pair" && name == key)
                 .then(|| pair.child_by_field_name("value"))
                 .flatten()
+        })
+    }
+
+    /// Whether the options of a call that reads a file open it for writing:
+    /// a `flag` (`flags` for a stream) that writes, or one only known when it
+    /// runs, in an object literal. A string is the encoding and a callback
+    /// is not options; any other value, or an object with a spread, a
+    /// computed name or a method of that name, may hold a flag.
+    fn read_flag_writes(&mut self, options: Node<'_>) -> bool {
+        match options.kind() {
+            "string" | "template_string" => return self.literal(options).is_none(),
+            "arrow_function" | "function_expression" | "function" | "null" | "undefined" => {
+                return false
+            }
+            "object" => {}
+            _ => return true,
+        }
+        let mut cursor = options.walk();
+        let members: Vec<Node<'_>> = options.named_children(&mut cursor).collect();
+        members.into_iter().any(|member| match member.kind() {
+            "comment" => false,
+            "pair" => {
+                let name = member
+                    .child_by_field_name("key")
+                    .and_then(|key| match key.kind() {
+                        "property_identifier" => Some(self.text(key).to_string()),
+                        "string" => self.literal(key),
+                        _ => None,
+                    });
+                match name.as_deref() {
+                    Some("flag" | "flags") => member
+                        .child_by_field_name("value")
+                        .and_then(|value| self.literal(value))
+                        .is_none_or(|flags| writes(Some(&flags))),
+                    Some(_) => false,
+                    None => true,
+                }
+            }
+            "shorthand_property_identifier" => matches!(self.text(member), "flag" | "flags"),
+            "method_definition" => member
+                .child_by_field_name("name")
+                .is_none_or(|name| match name.kind() {
+                    "property_identifier" => matches!(self.text(name), "flag" | "flags"),
+                    "string" => self
+                        .literal(name)
+                        .is_none_or(|name| matches!(name.as_str(), "flag" | "flags")),
+                    _ => true,
+                }),
+            _ => true,
         })
     }
 

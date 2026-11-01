@@ -1291,3 +1291,353 @@ fn code_handed_to_an_interpreter_on_windows_is_unknown() {
         );
     }
 }
+
+#[test]
+fn python_names_are_read_in_their_nfkc_form_so_a_name_that_is_not_ascii_is_unread() {
+    // Python reads `ｒｅｍｏｖｅ` (full-width) as `remove`: each of these runs
+    // the call it spells, and is not one the reader follows.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A string or a comment that is not ASCII is only text.
+            "python3 -c \"print('ｒｅｍｏｖｅ')\"",
+            "python3 -c \"print('é')  # ｒｅｍｏｖｅ\"",
+            "python3 -c \"import os; print(os.getcwd(), 'ｅｘｅｃ')\"",
+        ],
+        &[
+            (
+                "python3 -c \"import os; os.ｒｅｍｏｖｅ('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            ("python3 -c \"ｅｘｅｃ(input())\"", Rule::Unknown),
+            (
+                "python3 -c \"import ｓｈｕｔｉｌ; ｓｈｕｔｉｌ.rmtree('/home/me')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"__ｉｍｐｏｒｔ__('os').remove('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"ｏｐｅｎ('/home/me/.zshrc','w').write('x')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.ｃｈｄｉｒ('/home/me'); import shutil; shutil.rmtree('.ssh')\"",
+                Rule::Unknown,
+            ),
+            // Also a keyword argument's name, an alias and a method.
+            (
+                "python3 -c \"import os; os.remove('/home/me/.zshrc', ｄｉｒ_ｆｄ=1)\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from os import remove as ｒ; ｒ('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('/home/me/.zshrc').ｕｎｌｉｎｋ()\"",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn javascript_names_written_with_an_escape_are_unread() {
+    // Node reads `\u0072mSync` as `rmSync`.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // An escape in a string is decoded, and reads as it always did.
+            r#"node -e "console.log('\u0072mSync')""#,
+            r#"node -e "console.log(require('fs').readFileSync('\u002fetc/hosts', 'utf8'))""#,
+            r#"node -e "const o = {a: 1}; console.log(o.a)""#,
+        ],
+        &[
+            (
+                r#"node -e "require('fs').\u0072mSync('/home/me',{recursive:true})""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "const {\u0072mSync}=require('fs'); \u0072mSync('/home/me',{recursive:true})""#,
+                Rule::Unknown,
+            ),
+            (r#"node -e "\u0065val(process.argv[1])""#, Rule::Unknown),
+            (
+                r#"node -e "require('child_process').e\u0078ecSync('rm -rf ~')""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "const cp=require('child_process'); cp.\u{65}xecSync('rm -rf ~')""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "process.\u0063hdir('/home/me'); require('fs').rmSync('.ssh',{recursive:true})""#,
+                Rule::Unknown,
+            ),
+            // A shorthand property, a pattern with a rename and a local name.
+            (
+                r#"node -e "const {rmSync: \u0072}=require('fs'); r('/home/me',{recursive:true})""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "const \u0066s=require('fs'); fs.rmSync('/home/me',{recursive:true})""#,
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn code_in_a_data_url_is_not_read() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Modules that are not a `data:` URL are as they were.
+            r#"node -e "import fs from 'fs'; fs.readFileSync('package.json')""#,
+            r#"node -e "import {a} from './a.js'""#,
+            r#"node -e "export * from './a.js'""#,
+            "node --import ./setup.js -e 1",
+            "node --import=./setup.js -e 1",
+            "node --loader ./hooks.js -e 1",
+            "node --experimental-loader=./hooks.js -e 1",
+            "node --import ./setup.js build.js",
+        ],
+        &[
+            (
+                r#"node -e "import 'data:text/javascript,import fs from \"fs\"; fs.rmSync(\"/home/me\",{recursive:true})'""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "import {a} from 'data:text/javascript,export const a=1'""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "export * from 'data:text/javascript,console.log(45)'""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "export {a} from 'data:text/javascript,export const a=1'""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "import 'data:text/javascript;base64,Y29uc29sZS5sb2coNDYp'""#,
+                Rule::Unknown,
+            ),
+            // The URL parser drops leading spaces and reads the scheme in
+            // any case.
+            (
+                r#"node -e "import ' DATA:text/javascript,1'""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "import('data:text/javascript,1')""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "(async () => { await import('data:text/javascript,1') })()""#,
+                Rule::Unknown,
+            ),
+            ("node --import data:text/javascript,1 -e 1", Rule::Unknown),
+            ("node --import=data:text/javascript,1 -e 1", Rule::Unknown),
+            ("node --loader data:text/javascript,1 -e 1", Rule::Unknown),
+            ("node --loader=data:text/javascript,1 -e 1", Rule::Unknown),
+            (
+                "node --experimental-loader data:text/javascript,1 -e 1",
+                Rule::Unknown,
+            ),
+            (
+                "node --experimental-loader=data:text/javascript,1 -e 1",
+                Rule::Unknown,
+            ),
+            ("node -e 1 --import data:text/javascript,1", Rule::Unknown),
+            (
+                "node --import data:text/javascript,1 build.js",
+                Rule::Unknown,
+            ),
+            // A module only known when it runs may be one.
+            ("node --import $LOADER -e 1", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_chdir_in_nested_code_is_read_not_searched_for() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Nested code that never changes directory moves nothing.
+            "python3 -c \"exec('print(1)')\"",
+            "python3 -c \"import shutil; exec('import os; os.getcwd()'); print(shutil.which('ls'))\"",
+            "node -e \"eval('1+1'); console.log(process.cwd())\"",
+            // The word in a string is not a call.
+            "python3 -c \"exec('print(\\\"chdir\\\")')\"",
+        ],
+        &[
+            (
+                r#"python3 -c "import shutil; exec(\"import os; getattr(os,'ch'+'dir')('/home/me')\"); shutil.rmtree('.ssh')""#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e "eval(\"process[\`ch\${'dir'}\`]('/home/me')\"); require('fs').rmSync('.ssh',{recursive:true})""#,
+                Rule::Delete,
+            ),
+            // At any depth.
+            (
+                r#"python3 -c "import shutil; exec(\"exec(\\\"import os; getattr(os,'ch'+'dir')('/home/me')\\\")\"); shutil.rmtree('.ssh')""#,
+                Rule::Delete,
+            ),
+            // Nested code the reader cannot read may change directory.
+            (
+                r#"python3 -c "import shutil; exec(\"import os; f = getattr(os, input()); f('/home/me')\"); shutil.rmtree('.ssh')""#,
+                Rule::Unknown,
+            ),
+            // The nested code is in the other language's own terms.
+            (
+                r#"node -e "eval(\"process.chdir('/home/me')\"); require('fs').rmSync('.ssh',{recursive:true})""#,
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_module_bound_in_a_class_body_is_unread() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A class that binds nothing the reader looks for.
+            "python3 -c \"class C:\n    x = 1\n    def f(self):\n        return self.x\nprint(C().f())\"",
+            "python3 -c \"import os\nclass C:\n    def f(self):\n        return os.getcwd()\nprint(C().f())\"",
+            "python3 -c \"class C:\n    name = 'os'\nprint(C.name)\"",
+            // A name bound in a method is the method's own.
+            "python3 -c \"class C:\n    def f(self):\n        o = 1\n        return o\nprint(C().f())\"",
+        ],
+        &[
+            (
+                "python3 -c \"import os\nclass C: o = os\nC.o.remove('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os\nclass C: o = os\nC().o.system('rm -rf ~')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"class C:\n    from os import system\nC.system('rm -rf ~')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"class C:\n    import shutil as s\nC().s.rmtree('/home/me')\"",
+                Rule::Unknown,
+            ),
+            // A call the reader knows, bound the same way.
+            (
+                "python3 -c \"import os\nclass C:\n    r = os.remove\nC.r('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os\nclass C:\n    r = getattr(os, 'remove')\nC.r('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+            // A class in a class.
+            (
+                "python3 -c \"import os\nclass A:\n    class B:\n        o = os\nA.B.o.remove('/home/me/.zshrc')\"",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn reading_a_file_with_a_flag_that_writes_writes_it() {
+    // `{flag: 'w'}` opens the file for writing, which truncates it.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "node -e \"require('fs').readFileSync('/home/me/.zshrc')\"",
+            "node -e \"require('fs').readFileSync('/home/me/.zshrc', 'utf8')\"",
+            "node -e \"require('fs').readFileSync('/home/me/.zshrc', {encoding: 'utf8'})\"",
+            "node -e \"require('fs').readFileSync('/home/me/.zshrc', {encoding: 'utf8', flag: 'r'})\"",
+            "node -e \"require('fs').readFileSync('/home/me/.zshrc', {flag: 'rs'})\"",
+            "node -e \"require('fs').readFile('/home/me/.zshrc', 'utf8', (e, d) => console.log(d))\"",
+            "node -e \"require('fs').readFile('/home/me/.zshrc', (e, d) => console.log(d))\"",
+            "node -e \"require('fs').promises.readFile('/home/me/.zshrc', {flag: 'r'})\"",
+            "node -e \"require('fs').createReadStream('/home/me/.zshrc').pipe(process.stdout)\"",
+            "node -e \"require('fs').createReadStream('/home/me/.zshrc', {flags: 'r', encoding: 'utf8'})\"",
+            "node -e \"require('fs').createReadStream('/home/me/.zshrc', 'utf8')\"",
+        ],
+        &[
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {flag:'w'})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').createReadStream('/home/me/.zshrc', {flags:'w'})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFile('/home/me/.zshrc', {flag:'w'}, () => 0)\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').promises.readFile('/home/me/.zshrc', {flag:'w+'})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {encoding: 'utf8', flag: 'a'})\"",
+                Rule::Overwrite,
+            ),
+            // A flag only known when it runs, a spread, a computed name.
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {flag: process.argv[1]})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {flag: require('fs').constants.O_WRONLY})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {...process.env})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', {['fl'+'ag']: 'w'})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"const flag = 'w'; require('fs').readFileSync('/home/me/.zshrc', {flag})\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"require('fs').readFileSync('/home/me/.zshrc', process.argv[1])\"",
+                Rule::Overwrite,
+            ),
+            (
+                "node -e \"const {readFileSync: r} = require('fs'); r('/home/me/.zshrc', {flag: 'w'})\"",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn deno_options_that_print_do_not_read_the_input() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["deno --version", "deno -V", "deno --help", "deno -h"],
+        &[
+            // No subcommand and no such option reads its input.
+            ("deno", Rule::Unknown),
+            ("deno --unstable", Rule::Unknown),
+            ("deno repl", Rule::Unknown),
+        ],
+    );
+}

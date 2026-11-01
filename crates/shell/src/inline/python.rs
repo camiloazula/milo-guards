@@ -35,7 +35,16 @@ pub(super) fn read(code: &str) -> Reading {
     // The walk stops once the code is found to nest too deeply to read: the
     // line is unreadable whatever else is in it.
     walk(root, |node, field, above| {
+        // Python reads a name in its NFKC form (`ｒｅｍｏｖｅ` is `remove`),
+        // which the reader does not compute: a name that is not ASCII is a
+        // name it does not follow.
+        if node.kind() == "identifier" && !reader.text(node).is_ascii() {
+            reader.reading.unread(reader.text(node));
+        }
         match node.kind() {
+            "import_statement" | "import_from_statement" | "assignment" => {
+                reader.class_binding(node, above);
+            }
             "call" => reader.call(node, field, above),
             "attribute" | "identifier" => reader.reference(node, field, above),
             "subscript" => reader.subscript(node),
@@ -1194,6 +1203,36 @@ impl<'s> Reader<'s> {
                     METHODS.contains(&attribute)
                 });
         if unfollowable || method || (self.is_module(&name) && self.escapes(node, field, above)) {
+            self.reading.unread(self.text(node));
+        }
+    }
+
+    /// A name bound in the body of a class is an attribute of the class
+    /// (`class C: o = os`, `C.o.remove(…)`), not a name of its own: an import
+    /// there, or an assignment of a module or of a call the reader knows, is
+    /// one it does not follow.
+    fn class_binding<'t>(&mut self, node: Node<'t>, above: &[Ancestor<'t>]) {
+        let in_class = above
+            .iter()
+            .rev()
+            .find(|ancestor| {
+                matches!(
+                    ancestor.node.kind(),
+                    "class_definition" | "function_definition" | "lambda"
+                )
+            })
+            .is_some_and(|ancestor| ancestor.node.kind() == "class_definition");
+        if !in_class {
+            return;
+        }
+        let binds = match node.kind() {
+            "assignment" => node
+                .child_by_field_name("right")
+                .and_then(|right| self.qualified(right, 0))
+                .is_some_and(|name| kind(&name).is_some() || self.is_module(&name)),
+            _ => true,
+        };
+        if binds {
             self.reading.unread(self.text(node));
         }
     }

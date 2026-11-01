@@ -770,7 +770,7 @@ pub(crate) const MAX_DEPTH: usize = 8;
 pub(crate) const MAX_TREE_DEPTH: usize = 400;
 
 /// The longest line read: past it, the line is not read at all.
-const MAX_LEN: usize = 64 * 1024;
+pub(crate) const MAX_LEN: usize = 64 * 1024;
 
 /// The most nested script text read for one line, in bytes: past it, the
 /// line is unreadable. A nested script is read once for each time the line

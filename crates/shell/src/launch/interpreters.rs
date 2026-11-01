@@ -160,6 +160,8 @@ pub(super) fn interpreter(key: &str, args: &[Arg]) -> Launch {
                 _ => long.contains(&text),
             })
     });
+    // Code in a `data:` URL that node loads first runs, and is not read.
+    let code = code || (matches!(key, "node" | "nodejs") && inline::loads_data_url(args));
     let file = args
         .iter()
         .any(|arg| !arg.known().is_some_and(|text| text.starts_with('-')));

@@ -269,6 +269,9 @@ fn script_code(args: &[Arg]) -> Option<Code> {
         "input-type",
         "env-file",
     ];
+    if loads_data_url(args) {
+        return None;
+    }
     let mut found = Code::default();
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
@@ -319,6 +322,76 @@ fn script_code(args: &[Arg]) -> Option<Code> {
         }
     }
     (!found.pieces.is_empty()).then_some(found)
+}
+
+/// Whether a module specifier is a `data:` URL, whose code runs where it is
+/// written: as the URL parser reads it, leading control characters and
+/// spaces and any tab or newline are dropped, and the scheme has no case.
+pub(crate) fn data_url(specifier: &str) -> bool {
+    let cleaned: String = specifier
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .take(5)
+        .collect();
+    cleaned.eq_ignore_ascii_case("data:")
+}
+
+/// Whether node is told to load a module from a `data:` URL before its own
+/// code (`--import`, `--loader`, `--experimental-loader`): code that runs
+/// where it is written and is not read, so the line is unknown. A value only
+/// known when it runs may be one too.
+pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        // The options end at the script, or at a word only known when it runs.
+        let Some(text) = arg.known() else {
+            return false;
+        };
+        if text == "-" || !text.starts_with('-') || text == "--" {
+            return false;
+        }
+        let Some(long) = text.strip_prefix("--") else {
+            // `-e CODE`, `-p CODE` (unless an option follows), `-r MODULE`.
+            let letters = &text[1..];
+            if letters.chars().all(|letter| matches!(letter, 'e' | 'p')) {
+                if letters.contains('e')
+                    || iter
+                        .peek()
+                        .is_some_and(|next| next.known().is_some_and(|word| !word.starts_with('-')))
+                {
+                    iter.next();
+                }
+            } else if matches!(text, "-r" | "-C") {
+                iter.next();
+            }
+            continue;
+        };
+        let (name, value) = match long.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (long, None),
+        };
+        let found = match (name, value) {
+            ("import" | "loader" | "experimental-loader", Some(value)) => data_url(value),
+            ("import" | "loader" | "experimental-loader", None) => iter
+                .next()
+                .is_some_and(|value| value.known().is_none_or(data_url)),
+            // The options whose value is the next word, which is not an
+            // option of its own.
+            (
+                "eval" | "print" | "require" | "cwd" | "conditions" | "input-type" | "env-file",
+                None,
+            ) => {
+                iter.next();
+                false
+            }
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+    }
+    false
 }
 
 /// `deno eval [OPTIONS] CODE [ARGS]`: every word after `eval` that is not an
@@ -374,7 +447,11 @@ pub(crate) fn runner(key: &str, args: &[Arg]) -> Launch {
         .iter()
         .filter_map(Arg::known)
         .find(|text| !text.starts_with('-'));
-    let repl = first == Some("repl") || (key == "deno" && first.is_none());
+    // `deno --version` and `deno --help` print and exit: no subcommand and
+    // none of these reads the input, which is the REPL.
+    let prints =
+        key == "deno" && known(&|text| matches!(text, "--version" | "-V" | "--help" | "-h"));
+    let repl = first == Some("repl") || (key == "deno" && first.is_none() && !prints);
     if evals || repl || known(&|text| text == "-") {
         Launch::Reads(Reads::Interpreter)
     } else {
@@ -415,16 +492,13 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
     if !unit::within_limits(split, code, depth) {
         return;
     }
-    let reading = match language {
-        Language::Python => python::read(code),
-        Language::JavaScript => javascript::read(code),
-    };
+    let reading = read(language, code);
     if reading.deep {
         split.problem(Rule::Unreadable, "nests too deeply to read", None);
     }
     // A `chdir` in the code moves its own process, not the line.
     let outer = split.dir_snapshot();
-    let places = places(&reading.acts);
+    let places = places(&reading.acts, depth);
     if places.len() == 1 {
         for act in reading.acts {
             perform(split, act, depth);
@@ -454,6 +528,31 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
     split.restore_dir(outer);
 }
 
+/// Read `code` in `language`.
+fn read(language: Language, code: &str) -> Reading {
+    match language {
+        Language::Python => python::read(code),
+        Language::JavaScript => javascript::read(code),
+    }
+}
+
+/// Whether nested code (`exec("…")`, `eval("…")`), run `depth` levels deep,
+/// may change the directory: it is read, with its own language and at any
+/// depth, and holds a `chdir`. Code the reader cannot follow, or that is too
+/// long or too deep to read, may.
+fn changes_directory(language: Language, code: &str, depth: usize) -> bool {
+    if depth > unit::MAX_DEPTH || code.len() > unit::MAX_LEN {
+        return true;
+    }
+    let reading = read(language, code);
+    reading.deep
+        || reading.acts.iter().any(|act| match act {
+            Act::Chdir(_) | Act::Unread(_) => true,
+            Act::Code(language, text) => changes_directory(*language, text, depth + 1),
+            _ => false,
+        })
+}
+
 /// The most places code is judged from: past it, from none known.
 const MAX_PLACES: usize = 12;
 
@@ -465,15 +564,17 @@ const MAX_PLACES: usize = 12;
 /// below where it was (`sub`) is another folder below the start, so those
 /// places hold wherever the code can be. When the targets mix the two, one
 /// goes up (`..`) or is only known when it runs, or a nested piece of code
-/// has a `chdir` the reader does not follow, the code may be anywhere, and
-/// a relative path is only known when it runs.
-fn places(acts: &[Act]) -> Vec<Vec<Arg>> {
+/// holds a `chdir` (read, not searched for, at any depth) or cannot be read,
+/// the code may be anywhere, and a relative path is only known when it runs.
+fn places(acts: &[Act], depth: usize) -> Vec<Vec<Arg>> {
     let mut targets = Vec::new();
     let mut hidden = false;
     for act in acts {
         match act {
             Act::Chdir(target) => targets.push(target.clone()),
-            Act::Code(_, text) => hidden |= text.contains("chdir"),
+            Act::Code(language, text) => {
+                hidden |= changes_directory(*language, text, depth + 1);
+            }
             _ => {}
         }
     }
