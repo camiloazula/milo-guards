@@ -69,13 +69,11 @@ impl Checker<'_> {
 
             // Stopping the system.
             "kill" if shell == Shell::Posix => self.kill(args),
-            "killall" | "killall5" => self.add(
-                Rule::StopSystem,
-                "stops every process with a name",
-                operands(args, &["-s", "--signal", "-u", "--user"])
-                    .first()
-                    .copied(),
-            ),
+            "killall5" => self.add(Rule::StopSystem, "stops every process", None),
+            "killall" => self.killall(args),
+            "pkill" => self.pkill(args),
+            "taskkill" => self.taskkill(args),
+            "stop-process" => self.stop_process(unit),
             "shutdown" | "reboot" | "halt" | "poweroff" | "stop-computer" | "restart-computer" => {
                 let cancels = args.iter().filter_map(Arg::known).any(|text| {
                     matches!(
