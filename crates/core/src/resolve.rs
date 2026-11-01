@@ -4,7 +4,7 @@
 //! Nothing reads the file system, so a symlink is judged by its own name.
 
 use crate::spelling::glob::{self, Shape, WILDCARDS};
-use crate::{Paths, Place, ProtectedKind};
+use crate::{Paths, Place, ProtectedKind, Sensitivity};
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -163,19 +163,60 @@ impl Loc {
 
     /// An absolute directory as the caller passed it.
     fn absolute(text: &str) -> Self {
-        let windows = drive(text).is_some() || unc(text).is_some();
-        let flavour = if windows {
-            Flavour::Windows
-        } else {
-            Flavour::Posix
-        };
-        if let Some((letter, rest)) = drive(text) {
-            return Self::at(Root::Drive(letter)).walk(rest, flavour);
+        if let Some((root, rest)) = windows_root(text) {
+            return Self::at(root).walk(rest, Flavour::Windows);
         }
-        if let Some((share, rest)) = unc(text) {
-            return Self::at(Root::Unc(share)).walk(rest, flavour);
+        Self::at(Root::Unix).walk(text, Flavour::Posix)
+    }
+
+    /// What macOS names the root and the data volume by. The data volume is
+    /// also mounted at `/System/Volumes/Data`, the boot volume is linked at
+    /// `/Volumes/<its name>`, and the data volume at `/Volumes/<its name> -
+    /// Data`, so `/System/Volumes/Data/Users/me` and
+    /// `/Volumes/Macintosh HD/Users/me` are `/Users/me`. The leading parts
+    /// are dropped, as often as they come, however the path was spelled:
+    /// every path is made absolute first (`~` and `..` applied, the working
+    /// directory prepended). Names compare as a Mac's file system does, by
+    /// the widest fold (`/Syſtem/Volumes/Data` is `/System/Volumes/Data`
+    /// there). Everything that fails closed when it matches too much (the
+    /// home directories, the secrets, protected paths) looks a path up with the
+    /// links dropped on every system; the workspace and the temporary folders
+    /// only on a Mac, where they are links, since elsewhere the paths do not
+    /// exist and matching them would make a path that creates folders look
+    /// inside the workspace.
+    fn firm(mut self) -> Self {
+        while let Some(link) = self.link() {
+            self.parts.drain(..link);
         }
-        Self::at(Root::Unix).walk(text, flavour)
+        self
+    }
+
+    /// How many leading parts are one of the links.
+    fn link(&self) -> Option<usize> {
+        const LINKS: [&[&str]; 3] = [
+            &["System", "Volumes", "Data"],
+            &["Volumes", "Macintosh HD"],
+            &["Volumes", "Macintosh HD - Data"],
+        ];
+        if !matches!(self.root, Root::Unix) {
+            return None;
+        }
+        LINKS
+            .iter()
+            .find(|link| {
+                link.len() <= self.parts.len()
+                    && self
+                        .parts
+                        .iter()
+                        .zip(**link)
+                        .all(|(part, name)| same_fold(part, name))
+            })
+            .map(|link| link.len())
+    }
+
+    /// This location with the links dropped, or `None` when it has none.
+    fn stripped(&self) -> Option<Self> {
+        self.link().map(|_| self.clone().firm())
     }
 }
 
@@ -285,10 +326,7 @@ fn known_when_run(path: Spelling<'_>, flavour: Flavour) -> bool {
     }
     let rest = match path {
         Spelling::Home(rest) => rest,
-        Spelling::Plain(text) => match (unc(text), drive(text)) {
-            (Some((_, rest)), _) | (None, Some((_, rest))) => rest,
-            (None, None) => text,
-        },
+        Spelling::Plain(text) => windows_root(text).map_or(text, |(_, rest)| rest),
     };
     let names: Vec<&str> = rest.split(flavour.separators()).collect();
     names
@@ -309,6 +347,52 @@ fn unc(text: &str) -> Option<(String, &str)> {
     let rest = text
         .strip_prefix("\\\\")
         .or_else(|| text.strip_prefix("//"))?;
+    unc_parts(rest)
+}
+
+/// What a Windows path starts from: a drive (`C:`), a share
+/// (`\\server\share`), or a long path (`\\?\C:\x`, `\\?\UNC\server\share`)
+/// read as the drive or the share it names; and what follows it. `None` for
+/// a path that starts at none of them, and for a long path that names
+/// neither (`\\?\GLOBALROOT\...`, `\\?\Volume{...}\...`), which is a device.
+fn windows_root(text: &str) -> Option<(Root, &str)> {
+    if let Some(rest) = verbatim(text) {
+        if let Some((letter, tail)) = drive(rest) {
+            let whole = tail.is_empty() || tail.starts_with(['/', '\\']);
+            return whole.then_some((Root::Drive(letter), tail));
+        }
+        let (kind, tail) = rest.split_once(['/', '\\']).unwrap_or((rest, ""));
+        if kind.eq_ignore_ascii_case("unc") {
+            let (share, tail) = unc_parts(tail)?;
+            return Some((Root::Unc(share), tail));
+        }
+        return None;
+    }
+    if let Some((share, rest)) = unc(text) {
+        return Some((Root::Unc(share), rest));
+    }
+    drive(text).map(|(letter, rest)| (Root::Drive(letter), rest))
+}
+
+/// What follows `\\?\` (with either kind of separator) when `text` starts
+/// with it: the long-path prefix.
+#[must_use]
+pub fn verbatim(text: &str) -> Option<&str> {
+    prefix(text, '?')
+}
+
+/// What follows a two-separator prefix and `mark` and one more separator
+/// (`\\?\`, `//./`), each separator either kind.
+fn prefix(text: &str, mark: char) -> Option<&str> {
+    let mut chars = text.chars();
+    let sep = |c: Option<char>| c.is_some_and(|c| matches!(c, '/' | '\\'));
+    (sep(chars.next()) && sep(chars.next()) && chars.next() == Some(mark) && sep(chars.next()))
+        .then_some(chars.as_str())
+}
+
+/// `server` and `share` (lower case) and what follows, from the text after
+/// the separators of a share: `server\share\x`.
+fn unc_parts(rest: &str) -> Option<(String, &str)> {
     let mut parts = rest.splitn(3, ['/', '\\']);
     let server = parts.next().filter(|server| !server.is_empty())?;
     let share = parts.next().unwrap_or_default();
@@ -332,24 +416,224 @@ const DISK_DEVICES: [&str; 11] = [
     "sd", "hd", "vd", "xvd", "nvme", "mmcblk", "disk", "rdisk", "md", "dm-", "mapper/",
 ];
 
-/// Files and folders under the home directory whose loss or change hurts.
-const SENSITIVE: [(&[&str], &str); 19] = [
-    (&[".ssh"], "your SSH keys"),
-    (&[".gnupg"], "your GPG keys"),
-    (&[".aws"], "your AWS credentials"),
-    (&[".azure"], "your Azure credentials"),
-    (&[".kube"], "your Kubernetes credentials"),
-    (&[".docker"], "your Docker credentials"),
-    (&[".netrc"], "your saved logins"),
-    (&[".git-credentials"], "your git credentials"),
-    (&[".gitconfig"], "your git settings"),
-    (&[".bashrc"], "a shell startup file"),
-    (&[".bash_profile"], "a shell startup file"),
-    (&[".zshrc"], "a shell startup file"),
-    (&[".zprofile"], "a shell startup file"),
-    (&[".zshenv"], "a shell startup file"),
-    (&[".profile"], "a shell startup file"),
-    (&["Library", "Keychains"], "your keychains"),
+/// Files and folders under a home directory whose loss or change hurts, the
+/// words a reason calls each by, and what touching it means: a key or a
+/// credential (`Secret`), a file that runs or configures what runs later
+/// (`Startup`), the repository's history (`History`, which is not here: a
+/// workspace's own `.git` is told by its name).
+///
+/// This lists the places known to hold secrets; it is not a proof that
+/// nowhere else does.
+const SENSITIVE: [(&[&str], &str, Sensitivity); 60] = [
+    (&[".ssh"], "your SSH keys", Sensitivity::Secret),
+    (&[".gnupg"], "your GPG keys", Sensitivity::Secret),
+    (&[".aws"], "your AWS credentials", Sensitivity::Secret),
+    (&[".azure"], "your Azure credentials", Sensitivity::Secret),
+    (
+        &[".kube"],
+        "your Kubernetes credentials",
+        Sensitivity::Secret,
+    ),
+    (&[".docker"], "your Docker credentials", Sensitivity::Secret),
+    (&[".netrc"], "your saved logins", Sensitivity::Secret),
+    (
+        &[".git-credentials"],
+        "your git credentials",
+        Sensitivity::Secret,
+    ),
+    (&[".npmrc"], "your npm login", Sensitivity::Secret),
+    (&[".pypirc"], "your PyPI login", Sensitivity::Secret),
+    (&[".vault-token"], "your Vault login", Sensitivity::Secret),
+    (
+        &[".oci"],
+        "your Oracle Cloud credentials",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".password-store"],
+        "your saved passwords",
+        Sensitivity::Secret,
+    ),
+    (&[".config", "gh"], "your GitHub login", Sensitivity::Secret),
+    (
+        &[".config", "gcloud"],
+        "your Google Cloud credentials",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "git", "credentials"],
+        "your git credentials",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".cargo", "credentials.toml"],
+        "your crates.io login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".cargo", "credentials"],
+        "your crates.io login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".local", "share", "keyrings"],
+        "your keyrings",
+        Sensitivity::Secret,
+    ),
+    (
+        &["Library", "Keychains"],
+        "your keychains",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "Microsoft", "Credentials"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Local", "Microsoft", "Credentials"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "Microsoft", "Protect"],
+        "your Windows encryption keys",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "GitHub CLI"],
+        "your GitHub login",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "gcloud"],
+        "your Google Cloud credentials",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "gnupg"],
+        "your GPG keys",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "Microsoft", "Vault"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Local", "Microsoft", "Vault"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".pgpass"],
+        "your saved database logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".my.cnf"],
+        "your saved database logins",
+        Sensitivity::Secret,
+    ),
+    (&[".s3cfg"], "your S3 credentials", Sensitivity::Secret),
+    (
+        &[".gem", "credentials"],
+        "your RubyGems login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".m2", "settings.xml"],
+        "your Maven logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".terraform.d", "credentials.tfrc.json"],
+        "your Terraform login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "rclone"],
+        "your rclone logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "op"],
+        "your 1Password login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "sops", "age"],
+        "your encryption keys",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "hub"],
+        "your GitHub login",
+        Sensitivity::Secret,
+    ),
+    (&[".gitconfig"], "your git settings", Sensitivity::Startup),
+    (
+        &[".config", "git", "config"],
+        "your git settings",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".config", "powershell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".config", "systemd", "user"],
+        "the services your system starts at login",
+        Sensitivity::Startup,
+    ),
+    (
+        &["OneDrive", "Documents", "PowerShell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+    (
+        &["OneDrive", "Documents", "WindowsPowerShell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+    (&[".bashrc"], "a shell startup file", Sensitivity::Startup),
+    (
+        &[".bash_profile"],
+        "a shell startup file",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".bash_login"],
+        "a shell startup file",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".bash_logout"],
+        "a shell startup file",
+        Sensitivity::Startup,
+    ),
+    (&[".zshrc"], "a shell startup file", Sensitivity::Startup),
+    (&[".zprofile"], "a shell startup file", Sensitivity::Startup),
+    (&[".zshenv"], "a shell startup file", Sensitivity::Startup),
+    (&[".zlogin"], "a shell startup file", Sensitivity::Startup),
+    (&[".zlogout"], "a shell startup file", Sensitivity::Startup),
+    (&[".profile"], "a shell startup file", Sensitivity::Startup),
+    (
+        &[".config", "fish"],
+        "a shell startup file",
+        Sensitivity::Startup,
+    ),
+    (
+        &["Library", "LaunchAgents"],
+        "the programs macOS starts at login",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".config", "autostart"],
+        "the programs your desktop starts at login",
+        Sensitivity::Startup,
+    ),
     (
         &[
             "AppData",
@@ -361,11 +645,73 @@ const SENSITIVE: [(&[&str], &str); 19] = [
             "Startup",
         ],
         "the programs Windows starts at login",
+        Sensitivity::Startup,
     ),
-    (&["Documents", "PowerShell"], "your PowerShell profile"),
+    (
+        &["Documents", "PowerShell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
     (
         &["Documents", "WindowsPowerShell"],
         "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+];
+
+/// Keys and credentials the system itself keeps, under the root of a POSIX
+/// system (and under `/private`, where macOS keeps `/etc` and `/var`).
+const POSIX_SECRETS: [(&[&str], &str); 17] = [
+    (&["etc", "shadow"], "the system's password hashes"),
+    (&["etc", "gshadow"], "the system's password hashes"),
+    (&["etc", "master.passwd"], "the system's password hashes"),
+    (&["etc", "ssh"], "the system's SSH keys"),
+    (&["etc", "ssl", "private"], "the system's private keys"),
+    (
+        &["etc", "pki", "tls", "private"],
+        "the system's private keys",
+    ),
+    (&["etc", "letsencrypt"], "your certificate keys"),
+    (&["etc", "wireguard"], "your WireGuard keys"),
+    (&["etc", "krb5.keytab"], "the system's Kerberos keys"),
+    (
+        &["etc", "NetworkManager", "system-connections"],
+        "your saved network passwords",
+    ),
+    (&["etc", "ppp"], "your saved network passwords"),
+    (&["var", "db", "dslocal"], "the system's password hashes"),
+    (&["run", "secrets"], "the container's secrets"),
+    (&["var", "run", "secrets"], "the container's secrets"),
+    (&["var", "vm"], "the memory the system keeps on disk"),
+    (&["Library", "Keychains"], "the system's keychains"),
+    (
+        &["System", "Library", "Keychains"],
+        "the system's keychains",
+    ),
+];
+
+/// Where a POSIX system keeps the root user's home directory.
+const ROOT_HOMES: [&[&str]; 3] = [&["root"], &["var", "root"], &["private", "var", "root"]];
+
+/// Keys and credentials the system itself keeps, under a Windows drive.
+const WINDOWS_SECRETS: [(&[&str], &str); 6] = [
+    (
+        &["Windows", "System32", "config"],
+        "the Windows account database",
+    ),
+    (&["Windows", "Repair"], "the Windows account database"),
+    (
+        &["Windows", "System32", "Microsoft", "Protect"],
+        "the Windows encryption keys",
+    ),
+    (&["ProgramData", "ssh"], "the system's SSH keys"),
+    (
+        &["ProgramData", "Microsoft", "Vault"],
+        "the system's saved logins",
+    ),
+    (
+        &["ProgramData", "Microsoft", "Crypto"],
+        "the system's private keys",
     ),
 ];
 
@@ -399,14 +745,37 @@ const WINDOWS_SYSTEM: [&str; 4] = [
     "ProgramData",
 ];
 
+/// A workspace folder, and whether it is itself inside something sensitive
+/// (a workspace in `~/.docker/x`), where the folder's own paths stay the
+/// agent's.
+#[derive(Debug, Clone)]
+struct Workspace {
+    loc: Loc,
+    in_sensitive: bool,
+    /// Whether a sensitive place can be inside it (the home directory, or a
+    /// folder holding one, is the workspace): only then is a path in it
+    /// looked up in the sensitive places.
+    holds_sensitive: bool,
+}
+
 /// Judges paths against the caller's directories.
 #[derive(Debug, Clone)]
 pub struct Resolver {
     cwd: Loc,
+    /// Whether this is a Mac: see [`Loc::firm`].
+    mac: bool,
     home: Loc,
-    workspaces: Vec<Loc>,
+    workspaces: Vec<Workspace>,
     temps: Vec<Loc>,
-    sensitive: Vec<(Loc, &'static str)>,
+    /// What is sensitive under this home directory, and the system's own
+    /// secrets by their full place.
+    sensitive: Vec<(Loc, &'static str, Sensitivity)>,
+    /// The folders whose entries are users' home directories: the one holding
+    /// this home directory, and the places systems keep them (`/home`,
+    /// `/Users`, `C:\Users`), whatever this user's own home is.
+    neighbours: Vec<Loc>,
+    /// The root user's home directory.
+    root_homes: Vec<Loc>,
     /// Each protected path, its words, and whether it is a folder.
     protected: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
@@ -417,13 +786,32 @@ impl Resolver {
     /// makes it a Windows machine (its temporary and system folders are
     /// Windows ones); any other makes it a POSIX one.
     pub fn new(paths: &Paths) -> Self {
-        let cwd = Loc::absolute(&paths.cwd.to_string_lossy());
-        let home = Loc::absolute(&paths.home.to_string_lossy());
-        let workspaces = paths
-            .workspaces
-            .iter()
-            .map(|folder| Loc::absolute(&folder.to_string_lossy()))
-            .collect();
+        // The home directory, protected paths and secrets are looked up with a
+        // Mac's links dropped on every system (see `Loc::firm`). The
+        // workspace, the working directory and the temporary folders are only
+        // on a Mac: its home is under `/Users` (or root's, `/var/root`).
+        let home = Loc::absolute(&paths.home.to_string_lossy()).firm();
+        let mac = matches!(home.root, Root::Unix)
+            && match home.parts.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                [users, ..] if users.eq_ignore_ascii_case("Users") => true,
+                [var, root] => var.eq_ignore_ascii_case("var") && root.eq_ignore_ascii_case("root"),
+                [private, var, root] => {
+                    private.eq_ignore_ascii_case("private")
+                        && var.eq_ignore_ascii_case("var")
+                        && root.eq_ignore_ascii_case("root")
+                }
+                _ => false,
+            };
+        let absolute = |text: &std::path::Path| {
+            let loc = Loc::absolute(&text.to_string_lossy());
+            if mac {
+                loc.firm()
+            } else {
+                loc
+            }
+        };
+        let cwd = absolute(&paths.cwd);
+        let workspaces: Vec<Loc> = paths.workspaces.iter().map(|f| absolute(f)).collect();
         let (temps, system) = if home.windows() {
             let drive = Loc::at(home.root.clone());
             (
@@ -456,30 +844,84 @@ impl Resolver {
                     .collect(),
             )
         };
-        let sensitive = SENSITIVE
+        let mut sensitive: Vec<(Loc, &'static str, Sensitivity)> = SENSITIVE
             .iter()
-            .map(|(parts, words)| (home.join(parts), *words))
+            .map(|(parts, words, kind)| (home.join(parts), *words, *kind))
+            .collect();
+        let root = Loc::at(if home.windows() {
+            home.root.clone()
+        } else {
+            Root::Unix
+        });
+        if home.windows() {
+            sensitive.extend(
+                WINDOWS_SECRETS
+                    .iter()
+                    .map(|(parts, words)| (root.join(parts), *words, Sensitivity::Secret)),
+            );
+        } else {
+            for (parts, words) in POSIX_SECRETS {
+                for under in [&[][..], &["private"]] {
+                    let at = root.join(under).join(parts);
+                    sensitive.push((at, words, Sensitivity::Secret));
+                }
+            }
+        }
+        let root_homes = if home.windows() {
+            Vec::new()
+        } else {
+            ROOT_HOMES.iter().map(|parts| root.join(parts)).collect()
+        };
+        let mut neighbours: Vec<Loc> = Vec::new();
+        if home.parts.len() > 1 {
+            neighbours.push(Loc {
+                root: home.root.clone(),
+                parts: home.parts[..home.parts.len() - 1].to_vec(),
+            });
+        }
+        if home.windows() {
+            neighbours.push(root.join(&["Users"]));
+            neighbours.push(Loc::at(Root::Drive('C')).join(&["Users"]));
+        } else {
+            neighbours.push(root.join(&["home"]));
+            neighbours.push(root.join(&["Users"]));
+        }
+        let mut resolver = Self {
+            cwd,
+            mac,
+            home: home.clone(),
+            workspaces: Vec::new(),
+            temps: Vec::new(),
+            sensitive,
+            neighbours,
+            root_homes,
+            protected: Vec::new(),
+            system: Vec::new(),
+        };
+        let workspaces = workspaces
+            .into_iter()
+            .map(|loc| Workspace {
+                in_sensitive: resolver.sensitive_at(&loc).is_some(),
+                holds_sensitive: resolver.holds_sensitive(&loc),
+                loc,
+            })
             .collect();
         let protected = paths
             .protected
             .iter()
             .map(|entry| {
                 (
-                    Loc::absolute(&entry.path.to_string_lossy()),
+                    Loc::absolute(&entry.path.to_string_lossy()).firm(),
                     entry.words,
                     entry.kind == ProtectedKind::Folder,
                 )
             })
             .collect();
-        Self {
-            cwd,
-            home,
-            workspaces,
-            temps,
-            sensitive,
-            protected,
-            system,
-        }
+        resolver.workspaces = workspaces;
+        resolver.temps = temps;
+        resolver.protected = protected;
+        resolver.system = system;
+        resolver
     }
 
     /// Where `path` lands. It never answers [`Place::Registry`]: a path this
@@ -515,20 +957,23 @@ impl Resolver {
     /// `holding` says whether a harmless folder that holds a protected path
     /// is judged as that path.
     fn place_as(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool, holding: bool) -> Place {
-        let text = path.text();
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
                 return device;
             }
         }
-        if known_when_run(path, flavour) {
+        // A long path (`\\?\C:\x`) is the plain path it names.
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        let text = path.text();
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
             return Place::Unknown;
         }
         // Each part holding a wildcard stands for one entry, so a `..` after
         // it (`src/*/../../x`) still climbs; what a pattern matches lies in
         // the folder before its first wildcard part that no `..` cancels.
         let marked = mark_wildcards(text, flavour);
-        let mut loc = self.locate(path.with(marked.as_deref().unwrap_or(text)), flavour);
+        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
         // From the first wildcard part on, as the text of each part.
         let wildcards: Vec<&str> = text
             .split(flavour.separators())
@@ -566,7 +1011,9 @@ impl Resolver {
             return place;
         }
         let place = Self::pattern_place(place, text, tail.as_deref(), flavour, hidden);
-        match self.picks_protected(&loc, tail.as_deref(), flavour, hidden, place, holding) {
+        let stripped = loc.stripped();
+        let strip = stripped.as_ref().unwrap_or(&loc);
+        match self.picks_protected(strip, tail.as_deref(), flavour, hidden, place, holding) {
             Some(words) => Place::Protected(words),
             None => place,
         }
@@ -585,7 +1032,7 @@ impl Resolver {
             match glob::shape(text, flavour) {
                 // `.g*`, `*/.git`: can match hidden entries such as `.git`.
                 Shape::Hidden => {
-                    return Place::Sensitive(HIDDEN);
+                    return Place::Sensitive(HIDDEN, Sensitivity::History);
                 }
                 // `*.log`, `*/*.o`: picks files inside the folder.
                 Shape::Entries if place == (Place::Workspace { exact: true }) => {
@@ -598,7 +1045,7 @@ impl Resolver {
                         glob::reaches_git(&tail, flavour, hidden)
                     });
                     if reaches {
-                        return Place::Sensitive(HIDDEN);
+                        return Place::Sensitive(HIDDEN, Sensitivity::History);
                     }
                     return Place::Inside;
                 }
@@ -619,26 +1066,69 @@ impl Resolver {
     /// not one definite file: a device or a wildcard.
     #[must_use]
     pub fn key(&self, path: Spelling<'_>, flavour: Flavour) -> Option<String> {
-        let text = path.text();
-        let device = matches!(path, Spelling::Plain(_)) && device(text, flavour).is_some();
-        if device || glob::has_wildcard(text) {
+        let device = matches!(path, Spelling::Plain(text) if device(text, flavour).is_some());
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if device || glob::has_wildcard(path.text()) || self.elsewhere(path, flavour) {
             return None;
         }
         Some(self.locate(path, flavour).key())
     }
 
+    /// The plain path a Windows long path names (`\\?\C:\x` is `C:\x`,
+    /// `\\?\UNC\server\share\x` is `\\server\share\x`); `None` for a path
+    /// that is not one.
+    fn plain(&self, path: Spelling<'_>, flavour: Flavour) -> Option<String> {
+        let Spelling::Plain(text) = path else {
+            return None;
+        };
+        if flavour != Flavour::Windows || verbatim(text).is_none() {
+            return None;
+        }
+        match windows_root(text)? {
+            (Root::Drive(letter), rest) => Some(format!("{letter}:\\{rest}")),
+            (Root::Unc(share), rest) => Some(format!("\\\\{}\\{rest}", share.replace('/', "\\"))),
+            (Root::Unix, _) => None,
+        }
+    }
+
+    /// Whether `path` is on a drive's own working directory (`C:x`, `C:`)
+    /// and the working directory is not on that drive, so which folder it
+    /// is depends on the process: known only when it runs.
+    fn elsewhere(&self, path: Spelling<'_>, flavour: Flavour) -> bool {
+        let Spelling::Plain(text) = path else {
+            return false;
+        };
+        flavour == Flavour::Windows
+            && drive(text).is_some_and(|(letter, rest)| {
+                !rest.starts_with(flavour.separators())
+                    && !matches!(self.cwd.root, Root::Drive(cwd) if cwd == letter)
+            })
+    }
+
+    /// The location a path names, made absolute however it was spelled.
     fn locate(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
+        self.locate_raw(path, flavour).firm()
+    }
+
+    fn locate_raw(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
         let separators = flavour.separators();
         let text = match path {
             Spelling::Home(rest) => return self.home.clone().walk(rest, flavour),
             Spelling::Plain(text) => text,
         };
         if flavour == Flavour::Windows {
+            if let Some((letter, rest)) = drive(text) {
+                // `C:x` is from the drive's own working directory, which is
+                // the working directory when it is on that drive (`elsewhere`
+                // says it is not).
+                if !rest.starts_with(separators) {
+                    return self.cwd.clone().walk(rest, flavour);
+                }
+                return Loc::at(Root::Drive(letter)).walk(rest, flavour);
+            }
             if let Some((share, rest)) = unc(text) {
                 return Loc::at(Root::Unc(share)).walk(rest, flavour);
-            }
-            if let Some((letter, rest)) = drive(text) {
-                return Loc::at(Root::Drive(letter)).walk(rest, flavour);
             }
         }
         if text.starts_with(separators) {
@@ -661,48 +1151,69 @@ impl Resolver {
         if loc.parts.is_empty() {
             return Place::Top("the root of the disk");
         }
-        if loc.holds(&self.home) {
+        // The home directory, or a folder holding it. A name that is the
+        // home directory's without case (a Mac's file system ignores it too)
+        // or by its Windows short name is the same folder.
+        let stripped = loc.stripped();
+        let strip = stripped.as_ref().unwrap_or(loc);
+        if strip.parts.is_empty() {
+            return Place::Top("the root of the disk");
+        }
+        if above(strip, &self.home) {
             return Place::Home {
-                exact: loc.is(&self.home),
+                exact: strip.parts.len() == self.home.parts.len(),
             };
         }
-        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(loc, file)) {
+        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(strip, file)) {
             return Place::Protected(words);
         }
-        let place = self.judge_plain(loc, flavour);
+        let place = self.judge_plain(loc, strip, flavour);
         if holding && place.harmless() {
-            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(loc, file)) {
+            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(strip, file))
+            {
                 return Place::Protected(words);
             }
         }
         place
     }
 
-    fn judge_plain(&self, loc: &Loc, flavour: Flavour) -> Place {
+    /// `loc` is the location as spelled, `strip` the same with a Mac's links
+    /// dropped. The workspace and the temporary folders are matched by the
+    /// spelling on any system but a Mac, the secrets always by the stripped.
+    fn judge_plain(&self, spelled: &Loc, strip: &Loc, flavour: Flavour) -> Place {
+        let loc = if self.mac { strip } else { spelled };
         for workspace in &self.workspaces {
-            if loc.holds(workspace) {
+            let folder = &workspace.loc;
+            if loc.holds(folder) {
                 return Place::Workspace {
-                    exact: loc.is(workspace),
+                    exact: loc.is(folder),
                 };
             }
-            if workspace.holds(loc) {
-                let first = &loc.parts[workspace.parts.len()];
-                let history = first.eq_ignore_ascii_case(".git")
-                    || (flavour == Flavour::Windows && short_git(first));
-                return if history {
-                    Place::Sensitive("the repository's history")
-                } else {
-                    Place::Inside
-                };
+            if folder.holds(loc) {
+                let first = &loc.parts[folder.parts.len()];
+                let history =
+                    same_fold(first, ".git") || (flavour == Flavour::Windows && short_git(first));
+                if history {
+                    return Place::Sensitive("the repository's history", Sensitivity::History);
+                }
+                // A workspace that holds a key's folder (the home directory
+                // is the workspace) does not make the key the agent's; one
+                // inside such a folder keeps its own paths.
+                if workspace.holds_sensitive && !workspace.in_sensitive {
+                    if let Some((words, kind)) = self.sensitive_at(strip) {
+                        return Place::Sensitive(words, kind);
+                    }
+                }
+                return Place::Inside;
             }
+        }
+        if let Some((words, kind)) = self.sensitive_at(strip) {
+            return Place::Sensitive(words, kind);
         }
         if let Some(temp) = self.temps.iter().find(|temp| temp.holds(loc)) {
             return Place::Temp {
                 exact: temp.is(loc),
             };
-        }
-        if let Some((_, words)) = self.sensitive.iter().find(|(file, _)| file.holds(loc)) {
-            return Place::Sensitive(words);
         }
         if self.system.iter().any(|folder| folder.holds(loc)) {
             return Place::Top("a system folder");
@@ -711,6 +1222,169 @@ impl Resolver {
             return Place::Top("a top-level folder");
         }
         Place::Outside
+    }
+}
+
+/// What a POSIX system keeps readable in `/dev`: what discards, what is
+/// random or zero, and the terminal and standard streams. Every other device
+/// is a way to the disk or the memory.
+const DEV_READABLE: [&str; 8] = [
+    "null", "zero", "random", "urandom", "tty", "stdin", "stdout", "stderr",
+];
+
+/// What is readable in `/proc` without being one process's secrets: the
+/// machine's own facts. Everything else, and every process's folder (`self`
+/// and a number: its environment, memory, command line, maps, and `root` and
+/// `cwd`, which lead to any file), is not.
+const PROC_READABLE: [&str; 6] = [
+    "cpuinfo",
+    "meminfo",
+    "version",
+    "loadavg",
+    "uptime",
+    "filesystems",
+];
+
+impl Resolver {
+    /// The location `path` names, or `None` when it is known only when it
+    /// runs (see [`place`](Self::place)).
+    fn resolved(&self, path: Spelling<'_>, flavour: Flavour) -> Option<Loc> {
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return None;
+        }
+        Some(self.locate(path, flavour))
+    }
+
+    /// The words of what the kernel serves that `path` is, on a POSIX
+    /// machine: a device under `/dev` that is not one of the few safe to read
+    /// (`null`, `zero`, `random`, `urandom`, `tty`, the standard streams
+    /// `stdin`, `stdout`, `stderr` and descriptors 0 to 2), or anything under
+    /// `/proc` that is not one of the machine's own facts (`cpuinfo`,
+    /// `meminfo`, ...): a process's environment, memory and command line, and
+    /// its `root` and `cwd`, which lead to any file. Names compare without
+    /// case, since a Mac does not; `None` for any other path and on Windows.
+    ///
+    /// A guard that lets reads through uses it to refuse these: they are
+    /// files only by name, and what they hold is the agent's own keys.
+    #[must_use]
+    pub fn kernel(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if flavour != Flavour::Posix {
+            return None;
+        }
+        let loc = self.resolved(path, flavour)?;
+        if !matches!(loc.root, Root::Unix) {
+            return None;
+        }
+        let names: Vec<&str> = loc.parts.iter().map(String::as_str).collect();
+        let is = |name: &str, other: &str| name.eq_ignore_ascii_case(other);
+        match names.as_slice() {
+            [dev, rest @ ..] if is(dev, "dev") => {
+                let readable = match rest {
+                    [name] => DEV_READABLE.iter().any(|ok| is(name, ok)),
+                    [fd, number] => is(fd, "fd") && matches!(*number, "0" | "1" | "2"),
+                    _ => false,
+                };
+                (!readable).then_some("a device file")
+            }
+            [proc, rest @ ..] if is(proc, "proc") => {
+                let readable =
+                    matches!(rest, [name] if PROC_READABLE.iter().any(|ok| is(name, ok)));
+                (!readable).then_some("the kernel's process files")
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `path` is in a git repository's own folder, at any depth
+    /// (`vendor/x/.git/hooks/pre-commit`, not only the workspace's `.git`):
+    /// `Some(words)` with what a reason calls it. A hook is a program git
+    /// runs later, so it is named for that, and anything else in `.git` is
+    /// the repository's history. Names read as for the workspace's own
+    /// `.git`, without case and, on Windows, by short name.
+    #[must_use]
+    pub fn git(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        let loc = self.resolved(path, flavour)?;
+        let windows = flavour == Flavour::Windows;
+        let at = loc
+            .parts
+            .iter()
+            .position(|part| same_fold(part, ".git") || (windows && short_git(part)))?;
+        let hooks = loc
+            .parts
+            .get(at + 1)
+            .is_some_and(|part| same_fold(part, "hooks"));
+        Some(if hooks {
+            "a git hook, which runs code"
+        } else {
+            "the repository's history"
+        })
+    }
+
+    /// How `path`s are spelled on the machine these directories describe:
+    /// `Windows` when the home directory is a Windows path, `Posix`
+    /// otherwise, the way [`new`](Self::new) tells the two apart.
+    #[must_use]
+    pub fn flavour(&self) -> Flavour {
+        if self.home.windows() {
+            Flavour::Windows
+        } else {
+            Flavour::Posix
+        }
+    }
+
+    /// Whether a sensitive place can lie inside `folder`: it is, or holds, a
+    /// sensitive place of this home directory, another user's home
+    /// directory, or the root user's. Names compare as `sensitive_at` does.
+    fn holds_sensitive(&self, folder: &Loc) -> bool {
+        self.sensitive
+            .iter()
+            .any(|(entry, ..)| above(folder, entry))
+            || self.root_homes.iter().any(|home| above(folder, home))
+            || self.neighbours.iter().any(|homes| {
+                let shorter = folder.parts.len().min(homes.parts.len());
+                folder.parts.len() <= homes.parts.len() + 1
+                    && folder.root.same(&homes.root)
+                    && folder.parts[..shorter]
+                        .iter()
+                        .zip(&homes.parts)
+                        .all(|(spelled, name)| same_name(spelled, name, folder.windows()))
+            })
+    }
+
+    /// The words and the [`Sensitivity`] of the sensitive place `loc` is, or
+    /// is under: below this home directory, below the same place in another
+    /// user's home directory (a sibling folder of this one, or the root
+    /// user's), or one of the system's own secrets. Names compare without
+    /// case on every host, and by their Windows short names on Windows.
+    fn sensitive_at(&self, loc: &Loc) -> Option<(&'static str, Sensitivity)> {
+        let windows = loc.windows();
+        if let Some((_, words, kind)) = self.sensitive.iter().find(|(file, ..)| below(loc, file)) {
+            return Some((words, *kind));
+        }
+        let tail = |home: &Loc, skip: usize| {
+            let at = home.parts.len() + skip;
+            (loc.parts.len() > at && lead(loc, home)).then(|| &loc.parts[at..])
+        };
+        let homes = self
+            .neighbours
+            .iter()
+            .filter_map(|folder| tail(folder, 1))
+            .chain(self.root_homes.iter().filter_map(|home| tail(home, 0)));
+        for tail in homes {
+            let hit = SENSITIVE.iter().find(|(entry, ..)| {
+                entry.len() <= tail.len()
+                    && tail
+                        .iter()
+                        .zip(*entry)
+                        .all(|(spelled, name)| same_name(spelled, name, windows))
+            });
+            if let Some((_, words, kind)) = hit {
+                return Some((words, *kind));
+            }
+        }
+        None
     }
 }
 
@@ -771,7 +1445,34 @@ impl Resolver {
 /// protected path is spelled as is the caller's to say), or, on Windows, its
 /// 8.3 short name.
 fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
-    spelled.eq_ignore_ascii_case(name) || (windows && short_name(spelled, name))
+    same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
+}
+
+/// `c` as the widest reading of "the same without case" has it: the one
+/// character its upper case is, then the one its lower case is, so the long
+/// s `ſ`, the Kelvin sign `K`, the Ångström sign `Å`, the Ohm sign `Ω` and the
+/// capital sharp s `ẞ` are an `s`, a `k`, an `å`, an `ω` and a `ß`; a
+/// character whose case is more than one stays itself. APFS folds this far;
+/// NTFS does not (its table maps `ſ` up and leaves the signs alone), so this
+/// is used only where matching too much fails closed (the home directory,
+/// the sensitive places, protected paths and `.git`), and never for the
+/// workspace or a temporary folder, where it would make another folder the
+/// agent's own.
+fn fold(c: char) -> char {
+    let upper = single(c.to_uppercase()).unwrap_or(c);
+    single(upper.to_lowercase()).unwrap_or(upper)
+}
+
+/// The one character `chars` yields; `None` for none or several.
+fn single(mut chars: impl Iterator<Item = char>) -> Option<char> {
+    let only = chars.next()?;
+    chars.next().is_none().then_some(only)
+}
+
+/// Whether two names are the same without case, by [`fold`].
+fn same_fold(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+        || (!(a.is_ascii() && b.is_ascii()) && a.chars().map(fold).eq(b.chars().map(fold)))
 }
 
 /// Whether `spelled` is a protected path or under it.
@@ -857,6 +1558,47 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
     Loc::at(Root::Unix).walk(path, flavour).parts
 }
 
+/// Whether `text` names a place on another machine: a share, spelled with two
+/// separators (`\\server\share`, `//server/share`) or as a long path
+/// (`\\?\UNC\server\share`, `\\.\UNC\server\share`,
+/// `\\?\GLOBALROOT\Device\Mup\server\share`). Touching it contacts the
+/// server, which is offered the user's Windows credentials. `false` on
+/// `Posix`, where two separators are one.
+///
+/// Core reads a share's root only when it holds no wildcard, and a `?` is
+/// one, so the root is read here: two separators start it, and what is not a
+/// share is a long path or a device that is a disk (`\\?\C:\x`,
+/// `\\.\PhysicalDrive0`). Windows folds repeated separators and drops `.`
+/// parts, so `\\.\\UNC\host\share` and `\\.\.\UNC\host\share` are the same
+/// share; a `..` could undo any of it, so a path with one counts.
+#[must_use]
+pub fn network(text: &str, flavour: Flavour) -> bool {
+    if flavour == Flavour::Posix {
+        return false;
+    }
+    let separators = flavour.separators();
+    let mut chars = text.chars();
+    if !(chars.next().is_some_and(|c| separators.contains(&c))
+        && chars.next().is_some_and(|c| separators.contains(&c)))
+    {
+        return false;
+    }
+    let mut raw = text[2..].split(separators);
+    let first = raw.next().unwrap_or_default();
+    let rest: Vec<&str> = raw
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if first == ".." || rest.contains(&"..") {
+        return true;
+    }
+    match first {
+        "?" | "." => rest.first().is_some_and(|kind| {
+            kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
+        }),
+        _ => true,
+    }
+}
+
 /// A device a path names, by its spelling: `/dev/null`, `/dev/fd/<digits>`
 /// and the disks under `/dev` on either flavour, and on Windows also `NUL`,
 /// `CON` and the `\\.\` device namespace.
@@ -871,19 +1613,22 @@ pub fn parts(path: &str, flavour: Flavour) -> Vec<String> {
 /// does not show, so it is never a device.
 #[must_use]
 pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
+    if flavour == Flavour::Windows
+        && (prefix(text, '.').is_some()
+            || (verbatim(text).is_some() && windows_root(text).is_none()))
+    {
+        // The device namespace is the root of what follows: `..` cannot
+        // climb out of it. A long path that names no drive and no share
+        // (`\\?\GLOBALROOT\...`, `\\?\Volume{...}\...`) is in a namespace
+        // of its own, which is as much a disk.
+        return Some(Place::Disk);
+    }
     if text.contains('{') {
         return None;
     }
     let lower = text.to_ascii_lowercase();
-    if flavour == Flavour::Windows {
-        if matches!(lower.as_str(), "nul" | "nul:" | "con" | "con:") {
-            return Some(Place::Null);
-        }
-        // The device namespace is the root of what follows: `..` cannot
-        // climb out of it.
-        if lower.starts_with("\\\\.\\") || lower.starts_with("//./") {
-            return Some(Place::Disk);
-        }
+    if flavour == Flavour::Windows && matches!(lower.as_str(), "nul" | "nul:" | "con" | "con:") {
+        return Some(Place::Null);
     }
     let rest = lower.strip_prefix('/')?;
     let name: Vec<String> = if flavour == Flavour::Windows {
@@ -983,8 +1728,14 @@ mod tests {
             ("/data/x", Place::Outside),
             ("/tmp", Place::Temp { exact: true }),
             ("/tmp/x/y", Place::Temp { exact: false }),
-            (".git/config", Place::Sensitive("the repository's history")),
-            ("/home/me/.ssh/id_rsa", Place::Sensitive("your SSH keys")),
+            (
+                ".git/config",
+                Place::Sensitive("the repository's history", Sensitivity::History),
+            ),
+            (
+                "/home/me/.ssh/id_rsa",
+                Place::Sensitive("your SSH keys", Sensitivity::Secret),
+            ),
             ("/dev/null", Place::Null),
             ("/dev/fd/3", Place::Null),
             ("/dev/sda1", Place::Disk),
@@ -1023,8 +1774,14 @@ mod tests {
                 Place::Temp { exact: true },
             ),
             (r"C:\Windows\Temp\x", Place::Temp { exact: false }),
-            (r"C:\Users\me\.SSH\id", Place::Sensitive("your SSH keys")),
-            (r".GIT\config", Place::Sensitive("the repository's history")),
+            (
+                r"C:\Users\me\.SSH\id",
+                Place::Sensitive("your SSH keys", Sensitivity::Secret),
+            ),
+            (
+                r".GIT\config",
+                Place::Sensitive("the repository's history", Sensitivity::History),
+            ),
             ("nul", Place::Null),
             ("CON:", Place::Null),
             (r"\\.\PhysicalDrive0", Place::Disk),
@@ -1051,7 +1808,10 @@ mod tests {
         for (rest, place) in [
             ("", Place::Home { exact: true }),
             ("/", Place::Home { exact: true }),
-            ("/.ssh/id", Place::Sensitive("your SSH keys")),
+            (
+                "/.ssh/id",
+                Place::Sensitive("your SSH keys", Sensitivity::Secret),
+            ),
             ("/C:/x", Place::Outside),
             ("/..", Place::Home { exact: false }),
             ("/../..", Place::Top("the root of the disk")),
@@ -1068,7 +1828,10 @@ mod tests {
 
     #[test]
     fn a_windows_wildcard_in_the_workspace_folder_can_reach_the_repository_history() {
-        let hidden = Place::Sensitive("a hidden file such as the repository's history");
+        let hidden = Place::Sensitive(
+            "a hidden file such as the repository's history",
+            Sensitivity::History,
+        );
         let posix = testing::posix();
         for path in [
             "*git",
@@ -1133,7 +1896,10 @@ mod tests {
 
     #[test]
     fn a_posix_wildcard_reaches_the_repository_history_when_hidden_names_match() {
-        let hidden = Place::Sensitive("a hidden file such as the repository's history");
+        let hidden = Place::Sensitive(
+            "a hidden file such as the repository's history",
+            Sensitivity::History,
+        );
         let posix = testing::posix();
         let resolver = Resolver::new(&posix);
         let place =
@@ -1219,11 +1985,17 @@ mod tests {
             ("src/*/../../../x", Place::Outside),
             (
                 ".g*",
-                Place::Sensitive("a hidden file such as the repository's history"),
+                Place::Sensitive(
+                    "a hidden file such as the repository's history",
+                    Sensitivity::History,
+                ),
             ),
             (
                 "*/.git",
-                Place::Sensitive("a hidden file such as the repository's history"),
+                Place::Sensitive(
+                    "a hidden file such as the repository's history",
+                    Sensitivity::History,
+                ),
             ),
             ("/home/me/*", Place::Home { exact: true }),
             ("/etc/*", Place::Top("a system folder")),
@@ -1381,7 +2153,7 @@ mod tests {
     #[test]
     fn windows_drops_the_dots_and_spaces_a_name_ends_in() {
         let paths = testing::windows();
-        let history = Place::Sensitive("the repository's history");
+        let history = Place::Sensitive("the repository's history", Sensitivity::History);
         for (path, place) in [
             (".git.", history),
             (".git ", history),
@@ -1390,7 +2162,10 @@ mod tests {
             (r".git.\objects", history),
             (r"src\..\.git.", history),
             (r"C:\Users\me\dev\repo\.git.", history),
-            (r"C:\Users\me\.ssh.\id", Place::Sensitive("your SSH keys")),
+            (
+                r"C:\Users\me\.ssh.\id",
+                Place::Sensitive("your SSH keys", Sensitivity::Secret),
+            ),
             ("notes.txt.", Place::Inside),
             ("notes.txt ", Place::Inside),
             ("build...", Place::Inside),
@@ -1423,7 +2198,7 @@ mod tests {
     #[test]
     fn a_short_name_directly_in_a_workspace_may_be_the_repository_history() {
         let paths = testing::windows();
-        let history = Place::Sensitive("the repository's history");
+        let history = Place::Sensitive("the repository's history", Sensitivity::History);
         for (path, place) in [
             ("GIT~1", history),
             ("git~2", history),
@@ -1487,12 +2262,14 @@ mod tests {
             );
         }
         // A drive or a share is no stream, and a device name keeps its colon.
-        // One letter and a colon is a drive, as Windows reads it.
+        // One letter and a colon is a drive, as Windows reads it; with no
+        // separator after it, the drive's own working directory.
         for (path, place) in [
-            ("x:stream", Place::Top("a top-level folder")),
+            ("x:stream", Place::Unknown),
             (r"C:\Users\me\dev\repo\x", Place::Inside),
             (r"C:\Users\me", Place::Home { exact: true }),
-            (r"c:", Place::Top("the root of the disk")),
+            (r"c:\", Place::Top("the root of the disk")),
+            (r"c:", Place::Workspace { exact: true }),
             (r"\\server\share\x\y", Place::Outside),
             ("nul:", Place::Null),
             ("CON:", Place::Null),
@@ -1511,7 +2288,7 @@ mod tests {
     #[test]
     fn a_windows_part_that_cannot_be_read_is_known_only_when_it_runs() {
         let paths = testing::windows();
-        let history = Place::Sensitive("the repository's history");
+        let history = Place::Sensitive("the repository's history", Sensitivity::History);
         for path in [
             // Before the last: only dots and spaces, but not `.` or `..`.
             r".git\...\..\objects",
