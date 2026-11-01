@@ -6,7 +6,7 @@ use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
 use crate::{Rule, Shell};
-use milo_guards_core::spelling::glob;
+use milo_guards_core::spelling::{glob, verbatim};
 use milo_guards_core::Flavour;
 
 impl Checker<'_> {
@@ -543,8 +543,10 @@ impl Checker<'_> {
             };
             let at = text.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
             // cmd reads no wildcard in a folder part (`*\x`): the resolver
-            // judges the whole path.
-            if glob::has_wildcard(&text[..at]) {
+            // judges the whole path. The `?` of a long-path prefix
+            // (`\\?\C:\...`) is not a wildcard.
+            let folder_text = &text[..at];
+            if glob::has_wildcard(verbatim(folder_text).unwrap_or(folder_text)) {
                 continue;
             }
             let reaches = glob::can_match_git_entry(&text[at..], Flavour::Windows);
