@@ -1276,7 +1276,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`, `destroy_resources`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&
