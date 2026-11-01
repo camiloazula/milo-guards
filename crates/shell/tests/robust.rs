@@ -243,3 +243,568 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     // A few reads of a short script are fine.
     assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
 }
+
+// What follows widens the random lines, says what each may be called, times
+// the longest, and pins the limits.
+
+/// More syntax than `PIECES`: quotes and substitutions left open, here-
+/// documents with no end, here-strings, control and Unicode edge characters,
+/// PowerShell and cmd metacharacters, the keywords that open a block, and
+/// a few plain words.
+const WIDE_PIECES: [&str; 76] = [
+    // Left open.
+    "'",
+    "\"",
+    "`",
+    "$(",
+    "$((",
+    "${",
+    "$'",
+    "@(",
+    "@{",
+    "<(",
+    ">(",
+    "(",
+    "((",
+    "{",
+    "[",
+    "[[",
+    // Closing with nothing to close.
+    ")",
+    "))",
+    "}",
+    "]",
+    "]]",
+    ";;",
+    "esac",
+    "fi",
+    "done",
+    "'@",
+    "\"@",
+    // Here-documents and here-strings, with no end.
+    "<<EOF",
+    "<<-EOF",
+    "<<'EOF'",
+    "<<<",
+    "@'",
+    "@\"",
+    "<#",
+    // Blocks that open.
+    "if",
+    "then",
+    "case x in",
+    "for x in",
+    "while",
+    "function f {",
+    "f() {",
+    "ForEach-Object {",
+    "|%",
+    // Operators, alone or doubled.
+    "|",
+    "||",
+    "&",
+    "&&",
+    ";",
+    ">",
+    ">>",
+    "<",
+    "2>&1",
+    "\n",
+    "\r\n",
+    // The edges of text.
+    "\0",
+    "\\",
+    "\u{feff}",
+    "\u{fffd}",
+    "\u{2028}",
+    "é",
+    // Variables and escapes of the other shells.
+    "%X%",
+    "%~dp0",
+    "!X!",
+    "^",
+    "^&",
+    "$_",
+    "$env:X",
+    // What they run.
+    "rm -rf /",
+    "Remove-Item -Recurse",
+    "cmd /c",
+    "powershell -c",
+    "sh -c",
+    "Invoke-Expression",
+    "echo",
+    "ls",
+    "pwd",
+];
+
+const SHELLS: [Shell; 3] = [Shell::Posix, Shell::PowerShell, Shell::Cmd];
+
+fn paths_for(shell: Shell) -> milo_guards_shell::Paths {
+    if shell == Shell::Posix {
+        posix()
+    } else {
+        windows()
+    }
+}
+
+/// A line cut where it may split a character, with bytes no text holds
+/// joined on, read back the way `String::from_utf8_lossy` does.
+fn lossy(line: &str, random: &mut Lcg) -> String {
+    let mut bytes = line.as_bytes().to_vec();
+    if !bytes.is_empty() && random.next().is_multiple_of(2) {
+        bytes.truncate(random.next() % bytes.len());
+    }
+    for _ in 0..random.next() % 3 {
+        bytes.push([0xff, 0xfe, 0xc3, 0xe2, 0x80, 0xf0, 0x00][random.next() % 7]);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+fn wide_random_lines_never_panic_and_stay_quick() {
+    // The time a turn can wait for one line, with room for the debug build
+    // `just verify` runs: lines this short take microseconds.
+    const WORST: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut random = Lcg(0x5eed);
+    let mut worst = (std::time::Duration::ZERO, String::new());
+    let (mut unreadable, mut lines) = (0, 0);
+    for number in 0..4_500 {
+        let length = random.next() % 32;
+        let pieces: Vec<&str> = (0..length)
+            .map(|_| WIDE_PIECES[random.next() % WIDE_PIECES.len()])
+            .collect();
+        let mut line = pieces.join(if random.next().is_multiple_of(3) {
+            ""
+        } else {
+            " "
+        });
+        // A third of the lines are cut, or have stray bytes joined on.
+        if number % 3 == 0 {
+            line = lossy(&line, &mut random);
+        }
+        for shell in SHELLS {
+            let paths = paths_for(shell);
+            let started = std::time::Instant::now();
+            let assessment = classify(&line, shell, &paths);
+            let took = started.elapsed();
+            if took > worst.0 {
+                worst = (took, line.clone());
+            }
+            let _ = effect(&line, shell, &paths);
+            let wrong = disagreements(shell, &paths, [line.as_str()]);
+            assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
+            lines += 1;
+            unreadable += usize::from(
+                assessment
+                    .findings()
+                    .iter()
+                    .any(|finding| finding.rule == Rule::Unreadable),
+            );
+        }
+    }
+    assert!(worst.0 < WORST, "{:?} for {:?}", worst.0, worst.1);
+    // The set really is noise: most of it cannot be read.
+    assert!(unreadable * 3 > lines, "only {unreadable} of {lines}");
+}
+
+/// How a delete is written in `shell`.
+fn delete_in(shell: Shell) -> &'static str {
+    match shell {
+        Shell::PowerShell => "Remove-Item -Recurse -Force C:\\",
+        Shell::Cmd => "rd /s /q C:\\",
+        _ => "rm -rf /",
+    }
+}
+
+#[test]
+fn a_delete_among_plain_words_and_separators_is_never_safe() {
+    // A line of plain words, separators and one delete: nothing in it can
+    // make the delete inert (no quote, no comment, no here-document), so a
+    // safe verdict is a false one, whatever else the line holds.
+    const WORDS: [&str; 7] = ["echo", "ls", "pwd", ":", "é", "\u{fffd}", "~"];
+    // What ends a command in each shell: `;` is a separator in POSIX shell
+    // and PowerShell, and a space in cmd.
+    let separators = |shell: Shell| -> Vec<&'static str> {
+        let mut all = vec!["\n", "\r\n", "&&", "||", "|", " & "];
+        if shell != Shell::Cmd {
+            all.push(";");
+        }
+        all
+    };
+    let mut random = Lcg(11);
+    let mut wrong = Vec::new();
+    for _ in 0..3_000 {
+        for shell in SHELLS {
+            let separators = separators(shell);
+            let before = random.next() % 4;
+            let after = random.next() % 4;
+            let mut line = String::new();
+            for _ in 0..before {
+                for _ in 0..=random.next() % 3 {
+                    line += WORDS[random.next() % WORDS.len()];
+                    line += " ";
+                }
+                line += separators[random.next() % separators.len()];
+                line += " ";
+            }
+            line += delete_in(shell);
+            for _ in 0..after {
+                line += " ";
+                line += separators[random.next() % separators.len()];
+                line += " ";
+                line += WORDS[random.next() % WORDS.len()];
+            }
+            if classify(&line, shell, &paths_for(shell)).is_safe() {
+                wrong.push(format!("{shell:?}: {line:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "called safe:\n{}", wrong.join("\n"));
+}
+
+/// What `shell` reads as a plain word, where another shell reads syntax: the
+/// pieces an unfinished line may end in that are not unfinished there. cmd
+/// has no single quotes, backticks, `$(`, `${` or braces; PowerShell takes a
+/// `<<` for a plain word. The list is kept apart from the guard, so a safe
+/// verdict for a line that ends in one of these is not mistaken for a false
+/// one.
+fn literal_in(shell: Shell) -> &'static [&'static str] {
+    match shell {
+        Shell::PowerShell => &["<<EOF", "<<-EOF", "<<'EOF'"],
+        Shell::Cmd => &[
+            "'", "`", "$(", "$((", "${", "$'", "(", "((", "<<EOF", "<<-EOF", "<<'EOF'",
+        ],
+        _ => &[],
+    }
+}
+
+#[test]
+fn a_line_left_open_is_risky_unless_its_shell_reads_the_end_as_plain() {
+    // Plain words, then a quote, a substitution, a bracket or a here-
+    // document left open (or an operator with nothing after it), then more
+    // plain words: the shell has not been given a whole line.
+    const WORDS: [&str; 5] = ["echo", "ls", "pwd", "é", "~"];
+    const OPEN: [&str; 17] = [
+        "'", "\"", "`", "$(", "$((", "${", "$'", "(", "((", "<<EOF", "<<-EOF", "<<'EOF'", "\0",
+        "|", "&&", "||", ">",
+    ];
+    let mut random = Lcg(23);
+    let mut wrong = Vec::new();
+    for _ in 0..1_500 {
+        let open = OPEN[random.next() % OPEN.len()];
+        let mut line = String::new();
+        for _ in 0..=random.next() % 3 {
+            line += WORDS[random.next() % WORDS.len()];
+            line += " ";
+        }
+        line += open;
+        // An operator ends the line; the others may be followed by words.
+        if !matches!(open, "|" | "&&" | "||" | ">") {
+            for _ in 0..random.next() % 3 {
+                line += " ";
+                line += WORDS[random.next() % WORDS.len()];
+            }
+        }
+        for shell in SHELLS {
+            if !literal_in(shell).contains(&open)
+                && classify(&line, shell, &paths_for(shell)).is_safe()
+            {
+                wrong.push(format!("{shell:?}: {line:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "called safe:\n{}", wrong.join("\n"));
+}
+
+#[test]
+fn a_line_left_open_or_broken_is_risky() {
+    let everywhere = [
+        "echo \"abc",
+        "{ echo",
+        "[[ x",
+        "echo ||",
+        "echo &&",
+        "echo |",
+        "|",
+        "&&",
+        "echo \0",
+        "echo >",
+        "echo <",
+        "if x",
+        "for x in",
+        "echo 'a\nrm -rf /",
+        "cat <<EOF\nrm -rf /",
+    ];
+    // cmd has no `'`, backtick, `$(` or `${`: they are plain words there.
+    let posix_and_powershell = [
+        "echo 'abc",
+        "echo $(echo",
+        "echo `ls",
+        "echo ${x",
+        "echo (",
+        "echo )",
+        "echo $(",
+        "echo $((1",
+    ];
+    let posix_only = [
+        "echo \\",
+        "case x",
+        ";",
+        "echo <<EOF",
+        "echo x <<'EOF'\nrm -rf /",
+    ];
+    let mut wrong = Vec::new();
+    for (shell, lines) in [
+        (
+            Shell::Posix,
+            [&everywhere[..], &posix_and_powershell, &posix_only].concat(),
+        ),
+        (
+            Shell::PowerShell,
+            [&everywhere[..], &posix_and_powershell].concat(),
+        ),
+        (Shell::Cmd, everywhere.to_vec()),
+    ] {
+        for line in lines {
+            if classify(line, shell, &paths_for(shell)).is_safe() {
+                wrong.push(format!("{shell:?}: {line:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "called safe:\n{}", wrong.join("\n"));
+    // And the lines a shell reads as plain words are safe there: the lists
+    // above are what the grammars say, not a guess.
+    for (shell, line) in [
+        (Shell::Cmd, "echo 'abc"),
+        (Shell::Cmd, "echo `ls"),
+        (Shell::Cmd, "echo $(echo"),
+        (Shell::Cmd, "echo ${x"),
+        (Shell::Cmd, "echo ("),
+        (Shell::PowerShell, "echo <<EOF"),
+        (Shell::PowerShell, "echo \\"),
+        (Shell::Posix, "echo }"),
+        (Shell::Posix, "echo x <<'EOF'\nrm -rf /\nEOF"),
+    ] {
+        assert!(
+            classify(line, shell, &paths_for(shell)).is_safe(),
+            "{shell:?}: {line:?}"
+        );
+    }
+}
+
+/// The largest `n` in `1..limit` that `reads` accepts, found by halving the
+/// range, and checked from both sides: `reads` takes `1` and not `limit`,
+/// and takes the edge but not one past it.
+fn edge(limit: usize, reads: impl Fn(usize) -> bool) -> usize {
+    assert!(reads(1), "even 1 is not read");
+    assert!(!reads(limit), "{limit} is read: the limit is further off");
+    let (mut low, mut high) = (1, limit);
+    while high - low > 1 {
+        let middle = low + (high - low) / 2;
+        if reads(middle) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    assert!(reads(low) && !reads(low + 1));
+    low
+}
+
+fn unreadable(line: &str, shell: Shell) -> bool {
+    let paths = if shell == Shell::Posix {
+        posix()
+    } else {
+        windows()
+    };
+    classify(line, shell, &paths)
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable)
+}
+
+#[test]
+fn the_longest_line_that_reads_is_the_limit() {
+    // `MAX_LEN` in `unit.rs`: a line of 64 KiB reads, a byte more does not.
+    for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+        let found = edge(70_000, |n| {
+            !unreadable(&format!("echo {}", "a".repeat(n.saturating_sub(5))), shell)
+        });
+        assert_eq!(found, 64 * 1024, "{shell:?}");
+    }
+}
+
+#[test]
+fn the_deepest_nesting_that_reads_is_the_limit() {
+    // `MAX_TREE_DEPTH` in `unit.rs` is 400 levels of the parse tree; how many
+    // brackets that is depends on how many levels the grammar gives each.
+    // The edges are found by measuring and then held: a change to the limit,
+    // or to how deep a grammar nests, moves one and fails here.
+    for (shell, open, close, expected) in [
+        (Shell::Posix, "(", ")", 400),
+        (Shell::Posix, "$(", ")", 132),
+        (Shell::Posix, "((", "))", 200),
+        (Shell::Posix, "{ ", "; }", 397),
+        (Shell::PowerShell, "(", ")", 32),
+        (Shell::PowerShell, "$(", ")", 30),
+        (Shell::PowerShell, "@(", ")", 30),
+        (Shell::PowerShell, "{ ", " }", 26),
+        (Shell::Cmd, "(", ")", 398),
+    ] {
+        let found = edge(1_000, |n| {
+            !unreadable(&(open.repeat(n) + "echo" + &close.repeat(n)), shell)
+        });
+        assert_eq!(found, expected, "{shell:?} {open}");
+    }
+}
+
+/// `text` as the script of `sh -c "…"`, with its backslashes and double
+/// quotes escaped.
+fn shell_around(text: &str) -> String {
+    format!(
+        "sh -c \"{}\"",
+        text.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// Whether `line`, which hides `rm -rf /` at its centre, is read as far as
+/// the delete: it is when the line is risky as a delete and not unreadable.
+fn reads_the_delete(line: &str) -> bool {
+    let assessment = classify(line, Shell::Posix, &posix());
+    let rules: Vec<Rule> = assessment
+        .findings()
+        .iter()
+        .map(|finding| finding.rule)
+        .collect();
+    rules.contains(&Rule::Delete) && !rules.contains(&Rule::Unreadable)
+}
+
+#[test]
+fn the_most_shells_in_shells_that_read_is_the_limit() {
+    // `MAX_DEPTH` in `unit.rs`: eight shells started inside shells read, the
+    // ninth is too deep.
+    let found = edge(12, |n| {
+        let mut line = "rm -rf /".to_string();
+        for _ in 0..n {
+            line = shell_around(&line);
+        }
+        reads_the_delete(&line)
+    });
+    // `edge` counts from one shell; the line with none is the plain delete.
+    assert!(reads_the_delete("rm -rf /"));
+    assert_eq!(found, 8);
+}
+
+#[test]
+fn the_most_here_documents_that_read_is_the_limit() {
+    // `MAX_HEREDOCS` in `unit.rs`: a script is counted by its runs of `<<`
+    // before it is parsed, because the bash grammar takes time that grows
+    // with the square of how many it starts. Here-strings make runs of them
+    // that read, so the edge can be measured.
+    let found = edge(2_000, |n| {
+        !unreadable(&"cat <<< a; ".repeat(n), Shell::Posix)
+    });
+    assert_eq!(found, 256);
+    // Each one that starts a here-document is counted the same, read or not.
+    assert!(unreadable(&"cat <<EOF; ".repeat(257), Shell::Posix));
+}
+
+#[test]
+fn the_most_wrappers_in_front_of_a_program_that_read_is_the_limit() {
+    // `MAX_WRAPPERS` in `launch.rs`: fifteen wrappers and the program read;
+    // with a sixteenth the line is too wrapped.
+    for wrapper in [
+        "sudo", "env", "nohup", "nice", "command", "time", "exec", "xargs",
+    ] {
+        let found = edge(40, |n| {
+            reads_the_delete(&format!("{}rm -rf /", format!("{wrapper} ").repeat(n)))
+        });
+        assert_eq!(found, 15, "{wrapper}");
+    }
+}
+
+#[test]
+fn the_most_finds_in_finds_that_read_is_the_limit() {
+    // `find -exec find -exec …`: each is a wrapper, and is read as deep as
+    // the wrappers are, sixteen of them.
+    let found = edge(40, |n| {
+        reads_the_delete(&format!("{}rm -rf x \\;", "find . -exec ".repeat(n)))
+    });
+    assert_eq!(found, 16);
+}
+
+#[test]
+fn finds_in_finds_cost_what_the_line_is_long_not_what_it_multiplies_to() {
+    // Each `find` runs its program once for each place it searches, and the
+    // program is a `find` that does the same: eight places and sixteen levels
+    // are eight to the sixteenth reads if every one is made. Past a budget
+    // the line is unreadable instead.
+    let wide = "find a a a a a a a a -exec ".repeat(16) + "rm -rf x \\;";
+    // And as deep as the line is long: this overflowed the stack once.
+    let deep = "find . -exec ".repeat(5_000) + "rm -rf x \\;";
+    for line in [wide, deep] {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        assert!(unreadable(&line, Shell::Posix));
+        assert_ne!(effect(&line, Shell::Posix, &posix()), Effect::ReadsOnly);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+fn a_line_at_the_length_limit_is_read_in_time() {
+    // Longest line there is, in the shapes a real or a broken line takes.
+    // The bound is for the debug build `just verify` runs; a release build
+    // takes a tenth of it or less.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let fit = |unit: &str, head: &str, tail: &str| {
+        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}", unit.repeat(count))
+    };
+    let nested = |open: &str| {
+        let count = (64 * 1024 - 4) / (open.len() + 1);
+        format!("{}echo{}", open.repeat(count), ")".repeat(count))
+    };
+    let shapes = [
+        ("a chain", fit("echo x; ", "", "")),
+        ("a pipeline", fit("echo x | ", "", "cat")),
+        ("a conjunction", fit("echo x && ", "", "echo")),
+        ("one word", fit("a", "echo ", "")),
+        ("a quote left open", fit("a", "echo '", "")),
+        ("a string", fit("a", "echo \"", "\"")),
+        ("redirects", fit("echo >a; ", "", "")),
+        ("brackets", fit("[", "echo ", "")),
+        ("substitutions left open", fit("$(", "echo ", "")),
+        ("parentheses nested", nested("(")),
+        ("substitutions nested", nested("$(")),
+        ("blocks left open", fit("if x; then ", "", "")),
+        ("loops left open", fit("for i in a b; do ", "", "")),
+        ("here-documents left open", fit("cat <<EOF; ", "", "")),
+    ];
+    let mut slowest = (std::time::Duration::ZERO, String::new());
+    for (what, line) in &shapes {
+        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+        for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+            let paths = if shell == Shell::Posix {
+                posix()
+            } else {
+                windows()
+            };
+            let started = std::time::Instant::now();
+            let _ = classify(line, shell, &paths);
+            let _ = effect(line, shell, &paths);
+            let took = started.elapsed();
+            if took > slowest.0 {
+                slowest = (took, format!("{what} in {shell:?}"));
+            }
+        }
+    }
+    assert!(slowest.0 < LIMIT, "{:?} for {}", slowest.0, slowest.1);
+}

@@ -68,6 +68,26 @@ counts as far as a depth limit, and the text of all the nested scripts read
 for one line as far as a budget a few times the longest line. Past either, the
 line is unreadable.
 
+The other limits, each read as unreadable past it, and each pinned by a test
+that finds the edge by measuring it (see Tests):
+
+| Limit | Value | What it bounds |
+| --- | --- | --- |
+| Line length | 64 KiB | text parsed at all |
+| Parse tree depth | 400 levels | the walk, so the stack |
+| Shells in shells | 8 | `bash -c "sh -c '…'"` |
+| Wrappers in front of a program | 15 | `sudo env nice … rm` |
+| `find` inside `find -exec` | 16 | the walk, so the stack |
+| `find -exec` work | 256 Ki arguments | each level runs its program once per place it searches, so levels multiply |
+| Opening brackets with none closed | 400 | counted before parsing: cmd's grammar takes time that grows with the square of the depth |
+| Here-documents (runs of `<<`) | 256 | counted before parsing, for the same reason in bash's |
+
+The grammars themselves take time that grows with the square of the line on
+some noise at the length limit (tens of thousands of `)`, `|` or `>` in a
+row, cmd's `@`): seconds in a release build, which the two counts above do not
+cover. A real line never has them, and they come back risky, so the guard is
+slow there, never wrong.
+
 ### Actions that run later
 
 Some commands only register a script, which runs when something happens
@@ -723,5 +743,35 @@ and assessment must be `classify`'s, and its tree must show every finding.
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
 until it is named there. `tests/robust.rs` feeds the guard random lines and
-checks that it never panics, and that a line too long or too nested comes back
-unreadable (and `Unknown` for `effect`).
+checks what no line may do to the guard, for each of the three shells:
+
+- **Never panics, and `classify`, `effect` and `explain` agree.** Thousands of
+  seeded random lines (a small linear congruential generator, so a failure
+  names its seed) joined from a wide set of pieces: quotes, substitutions and
+  brackets left open, here-documents with no end, here-strings, NUL, a line cut
+  through a character or with bytes no text holds read back lossily, and
+  PowerShell and cmd metacharacters. The same noise goes through `effect` and
+  `explain`, which must agree with `classify`.
+- **A line left open is risky, and a delete is never safe.** Safe is a verdict
+  the guard has to earn, so the tests say what a safe line may be, apart from
+  the guard. A line of plain words, separators and one delete (written for the
+  shell) is never safe: nothing in it can make the delete inert. A line of
+  plain words that ends in a quote, substitution, bracket or here-document left
+  open, or an operator with nothing after it, is never safe either, unless its
+  shell reads that ending as a plain word: the test keeps a list of those per
+  shell (cmd has no single quotes or backticks, PowerShell takes `<<` as a
+  word), and a table pins both sides. That a line is read at all is not the
+  claim: a program the guard does not know is safe.
+- **A line too long or too nested comes back unreadable** (and `Unknown` for
+  `effect`).
+- **The time.** The worst of the random lines, and a line at the length limit
+  in each of fourteen shapes in each shell, classify and give `effect` within a
+  bound that holds in the debug build `just verify` runs (500 ms and 2 s). In a
+  release build the longest takes under 100 ms, and most are far quicker.
+- **The limits.** The table above, found by measuring and held on both sides:
+  the longest line, the deepest bracket nesting for each opener in each shell,
+  the most shells in shells, wrappers in front of a program, finds in finds and
+  here-documents that still read. One past each is unreadable, so a later
+  change to a limit, or to how deep a grammar nests, fails loudly. `find`s
+  eight places wide and sixteen deep, and five thousand deep, are unreadable
+  and return at once.

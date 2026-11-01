@@ -1,14 +1,37 @@
 //! `find`: the places it searches, what its filters can match, and the
 //! programs its `-exec` runs for each file found.
 
-use super::add;
+use super::{add, MAX_WRAPPERS};
 use crate::unit::{Arg, Split, Unit};
-use crate::Shell;
+use crate::{Rule, Shell};
+
+/// The most work `find -exec` may be read to do for one line, in all the
+/// `find`s inside `find`s, counted in arguments handed to the programs it
+/// runs: each level runs the program once for each place it searches, so
+/// the work could grow as fast as the line is long, or faster.
+const MAX_EXEC_WORK: usize = 256 * 1024;
 
 /// `find`'s `-exec`, `-execdir`, `-ok` and `-okdir` run a program for each
 /// file found: each becomes a unit, with `{}` a file under each place it
 /// searches.
 pub(super) fn find_exec(split: &mut Split, unit: &Unit, depth: usize) {
+    // A `find` that runs a `find` that runs a `find` ... would be walked as
+    // deep as the line is long.
+    if split.find_depth >= MAX_WRAPPERS {
+        split.problem(
+            Rule::Unreadable,
+            "wraps a program in too many others to read",
+            None,
+        );
+        return;
+    }
+    split.find_depth += 1;
+    run_each(split, unit, depth);
+    split.find_depth -= 1;
+}
+
+/// [`find_exec`], once it is known how deep it is.
+fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
     let targets = find_targets(&unit.args);
     let mut iter = unit.args.iter();
     while let Some(arg) = iter.next() {
@@ -26,6 +49,11 @@ pub(super) fn find_exec(split: &mut Split, unit: &Unit, depth: usize) {
             .iter()
             .any(|arg| arg.known().is_some_and(|text| text.contains("{}")));
         for target in &targets {
+            split.find_work += rest.len() + 1;
+            if split.find_work > MAX_EXEC_WORK {
+                split.problem(Rule::Unreadable, "runs too many programs to read", None);
+                return;
+            }
             let mut args: Vec<Arg> = rest
                 .iter()
                 .map(|arg| match (arg.known(), target) {

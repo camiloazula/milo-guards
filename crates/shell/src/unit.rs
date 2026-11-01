@@ -258,6 +258,13 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How deep the line is inside `find … -exec find … -exec …`: each
+    /// level is read once for every place the one outside it searches.
+    pub(crate) find_depth: usize,
+    /// How much work `find -exec` has been read to do, in all, counted in
+    /// arguments handed on: the levels multiply, so a line must not make
+    /// this grow without bound.
+    pub(crate) find_work: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -779,6 +786,42 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
+/// The most here-documents a script may start before it is not read: the
+/// bash grammar takes time that grows with the square of their number
+/// (seconds, at the length limit), and no real script starts this many.
+const MAX_HEREDOCS: usize = 256;
+
+/// Whether the grammars would take too long over `text`, and why, found by
+/// counting bytes without parsing: more brackets opened, with none closed
+/// in between, than a parse tree is walked deep (the line is unreadable
+/// whatever the grammar makes of it, and cmd's takes seconds to find that
+/// out at the length limit), or more here-documents than [`MAX_HEREDOCS`].
+/// The count ignores quoting, so it can only err towards unreadable.
+fn too_tangled(text: &str) -> Option<&'static str> {
+    let bytes = text.as_bytes();
+    let (mut open, mut heredocs) = (0_usize, 0_usize);
+    for (at, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' => {
+                open += 1;
+                if open > MAX_TREE_DEPTH {
+                    return Some("nests too deeply to read");
+                }
+            }
+            b')' => open = open.saturating_sub(1),
+            // The second `<` of each run of them: `<<EOF`, `<<<`.
+            b'<' if at >= 1 && bytes[at - 1] == b'<' && (at < 2 || bytes[at - 2] != b'<') => {
+                heredocs += 1;
+                if heredocs > MAX_HEREDOCS {
+                    return Some("starts too many here-documents to read");
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Split `command`; `effect` says it is also read for [`crate::effect`].
 pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
@@ -807,6 +850,10 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if text.len() > MAX_LEN {
         split.problem(Rule::Unreadable, "is too long to read", None);
+        return;
+    }
+    if let Some(why) = too_tangled(text) {
+        split.problem(Rule::Unreadable, why, None);
         return;
     }
     if depth > 0 {
