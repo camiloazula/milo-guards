@@ -120,6 +120,14 @@ pub(crate) fn canonical(name: &str) -> &str {
     }
 }
 
+/// How a value uses `$_` (see [`Walker::item_use`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ItemUse {
+    Absent,
+    Own,
+    Other,
+}
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
@@ -248,6 +256,7 @@ impl Walker<'_> {
         if key.as_deref() == Some("stop-process") {
             if let Some(elements) = node.child_by_field_name("command_elements") {
                 unit.listings = self.listings(elements);
+                unit.unread_item = self.item.is_some() && self.unread_item(elements);
             }
         }
         // A block known only when it runs (`-Action $block`, an action given
@@ -270,12 +279,124 @@ impl Walker<'_> {
     /// block of a `Where-Object` that only compares a process's name
     /// (`{ $_.ProcessName -eq 'node' }`), read as `ProcessName -eq node`.
     fn element_args(&self, element: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+        // A value a `Stop-Process` in a block builds on `$_`: the item, when
+        // it unwraps to the item or one of the process's own members, and
+        // only known when it runs for anything else.
+        if program == Some("stop-process") && self.item.is_some() {
+            match self.item_use(element) {
+                ItemUse::Absent => {}
+                ItemUse::Own => return vec![Arg::Input],
+                ItemUse::Other => {
+                    return vec![Arg::Unknown(unit::text(&element, self.source).to_string())]
+                }
+            }
+        }
         if program == Some("where-object") && is_script_block(element) {
             if let Some(filter) = self.name_filter(element) {
                 return filter.to_vec();
             }
         }
         vec![self.expr(element)]
+    }
+
+    /// How a value uses `$_`, the item of a `ForEach-Object` block: not at
+    /// all; as the item or one of the process's own members (`.Id`, `.Name`,
+    /// `.ProcessName`), through any parentheses, `$( )`, `@( )`, cast or
+    /// string that holds nothing else; or as anything else (`$_.Parent`,
+    /// `$_ + 1`, a call), which is not the processes the pipeline hands on.
+    fn item_use(&self, node: Node<'_>) -> ItemUse {
+        let mut holds = false;
+        unit::for_each_node(node, |inner| {
+            holds |= inner.kind() == "variable" && self.is_item(unit::text(&inner, self.source));
+        });
+        if !holds {
+            return ItemUse::Absent;
+        }
+        let mut node = node;
+        loop {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            let next = match (node.kind(), children.as_slice()) {
+                ("variable", _) => {
+                    return if self.is_item(unit::text(&node, self.source)) {
+                        ItemUse::Own
+                    } else {
+                        ItemUse::Other
+                    };
+                }
+                ("member_access", [object, member]) => {
+                    let own = object.kind() == "variable"
+                        && self.is_item(unit::text(object, self.source))
+                        && member.kind() == "member_name"
+                        && ["id", "name", "processname"]
+                            .iter()
+                            .any(|own| unit::text(member, self.source).eq_ignore_ascii_case(own));
+                    return if own { ItemUse::Own } else { ItemUse::Other };
+                }
+                // `"$_"` and `"$($_.Id)"`: a string that is one expansion.
+                ("string_literal", [literal]) if literal.kind() == "expandable_string_literal" => {
+                    match literal
+                        .named_children(&mut literal.walk())
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                    {
+                        [only]
+                            if only.start_byte() == literal.start_byte() + 1
+                                && only.end_byte() + 1 == literal.end_byte() =>
+                        {
+                            *only
+                        }
+                        _ => return ItemUse::Other,
+                    }
+                }
+                // `[int]$_.Id`: a cast of the value, which the grammar holds
+                // in an operator's layer (`-not $_.Id` is one too, and not a
+                // cast).
+                ("expression_with_unary_operator", [cast]) if cast.kind() == "cast_expression" => {
+                    *cast
+                }
+                // `[int]$_.Id`: a cast of the value.
+                ("cast_expression", [kind, value]) if kind.kind() == "type_literal" => *value,
+                (
+                    "parenthesized_expression"
+                    | "sub_expression"
+                    | "array_expression"
+                    | "statement_list"
+                    | "pipeline"
+                    | "pipeline_chain"
+                    | "unary_expression"
+                    | "array_literal_expression"
+                    | "logical_expression"
+                    | "bitwise_expression"
+                    | "comparison_expression"
+                    | "additive_expression"
+                    | "multiplicative_expression"
+                    | "format_expression"
+                    | "range_expression",
+                    [only],
+                ) => *only,
+                _ => return ItemUse::Other,
+            };
+            node = next;
+        }
+    }
+
+    /// Whether any value given to a `Stop-Process` (`elements`, its
+    /// arguments) is built on `$_` into something that is not the item.
+    fn unread_item(&self, elements: Node<'_>) -> bool {
+        let mut cursor = elements.walk();
+        let other = elements.named_children(&mut cursor).any(|element| {
+            if element.kind() == "array_literal_expression" {
+                let mut items = element.walk();
+                let other = element
+                    .named_children(&mut items)
+                    .any(|item| self.item_use(item) == ItemUse::Other);
+                other
+            } else {
+                self.item_use(element) == ItemUse::Other
+            }
+        });
+        other
     }
 
     /// `{ $_.Name -eq 'x' }`: the property, the operator and the value of a
@@ -758,7 +879,11 @@ impl Walker<'_> {
     }
 
     fn is_item(&self, source: &str) -> bool {
-        self.item.is_some() && matches!(source.to_ascii_lowercase().as_str(), "$_" | "$psitem")
+        self.item.is_some()
+            && matches!(
+                source.to_ascii_lowercase().as_str(),
+                "$_" | "$psitem" | "${_}" | "${psitem}"
+            )
     }
 
     /// The variables that name a known place, as paths the resolver reads;

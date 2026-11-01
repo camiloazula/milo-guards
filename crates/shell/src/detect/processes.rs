@@ -129,18 +129,15 @@ impl Checker<'_> {
     /// `pkill`: regular expressions, searched for in each name.
     pub(super) fn pkill(&mut self, args: &[Arg]) {
         let options = Options::read(args, "uUGgPstFjMNqrO", &PKILL_LONGS);
-        let user = ["u", "U", "G", "euid", "uid", "group"]
-            .iter()
-            .any(|name| options.has_value(name));
         if options.has("v") || options.has("inverse") {
-            // Everything but what matches.
-            if !options.operands.is_empty() || user {
-                self.add(
-                    Rule::StopSystem,
-                    "stops every process but the ones it names",
-                    options.operands.first().copied(),
-                );
-            }
+            // Everything but what matches: what a pattern or a selection
+            // (`-P 1234`, `-F pids.txt`, `-t tty`) names is the only thing
+            // left running, and with neither the program is an error.
+            self.add(
+                Rule::StopSystem,
+                "stops every process but the ones it names",
+                options.operands.first().copied(),
+            );
             return;
         }
         let kind = Names::Regex {
@@ -148,6 +145,9 @@ impl Checker<'_> {
             ignore_case: options.has("i") || options.has("ignore-case"),
             full: options.has("f") || options.has("full"),
         };
+        let user = ["u", "U", "G", "euid", "uid", "group"]
+            .iter()
+            .any(|name| options.has_value(name));
         // Given no pattern, a selection stops everything it picks: a user's
         // processes, the children of `init`, every process older than a
         // second, a terminal's.
@@ -304,7 +304,20 @@ impl Checker<'_> {
         if params.has(&["id", "inputobject"]) || !params.positional.is_empty() {
             // Picked by id or by object: judged by what they hold, a
             // listing written in the argument or `$_` in a block that is a
-            // stage after one.
+            // stage after one. After a `Get-Process`, a value built on `$_`
+            // that is not the item or one of the process's own members
+            // (`$_.Parent`, `($_.Parent)`, `$_ + 1`) is another process, only
+            // known when it runs; after anything else `$_` is not a process.
+            let listed = unit
+                .stage
+                .is_some_and(|stage| stage.index > 0 && self.pipeline(stage.pipeline).is_some());
+            if unit.unread_item && listed {
+                self.add(
+                    Rule::StopSystem,
+                    "stops processes only known when it runs",
+                    None,
+                );
+            }
             for listing in &unit.listings {
                 self.judge_listing(&listing.args, &listing.between);
             }

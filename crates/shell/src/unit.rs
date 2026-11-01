@@ -91,6 +91,11 @@ pub(crate) struct Unit {
     /// The `Get-Process` listings written inside the arguments of a
     /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
     pub(crate) listings: Vec<Listing>,
+    /// Whether a value given to a `Stop-Process` in a `ForEach-Object` block
+    /// is built on `$_` into something other than the item or one of its
+    /// own members (`$_.Parent`, `$_ + 1`): not the processes the pipeline
+    /// hands it.
+    pub(crate) unread_item: bool,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -163,6 +168,7 @@ impl Unit {
             hidden: false,
             downloaded: false,
             listings: Vec::new(),
+            unread_item: false,
         }
     }
 

@@ -365,7 +365,19 @@ the same line. It is `stop_system` when the line stops more than a name:
   as `-ExpandProperty` does, and is any other stage: `Stop-Process
   -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
   an app's usual parent, and is `stop_system` as `((Get-Process
-  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. A
+  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. The
+  same holds for `$_` in a `ForEach-Object` block after a `Get-Process`:
+  `.Id`, `.Name` and `.ProcessName` pass the listing on, and any other
+  member (`$_.Parent`, `$_.Parent.Id`, `$_.Threads`) is "stops processes only
+  known when it runs". A wrapped item is read through what only wraps it,
+  parentheses, `$( )`, `@( )`, a cast (`[int]`) and a string that is one
+  expansion (`"$($_.Id)"`): `Stop-Process ($_)` and `-Id ([int]$_.Id)` are
+  judged like the pipeline (every process after a bare `Get-Process`, the
+  name after `Get-Process node`); a value that does anything else with `$_`
+  (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
+  processes only known when it runs". After a first stage that is not a
+  `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
+  `$_` is not a process and the value is read as any other `-Id`. A
   `Get-Process` anywhere else in the arguments, inside another command or a
   block, is read as one such listing, once, however many there are: the
   arguments are read in one pass that never goes below a command, so the time
