@@ -449,9 +449,9 @@ the files the stage before it lists.
 
 `7z` matches a wildcard itself, quoted or not, and a name that starts with a
 dot is among the matches. `zip` does so on Windows; on Unix it matches
-wildcards only for `-x`, `-i` and the names inside the archive, so there `zip
--m x.zip 'a*'` and `zip -mr x.zip '*git'` delete nothing. The guard judges the
-members of `zip` and `7z` alike, with the wildcards matching names that start
+wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
+names inside the archive, so there `zip -m x.zip 'a*'` and
+`zip -mr x.zip '*git'` delete nothing. The guard judges the members of `zip` and `7z` alike, with the wildcards matching names that start
 with a dot, whatever the shell. For `zip` on Unix this is a cautious choice,
 not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
 `.git`, and so is the unquoted `zip -mr x.zip *git`.

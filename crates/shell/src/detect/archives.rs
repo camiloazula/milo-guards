@@ -38,7 +38,7 @@ impl Checker<'_> {
             _ => return,
         };
         // `7z` matches a wildcard itself, quoted or not, and so does `zip` on
-        // Windows; `zip` on Unix does so only for `-x`, `-i` and names inside
+        // Windows; `zip` on Unix does so only for `-x`, `-i`, `-R` and names inside
         // the archive, so `zip -m x.zip 'a*'` there deletes nothing. A line
         // cannot show which shell's expansion a name went through, so every
         // member is judged with names that start with a dot among the
@@ -520,17 +520,14 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             if flag {
                 continue;
             }
-            // A value stands in the next argument when nothing follows its
-            // letter, and ends the bundle.
-            let separate = match letter {
-                'm' => {
-                    moves = true;
-                    false
-                }
-                '@' => {
-                    from_input = true;
-                    false
-                }
+            // A value stands in the next argument when nothing follows the
+            // option's name, and is the rest of this one when something does;
+            // either way it ends the bundle.
+            let mut separate = false;
+            let mut inside = false;
+            match letter {
+                'm' => moves = true,
+                '@' => from_input = true,
                 // Bare, they open a list; with something after the letter
                 // (`-xpat`, `-x=pat`) that is the one value, and it ends the
                 // bundle.
@@ -540,24 +537,39 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                     } else {
                         ZipList::Include
                     });
-                    false
+                    inside = !rest.is_empty();
                 }
-                'b' | 'O' | 'P' | 'Z' => rest.is_empty(),
+                'b' | 'O' | 'P' | 'Z' => separate = rest.is_empty(),
                 // `-t date` and `-tt date`, `-TT command`.
-                't' => rest.is_empty() || rest == "t",
-                'T' => rest == "T",
-                // `-s size` (`-sf` and its kin are flags), `-ds size`,
-                // `-lf file`, `-n suffixes` (`-nw` is a flag).
-                's' | 'n' => rest.is_empty(),
-                'd' => rest == "s",
-                'l' => rest == "f",
-                _ => false,
-            };
+                't' => separate = rest.is_empty() || rest == "t",
+                'T' => {
+                    separate = rest == "T";
+                    inside = rest.starts_with('T') && !separate;
+                }
+                // `-s size` and `-s100m` (`-sf` and its kin are flags).
+                's' => {
+                    separate = rest.is_empty();
+                    inside = rest.starts_with(|c: char| c.is_ascii_digit());
+                }
+                // `-n suffixes` and `-n.mp3` (`-nw` is a flag).
+                'n' => {
+                    separate = rest.is_empty();
+                    inside = !rest.is_empty() && !rest.starts_with('w');
+                }
+                // `-ds size` and `-ds10m`, `-lf file` and `-lfout`.
+                'd' | 'l' => {
+                    let name = if letter == 'd' { 's' } else { 'f' };
+                    if let Some(after) = rest.strip_prefix(name) {
+                        separate = after.is_empty();
+                        inside = !after.is_empty();
+                    }
+                }
+                _ => {}
+            }
             if separate {
                 iter.next();
             }
-            let value_inside = matches!(letter, 'x' | 'i') && !rest.is_empty();
-            if separate || value_inside || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
+            if separate || inside || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
                 break;
             }
         }

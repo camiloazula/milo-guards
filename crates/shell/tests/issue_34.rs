@@ -660,3 +660,24 @@ fn a_long_chain_of_dash_c_is_read_quickly() {
     );
     assert!(!assessment.findings().is_empty());
 }
+
+#[test]
+fn zip_a_value_attached_to_its_option_ends_the_bundle() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "zip -r -s100m x.zip ~",
+            "zip -r -n.mp3 x.zip ~",
+            "zip -r -ds10m x.zip ~",
+            "zip -r -lfmain.log x.zip ~",
+        ],
+        &[
+            ("zip -m -lfout x.zip ~", Rule::Delete),
+            ("zip -m -n.dat x.zip ~", Rule::Delete),
+            ("zip -m -n.mat x.zip ~", Rule::Delete),
+            ("zip -m -s1t x.zip ~", Rule::Delete),
+            ("zip -m -s1x x.zip ~ src", Rule::Delete),
+        ],
+    );
+}
