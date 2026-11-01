@@ -1252,14 +1252,19 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
     // Nothing found is only safe for code read whole: written whole on the
     // line, with no option and no environment around the interpreter, and
     // nothing in it outside the subset (see [`strict`]).
-    let whole = code.plain
-        && !split.environment_set()
-        && matches!(
-            code.pieces.as_slice(),
-            [Arg::Known(text)] if strict::reads_whole(language, text)
-        );
-    if !whole {
-        split.unread_code(code.pieces.first().map_or("", Arg::text));
+    let read = match code.pieces.as_slice() {
+        [Arg::Known(text)] if code.plain && !split.environment_set() => {
+            strict::reads_whole(language, text)
+        }
+        _ => None,
+    };
+    match read {
+        None => split.unread_code(code.pieces.first().map_or("", Arg::text)),
+        // An import looks in the folder the code runs in first, so code that
+        // imports is only read whole there when that folder is the
+        // workspace's, which is judged with the directories.
+        Some(true) => split.imports(code.pieces.first().map_or("", Arg::text)),
+        Some(false) => {}
     }
     split.restore_dir(outer);
 }

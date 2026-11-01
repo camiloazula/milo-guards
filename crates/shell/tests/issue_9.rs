@@ -5229,3 +5229,165 @@ fn an_assignment_after_the_interpreter_or_none_leaves_the_code_read_whole() {
         &[],
     );
 }
+
+// The second review of the strict gate: a name the line redefines, other ways
+// of setting a variable, the folder an import looks in first, and a module
+// named without its import.
+
+#[test]
+fn a_name_the_line_redefines_earlier_is_not_the_interpreter_it_shows() {
+    assert_unknown(&[
+        // An alias is used on a later line once `expand_aliases` is on, and
+        // by zsh always.
+        "shopt -s expand_aliases\nalias python3='rm -rf /home/me'\npython3 -c 'print(1)'",
+        "alias python3='rm -rf /home/me'; python3 -c 'print(1)'",
+        "alias node='node --require /tmp/x.js'\nnode -e 'console.log(1)'",
+        "alias ll='ls -l'; python3 -c 'print(1)'",
+        "unalias -a; python3 -c 'print(1)'",
+        // `hash -p` makes the shell run any binary for a name.
+        "hash -p /tmp/x/node node; node -e 'console.log(1)'",
+        "hash -r; python3 -c 'print(1)'",
+        "enable -n python3; python3 -c 'print(1)'",
+        // A function that sets an environment and calls the real program.
+        r#"node() { NODE_OPTIONS=--require=/tmp/x.js command node "$@"; }; node -e 'console.log(1)'"#,
+        r#"python3() { PYTHONPATH=/tmp/x command python3 "$@"; }; python3 -c 'import json'"#,
+        r#"function node { NODE_OPTIONS=--require=/tmp/x.js command node "$@"; }; node -e 'console.log(1)'"#,
+        "function node { echo hi; }; node -e 'console.log(1)'",
+    ]);
+    // What the function holds is still found.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The call inside the body comes before the definition ends.
+            "f() { python3 -c 'print(1)'; }; f",
+            "command -v python3 && python3 -c 'print(1)'",
+        ],
+        &[(
+            "python3() { rm -rf /home/me; }; python3 -c 'print(1)'",
+            Rule::Delete,
+        )],
+    );
+}
+
+#[test]
+fn more_ways_to_set_a_variable_earlier_in_the_line_leave_the_code_unread() {
+    assert_unknown(&[
+        "printf -v PATH /tmp/x; python3 -c 'print(1)'",
+        "printf -v PYTHONPATH /tmp/x; python3 -c 'import json'",
+        "printf -vPATH /tmp/x; python3 -c 'print(1)'",
+        "builtin printf -v PATH /tmp/x; python3 -c 'print(1)'",
+        "for PATH in /tmp/x; do python3 -c 'print(1)'; done",
+        "for NODE_OPTIONS in --require=/tmp/x.js; do node -e 'console.log(1)'; done",
+        "select PYTHONPATH in /tmp/x; do python3 -c 'import json'; done",
+        "for ((PATH=1; ; )); do python3 -c 'print(1)'; done",
+        "((PYTHONPATH=1)); python3 -c 'print(1)'",
+        "(( PATH += 1 )); python3 -c 'print(1)'",
+        "(( x++ )); python3 -c 'print(1)'",
+        "(( --x )); python3 -c 'print(1)'",
+        "echo $((x=1)); python3 -c 'print(1)'",
+        ": ${PYTHONPATH:=/tmp/x}; python3 -c 'print(1)'",
+        ": ${PYTHONPATH=/tmp/x}; python3 -c 'print(1)'",
+        ": ${PATH[0]:=/tmp/x}; python3 -c 'print(1)'",
+        "[[ ${PYTHONPATH:=/tmp/x} ]]; python3 -c 'print(1)'",
+        r#"true "${NODE_OPTIONS:=--require=./x.js}"; node -e 'console.log(1)'"#,
+        "declare -n PATH=X; python3 -c 'print(1)'",
+        "eval 'PATH=/tmp/x'; python3 -c 'print(1)'",
+    ]);
+    // A test, a default that sets nothing and plain arithmetic do not.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "[ a = b ] && python3 -c 'print(1)'",
+            "[[ a = b ]] && python3 -c 'print(1)'",
+            "[[ a == b ]] && python3 -c 'print(1)'",
+            "echo ${X:-d}; python3 -c 'print(1)'",
+            "echo $((1+2)); python3 -c 'print(1)'",
+            "printf '%s\\n' hi; python3 -c 'print(1)'",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn an_import_looks_in_the_folder_the_code_runs_in_first() {
+    // `import json` loads `./json.py` from where the code runs.
+    assert_unknown(&[
+        "cd /tmp/x && python3 -c 'import json'",
+        "cd /tmp/x; python3 -c 'import json'",
+        "cd /tmp/x && python3 -c 'import re; print(1)'",
+        "cd /tmp/x && python3 -c 'import math'",
+        "cd /tmp/x && python3 -c 'import sys'",
+        "cd .. && python3 -c 'import json'",
+        "cd ~ && python3 -c 'import json'",
+        r#"cd "$X" && python3 -c 'import json'"#,
+        "pushd /tmp/x && python3 -c 'import json'",
+        "cd /tmp/x || python3 -c 'import json'",
+        "cd sub; cd ..; cd ..; python3 -c 'import json'",
+        "cd /home/me/work/repo/.git && python3 -c 'import json'",
+        // A function body or a loop runs again after any later `cd`.
+        "f() { python3 -c 'import json'; }; cd /tmp; f",
+        "while true; do python3 -c 'import json'; cd /tmp; done",
+        "trap 'python3 -c \"import json\"' EXIT; cd /tmp",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The workspace's own code.
+            "cd sub && python3 -c 'import json'",
+            "cd . && python3 -c 'import json'",
+            "cd /home/me/work/repo && python3 -c 'import json'",
+            "cd /home/me/work/repo/sub && python3 -c 'import json'",
+            "cd sub; cd ..; python3 -c 'import json'",
+            // Nothing is imported, or the `cd` is behind or after it.
+            "cd /tmp/x && python3 -c 'print(1)'",
+            "(cd /tmp/x && true); python3 -c 'import json'",
+            "python3 -c 'import json' && cd /tmp/x",
+            "f() { python3 -c 'import json'; }; f",
+            "python3 -c 'import json'",
+            "python3 -c 'import json, sys; json.load(sys.stdin)'",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn an_import_in_a_working_directory_outside_the_workspace_is_unknown() {
+    let outside = milo_guards_shell::Paths::new("/tmp/x", "/home/me", ["/home/me/work/repo"]);
+    check(
+        Shell::Posix,
+        &outside,
+        &[
+            "python3 -c 'print(1)'",
+            // Moved into the workspace, the folder is its own.
+            "cd /home/me/work/repo && python3 -c 'import json'",
+        ],
+        &[("python3 -c 'import json'", Rule::Unknown)],
+    );
+}
+
+#[test]
+fn a_module_used_without_its_import_is_not_read_whole() {
+    // A name the code did not set or import is not read whole, a listed
+    // module among them: the code only fails, but the guard does not say it
+    // is safe.
+    assert_unknown(&[
+        "python3 -c 'print(math.pi)'",
+        "python3 -c 'print(json.dumps(1))'",
+        "python3 -c 'print(re.escape(\"a\"))'",
+        "python3 -c 'print(sys.argv)'",
+        "python3 -c 'import json; print(math.pi)'",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "python3 -c 'import math; print(math.pi)'",
+            "python3 -c 'import sys; print(sys.argv)'",
+            "python3 -c 'import json; print(json.dumps(1))'",
+        ],
+        &[],
+    );
+}

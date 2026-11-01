@@ -443,6 +443,12 @@ pub(crate) struct Split {
     /// read whole (see [`crate::inline`]): `unknown`, said once, and only
     /// when the line has no finding of its own, which already asks.
     pub(crate) unread: Vec<Finding>,
+    /// The inline Python read whole that imports a module, with the folder
+    /// it runs in: Python puts that folder first where an import looks, so
+    /// outside the workspace (or where it is not known) a `json.py` there is
+    /// what `import json` loads. Judged with the directories, where the
+    /// line is judged.
+    pub(crate) importing: Vec<Importing>,
     /// Whether the command being added has a word with zsh's `(D)` glob
     /// qualifier, which lets that command's wildcards match a leading dot
     /// without any option on: `rm -rf *git(D)`. It belongs to the command
@@ -562,6 +568,19 @@ pub(crate) struct Read {
     pub(crate) hidden: bool,
 }
 
+/// Inline Python read whole that imports a module (see
+/// [`Split::importing`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Importing {
+    /// The folder the line had moved to when the code ran.
+    pub(crate) dir: Option<Arg>,
+    /// Whether the code sits in a function body or a loop, which runs again
+    /// after any `cd` of the line.
+    pub(crate) repeated: bool,
+    /// What it comes to when that folder is not the workspace's.
+    pub(crate) finding: Finding,
+}
+
 /// Where the walk was when an action that runs later began.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Began {
@@ -569,6 +588,7 @@ pub(crate) struct Began {
     writes: usize,
     reads: usize,
     findings: usize,
+    importing: usize,
     moved: usize,
 }
 
@@ -591,6 +611,7 @@ struct Later {
     units: Range<usize>,
     writes: Range<usize>,
     reads: Range<usize>,
+    importing: Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -981,6 +1002,7 @@ impl Split {
             writes: self.writes.len(),
             reads: self.reads.len(),
             findings: self.findings.len(),
+            importing: self.importing.len(),
             moved: self.moved,
         }
     }
@@ -1000,6 +1022,7 @@ impl Split {
             units: began.units..self.units.len(),
             writes: began.writes..self.writes.len(),
             reads: began.reads..self.reads.len(),
+            importing: began.importing..self.importing.len(),
             moves: self.moves,
             moved: self.moved,
             inherited,
@@ -1062,6 +1085,13 @@ impl Split {
         }
         for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
             read.dir = Some(moved.clone());
+        }
+        for code in self
+            .importing
+            .get_mut(later.importing.clone())
+            .unwrap_or_default()
+        {
+            code.dir = Some(moved.clone());
         }
     }
 
@@ -1207,7 +1237,19 @@ impl Split {
                             | "mapfile"
                             | "readarray"
                             | "getopts"
-                    )
+                            // They change what a program's name stands for:
+                            // an alias, a path `hash` remembers, a builtin
+                            // `enable` loads or turns off.
+                            | "alias"
+                            | "unalias"
+                            | "hash"
+                            | "enable"
+                    ) || (key == "printf"
+                        && unit
+                            .args
+                            .iter()
+                            .filter_map(Arg::known)
+                            .any(|arg| arg.strip_prefix("-v").is_some()))
                 })
             })
     }
@@ -1216,12 +1258,33 @@ impl Split {
     /// whole: the line is `unknown` unless it has a finding of its own.
     pub(crate) fn unread_code(&mut self, code: &str) {
         if self.unread.is_empty() {
-            self.unread.push(Finding {
-                rule: Rule::Unknown,
-                reason: "runs code the guard does not read fully".to_string(),
-                target: Some(crate::inline::shorten(code)),
-            });
+            self.unread.push(Self::unread_finding(code));
         }
+    }
+
+    /// What inline code the guard does not read whole comes to.
+    pub(crate) fn unread_finding(code: &str) -> Finding {
+        Finding {
+            rule: Rule::Unknown,
+            reason: "runs code the guard does not read fully".to_string(),
+            target: Some(crate::inline::shorten(code)),
+        }
+    }
+
+    /// Note inline Python read whole that imports a module, run from the
+    /// folder the line has moved to (see [`Split::importing`]).
+    pub(crate) fn imports(&mut self, code: &str) {
+        self.importing.push(Importing {
+            dir: self.dir.clone(),
+            repeated: self.repeats > 0,
+            finding: Self::unread_finding(code),
+        });
+    }
+
+    /// Whether the line moves to another folder anywhere: `cd`, `pushd`,
+    /// `popd`.
+    pub(crate) fn ever_moves(&self) -> bool {
+        self.moved > 0
     }
 
     pub(crate) fn problem(&mut self, rule: Rule, reason: &str, target: Option<&str>) {

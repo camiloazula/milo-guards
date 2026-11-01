@@ -21,7 +21,8 @@
 //! - its imports are `json`, `math`, `re` and `sys` in Python, and it has no
 //!   import, `require` or `eval` in JavaScript;
 //! - it names nothing that is not a name it set, a call on the list or a
-//!   module on the list, and sets none of those;
+//!   module on the list that it imported (JavaScript's are always there), and
+//!   sets none of those;
 //! - it reaches into nothing: no attribute that starts with an underscore, and
 //!   in JavaScript no member other than `length` and the methods on the list.
 
@@ -32,15 +33,17 @@ use tree_sitter::Node;
 use super::{walk, Ancestor, Language};
 
 /// Whether `code` is read whole: nothing in it is outside the subset above.
-pub(super) fn reads_whole(language: Language, code: &str) -> bool {
+/// `None` when it is not; when it is, `Some(true)` if it imports a module,
+/// which looks in the folder the code runs in first.
+pub(super) fn reads_whole(language: Language, code: &str) -> Option<bool> {
     if code.chars().any(|c| {
         (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
     }) {
-        return false;
+        return None;
     }
     match language {
         Language::Python => python(code),
-        Language::JavaScript => javascript(code),
+        Language::JavaScript => javascript(code).then_some(false),
     }
 }
 
@@ -141,24 +144,30 @@ fn has_statement(root: Node<'_>) -> bool {
     found
 }
 
-fn python(code: &str) -> bool {
+/// Python code that is read whole, and whether it imports a module.
+fn python(code: &str) -> Option<bool> {
     let mut parser = tree_sitter::Parser::new();
-    let Some(tree) = parser
+    let tree = parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
         .ok()
-        .and_then(|()| parser.parse(code, None))
-    else {
-        return false;
-    };
+        .and_then(|()| parser.parse(code, None))?;
     let root = tree.root_node();
     if root.has_error() || !has_statement(root) {
-        return false;
+        return None;
     }
     // The names the code sets, none of which may be a name the reader gives a
-    // meaning to.
+    // meaning to, and the modules it imports: a member of a module is only
+    // read once the code has named the module.
     let mut assigned = HashSet::new();
+    let mut imported = HashSet::new();
     let mut clean = true;
     walk(root, |node, _, _| {
+        if node.kind() == "import_statement" {
+            let mut cursor = node.walk();
+            for name in node.named_children(&mut cursor) {
+                imported.insert(text(name, code).to_string());
+            }
+        }
         let left = match node.kind() {
             "assignment" | "augmented_assignment" => node.child_by_field_name("left"),
             _ => None,
@@ -179,14 +188,14 @@ fn python(code: &str) -> bool {
         clean
     });
     if !clean {
-        return false;
+        return None;
     }
     let mut whole = true;
     walk(root, |node, field, above| {
-        whole = python_node(node, field, above, code, &assigned);
+        whole = python_node(node, field, above, code, &assigned, &imported);
         whole
     });
-    whole
+    whole.then_some(!imported.is_empty())
 }
 
 fn python_node(
@@ -195,6 +204,7 @@ fn python_node(
     above: &[Ancestor<'_>],
     code: &str,
     assigned: &HashSet<String>,
+    imported: &HashSet<String>,
 ) -> bool {
     // A token (`(`, `,`, an operator) is the business of the node it is in.
     if !node.is_named() {
@@ -281,8 +291,9 @@ fn python_node(
                     (Some("call"), Some("function")) => {
                         PYTHON_CALLS.contains(&name) && !assigned.contains(name)
                     }
+                    // A module is a name once the code imports it.
                     (Some("attribute"), Some("object")) => {
-                        PYTHON_MODULES.contains(&name) || assigned.contains(name)
+                        imported.contains(name) || assigned.contains(name)
                     }
                     (Some("attribute"), Some("attribute")) => !name.starts_with('_'),
                     (Some("keyword_argument"), Some("name")) => true,

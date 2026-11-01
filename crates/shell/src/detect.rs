@@ -12,7 +12,7 @@ use milo_guards_core::spelling::glob;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
+use crate::unit::{operands, plain, Arg, Importing, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
@@ -155,8 +155,20 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     // nothing else was found: a line that already asks, or that the guard is
     // certain of (a delete, a write, a key), says so.
     if checker.found.is_empty() {
-        line.extend_from_slice(&split.unread);
-        checker.found.extend_from_slice(&split.unread);
+        let mut unread = split.unread.clone();
+        // Code that imports is read whole only where Python looks first for
+        // what it imports: the workspace's own folders.
+        if unread.is_empty() {
+            unread.extend(
+                split
+                    .importing
+                    .iter()
+                    .find(|code| !checker.imports_in_workspace(code))
+                    .map(|code| code.finding.clone()),
+            );
+        }
+        line.extend_from_slice(&unread);
+        checker.found.extend_from_slice(&unread);
     }
     let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
@@ -202,6 +214,29 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    /// Whether inline Python that imports runs in a workspace folder: where
+    /// the folder the line had moved to is, or the working directory when it
+    /// had not. A code in a function body or a loop runs again after any
+    /// `cd` of the line, so the folder is not known when the line has one.
+    fn imports_in_workspace(&self, code: &Importing) -> bool {
+        let moved = Arg::Unknown("where the line moves to".to_string());
+        let dir = if code.repeated && self.split.ever_moves() {
+            Some(&moved)
+        } else {
+            code.dir.as_ref()
+        };
+        matches!(
+            self.resolver.place(
+                dir,
+                &Arg::Known(".".to_string()),
+                Shell::Posix,
+                false,
+                Access::Item
+            ),
+            Place::Inside | Place::Workspace { exact: true }
+        )
+    }
+
     /// Note a file the line writes, from `dir`.
     fn written(&mut self, dir: Option<&Arg>, target: &Arg, shell: Shell) {
         if let Some(key) = self.resolver.file_key(dir, target, shell) {

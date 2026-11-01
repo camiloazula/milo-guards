@@ -429,6 +429,46 @@ impl Walker<'_> {
             .any(|mark| (node.start_byte()..=node.end_byte()).contains(mark))
     }
 
+    /// Whether `node`, a `${…}`, gives its variable a value when it has
+    /// none: `${X:=v}`, `${X=v}`, `${X[1]:=v}`. Whether it had one is not
+    /// known, so the variable is taken as set.
+    fn assigns_default(&self, node: Node<'_>) -> bool {
+        let Some(inner) = unit::text(&node, self.source)
+            .strip_prefix("${")
+            .and_then(|inner| inner.strip_suffix('}'))
+        else {
+            return false;
+        };
+        let rest = inner.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        let rest = match rest.strip_prefix('[') {
+            Some(subscript) => subscript.split_once(']').map_or("", |(_, rest)| rest),
+            None => rest,
+        };
+        rest.len() < inner.len() && (rest.starts_with('=') || rest.starts_with(":="))
+    }
+
+    /// Whether `node` is in arithmetic, `(( ))` or `$(( ))`, where `=`, `++`
+    /// and `--` set a variable, and not in a `[` or `[[` test, where `=` is a
+    /// comparison.
+    fn in_arithmetic(node: Node<'_>) -> bool {
+        let mut up = node.parent();
+        while let Some(parent) = up {
+            match parent.kind() {
+                "arithmetic_expansion" | "c_style_for_statement" | "compound_statement" => {
+                    return true
+                }
+                "binary_expression"
+                | "unary_expression"
+                | "postfix_expression"
+                | "parenthesized_expression"
+                | "ternary_expression" => {}
+                _ => return false,
+            }
+            up = parent.parent();
+        }
+        false
+    }
+
     /// Whether `node`, a `${…}`, assigns `GLOBIGNORE` a value that is not
     /// empty: `${GLOBIGNORE:=x}` when it is unset or empty, `${GLOBIGNORE=x}`
     /// when it is unset. Whether it was is not known, so the assignment is
@@ -604,6 +644,9 @@ impl Walker<'_> {
                 if assigns && self.assigns_in_chain(node) {
                     self.split.hide();
                 }
+                // `((PATH=1))` sets a variable the interpreter after it may
+                // be given.
+                self.split.assigned_earlier |= assigns && Self::in_arithmetic(node);
                 self.children(node, stage, level);
             }
             // `: ${GLOBIGNORE:=x}`: the expansion sets it.
@@ -611,6 +654,7 @@ impl Walker<'_> {
                 if self.assigns_ignore(node) {
                     self.split.hide();
                 }
+                self.split.assigned_earlier |= self.assigns_default(node);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
@@ -621,6 +665,7 @@ impl Walker<'_> {
                 if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
                     self.split.hide();
                 }
+                self.split.assigned_earlier |= bare.len() < text.len() && Self::in_arithmetic(node);
                 self.children(node, stage, level);
             }
             // What may not run, may run more than once, or runs when the
@@ -658,6 +703,9 @@ impl Walker<'_> {
                     self.split.define_function(name);
                     self.fork_bomb(node, name);
                 }
+                // The variable of `for` and `select` is set for the body
+                // (`for PATH in /x; do …`).
+                self.split.assigned_earlier |= node.kind() == "for_statement";
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
@@ -666,6 +714,10 @@ impl Walker<'_> {
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                // A function defined here may stand for a program of the same
+                // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
+                // here on.
+                self.split.assigned_earlier |= node.kind() == "function_definition";
                 self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;

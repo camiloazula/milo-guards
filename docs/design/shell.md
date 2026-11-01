@@ -1285,8 +1285,16 @@ questions are answered apart:
    `readonly`, `local`, `set`, `source`, `.`, `read`, `let`, `mapfile`,
    `readarray`, `getopts`, `unset` or assignment on a line of its own
    (`NODE_OPTIONS=x; node -e …`, `HOME=/elsewhere; python3 -c …`) earlier in
-   the line: a variable already exported (`PATH`, `HOME`, and whatever the
-   caller has set) is changed for the interpreter, and which are is not known.
+   the line, nor any other way of setting a variable: `printf -v`, the
+   variable of a `for` or `select` loop, an arithmetic assignment (`((X=1))`,
+   `((X++))`, `$((X=1))`) and a `${X:=v}` or `${X=v}` expansion. A variable
+   already exported (`PATH`, `HOME`, and whatever the caller has set) is
+   changed for the interpreter, and which are is not known. Nor does the line
+   change what the interpreter's name stands for before it: `alias`,
+   `unalias`, `hash` (`hash -p /tmp/x/node node` runs any binary), `enable`,
+   or a function defined earlier (`node() { NODE_OPTIONS=… command node
+   "$@"; }`), none of which the code shows; a function body is still read
+   where it is written, and a delete in it is still found.
    An option of `bun run` that carries code (`bun -F x run -e CODE`) is
    an option and a subcommand around the code, not read whole.
 3. **It parses and holds a statement.** A parse error (`python3 -c 'if 1:'`),
@@ -1337,7 +1345,20 @@ questions are answered apart:
    digits, `_` and `$`, as Python reads a name in its NFKC form (a full-width
    `＿＿class＿＿` is `__class__`) and JavaScript reads `console` as
    `console`, so neither is the name the checks see. A name the code did not
-   set is not read whole either, so `os.getcwd()` with no `import os` is not.
+   set is not read whole either, so `os.getcwd()` with no `import os` is not,
+   and a module on the list is a name only once the code imports it:
+   `print(math.pi)` and `json.dumps(1)` with no import are not read whole
+   (they only fail, but the guard does not say so). Python puts the folder
+   the code runs in ahead of the standard library, so `import json` loads
+   `./json.py` from it. Code that imports is read whole only when that
+   folder is inside a workspace folder, the workspace's own code: the working
+   directory, or where the line has moved to by `cd`. After a `cd` out of the
+   workspace (`cd /tmp/x && python3 -c 'import json'`, `cd ..`), to a place
+   the guard cannot tell (`cd "$X"`, `pushd`, `popd`), or with a working
+   directory outside it, the code is not read whole; the same when the code is
+   in a function body, a loop or a `trap` and the line moves anywhere, since
+   it runs again after the `cd`. Code that imports nothing does not look in
+   the folder, so `cd /tmp/x && python3 -c 'print(1)'` is read whole.
 
 `python3 -c 'print(1+1)'`, `node -e 'console.log(1)'`,
 `python3 -c "import json,sys; json.load(sys.stdin)"` and
