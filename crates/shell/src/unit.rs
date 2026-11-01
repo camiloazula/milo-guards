@@ -209,6 +209,9 @@ pub(crate) struct Split {
     pipelines: usize,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// The drive the line is on (upper case), which cmd's `cd` without `/d`
+    /// does not leave; `None` when it is not known.
+    drive: Option<char>,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -267,6 +270,7 @@ pub(crate) struct Began {
 #[derive(Debug, Clone)]
 pub(crate) struct Place {
     dir: Option<Arg>,
+    drive: Option<char>,
     moves: usize,
     later: usize,
 }
@@ -324,9 +328,26 @@ impl Split {
             self.in_body.push(self.units.len());
         }
         if let Some(target) = moves_to(&unit) {
-            self.moves += 1;
-            self.moved += 1;
-            self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
+            let effect = if unit.shell == Shell::Cmd {
+                cmd_effect(&unit, &target, self.drive)
+            } else {
+                Effect::Moves(None)
+            };
+            match effect {
+                Effect::Stays => {}
+                Effect::Unsure(drive) => {
+                    self.moves += 1;
+                    self.moved += 1;
+                    self.dir = Some(Arg::Unknown(target.text().to_string()));
+                    self.drive = drive;
+                }
+                Effect::Moves(drive) => {
+                    self.moves += 1;
+                    self.moved += 1;
+                    self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
+                    self.drive = drive;
+                }
+            }
         }
         self.units.push(unit);
     }
@@ -537,6 +558,7 @@ impl Split {
     pub(crate) fn dir_snapshot(&self) -> Place {
         Place {
             dir: self.dir.clone(),
+            drive: self.drive,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -556,6 +578,7 @@ impl Split {
             }
         }
         self.dir = place.dir;
+        self.drive = place.drive;
         self.moves = place.moves;
     }
 
@@ -589,28 +612,87 @@ impl Split {
     }
 }
 
+/// The drive a bare `D:` switches to: cmd reads it as the program `D` given
+/// `:`, PowerShell as a function named `D:`.
+fn drive_switch(unit: &Unit) -> Option<char> {
+    let lower = unit.program.known()?.to_ascii_lowercase();
+    let letter = match unit.shell {
+        Shell::Cmd => (lower.len() == 1 && unit.args.first().and_then(Arg::known) == Some(":"))
+            .then(|| lower.chars().next())?,
+        Shell::PowerShell => {
+            (lower.len() == 2 && lower.ends_with(':')).then(|| lower.chars().next())?
+        }
+        Shell::Posix => None,
+    };
+    letter
+        .filter(char::is_ascii_alphabetic)
+        .map(|letter| letter.to_ascii_uppercase())
+}
+
+/// What a `cd` does to where a cmd line is.
+enum Effect {
+    /// It moves the line, onto this drive (`None` when that is not known).
+    Moves(Option<char>),
+    /// It sets another drive's working directory and leaves the line where
+    /// it was.
+    Stays,
+    /// Whether it moves cannot be told: the line is somewhere unknown, then
+    /// on this drive (`None` when that is not known).
+    Unsure(Option<char>),
+}
+
+/// What the cmd unit `unit`, which moves to `target`, does to where the line
+/// is, the line being on `drive`. `cd` without `/d` does not change the
+/// drive: for a path on another drive it sets that drive's own working
+/// directory and the line stays; `/d` changes both, as `pushd` and `D:` do.
+fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>) -> Effect {
+    if let Some(letter) = drive_switch(unit) {
+        return Effect::Moves(Some(letter));
+    }
+    let key = unit.key().unwrap_or_default();
+    match key.as_str() {
+        "popd" => return Effect::Moves(None),
+        "pushd" => {
+            return Effect::Moves(
+                target
+                    .known()
+                    .and_then(|text| crate::path::drive_of(text).or(drive)),
+            );
+        }
+        "cd" | "chdir" => {}
+        // `cd..`, `cd\`: no drive in them.
+        _ => return Effect::Moves(drive),
+    }
+    let is_switch = |arg: &Arg| arg.known().is_some_and(|t| t.eq_ignore_ascii_case("/d"));
+    let leading = unit.args.first().is_some_and(is_switch);
+    let anywhere = unit.args.iter().any(is_switch);
+    let Some(text) = target.known() else {
+        return Effect::Moves(if anywhere { None } else { drive });
+    };
+    let Some(there) = crate::path::drive_of(text) else {
+        return Effect::Moves(drive);
+    };
+    if leading {
+        Effect::Moves(Some(there))
+    } else if anywhere {
+        Effect::Unsure(None)
+    } else {
+        match drive {
+            Some(here) if here == there => Effect::Moves(drive),
+            Some(_) => Effect::Stays,
+            None => Effect::Unsure(None),
+        }
+    }
+}
+
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 fn moves_to(unit: &Unit) -> Option<Arg> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
-    // show: cmd reads it as the program `D` given `:`, PowerShell as a
-    // function named `D:`.
-    let drive = match unit.shell {
-        Shell::Cmd => {
-            lower.len() == 1
-                && lower.chars().all(|c| c.is_ascii_alphabetic())
-                && unit.args.first().and_then(Arg::known) == Some(":")
-        }
-        Shell::PowerShell => {
-            lower.len() == 2
-                && lower.ends_with(':')
-                && lower.starts_with(|c: char| c.is_ascii_alphabetic())
-        }
-        Shell::Posix => false,
-    };
-    if drive {
-        return Some(Arg::Unknown(format!("{}:", &lower[..1])));
+    // show.
+    if let Some(letter) = drive_switch(unit) {
+        return Some(Arg::Unknown(format!("{letter}:")));
     }
     // `cd..` and `cd\`: cmd and PowerShell read them as one program name.
     if unit.shell != Shell::Posix {
@@ -679,8 +761,11 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-pub(crate) fn split(command: &str, shell: Shell) -> Split {
-    let mut split = Split::default();
+pub(crate) fn split(command: &str, shell: Shell, drive: Option<char>) -> Split {
+    let mut split = Split {
+        drive,
+        ..Split::default()
+    };
     script(&mut split, command, shell, 0);
     split.hide_bodies();
     split.settle_later();

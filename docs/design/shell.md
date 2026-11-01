@@ -144,6 +144,16 @@ nested script in a process of its own does not reach the rest of the line;
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 
+In cmd, `cd` (or `chdir`) without `/d` does not change the drive: for a path
+on another drive it sets that drive's own working directory and the line stays
+where it was, so `cd D:\ws\a & rd /s /q ..\..` from `C:\Users\me\repo` deletes
+`C:\Users`. The line tracks the drive it is on, starting from the working
+directory's. With `/d`, or on the same drive, the line moves as for any `cd`;
+`pushd` and `D:` change the drive and so move it. Where the line is on is not
+known after `popd`, from a working directory on no drive, or beside a `/d`
+that does not come first, and a `cd` to another drive then leaves the line
+somewhere unknown.
+
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 

@@ -101,7 +101,7 @@ fn start(text: &str, shell: Shell) -> Start<'_> {
 }
 
 /// The drive letter a working directory is on (`C` for `C:\Users\me`).
-fn drive_of(dir: &str) -> Option<char> {
+pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
