@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 
 mod git;
 pub(crate) mod operands;
@@ -140,8 +140,13 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
     seen.unknown |= split.kept.sets.iter().any(|name| !harmless(name));
     seen.unknown |= split.kept.loops.iter().any(|name| !plain_loop(name));
     for write in &split.writes {
-        let target = path::within(write.dir.as_ref(), &write.target, write.shell);
-        let place = resolver.place(&target, write.shell, write.hidden);
+        let place = resolver.place(
+            write.dir.as_ref(),
+            &write.target,
+            write.shell,
+            write.hidden,
+            Access::Content,
+        );
         seen.changes |= !matches!(place, Place::Null);
     }
     // The first unit at each pipeline stage, for what a stage is handed.
@@ -350,7 +355,13 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
         // Going into a folder is a read of it: `cd ~` leaves the workspace
         // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
-        let place = resolver.place(&at, unit.shell, unit.hidden);
+        let place = resolver.place(
+            unit.dir.as_ref(),
+            &target,
+            unit.shell,
+            unit.hidden,
+            Access::Item,
+        );
         context.land(unit.shell, None, &at, place, Manner::default());
         if matches!(place, Place::Unknown) {
             Kind::Unknown

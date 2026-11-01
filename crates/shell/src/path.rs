@@ -4,8 +4,8 @@
 //! The path model itself is [`milo_guards_core::Resolver`], which takes a
 //! path spelled out as text. What is left here is what only a shell's
 //! syntax gives a path a meaning for: `~` and `~user`, PowerShell's
-//! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
-//! lists, and a `cd` that moved the line.
+//! provider paths (`HKLM:\Software`, `FileSystem::C:\x`), PowerShell's
+//! `$null`, brace lists, and a `cd` that moved the line.
 
 use std::path::PathBuf;
 
@@ -49,25 +49,27 @@ enum Start<'a> {
 
 /// The `name:` a path starts with, and what follows it: a disk's drive
 /// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, a drive made
-/// with `New-PSDrive`: `my_drive:`, `my-drive:`). Read before anything else,
-/// since a wildcard after it (`HKCU:*`) does not change what it names. A
-/// drive's name holds no separator, no wildcard and no `.` (`x.txt:stream`
-/// is a file's stream, not a drive).
+/// with `New-PSDrive`: `my_drive:`, `my-drive:`). A PowerShell drive's name
+/// may hold any character but `: / \ . ~` (`x.txt:stream` is a file's
+/// stream, not a drive). Read before anything else, since a wildcard after
+/// it (`HKCU:*`) does not change what it names.
 fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
     if shell == Shell::Posix {
         return None;
     }
     let (name, rest) = text.split_once(':')?;
-    if name.len() == 1 {
-        return name
-            .starts_with(|c: char| c.is_ascii_alphabetic())
-            .then_some((name, rest));
-    }
-    let named = !name.is_empty()
-        && !name.contains(flavour(shell).separators())
-        && !glob::has_wildcard(name)
-        && !name.contains('.');
-    (named && shell == Shell::PowerShell).then_some((name, rest))
+    let named = if shell == Shell::PowerShell {
+        !name.is_empty() && !name.contains(['/', '\\', '.', '~'])
+    } else {
+        is_letter(name)
+    };
+    named.then_some((name, rest))
+}
+
+/// Whether `name` is one ASCII letter: a disk's drive letter.
+fn is_letter(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next().is_none()
 }
 
 /// Read what `text` starts from. The drive is read first; then a first part
@@ -75,7 +77,7 @@ fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
 fn start(text: &str, shell: Shell) -> Start<'_> {
     let separators = flavour(shell).separators();
     if let Some((name, rest)) = qualifier(text, shell) {
-        if name.len() > 1 {
+        if !is_letter(name) {
             return Start::Provider(name.to_ascii_lowercase(), rest);
         }
         let letter = name.chars().next().unwrap_or_default();
@@ -103,7 +105,7 @@ fn start(text: &str, shell: Shell) -> Start<'_> {
 }
 
 /// The drive letter a working directory is on (`C` for `C:\Users\me`).
-fn drive_of(dir: &str) -> Option<char> {
+pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
@@ -238,6 +240,10 @@ impl Resolver {
     /// A key for the single file `arg` names from `dir`; `None` when it is
     /// not one definite file (a device, a wildcard, a brace list, unknown).
     pub(crate) fn file_key(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<String> {
+        // A device is the same in any folder: read it before the join.
+        if is_device(arg, shell) {
+            return None;
+        }
         let arg = within(dir, arg, shell);
         let text = arg.known()?;
         if brace_list(text) || device(text, shell).is_some() || glob::has_wildcard(text) {
@@ -297,10 +303,7 @@ impl Resolver {
     /// Whether `arg`, written from `dir`, is a file that cannot be placed:
     /// not a device, and unknown by itself or by where `dir` moved to.
     pub(crate) fn unplaced(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
-        if arg
-            .known()
-            .is_some_and(|text| device(text, shell).is_some())
-        {
+        if is_device(arg, shell) {
             return false;
         }
         within(dir, arg, shell).is_unknown()
@@ -471,20 +474,64 @@ impl Resolver {
         self.core.kernel(spelling, Flavour::Posix)
     }
 
-    /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
-    /// it may match a leading dot (`dotglob`).
-    pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
-        match arg.known() {
-            Some(text) => self.place_of(text, shell, hidden, true),
-            None => Place::Unknown,
-        }
+    /// Where `arg` lands when `shell` runs it from `dir`, where an earlier
+    /// `cd` moved; `hidden` says a wildcard in it may match a leading dot
+    /// (`dotglob`). A device is the same in any folder, so it is read as
+    /// written, before `arg` is joined to `dir`; in PowerShell only where
+    /// that holds (see [`Access`]).
+    pub(crate) fn place(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        access: Access,
+    ) -> Place {
+        self.locate(dir, arg, shell, hidden, access, true)
     }
 
     /// As [`place`](Self::place), for a path something is written into: a
     /// folder that only holds a protected path is not a write of it.
-    pub(crate) fn place_into(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+    pub(crate) fn place_into(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        access: Access,
+    ) -> Place {
+        self.locate(dir, arg, shell, hidden, access, false)
+    }
+
+    /// Where `arg` lands, a path already joined to where the line runs: a
+    /// bare device name is read as written, as it is with no `cd` before it.
+    pub(crate) fn place_joined(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+        self.locate(None, arg, shell, hidden, Access::Item, true)
+    }
+
+    /// Where `arg` lands, as a path it holds (`holding`) or is written into.
+    fn locate(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        access: Access,
+        holding: bool,
+    ) -> Place {
+        if matches!(arg, Arg::Null) {
+            return Place::Null;
+        }
+        if let Some(device) = arg
+            .known()
+            .filter(|_| device_in_any_folder(dir, shell, access))
+            .and_then(|text| device(text, shell))
+        {
+            return device;
+        }
+        let arg = &within(dir, arg, shell);
         match arg.known() {
-            Some(text) => self.place_of(text, shell, hidden, false),
+            Some(text) => self.place_of(text, shell, hidden, holding),
             None => Place::Unknown,
         }
     }
@@ -652,11 +699,68 @@ fn without_streams(text: &str) -> Option<String> {
     changed.then(|| parts.join("\\"))
 }
 
-/// A device a path names: the core's, and PowerShell's and cmd's `$null`.
-fn device(text: &str, shell: Shell) -> Option<Place> {
-    if shell != Shell::Posix && text.eq_ignore_ascii_case("$null") {
-        return Some(Place::Null);
+/// What a command does with a path it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Writes a file by its file system path: a redirect, `Out-File`,
+    /// `Tee-Object -FilePath`, `Invoke-WebRequest -OutFile`. These fail in a
+    /// PowerShell provider that is not the file system, so a device name
+    /// there is never a harmful one.
+    Content,
+    /// Reaches the item itself, in whatever provider the folder is: deletes,
+    /// moves, changes permissions or properties of, or creates it, and
+    /// `Set-Content`, `Add-Content`, `Clear-Content` and a copy or move's
+    /// destination, which the `Env:`, `Variable:`, `Function:` and `Alias:`
+    /// providers (content) and the registry (a key) take. In a provider other
+    /// than the file system `NUL` and `CON` are ordinary item names there, so
+    /// a device is read only where the folder is the file system.
+    Item,
+}
+
+/// Whether a device spelling written from `dir` is a device wherever `dir`
+/// is: in cmd and POSIX a `cd` is always to the file system. In PowerShell a bare
+/// `NUL` or `CON` is the device for a content write (which fails elsewhere)
+/// or after a `cd` to the file system; after a `cd` to the registry, `Env:`,
+/// or a place only known when it runs, it is an item's name, so it joins to
+/// where the `cd` went. PowerShell's `$null` is not a spelling at all (see
+/// [`Arg::Null`]).
+fn device_in_any_folder(dir: Option<&Arg>, shell: Shell, access: Access) -> bool {
+    if shell != Shell::PowerShell || access == Access::Content {
+        return true;
     }
+    match dir {
+        None => true,
+        Some(Arg::Known(dir)) => on_file_system(dir),
+        Some(_) => false,
+    }
+}
+
+/// Whether a PowerShell location is on the file system: a path with no
+/// provider, or one the file system provider names.
+fn on_file_system(dir: &str) -> bool {
+    if let Some((qualifier, _)) = dir.split_once("::") {
+        let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+        return provider.eq_ignore_ascii_case("filesystem");
+    }
+    !matches!(
+        start(dir, Shell::PowerShell),
+        Start::Provider(..) | Start::Unknown
+    )
+}
+
+/// Whether `arg` is a device wherever it is written from: PowerShell's
+/// `$null` value, or a spelling [`device`] reads. In a POSIX shell `$null` is
+/// the variable `null`, only known when it runs; in cmd, and quoted in
+/// PowerShell (`'$null'`), it is a file name.
+fn is_device(arg: &Arg, shell: Shell) -> bool {
+    matches!(arg, Arg::Null)
+        || arg
+            .known()
+            .is_some_and(|text| device(text, shell).is_some())
+}
+
+/// A device a path names, by its spelling: the core's.
+fn device(text: &str, shell: Shell) -> Option<Place> {
     milo_guards_core::spelling::device(text, flavour(shell))
 }
 
@@ -674,14 +778,29 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
     let (Some(dir), Arg::Known(text)) = (dir, path) else {
         return path.clone();
     };
+    // In PowerShell a rooted path with no drive (`\x`, `/x`) is the root of
+    // the drive the folder before it is on, which after a `cd` to another
+    // provider is that provider's, not the file system's.
+    if shell == Shell::PowerShell && rooted(text) {
+        return match root_of(dir) {
+            Root::Plain => path.clone(),
+            Root::Drive(drive) => Arg::Known(format!("{drive}{text}")),
+            Root::Unknown => Arg::Unknown(text.clone()),
+        };
+    }
+    // `~` is the home of the provider the folder is in, and only the file
+    // system has one: elsewhere the `cd ~` fails and stays where it was, so
+    // the place is only known when it runs.
+    if shell == Shell::PowerShell && home(text) && !file_system_folder(dir) {
+        return Arg::Unknown(text.clone());
+    }
     let drive =
         text.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && text[1..].starts_with(':');
     let absolute = text.starts_with(['/', '~'])
         || (shell != Shell::Posix && text.starts_with('\\'))
         || (shell != Shell::Posix && drive)
         || (shell == Shell::PowerShell
-            && (text.contains("::")
-                || qualifier(text, shell).is_some_and(|(name, _)| name.len() > 1)));
+            && (text.contains("::") || qualifier(text, shell).is_some()));
     if absolute {
         // A path on a drive's own working directory (`C:x`) is not where a
         // `cd` on another drive, or this one, left it.
@@ -698,6 +817,65 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         }
         Arg::Known(dir) => Arg::Known(format!("{dir}/{text}")),
         _ => Arg::Unknown(text.clone()),
+    }
+}
+
+/// Whether `text` is `~` or a path below it (`~\x`, `~/x`).
+fn home(text: &str) -> bool {
+    text.strip_prefix('~')
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
+}
+
+/// Whether the PowerShell folder `dir` is on the file system: a disk, or no
+/// drive at all. A provider drive, a provider path, and a place only known
+/// when it runs are not.
+fn file_system_folder(dir: &Arg) -> bool {
+    match root_of(dir) {
+        Root::Plain => true,
+        Root::Drive(drive) => is_letter(drive.trim_end_matches(':')),
+        Root::Unknown => false,
+    }
+}
+
+/// Whether `text` is a path rooted at the current drive, with no drive of its
+/// own: `\x` or `/x`, but not a UNC path (`\\server\share`).
+fn rooted(text: &str) -> bool {
+    text.starts_with(['\\', '/']) && !text[1..].starts_with(['\\', '/'])
+}
+
+/// The drive a PowerShell folder is on, as its root is read.
+enum Root {
+    /// The file system's current drive: no earlier folder, or one that names
+    /// no drive.
+    Plain,
+    /// A drive of its own: `HKCU:`, `Function:`, `C:`.
+    Drive(String),
+    /// Only known when it runs, or a provider path with no drive.
+    Unknown,
+}
+
+/// The drive the folder `dir` is on.
+fn root_of(dir: &Arg) -> Root {
+    match dir {
+        Arg::Known(dir) => root_of_text(dir),
+        _ => Root::Unknown,
+    }
+}
+
+fn root_of_text(dir: &str) -> Root {
+    // `FileSystem::C:\x` is the file system's own path, and any other
+    // provider's `Provider::path` has no drive to take the root of.
+    if let Some((qualifier, rest)) = dir.split_once("::") {
+        let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+        return if provider.eq_ignore_ascii_case("filesystem") {
+            root_of_text(rest)
+        } else {
+            Root::Unknown
+        };
+    }
+    match qualifier(dir, Shell::PowerShell) {
+        Some((name, _)) => Root::Drive(format!("{name}:")),
+        None => Root::Plain,
     }
 }
 
