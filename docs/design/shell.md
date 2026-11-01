@@ -148,12 +148,17 @@ In cmd, `cd` (or `chdir`) without `/d` does not change the drive: for a path
 on another drive it sets that drive's own working directory and the line stays
 where it was, so `cd D:\ws\a & rd /s /q ..\..` from `C:\Users\me\repo` deletes
 `C:\Users`. The line tracks the drive it is on, starting from the working
-directory's. With `/d`, or on the same drive, the line moves as for any `cd`;
-`pushd` and `D:` change the drive and so move it (a `pushd` to a network path
-puts the line on a drive the line does not name). Where the line is on is not
-known after `popd`, from a working directory on no drive, or beside a `/d`
-that does not come first, and a `cd` to another drive then leaves the line
-somewhere unknown.
+directory's, and stays only while it is sure which drive that is. A `cd`
+without `/d`, and a `cd /d`, `pushd` or `D:` on the same drive, cannot change
+the drive, so it stays sure. A `cd /d`, `pushd` or `D:` to another drive may
+not have run (it can sit in a branch, in a pipe stage or behind `start`, or
+fail), so the drive is only a guess from then on: a `cd` without `/d` to a path
+on another drive than the guess leaves the line somewhere unknown, and one to
+the guessed drive moves it. With `/d`, or on the same drive, the line moves as
+for any `cd` (a `pushd` to a network path puts the line on a drive the line
+does not name). Which drive the line is on is not known after `popd`, from a
+working directory on no drive, or beside a `/d` that does not come first, and
+a `cd` to another drive then leaves the line somewhere unknown.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.

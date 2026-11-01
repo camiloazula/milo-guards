@@ -212,6 +212,10 @@ pub(crate) struct Split {
     /// The drive the line is on (upper case), which cmd's `cd` without `/d`
     /// does not leave; `None` when it is not known.
     drive: Option<char>,
+    /// Whether `drive` is certain. A `cd /d`, `pushd` or `D:` to another
+    /// drive makes it a guess: it may sit in a branch, in a pipe stage or
+    /// behind `start`, or fail, and then the line never left its drive.
+    drive_sure: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -271,6 +275,7 @@ pub(crate) struct Began {
 pub(crate) struct Place {
     dir: Option<Arg>,
     drive: Option<char>,
+    drive_sure: bool,
     moves: usize,
     later: usize,
 }
@@ -329,9 +334,9 @@ impl Split {
         }
         if let Some(target) = moves_to(&unit) {
             let effect = if unit.shell == Shell::Cmd {
-                cmd_effect(&unit, &target, self.drive)
+                cmd_effect(&unit, &target, self.drive, self.drive_sure)
             } else {
-                Effect::Moves(None)
+                Effect::Moves(None, false)
             };
             match effect {
                 Effect::Stays => {}
@@ -340,12 +345,14 @@ impl Split {
                     self.moved += 1;
                     self.dir = Some(Arg::Unknown(target.text().to_string()));
                     self.drive = drive;
+                    self.drive_sure = false;
                 }
-                Effect::Moves(drive) => {
+                Effect::Moves(drive, sure) => {
                     self.moves += 1;
                     self.moved += 1;
                     self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
                     self.drive = drive;
+                    self.drive_sure = sure && drive.is_some();
                 }
             }
         }
@@ -559,6 +566,7 @@ impl Split {
         Place {
             dir: self.dir.clone(),
             drive: self.drive,
+            drive_sure: self.drive_sure,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -579,6 +587,7 @@ impl Split {
         }
         self.dir = place.dir;
         self.drive = place.drive;
+        self.drive_sure = place.drive_sure;
         self.moves = place.moves;
     }
 
@@ -631,61 +640,71 @@ fn drive_switch(unit: &Unit) -> Option<char> {
 
 /// What a `cd` does to where a cmd line is.
 enum Effect {
-    /// It moves the line, onto this drive (`None` when that is not known).
-    Moves(Option<char>),
+    /// It moves the line, onto this drive (`None` when that is not known),
+    /// which is certain or a guess (`true` when certain).
+    Moves(Option<char>, bool),
     /// It sets another drive's working directory and leaves the line where
-    /// it was.
+    /// it was. Only said while the drive the line is on is certain.
     Stays,
-    /// Whether it moves cannot be told: the line is somewhere unknown, then
-    /// on this drive (`None` when that is not known).
+    /// Whether it moves cannot be told: the line is somewhere unknown, on a
+    /// drive that is not known (`None`).
     Unsure(Option<char>),
 }
 
 /// What the cmd unit `unit`, which moves to `target`, does to where the line
-/// is, the line being on `drive`. `cd` without `/d` does not change the
-/// drive: for a path on another drive it sets that drive's own working
-/// directory and the line stays; `/d` changes both, as `pushd` and `D:` do.
-fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>) -> Effect {
+/// is, the line being on `drive`, which is certain when `sure`. `cd` without
+/// `/d` does not change the drive: for a path on another drive it sets that
+/// drive's own working directory and the line stays; `/d` changes both, as
+/// `pushd` and `D:` do. None of them can change the drive when it names the
+/// drive the line is on; to another drive each may sit in a branch or a pipe
+/// stage, or fail, so the drive is then only a guess, and a `cd` without `/d`
+/// to a path on a drive other than the guess leaves the line somewhere
+/// unknown.
+fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>, sure: bool) -> Effect {
+    // A move onto `there`: certain only when the line was certainly there.
+    let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
     if let Some(letter) = drive_switch(unit) {
-        return Effect::Moves(Some(letter));
+        return onto(Some(letter));
     }
     let key = unit.key().unwrap_or_default();
     match key.as_str() {
-        "popd" => return Effect::Moves(None),
+        "popd" => return Effect::Moves(None, false),
         "pushd" => {
             // A network path is mapped to a drive letter the line does not
             // name, so the line is on an unknown drive then.
             let network = |text: &str| text.starts_with("\\\\") || text.starts_with("//");
-            return Effect::Moves(target.known().and_then(|text| {
-                if network(text) {
-                    None
-                } else {
-                    crate::path::drive_of(text).or(drive)
-                }
-            }));
+            return match target.known() {
+                Some(text) if network(text) => Effect::Moves(None, false),
+                Some(text) => onto(crate::path::drive_of(text).or(drive)),
+                None => Effect::Moves(None, false),
+            };
         }
         "cd" | "chdir" => {}
         // `cd..`, `cd\`: no drive in them.
-        _ => return Effect::Moves(drive),
+        _ => return Effect::Moves(drive, sure),
     }
     let is_switch = |arg: &Arg| arg.known().is_some_and(|t| t.eq_ignore_ascii_case("/d"));
     let leading = unit.args.first().is_some_and(is_switch);
     let anywhere = unit.args.iter().any(is_switch);
     let Some(text) = target.known() else {
-        return Effect::Moves(if anywhere { None } else { drive });
+        return if anywhere {
+            Effect::Moves(None, false)
+        } else {
+            Effect::Moves(drive, sure)
+        };
     };
     let Some(there) = crate::path::drive_of(text) else {
-        return Effect::Moves(drive);
+        return Effect::Moves(drive, sure);
     };
     if leading {
-        Effect::Moves(Some(there))
+        onto(Some(there))
     } else if anywhere {
         Effect::Unsure(None)
     } else {
         match drive {
-            Some(here) if here == there => Effect::Moves(drive),
-            Some(_) => Effect::Stays,
-            None => Effect::Unsure(None),
+            Some(here) if here == there => Effect::Moves(drive, sure),
+            Some(_) if sure => Effect::Stays,
+            _ => Effect::Unsure(None),
         }
     }
 }
@@ -769,6 +788,7 @@ const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 pub(crate) fn split(command: &str, shell: Shell, drive: Option<char>) -> Split {
     let mut split = Split {
         drive,
+        drive_sure: drive.is_some(),
         ..Split::default()
     };
     script(&mut split, command, shell, 0);
