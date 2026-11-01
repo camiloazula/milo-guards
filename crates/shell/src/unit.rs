@@ -786,21 +786,60 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-/// The most here-documents a script may start before it is not read: the
-/// bash grammar takes time that grows with the square of their number
-/// (seconds, at the length limit), and no real script starts this many.
+/// The most here-documents a POSIX script may start on one line before it is
+/// not read: the bash grammar holds each until the line ends and takes time
+/// that grows with the square of how many are waiting (a second, at the
+/// length limit), and no real script starts this many on a line. Here-
+/// documents on lines of their own, closed or not, cost no more than the
+/// text does, and here-strings (`<<<`) are not here-documents.
 const MAX_HEREDOCS: usize = 256;
 
-/// Whether the grammars would take too long over `text`, and why, found by
-/// counting bytes without parsing: more brackets opened, with none closed
-/// in between, than a parse tree is walked deep (the line is unreadable
-/// whatever the grammar makes of it, and cmd's takes seconds to find that
-/// out at the length limit), or more here-documents than [`MAX_HEREDOCS`].
+/// The most `&`, and the most `|`, a cmd line may hold before it is not
+/// read: cmd's grammar nests a chain one level for each, so a line past
+/// the depth the walk goes is unreadable whatever else it holds, and its
+/// grammar takes time that grows with the square of the chain to find that
+/// out (seconds, at the length limit).
+const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+
+/// Whether the grammar of `shell` would take too long over `text`, and why,
+/// found by counting bytes without parsing:
+///
+/// - more brackets opened, with none closed in between, than a parse tree is
+///   walked deep (the line is unreadable whatever the grammar makes of it,
+///   and cmd's takes seconds to find that out at the length limit);
+/// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
+///   `||` count once);
+/// - in a POSIX shell, more here-documents started on one line (a `\` before
+///   the line break continues it) than [`MAX_HEREDOCS`].
+///
 /// The count ignores quoting, so it can only err towards unreadable.
-fn too_tangled(text: &str) -> Option<&'static str> {
+fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
     let bytes = text.as_bytes();
     let (mut open, mut heredocs) = (0_usize, 0_usize);
-    for (at, byte) in bytes.iter().enumerate() {
+    let (mut ands, mut pipes) = (0_usize, 0_usize);
+    // How many `<` in a row end just before `at`, and whether the `&` or `|`
+    // just before it was the second of a pair.
+    let (mut run, mut paired) = (0_usize, false);
+    // A line break after the text settles a run of `<` at its end.
+    for (at, byte) in bytes
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'\n'))
+        .enumerate()
+    {
+        if byte == b'<' {
+            run += 1;
+            continue;
+        }
+        // `<<EOF` starts a here-document, `<<<` a here-string; more than
+        // three in a row is noise, which counts.
+        if shell == Shell::Posix && (run == 2 || run >= 4) {
+            heredocs += 1;
+            if heredocs > MAX_HEREDOCS {
+                return Some("starts too many here-documents to read");
+            }
+        }
+        run = 0;
         match byte {
             b'(' => {
                 open += 1;
@@ -809,11 +848,17 @@ fn too_tangled(text: &str) -> Option<&'static str> {
                 }
             }
             b')' => open = open.saturating_sub(1),
-            // The second `<` of each run of them: `<<EOF`, `<<<`.
-            b'<' if at >= 1 && bytes[at - 1] == b'<' && (at < 2 || bytes[at - 2] != b'<') => {
-                heredocs += 1;
-                if heredocs > MAX_HEREDOCS {
-                    return Some("starts too many here-documents to read");
+            b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
+            b'&' | b'|' if shell == Shell::Cmd => {
+                // The second of two the same is part of `&&` or `||`.
+                let second = !paired && at >= 1 && bytes[at - 1] == byte;
+                paired = second;
+                if !second {
+                    let count = if byte == b'&' { &mut ands } else { &mut pipes };
+                    *count += 1;
+                    if *count > MAX_CMD_SEPARATORS {
+                        return Some("chains too many commands to read");
+                    }
                 }
             }
             _ => {}
@@ -852,7 +897,7 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
         split.problem(Rule::Unreadable, "is too long to read", None);
         return;
     }
-    if let Some(why) = too_tangled(text) {
+    if let Some(why) = too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
         return;
     }

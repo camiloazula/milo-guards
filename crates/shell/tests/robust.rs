@@ -469,8 +469,9 @@ fn a_delete_among_plain_words_and_separators_is_never_safe() {
 
 /// What `shell` reads as a plain word, where another shell reads syntax: the
 /// pieces an unfinished line may end in that are not unfinished there. cmd
-/// has no single quotes, backticks, `$(`, `${` or braces; PowerShell takes a
-/// `<<` for a plain word. The list is kept apart from the guard, so a safe
+/// has no single quotes, backticks, `$(`, `${` or braces; PowerShell's grammar
+/// reads a `<<` as a plain word (PowerShell itself refuses the line, so
+/// nothing runs). The list is kept apart from the guard, so a safe
 /// verdict for a line that ends in one of these is not mistaken for a false
 /// one.
 fn literal_in(shell: Shell) -> &'static [&'static str] {
@@ -628,6 +629,16 @@ fn unreadable(line: &str, shell: Shell) -> bool {
         .any(|finding| finding.rule == Rule::Unreadable)
 }
 
+/// Whether `line` is unreadable for the reason `why` names (a part of the
+/// reason the finding gives): a limit is pinned by its own reason, so the
+/// line need not read once the limit is not in the way.
+fn stopped_by(line: &str, shell: Shell, why: &str) -> bool {
+    classify(line, shell, &paths_for(shell))
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable && finding.reason.contains(why))
+}
+
 #[test]
 fn the_longest_line_that_reads_is_the_limit() {
     // `MAX_LEN` in `unit.rs`: a line of 64 KiB reads, a byte more does not.
@@ -701,17 +712,95 @@ fn the_most_shells_in_shells_that_read_is_the_limit() {
 }
 
 #[test]
-fn the_most_here_documents_that_read_is_the_limit() {
-    // `MAX_HEREDOCS` in `unit.rs`: a script is counted by its runs of `<<`
-    // before it is parsed, because the bash grammar takes time that grows
-    // with the square of how many it starts. Here-strings make runs of them
-    // that read, so the edge can be measured.
+fn the_most_here_documents_started_on_a_line_that_read_is_the_limit() {
+    // `MAX_HEREDOCS` in `unit.rs`: the bash grammar holds every here-document
+    // started on a line until the line ends, and takes time that grows with
+    // the square of how many, so a POSIX script is counted before it is
+    // parsed. The edge is found by the reason the limit gives.
+    let why = "too many here-documents";
     let found = edge(2_000, |n| {
-        !unreadable(&"cat <<< a; ".repeat(n), Shell::Posix)
+        !stopped_by(&"cat <<A; ".repeat(n), Shell::Posix, why)
     });
     assert_eq!(found, 256);
-    // Each one that starts a here-document is counted the same, read or not.
-    assert!(unreadable(&"cat <<EOF; ".repeat(257), Shell::Posix));
+    // A line continued with a backslash is one line.
+    let found = edge(2_000, |n| {
+        !stopped_by(&"cat <<A; \\\n".repeat(n), Shell::Posix, why)
+    });
+    assert_eq!(found, 256);
+    // Here-strings are not here-documents, and here-documents on lines of
+    // their own, closed or not, cost no more than the text: neither counts.
+    for line in [
+        "cat <<< a; ".repeat(2_000),
+        "cat <<EOF\n".repeat(2_000),
+        "cat <<EOF\nx\nEOF\n".repeat(2_000),
+    ] {
+        assert!(!stopped_by(&line, Shell::Posix, why), "{}", &line[..20]);
+    }
+    // And only a POSIX shell has them: `<<` is no more than a word, or a
+    // shift, in the others.
+    for shell in [Shell::PowerShell, Shell::Cmd] {
+        assert!(!stopped_by(&"cat <<A; ".repeat(2_000), shell, why));
+    }
+}
+
+#[test]
+fn the_most_brackets_opened_that_read_is_the_limit() {
+    // `MAX_TREE_DEPTH` in `unit.rs` is also the count of `(` with none
+    // closed, taken before parsing and blind to quoting. In a string the
+    // grammar sees no nesting, so the count alone is measured: the edge is
+    // the same in every shell.
+    for shell in SHELLS {
+        let found = edge(1_000, |n| {
+            !stopped_by(&format!("echo \"{}\"", "(".repeat(n)), shell, "too deeply")
+        });
+        assert_eq!(found, 400, "{shell:?}");
+        // A bracket closed in between is not one still open.
+        let closed = format!("echo \"{}\"", "() ".repeat(2_000));
+        assert!(!stopped_by(&closed, shell, "too deeply"), "{shell:?}");
+    }
+}
+
+#[test]
+fn the_most_ands_and_pipes_in_cmd_that_read_is_the_limit() {
+    // `MAX_CMD_SEPARATORS` in `unit.rs`: cmd's grammar nests a chain a level
+    // for each `&` or `|` and takes time that grows with the square of them,
+    // so each is counted before parsing (`&&` and `||` once). Inside a
+    // string, where they separate nothing, the count alone is measured.
+    let why = "too many commands";
+    for separator in ["& ", "| ", "&& ", "|| "] {
+        let found = edge(1_000, |n| {
+            !stopped_by(
+                &format!("echo \"{}\"", separator.repeat(n)),
+                Shell::Cmd,
+                why,
+            )
+        });
+        assert_eq!(found, 400, "{separator}");
+    }
+    // The two are counted apart, and the others do not count them.
+    assert!(!stopped_by(
+        &format!("echo \"{}\"", "& | ".repeat(400)),
+        Shell::Cmd,
+        why
+    ));
+    for shell in [Shell::Posix, Shell::PowerShell] {
+        assert!(!stopped_by(
+            &format!("echo \"{}\"", "& ".repeat(2_000)),
+            shell,
+            why
+        ));
+    }
+    // A real chain is unreadable at the grammar's own depth, a little short
+    // of the count, so the count never turns a line that reads away.
+    for separator in [" & ", " | ", " && ", " || "] {
+        let found = edge(3_000, |n| {
+            !unreadable(
+                &format!("echo x{}", format!("{separator}echo x").repeat(n)),
+                Shell::Cmd,
+            )
+        });
+        assert_eq!(found, 397, "{separator}");
+    }
 }
 
 #[test]
@@ -755,6 +844,117 @@ fn finds_in_finds_cost_what_the_line_is_long_not_what_it_multiplies_to() {
 }
 
 #[test]
+fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
+    // `MAX_EXEC_WORK` in `find.rs`: every place `find` searches runs the
+    // program once, with the bytes of its arguments, `{}` replaced by the
+    // place. Here each of the places (`a`) costs the bytes of `echo` and
+    // five hundred `{}`, and the edge is where the budget (1 MiB) runs out.
+    let why = "runs too many programs";
+    let line = |places: usize| {
+        format!(
+            "find {}-exec echo {}\\;",
+            "a ".repeat(places),
+            "{} ".repeat(500)
+        )
+    };
+    let found = edge(2_000, |n| !stopped_by(&line(n), Shell::Posix, why));
+    assert_eq!(found, 522);
+    // One argument of a thousand `{}` is fewer arguments and more bytes, so
+    // fewer places fit: the bytes count, not the arguments.
+    let heavy = |places: usize| {
+        format!(
+            "find {}-exec echo {}\\;",
+            "a ".repeat(places),
+            "{}".repeat(1_000)
+        )
+    };
+    assert!(!stopped_by(&heavy(348), Shell::Posix, why));
+    assert!(stopped_by(&heavy(349), Shell::Posix, why));
+    // Everyday finds are far under it.
+    for line in [
+        "find . -name '*.o' -exec rm {} \\;",
+        "find src tests docs -type f -name '*.rs' -exec grep -l foo {} +",
+        "find . -exec find . -exec echo {} \\; \\;",
+    ] {
+        assert!(!stopped_by(line, Shell::Posix, why), "{line}");
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an explosion"
+)]
+fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
+    // The work of `find -exec` is the bytes it builds, not the arguments it
+    // hands on: a few arguments of many `{}` each, or one big one, made the
+    // same blow-up through a budget counted in arguments. The bound is for
+    // the debug build `just verify` runs.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let levels = |places: &str, each: usize, last: &str| {
+        let mut line = format!("find {places}");
+        for _ in 0..each {
+            line += "-exec find . . . . . . . . ";
+        }
+        line + last
+    };
+    let lines = [
+        // One place of a thousand bytes, four levels of eight places, and an
+        // argument of a thousand `{}`: a megabyte for each of 4,096 runs.
+        (
+            "levels of long arguments",
+            levels(
+                &format!("{} ", "a".repeat(1_000)),
+                4,
+                &format!("-exec echo {} \\;", "{}".repeat(1_000)),
+            ),
+        ),
+        // One place of 25,000 bytes and one argument of 17,000 `{}`: 425 MB.
+        (
+            "one huge argument",
+            format!(
+                "find {} -exec echo {} \\;",
+                "a".repeat(25_000),
+                "{}".repeat(17_000)
+            ),
+        ),
+        // The same, with twelve levels in front.
+        (
+            "one huge argument, deeper",
+            format!(
+                "find {} {}-exec echo {} \\;",
+                "a".repeat(25_000),
+                "-exec find . ".repeat(12),
+                "{}".repeat(17_000)
+            ),
+        ),
+        // Eight places and seven levels, then a script of 55 KB.
+        (
+            "a script at the bottom",
+            format!(
+                "find . . . . . . . . {}-exec sh -c 'echo {}' \\;",
+                "-exec find . . . . . . . . ".repeat(6),
+                "a".repeat(55_000)
+            ),
+        ),
+    ];
+    for (what, line) in &lines {
+        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+        let started = std::time::Instant::now();
+        let assessment = classify(line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{what}: {took:?}");
+        assert!(
+            assessment
+                .findings()
+                .iter()
+                .any(|finding| finding.rule == Rule::Unreadable),
+            "{what}"
+        );
+    }
+}
+
+#[test]
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
@@ -772,31 +972,35 @@ fn a_line_at_the_length_limit_is_read_in_time() {
         let count = (64 * 1024 - 4) / (open.len() + 1);
         format!("{}echo{}", open.repeat(count), ")".repeat(count))
     };
-    let shapes = [
-        ("a chain", fit("echo x; ", "", "")),
-        ("a pipeline", fit("echo x | ", "", "cat")),
-        ("a conjunction", fit("echo x && ", "", "echo")),
-        ("one word", fit("a", "echo ", "")),
-        ("a quote left open", fit("a", "echo '", "")),
-        ("a string", fit("a", "echo \"", "\"")),
-        ("redirects", fit("echo >a; ", "", "")),
-        ("brackets", fit("[", "echo ", "")),
-        ("substitutions left open", fit("$(", "echo ", "")),
-        ("parentheses nested", nested("(")),
-        ("substitutions nested", nested("$(")),
-        ("blocks left open", fit("if x; then ", "", "")),
-        ("loops left open", fit("for i in a b; do ", "", "")),
-        ("here-documents left open", fit("cat <<EOF; ", "", "")),
-    ];
+    // The separator that ends a command in `shell`: `;` is one in POSIX shell
+    // and PowerShell, and a space in cmd, where `&` is.
+    let chain = |shell: Shell| match shell {
+        Shell::Cmd => "echo x & ",
+        _ => "echo x; ",
+    };
+    let shapes = |shell: Shell| {
+        [
+            ("a chain", fit(chain(shell), "", "")),
+            ("a pipeline", fit("echo x | ", "", "cat")),
+            ("a conjunction", fit("echo x && ", "", "echo")),
+            ("one word", fit("a", "echo ", "")),
+            ("a quote left open", fit("a", "echo '", "")),
+            ("a string", fit("a", "echo \"", "\"")),
+            ("redirects", fit("echo >a; ", "", "")),
+            ("brackets", fit("[", "echo ", "")),
+            ("substitutions left open", fit("$(", "echo ", "")),
+            ("parentheses nested", nested("(")),
+            ("substitutions nested", nested("$(")),
+            ("blocks left open", fit("if x; then ", "", "")),
+            ("loops left open", fit("for i in a b; do ", "", "")),
+            ("here-documents left open", fit("cat <<EOF; ", "", "")),
+        ]
+    };
     let mut slowest = (std::time::Duration::ZERO, String::new());
-    for (what, line) in &shapes {
-        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
-        for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
-            let paths = if shell == Shell::Posix {
-                posix()
-            } else {
-                windows()
-            };
+    for shell in SHELLS {
+        let paths = paths_for(shell);
+        for (what, line) in &shapes(shell) {
+            assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
             let started = std::time::Instant::now();
             let _ = classify(line, shell, &paths);
             let _ = effect(line, shell, &paths);
