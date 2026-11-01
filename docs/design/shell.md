@@ -792,15 +792,15 @@ so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
 `--recursive`), `s3 rb`, `s3 sync --delete`, `terminate-*`, `delete-*`,
 `batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
 `--dry-run` and `s3`'s `--dryrun` make it safe, unless a later `--no-dry-run`
-turns it off (the CLI takes the last). `gcloud` (a `delete` or
-`destroy` among the first words, `storage rm`, and `storage rsync` with
+turns it off (the CLI takes the last). `gcloud` (a `delete`, `delete-*`,
+`bulk-delete` or `destroy` among the first words, `storage rm`, and `storage rsync` with
 `--delete-unmatched-destination-objects`, which `gsutil rsync -d` and `aws s3
 sync --delete` match), `gsutil rm`, `rb` and `rsync -d`, `az` (`delete`,
-`delete-*`, `purge`, `storage remove`), `doctl` (`delete`, `d`, `rm`), `flyctl`
+`delete-*`, `purge`, `storage remove`), `doctl` (`delete`, `delete-*`, `d`, `rm`), `flyctl`
 and `fly` (`destroy`, `delete`, `rm` and `remove` under any
 word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
 (`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
-(`apps:destroy`, `addons:destroy`), `wrangler` (`delete` at any depth,
+(`apps:destroy`, `addons:destroy`, `pg:backups:delete`), `wrangler` (`delete` at any depth,
 `kv:namespace delete`), `firebase` (`…:delete` and `…:remove`, as in
 `database:remove`), `hcloud`, `scw`, `oci` (`delete`, `bulk-delete`,
 `terminate`), `eksctl` and `kops` (`delete`).
@@ -816,23 +816,25 @@ PowerShell's `--dry-run=$false`.
 A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
 s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
 run-all $cmd`) is `unknown`: the line may be any of the above. For the cloud
-CLIs that read a verb at any depth, a word behind a verb that only reads or
-changes one thing (`gcloud compute instances describe $vm`) is that verb's
-operand, so it stays safe. The options of each CLI that take a value are
+CLIs that read a verb at any depth, a word behind a verb that only reads,
+creates or changes one thing (`gcloud compute instances describe $vm`, `get-`,
+`add-`, `create-`, `update-` and `set-` verbs, `put`, `submit`, `access`, `use`,
+`link`) is that verb's operand, so it stays safe. So is the word after a
+`topic:command` of heroku (`heroku config:set $(cat .env)`), and a word that
+is an assignment (`FOO=$BAR`) is never read as a verb. The options of each CLI that take a value are
 listed, and a boolean flag is never in a list: a flag listed by mistake eats
 the command word after it (`cdk --json destroy`).
 
 Not read, so the caller has to account for them: a verb that deletes under
 another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
-`docker rmi -f` of every image); a program run on another machine (`ssh host
-docker system
-prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf /`); a command a
-tool reads from a file or its environment (`TF_CLI_ARGS=-destroy`, a
-`kubectl` plugin, a shell alias); and the `delete` verb of a resource that is
-named `delete` (`gcloud config set project delete` reads as a delete, because
-the verb is the last word of the command and the guard cannot tell it from a
-name that follows).
+`docker rmi -f` of every image); a program run on another machine
+(`ssh host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p --
+rm -rf /`); a command a tool reads from a file or its environment
+(`TF_CLI_ARGS=-destroy`, a `kubectl` plugin, a shell alias); and the `delete`
+verb of a resource that is named `delete` (`gcloud config set project delete`
+reads as a delete, because the verb is the last word of the command and the
+guard cannot tell it from a name that follows).
 
 ## Tests
 

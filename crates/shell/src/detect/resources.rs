@@ -87,6 +87,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 5,
+                false,
                 |before, word| {
                     (before == Some("storage") && word == "remove")
                         || word == "delete"
@@ -100,13 +101,17 @@ impl Checker<'_> {
                 args,
                 &values,
                 4,
-                |_, word| matches!(word, "delete" | "del" | "d" | "rm"),
+                false,
+                |_, word| {
+                    matches!(word, "delete" | "del" | "d" | "rm") || word.starts_with("delete-")
+                },
                 "deletes DigitalOcean resources",
             ),
             "flyctl" | "fly" => cloud(
                 args,
                 &values,
                 3,
+                false,
                 |_, word| matches!(word, "destroy" | "delete" | "rm" | "remove"),
                 "destroys a Fly.io app, machine or volume",
             ),
@@ -114,6 +119,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 2,
+                false,
                 |_, word| matches!(word, "remove" | "rm" | "del"),
                 "removes Vercel deployments, projects or settings",
             ),
@@ -121,13 +127,17 @@ impl Checker<'_> {
                 args,
                 &values,
                 2,
-                |_, word| word == "destroy" || word.ends_with(":destroy"),
+                true,
+                |_, word| {
+                    word == "destroy" || word.ends_with(":destroy") || word.ends_with(":delete")
+                },
                 "destroys a Heroku app or add-on",
             ),
             "wrangler" => cloud(
                 args,
                 &values,
                 4,
+                false,
                 |_, word| word == "delete" || word.ends_with(":delete"),
                 "deletes Cloudflare resources",
             ),
@@ -135,6 +145,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 1,
+                true,
                 |_, word| word.ends_with(":delete") || word.ends_with(":remove"),
                 "deletes Firebase resources",
             ),
@@ -142,6 +153,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 3,
+                false,
                 |_, word| word == "delete",
                 "deletes Hetzner Cloud resources",
             ),
@@ -149,6 +161,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 4,
+                false,
                 |_, word| matches!(word, "delete" | "terminate"),
                 "deletes Scaleway resources",
             ),
@@ -156,6 +169,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 6,
+                false,
                 |_, word| matches!(word, "delete" | "bulk-delete" | "terminate"),
                 "deletes Oracle Cloud resources",
             ),
@@ -163,6 +177,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 2,
+                false,
                 |_, word| word == "delete",
                 "deletes an EKS cluster or its parts",
             ),
@@ -170,6 +185,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 2,
+                false,
                 |_, word| word == "delete",
                 "deletes a kops cluster or its parts",
             ),
@@ -246,8 +262,9 @@ fn values_of(key: &str) -> Vec<&'static str> {
 }
 
 // What each program takes a value for, before its command. A value that is
-// missed would be read as the command, so each list holds every global
-// option the program has that takes one.
+// missed would be read as the command, so a missing one is a false safe: each
+// list holds the global options the program has that take one, as far as its
+// help, manual and docs show them, and a new one is added when it turns up.
 
 /// Options of docker, podman and nerdctl that take a value.
 const ENGINE_VALUES: &[&str] = &[
@@ -289,7 +306,18 @@ const ENGINE_VALUES: &[&str] = &[
     "--snapshotter",
     "--cni-config-dir",
     "--cdi-spec-dirs",
+    "--cdi-spec-dir",
     "--bridge-ip",
+    "--out",
+    "--ssh",
+    "--tls-ca",
+    "--tls-cert",
+    "--tls-key",
+    "--tls-details",
+    "--network-cmd-path",
+    "--volumepath",
+    "--db-backend",
+    "--host-gateway-ip",
 ];
 
 /// Options of `docker compose` that take a value.
@@ -331,6 +359,9 @@ const KUBECTL_VALUES: &[&str] = &[
     "--as",
     "--as-group",
     "--as-uid",
+    "--as-user-extra",
+    "--kuberc",
+    "--proxy-url",
     "--certificate-authority",
     "--client-certificate",
     "--client-key",
@@ -389,6 +420,9 @@ const HELM_VALUES: &[&str] = &[
     "--description",
     "--cascade",
     "--timeout",
+    "--color",
+    "--colour",
+    "--content-cache",
 ];
 
 /// Options of minikube that take a value.
@@ -505,7 +539,8 @@ const AWS_VALUES: &[&str] = &[
     "--cli-binary-format",
 ];
 
-/// Options of gcloud that take a value, global and common to its commands.
+/// Options of gcloud that take a value, global and common to its commands,
+/// and those of the everyday commands that name a thing.
 const GCLOUD_VALUES: &[&str] = &[
     "--project",
     "--account",
@@ -523,6 +558,24 @@ const GCLOUD_VALUES: &[&str] = &[
     "--limit",
     "--sort-by",
     "--page-size",
+    "--tag",
+    "--key-file",
+    "--secret",
+    "--member",
+    "--role",
+    "--cluster",
+    "--location",
+    "--source",
+    "--config",
+    "--timeout",
+    "--substitutions",
+    "--service-account",
+    "--network",
+    "--machine-type",
+    "--image",
+    "--metadata",
+    "--labels",
+    "--description",
 ];
 
 /// Options of gsutil that take a value.
@@ -580,6 +633,7 @@ const VERCEL_VALUES: &[&str] = &[
     "--global-config",
     "--team",
     "-T",
+    "--project",
 ];
 
 /// Options of heroku that take a value.
@@ -623,6 +677,15 @@ const OCI_VALUES: &[&str] = &[
     "--query",
     "--cert-bundle",
     "--auth",
+    "-bn",
+    "--bucket-name",
+    "-ns",
+    "--namespace-name",
+    "--compartment-id",
+    "--cluster-id",
+    "--instance-id",
+    "--display-name",
+    "--from-json",
 ];
 
 /// Options of eksctl that take a value.
@@ -891,11 +954,14 @@ fn first_word<'a>(
 }
 
 /// A CLI whose delete verb is one of the first `depth` words (`gcloud
-/// compute instances delete vm`); `hit` is given the word before it.
+/// compute instances delete vm`); `hit` is given the word before it. With
+/// `colon`, a `topic:command` word (`heroku config:set`) is a whole command,
+/// so the words after it are operands.
 fn cloud<'a>(
     args: &'a [Arg],
     values: &[&str],
     depth: usize,
+    colon: bool,
     hit: fn(Option<&str>, &str) -> bool,
     reason: &'static str,
 ) -> Say<'a> {
@@ -911,9 +977,10 @@ fn cloud<'a>(
                 }
                 // A verb that does not delete takes operands, not another
                 // verb: `describe $vm` names a machine.
-                leaf = leaf || LEAF_VERBS.contains(&text);
+                leaf = leaf || leaf_verb(text) || (colon && text.contains(':'));
             }
-            None => unread = unread || !leaf,
+            // `FOO=$BAR` after `config:set` is an assignment, never a verb.
+            None => unread = unread || !(leaf || assignment(written(word))),
         }
         before = word.known();
     }
@@ -930,8 +997,28 @@ fn cloud<'a>(
 const LEAF_VERBS: &[&str] = &[
     "list", "ls", "describe", "get", "show", "create", "add", "set", "update", "read", "logs",
     "status", "info", "inspect", "start", "stop", "restart", "reboot", "resize", "ssh", "scp",
-    "deploy", "login", "whoami", "version",
+    "deploy", "login", "whoami", "version", "put", "submit", "access", "use", "link",
 ];
+
+/// Whether a known word is a verb that reads, creates or changes one thing:
+/// one of [`LEAF_VERBS`], or a longer name for one (`get-credentials`,
+/// `add-metadata`, `create-kubeconfig`, `update-labels`, `set-iam-policy`).
+fn leaf_verb(text: &str) -> bool {
+    LEAF_VERBS.contains(&text)
+        || ["get-", "add-", "create-", "update-", "set-"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+}
+
+/// Whether a word is an assignment (`FOO=$BAR`, `web=2`): a name, then `=`.
+fn assignment(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(name, _)| {
+        name.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
 
 /// Whether a kubectl line only rehearses: `--dry-run=client` or `=server`
 /// (or bare, as older versions took it), the last one written.
@@ -1385,8 +1472,11 @@ fn gcloud<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
         args,
         values,
         6,
+        false,
         |before, word| {
-            matches!(word, "delete" | "destroy") || (before == Some("storage") && word == "rm")
+            matches!(word, "delete" | "destroy" | "bulk-delete")
+                || word.starts_with("delete-")
+                || (before == Some("storage") && word == "rm")
         },
         "deletes Google Cloud resources",
     );
