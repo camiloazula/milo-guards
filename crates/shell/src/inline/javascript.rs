@@ -201,14 +201,9 @@ fn whole(name: &str) -> Option<Kind> {
         | "process.dlopen"
         | "process.mainModule"
         | "process.execve"
-        | "module.require"
-        | "module._load"
-        | "module.prototype.require"
         | "Bun.$.cwd"
         | "zx.$.cwd"
         | "zx.cd"
-        | "module.constructor"
-        | "module.createRequire"
         | "require.main"
         | "worker_threads.Worker"
         // Read code from the input (`repl`), or run what a string or a worker
@@ -228,9 +223,22 @@ fn whole(name: &str) -> Option<Kind> {
         // The members of `child_process` the reader does not read start a
         // program or a process (`ChildProcess`, `_forkChild`).
         name if name.starts_with("child_process.") => Kind::Unread,
+        // So are the members of `module` that load or run code (`_compile`,
+        // `register`, `runMain`, `_load`, `require`, `createRequire`): only
+        // its plain data is not.
+        name if name.strip_prefix("module.").is_some_and(|member| {
+            let member = member.split('.').next().unwrap_or_default();
+            !MODULE_DATA.contains(&member)
+        }) =>
+        {
+            Kind::Unread
+        }
         _ => return None,
     })
 }
+
+/// The members of `module` that are plain data.
+const MODULE_DATA: [&str; 6] = ["exports", "paths", "filename", "id", "children", "loaded"];
 
 /// The objects a computed name looked up on cannot be followed.
 const ROOTS: [&str; 11] = [
@@ -354,6 +362,16 @@ fn require_source<'t>(name: Option<&str>, args: &Args<'t>) -> Option<Source<'t>>
         }
     }
     None
+}
+
+/// Whether the value of an expression is used: it is anything but a
+/// statement of its own.
+fn value_used(above: &[Ancestor<'_>]) -> bool {
+    above
+        .iter()
+        .rev()
+        .find(|parent| parent.node.kind() != "parenthesized_expression")
+        .is_some_and(|parent| parent.node.kind() != "expression_statement")
 }
 
 struct Reader<'s> {
@@ -1192,6 +1210,12 @@ impl<'s> Reader<'s> {
             }
             Some(Kind::Unread) => self.reading.unread(self.text(call)),
             Some(Kind::Eval) => {
+                // The value of the code is a module or an object the reader
+                // follows, if the call is not a statement of its own, and
+                // comes back under no name.
+                if value_used(above) {
+                    self.reading.unread(self.text(call));
+                }
                 let literal = args
                     .get(0)
                     .filter(|node| node.kind() == "string")

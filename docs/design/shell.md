@@ -500,11 +500,13 @@ and the code that is the reason as the target: code that does not parse;
 `eval`, `exec`, `compile`, `Function`, `vm.*` of anything but a literal string
 (a literal is read as code of its language); a library call that runs the code
 it is given, `timeit.timeit`/`repeat`/`Timer`, `cProfile.run`/`runctx`,
-`profile.run`/`runctx`, `pdb.run`/`runeval` (a literal is read as Python, a
+`profile.run`/`runctx` (a literal is read as Python, a
 `lambda` is read where it is written, anything else is code only known when it
 runs), and the ones that load code, `pickle` and `marshal` (`load`, `loads`),
 `pkgutil.resolve_name`, `importlib.util.module_from_spec`, `exec_module`,
-`load_module`, `cProfile.Profile`, `pdb.runcall`; `__import__`, `getattr`,
+`load_module`, `cProfile.Profile`; every call of `pdb` (`run`, `runeval`,
+`runcall`, `main`, `Pdb`), which starts a debugger that reads commands from the
+input; `__import__`, `getattr`,
 `import()` and `require` of a computed name, a computed member of `fs` or
 `os`; `globals`, `locals`, `vars`, `__dict__`, `__builtins__`, `.constructor`;
 a call to a name above used as a value (`r = os.remove`,
@@ -520,10 +522,18 @@ it comes back under a name the reader does not follow; `with (require('fs'))`;
 a `{ ...rest }` taken from a module (a default, `{ rmSync = null }`, still
 names the member); `sys.modules`; starting a program by `os.exec*`,
 `os.spawn*`, `pty.spawn`, `ctypes`; what reads code from the input, `code.interact`,
-`breakpoint()`, `pdb.set_trace`, `post_mortem` and `pm` in Python, `repl.start`
+`breakpoint()` and every `pdb` call in Python, `repl.start`
 and `repl.REPLServer` in JavaScript; a session of the `inspector`, which
 evaluates what it is sent, and a `cluster` worker, which takes its options from
-the settings. A command line or code only known when it
+the settings; the members of node's `module` that load or run code
+(`_compile`, `register`, `runMain`, `_load`, `require`, `createRequire`, and
+every other member but the plain data `exports`, `paths`, `filename`, `id`,
+`children`, `loaded`); the value of a Python `eval` or a JavaScript `eval`
+that is used rather than a statement of its own (`eval('os').system(…)`, `r =
+eval('require("fs")')`), which may be a module or an object the reader follows
+and then comes back under no name (`print(eval('1+2'))` is still safe: the
+value goes to `print`); `__import__('os.path')` is `os` unless a non-empty
+`fromlist` is given, as Python returns the top package. A command line or code only known when it
 runs (`child_process.execSync(process.argv[1])`, an f-string with a
 substitution) is `unknown` too. Code with none of the calls above and
 nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
@@ -561,7 +571,7 @@ Python 2's `exec "code"` (also `exec "code" in globals`) is read like
 literal, whose `replace` takes two.
 
 **Names shared with nested code.** Literal code given to `exec`, `eval` or a
-profiler (`cProfile.run`, `pdb.run`) runs in the namespace of the code around
+profiler (`cProfile.run`) runs in the namespace of the code around
 it, and the reader reads it apart, from a table of names of its own. So a name
 the nested code binds (`exec('import shutil as json')`, then `json.rmtree(…)`;
 `from shutil import rmtree as f`, `var m = require('fs')`, `var { rm } =

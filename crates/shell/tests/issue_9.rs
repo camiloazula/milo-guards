@@ -906,8 +906,6 @@ fn python_library_calls_that_run_code_are_read_or_unknown() {
             r#"python3 -c 'import timeit; timeit.Timer("x = 1")'"#,
             r#"python3 -c 'import cProfile; cProfile.run("sum(range(10))")'"#,
             r#"python3 -c 'import profile; profile.run("sum(range(10))")'"#,
-            r#"python3 -c 'import pdb; pdb.run("x = 1")'"#,
-            r#"python3 -c 'import pdb; pdb.runeval("1 + 1")'"#,
             r#"python3 -c 'import json; json.loads("{}")'"#,
         ],
         &[
@@ -949,11 +947,11 @@ fn python_library_calls_that_run_code_are_read_or_unknown() {
             ),
             (
                 r#"python3 -c 'import pdb; pdb.run("import shutil; shutil.rmtree(\"/home/me\")")'"#,
-                Rule::Delete,
+                Rule::Unknown,
             ),
             (
                 r#"python3 -c 'import pdb; pdb.runeval("__import__(\"shutil\").rmtree(\"/home/me\")")'"#,
-                Rule::Delete,
+                Rule::Unknown,
             ),
             // Code only known when it runs, a profiler's or a debugger's own
             // object, and a call handed on.

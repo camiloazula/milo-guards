@@ -126,7 +126,7 @@ enum Kind {
     /// `eval` and `exec`.
     Eval,
     /// A library call that runs the code it is given as a string
-    /// (`timeit.timeit`, `cProfile.run`, `pdb.run`): a literal is read as
+    /// (`timeit.timeit`, `cProfile.run`): a literal is read as
     /// Python, a callable is walked where it is written, and anything else
     /// is code only known when it runs.
     Code,
@@ -250,6 +250,9 @@ fn kind(name: &str) -> Option<Kind> {
         | "subprocess.getoutput"
         | "subprocess.getstatusoutput"
         | "asyncio.create_subprocess_shell"
+        // `asyncio.subprocess` is read as `subprocess` (the last module in a
+        // name holds the call), which is where these two really are.
+        | "subprocess.create_subprocess_shell"
         | "commands.getoutput"
         | "commands.getstatusoutput"
         | "pexpect.run"
@@ -259,15 +262,12 @@ fn kind(name: &str) -> Option<Kind> {
         | "subprocess.check_call"
         | "subprocess.check_output"
         | "subprocess.Popen" => Kind::Subprocess,
-        "asyncio.create_subprocess_exec" => Kind::Exec,
+        "asyncio.create_subprocess_exec" | "subprocess.create_subprocess_exec" => Kind::Exec,
         "pty.spawn"
         | "sys.modules"
         // Read commands, and run what they say, from the input.
         | "breakpoint"
         | "sys.breakpointhook"
-        | "pdb.set_trace"
-        | "pdb.post_mortem"
-        | "pdb.pm"
         | "compile"
         | "globals"
         | "locals"
@@ -279,8 +279,6 @@ fn kind(name: &str) -> Option<Kind> {
         | "code.InteractiveConsole"
         | "cProfile.Profile"
         | "profile.Profile"
-        | "pdb.Pdb"
-        | "pdb.runcall"
         | "pickle.loads"
         | "pickle.load"
         | "pickle.Unpickler"
@@ -293,7 +291,7 @@ fn kind(name: &str) -> Option<Kind> {
         | "imp.load_compiled"
         | "imp.load_dynamic" => Kind::Unread,
         "timeit.timeit" | "timeit.repeat" | "timeit.Timer" | "cProfile.run" | "cProfile.runctx"
-        | "profile.run" | "profile.runctx" | "pdb.run" | "pdb.runeval" => Kind::Code,
+        | "profile.run" | "profile.runctx" => Kind::Code,
         "eval" | "exec" => Kind::Eval,
         "__import__" | "importlib.import_module" | "importlib.__import__" => Kind::Import,
         "getattr" => Kind::Getattr,
@@ -301,6 +299,10 @@ fn kind(name: &str) -> Option<Kind> {
             || name.starts_with("os.spawn")
             || name.starts_with("os.posix_spawn")
             || name.starts_with("runpy.")
+            // Every `pdb` call starts the debugger (`run`, `runeval`,
+            // `runcall`, `main`, `Pdb`), which reads commands, and runs what
+            // they say, from the input.
+            || name.starts_with("pdb.")
             || name.starts_with("ctypes.") =>
         {
             Kind::Unread
@@ -798,7 +800,33 @@ impl<'s> Reader<'s> {
         match kind(&name)? {
             Kind::Import => {
                 let module = args.get(0, &["name"])?;
-                let module = self.value(module, level + 1)?;
+                let mut module = self.value(module, level + 1)?;
+                // `__import__('os.path')` is `os`, the top package, unless a
+                // `fromlist` is given and is not empty; `import_module` gives
+                // the module it names.
+                if !name.ends_with("import_module") && module.contains('.') {
+                    if args.splat {
+                        return None;
+                    }
+                    let whole = match args.get(3, &["fromlist"]) {
+                        None => false,
+                        Some(list) => match list.kind() {
+                            "none" => false,
+                            "list" | "tuple" => {
+                                let mut cursor = list.walk();
+                                let items = list
+                                    .named_children(&mut cursor)
+                                    .filter(|item| item.kind() != "comment")
+                                    .count();
+                                items > 0
+                            }
+                            _ => return None,
+                        },
+                    };
+                    if !whole {
+                        module.truncate(module.find('.').unwrap_or(module.len()));
+                    }
+                }
                 self.modules.insert(module.clone());
                 Some(module)
             }
@@ -1114,7 +1142,15 @@ impl<'s> Reader<'s> {
                 self.act(Some(Act::Program(words)));
             }
             Some(Kind::Unread) => self.reading.unread(self.text(call)),
-            Some(Kind::Eval) => self.eval(&args, call),
+            Some(Kind::Eval) => {
+                // The value of `eval` is a module or an object the reader
+                // follows, if the call is not a statement of its own and is
+                // not just printed, and comes back under no name.
+                if name.as_deref() == Some("eval") && self.value_used(above) {
+                    self.reading.unread(self.text(call));
+                }
+                self.eval(&args, call);
+            }
             Some(Kind::Import | Kind::Getattr) => {
                 // With a literal name the call is a name (`qualified`); the
                 // rest is a lookup the reader cannot follow.
@@ -1179,6 +1215,32 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// Whether the value of `eval(…)` is used: it is anything but a
+    /// statement of its own or an argument of `print`, which does nothing
+    /// with it.
+    fn value_used(&mut self, above: &[Ancestor<'_>]) -> bool {
+        let mut at = above.len();
+        while let Some(parent) = at.checked_sub(1).and_then(|index| above.get(index)) {
+            match parent.node.kind() {
+                "parenthesized_expression" => at -= 1,
+                "expression_statement" => return false,
+                "argument_list" => {
+                    let printed = at
+                        .checked_sub(2)
+                        .and_then(|index| above.get(index))
+                        .filter(|outer| outer.node.kind() == "call")
+                        .and_then(|outer| outer.node.child_by_field_name("function"))
+                        .and_then(|function| self.qualified(function, 0))
+                        .as_deref()
+                        == Some("print");
+                    return !printed;
+                }
+                _ => return true,
+            }
+        }
+        false
+    }
+
     /// `eval("…")` and `exec("…")` run code that is read as Python;
     /// anything else is code only known when it runs.
     fn eval(&mut self, args: &Args<'_>, call: Node<'_>) {
@@ -1191,7 +1253,7 @@ impl<'s> Reader<'s> {
         }
     }
 
-    /// `timeit.timeit(stmt, setup)`, `cProfile.run(statement)`, `pdb.run(…)`:
+    /// `timeit.timeit(stmt, setup)`, `cProfile.run(statement)`:
     /// the code they run is read as Python when it is a literal, a callable
     /// (`lambda`) is walked where it is written, and anything else (a name, a
     /// computed string, `*args`) is code only known when it runs.
