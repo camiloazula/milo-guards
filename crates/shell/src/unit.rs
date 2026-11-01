@@ -1405,9 +1405,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
-/// Whether `text` is a `/X`-style switch, not a path.
+/// Whether `text` is a `/X`-style switch, not a path. A long path spelt with
+/// forward slashes (`//?/C:/x`) is a path: read as one, it can only be judged
+/// more strictly.
 pub(crate) fn is_switch(text: &str) -> bool {
-    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+    text.starts_with('/')
+        && text.len() > 1
+        && !text[1..].contains(['\\', '.'])
+        && milo_guards_core::spelling::verbatim(text).is_none()
 }
 
 /// The arguments that are not `/X`-style switches.

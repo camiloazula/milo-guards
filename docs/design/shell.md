@@ -898,12 +898,34 @@ a path.
   `Get-ChildItem -Force | Rename-Item -NewName x` is a `delete`, as
   `Rename-Item .git x` is. A filter on such a listing is judged against the
   folder: a `-Filter` or `-Include` pattern that can match `.git`
-  (`*`, `.g*`, `.git`) hands on `.git`, and a recursive one (`-Recurse`,
-  `-Depth`) hands on every hidden folder, since `-Filter config` finds
-  `.git\config`; `-Force -Filter *.tmp | Move-Item -Destination trash` stays
-  safe, and `-Exclude` leaves the listing whole. `-Depth` and `-Attributes`
-  take a value, which is never read as the path. A common parameter's value
-  (`-ErrorAction 0`) is never read as the path.
+  (`*`, `.g*`, `.git`) hands on `.git`. A `-Filter` is also matched by the file
+  system against the 8.3 short name, `GIT~1` on the system drive, so `-Filter
+  g*`, `*~1`, `GIT~?` and `?????` hand on `.git` too, read as cmd reads a
+  wildcard, DOS wildcards included: `<` is a `*`, `>` a `?` that can match
+  nothing, and `"` a `.` that can match nothing (`-Filter .gi<`, `<`), and a `.`
+  followed by `*` or `?` can match nothing too (`-Filter HEAD.*.*` finds `HEAD`) (`-Include`
+  is PowerShell's own matching, against the long name only, where these are
+  plain characters). A recursive
+  listing (`-Recurse`, `-Depth`) searches the folders below, so
+  `-Filter config` finds `.git\config`: it hands on `.git` when a pattern can
+  match one of the names `.git` holds: a top-level entry or file (`HEAD`,
+  `config`, `index`), a folder below the top (`pack`, `heads`, `tags`,
+  `remotes`, and the default remote `origin`), `stash` (the only reference
+  to every stash entry), a branch named `main` or `master`, or an object by the shape of its name, asked as "can this pattern
+  match some string of n hex digits": a loose object's folder (two digits,
+  `??`), its file (thirty-eight, `1*`, `*7*`) and a pack (`pack-` and forty
+  digits, then `.pack` or `.idx`); and every hidden folder when a pattern is
+  not known. `bin`, `obj`, `node_modules`, `Debug`, `*.tmp`, `*.orig` and
+  `*.log` hold a letter that is not a hex digit, or a dot, so they match none
+  of these.
+  `-Force -Filter *.tmp | Move-Item -Destination trash` stays safe, and
+  `-Exclude` leaves the listing whole. So the everyday clean-ups
+  `-Include bin,obj -Recurse -Force | Remove-Item -Recurse -Force`,
+  `-Recurse -Force -Directory -Filter node_modules` and
+  `-Force -Recurse -Include *.tmp` stay safe, as do `-Filter *.log | Remove-Item`
+  and `-Recurse -Include *.tmp | Remove-Item` without `-Force`.
+  `-Depth` and `-Attributes` take a value, which is never read as the path.
+  A common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
@@ -915,6 +937,32 @@ a path.
   (`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER*`) is judged on the
   provider's own path.
   A drive's root listed (`C:\*`) is the root, not the drive's working directory.
+- `del /s` and `erase /s` search every folder below the one they start in.
+  From the workspace folder, a name pattern that can match one of the files
+  `.git` holds (`HEAD`, `config`, `index`, `packed-refs`, `description`,
+  `COMMIT_EDITMSG`, `stash`, a branch named `main` or `master`), a folder below its
+  top (`pack`, `heads`, `tags`, `remotes`, `origin`), or an object by the
+  shape of its name (a loose object's two-digit folder, its thirty-eight-digit
+  file, a `pack-` and forty hex digits with `.pack` or `.idx`) is a
+  `delete`: `del /s /q HEAD`, `del /s /q *.` (every name without an
+  extension), `del /s /q ?????`, `del /s /q 1*`, `del /s /q *7*`.
+  `del /s /q *.obj`, `*.tmp`, `*.pyc`, `bin`, `obj` and
+  `Thumbs.db` stay safe, and so does a pattern started deeper in the
+  workspace (`del /s /q src\HEAD`), since only the workspace's own `.git`
+  is the model's to protect. Without `/s` the name is one file in the folder
+  (`del HEAD` is safe). Whether `del /s` descends into hidden folders has
+  not been checked on a Windows machine; it is taken to, since a false safe is
+  the worse mistake, and the rows relax if it is found not to. The pattern is
+  read by cmd's rules, not PowerShell's: a `.` followed by `*` or `?`
+  also matches nothing, as cmd's DOS dot does (`del /s /q main.*` takes the
+  branch `main`, `del /s /q HEAD.*.*` takes `HEAD`), a run of `?` at the end or just before a `.` can match
+  nothing (`HEAD?`, `????????`), cmd's DOS wildcards are read (`<` is a
+  `*`, `>` a `?` that can match nothing, `"` a `.` that can match nothing:
+  `del /s /q "HEA>"`, `del /s /q "<"`), and the 8.3 short names of the long ones are
+  tried too (`*.pac`, `COMMIT~1`, `PACKED~1`, and six hex digits with `~1` for
+  a loose object), since the system drive creates them. `main.obj`, `*.obj`, `*.log` and `*.orig` stay safe. Only the names
+  listed, their short forms and the hex shapes are tried, so a pattern that
+  fits some other branch name (`dev`) is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.

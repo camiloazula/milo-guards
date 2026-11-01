@@ -6,6 +6,8 @@ use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
 use crate::{Rule, Shell};
+use milo_guards_core::spelling::{glob, verbatim};
+use milo_guards_core::Flavour;
 
 impl Checker<'_> {
     /// Deleting, moving, copying and writing files.
@@ -39,6 +41,9 @@ impl Checker<'_> {
             "del" | "erase" if shell == Shell::Cmd => {
                 let targets = builtin(&plain(args));
                 self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
+                if has_switch(args, "s") {
+                    self.search_deletes(unit, &targets);
+                }
             }
             "rd" | "rmdir" if shell == Shell::Cmd && has_switch(args, "s") => {
                 let targets = builtin(&plain(args));
@@ -534,6 +539,42 @@ impl Checker<'_> {
             _ => {}
         }
     }
+
+    /// `del /s` from the workspace folder: it deletes the files of every folder
+    /// below it that its name pattern matches, and takes `.git`'s own files
+    /// (`HEAD`, `config`, `index`, ...) when the pattern can match one. cmd
+    /// is taken to search hidden folders too: not checked on Windows, and a
+    /// false safe is the worse mistake. A pattern deeper in the workspace is
+    /// the agent's, as `.git` there is not the model's to protect.
+    fn search_deletes(&mut self, unit: &Unit, targets: &[Arg]) {
+        for target in targets {
+            let Arg::Known(text) = target else {
+                continue;
+            };
+            let at = text.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
+            // cmd reads no wildcard in a folder part (`*\x`): the resolver
+            // judges the whole path. The `?` of a long-path prefix
+            // (`\\?\C:\...`) is not a wildcard.
+            let folder_text = &text[..at];
+            if glob::has_wildcard(verbatim(folder_text).unwrap_or(folder_text)) {
+                continue;
+            }
+            let reaches = glob::can_match_git_entry(&text[at..], Flavour::Windows);
+            let folder = Arg::Known(folder_of(&text[..at]));
+            if reaches
+                && matches!(
+                    self.place(unit.shell, unit.scope(), &folder, Access::Item),
+                    Place::Workspace { exact: true }
+                )
+            {
+                self.add(
+                    Rule::Delete,
+                    "deletes files in every folder below the workspace, the repository's history among them",
+                    Some(target),
+                );
+            }
+        }
+    }
 }
 
 /// Whether an argument is a splat (`@p`, `@args`): a hashtable of parameters
@@ -804,6 +845,24 @@ pub(super) fn remote(arg: &Arg) -> bool {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
     })
+}
+
+/// The folder a `del` pattern is searched from, given what comes before the
+/// pattern's name: `.` for none, the text without its last separator, and the
+/// root of a drive (`C:\`) or a drive's own folder (`C:`) as written.
+fn folder_of(before: &str) -> String {
+    match before {
+        "" => ".".to_string(),
+        text if text.ends_with(':') => text.to_string(),
+        text => {
+            let trimmed = &text[..text.len() - 1];
+            if trimmed.is_empty() || trimmed.ends_with(':') {
+                text.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
 }
 
 /// The name each source lands as inside a folder it is copied into: its last

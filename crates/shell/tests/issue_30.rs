@@ -91,20 +91,23 @@ fn a_pattern_can_match_the_short_name_of_git() {
             "del /s /q GI??~1",
             "del /s /q GI?????~1",
             "del /s /q GI[g-z]???~1",
-            // No `~`, so no hashed short name: these are ordinary patterns.
-            "del /s /q *2024*",
-            "del /s /q *a*",
-            "del /s /q *cafe*",
             // No literal `~`: `cmd` skips a folder a wildcard matches.
             "del /s /q git*",
             "del /s /q G*",
-            "del /s /q *1",
-            "del /s /q *2",
             "del /s /q Git*",
-            "del /s /q ?????",
             "del /s /q git*\\objects",
         ],
         &[
+            // No `~`, so no hashed short name, but a `del /s` from the
+            // workspace searches `.git` too and takes the files of it that
+            // the pattern matches (an object by the shape of its name, `index`,
+            // `heads`): issue 25's reading, which these rows moved to.
+            ("del /s /q *2024*", Rule::Delete),
+            ("del /s /q *a*", Rule::Delete),
+            ("del /s /q *cafe*", Rule::Delete),
+            ("del /s /q *1", Rule::Delete),
+            ("del /s /q *2", Rule::Delete),
+            ("del /s /q ?????", Rule::Delete),
             ("del /s /q GIT~?", Rule::Delete),
             ("del /s /q git~*", Rule::Delete),
             ("del /s /q GIT~[0-9]", Rule::Delete),

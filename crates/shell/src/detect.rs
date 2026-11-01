@@ -720,13 +720,27 @@ fn hidden_files_of(arg: Arg) -> Arg {
     }
 }
 
+/// A pattern a hidden listing is filtered by, and whether it is a `-Filter`
+/// value, which Windows PowerShell hands to the file system's own matching.
+struct Pattern {
+    arg: Arg,
+    filter: bool,
+}
+
 /// The hidden files a `-Force` or `-Hidden` listing with a filter hands on:
-/// each pattern as written, `.git` itself when the pattern can match it
-/// (`*`, `.g*`, `.git`), and, when the listing recurses, every hidden folder
-/// of the folder, which is searched too (`config` finds `.git\config`).
-/// What the pattern keeps that is not hidden is judged as written, so
-/// `*.tmp` stays the files of the folder.
-fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg> {
+/// each pattern as written, and `.git` itself when the pattern can match it
+/// (`*`, `.g*`, `.git`). A `-Filter` is matched by the file system against
+/// the 8.3 short name too, so one that can match `GIT~1` (`g*`, `*~1`,
+/// `?????`) hands on `.git` as well; `-Include` is matched against the long
+/// name only. When the listing recurses, the folders below are searched too,
+/// so `.git` is handed on when a pattern can match one of the names it holds:
+/// a top-level entry or a well-known file (`config` finds `.git\config`), a
+/// well-known folder (`pack`, `heads`, `tags`, `remotes`, `origin`), or an
+/// object by the shape of its name (`??` finds a loose object's folder, `1*` a
+/// loose object or a pack). A pattern that is not known hands on every hidden
+/// folder. What the pattern keeps that is not hidden is judged as
+/// written, so `*.tmp` stays the files of the folder.
+fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<Arg> {
     let mut found = Vec::new();
     if patterns.is_empty() {
         return found;
@@ -741,21 +755,58 @@ fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg>
             continue;
         };
         for pattern in patterns {
-            match pattern {
+            match &pattern.arg {
                 Arg::Known(text) => {
-                    found.push(Arg::Known(inside(folder, text)));
-                    if glob::matches(text, ".git", Flavour::Windows, true) {
+                    // The resolver reads a wildcard with a `~` (`*~1`) as
+                    // possibly a short name, which `-Include` never matches.
+                    let written = if pattern.filter {
+                        text.clone()
+                    } else {
+                        long_names_only(text)
+                    };
+                    found.push(Arg::Known(inside(folder, &written)));
+                    // A `-Filter` is the file system's own matching: cmd's
+                    // wildcards, the short name and all. `-Include` is
+                    // PowerShell's, against the long name.
+                    let names_git = if pattern.filter {
+                        glob::can_match_git_folder(text)
+                    } else {
+                        glob::matches(text, ".git", Flavour::Windows, true)
+                    };
+                    let reaches_below = recurses
+                        && if pattern.filter {
+                            glob::can_match_git_entry(text, Flavour::Windows)
+                        } else {
+                            glob::can_match_git_entry_powershell(text)
+                        };
+                    if names_git || reaches_below {
                         found.push(Arg::Known(inside(folder, ".git")));
                     }
                 }
-                other => found.push((*other).clone()),
+                other => {
+                    found.push(other.clone());
+                    if recurses {
+                        found.push(Arg::Known(inside(folder, ".*")));
+                    }
+                }
             }
-        }
-        if recurses {
-            found.push(Arg::Known(inside(folder, ".*")));
         }
     }
     found
+}
+
+/// An `-Include` pattern written so the resolver reads it against long names
+/// only: each `~` of a wildcard is put in a class (`*~1` is `*[~]1`), so it is
+/// no longer a pattern for an 8.3 short name (`GIT~1`), which `-Include` is
+/// never matched against. It picks the same long names. A text with no
+/// wildcard, or with a class of its own (a `~` there is a member, and is not
+/// to be put in another class), is as written.
+fn long_names_only(text: &str) -> String {
+    if glob::has_wildcard(text) && !text.contains('[') {
+        text.replace('~', "[~]")
+    } else {
+        text.to_string()
+    }
 }
 
 /// The most places times patterns a hidden listing is matched for; more is not
@@ -768,7 +819,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
         return Some(find_targets(&unit.args));
     }
     // What a hidden listing's filter may name, and whether it recurses.
-    let mut patterns: Vec<Arg> = Vec::new();
+    let mut patterns: Vec<Pattern> = Vec::new();
     let mut recurses = false;
     let (mut places, filtered): (Vec<Arg>, bool) = match unit.key()?.as_str() {
         "ls" if unit.shell != Shell::PowerShell => (
@@ -788,8 +839,14 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
             let has_path = !places.is_empty();
             places.extend(params.positional.iter().map(|arg| (*arg).clone()));
             let include = params.values(&["include"]);
-            patterns.extend(params.values(&["filter"]).into_iter().cloned());
-            patterns.extend(include.iter().map(|arg| (*arg).clone()));
+            let pattern = |filter: bool| {
+                move |arg: &Arg| Pattern {
+                    arg: arg.clone(),
+                    filter,
+                }
+            };
+            patterns.extend(params.values(&["filter"]).into_iter().map(pattern(true)));
+            patterns.extend(include.iter().copied().map(pattern(false)));
             let mut filtered = !patterns.is_empty();
             if lists_hidden(unit) {
                 // `-Include a,b` and `-Attributes Directory,Hidden` leave
@@ -805,7 +862,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
                     places.push(Arg::Known(".".to_string()));
                 }
                 if !include.is_empty() {
-                    patterns.extend(params.positional.iter().map(|arg| (*arg).clone()));
+                    patterns.extend(params.positional.iter().copied().map(pattern(false)));
                 }
             } else {
                 // A listing that hands on no hidden file keeps its reading:
@@ -826,7 +883,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     if places.is_empty() {
         places.push(Arg::Known(".".to_string()));
     }
-    let extra = hidden_matches(&places, &patterns.iter().collect::<Vec<_>>(), recurses);
+    let extra = hidden_matches(&places, &patterns, recurses);
     let mut found = found_by(places, filtered);
     found.extend(extra);
     Some(found)
