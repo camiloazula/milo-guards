@@ -23,8 +23,8 @@ verdict back in microseconds.
   something or cannot be told: `git status` only reads, `mkdir build` is safe
   and changes the disk, `./script.sh` cannot be told. A line that only reads
   also says whether the reads stay in the workspace: `git status` does, `cat
-  ~/.ssh/id_ed25519` does not. `effect_paths` lists the paths
-  such a line reads, for a caller that checks them on the disk.
+  ~/.ssh/id_ed25519` does not. `effect_paths` lists the places
+  such a line reads, and how each is read (exactly, as a pattern, or as a walk), for a caller that checks them on the disk.
 - **file** judges one read or write of a path through a file API, which no shell
   line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
   drives, shares, long paths, short names, any case): a read of

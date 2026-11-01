@@ -598,18 +598,55 @@ What stays open, and a caller should know:
 link inside the workspace that points out of it reads as `Workspace`: with
 `link -> ~/.ssh`, the line `cat link/id_rsa` is `ReadsOnly(Reach::Workspace)`.
 A caller that can look at the disk, and runs `Workspace` reads without asking,
-needs the places the line reads to check them itself. The guard has already
-placed each one, so `effect_paths` returns them, from the same reading as
-`effect` (one pass, not a second walk):
+needs the places the line reads to check them itself, and how the program
+reaches from each: `cat *.rs` opens whatever the shell expands the pattern to
+(`a.rs -> ~/.ssh/id_rsa`), `cat src/*/x.rs` is expanded across `src/a -> ~`,
+and `grep -R x src` or `ls src | xargs cat` opens what it finds through links.
+The guard has already placed each read, so `effect_paths` returns them, from
+the same reading as `effect` (one pass, not a second walk):
 
 ```rust
-effect_paths(line, shell, &paths) -> Option<Vec<PathBuf>>   // Some only for ReadsOnly(_)
+effect_paths(line, shell, &paths) -> Option<Vec<ReadPath>>   // Some only for ReadsOnly(_)
+
+pub struct ReadPath { pub path: PathBuf, pub how: How }
+pub enum How {
+    Exact,                              // one path
+    Glob(String),                       // a pattern: `path` is its folder, this the rest
+    Tree { follows_links: bool },       // a folder the program walks, or lists for another
+}
 ```
+
+Both enums are exhaustive, like `Effect`: a way of reading the caller does not
+handle would be a way past its check.
 
 It is `Some` exactly when `effect` is `ReadsOnly(_)`, the reach either way, and
 `None` for `Changes` and `Unknown`. A test holds every row of every table to
 that, and holds the paths of every `ReadsOnly(Workspace)` row to be inside a
 workspace folder or a temporary folder by spelling.
+
+**How each is read, and what a caller does with it:**
+
+| `how` | Which reads | What the caller checks on disk |
+| --- | --- | --- |
+| `Exact` | A file operand, a `<` source, a folder a lister lists, a `cd` target, a path `git` takes. | Canonicalize the path: when it does not exist, canonicalize its nearest existing ancestor and put the rest of the names back. |
+| `Glob(rest)` | A pattern the shell expands: `path` is the fixed folder it expands in and `rest` what follows it, as written (`src/*/x.rs` is `src` and `*/x.rs`; `*.rs` is the working directory and `*.rs`; `C:\*` is `C:\` and `*`). A `for` over a pattern is the same, and so is a pathspec `git` expands. | Expand `path` + separator + `rest` on disk the way the shell does (a wildcard may match a leading dot: match it, to be safe), and canonicalize the folder and every match. The expansion crosses links, so a link shows in a match. |
+| `Tree { follows_links: false }` | A folder a deep reader walks and does not open through links: `grep -r`, `rg`, `fd`, `find` (no `-L`, `-follow`, `-exec`), `ls -R`, `du`, and the repository `git` reads. | Canonicalize the root. That is the whole check: such a reader does not cross a link it meets below it. |
+| `Tree { follows_links: true }` | A folder walked by a reader that opens what it finds through links: `grep -R`, `rg -L` and `--follow`, `fd -L`, `find -L`, `-follow`, `-exec` and `-ok`, `diff -r`, and any reader the guard does not know to stay out of links (every PowerShell and cmd walk included). Also the folder of a lister whose names a later stage opens: `ls src \| xargs cat`, `git ls-files \| xargs cat`, `find src -print0 \| xargs -0 grep x`, `Get-ChildItem \| Get-Content`. | A link anywhere below the root can lead out, which only walking the folder shows. A caller may simply treat the line as reading beyond the workspace, or walk the folder and canonicalize every entry. |
+
+Where the same place is read in more than one way, the entry that asks the
+most is kept: a walk that follows links over a walk that does not, either over
+an exact path. A pattern whose matches are walked through links, or whose
+listing is handed on, is the walk from its folder.
+
+A caller treats the line as reading beyond the workspace when anything these
+checks find leaves it. It compares with the workspace folders after
+canonicalizing them too, and with the temporary folders the guard allows,
+canonicalized the same way: `/tmp`, `/var/tmp` and `/var/folders`, and on a
+Mac `/private/tmp`, `/private/var/tmp` and `/private/var/folders` (`/tmp`
+canonicalizes to `/private/tmp`, and `/var/folders` to `/private/var/folders`);
+on Windows `%USERPROFILE%\AppData\Local\Temp` and `C:\Windows\Temp`. A temporary
+path is `Workspace` by the rule for temporary files, not because it is inside
+the workspace, and `effect_paths` lists it like any other.
 
 - **What it holds** is what [What a line reads](#reach) lists: every operand
   and `<` source, a lister's folder, a `cd` target, the working directory
@@ -618,32 +655,23 @@ workspace folder or a temporary folder by spelling.
   chains, and a `git` revision or pathspec as `effect` places it (`git show
   HEAD:a.rs` also lists `a.rs`, from the working directory and from every
   workspace folder).
-- **A pattern** is the fixed folder it expands in: `cat *.rs` is the working
-  directory, `cat src/*.rs` is `src`, `C:\*` is `C:\`. The names it picks are the
-  disk's to say, and the caller checks the folder.
 - **Absolute, by spelling.** Each path is resolved as the guard resolves it:
   the working directory after the `cd`s it follows, `~`, `.` and `..`, a Windows
   long path as the plain path it names. The case, the macOS names of the root
   volume (`/System/Volumes/Data`) and the links are left alone: the path is as
-  written, made absolute. It comes from core's `Resolver::absolute`.
-- **Sorted, each once**, so the answer is the same every time.
+  written, made absolute. It comes from core's `Resolver::absolute`. A `\\?\`
+  and a `FileSystem::` in front of a path are not part of a pattern.
+- **Sorted, each entry once**, so the answer is the same every time.
 - **No path, not listed.** A read that is not a place on a disk has no path:
   the null device and other devices, a registry hive or another PowerShell
   drive, and a path on another drive's own working directory (`D:x` from `C:`).
   Each is judged by its place already (the null device is `Workspace`, the rest
   `Beyond`). `cat /dev/null` is `Some([])`, as `echo hi` is.
-- **A temporary path is listed** like any other. `cat /tmp/x` is `Workspace` by
-  the rule for temporary files, not because it is inside the workspace, so a
-  caller that holds every path to the workspace's folders should hold a
-  temporary one to the temporary folders.
 - **`Beyond` lines are listed too**, with every read, not only the one that
   made it `Beyond`.
-
-**What a caller does with the list.** Resolve each path on disk: canonicalize
-it, and when it does not exist, canonicalize its nearest existing ancestor and
-put the rest of the names back. Then treat the line as reading beyond the
-workspace when any resolved path leaves it. The check belongs to the caller,
-which can touch the disk; the guard answers by spelling.
+- **Over-listing** is on the safe side: `cat '~/x'` lists the home folder's `x`
+  (the guard reads the quoted `~` as home), `cat 0< x` lists a path `0`, and a
+  git revision is listed as a path (`HEAD~1`).
 
 `effect` costs what it did: the paths are collected only when `effect_paths`
 asks, and `classify` is untouched.
@@ -866,7 +894,8 @@ folder and one that holds a folder of logins, in POSIX, PowerShell and cmd; the
 rest of `Reach`'s rows are in `tests/effect.rs`, and core's `reaches_secret`
 has its own in `crates/core/tests/reaches_secret.rs`.
 `tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
-one that reads a real symbolic link the way the docs tell a caller to; and
+one that checks every way of reading against a table of links playing the disk,
+the way the docs tell a caller to; and
 every row of every table is also held to agree with `effect` on whether it has
 a list (`common::path_disagreement`). Core's `absolute` has its own in
 `crates/core/tests/absolute.rs`.

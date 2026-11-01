@@ -24,6 +24,7 @@ use milo_guards_core::spelling::{glob, verbatim};
 use milo_guards_core::Sensitivity;
 
 use super::operands::{shape, takes_no_paths, Context, Opened};
+use super::paths::Landed;
 use super::Kind;
 use crate::path::{self, Place};
 use crate::unit::{moves_to, Arg, Unit};
@@ -32,22 +33,36 @@ use crate::Shell;
 /// How a unit reads the places it names: whether its wildcards match a
 /// leading dot, and whether it goes below the folders it names.
 #[derive(Debug, Default, Clone, Copy)]
-pub(super) struct How {
+pub(super) struct Manner {
     pub(super) hidden: bool,
     pub(super) deep: bool,
+    /// Whether a deep read opens what it finds through symbolic links.
+    pub(super) follows: bool,
+    /// Whether the unit walks what it names: deep, and not a `cd`, which goes
+    /// into a folder and reads nothing below it.
+    pub(super) walks: bool,
 }
 
 /// How `unit`, a reader known as `key`, reads.
-pub(super) fn how(unit: &Unit, key: &str) -> How {
-    How {
+pub(super) fn how(unit: &Unit, key: &str) -> Manner {
+    Manner {
         hidden: unit.hidden,
         deep: deep(unit, key),
+        follows: follows_links(unit, key),
+        walks: moves_to(unit).is_none(),
     }
 }
 
 impl Context<'_> {
     /// Record a read of `arg`, written from `dir`, that lands at `place`.
-    pub(super) fn land(&self, shell: Shell, dir: Option<&Arg>, arg: &Arg, place: Place, how: How) {
+    pub(super) fn land(
+        &self,
+        shell: Shell,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        place: Place,
+        how: Manner,
+    ) {
         // Once a read is beyond the workspace the answer is settled, unless
         // the paths are asked for: those are every read, so each is kept.
         if self.beyond.get() && self.landed.is_none() {
@@ -55,7 +70,15 @@ impl Context<'_> {
         }
         let from = path::within(dir, arg, shell);
         if let (Some(landed), Some(text)) = (&self.landed, from.known()) {
-            landed.borrow_mut().push((folder_read(text, shell), shell));
+            let (text, glob) = folder_read(text, shell);
+            landed.borrow_mut().push(Landed {
+                text,
+                glob,
+                deep: how.deep && how.walks,
+                follows: how.follows,
+                shell,
+                stage: self.stage.get(),
+            });
         }
         let beyond = match place {
             Place::Inside
@@ -100,19 +123,19 @@ impl Context<'_> {
         // A part like `.*` picks `..` too, in the shells whose patterns match
         // it: the folder above is read.
         if let Some(above) = from.known().and_then(|text| path::climb(text, shell)) {
-            self.land_arg(shell, &Arg::Known(above), How { deep: false, ..how });
+            self.land_arg(shell, &Arg::Known(above), Manner { deep: false, ..how });
         }
     }
 
     /// Record a read of the text `text`, written from where `unit` runs.
-    fn land_text(&self, unit: &Unit, text: &str, how: How) -> Kind {
+    fn land_text(&self, unit: &Unit, text: &str, how: Manner) -> Kind {
         let from = path::within(unit.dir.as_ref(), &Arg::Known(text.to_string()), unit.shell);
         self.land_arg(unit.shell, &from, how)
     }
 
     /// Record a read of `from`, a path already joined to where the line
     /// runs: the place it lands, and `Unknown` when that cannot be said.
-    fn land_arg(&self, shell: Shell, from: &Arg, how: How) -> Kind {
+    fn land_arg(&self, shell: Shell, from: &Arg, how: Manner) -> Kind {
         let place = self.resolver.place(from, shell, how.hidden);
         self.land(shell, None, from, place, how);
         if matches!(place, Place::Unknown) {
@@ -123,24 +146,28 @@ impl Context<'_> {
     }
 }
 
-/// The place a read of `text` opens on disk: the path itself, or for a
-/// pattern the folder it expands in (`src` for `src/*.rs`, `.` when no folder
-/// is written), since the names it picks are the disk's.
-fn folder_read(text: &str, shell: Shell) -> String {
+/// The place a read of `text` opens on disk, and for a pattern what follows
+/// it: the path itself, or the fixed folder the pattern expands in (`src` for
+/// `src/*.rs`, `.` when no folder is written) and the rest of the pattern
+/// below it (`*.rs`), since the names it picks are the disk's.
+fn folder_read(text: &str, shell: Shell) -> (String, Option<String>) {
     // What comes before the path proper is not part of the pattern: a long
     // path's `\\?\` holds a `?`, and PowerShell's `FileSystem::` a colon.
-    let skip = verbatim(text)
-        .map(|rest| text.len() - rest.len())
+    let mut skip = 0;
+    while let Some(len) = verbatim(&text[skip..])
+        .map(|rest| text.len() - skip - rest.len())
         .or_else(|| {
-            let (provider, _) = text
+            let (provider, _) = text[skip..]
                 .split_once("::")
                 .filter(|_| shell == Shell::PowerShell)?;
             Some(provider.len() + 2)
         })
-        .unwrap_or(0);
+    {
+        skip += len;
+    }
     let (prefix, body) = text.split_at(skip);
     if !glob::has_wildcard(body) {
-        return text.to_string();
+        return (text.to_string(), None);
     }
     let folder = path::pattern_folder(body);
     let drive = shell != Shell::Posix
@@ -156,7 +183,19 @@ fn folder_read(text: &str, shell: Shell) -> String {
         _ if drive && folder == "." => body[..2].to_string(),
         _ => folder,
     };
-    format!("{prefix}{folder}")
+    // The folder is the front of the body, unless none is written (`.`).
+    let rest = body.strip_prefix(folder.as_str()).unwrap_or(body);
+    let rest = rest.trim_start_matches(flavour_separators(shell));
+    (format!("{prefix}{folder}"), Some(rest.to_string()))
+}
+
+/// The characters that separate the parts of a path for `shell`.
+fn flavour_separators(shell: Shell) -> &'static [char] {
+    if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    }
 }
 
 /// What `unit`, a reader of its operands, also reads: the working directory
@@ -168,7 +207,7 @@ pub(super) fn reads(
     unit: &Unit,
     key: &str,
     opened: &Opened<'_>,
-    how: How,
+    how: Manner,
     context: &Context<'_>,
 ) -> Kind {
     // A `cd` reads its target, which `judge_unit` placed.
@@ -194,7 +233,7 @@ pub(super) fn reads(
     if unit.shell == Shell::Posix && key == "df" && opened.operands == 0 {
         context.beyond.set(true);
     }
-    let shallow = How { deep: false, ..how };
+    let shallow = Manner { deep: false, ..how };
     // `echo ~/.ssh/*` opens nothing, but the shell lists the folder.
     if unit.shell == Shell::Posix && takes_no_paths(unit.shell, key) {
         for text in unit.args.iter().filter_map(Arg::known) {
@@ -222,8 +261,8 @@ pub(super) fn reads(
 /// (`:/x`, `:(top)x`, `:x`, `REV:x`), and the guard does not know where the
 /// root is: they are judged from the working directory and from each
 /// workspace folder, and a read beyond either wins.
-fn git_paths(unit: &Unit, opened: &Opened<'_>, how: How, context: &Context<'_>) {
-    let shallow = How { deep: false, ..how };
+fn git_paths(unit: &Unit, opened: &Opened<'_>, how: Manner, context: &Context<'_>) {
+    let shallow = Manner { deep: false, ..how };
     let operands = opened.pathspecs.iter().copied();
     let places = opened.places.iter().map(AsRef::<Arg>::as_ref);
     for spec in operands.chain(places) {
@@ -405,5 +444,31 @@ fn deep(unit: &Unit, key: &str) -> bool {
             "dir" | "findstr" => cmd_recursive(args),
             _ => true,
         },
+    }
+}
+
+/// Whether the reader, when it goes below the folders it names, opens what it
+/// finds through symbolic links. A whitelist of the readers known to stay out
+/// of them: `grep -r` (not `-R`), `rg` and `fd` (not `-L`, `--follow`), `find`
+/// (not `-L`, `-follow`, and no `-exec` or `-ok`, which open the names it
+/// finds), `ls`, `du` and `git`. Any other reader, a reader added later and
+/// everything in PowerShell and cmd included, is taken to follow them.
+fn follows_links(unit: &Unit, key: &str) -> bool {
+    if unit.shell != Shell::Posix {
+        return true;
+    }
+    let args = unit.args.as_slice();
+    match key {
+        "grep" | "egrep" | "fgrep" => asks(args, "R", &["dereference-recursive"]),
+        "rg" | "fd" => asks(args, "L", &["follow"]),
+        "find" => args.iter().any(|arg| match arg.known() {
+            None => true,
+            Some(text) => matches!(
+                text,
+                "-L" | "-follow" | "-exec" | "-execdir" | "-ok" | "-okdir"
+            ),
+        }),
+        "ls" | "du" | "git" => false,
+        _ => true,
     }
 }

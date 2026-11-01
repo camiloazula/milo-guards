@@ -8,7 +8,20 @@ mod common;
 use std::path::PathBuf;
 
 use common::{path_disagreement, posix, windows};
-use milo_guards_shell::{effect, effect_paths, Effect, Paths, Protected, Reach, Shell};
+use milo_guards_shell::{
+    effect, effect_paths, Effect, How, Paths, Protected, Reach, ReadPath, Shell,
+};
+
+/// The places `effect_paths` lists for a line, each once, whatever way it is
+/// read.
+fn places(line: &str, shell: Shell, paths: &Paths) -> Option<Vec<PathBuf>> {
+    let mut places: Vec<PathBuf> = effect_paths(line, shell, paths)?
+        .into_iter()
+        .map(|read| read.path)
+        .collect();
+    places.dedup();
+    Some(places)
+}
 
 /// The paths of each row, or none, written as the row says; the rows that
 /// differ are named together.
@@ -17,7 +30,7 @@ fn check(shell: Shell, paths: &Paths, rows: &[(&str, Option<&[&str]>)]) {
         .iter()
         .filter_map(|(line, want)| {
             let want = want.map(|paths| paths.iter().map(PathBuf::from).collect::<Vec<_>>());
-            let got = effect_paths(line, shell, paths);
+            let got = places(line, shell, paths);
             (got != want).then(|| format!("{line}\n    want {want:?}\n    got  {got:?}"))
         })
         .collect();
@@ -258,8 +271,13 @@ fn a_cd_moves_the_line_and_is_itself_a_read() {
 fn the_list_is_sorted_and_holds_each_path_once() {
     let paths = posix();
     let list = effect_paths("cat b a b ./a src/../a c", Shell::Posix, &paths).unwrap();
+    let places = |list: &[ReadPath]| {
+        list.iter()
+            .map(|read| read.path.clone())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        list,
+        places(&list),
         ["a", "b", "c"].map(|name| PathBuf::from(format!("{ROOT}/{name}")))
     );
     // The same line gives the same list every time.
@@ -523,39 +541,356 @@ fn every_extra_row_agrees_with_effect() {
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
-/// The caller's side of the contract, with the disk played by a table of
-/// links (the guard itself does no I/O, and neither do its tests): a link in
-/// the workspace that points out of it reads as `Workspace` by spelling, and
-/// resolving each listed path as the docs say finds where it really goes.
+fn exact(path: &str) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Exact,
+    }
+}
+
+fn glob(path: &str, rest: &str) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Glob(rest.to_string()),
+    }
+}
+
+fn walk(path: &str, follows_links: bool) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Tree { follows_links },
+    }
+}
+
+/// How each line is read: exact paths, patterns as a folder and the rest,
+/// and walks, with whether they open what they find through links.
 #[test]
-fn a_link_that_leaves_the_workspace_is_found_by_resolving_the_listed_paths() {
-    /// Where `path` really is: each link on the way is followed, and the names
-    /// below one that does not exist are put back (the nearest existing
-    /// ancestor, resolved, and the rest).
-    fn resolve(path: &str, links: &[(&str, &str)]) -> String {
+fn each_entry_says_how_it_is_read() {
+    let rows: &[(&str, &[ReadPath])] = &[
+        ("cat a.txt", &[exact("/home/me/work/repo/a.txt")]),
+        ("cat < in.txt", &[exact("/home/me/work/repo/in.txt")]),
+        ("ls src", &[exact("/home/me/work/repo/src")]),
+        ("ls", &[exact(ROOT)]),
+        ("cd src && ls", &[exact("/home/me/work/repo/src")]),
+        // A pattern: the folder it expands in, and the rest.
+        ("cat *.rs", &[glob(ROOT, "*.rs")]),
+        ("cat src/*.rs", &[glob("/home/me/work/repo/src", "*.rs")]),
+        (
+            "cat src/*/x.rs",
+            &[glob("/home/me/work/repo/src", "*/x.rs")],
+        ),
+        (
+            "cat src/**/x.rs",
+            &[glob("/home/me/work/repo/src", "**/x.rs")],
+        ),
+        ("cat ../*/x", &[glob("/home/me/work", "*/x")]),
+        ("cat /*", &[glob("/", "*")]),
+        ("cat ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
+        ("echo ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
+        ("cat src/a?.rs", &[glob("/home/me/work/repo/src", "a?.rs")]),
+        (
+            "cat src/[ab].rs",
+            &[glob("/home/me/work/repo/src", "[ab].rs")],
+        ),
+        (
+            "cat src/*.rs docs/*.md",
+            &[
+                glob("/home/me/work/repo/docs", "*.md"),
+                glob("/home/me/work/repo/src", "*.rs"),
+            ],
+        ),
+        ("for f in *.rs; do cat \"$f\"; done", &[glob(ROOT, "*.rs")]),
+        (
+            "for d in a b; do ls $d/*; done",
+            &[
+                glob("/home/me/work/repo/a", "*"),
+                glob("/home/me/work/repo/b", "*"),
+            ],
+        ),
+        // A walk that stays out of links.
+        ("rg TODO src", &[walk("/home/me/work/repo/src", false)]),
+        ("rg TODO", &[walk(ROOT, false)]),
+        ("grep -r x src", &[walk("/home/me/work/repo/src", false)]),
+        ("find src -name x", &[walk("/home/me/work/repo/src", false)]),
+        ("find . -name '*.rs'", &[walk(ROOT, false)]),
+        ("ls -R", &[walk(ROOT, false)]),
+        ("ls -R src", &[walk("/home/me/work/repo/src", false)]),
+        ("fd -e rs", &[walk(ROOT, false)]),
+        ("du -sh target", &[walk("/home/me/work/repo/target", false)]),
+        ("git status", &[walk(ROOT, false)]),
+        (
+            "git -C a -C b log",
+            &[walk("/home/me/work/repo/a/b", false)],
+        ),
+        // A walk that opens what it finds through links.
+        ("grep -R x src", &[walk("/home/me/work/repo/src", true)]),
+        ("grep -rR x src", &[walk("/home/me/work/repo/src", true)]),
+        (
+            "grep --dereference-recursive x src",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        ("rg -L x src", &[walk("/home/me/work/repo/src", true)]),
+        ("rg --follow x src", &[walk("/home/me/work/repo/src", true)]),
+        ("rg -nL x src", &[walk("/home/me/work/repo/src", true)]),
+        ("fd -L x src", &[walk("/home/me/work/repo/src", true)]),
+        ("find -L src", &[walk("/home/me/work/repo/src", true)]),
+        ("find src -follow", &[walk("/home/me/work/repo/src", true)]),
+        (
+            "find src -exec cat {} +",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        (
+            r"find src -execdir cat {} \;",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        (
+            "diff -r a b",
+            &[
+                walk("/home/me/work/repo/a", true),
+                walk("/home/me/work/repo/b", true),
+            ],
+        ),
+        // What a lister hands to a program that opens the names.
+        (
+            "ls src | xargs cat",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        ("ls | xargs cat", &[walk(ROOT, true)]),
+        ("ls | sort | xargs cat", &[walk(ROOT, true)]),
+        ("git ls-files | xargs cat", &[walk(ROOT, true)]),
+        ("fd -e rs | xargs cat", &[walk(ROOT, true)]),
+        (
+            "find src -name '*.rs' | xargs cat",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        (
+            "find src -print0 | xargs -0 grep x",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        (
+            "ls src/* | xargs cat",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        // A lister whose names nothing opens is only read.
+        ("ls src | head -n 5", &[exact("/home/me/work/repo/src")]),
+        ("ls src | wc -l", &[exact("/home/me/work/repo/src")]),
+        // The same folder read two ways keeps the stronger.
+        (
+            "cat src; rg x src",
+            &[walk("/home/me/work/repo/src", false)],
+        ),
+        (
+            "rg x src; grep -R y src",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+        (
+            "rg x src; ls src | xargs cat",
+            &[walk("/home/me/work/repo/src", true)],
+        ),
+    ];
+    let wrong: Vec<String> = rows
+        .iter()
+        .filter_map(|(line, want)| {
+            let got = effect_paths(line, Shell::Posix, &posix());
+            (got.as_deref() != Some(*want))
+                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn powershell_and_cmd_walks_are_taken_to_follow_links() {
+    let win = windows();
+    let root = r"C:\Users\me\dev\repo";
+    for (shell, line, want) in [
+        (
+            Shell::PowerShell,
+            "Get-ChildItem -Recurse src",
+            vec![walk(&format!(r"{root}\src"), true)],
+        ),
+        (Shell::PowerShell, "gci -Rec", vec![walk(root, true)]),
+        (
+            Shell::PowerShell,
+            "Get-ChildItem src",
+            vec![exact(&format!(r"{root}\src"))],
+        ),
+        (
+            Shell::PowerShell,
+            "Get-ChildItem src | Get-Content",
+            vec![walk(&format!(r"{root}\src"), true)],
+        ),
+        (
+            Shell::PowerShell,
+            "Get-Content src\\*.rs",
+            vec![glob(&format!(r"{root}\src"), "*.rs")],
+        ),
+        (
+            Shell::PowerShell,
+            "Get-Content C:\\*",
+            vec![glob(r"C:\", "*")],
+        ),
+        (Shell::PowerShell, "Get-Content C:*", vec![glob("C:", "*")]),
+        (
+            Shell::Cmd,
+            "dir /s src",
+            vec![walk(&format!(r"{root}\src"), true)],
+        ),
+        (
+            Shell::Cmd,
+            "findstr foo src\\*.rs",
+            vec![glob(&format!(r"{root}\src"), "*.rs")],
+        ),
+        (
+            Shell::Cmd,
+            "type a.txt",
+            vec![exact(&format!(r"{root}\a.txt"))],
+        ),
+    ] {
+        let got = effect_paths(line, shell, &win);
+        // `C:*` on the drive of the working directory is its working directory.
+        let want = if line == "Get-Content C:*" {
+            vec![glob(root, "*")]
+        } else {
+            want
+        };
+        assert_eq!(got, Some(want), "{line}");
+    }
+}
+
+#[test]
+fn a_long_path_and_a_provider_prefix_are_not_patterns() {
+    let win = windows();
+    let root = r"C:\Users\me\dev\repo";
+    for line in [
+        r"Get-Content \\?\C:\Users\me\dev\repo\x",
+        r"Get-Content FileSystem::\\?\C:\Users\me\dev\repo\x",
+        r"Get-Content FileSystem::C:\Users\me\dev\repo\x",
+        r"Get-Content Microsoft.PowerShell.Core\FileSystem::\\?\C:\Users\me\dev\repo\x",
+    ] {
+        assert_eq!(
+            effect_paths(line, Shell::PowerShell, &win),
+            Some(vec![exact(&format!(r"{root}\x"))]),
+            "{line}"
+        );
+    }
+    // A pattern behind either is still one.
+    assert_eq!(
+        effect_paths(
+            r"Get-Content \\?\C:\Users\me\dev\repo\*.rs",
+            Shell::PowerShell,
+            &win
+        ),
+        Some(vec![glob(root, "*.rs")])
+    );
+    assert_eq!(
+        effect_paths(
+            r"Get-Content FileSystem::\\?\C:\Users\me\dev\repo\*.rs",
+            Shell::PowerShell,
+            &win
+        ),
+        Some(vec![glob(root, "*.rs")])
+    );
+}
+
+/// The caller's side of the contract, with the disk played by a table of
+/// links and files (the guard itself does no I/O, and neither do its tests): a
+/// link in the workspace that points out of it reads as `Workspace` by
+/// spelling, and checking each entry as the docs say finds where it really
+/// goes. Every way of reading is covered: exact, a pattern the shell expands
+/// across a link, a walk that follows links, and names a lister hands on.
+#[test]
+fn a_link_that_leaves_the_workspace_is_found_by_checking_each_entry() {
+    const LINKS: [(&str, &str); 3] = [
+        ("/home/me/work/repo/link", "/home/me/.ssh"),
+        ("/home/me/work/repo/src/a", "/home/me"),
+        ("/home/me/work/repo/a.rs", "/home/me/.ssh/id_rsa"),
+    ];
+    // Every name on the disk, as spelled (links included).
+    const FILES: [&str; 8] = [
+        "/home/me/work/repo/a.rs",
+        "/home/me/work/repo/b.rs",
+        "/home/me/work/repo/src/a",
+        "/home/me/work/repo/src/a/x.rs",
+        "/home/me/work/repo/src/b",
+        "/home/me/work/repo/src/b/x.rs",
+        "/home/me/work/repo/link",
+        "/home/me/work/repo/link/id_rsa",
+    ];
+
+    /// Where `path` really is: each link on the way is followed, and the
+    /// names below one that does not exist are put back.
+    fn resolve(path: &str) -> String {
         let mut at = String::new();
         for name in path.split('/').filter(|name| !name.is_empty()) {
             at = format!("{at}/{name}");
-            if let Some((_, to)) = links.iter().find(|(from, _)| *from == at) {
+            if let Some((_, to)) = LINKS.iter().find(|(from, _)| *from == at) {
                 at = (*to).to_string();
             }
         }
         at
     }
+    let inside = |real: &str| real == ROOT || real.starts_with(&format!("{ROOT}/"));
+    /// Whether `name` matches one part of a pattern with `*` in it.
+    fn part(pattern: &str, name: &str) -> bool {
+        match pattern.split_once('*') {
+            Some((head, tail)) => {
+                name.len() >= head.len() + tail.len()
+                    && name.starts_with(head)
+                    && name.ends_with(tail)
+            }
+            None => pattern == name,
+        }
+    }
+    /// The names a pattern picks: the folder, then the parts of the rest.
+    fn expand(folder: &str, rest: &str) -> Vec<String> {
+        let mut found = vec![folder.to_string()];
+        for pattern in rest.split('/') {
+            found = FILES
+                .iter()
+                .map(|file| (*file).to_string())
+                .filter(|file| {
+                    found.iter().any(|from| {
+                        file.strip_prefix(&format!("{from}/"))
+                            .is_some_and(|name| part(pattern, name))
+                    })
+                })
+                .collect();
+        }
+        found
+    }
 
-    let links = [("/home/me/work/repo/link", "/home/me/.ssh")];
     let paths = posix();
     let leaves = |line: &str| {
         effect_paths(line, Shell::Posix, &paths)
             .unwrap()
             .iter()
-            .any(|path| {
-                let real = resolve(&path.to_string_lossy(), &links);
-                real != ROOT && !real.starts_with(&format!("{ROOT}/"))
+            .any(|read| {
+                let path = read.path.to_string_lossy();
+                match &read.how {
+                    How::Exact
+                    | How::Tree {
+                        follows_links: false,
+                    } => !inside(&resolve(&path)),
+                    How::Glob(rest) => {
+                        !inside(&resolve(&path))
+                            || expand(&path, rest)
+                                .iter()
+                                .any(|name| !inside(&resolve(name)))
+                    }
+                    How::Tree {
+                        follows_links: true,
+                    } => true,
+                }
             })
     };
     // Judged by spelling, all of them stay in the workspace; on the disk,
-    // each reads what the link points at.
+    // each reads what a link points at.
     for line in [
         "cat link/id_rsa",
         "ls link",
@@ -563,6 +898,16 @@ fn a_link_that_leaves_the_workspace_is_found_by_resolving_the_listed_paths() {
         "cat link/*",
         "cd link && ls",
         "cat src/../link/id_rsa",
+        "cat *.rs",
+        "cat src/*/x.rs",
+        "for f in *.rs; do cat \"$f\"; done",
+        "ls src | xargs cat",
+        "git ls-files | xargs cat",
+        "find src -exec cat {} +",
+        "grep -R x src",
+        "rg -L x src",
+        "rg --follow x src",
+        "find -L src",
     ] {
         assert_eq!(
             effect(line, Shell::Posix, &paths),
@@ -571,22 +916,22 @@ fn a_link_that_leaves_the_workspace_is_found_by_resolving_the_listed_paths() {
         );
         assert!(leaves(line), "{line}");
     }
-    assert_eq!(
-        effect_paths("cat link/id_rsa", Shell::Posix, &paths).unwrap(),
-        [PathBuf::from("/home/me/work/repo/link/id_rsa")]
-    );
-    assert_eq!(
-        resolve("/home/me/work/repo/link/id_rsa", &links),
-        "/home/me/.ssh/id_rsa"
-    );
     // What is in the workspace stays in it.
     for line in [
-        "cat src/a.rs",
+        "cat src/b/x.rs",
+        "cat b.rs",
+        "cat src/b/*.rs",
         "ls",
-        "rg TODO src",
-        "cat *.rs",
+        "rg TODO src/b",
+        "grep -r x src/b",
+        "find src/b -name x",
         "git status",
+        "ls -R src/b",
     ] {
         assert!(!leaves(line), "{line}");
     }
+    assert_eq!(
+        resolve("/home/me/work/repo/link/id_rsa"),
+        "/home/me/.ssh/id_rsa"
+    );
 }

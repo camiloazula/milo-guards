@@ -86,7 +86,7 @@ pub fn path_disagreement(shell: Shell, paths: &Paths, line: &str) -> Option<Stri
     let windows = shell != Shell::Posix;
     listed?
         .iter()
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|read| read.path.to_string_lossy().into_owned())
         .find(|path| !stays(path, paths, windows))
         .map(|path| format!("reads only in the workspace, but lists {path}: {line}"))
 }
