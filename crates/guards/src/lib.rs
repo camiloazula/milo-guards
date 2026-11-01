@@ -35,6 +35,7 @@
 //! | --- | --- | --- |
 //! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
+//! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
@@ -79,6 +80,28 @@
 //! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
 //! let assessment = judge(Access::Write, "../other/x", &paths);
 //! assert_eq!(assessment.findings()[0].rule, Rule::WriteOutside);
+//! # }
+//! ```
+//!
+//! A fetch is judged by its host, however the address is spelled:
+//!
+//! ```
+//! # #[cfg(feature = "url")] {
+//! use milo_local_guards::url::{judge, Rule};
+//! use milo_local_guards::Paths;
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+//!
+//! assert!(judge("https://docs.rs/url", &paths).is_safe());
+//!
+//! // `2130706433` is `127.0.0.1`, whatever it looks like.
+//! let assessment = judge("http://2130706433:9090/admin", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::LocalAddress);
+//! assert_eq!(assessment.findings()[0].rule.name(), "local_address");
+//!
+//! // The cloud metadata service is its own rule.
+//! let assessment = judge("http://169.254.169.254/latest/meta-data/", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::Metadata);
 //! # }
 //! ```
 //!
@@ -127,6 +150,9 @@ pub use milo_guards_shell as shell;
 
 #[cfg(feature = "file")]
 pub use milo_guards_file as file;
+
+#[cfg(feature = "url")]
+pub use milo_guards_url as url;
 
 /// The README's example, compiled and run with the doctests so it cannot
 /// drift from the code. Only rustdoc's doctest pass reads the file, so

@@ -29,12 +29,18 @@ verdict back in microseconds.
   is safe, a write beyond the workspace or to a startup file or the
   repository's history is risky, and a path that is not one literal path (a
   wildcard, a variable) is unreadable.
+- **url** judges a URL an agent is about to fetch, by the host a URL parser reads
+  and never by how it is spelled. `http://2130706433/` is `127.0.0.1`, so it is
+  risky ("fetches your own machine"), like `http://192.168.1.1/` and
+  `http://169.254.169.254/` (a cloud metadata service); a URL with a password
+  in it (shown without the password), a `file:` URL and a scheme that is not the
+  web are risky too. `https://docs.rs/url` is safe.
 
 More guards will sit beside them.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell` and `file` features are on by
+Depend on `milo-local-guards` by git. The `shell`, `file` and `url` features are on by
 default.
 
 ```toml
