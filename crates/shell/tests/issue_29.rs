@@ -557,3 +557,44 @@ fn a_drive_name_is_not_only_letters_and_digits() {
         ],
     );
 }
+
+#[test]
+fn a_powershell_cd_dash_is_a_step_in_location_history() {
+    // `cd -` and `cd +` go back or forward in location history: the place is
+    // only known when it runs, not a folder named `-`.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "cd HKCU:\\Software; cd C:\\x; cd -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd HKCU:\\Software; cd C:\\x; Set-Location -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd HKCU:\\Software; cd C:\\x; sl -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd $k; cd C:\\x; cd -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd Function:; cd C:\\x; cd -; Set-Content NUL 'rm -r -fo ~'; NUL",
+                Rule::Overwrite,
+            ),
+            (
+                "cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -; Remove-Item -Recurse -Force *",
+                Rule::Delete,
+            ),
+            (
+                "cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; Set-Location -Path -; Remove-Item -Recurse -Force *",
+                Rule::Delete,
+            ),
+        ],
+    );
+}

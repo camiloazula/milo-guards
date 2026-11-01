@@ -75,6 +75,9 @@ PowerShell, and only as the null value itself: in cmd and a POSIX shell, and
 quoted in PowerShell (`'$null'`), it is a file name like any other, joined to
 where the `cd` went.
 
+In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
+place is only known when it runs.
+
 In PowerShell a bare `NUL` or `CON` is the device only on the file system.
 After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
 a place only known when it runs (it may be a registry key), it is an ordinary

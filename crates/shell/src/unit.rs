@@ -498,7 +498,12 @@ fn moves_to(unit: &Unit) -> Option<Arg> {
                 .values(&["path", "literalpath"])
                 .first()
                 .or(params.positional.first())
-                .map(|target| (*target).clone());
+                .map(|target| match target {
+                    // PowerShell 6.2+ reads `-` and `+` as a step back or
+                    // forward in location history, not a folder.
+                    Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
+                    other => (*other).clone(),
+                });
             Some(target.unwrap_or_else(|| {
                 // With no path, a stage after the first takes it from the
                 // pipeline; the first goes home.
