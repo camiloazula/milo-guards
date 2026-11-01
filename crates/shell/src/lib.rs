@@ -336,10 +336,19 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// working directory and from every workspace folder). A line run after a
 /// `cd` reads from where the `cd` went.
 ///
-/// Every [`ReadPath::path`] is absolute, spelled as the guard resolves it
-/// (`~` is the home directory, `.` and `..` are applied, a relative path starts
-/// at the working directory or at where a `cd` went), and nothing is read from
-/// the disk, so a link is not followed. The list is sorted and holds each
+/// Every [`ReadPath::path`] is absolute, as the system opens it: `~` is the
+/// home directory, `.` is dropped, a relative path starts at the working
+/// directory or at where a `cd` went, and every `..` stays where the line wrote
+/// it. Nothing is read from the disk, so a link is not followed, and a `..` is
+/// not applied by spelling, because the system applies it after it has followed
+/// the link before it: with `link -> /etc`, `cat link/../etc/hosts` reads
+/// `/etc/hosts`, and the path is listed as `<cwd>/link/../etc/hosts`. A caller
+/// resolves it on the disk part by part (what `canonicalize` does), and must
+/// not fold the `..` first, nor test the listed path for a prefix: `<cwd>/../x`
+/// starts with the workspace and is not in it. The `..` of a `cd` is the
+/// exception, since the shell applies it itself: `cd link/.. && cat x` lists
+/// `<cwd>` and `<cwd>/x`. [`effect`] keeps judging by spelling. The list is
+/// sorted and holds each
 /// entry once, so the answer is the same every time. A read that is not a
 /// place on a disk (the null device, a registry hive, a path on another
 /// drive's own working directory) has no path and is not listed; [`effect`]
@@ -349,9 +358,9 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 ///
 /// Each entry says how it is read ([`How`]), which says what a caller checks:
 ///
-/// - [`How::Exact`]: one path. Canonicalize it (a path that does not exist is
-///   resolved by its nearest existing ancestor, with the rest of the names put
-///   back).
+/// - [`How::Exact`]: one path. Canonicalize it, which follows each link before
+///   the `..` after it (a path that does not exist is resolved by its nearest
+///   existing ancestor, with the rest of the names put back).
 /// - [`How::Glob`]: a pattern the shell expands, as the fixed folder and the
 ///   rest of the pattern. Expand it on disk the way the shell does, and
 ///   canonicalize the folder and every match: the shell crosses a link while it
@@ -380,6 +389,11 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// let read = |line| effect_paths(line, Shell::Posix, &paths);
 /// assert_eq!(read("cat link/id_rsa"), Some(vec![exact("/work/app/link/id_rsa")]));
 /// assert_eq!(read("cat ~/.ssh/config"), Some(vec![exact("/home/me/.ssh/config")]));
+/// // A `..` is kept where it was written: the disk says what it climbs from.
+/// assert_eq!(
+///     read("cat link/../etc/hosts"),
+///     Some(vec![exact("/work/app/link/../etc/hosts")])
+/// );
 /// // A pattern: the folder it expands in, and the rest of it.
 /// let glob = ReadPath { path: PathBuf::from("/work/app"), how: How::Glob("*.rs".into()) };
 /// assert_eq!(read("cat *.rs"), Some(vec![glob]));

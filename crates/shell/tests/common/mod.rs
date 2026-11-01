@@ -136,7 +136,19 @@ fn stays(path: &str, paths: &Paths, windows: bool) -> bool {
                 text = &text[link.len()..];
             }
         }
-        text.trim_end_matches('/').to_string()
+        // `effect` judges by spelling, so the `..` the list keeps are applied
+        // here, as the guard's own verdict applies them.
+        let mut parts: Vec<&str> = Vec::new();
+        for part in text.split('/').filter(|part| !part.is_empty()) {
+            if part == ".." {
+                parts.pop();
+            } else {
+                parts.push(part);
+            }
+        }
+        format!("/{}", parts.join("/"))
+            .trim_end_matches('/')
+            .to_string()
     };
     let inside = |path: &str, folder: &str| {
         let (path, folder) = (key(path), key(folder));

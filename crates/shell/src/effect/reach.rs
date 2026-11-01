@@ -99,8 +99,10 @@ impl Context<'_> {
         let from = path::within(dir, arg, shell);
         if let (Some(landed), Some(text)) = (&self.landed, from.known()) {
             let (text, glob) = folder_read(text, shell);
+            let folded = self.folded(&text);
             landed.borrow_mut().push(Landed {
                 text,
+                folded,
                 glob,
                 walk: how.walk,
                 shell,
@@ -152,6 +154,28 @@ impl Context<'_> {
         if let Some(above) = from.known().and_then(|text| path::climb(text, shell)) {
             self.land_arg(shell, &Arg::Known(above), how.shallow());
         }
+    }
+
+    /// How many leading bytes of `text`, a path as joined to where the line
+    /// runs, the shell has already applied the `..` of: a `cd` applies its
+    /// own by spelling (`cd link/..` is the folder `link` is in), so the
+    /// folder the line moved to, and a `cd` target as a whole. The rest is
+    /// opened by a program, which gets a `..` after the link before it. A line
+    /// that keeps the physical path (`cd -P`) has no such part.
+    fn folded(&self, text: &str) -> usize {
+        if self.physical {
+            return 0;
+        }
+        if self.cd_target.get() {
+            return text.len();
+        }
+        let dir = self.dir.borrow();
+        dir.as_deref()
+            .filter(|dir| {
+                text.strip_prefix(dir)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .map_or(0, str::len)
     }
 
     /// Record a read of the text `text`, written from where `unit` runs.

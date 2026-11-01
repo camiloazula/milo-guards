@@ -165,8 +165,14 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
         landed: collect.then(|| RefCell::new(Vec::new())),
         followed: RefCell::default(),
         stage: Cell::new(None),
+        physical: split.physical(),
+        dir: RefCell::new(None),
+        cd_target: Cell::new(false),
     };
     for read in &split.reads {
+        context
+            .dir
+            .replace(read.dir.as_ref().and_then(Arg::known).map(str::to_string));
         seen.add(place_effect(
             &context,
             read.shell,
@@ -177,6 +183,12 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
     }
     for (at, unit) in split.units.iter().enumerate() {
         context.stage.set(unit.stage);
+        context
+            .dir
+            .replace(unit.dir.as_ref().and_then(Arg::known).map(str::to_string));
+        // The shell applies the `..` of a `cd` target itself (`cd link/..` is
+        // the folder `link` is in), unless it keeps the physical path.
+        context.cd_target.set(moves_to(unit).is_some());
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.
         let enclosing: Vec<_> = split

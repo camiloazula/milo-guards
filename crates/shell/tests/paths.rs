@@ -67,10 +67,13 @@ fn operands_and_redirect_sources_are_listed_as_absolute_paths() {
         &posix(),
         &[
             ("cat a.txt", Some(&["/home/me/work/repo/a.txt"])),
-            ("cat ./src/../a.txt", Some(&["/home/me/work/repo/a.txt"])),
+            (
+                "cat ./src/../a.txt",
+                Some(&["/home/me/work/repo/src/../a.txt"]),
+            ),
             ("cat /etc/hosts", Some(&["/etc/hosts"])),
             ("cat ~/.ssh/config", Some(&["/home/me/.ssh/config"])),
-            ("cat ../x", Some(&["/home/me/work/x"])),
+            ("cat ../x", Some(&["/home/me/work/repo/../x"])),
             ("cat < in.txt", Some(&["/home/me/work/repo/in.txt"])),
             (
                 "head -n 3 a.txt b.txt",
@@ -92,7 +95,13 @@ fn operands_and_redirect_sources_are_listed_as_absolute_paths() {
             ),
             ("cat ~", Some(&["/home/me"])),
             ("cat /", Some(&["/"])),
-            ("cat ../../../../../..", Some(&["/"])),
+            (
+                "cat ../../../../../..",
+                Some(&["/home/me/work/repo/../../../../../.."]),
+            ),
+            // Nothing is above the root: a `..` there climbs nowhere.
+            ("cat /..", Some(&["/"])),
+            ("cat /../etc", Some(&["/etc"])),
         ],
     );
 }
@@ -166,7 +175,10 @@ fn a_deep_read_is_listed_as_its_root() {
             ),
             ("rg TODO ~/notes", Some(&["/home/me/notes"])),
             ("rg TODO /etc", Some(&["/etc"])),
-            ("find ../other -name x", Some(&["/home/me/work/other"])),
+            (
+                "find ../other -name x",
+                Some(&["/home/me/work/repo/../other"]),
+            ),
         ],
     );
 }
@@ -183,7 +195,7 @@ fn a_pattern_is_the_folder_it_expands_in() {
             ("wc -l src/**/*.rs", Some(&["/home/me/work/repo/src"])),
             ("cat src/a?.rs", Some(&["/home/me/work/repo/src"])),
             ("cat src/[ab].rs", Some(&["/home/me/work/repo/src"])),
-            ("cat ../*/x", Some(&["/home/me/work"])),
+            ("cat ../*/x", Some(&["/home/me/work/repo/.."])),
             ("cat /etc/*", Some(&["/etc"])),
             ("cat /*", Some(&["/"])),
             ("cat ~/.ssh/*", Some(&["/home/me/.ssh"])),
@@ -195,7 +207,7 @@ fn a_pattern_is_the_folder_it_expands_in() {
             ),
             ("cat src/*.rs src/*.toml", Some(&["/home/me/work/repo/src"])),
             // A part that starts with a dot can also pick `..`.
-            ("cat .*/x", Some(&["/home/me/work", ROOT])),
+            ("cat .*/x", Some(&[ROOT, "/home/me/work/repo/.."])),
             ("cat é*", Some(&[ROOT])),
         ],
     );
@@ -214,7 +226,7 @@ fn git_reads_the_repository_at_the_working_directory_or_where_c_goes() {
             ("git -C sub status", Some(&["/home/me/work/repo/sub"])),
             ("git -C a -C b status", Some(&["/home/me/work/repo/a/b"])),
             ("git -C a -C /other status", Some(&["/other"])),
-            ("git -C .. status", Some(&["/home/me/work"])),
+            ("git -C .. status", Some(&["/home/me/work/repo/.."])),
             ("git -C ~ status", Some(&["/home/me"])),
             (
                 "git diff -- src/lib.rs",
@@ -276,9 +288,11 @@ fn the_list_is_sorted_and_holds_each_path_once() {
             .map(|read| read.path.clone())
             .collect::<Vec<_>>()
     };
+    // `src/../a` is spelled differently from `a`, and which place it is
+    // depends on `src` (a link would make it another), so it is its own entry.
     assert_eq!(
         places(&list),
-        ["a", "b", "c"].map(|name| PathBuf::from(format!("{ROOT}/{name}")))
+        ["a", "b", "c", "src/../a"].map(|name| PathBuf::from(format!("{ROOT}/{name}")))
     );
     // The same line gives the same list every time.
     for _ in 0..8 {
@@ -410,7 +424,7 @@ fn powershell_paths_are_windows_paths() {
             ("Get-Content a.txt", Some(&[r"C:\Users\me\dev\repo\a.txt"])),
             (
                 "Get-Content .\\src\\..\\a.txt",
-                Some(&[r"C:\Users\me\dev\repo\a.txt"]),
+                Some(&[r"C:\Users\me\dev\repo\src\..\a.txt"]),
             ),
             ("Get-Content ~\\a.txt", Some(&[r"C:\Users\me\a.txt"])),
             (
@@ -478,7 +492,7 @@ fn cmd_paths_are_windows_paths() {
         &windows(),
         &[
             ("type a.txt", Some(&[r"C:\Users\me\dev\repo\a.txt"])),
-            ("type ..\\x", Some(&[r"C:\Users\me\dev\x"])),
+            ("type ..\\x", Some(&[r"C:\Users\me\dev\repo\..\x"])),
             ("type C:\\Windows\\win.ini", Some(&[r"C:\Windows\win.ini"])),
             ("type ~\\a", Some(&[r"C:\Users\me\a"])),
             ("type \\Windows\\win.ini", Some(&[r"C:\Windows\win.ini"])),
@@ -583,7 +597,7 @@ fn each_entry_says_how_it_is_read() {
             "cat src/**/x.rs",
             &[glob("/home/me/work/repo/src", "**/x.rs")],
         ),
-        ("cat ../*/x", &[glob("/home/me/work", "*/x")]),
+        ("cat ../*/x", &[glob("/home/me/work/repo/..", "*/x")]),
         ("cat /*", &[glob("/", "*")]),
         ("cat ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
         ("echo ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
@@ -710,25 +724,33 @@ fn each_entry_says_how_it_is_read() {
 #[test]
 fn a_leading_dot_stays_in_the_rest_of_a_pattern() {
     let src = "/home/me/work/repo/src";
+    // The folder above, a `..` kept as the pattern's part picks it.
+    const UP: &str = "/home/me/work/repo/..";
     let rows: &[(&str, &[ReadPath])] = &[
         ("cat .a*/x", &[glob(ROOT, ".a*/x")]),
         ("cat .??/x", &[glob(ROOT, ".??/x")]),
-        ("cat .*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
-        ("ls .*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
+        ("cat .*", &[glob(ROOT, ".*"), exact(UP)]),
+        ("ls .*", &[glob(ROOT, ".*"), exact(UP)]),
         ("cat .[a-z]*/x", &[glob(ROOT, ".[a-z]*/x")]),
         ("cat ./*.rs", &[glob(ROOT, "*.rs")]),
-        ("cat ./.*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
+        ("cat ./.*", &[glob(ROOT, ".*"), exact(UP)]),
         ("cat a.*", &[glob(ROOT, "a.*")]),
         ("cat src/.*rc", &[glob(src, ".*rc")]),
         ("cat src/.[a-z]*/x", &[glob(src, ".[a-z]*/x")]),
         (
             "cat x/.*",
-            &[exact(ROOT), glob("/home/me/work/repo/x", ".*")],
+            &[
+                glob("/home/me/work/repo/x", ".*"),
+                exact("/home/me/work/repo/x/.."),
+            ],
         ),
         ("cat ~/.*rc", &[glob("/home/me", ".*rc")]),
         (
             "cat ../.*",
-            &[exact("/home/me"), glob("/home/me/work", ".*")],
+            &[
+                glob("/home/me/work/repo/..", ".*"),
+                exact("/home/me/work/repo/../.."),
+            ],
         ),
         ("cat /.*", &[exact("/"), glob("/", ".*")]),
         (
@@ -1031,11 +1053,16 @@ fn a_link_that_leaves_the_workspace_is_found_by_checking_each_entry() {
         "/home/me/work/repo/link/id_rsa",
     ];
 
-    /// Where `path` really is: each link on the way is followed, and the
-    /// names below one that does not exist are put back.
+    /// Where `path` really is: each link on the way is followed, a `..`
+    /// climbs from where the parts before it led, and the names below one
+    /// that does not exist are put back.
     fn resolve(path: &str) -> String {
         let mut at = String::new();
         for name in path.split('/').filter(|name| !name.is_empty()) {
+            if name == ".." {
+                at.truncate(at.rfind('/').unwrap_or(0));
+                continue;
+            }
             at = format!("{at}/{name}");
             if let Some((_, to)) = LINKS.iter().find(|(from, _)| *from == at) {
                 at = (*to).to_string();

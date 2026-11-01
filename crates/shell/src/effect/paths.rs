@@ -11,9 +11,10 @@ use crate::Shell;
 
 /// One place a line that only reads reads, and how it is read.
 ///
-/// The [`path`](Self::path) is absolute, as the guard resolves it by
-/// spelling: it is the place to look at on the disk, and [`how`](Self::how)
-/// says what else the program reaches from it.
+/// The [`path`](Self::path) is absolute, as the system opens it, every `..`
+/// kept where the line wrote it: it is the place to look at on the disk
+/// (resolve it part by part, a `..` climbing from where the link before it
+/// led), and [`how`](Self::how) says what else the program reaches from it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReadPath {
     /// The place: one exact path, the fixed folder a pattern expands in, or
@@ -32,7 +33,8 @@ pub struct ReadPath {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum How {
     /// One exact path (a file operand, a `<` source, a folder listed, a
-    /// `cd`): canonicalize it.
+    /// `cd`): canonicalize it, which follows each link before the `..` after
+    /// it.
     Exact,
     /// A pattern the shell expands. The [`path`](ReadPath::path) is the fixed
     /// folder the pattern expands in, and this is the rest of the pattern, as
@@ -68,6 +70,10 @@ pub enum How {
 pub(super) struct Landed {
     /// The path as written, or the fixed folder of a pattern.
     pub(super) text: String,
+    /// How many leading bytes of `text` the shell applied the `..` of itself
+    /// (a `cd`), so that part is made absolute by spelling and a `..` after it
+    /// is kept.
+    pub(super) folded: usize,
     /// What follows the folder of a pattern.
     pub(super) glob: Option<String>,
     /// How the reader walks it.
@@ -89,7 +95,7 @@ pub(super) fn resolve(
     let mut trees: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let mut globs = BTreeSet::new();
     for read in landed {
-        let Some(path) = resolver.absolute(&read.text, read.shell) else {
+        let Some(path) = opened(read, resolver) else {
             continue;
         };
         let handed = read
@@ -128,4 +134,20 @@ pub(super) fn resolve(
     );
     paths.sort();
     paths
+}
+
+/// The absolute path a read opens, every `..` kept where it was written
+/// except those the shell itself applied (`read.folded`): a program opens
+/// `link/../x` by following `link` first.
+fn opened(read: &Landed, resolver: &Resolver) -> Option<PathBuf> {
+    let (text, shell) = (read.text.as_str(), read.shell);
+    match read.folded {
+        0 => resolver.opened(text, shell),
+        at if at >= text.len() => resolver.absolute(text, shell),
+        at => {
+            let folder = resolver.absolute(&text[..at], shell)?;
+            let joined = format!("{}/{}", folder.to_string_lossy(), &text[at + 1..]);
+            resolver.opened(&joined, shell)
+        }
+    }
 }

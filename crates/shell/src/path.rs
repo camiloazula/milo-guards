@@ -47,6 +47,15 @@ enum Start<'a> {
     Unknown,
 }
 
+/// What is done with a `..` when a path is made absolute.
+#[derive(Clone, Copy)]
+enum Dots {
+    /// Applied by spelling, as the guard judges a path.
+    Applied,
+    /// Left where it was written, for a caller that looks at the disk.
+    Kept,
+}
+
 /// The `name:` a path starts with, and what follows it: a disk's drive
 /// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, a drive made
 /// with `New-PSDrive`: `my_drive:`, `my-drive:`). A PowerShell drive's name
@@ -279,26 +288,41 @@ impl Resolver {
     /// not a disk (`HKLM:`, `Env:`), a path on another drive's own working
     /// directory, and what cannot be spelled out (`~user`).
     pub(crate) fn absolute(&self, text: &str, shell: Shell) -> Option<PathBuf> {
+        self.resolved(text, shell, Dots::Applied)
+    }
+
+    /// The absolute path the system opens for `text`: as [`absolute`](Self::absolute),
+    /// but every `..` stays where it was written, since the system applies it
+    /// after the link before it (core's `Resolver::opened`).
+    pub(crate) fn opened(&self, text: &str, shell: Shell) -> Option<PathBuf> {
+        self.resolved(text, shell, Dots::Kept)
+    }
+
+    fn resolved(&self, text: &str, shell: Shell, dots: Dots) -> Option<PathBuf> {
         if brace_list(text) || device(text, shell).is_some() {
             return None;
         }
         let flavour = flavour(shell);
+        let make = |spelling| match dots {
+            Dots::Applied => self.core.absolute(spelling, flavour),
+            Dots::Kept => self.core.opened(spelling, flavour),
+        };
         // `FileSystem::C:\x` is the provider's own path to `C:\x`.
         if shell == Shell::PowerShell {
             if let Some((qualifier, rest)) = text.split_once("::") {
                 let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
                 return provider
                     .eq_ignore_ascii_case("filesystem")
-                    .then(|| self.absolute(rest, shell))
+                    .then(|| self.resolved(rest, shell, dots))
                     .flatten();
             }
         }
         match start(text, shell) {
-            Start::Plain => self.core.absolute(Spelling::Plain(text), flavour),
-            Start::Home(rest) => self.core.absolute(Spelling::Home(rest), flavour),
+            Start::Plain => make(Spelling::Plain(text)),
+            Start::Home(rest) => make(Spelling::Home(rest)),
             Start::DriveRelative(letter, rest) => self
                 .on_cwd_drive(letter, rest)
-                .and_then(|rest| self.core.absolute(Spelling::Plain(rest), flavour)),
+                .and_then(|rest| make(Spelling::Plain(rest))),
             Start::Provider(..) | Start::Unknown => None,
         }
     }
