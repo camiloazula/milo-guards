@@ -59,7 +59,7 @@ impl Checker<'_> {
             // Moving and copying: what is moved away, and where it lands.
             "mv" if shell != Shell::PowerShell => {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
-                self.move_away(unit, &sources);
+                self.move_away(unit, &sources, "moves");
                 if let Some(destination) = destination {
                     self.copy_to(
                         shell,
@@ -102,7 +102,7 @@ impl Checker<'_> {
                 let operands = builtin(&plain(args));
                 let operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
-                    self.move_away(unit, &operands[..operands.len() - 1]);
+                    self.move_away(unit, &operands[..operands.len() - 1], "moves");
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
@@ -193,7 +193,14 @@ impl Checker<'_> {
                         }
                     }
                     moved.retain(|source| **source != Arg::Input);
-                    self.move_away(unit, &moved);
+                    // With no path, what the stage before lists is moved.
+                    let piped = if moved.is_empty() {
+                        self.items(unit, &params)
+                    } else {
+                        Vec::new()
+                    };
+                    moved.extend(piped.iter());
+                    self.move_away(unit, &moved, "moves");
                 }
                 for (sources, destination) in readings {
                     let leaves = leaves(unit, &sources);
@@ -229,6 +236,10 @@ impl Checker<'_> {
                     })
                     .collect();
                 let params = Params::read(&renamed_args);
+                // What is renamed away is judged as the items the cmdlet
+                // works on: a path, else what the stage before lists.
+                let items = self.items(unit, &params);
+                self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
                 let mut sources = params.values(&["path", "literalpath"]);
                 let mut positional = params.positional.iter().copied();
                 if sources.is_empty() {
@@ -242,7 +253,15 @@ impl Checker<'_> {
                     .first()
                     .copied()
                     .or_else(|| positional.next());
-                self.rename(unit, &sources, name);
+                self.renamed_to(unit, &sources, name);
+                // The new name is a name, not a path; one that holds a
+                // separator is also a place the item is moved to.
+                if let Some(name) = name.filter(|name| {
+                    name.known()
+                        .is_some_and(|name| name.contains(['\\', '/', ':']))
+                }) {
+                    self.write(shell, unit.scope(), name, "renames to");
+                }
             }
             "ren" | "rename" if shell == Shell::Cmd => {
                 let operands = builtin(&plain(args));
@@ -262,6 +281,28 @@ impl Checker<'_> {
                     self.links_to(shell, unit.scope(), target);
                 }
             }
+            // A registry key or an item of another provider: judged by where
+            // its path lands, as `Remove-Item` is.
+            "clear-item" | "set-item" => {
+                let verb = if key == "clear-item" {
+                    "clears"
+                } else {
+                    "changes"
+                };
+                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
+                    self.write_as(shell, unit.scope(), &target, verb, Access::Item);
+                }
+            }
+
+            // Unpacking an archive writes into the folder it unpacks to;
+            // packing one with `--remove-files`, `-m` or `-sdel` deletes
+            // what it packs.
+            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "unzip" | "expand-archive" => self.unpack(unit, key),
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {
@@ -385,12 +426,26 @@ impl Checker<'_> {
                     }
                 }
             }
-            "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
+            "set-itemproperty"
+            | "new-itemproperty"
+            | "remove-itemproperty"
+            | "clear-itemproperty"
+            | "rename-itemproperty" => {
                 let params = Params::read(args);
                 let mut targets = params.values(&["path", "literalpath"]);
                 if targets.is_empty() {
                     targets.extend(params.positional.first().copied());
                 }
+                for target in targets {
+                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
+                }
+            }
+            // A value moved or copied between keys: the path, the destination and
+            // any argument that may stand for either are judged.
+            "copy-itemproperty" | "move-itemproperty" => {
+                let params = Params::read(args);
+                let mut targets = params.values(&["path", "literalpath", "destination"]);
+                targets.extend(params.positional.iter().copied());
                 for target in targets {
                     self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
@@ -460,7 +515,12 @@ impl Checker<'_> {
             .copied()
             .filter(|source| **source != Arg::Input)
             .collect();
-        self.move_away(unit, &moved);
+        self.move_away(unit, &moved, "moves");
+        self.renamed_to(unit, sources, name);
+    }
+
+    /// The new name of a rename, in each source's folder: written.
+    fn renamed_to(&mut self, unit: &Unit, sources: &[&Arg], name: Option<&Arg>) {
         let Some(name) = name else { return };
         let none = Arg::Known(String::new());
         let sources = if sources.is_empty() {
@@ -547,7 +607,7 @@ impl Checker<'_> {
             } else {
                 &operands[..]
             };
-            self.move_away(unit, named);
+            self.move_away(unit, named, "moves");
             for operand in named {
                 let to = Arg::Unknown(operand.text().to_string());
                 self.write(unit.shell, unit.scope(), &to, "writes to");
@@ -564,7 +624,7 @@ impl Checker<'_> {
             if file.known() == new.known() && new.known().is_some() {
                 continue;
             }
-            self.move_away(unit, &[file]);
+            self.move_away(unit, &[file], "moves");
             self.write(unit.shell, unit.scope(), &new, "writes to");
         }
     }

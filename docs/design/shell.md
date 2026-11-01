@@ -329,7 +329,7 @@ provider path, or a place only known when it runs, `cd ~` fails and the line
 stays where it was, so a path starting with `~` is only known when it runs, and
 so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
 first stage of its pipeline gets its path from the pipeline, not from home. A
-drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+drive's name may hold any character but `/ \ . ~`, a separator and a wildcard (`my_reg:`), so any such
 name before a colon, other than one letter, is a drive that is not a disk. Once
 the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
 even after the `cd` (a function body, a loop), a single letter in a `cd`
@@ -439,19 +439,19 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy; on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
-| `run_downloaded` | Runs a script it downloads. |
+| `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
-| `stop_system` | Shuts the computer down, restarts it, or stops every process. |
+| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
 | `drop_data` | Deletes data in a database. |
 | `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
@@ -460,6 +460,351 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 The wire names never change. A reason is a few plain words that follow from
 the rule: `deletes your home directory`, `runs code the guard does not read`.
+
+### Stopping processes by name
+
+`killall`, `pkill`, `taskkill` and `Stop-Process` (also `kill`, `spps`) are
+judged one way. Stopping a process by a plain name is everyday work (your own
+dev server, `killall Finder`) and is safe: `killall node` and `pkill node` are
+the same line. It is `stop_system` when the line stops more than a name:
+
+- **Every process.** A pattern that matches every process: `pkill -f .`,
+  `pkill ''`, `pkill '.*'`, `killall -r .`, `Stop-Process -Name *`,
+  `taskkill /IM *`. `pkill` and `killall -r` read a regular expression, and the
+  guard asks whether every match must hold a letter or digit the expression
+  spells out; `a*`, `(a|)`, `^` and `\w` do not. An expression it cannot read
+  (an unclosed `(` or `[`) counts as matching everything. `Stop-Process -Name`
+  and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
+  after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
+  process but the ones named) are always `stop_system`.
+- **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
+  `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
+  `taskkill /FI "USERNAME eq me"`, given no name. With a name
+  (`pkill -u me node`) it is the name that is judged. `killall -c name` is a
+  name too, judged as the operands are (`killall -c loginwindow`,
+  `killall -m -c .`).
+- **Every process a selection picks.** `pkill` given no pattern stops whatever
+  its selection picks: `-P`/`--parent`, `-s`/`--session` and `-g`/`--pgroup` of
+  0 or 1, or of a value only known when it runs (`pkill -P 1`, the children of
+  `launchd` or `init`, which is every app and daemon; `pkill -s 0`, the
+  session of the shell that runs the line, which is the terminal's processes;
+  `pkill -P "$(pgrep -x launchd)"`), and `-O`/`--older`, `-r`/`--runstates`,
+  `--cgroup`, `--ns`, `--nslist`, `--env`, `-t`/`--terminal` with any value
+  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$` (the shell's own
+  children, read by its source text), `pkill -F pids.txt`, `pkill -s 1234` and
+  `pkill -P 1 node` (the name is judged) are not. A value an option takes is
+  never a pattern (`pkill -q 1 -u me`, `-r R`).
+- **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
+  `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
+  "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
+  `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
+  stops the programs that hang, are read; with `/IM`, `/PID` or an
+  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
+  names are judged.
+- **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
+  `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
+  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `.exe` or a folder in front (`killall /sbin/init` picks the process by its
+  file, so the last part of the name is the name). `pkill` and `killall
+  -r`/`-m` search their regular expression in the name, so it is compared two
+  ways, per alternative: whole, without its anchors and brackets (`^init$`,
+  `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
+  can match a system name at all. A name is searched for in the system name:
+  `pkill login`, `pkill launch` and `pkill Window` stop `loginwindow`,
+  `launchd` and `WindowServer`. A leading `^` wants the name to start with it,
+  a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
+  server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
+  -I`). The expression is read with its syntax, never skipped for having
+  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
+  and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
+  (an escape, a collating element, `\b`, a back reference) it is read as
+  matching more, so `pkill '[l]aunchd'`, `pkill 'log.n'`, `pkill 'login(window)?'`,
+  `pkill 'a+'` and `pkill '[[:alpha:]]x'` are `stop_system` while `pkill
+  '[n]ode'` and `pkill -f 'node.*server'` are not. Without `-f` a `/` ends
+  a folder, so what follows it is the name (`pkill '/sbin/[i]nit'`); `-f`
+  matches the whole command line, so there the pattern is also searched, `/`
+  and all, in the usual command lines of the system processes
+  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
+  the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
+  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
+  two with (its jobs for them run `loginwindow console` and `WindowServer
+  -daemon`), and a match that is still going at the end of the line and can
+  go on into a space counts, since any further arguments are not known:
+  `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
+  -f -- -daemon`, `pkill -f 'WindowServer -daemon'` and `pkill -f 'systemd
+  --user'` are `stop_system` while `pkill -f 'node server.js'`, `pkill -f
+  vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
+  not. `killall` without
+  `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
+  matches one is the same (`Stop-Process -Name s*`).
+- **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
+  `xargs pkill`.
+- **A listing into `Stop-Process`.** `Stop-Process` is read by its own
+  parameters: `-Name` and its alias `-ProcessName`, `-Id`, `-InputObject`,
+  `-Force`, `-PassThru`, `-WhatIf`, `-Confirm` and the common ones, each
+  written in full or as any prefix that is not another's (`-N`, `-Proc`).
+  With no `-Name`, `-Id` or `-InputObject`, it stops what the first stage
+  lists: `Get-Process node | Stop-Process` is the name `node`, and any other
+  first stage (`$procs | Stop-Process`) is known only when it runs. A
+  `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
+  `Stop-Process -Id` does, and is safe; one given no name lists every
+  process. A stage between the listing and `Stop-Process` is never "every
+  process": `Where-Object` is read when it only compares `Name` or
+  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
+  `-Property Name`) keep some of the same processes; a `Select-Object` given
+  `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
+  or a script block) hands on other objects, such as a process's parent, and
+  is any other stage. Any other filter is "picked by a filter only known when
+  it runs", and any other stage, which may hand on other processes, is known
+  only when it runs. What follows a named listing, when it only picks from it,
+  can only narrow it, so the names are judged.
+  The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
+  `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
+  `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
+  of a pipeline that starts with `Get-Process`. Any other `-Id` or
+  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
+  processes the guard does not read and is safe. Only a member that is the
+  process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
+  any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
+  as `-ExpandProperty` does, and is any other stage: `Stop-Process
+  -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
+  an app's usual parent, and is `stop_system` as `((Get-Process
+  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. The
+  same holds for `$_` in a `ForEach-Object` block after a `Get-Process`:
+  `.Id`, `.Name` and `.ProcessName` pass the listing on, and any other
+  member (`$_.Parent`, `$_.Parent.Id`, `$_.Threads`) is "stops processes only
+  known when it runs". A wrapped item is read through what only wraps it,
+  parentheses, `$( )`, `@( )`, a cast (`[int]`) and a string that is one
+  expansion (`"$($_.Id)"`): `Stop-Process ($_)` and `-Id ([int]$_.Id)` are
+  judged like the pipeline (every process after a bare `Get-Process`, the
+  name after `Get-Process node`); a value that does anything else with `$_`
+  (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
+  processes only known when it runs". After a first stage that is not a
+  `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
+  `$_` is not a process and the value is read as any other `-Id`. A
+  `Get-Process` anywhere else in the arguments, inside another command or a
+  block, is read as one such listing, once, however many there are: the
+  arguments are read in one pass that never goes below a command, so the time
+  is the line's length however deeply they nest.
+- **A fork bomb.** A function that calls itself in the background or as one
+  side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
+  `stop_system` however it is called, even when the line only defines it, and
+  however the call is written: `\f`, `"f"` and `'f'` call the function `f`, as
+  `\rm` is read as `rm`. A
+  function defined inside another is judged on its own, by its own name, and
+  its commands are not also read as the outer one's. A bomb split over two
+  functions that call each other is not read.
+
+`killall`'s and `pkill`'s options are read as they read them: bundled letters,
+`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,
+`-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
+and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
+(`--pa 1` is `--parent 1`; a prefix that fits several is read as the
+riskier). Options written after the first name are read both ways, because
+the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
+and `pkill` stop reading options at the first name, so every later word is a
+name too, a `-u` and its user included. Every word after the first name is
+therefore also a name, with the value an option takes, and the options are
+read as well, so the riskier reading counts: `killall node -u loginwindow`,
+`killall node -s WindowServer` and `pkill node -u launchd` are `stop_system`
+(the names `loginwindow`, `WindowServer` and `launchd`), while `killall node -s
+HUP` and `pkill vite -9` are not. `pgrep` stops nothing and is safe.
+
+A caller that used to stop on `killall node` stops seeing it: it was
+`stop_system` ("stops every process with a name") and is now safe.
+
+### Unpacking archives
+
+An archive unpacked into a folder writes into that folder, and the folder is
+judged as the destination of `cp` is, by where it resolves (see Paths). With
+no folder given, it is the working directory, as moved by a `cd`. The paths
+stored inside the archive are not in the line and are not read.
+
+| Program | Folder | Writes nothing |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `-C dir`, `-Cdir`, `--directory dir`, `--directory=dir`, `--one-top-level=dir` (every one given); an old-style first argument (`tar xf x.tar -C dir`) is read too | no `-x`/`--extract`/`--get`; `-t`, `-c`, `-r`, `-u`, `-A`, `-d`; `-O`/`--to-stdout` |
+| `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
+| `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
+| `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+
+`tar` takes a long option written as a unique prefix, which the guard reads
+for the modes and `--to-stdout` as well as `--directory`: `--ext` and `--extr`
+are `--extract` (at least three letters; `--to-s` is `--to-stdout`). A tar line
+whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
+-C ~`) is judged as if it extracted, unless a mode letter or long mode is
+read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
+
+The reasons say `unpacks into your home directory`, `unpacks into a folder
+outside the workspace`, `unpacks into a folder only known when it runs`. A
+folder that is the workspace, inside it or a temporary file is not risky.
+
+### Archiving that removes what it archives
+
+Three options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+members named on the line are judged as the operands of `rm` are (see
+Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
+your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
+and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
+Packing without the option is no `delete`: `tar -cf x.tar src` is safe. What
+it packs is still read, so `tar -cf x.tar ~` is `read_secret` (it reads your
+home directory, and the keys in it).
+
+| Program | Option | Members |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
+
+A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
+--remove-files`) is judged as if it packed. A `tar` option that takes a value
+in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
+a member. An operand only known when it runs is a member known only when it
+runs; with `zip`, so is a first operand that is, since it may be the archive
+and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
+the files the stage before it lists. With `7z`, an argument whose readable
+start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
+(`$OPTS`) may be a switch too, so the default `*` stays among the members when
+the operands that are certain are only the command and the archive. With
+`zip`, an argument only known when it runs inside a `-x` or `-i` list may
+start with `-` or be `@`, which end the list, so the names after it are
+operands again.
+
+`7z` matches a wildcard itself, quoted or not, and a name that starts with a
+dot is among the matches. `zip` does so on Windows; on Unix it matches
+wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
+names inside the archive, so there `zip -m x.zip 'a*'` and
+`zip -mr x.zip '*git'` delete nothing. The guard judges the members of `zip` and `7z` alike, with the wildcards matching names that start
+with a dot, whatever the shell. For `zip` on Unix this is a cautious choice,
+not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
+`.git`, and so is the unquoted `zip -mr x.zip *git`.
+
+`tar` is given the names the shell expands, so `tar -cf x.tar *git
+--remove-files` leaves `.git` as `rm -rf *git` does.
+
+### Git tags and submodules
+
+`git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
+has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
+is `git_discard` too: it throws away the submodule's changes; without `-f`
+git refuses when there are some. Deleting a tag on a remote (`git push
+--delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+### Running a download through `Invoke-Expression`
+
+`iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
+`Invoke-Expression` (`iex`) is given a download when one of its arguments holds
+a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
+`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+(`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
+(`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
+bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
+`unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
+`unknown`.
+
+### Machine settings on macOS and Linux
+
+`system_settings` also covers the changes to the machine that `sudo` does not
+show. The guard keeps to what is system-wide or turns protection off; reading
+a setting and a user's own settings stay safe. Callers treat the rule as one
+of their strictest, so each family below was added on that test.
+
+- **Security switches.** `spctl --master-disable`, `--global-disable` and
+  `--disable` (Gatekeeper); `csrutil disable`, `authenticated-root disable`
+  and `enable --without …` (System Integrity Protection); `setenforce` to
+  anything but `1` or `Enforcing`; any write to `/etc/selinux/config` or
+  `/etc/sysconfig/selinux`, whatever the program (a redirect, `tee`, `sed -i`,
+  `cp`); `nvram` that sets, deletes or clears a variable (`boot-args`). A
+  value only known when it runs is risky. `spctl --master-enable`, `csrutil
+  status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
+  safe.
+- **The firewall.** `iptables` and `ip6tables` (and their `-legacy` and
+  `-nft` builds) with `-F`/`--flush`, `-X`/`--delete-chain` or a default
+  policy of ACCEPT (`-P chain ACCEPT`, `--policy`) for `INPUT`, `FORWARD` or
+  a chain only known when it runs; the chain may be attached (`-PINPUT`,
+  `-nPINPUT`, `--policy=INPUT`), and then the policy is the next argument.
+  `OUTPUT` accepting is the default, so it is not read. `nft` joins its
+  arguments with spaces and reads them as one line, so each command in
+  them (split at whitespace, `;` and newlines, whichever argument it is in,
+  `nft 'flush ruleset'` as well) is read: `flush ruleset|table|chain` and
+  `delete|destroy table|chain` are risky, and so is a `flush`, `delete` or
+  `destroy` of an object not known to be a set, map, rule or the like
+  (`nft flush $what`), or a command word only known when it runs; `-d` and
+  `--debug` take a level, as `-f` and `-I` take a value. Under `-j` or
+  `--json` (or a prefix of it, or inside a bundle such as `-aj`) the operands
+  are JSON, which is not read, so any `{` or `[` in them is risky
+  (`nft -j list ruleset` is safe). `ufw disable`,
+  `reset` and `default allow` for `incoming`, `routed`, no direction (which
+  means incoming) or an unknown one; `ufw default allow outgoing` is ufw's
+  stock default and is safe. `firewall-cmd --panic-on` and
+  `--set-default-zone`; `pfctl -d` and `-F` with `all`, `rules` or `nat`,
+  which may be abbreviated (`-F a`) and attached (`-Fa`, `-qFrules`), or
+  with a modifier only known when it runs; `socketfilterfw --setglobalstate
+  off`. Adding or deleting one rule, `-P chain DROP`, listing, `ufw allow`,
+  `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
+  from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
+  file's content is not in the line. Long options may be abbreviated as
+  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
+  takes any unique prefix too (`--set-default=trusted`).
+- **Services the system runs.** `systemctl disable` and `mask`, unless
+  `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
+  `unload`, `remove` and `disable`. The one thing read as the workspace's own
+  is a plist inside the workspace: `launchctl unload ./x.plist` and
+  `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`
+  (a label), `bootout system/…`, and any plist in `/Library/LaunchDaemons` or
+  `~/Library/LaunchAgents` are not. `launchctl unload -D domain` unloads
+  every plist in that search path (`-D system`, `-D all`), so it is risky
+  whatever the domain. A command word only known when it runs
+  (`systemctl $verb x`) is risky. `systemctl` options that take a value
+  (`-t`, `--message`, `--capsule`, `--what`, `--timestamp`, `--image`,
+  `--legend` and the like, also abbreviated) do not count as the verb, and
+  are not read as `--user` or `--system` either: one walk of the arguments
+  skips the values and finds those two (`systemctl -p --user disable x` is
+  a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
+  `-p`/`--property` value the same way.
+- **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
+  stop` are safe, because `stop docker` is a common development step, and
+  `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
+  `restart`, `enable` and `reload` are safe too. The exception is a unit
+  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
+  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  as turning that protection off, so it is risky. `systemctl kill` sends
+  SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
+  refuses `stop`, so `kill` is how it is stopped), so it is read through the
+  same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
+  'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
+  unit name holding `*`, `?` or `[` against the loaded units, so a pattern
+  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  action only known when it runs may be `stop`, so it is risky when the name
+  protects the machine or is only known when it runs (`service ufw
+  $action`); `service nginx $action` is safe, as `service nginx stop` is.
+- **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
+  `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
+  `listbackups`, `status`, `startbackup` and `enable` are safe.
+- **Machine-wide preferences.** `defaults delete <domain>` with no key,
+  `defaults import` (the reason says "deletes" for a delete with no key and
+  "replaces" for an import), and any `defaults write`, `delete`, `import` or
+  `rename` whose domain is a path in a system folder
+  (`/Library/Preferences/…`); `pmset` with `-a`, `-b`, `-c` or `-u`, or with
+  any first operand but the actions that only act or read (`sleepnow`,
+  `displaysleepnow`, `touch`, `noidle`, `boot`), because the flag is
+  optional in `pmset sleep 0` and the operand is then a setting; `-g` reads;
+  `networksetup` and `systemsetup` options that start `-set`, `-add`,
+  `-remove`, `-create`, `-delete`, `-rename`, `-duplicate`, `-order`,
+  `-import`; `scutil --set`; `hostnamectl set-…` and `timedatectl set-…`,
+  and the verbs `hostnamectl` has since systemd 249 (`hostname`,
+  `icon-name`, `chassis`, `deployment`, `location`) when given a value
+  (`hostnamectl hostname newname`; with none they print); `hostname name`
+  and `hostname -F`. An application's own keys
+  (`defaults write com.example.app key value`, `defaults delete com.apple.dock
+  persistent-apps`), a path in the workspace or the user's own folder,
+  `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
+
+`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
+they are Windows programs and are left alone.
 
 ### The rule enum is exhaustive on purpose
 
@@ -498,6 +843,25 @@ a path.
 - A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
+  A drive's name is whatever comes before the first `:` when that holds no
+  `/`, `\`, `.` or `~`, no separator and no wildcard, so a drive made with `New-PSDrive`
+  (`my_drive:*`, `my-drive:\*`) is a drive, outside the workspace, and
+  `x.txt:stream` is a file's stream, not a drive.
+- The item cmdlets are judged by where their path lands, as `Remove-Item` is:
+  `Clear-Item`, `Rename-Item`, `Set-Item`, `New-Item`, `Move-Item`,
+  `Copy-Item` (its destination), the `-ItemProperty` cmdlets and their
+  aliases. A registry place is `system_settings`: `Clear-Item HKCU:\Software\x`,
+  `Rename-Item HKCU:\Software\x y`, `Set-Item HKLM:\SYSTEM\x -Value 1`. A
+  rename or move of what lies beyond the workspace is `delete`, and a
+  `Set-Item` or `Clear-Item` on another drive (`Env:`, `Variable:`) is
+  `overwrite`, as writing to it is. `Rename-Item src\a.rs b.rs` is safe, but a new name only known when it runs
+  (`Rename-Item src\a.rs $name`, `-NewName { $_.Name + 'x' }`) is `overwrite`,
+  as it may be a startup file's. With
+  no path, the four that act on an item work on what the stage before lists (or `$_`), except that a
+  listing of the whole workspace by `Get-ChildItem`, `ls` or `dir`, or a
+  `Get-Item` pattern such as `Get-Item *`, is its contents, not the workspace
+  itself; `Get-Item .` or `Get-Item D:\ws2` hands on that folder, as written.
+  `Clear-Item` and `Set-Item` take a list of paths, so each is judged (`Clear-Item src\a, HKCU:\Software\y`; with no `-Value`, the last of `Set-Item`'s positionals is the value); a common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
@@ -830,6 +1194,30 @@ A line is never safe because the guard gave up on it. These come back risky:
 - Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
+- PowerShell code known only when it runs: a script block that is not written
+  out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
+  `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
+  `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
+  `ForEach-Object`, `New-Module`, `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
+  assignment or its `set_` method, `LocationChangedAction` among them), and code built
+  from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
+  `ExpandString`, whose `$( )` subexpressions run). A block
+  written out is read where it stands, and so is a string written out as the
+  text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
+  method. `ForEach-Object Name` takes a member name, not a block, and what
+  follows it is the member's arguments (`$list | % Add $item` is safe), but a
+  member name is judged as the call written out is: a method that is
+  risky as `.Invoke()` and `.Delete()` are (`% Invoke`, `-MemberName Delete`),
+  `InvokeScript`, `NewScriptBlock` and `ExpandString` (their text is read when
+  written out, positionally or after `-ArgumentList`), and a hook set by
+  `set_` or by its property given an argument. `Start-Job` takes
+  `-InitializationScript` by position after the block, so `Start-Job { … } $init` is risky, and a named
+  `-InitializationScript` on `Start-ThreadJob` or `Register-ScheduledJob` does not
+  make a block given by position safe. A splat (`@p`) on these cmdlets may hold a
+  block, so it is risky unless the cmdlet runs one block only and one is written
+  out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`),
+  and so does the argument after a parameter written with a colon
+  (`-Confirm:$false`), a common parameter (`-ErrorAction Stop`) and `-Args`.
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.

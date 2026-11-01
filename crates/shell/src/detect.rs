@@ -13,12 +13,16 @@ use std::collections::HashMap;
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
+mod archives;
 mod code;
 mod data;
 mod files;
+mod processes;
+mod regex;
 mod resources;
 mod secrets;
 mod send;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -35,7 +39,7 @@ const ELEVATORS: [&str; 8] = [
 
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
-const DOWNLOADERS: [&str; 10] = [
+pub(crate) const DOWNLOADERS: [&str; 10] = [
     "curl",
     "wget",
     "fetch",
@@ -75,6 +79,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         stages: HashMap::new(),
         scans_keys: None,
         data: data::Cache::default(),
+        lengths: HashMap::new(),
+        pipelines: HashMap::new(),
         flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
@@ -100,6 +106,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .entry((stage.pipeline, stage.index))
                 .or_default()
                 .push(at);
+            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
+            *length = (*length).max(stage.index + 1);
         }
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -161,6 +169,11 @@ struct Checker<'a> {
     scans_keys: Option<bool>,
     /// What the line says to its database clients, read once for each stage.
     data: data::Cache,
+    /// The number of stages of each pipeline.
+    lengths: HashMap<usize, usize>,
+    /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
+    /// first asks for it.
+    pipelines: HashMap<usize, Option<std::rc::Rc<processes::Pipeline>>>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
@@ -198,6 +211,7 @@ impl Checker<'_> {
         self.data(at, unit, &key);
         self.resources(unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -265,10 +279,16 @@ impl Checker<'_> {
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        self.delete_matching(unit, targets, verb, false);
+    }
+
+    /// [`Checker::delete`], where `hidden` says the program matches the
+    /// wildcards itself, with names that start with a dot among them.
+    fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
-                hidden: unit.hidden || listed_hidden,
+                hidden: unit.hidden || listed_hidden || hidden,
                 ..unit.scope()
             };
             for arg in found {
@@ -290,18 +310,103 @@ impl Checker<'_> {
 
     /// Sources a move takes away: anything beyond the workspace and its
     /// temporary files is lost where it was (`mv ~/x /tmp` and then
-    /// `rm -rf /tmp/x` deletes it).
-    fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
+    /// `rm -rf /tmp/x` deletes it). A registry key moved is a registry
+    /// change.
+    fn move_away(&mut self, unit: &Unit, sources: &[&Arg], verb: &str) {
         for source in sources {
             let place = self.place(unit.shell, unit.scope(), source, Access::Item);
-            if !place.harmless() {
-                self.add(
+            match place {
+                place if place.harmless() => {}
+                Place::Registry => {
+                    self.add(Rule::SystemSettings, "changes the registry", Some(source));
+                }
+                place => self.add(
                     Rule::Delete,
-                    format!("moves {}", place.words()),
+                    format!("{verb} {}", place.words()),
                     Some(source),
-                );
+                ),
             }
         }
+    }
+
+    /// The items a PowerShell item cmdlet works on: its `-Path` or
+    /// `-LiteralPath`, else its first positional argument, else what the
+    /// stage before it lists; `$_` in a `ForEach-Object` block is that too.
+    /// A listing that takes in the whole workspace hands on what is inside
+    /// it, so those are not the workspace itself.
+    fn items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
+        let mut paths = params.values(&["path", "literalpath"]);
+        if paths.is_empty() {
+            paths.extend(params.positional.first().copied());
+        }
+        self.listed_paths(unit, paths)
+    }
+
+    /// The items `Clear-Item` and `Set-Item` act on: every `-Path` and
+    /// `-LiteralPath` value and every positional, as `Remove-Item` reads
+    /// them, since both take a list of paths. With no path named and no
+    /// `-Value`, `Set-Item` takes its value as the last positional, which is
+    /// not a path (unless it is the only one). With a path named, a
+    /// positional may be the rest of the list (`-Path a,b`), so each is
+    /// judged.
+    fn list_items(&self, unit: &Unit, params: &Params<'_>, value_last: bool) -> Vec<Arg> {
+        let mut paths = params.values(&["path", "literalpath"]);
+        let positional = &params.positional;
+        let value_named = params
+            .named
+            .iter()
+            .any(|(name, _)| "value".starts_with(name.as_str()));
+        let count = if value_last && !value_named && paths.is_empty() && positional.len() > 1 {
+            positional.len() - 1
+        } else {
+            positional.len()
+        };
+        paths.extend(positional.iter().take(count).copied());
+        self.listed_paths(unit, paths)
+    }
+
+    fn listed_paths(&self, unit: &Unit, paths: Vec<&Arg>) -> Vec<Arg> {
+        if paths.is_empty() && unit.stage.is_some_and(|stage| stage.index > 0) {
+            return self.listed_items(unit, &Arg::Input);
+        }
+        paths
+            .into_iter()
+            .flat_map(|arg| self.listed_items(unit, arg))
+            .collect()
+    }
+
+    /// `arg`, or the places the stage before lists when it is the pipeline's
+    /// input. A listing (`Get-ChildItem`, `ls`, `dir`) of the whole workspace
+    /// hands on what is inside it, so that place is dropped; `Get-Item` hands
+    /// on the item itself, so only a pattern of its (`Get-Item *`) is dropped
+    /// and a workspace root named as written is kept.
+    fn listed_items(&self, unit: &Unit, arg: &Arg) -> Vec<Arg> {
+        if *arg != Arg::Input {
+            return vec![arg.clone()];
+        }
+        let (found, hidden) = self.expand(unit, arg);
+        let scope = Scope {
+            hidden: unit.hidden || hidden,
+            ..unit.scope()
+        };
+        let item = unit
+            .stage
+            .filter(|stage| stage.index > 0)
+            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
+            .and_then(|&at| self.split.units.get(at))
+            .and_then(Unit::key)
+            .is_some_and(|key| key.as_str() == "get-item");
+        found
+            .into_iter()
+            .filter(|arg| {
+                let named = item && !matches!(arg, Arg::Known(text) if glob::has_wildcard(text));
+                named
+                    || !matches!(
+                        self.place(unit.shell, scope, arg, Access::Item),
+                        Place::Workspace { exact: true }
+                    )
+            })
+            .collect()
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
@@ -347,6 +452,11 @@ impl Checker<'_> {
         self.write_as(shell, scope, target, verb, Access::Content);
     }
 
+    /// A write into a folder, as an archive unpacked into it makes.
+    fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        self.write_to(shell, scope, target, verb, "a folder", Access::Content);
+    }
+
     /// A write of `target`, by how it reaches it (see [`Access`]).
     fn write_as(
         &mut self,
@@ -356,6 +466,21 @@ impl Checker<'_> {
         verb: &str,
         access: Access,
     ) {
+        self.write_to(shell, scope, target, verb, "a file", access);
+    }
+
+    /// A write to `target`, which is a `what` in the words of a reason, by
+    /// how it reaches it (see [`Access`]).
+    fn write_to(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        what: &str,
+        access: Access,
+    ) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
@@ -363,12 +488,12 @@ impl Checker<'_> {
             Place::Registry => self.add(Rule::SystemSettings, "changes the registry", Some(target)),
             Place::Outside => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file outside the workspace"),
+                format!("{verb} {what} outside the workspace"),
                 Some(target),
             ),
             Place::Unknown => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file only known when it runs"),
+                format!("{verb} {what} only known when it runs"),
                 Some(target),
             ),
             place => self.add(

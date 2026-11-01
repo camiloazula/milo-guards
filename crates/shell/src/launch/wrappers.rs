@@ -329,6 +329,9 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         hidden: false,
         repeated: false,
+        downloaded: false,
+        listings: Vec::new(),
+        unread_item: false,
         depth: unit.depth,
     }))
 }
@@ -904,6 +907,9 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         dir: None,
         hidden: false,
         repeated: false,
+        downloaded: false,
+        listings: Vec::new(),
+        unread_item: false,
         depth: unit.depth,
     }
 }
