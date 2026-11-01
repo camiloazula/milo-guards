@@ -524,6 +524,9 @@ impl Walker<'_> {
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
+            }
         }
     }
 
@@ -587,6 +590,9 @@ impl Walker<'_> {
                 self.split.redirect(own.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
+            }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
             }
             for inside in inside {
                 self.split.nest(own.clone(), inside);
@@ -686,6 +692,38 @@ impl Walker<'_> {
             _ => return None,
         };
         (!text.is_empty()).then_some(Arg::Unknown(text))
+    }
+
+    /// The text a here-string or a here-document feeds, as written, whether
+    /// or not it holds an expansion (a template when it does): the
+    /// statements a database client reads from its input.
+    fn fed_literal(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "herestring_redirect" => Some(self.arg(node.named_children(&mut cursor).next()?)),
+            "heredoc_redirect" => {
+                let Some(body) = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "heredoc_body")
+                else {
+                    return Some(Arg::Known(String::new()));
+                };
+                let text = unit::text(&body, self.source).to_string();
+                let mut cursor = body.walk();
+                let expands = body
+                    .named_children(&mut cursor)
+                    .any(|part| part.kind() != "heredoc_content");
+                Some(if expands {
+                    Arg::Template {
+                        source: text.clone(),
+                        text,
+                    }
+                } else {
+                    Arg::Known(text)
+                })
+            }
+            _ => None,
+        }
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a

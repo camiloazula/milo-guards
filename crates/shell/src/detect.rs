@@ -11,6 +11,7 @@ use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
 mod code;
+mod data;
 mod files;
 mod send;
 mod system;
@@ -138,6 +139,7 @@ impl Checker<'_> {
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.send(at, unit, &key);
+        self.data(at, unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }

@@ -251,6 +251,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
 | `stop_system` | Shuts the computer down, restarts it, or stops every process. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
+| `drop_data` | Deletes data in a database. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
@@ -329,6 +330,7 @@ A line is never safe because the guard gave up on it. These come back risky:
 - Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
+- A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
@@ -454,6 +456,93 @@ when it runs (`curl -d @$F`); a connection opened with `exec 3<>/dev/tcp/…`;
 `git push` of a committed `.env`; secrets outside core's table (`/etc/shadow`,
 a key with an unusual name); and a `find -exec` whose filter picks secrets by a
 name the guard does not know (`-name '*.pem'`).
+
+## Data in a database
+
+`drop_data` is for a statement a database client is given that drops,
+truncates or empties something. The guard sees files and disks, and a database
+is neither: `psql -c 'DROP TABLE users'` touches no path the line names.
+Reading, inserting, creating and a statement that picks its rows are safe.
+
+**Where the statement is.** Only text on the line itself is read: an option, an
+operand, a here-document or here-string fed to the client, or the text a
+piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
+says. A file of statements (`psql -f migrations/001.sql`, `sqlite3 data.db <
+seed.sql`, `cat seed.sql | psql`) is the workspace's own code and is safe, as
+`python3 scripts/gen.py` is.
+
+| Client | Statement |
+| --- | --- |
+| `psql` | `-c`, `--command` |
+| `mysql`, `mariadb` | `-e`, `--execute`, `--init-command` |
+| `sqlite3` | the operands after the file, `-cmd` |
+| `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
+| `mongosh`, `mongo` | `--eval` |
+| `redis-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `cqlsh` | `-e`, `--execute` |
+
+Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
+`--command=SQL`), and a long option may be shortened as far as three letters
+(`--comm`).
+
+**What destroys.**
+
+- **SQL.** `DROP` (a table, database, schema, index, view, anything; also
+  `ALTER TABLE … DROP`), `TRUNCATE`, `DELETE` and `UPDATE` with no `WHERE`. A
+  `WHERE` that picks every row (`WHERE 1`, `WHERE true`, `WHERE 1 = 1`) is
+  none. `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`,
+  `GRANT UPDATE` and `THEN DELETE` in a `MERGE` are parts of other statements,
+  and `TRUNCATE(x)` is a function. `DELETE` and `UPDATE` inside a `WITH` or
+  after `EXPLAIN ANALYZE` count. `DO $$ … $$` is read as the statements it
+  holds.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one, and a
+  `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
+  redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
+  deletes one key and is safe.
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
+  command key), `deleteMany` and `remove` with no filter or `{}`.
+- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop`.
+
+**How a statement is read.** A keyword reader over the text, with no SQL
+grammar. It skips comments and string literals, splits on `;`, and reads each
+dialect's quoting where the dialects differ in a way that would hide a
+statement: `#` comments and backslash escapes in MySQL and ClickHouse, `--`
+needing a space after it in MySQL, `/*! … */` comments that MySQL runs, `E'…'`
+strings and `$tag$ … $tag$` strings in PostgreSQL, `//` comments in CQL. A
+statement the reader has to guess at is `unknown`, never safe: a string, a
+comment or a `$$` string that is never closed.
+
+A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
+q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
+a database statement only known when it runs`. In a double-quoted statement
+the expansions stand as words, so `psql -c "DELETE FROM users WHERE id = $id"`
+is read and is safe, `psql -c "DROP TABLE $t"` is `drop_data`, and
+`psql -c "$verb FROM users"` is `unknown`. A client command that runs a
+program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
+`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`.
+
+**A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
+database file are judged like any file: inside the workspace or a temporary
+directory, in memory (`:memory:`, no file) or opened `-readonly`, a `DROP`
+is safe; anywhere else, or a file only known when it runs, it is `drop_data`.
+`ATTACH`, `.open` and `.attach` reach another file, so they make the file
+given not the only one, and the statements are judged as a file outside the
+workspace. Every server database is risky, because the line cannot tell a
+scratch database from production.
+
+Migrations run by the project's own tool (`sqlx migrate run`, `rails
+db:migrate`) are safe: the guard reads no program that is not on its list.
+
+Not read, so the caller has to account for them: a statement behind a program
+the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
+-c …`); a statement handed over by a file, a process substitution
+(`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
+`cat` (`echo … | sed … | psql`); a PowerShell string piped on (`'DROP TABLE t'
+| psql`); stored procedures and `EXECUTE` of text built at run time; a `WHERE`
+that is true for every row in a way other than `1`, `TRUE` and `1 = 1`; other
+clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
 
 ## Tests
 
