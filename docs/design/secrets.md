@@ -60,15 +60,15 @@ with `Rule::ALL`, and a wire name never changes once a caller uses it.
 
 | Rule | Wire name | Holds |
 | --- | --- | --- |
-| `PrivateKey` | `private_key` | a block of private key, or an age secret key |
-| `CloudKey` | `cloud_key` | a key of AWS, Google, Azure or DigitalOcean |
-| `ApiKey` | `api_key` | a key or token of Anthropic, OpenAI, GitHub, GitLab, Slack, Stripe, SendGrid, Twilio, npm, PyPI, crates.io, Hugging Face or Shopify |
+| `PrivateKey` | `private_key` | a block of private key (PEM, PGP, SSH.com), a PuTTY key's private lines, or an age secret key |
+| `CloudKey` | `cloud_key` | a key of AWS, Google, Azure (storage keys, client secrets, shared access signatures) or DigitalOcean |
+| `ApiKey` | `api_key` | a key or token of Anthropic, OpenAI, GitHub, GitLab, Slack, Discord, Telegram, Stripe, SendGrid, Twilio, npm, PyPI, crates.io, Hugging Face or Shopify |
 | `Jwt` | `jwt` | a JSON web token |
-| `BasicAuth` | `basic_auth` | the base64 of `user:password` after `Basic` |
+| `BasicAuth` | `basic_auth` | the base64 of `user:password` after `Basic`, or as a Docker `auth` |
 | `BearerToken` | `bearer_token` | a token after `Bearer` that no other rule found |
 | `ConnectionString` | `connection_string` | the password in the address of a database or a broker |
 | `UrlCredentials` | `url_credentials` | the password in any other URL |
-| `GenericSecret` | `generic_secret` | a password, secret or token written as the value of a name; and, from the entropy pass, a run that looks random |
+| `GenericSecret` | `generic_secret` | a password, secret or token written as the value of a name, or after `password` in a `.netrc`; and, from the entropy pass, a run that looks random |
 | `CreditCard` | `credit_card` | a payment card number |
 | `GovernmentId` | `government_id` | a US social security number, a UK national insurance number, a Brazilian CPF |
 | `Email` | `email` | an email address |
@@ -88,9 +88,13 @@ table has its own reason; one rule has several rows.
    a block of private key, the provider rows (cloud, then service keys), a JWT,
    a password in an address, the `Basic` and `Bearer` headers, a name assigned
    a value, then personal data (a card, an id, an email, a phone, an address).
-3. **Settle overlaps.** A hit that overlaps one already kept is dropped, so a
-   GitHub token after `token=` is a GitHub token and not also a generic
-   secret, and the address inside a URL is not found a second time.
+3. **Settle overlaps.** Hits that overlap become one hit that covers both,
+   with the rule of the more specific. `password=Xy9!` followed by a key and
+   `/tail9` is one secret, and a span that stopped at the key would leave the
+   rest of the password in the text a caller scrubs. A GitHub token after
+   `token=` is one finding of the GitHub rule, and the address inside a
+   password is not a second one. A range that now begins earlier shows no
+   prefix: its first characters are not the key's.
 4. **Carry each range back** to the text as it was written.
 
 The table is written from each provider's published description of its own key
@@ -105,46 +109,107 @@ without spaces runs words together and a key beside it is still a key.
 Each key of a provider is matched on its own prefix, so none is guessed from
 its length alone. A provider whose secret has no mark of its own (an AWS secret
 key, a Twilio auth token, an Azure storage key) is found only where it is
-named: `aws_secret_access_key = …`.
+named: `aws_secret_access_key = …`; or, for an AWS secret, where an access key
+id is written beside it, with a separator and nothing else between, as the
+console's credentials file writes them. A Discord bot token, a Discord webhook
+URL and a Telegram bot token (`bot` and the token, in a URL, as the API takes
+it) are found by their parts; an Azure shared access signature by `sig=` in a
+query that also has `sv=`, `se=`, `sp=`, `sr=` or `srt=`; the `auth` of a
+Docker `config.json` by its value decoding to `user:password`; a `.netrc`
+password by the word `password` after a `machine`, a `login` or `default`.
 
 ## A private key
 
 A block is the `-----BEGIN … PRIVATE KEY-----` line (`RSA`, `EC`, `DSA`,
-`OPENSSH`, `ENCRYPTED`, `PGP … BLOCK`), the body and the `-----END` line. The
-span is the whole block. A header alone is not a key, so text that explains the
-format is Safe; what follows the header must look like a body: at least 32
-base64 characters on lines that hold nothing but base64. The lines of an
-armour header (`Proc-Type: 4,ENCRYPTED`, `Version: …`) are allowed and do not
-count. A body written in a JSON string with `\n` for its line ends is a key, so
-is one indented or quoted by `#`, `>`, `*` or `|`, and so is one cut short
-with no `END` line: a key as far as it goes.
+`OPENSSH`, `ENCRYPTED`, `PGP … BLOCK`; SSH.com's `---- BEGIN SSH2 ENCRYPTED
+PRIVATE KEY ----` too), the body and the `END` line. The span is the whole
+block. A header alone is not a key, so text that explains the format is Safe;
+what follows the header must look like a body: at least 32 base64 characters on
+lines that hold nothing but base64.
+
+Before the body come the lines of an armour header (`Proc-Type: 4,ENCRYPTED`,
+`Version:`, `Comment: "a long, odd (comment)"`), up to a blank line. They may
+hold anything but a line end, a line that ends in a backslash goes on with the
+next, and they are part of the block and count for nothing. A body written in a
+string with `\n` for its line ends is a key, so is one in a string in a string
+(`\\n`), one indented, one with each line quoted (`"…\n"`) or commented
+(`#`, `>`, `*`, `|`), and so is one cut short with no `END` line: a key as far
+as it goes.
+
+A PuTTY key file's `Private-Lines: N` is followed by `N` lines of base64; those
+lines are the key, and the public lines before them are not. An age secret key
+is one line (`AGE-SECRET-KEY-1` and fifty-eight characters of bech32).
+
+Each line is read once, a line of armour is at most 256 bytes and there are at
+most 24 of them, and a line ends where a run of dashes begins, so a text of
+headers is read in time linear in its length.
 
 ## A name assigned a value
 
 `password=`, `secret=` and `token=` followed by a value is the one detector
 that reads a name, so it is the one where code is easy to mistake for a secret
-(`password: String`, `token = self.token`). It judges the value:
+(`password: String`, `token = self.token`). It judges the value.
 
-- **The name** ends in a word that names a secret: `password`, `passwd`,
-  `passphrase`, `secret`, `token`, `api_key`, `access_key`, `secret_key`,
-  `private_key`, `auth_key`, `credential(s)`, `pwd`, and `pass` alone or after
-  `_`, `-` or `.`; in any case, with `_`, `-` and `.` ignored. `tokens`,
-  `max_tokens`, `password_hash` and `bypass` do not.
-- **The value** is the text after `=`, `:`, `:=`, `==` or `=>`: a string in
-  quotes (also written `\"…\"` inside a string), or a word up to a space, a
-  quote or one of `,` `;` `&` `|` `(` `)`.
-- **It is no secret** when it is shorter than six characters; a reference to a
-  variable or a template field (`$TOKEN`, `${TOKEN}`, `{{ token }}`,
-  `<password>`, `%s`); a redaction or a mask (`[REDACTED]`, `****`, `xxxxxx`);
-  a label of a field (`"password": "Password"`, `string`, `null`, `true`); the
-  name said twice (`password=password`); a placeholder that begins `your_`; a
-  value AWS's documentation shows (ends in `EXAMPLE`); a call (`get_token()`);
-  a chain of names (`self.token`, `config::TOKEN`); or an index (`env["X"]`).
-- **A quoted value** has no space in it. **An unquoted one** is a secret when
-  the name is tied to it with `=` and no space (`password=value`, the way an
-  environment file, a query and a connection string write it), or when it has
-  a digit in it (`password: hunter22`), which a word of code does not, or when
-  it ends in `=` (a base64 padding, as a Kubernetes secret is written).
+**Where a value ends is decided on the text as it was written**, with the
+quoting and the separators of that text. Reading escapes is for recognising a
+secret, never for ending one: `%26`, `%20`, `\u0022`, `%22` and a JSON `\"`
+inside a value are part of it, so the span covers all of it and no byte of the
+secret stays in a scrubbed text.
+
+- A value in quotes ends at its closing quote, read with the escaping of the
+  formats that write one: a backslash escapes what follows (JSON, shell, code),
+  `''` inside `'…'` is a quote of the value (YAML, SQL). A string written
+  `\"…\"` inside another string ends at the closing `\"`. A quote that never
+  closes on its line is not one: the value is the word after it.
+- Any other value ends at white space or the end of the line; at the closer of
+  the quote or bracket the name sits in (`echo "password=…"`, `login(password=…)`,
+  `{password: …}`); and at the format's own separator: a `&` before another
+  `name=` (a query), a `;` before another `Name=` (a connection string, whose
+  names may have spaces). `|`, `,`, `(` and a backtick do not end it.
+- The scan runs once from front to back and goes on after a value that was read,
+  accepted or not, so no byte is read twice: a long value full of names is read
+  once. (A name inside the value of a name that is no secret's is still found.)
+
+**The name** ends in a word that names a secret: `password`, `passwd`,
+`passphrase`, `secret`, `token`, `api_key`, `access_key`, `secret_key`,
+`private_key`, `auth_key`, `credential(s)`, `pwd`, and `pass` alone or after
+`_`, `-` or `.`; in any case, with `_`, `-` and `.` ignored. `tokens`,
+`max_tokens`, `password_hash` and `bypass` do not.
+
+**It is no secret** when it is:
+
+- shorter than six characters;
+- a reference to a variable or a template field (`$TOKEN`, `${TOKEN}`,
+  `{{ token }}`, `<password>`, `%s`, `[REDACTED]`);
+- a stand-in, by one of these shapes, each with rows in the tests and none a
+  list of words that grows:
+  - **upper snake case**, the name of a constant: `DEFAULT_TOKEN`, `REPLACE_ME`;
+  - **repeated characters**, or fewer than six different ones in its last
+    sixteen: `xxxxxxxx`, `ghp_` and thirty-six `x`;
+  - **an elision**, `...` or `…` in it: `sk-...`;
+  - **its own name**: the word the name ends in (also `secret` of `secret_key`)
+    is in the value, with no more than three digits: `api_key=api_key`,
+    `dummy_password`, `my-secret-2`. A short word (`pass`, `pwd`) must be all of
+    the value, since it is in too many passwords;
+  - **a stem from a closed list** that begins the value and is a word of its own
+    (`changeme123`, `replace-with-…`, `dummy-…`, `placeholder1`, `example-…`,
+    `sample-…`, `todo-…`, `fixme`), or a literal (`string`, `null`, `none`,
+    `true`, `false`, `undefined`, …); a stem followed by a letter
+    (`Replacement9`) is not one;
+  - **documented by AWS**: ends in `EXAMPLE` or `EXAMPLEKEY`;
+- a call (`get_token()`, `env::var("X")?;`), an index (`env["X"]`) or a chain
+  of names (`self.token`, `config::TOKEN`).
+
+The shapes judge a stand-in, not a secret: a value that is none of them is found
+whatever it looks like beside its name (`api_key=F4keApiKey0123456789abcdef`).
+
+**A quoted value** has no space in it, as written. **An unquoted one** is a
+secret when the name is tied to it with `=` and no space (`password=value`, the
+way an environment file, a query and a connection string write it), when it has
+a digit in it (`password: hunter22`), which a word of code does not, or when it
+ends in `=` (a base64 padding, as a Kubernetes secret is written). A `,`, `;`,
+`:`, `.`, `)`, quote or backtick at the end of an unquoted value is judged
+without, and covered with it.
 
 The span is the value without its quotes.
 
@@ -161,6 +226,13 @@ range found in the second text is carried back to the first and covers the
 whole escape. Only printable ASCII is read, so no line end is made (`%0A` is
 left alone) and the reading never makes a character the text had no spelling of.
 
+Reading is for recognising a secret; where one ends is decided on the text as it
+was written. The rows for a password in an address run over the written text
+too, so a `%2F` in a password is not the `/` that ends it and a `%40` in a user
+name is not the `@`; the read text is run as well, which finds an address
+written in escapes as a whole. A name assigned a value ends its value on the
+written text (see above).
+
 ## What is safe on purpose
 
 These are Safe, and each has a row in the tests:
@@ -170,9 +242,12 @@ These are Safe, and each has a row in the tests:
   reads a run for its shape alone.
 - A page of source: `password: String`, `let token = self.token`,
   `max_tokens=100000`, `password_hash`, a call that fetches a password.
-- Stand-ins for a secret that a document writes on purpose: `ghp_` and `AKIA`
+- Stand-ins for a secret that a document writes on purpose, by the shapes of
+  [a name assigned a value](#a-name-assigned-a-value): `ghp_` and `AKIA`
   followed by one repeated character, a value that ends in `EXAMPLE`, a
-  `${TOKEN}`, `<password>`, `YOUR_TOKEN_HERE`, `[REDACTED]`. Each key row
+  `${TOKEN}`, `<password>`, `YOUR_TOKEN_HERE`, `REPLACE_ME`, `DEFAULT_TOKEN`,
+  `changeme`, `dummy_password`, `api_key=api_key`, `sk-...`, `[REDACTED]`,
+  helm's `existingSecret: my-secret-2`. Each key row
   (the JWT and the Slack webhook apart) requires the last sixteen characters
   to be varied, six different ones at least: a placeholder is not random and
   a key is.
@@ -211,6 +286,9 @@ prompt:
   assembly version `1.0.0.0`, and a DNS server written in a document
   (`8.8.8.8`). A version after a letter or a dash (`v1.2.3.4`) and a longer
   dotted number are not found.
+- A JWT-shaped text whose signature is `signature` is Safe (a signature is
+  empty, for `none`, or at least sixteen characters); one with a sixteen-letter
+  word there is found.
 - A `token=` or `password:` whose value is a pagination cursor, a CSRF token
   or a word of code that has a digit in it (`token: token2`).
 - A line of a patch that adds ten to fifteen digits after a `+`.
@@ -234,6 +312,10 @@ prompt:
 - **Flags** (`--password hunter22`, `curl -u user:pass`, `mysql -pSecret`) are
   the shell's: the shell guard reads a command line. A name assigned a value
   with `=`, as `--password=hunter22`, is found.
+- **A weak password that is its own name** (`password=Password1`,
+  `secret=mysecret2`) is read as a stand-in and is Safe: the shape cannot tell
+  it from `api_key=api_key`. So is one that begins with a stem as a word of its
+  own (`changeme!`).
 - **A password shorter than six characters** after a name is not found, and
   neither is a password of words: `password: correct horse battery staple`.
   An unquoted value of letters alone after `name: ` or `name = ` is read as
@@ -297,4 +379,6 @@ does.
   read and carried back.
 - `tests/rows.rs`: one sample for every row of the table finds exactly its
   secret with its rule and reason, and no target or reason holds the secret.
+- `tests/review.rs`: the rows of a reviewer's probe, every kind of key in the
+  dress it comes in, and the text of a code base that looks like a secret.
 - `tests/entropy.rs`, `tests/names.rs` and `tests/robust.rs`.
