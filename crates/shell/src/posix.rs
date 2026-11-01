@@ -220,6 +220,47 @@ fn environment(split: &mut Split, root: Node<'_>, source: &str) {
     });
 }
 
+/// Whether `body` may set `name`, or define a function, which runs later: an
+/// assignment, `unset`, a loop of the same name, an arithmetic assignment or
+/// increment, `${name:=…}`, or a declaration that mentions it.
+fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
+    let mut found = false;
+    let set = format!("${{{name}");
+    unit::for_each_node(body, |node| {
+        let text = unit::text(&node, source);
+        found |= match node.kind() {
+            "function_definition" => true,
+            "variable_assignment" => node
+                .child_by_field_name("name")
+                .is_some_and(|assigned| unit::text(&assigned, source) == name),
+            "unset_command" => text.split_whitespace().any(|word| word == name),
+            "for_statement" => node
+                .child_by_field_name("variable")
+                .is_some_and(|inner| unit::text(&inner, source) == name),
+            "binary_expression" => {
+                node.child_by_field_name("left")
+                    .is_some_and(|left| unit::text(&left, source) == name)
+                    && node.children(&mut node.walk()).any(|part| {
+                        !part.is_named() && {
+                            let operator = unit::text(&part, source);
+                            operator.ends_with('=')
+                                && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                        }
+                    })
+            }
+            "postfix_expression" | "unary_expression" => {
+                text.contains(name) && (text.contains("++") || text.contains("--"))
+            }
+            "expansion" => text
+                .strip_prefix(set.as_str())
+                .is_some_and(|rest| rest.starts_with(":=") || rest.starts_with('=')),
+            "declaration_command" => text.contains(name),
+            _ => false,
+        };
+    });
+    found
+}
+
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
@@ -351,7 +392,11 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                let start = self.split.units.len();
                 self.children(node, stage, level);
+                if node.kind() == "for_statement" && self.split.kept.on {
+                    self.bind_loop(node, start);
+                }
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }
@@ -413,6 +458,36 @@ impl Walker<'_> {
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A `for` over words written out (no expansion in the list), whose body
+    /// does not set the variable and defines no function: `effect` reads each
+    /// body unit with every word in place of the variable.
+    fn bind_loop(&mut self, node: Node<'_>, start: usize) {
+        let (Some(variable), Some(body)) = (
+            node.child_by_field_name("variable"),
+            node.child_by_field_name("body"),
+        ) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let words: Vec<Arg> = node
+            .children_by_field_name("value", &mut cursor)
+            .map(|word| self.arg(word))
+            .collect();
+        if words.is_empty() || words.iter().any(|word| word.known().is_none()) {
+            return;
+        }
+        let name = unit::text(&variable, self.source);
+        if reassigns(body, name, self.source) {
+            return;
+        }
+        let words = words
+            .iter()
+            .filter_map(Arg::known)
+            .map(str::to_string)
+            .collect();
+        self.split.bind(name, words, start);
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {

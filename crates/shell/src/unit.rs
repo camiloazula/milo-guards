@@ -274,6 +274,18 @@ pub(crate) struct Kept {
     pub(crate) changes: bool,
     /// The files redirected from (`< file`), where the line was.
     pub(crate) reads: Vec<Read>,
+    /// The `for` loops over words written out, whose variable the body does
+    /// not set: `effect` reads the body with each word in place.
+    pub(crate) bindings: Vec<Binding>,
+}
+
+/// A `for` variable and the words it takes, over the units of the body.
+#[derive(Debug, Clone)]
+pub(crate) struct Binding {
+    pub(crate) variable: String,
+    pub(crate) words: Vec<String>,
+    /// The units added while the loop was read, by index in the split.
+    pub(crate) units: std::ops::Range<usize>,
 }
 
 /// A read a redirect makes: `< file`.
@@ -376,6 +388,18 @@ impl Split {
             dir,
             hidden,
         });
+    }
+
+    /// Record a `for` loop over `words` whose body, the units from `start` on,
+    /// does not set `variable`, for `effect`.
+    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: usize) {
+        if self.kept.on {
+            self.kept.bindings.push(Binding {
+                variable: variable.to_string(),
+                words,
+                units: start..self.units.len(),
+            });
+        }
     }
 
     /// Add a redirect's read, made where the line has moved to, for `effect`.

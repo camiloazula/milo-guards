@@ -478,17 +478,49 @@ when it runs, is `Unknown`.
   not read and the shell runs.
 - **A path known only when it runs makes the line `Unknown`.** A reader's file
   operand or the source of a `<` redirect (`cat $f`, `cat < "$F"`, `cat
-  "$(pwd)/x"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may name anything,
-  a network device or a share included, and what cannot be read is not
-  reads-only. The paths the guard names stay known: `~`, `$HOME`, `$TMPDIR`,
-  `$env:TEMP` and the other forms [Core](core.md) resolves, and a glob, which
-  is a pattern over known folders (`cat *.rs` reads only). What a pipeline hands
-  a reader (`xargs cat`) counts only when the stage before it is a listing
-  (`ls`, `find`, `fd`, `dir`, `Get-ChildItem`): `ls | xargs cat` reads only and
-  `echo a | xargs cat` does not. Programs that only print their operands
-  (`echo`, `printf`, `basename`, `test`, `Write-Output`) are not readers of
-  them. So `for f in *.txt; do wc -l "$f"; done` is `Unknown`: the guard does
-  not follow a loop variable.
+  "$(pwd)/x"`, `grep x "$f"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may
+  name anything, a network device or a share included, and what cannot be read
+  is not reads-only. The paths the guard names stay known: `~`, `$HOME`,
+  `$TMPDIR`, `$env:TEMP` and the other forms [Core](core.md) resolves, and a
+  glob, which is a pattern over known folders (`cat *.rs` reads only).
+- **Only a path is judged as a path.** Each reader's table entry says which
+  arguments the program opens as files. A pattern, a count or an author is
+  data: `grep -rn "$PATTERN" .`, `rg "$x" src`, `head -n "$N" x`, `sort -k
+  "$K" x` and `git log --author="$NAME"` read only. For `grep` and `rg` the
+  first operand is the pattern, unless `-e` or `-f` gives it (`-f FILE` and
+  `rg --ignore-file FILE` are paths, and so is every operand of `rg --files`);
+  a value of an option that takes one is data, unless the option takes a file;
+  for `find`, the places are the arguments before the first test, and the
+  value of `-name` and the like is data. For `git`, the places are the value
+  of `-C`, what comes after `--`, and every operand of `--no-index`; the other
+  operands are revisions and pathspecs inside the work tree, which git does
+  not take outside it. A value counts as data only when it is known or every
+  expansion in it is in double quotes: unquoted, `$x` splits into more
+  arguments, options among them, and is an operand. An operand known only when
+  it runs is `Unknown` for `git`, since it could be an option. What stays
+  open: a quoted pattern or value could itself start with `-` and be read as an
+  option.
+- **A pipeline into a reader** (`xargs cat`, and in PowerShell `Get-Item`,
+  `Get-ChildItem`, `Test-Path`, `Resolve-Path`, `Get-Content` and `Select-String`
+  with no path of their own) hands it paths, so the stage before it must list
+  known places: `ls`, `fd`, `dir`, `Get-ChildItem`, `git ls-files`, or a `find`
+  that prints only what it finds (`-printf` and `-exec` print any text), through
+  stages that only select or order (`head`, `tail`, `sort`, `grep` with no file
+  of its own; `Where-Object`, `Sort-Object` and `Select-Object -First`, with no
+  `-Property`). `ls | xargs cat` and `Get-ChildItem | Get-Content` read only;
+  `echo a | xargs cat` and `'\\evil\share' | Test-Path` do not. A
+  `Select-String` also takes the text of `Get-Content` or another search.
+  Programs that only print their operands (`echo`, `printf`, `basename`, `test`,
+  `Write-Output`) are not readers of them.
+- **A `for` over words written out** (no expansion in the list) is read with
+  each word in place of the variable, as if the body were written out, the
+  network check included: `for f in *.txt; do wc -l "$f"; done` reads only,
+  `for f in /dev/tcp/h/80; do cat $f; done` does not. A glob stands for itself.
+  Not read this way, so `Unknown`: a list with an expansion (`for f in $(ls)`),
+  no list (`for f; do`), a body that sets the variable (assignment, `unset`,
+  `read`, `((`, `${f:=}`, a loop of the same name) or defines a function, a
+  variable in the program's own name, and a `<` redirect in the body. More than
+  64 combinations of words are not read either.
 - A read that contacts the network is `Unknown`, judged on the path's known
   value after quotes are resolved, never on its spelling: a path naming bash's
   `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, as an operand or as the source
@@ -499,7 +531,9 @@ when it runs, is `Unknown`.
   and `GLOBALROOT` after `\\?\` or `\\.\`, which reaches the share through
   the device namespace), which offers the user's credentials to the server. A
   long path or device that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) is
-  not a share.
+  not a share. Repeated separators and `.` parts are folded as Windows folds
+  them (`\\.\\UNC\host\share`), and a path with `..` in its root counts. A
+  `<` redirect is read in cmd too, with a handle in front (`0<`).
 - Not read, so the caller has to account for them: an alias or function
   defined outside the line, the `PATH` the shell runs with, and an option set
   by a start-up file. A name in the table is taken to be the program that

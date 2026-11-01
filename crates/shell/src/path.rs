@@ -194,12 +194,22 @@ impl Resolver {
         {
             return false;
         }
-        let mut parts = text[2..].split(separators);
-        match parts.next() {
+        // Windows folds repeated separators and drops `.` parts, so
+        // `\\.\\UNC\host\share` and `\\.\.\UNC\host\share` are the same share; a
+        // `..` could undo any of it, so a path with one counts.
+        let mut raw = text[2..].split(separators);
+        let first = raw.next().unwrap_or_default();
+        let rest: Vec<&str> = raw
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        if first == ".." || rest.contains(&"..") {
+            return true;
+        }
+        match first {
             // The long-path and device prefixes (`\\?\`, `\\.\`) name a
             // disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) unless a share
             // follows: `UNC\server\share`, or `GLOBALROOT\Device\Mup\server\share`.
-            Some("?" | ".") => parts.next().is_some_and(|kind| {
+            "?" | "." => rest.first().is_some_and(|kind| {
                 kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
             }),
             _ => true,

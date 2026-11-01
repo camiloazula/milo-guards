@@ -11,8 +11,11 @@
 use std::collections::HashMap;
 
 use crate::path::{self, Place, Resolver};
+
+mod operands;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
+use operands::{inert, operands, place_effect, substituted, Context};
 
 /// What a line does to the machine, as far as the guard can read: the answer
 /// of [`effect`](fn@crate::effect), beside [`classify`](crate::classify)'s.
@@ -81,37 +84,25 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         resolver,
         producers,
     };
-    for unit in &split.units {
-        seen.add(unit_effect(unit, &context));
+    for (at, unit) in split.units.iter().enumerate() {
+        // A `for` loop over words written out is read with each word in place
+        // of its variable, as if the body were written out.
+        let enclosing: Vec<_> = split
+            .kept
+            .bindings
+            .iter()
+            .filter(|binding| binding.units.contains(&at))
+            .collect();
+        match substituted(unit, &enclosing) {
+            Some(copies) => {
+                for copy in &copies {
+                    seen.add(unit_effect(copy, &context));
+                }
+            }
+            None => seen.add(unit_effect(unit, &context)),
+        }
     }
     seen.effect()
-}
-
-/// What `unit_effect` needs besides the unit.
-struct Context<'a> {
-    resolver: &'a Resolver,
-    producers: HashMap<(usize, usize), &'a Unit>,
-}
-
-/// Whether reading from `arg`, written from `dir`, is a read of a place the
-/// guard can name and that is on this machine. Not when it is known only
-/// when it runs, nor bash's `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, nor
-/// on Windows a UNC path (`\\server\share`, `//server/share`,
-/// `\\?\UNC\server\share`): reading those contacts the network, and a
-/// share is offered the user's credentials.
-fn place_effect(resolver: &Resolver, shell: Shell, dir: Option<&Arg>, arg: &Arg) -> Effect {
-    let Some(text) = arg.known() else {
-        return Effect::Unknown;
-    };
-    let from = path::within(dir, arg, shell);
-    if (shell == Shell::Posix && names_network_device(text))
-        || resolver.network(dir, arg, shell)
-        || matches!(resolver.place(&from, shell, false), Place::Unknown)
-    {
-        Effect::Unknown
-    } else {
-        Effect::ReadsOnly
-    }
 }
 
 /// What has been seen so far: a change beats not knowing, which beats
@@ -253,90 +244,6 @@ fn unit_effect(unit: &Unit, context: &Context<'_>) -> Effect {
         Effect::ReadsOnly => operands(unit, &key, context),
         other => other,
     }
-}
-
-/// Programs that read nothing from the places their arguments name: they
-/// print them, test them or look them up.
-fn takes_no_paths(shell: Shell, key: &str) -> bool {
-    match shell {
-        Shell::Posix => matches!(
-            key,
-            "echo"
-                | "printf"
-                | "true"
-                | "false"
-                | "test"
-                | "["
-                | "basename"
-                | "dirname"
-                | "which"
-                | "pwd"
-        ),
-        Shell::PowerShell => matches!(
-            key,
-            "write-output"
-                | "write-host"
-                | "echo"
-                | "where-object"
-                | "select-object"
-                | "sort-object"
-                | "measure-object"
-                | "get-location"
-                | "pwd"
-        ),
-        Shell::Cmd => matches!(key, "echo" | "cd" | "chdir"),
-    }
-}
-
-/// The programs whose output is the names of what is in known places: what
-/// a pipeline hands on from one is not a path from the environment.
-const LISTERS: [&str; 5] = ["ls", "find", "fd", "dir", "get-childitem"];
-
-/// A reader read the files its operands name, so each must be a place the
-/// guard can name on this machine: a glob is a pattern over known folders
-/// and stays known, a path known only when it runs (`cat $f`) does not. What
-/// a pipeline hands the unit counts when the stage before it lists.
-fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect {
-    let paths = !takes_no_paths(unit.shell, key);
-    let mut effect = Effect::ReadsOnly;
-    for arg in &unit.args {
-        let listed = || {
-            unit.stage
-                .filter(|stage| stage.index > 0)
-                .and_then(|stage| context.producers.get(&(stage.pipeline, stage.index - 1)))
-                .and_then(|producer| producer.key())
-                .is_some_and(|name| LISTERS.contains(&name.as_str()))
-        };
-        let own = match arg {
-            Arg::Input if paths && !listed() => Effect::Unknown,
-            Arg::Input => Effect::ReadsOnly,
-            known if paths => place_effect(context.resolver, unit.shell, unit.dir.as_ref(), known),
-            // Not a path, but a name that is one of the network's.
-            known if known.known().is_some() => {
-                let network = unit.shell == Shell::Posix
-                    && known.known().is_some_and(names_network_device)
-                    || context
-                        .resolver
-                        .network(unit.dir.as_ref(), known, unit.shell);
-                if network {
-                    Effect::Unknown
-                } else {
-                    Effect::ReadsOnly
-                }
-            }
-            _ => Effect::ReadsOnly,
-        };
-        if own == Effect::Unknown {
-            effect = Effect::Unknown;
-        }
-    }
-    effect
-}
-
-/// Whether `text` names one of bash's network devices.
-pub(crate) fn names_network_device(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("/dev/tcp/") || lower.contains("/dev/udp/")
 }
 
 /// The name the tables know the unit's program by, when the program is
@@ -568,7 +475,7 @@ fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Effect
     let long = abbreviated(args, reads, writes);
     if short || long == Effect::Changes {
         Effect::Changes
-    } else if long == Effect::Unknown || args.iter().any(|arg| arg.known().is_none()) {
+    } else if long == Effect::Unknown {
         Effect::Unknown
     } else {
         Effect::ReadsOnly
@@ -601,11 +508,12 @@ fn given(args: &[Arg], flags: &[Flag]) -> bool {
 }
 
 /// A reader some of whose flags write or run something. An argument known
-/// only when it runs could be one of them.
+/// only when it runs is judged with the places the program opens (see
+/// [`operands`]), where it is not a value or a pattern.
 fn guarded(args: &[Arg], writes: &[Flag], runs: &[Flag]) -> Effect {
     if given(args, writes) {
         Effect::Changes
-    } else if given(args, runs) || args.iter().any(|arg| arg.known().is_none()) {
+    } else if given(args, runs) {
         Effect::Unknown
     } else {
         Effect::ReadsOnly
@@ -735,20 +643,61 @@ fn posix(key: &str, unit: &Unit) -> Effect {
 }
 
 /// `find`: the actions that write; what `-exec` and `-ok` run are units of
-/// their own. An argument known only when it runs could be `-delete`.
+/// their own. An argument known only when it runs could be `-delete`, unless
+/// it is the value of a test that takes one (`-name "$p"`) and is quoted.
 fn find(args: &[Arg]) -> Effect {
     const WRITES: [&str; 5] = ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
+    /// The tests whose next argument is a pattern, a number or a type.
+    const VALUED: [&str; 28] = [
+        "-name",
+        "-iname",
+        "-path",
+        "-ipath",
+        "-wholename",
+        "-iwholename",
+        "-lname",
+        "-ilname",
+        "-regex",
+        "-iregex",
+        "-type",
+        "-xtype",
+        "-newer",
+        "-mtime",
+        "-mmin",
+        "-atime",
+        "-amin",
+        "-ctime",
+        "-cmin",
+        "-size",
+        "-perm",
+        "-user",
+        "-group",
+        "-maxdepth",
+        "-mindepth",
+        "-links",
+        "-samefile",
+        "-regextype",
+    ];
     if args
         .iter()
         .filter_map(Arg::known)
         .any(|text| WRITES.contains(&text))
     {
-        Effect::Changes
-    } else if args.iter().any(|arg| arg.known().is_none()) {
-        Effect::Unknown
-    } else {
-        Effect::ReadsOnly
+        return Effect::Changes;
     }
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some(text) if VALUED.contains(&text) => {
+                if iter.next().is_some_and(|value| !inert(value)) {
+                    return Effect::Unknown;
+                }
+            }
+            Some(_) => {}
+            None => return Effect::Unknown,
+        }
+    }
+    Effect::ReadsOnly
 }
 
 /// The subcommands of git that change the repository or the work tree.
@@ -777,6 +726,107 @@ const GIT_WRITERS: [&str; 22] = [
     "gc",
 ];
 
+/// The subcommand of a `git` command, after the options that only choose
+/// where to look and how to page.
+pub(super) fn git_subcommand(args: &[Arg]) -> Option<&str> {
+    let mut at = 0;
+    loop {
+        match args.get(at)?.known()? {
+            "-C" => at += 2,
+            "--no-pager" | "-P" | "--no-optional-locks" => at += 1,
+            other if other.starts_with('-') => return None,
+            other => return Some(other),
+        }
+    }
+}
+
+/// The options of `git log` and its kin that take a value, which is a
+/// revision, a pattern or a number and not a place.
+const GIT_VALUED: [&str; 21] = [
+    "author",
+    "committer",
+    "grep",
+    "since",
+    "until",
+    "after",
+    "before",
+    "max-count",
+    "skip",
+    "format",
+    "pretty",
+    "date",
+    "diff-filter",
+    "unified",
+    "relative",
+    "encoding",
+    "min-parents",
+    "max-parents",
+    "glob",
+    "branches",
+    "tags",
+];
+
+/// The options of `status`, `log`, `diff`, `show`, `blame`, `rev-parse` and
+/// `ls-files`: `--output` writes the diff to a file, `--ext-diff` runs the
+/// configured program, `--help` starts a viewer. The value of an option that
+/// takes one is read as such, quoted or known. An operand known only when it
+/// runs could be any option, so it is `Unknown`; what is known is a revision
+/// or a pathspec.
+fn git_options(args: &[Arg]) -> Effect {
+    let (mut changes, mut unknown) = (false, false);
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some((head, tail)) = (match arg {
+            Arg::Known(text) => Some((text.as_str(), false)),
+            Arg::Template { text, .. } => Some((
+                &text[..text.find(crate::posix::OPAQUE).unwrap_or(text.len())],
+                true,
+            )),
+            Arg::Unknown(_) | Arg::Input => None,
+        }) else {
+            unknown = true;
+            continue;
+        };
+        if head == "--" && !tail {
+            break;
+        }
+        if let Some(long) = head.strip_prefix("--") {
+            let (name, equals) = long
+                .split_once('=')
+                .map_or((long, false), |(name, _)| (name, true));
+            if tail && !equals {
+                unknown = true;
+            } else if name == "output" {
+                changes = true;
+            } else if matches!(name, "ext-diff" | "help" | "open-files-in-pager") {
+                unknown = true;
+            } else if equals {
+                unknown |= tail && !inert(arg);
+            } else if GIT_VALUED.contains(&name) {
+                unknown |= iter.next().is_some_and(|value| !inert(value));
+            }
+        } else if let Some(bundle) = head.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
+            // `-n 5`, `-S text`, `-G regex`, `-L range`: a value as the next
+            // argument, or attached.
+            let last = bundle.chars().last();
+            if matches!(last, Some('n' | 'S' | 'G' | 'L')) && !tail && bundle.len() == 1 {
+                unknown |= iter.next().is_some_and(|value| !inert(value));
+            } else {
+                unknown |= tail && !inert(arg);
+            }
+        } else {
+            unknown |= tail;
+        }
+    }
+    if changes {
+        Effect::Changes
+    } else if unknown {
+        Effect::Unknown
+    } else {
+        Effect::ReadsOnly
+    }
+}
+
 /// `git`: after the options that only choose where to look and how to page,
 /// the subcommand. `-c` and every other option before it can make git run a
 /// command, so they are not read.
@@ -797,11 +847,9 @@ fn git(args: &[Arg]) -> Effect {
     match subcommand {
         // `--output` writes the diff to a file, `--ext-diff` runs the
         // configured program, `--help` starts a viewer.
-        "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "ls-files" => guarded(
-            rest,
-            &[(None, Some("output"))],
-            &[(None, Some("ext-diff")), (None, Some("help"))],
-        ),
+        "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "ls-files" => {
+            git_options(rest)
+        }
         "branch" => listing(rest, &BRANCH),
         "tag" => listing(rest, &TAG),
         "remote" => match rest {
