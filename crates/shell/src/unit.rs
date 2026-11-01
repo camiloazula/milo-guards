@@ -251,16 +251,27 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// What only `effect` needs of the line, kept only when it is read for
+    /// `effect`, so `classify` costs what it did.
+    pub(crate) kept: Kept,
+}
+
+/// What a line holds that only [`crate::effect`] reads.
+#[derive(Debug, Default)]
+pub(crate) struct Kept {
+    /// Whether the line is read for `effect`: nothing below is kept if not.
+    pub(crate) on: bool,
     /// The variables the line sets or unsets, as written (`PATH`,
-    /// `env:TEMP`): `effect` reads them, since one can change which program
-    /// runs or what it does.
+    /// `env:TEMP`): one can change which program runs or what it does.
     pub(crate) sets: Vec<String>,
     /// The variables of `for` loops that could be one of those: a loop's
     /// own variable is only a name for each of its words.
     pub(crate) loops: Vec<String>,
     /// Whether the line holds something that runs or changes without being
-    /// a unit (a method call in PowerShell), which `effect` cannot judge.
+    /// a unit (a method call in PowerShell), or that cannot be told.
     pub(crate) opaque: bool,
+    /// Whether a wrapper the line uses writes (`time -o FILE`).
+    pub(crate) changes: bool,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -571,18 +582,31 @@ impl Split {
 
     /// Record that the line sets or unsets the variable `name`, for `effect`.
     pub(crate) fn set(&mut self, name: &str) {
-        self.sets.push(name.to_string());
+        if self.kept.on {
+            self.kept.sets.push(name.to_string());
+        }
     }
 
     /// Record the variable of a `for` loop, for `effect`.
     pub(crate) fn loop_variable(&mut self, name: &str) {
-        self.loops.push(name.to_string());
+        if self.kept.on {
+            self.kept.loops.push(name.to_string());
+        }
     }
 
     /// Record that the line runs or changes something that is not a unit,
     /// for `effect`.
     pub(crate) fn opaque(&mut self) {
-        self.opaque = true;
+        self.kept.opaque |= self.kept.on;
+    }
+
+    /// Record what a wrapper's own options do, for `effect`.
+    pub(crate) fn wrapped(&mut self, effect: crate::Effect) {
+        match effect {
+            crate::Effect::ReadsOnly => {}
+            crate::Effect::Changes => self.kept.changes |= self.kept.on,
+            crate::Effect::Unknown => self.opaque(),
+        }
     }
 
     /// Record that the line sets the variable `name`.
@@ -705,8 +729,10 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-pub(crate) fn split(command: &str, shell: Shell) -> Split {
+/// Split `command`; `effect` says it is also read for [`crate::effect`].
+pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
+    split.kept.on = effect;
     script(&mut split, command, shell, 0);
     split.hide_bodies();
     split.settle_later();

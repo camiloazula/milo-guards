@@ -182,7 +182,8 @@ impl milo_guards_core::RuleName for Rule {
     }
 }
 
-/// A line read once: split into units and judged by the rules. [`classify`]
+/// A line read once: split into units and judged by the rules. `effect`
+/// says the split also keeps what only [`effect`] reads. [`classify`]
 /// and [`effect`] each take their answer from it, so they cannot disagree
 /// about what the units are.
 struct Reading {
@@ -192,8 +193,8 @@ struct Reading {
 }
 
 impl Reading {
-    fn new(command: &str, shell: Shell, paths: &Paths) -> Self {
-        let split = unit::split(command, shell);
+    fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
+        let split = unit::split(command, shell, effect);
         let resolver = path::Resolver::new(paths);
         let findings = detect::findings(&split, &resolver);
         Self {
@@ -207,7 +208,7 @@ impl Reading {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let findings = Reading::new(command, shell, paths).findings;
+    let findings = Reading::new(command, shell, paths, false).findings;
     if findings.is_empty() {
         Assessment::Safe
     } else {
@@ -238,6 +239,6 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 /// ```
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
-    let reading = Reading::new(command, shell, paths);
+    let reading = Reading::new(command, shell, paths, true);
     effect::of(&reading.split, &reading.findings, &reading.resolver)
 }

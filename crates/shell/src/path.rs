@@ -161,6 +161,50 @@ impl Resolver {
         within(dir, arg, shell).is_unknown()
     }
 
+    /// Whether `arg`, written from `dir`, names a place on another machine:
+    /// a UNC path (`\\server\share`, `//server/share`,
+    /// `\\?\UNC\server\share`) in PowerShell or cmd. Reading it contacts
+    /// the server, which is offered the user's credentials.
+    ///
+    /// Core reads a share's root only when it holds no wildcard, and takes
+    /// the `?` of a `\\?\` long path for one, so the root is read here: two
+    /// separators start it, and what is not a share is the device namespace
+    /// (`\\.\`, core's) and a long path to a disk (`\\?\C:\x`).
+    pub(crate) fn network(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
+        if shell == Shell::Posix {
+            return false;
+        }
+        let arg = within(dir, arg, shell);
+        let Some(mut text) = arg.known() else {
+            return false;
+        };
+        // `FileSystem::\\server\share`
+        if shell == Shell::PowerShell {
+            if let Some((provider, rest)) = text.split_once("::") {
+                let provider = provider.rsplit('\\').next().unwrap_or(provider);
+                if provider.eq_ignore_ascii_case("filesystem") {
+                    text = rest;
+                }
+            }
+        }
+        let separators = flavour(shell).separators();
+        let mut chars = text.chars();
+        if !(chars.next().is_some_and(|c| separators.contains(&c))
+            && chars.next().is_some_and(|c| separators.contains(&c)))
+            || device(text, shell).is_some()
+        {
+            return false;
+        }
+        let mut parts = text[2..].split(separators);
+        match parts.next() {
+            // `\\?\UNC\server\share` is a share; `\\?\C:\x` is a disk.
+            Some("?") => parts
+                .next()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("unc")),
+            _ => true,
+        }
+    }
+
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
     /// it may match a leading dot (`dotglob`).
     pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {

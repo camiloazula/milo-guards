@@ -5,7 +5,16 @@
 
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
-use milo_guards_shell::{classify, effect, Effect, Paths, Rule, Shell};
+use milo_guards_shell::{classify as judge, effect, Effect, Paths, Rule, Shell};
+
+/// `classify`, and the line's `effect` held to agree with it (see
+/// [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge every
+/// line through this, so each line they name goes through `effect` too.
+pub fn classify(command: &str, shell: Shell, paths: &Paths) -> milo_guards_shell::Assessment {
+    let wrong = disagreements(shell, paths, [command]);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    judge(command, shell, paths)
+}
 
 /// The rules a line breaks, in order.
 pub fn rules(command: &str, shell: Shell, paths: &Paths) -> Vec<Rule> {
@@ -39,7 +48,7 @@ pub fn disagreements<'a>(
 ) -> Vec<String> {
     rows.into_iter()
         .filter_map(|line| {
-            let assessment = classify(line, shell, paths);
+            let assessment = judge(line, shell, paths);
             let flagged: Vec<Rule> = assessment
                 .findings()
                 .iter()

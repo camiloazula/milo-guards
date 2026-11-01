@@ -49,9 +49,10 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         seen.add(rule_effect(finding.rule));
     }
     // What is read but not a unit.
-    seen.unknown |= split.opaque;
-    seen.unknown |= split.sets.iter().any(|name| !harmless(name));
-    seen.unknown |= split.loops.iter().any(|name| !plain_loop(name));
+    seen.unknown |= split.kept.opaque;
+    seen.changes |= split.kept.changes;
+    seen.unknown |= split.kept.sets.iter().any(|name| !harmless(name));
+    seen.unknown |= split.kept.loops.iter().any(|name| !plain_loop(name));
     for write in &split.writes {
         let target = path::within(write.dir.as_ref(), &write.target, write.shell);
         let place = resolver.place(&target, write.shell, write.hidden);
@@ -177,6 +178,9 @@ fn unit_effect(unit: &Unit, resolver: &Resolver) -> Effect {
     let Some(key) = program(unit) else {
         return Effect::Unknown;
     };
+    if reaches_network(unit, resolver) {
+        return Effect::Unknown;
+    }
     // A `cd` the guard follows only moves the line.
     let own = if let Some(target) = moves_to(unit) {
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
@@ -200,6 +204,27 @@ fn unit_effect(unit: &Unit, resolver: &Resolver) -> Effect {
         Effect::ReadsOnly if !known_wrappers => Effect::Unknown,
         other => other,
     }
+}
+
+/// Whether a unit's arguments name somewhere on the network, which reading
+/// contacts: bash's `/dev/tcp/HOST/PORT` and `/dev/udp/HOST/PORT`, and on
+/// Windows a UNC path (`\\server\share`, `//server/share`,
+/// `\\?\UNC\server\share`), which offers the user's credentials to the
+/// server.
+fn reaches_network(unit: &Unit, resolver: &Resolver) -> bool {
+    unit.args.iter().any(|arg| {
+        if unit.shell == Shell::Posix {
+            names_network_device(arg.text())
+        } else {
+            resolver.network(unit.dir.as_ref(), arg, unit.shell)
+        }
+    })
+}
+
+/// Whether `text` names one of bash's network devices.
+pub(crate) fn names_network_device(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("/dev/tcp/") || lower.contains("/dev/udp/")
 }
 
 /// The name the tables know the unit's program by, when the program is
@@ -229,6 +254,213 @@ fn program(unit: &Unit) -> Option<String> {
         return None;
     }
     unit.key()
+}
+
+/// What the options of a wrapper do, `own` being the arguments before the
+/// program it runs. A wrapper is let through by [`WRAPPERS`] only when
+/// every option it is given is one of these: an option the guard does not
+/// know could do anything (`sudo -e` edits a file, `env -P` changes where
+/// programs are found), and `time -o FILE` writes one.
+pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
+    let none = Options::default();
+    let spec = match key {
+        "sudo" | "doas" | "gsudo" | "pkexec" => Options {
+            flags: "nHSk",
+            valued: "ug",
+            longs: &["non-interactive", "set-home", "stdin", "reset-timestamp"],
+            valued_longs: &["user", "group"],
+            ..none
+        },
+        // Assignments are bare words, and are recorded as variables set.
+        "env" => Options {
+            flags: "i0",
+            valued: "uC",
+            longs: &["ignore-environment", "null"],
+            valued_longs: &["unset", "chdir"],
+            ..none
+        },
+        "nice" => Options {
+            flags: "0123456789",
+            valued: "n",
+            valued_longs: &["adjustment"],
+            ..none
+        },
+        "ionice" => Options {
+            flags: "t",
+            valued: "cn",
+            longs: &["ignore"],
+            valued_longs: &["class", "classdata"],
+            ..none
+        },
+        // GNU and BSD `time` write their report to a file with `-o`.
+        "time" => Options {
+            flags: "pvla",
+            valued: "f",
+            writes: "o",
+            longs: &["portability", "verbose", "append"],
+            valued_longs: &["format"],
+            write_longs: &["output"],
+        },
+        "timeout" | "gtimeout" => Options {
+            flags: "v",
+            valued: "sk",
+            longs: &["preserve-status", "foreground", "verbose"],
+            valued_longs: &["signal", "kill-after"],
+            ..none
+        },
+        "stdbuf" => Options {
+            valued: "ioe",
+            valued_longs: &["input", "output", "error"],
+            ..none
+        },
+        "xargs" => Options {
+            flags: "0rtxpo",
+            valued: "nPLsdEeaRSIJil",
+            longs: &[
+                "null",
+                "no-run-if-empty",
+                "verbose",
+                "exit",
+                "open-tty",
+                "interactive",
+                "show-limits",
+            ],
+            valued_longs: &[
+                "max-args",
+                "max-procs",
+                "max-lines",
+                "max-chars",
+                "delimiter",
+                "eof",
+                "arg-file",
+                "replace",
+                "process-slot-var",
+            ],
+            ..none
+        },
+        "command" => Options { flags: "p", ..none },
+        _ => return Effect::ReadsOnly,
+    };
+    options(own, &spec)
+}
+
+/// The options of a wrapper: short letters that stand alone, that take a
+/// value, and that write; long names the same. A value follows an option
+/// as the rest of its bundle (`-n5`), after `=`, or as the next argument.
+#[derive(Default)]
+struct Options {
+    flags: &'static str,
+    valued: &'static str,
+    writes: &'static str,
+    longs: &'static [&'static str],
+    valued_longs: &'static [&'static str],
+    write_longs: &'static [&'static str],
+}
+
+/// `Changes` when a writing option is given, `Unknown` when one the spec
+/// does not name is, or one known only when it runs.
+fn options(own: &[Arg], spec: &Options) -> Effect {
+    let (mut changes, mut unknown) = (false, false);
+    let mut iter = own.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else {
+            unknown = true;
+            continue;
+        };
+        if text == "--" {
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, false), |(name, _)| (name, true));
+            if spec.write_longs.contains(&name) {
+                changes = true;
+                if !value {
+                    iter.next();
+                }
+            } else if spec.valued_longs.contains(&name) {
+                if !value {
+                    iter.next();
+                }
+            } else if !spec.longs.contains(&name) {
+                unknown = true;
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            for (at, letter) in bundle.char_indices() {
+                let value = at + letter.len_utf8() < bundle.len();
+                if spec.writes.contains(letter) {
+                    changes = true;
+                } else if !spec.valued.contains(letter) && !spec.flags.contains(letter) {
+                    unknown = true;
+                    break;
+                }
+                if spec.writes.contains(letter) || spec.valued.contains(letter) {
+                    if !value {
+                        iter.next();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if changes {
+        Effect::Changes
+    } else if unknown {
+        Effect::Unknown
+    } else {
+        Effect::ReadsOnly
+    }
+}
+
+/// The long options of a program that takes any unambiguous prefix of one
+/// (GNU `sort`, `file` and `less` do): one counts as reading only when it is
+/// exactly one of `reads`; a prefix of a writing option is a write, and
+/// anything else is not known, a prefix of a program-running one included.
+/// Names compare without case, as `less` does.
+fn abbreviated(args: &[Arg], reads: &[&str], writes: &[&str]) -> Effect {
+    let (mut changes, mut unknown) = (false, false);
+    for text in args.iter().filter_map(Arg::known) {
+        if text == "--" {
+            break;
+        }
+        let Some(long) = text.strip_prefix("--") else {
+            continue;
+        };
+        let name = long.split('=').next().unwrap_or_default();
+        let lower = name.to_ascii_lowercase();
+        let prefix_of = |full: &&str| !lower.is_empty() && full.starts_with(&lower);
+        if reads.contains(&name) {
+        } else if writes.iter().any(prefix_of) {
+            changes = true;
+        } else {
+            // Any other option, a program-running one (`--compress-program`)
+            // by prefix included, is not one the guard has named.
+            unknown = true;
+        }
+    }
+    if changes {
+        Effect::Changes
+    } else if unknown {
+        Effect::Unknown
+    } else {
+        Effect::ReadsOnly
+    }
+}
+
+/// Both the long options by prefix and the short ones for a program.
+fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Effect {
+    let short = shorts
+        .iter()
+        .any(|&letter| has_flag(args, Some(letter), None));
+    let long = abbreviated(args, reads, writes);
+    if short || long == Effect::Changes {
+        Effect::Changes
+    } else if long == Effect::Unknown || args.iter().any(|arg| arg.known().is_none()) {
+        Effect::Unknown
+    } else {
+        Effect::ReadsOnly
+    }
 }
 
 /// Programs that change the machine whatever their flags: the files, the
@@ -282,23 +514,68 @@ fn posix(key: &str, unit: &Unit) -> Effect {
             Some(None) => Effect::Unknown,
             _ => Effect::ReadsOnly,
         },
-        "sort" => guarded(
+        // GNU `sort`, `file` and `less` take any unambiguous prefix of a
+        // long option, so only the long options named here read (see
+        // [`abbreviated`]). `sort -o`/`--output` writes and
+        // `--compress-program` runs a program.
+        "sort" => gnu(
             args,
-            &[(Some('o'), Some("output"))],
-            &[(None, Some("compress-program"))],
+            &['o'],
+            &[
+                "reverse",
+                "unique",
+                "numeric-sort",
+                "general-numeric-sort",
+                "human-numeric-sort",
+                "version-sort",
+                "month-sort",
+                "ignore-case",
+                "ignore-leading-blanks",
+                "dictionary-order",
+                "stable",
+                "check",
+                "key",
+                "field-separator",
+            ],
+            &["output"],
         ),
         // `file -C` compiles a magic file.
-        "file" => guarded(args, &[(Some('C'), Some("compile"))], &[]),
+        "file" => gnu(
+            args,
+            &['C'],
+            &[
+                "brief",
+                "mime",
+                "mime-type",
+                "mime-encoding",
+                "dereference",
+                "no-dereference",
+                "keep-going",
+            ],
+            &["compile"],
+        ),
         // `-o` and `-O` log what is read to a file, and an argument that
         // starts with `+` is a command (`+!rm x`).
         "less" => {
             let command = args
                 .iter()
                 .any(|arg| arg.known().is_some_and(|text| text.starts_with('+')));
-            match guarded(
+            match gnu(
                 args,
-                &[(Some('o'), Some("log-file")), (Some('O'), Some("LOG-FILE"))],
-                &[],
+                &['o', 'O'],
+                &[
+                    "quit-if-one-screen",
+                    "RAW-CONTROL-CHARS",
+                    "chop-long-lines",
+                    "LINE-NUMBERS",
+                    "line-numbers",
+                    "ignore-case",
+                    "IGNORE-CASE",
+                    "no-init",
+                    "quit-at-eof",
+                    "hilite-search",
+                ],
+                &["log-file"],
             ) {
                 Effect::ReadsOnly if command => Effect::Unknown,
                 other => other,
@@ -315,11 +592,26 @@ fn posix(key: &str, unit: &Unit) -> Effect {
                 (None, Some("hostname-bin")),
             ],
         ),
-        "fd" => guarded(
-            args,
-            &[],
-            &[(Some('x'), Some("exec")), (Some('X'), Some("exec-batch"))],
-        ),
+        // A prefix of `--exec` or `--exec-batch` is read as one too, in case
+        // the program takes abbreviations.
+        "fd" => {
+            let abbreviated = args.iter().filter_map(Arg::known).any(|text| {
+                let name = text
+                    .strip_prefix("--")
+                    .and_then(|long| long.split('=').next())
+                    .unwrap_or_default();
+                !name.is_empty() && ("exec".starts_with(name) || "exec-batch".starts_with(name))
+            });
+            if abbreviated {
+                Effect::Unknown
+            } else {
+                guarded(
+                    args,
+                    &[],
+                    &[(Some('x'), Some("exec")), (Some('X'), Some("exec-batch"))],
+                )
+            }
+        }
         "find" => find(args),
         "git" => git(args),
         key if WRITERS.contains(&key) || TOOLS.contains(&key) => Effect::Changes,

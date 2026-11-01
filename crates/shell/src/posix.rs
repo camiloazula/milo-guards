@@ -17,7 +17,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in assigned(tree.root_node(), text) {
         split.reassign(&name);
     }
-    environment(split, tree.root_node(), text);
+    if split.kept.on {
+        environment(split, tree.root_node(), text);
+    }
     Walker {
         source: text,
         depth,
@@ -377,7 +379,7 @@ impl Walker<'_> {
                 let backtick = children.iter().any(|child| {
                     child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
                 });
-                if backtick && !quoted {
+                if backtick && !quoted && self.split.kept.on {
                     self.split.opaque();
                 }
                 self.children(node, stage, level);
@@ -537,6 +539,11 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        // bash opens `/dev/tcp/HOST/PORT` itself: a read from it is a
+        // connection.
+        if crate::effect::names_network_device(target.text()) {
+            self.split.opaque();
+        }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
             Some(">&" | "&>&") => !target

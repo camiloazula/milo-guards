@@ -402,11 +402,15 @@ never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly` and `Elevated`.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `xargs`, `command`, `builtin`, and the `find` a `-exec`
-makes). `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and
-`screen` start sessions: those wrap a reader into `Unknown`. A shell started
-with a script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program
-the table does not know, so it is `Unknown` even when the script it holds only
+`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
+`-exec` makes), and only with options the guard knows: any other option
+makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
+`sudo -s` and `-i` start a shell, `env -P` changes where programs are found).
+`time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
+`flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
+start sessions: those wrap a reader into `Unknown`. A shell started with a
+script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
+table does not know, so it is `Unknown` even when the script it holds only
 reads.
 
 ### The readers
@@ -422,6 +426,14 @@ when it runs, is `Unknown`.
 | PowerShell | `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Item`, `Get-Location`, `Test-Path`, `Resolve-Path`, `Write-Output`, `Write-Host`, `Where-Object`, `Select-Object`, `Sort-Object`, `Measure-Object` and the aliases `cat`, `gc`, `type`, `sls`, `echo`, `pwd` (and `ls`, `dir`, `gci`, which `classify` already reads as `Get-ChildItem`); `git`; `Set-Location` when followed. |
 | cmd | `dir`, `type`, `findstr`, `echo`; `git`; `cd` when followed. |
 
+- GNU `sort`, `file` and `less` take any unambiguous prefix of a long option
+  (`sort --outp=x` is `--output=x`, `file --comp` is `--compile`, `less
+  --log=x` is `--log-file=x`). So a long option of theirs reads only when it
+  is exactly one the guard names (`sort --reverse`, `file --brief`, `less
+  --quit-if-one-screen`); a prefix of the option that writes is `Changes`
+  (names compare without case, as `less` does), and any other is `Unknown`.
+  The other readers have no long option that writes or runs a program, and `git`
+  and `rg` refuse abbreviations.
 - `sort -o` and `sort --output` write (`Changes`); `--compress-program` runs a
   program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, and
   an argument that starts with `+` is a `less` command. `rg --pre`, `rg
@@ -441,7 +453,11 @@ when it runs, is `Unknown`.
   `Changes`, the rest `Unknown`. Only `-C`, `--no-pager`, `-P` and
   `--no-optional-locks` may come before the subcommand: `-c` and the others
   can make git run a command. What the repository's own config makes git run
-  (`core.fsmonitor`, a pager, an external diff) is not read.
+  is not read, and a caller should know it: `diff.external` and textconv
+  drivers (which `diff`, `show`, `log -p` and `blame` run on the files they
+  show), `core.fsmonitor` (which `status` runs), and the lazy fetches of a
+  partial clone (which any of them may make over the network). Each runs a
+  program or touches the network from configuration the guard cannot see.
 - Package managers and build tools (`cargo`, `npm`, `pip`, `make`, `brew`,
   `dotnet`, ...) are `Changes` whatever their subcommand.
 - A program named with a folder is the program the shell finds by that name
@@ -459,6 +475,13 @@ when it runs, is `Unknown`.
   no unit, and the rules know only some of them: it is `Unknown`. So is a
   backtick substitution in an unquoted here-document, which the grammar does
   not read and the shell runs.
+- A read that contacts the network is `Unknown`: an argument naming bash's
+  `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, or a redirect from one
+  (`cat < /dev/tcp/evil.example/80`); and in PowerShell and cmd a UNC path
+  (`\\server\share`, `//server/share`, `\\?\UNC\server\share`), which
+  offers the user's credentials to the server. A path to a disk (`\\?\C:\x`)
+  and the device namespace (`\\.\`) are not. A path known only when it runs
+  (`cat $f`) may name any of these and is not read.
 - Not read, so the caller has to account for them: an alias or function
   defined outside the line, the `PATH` the shell runs with, and an option set
   by a start-up file. A name in the table is taken to be the program that
@@ -480,9 +503,11 @@ lines and a list of risky lines with the rule each must break. A new rule
 comes with rows of both kinds.
 
 `tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
-row of every other table also goes through `effect` (the shared `check` does
-it), and a row `classify` finds risky for anything but an elevation must not be
-`ReadsOnly`.
+line of `posix.rs` and `windows.rs` also goes through `effect`: the shared
+`check` does it for each row of a table, and the tests that name a finding's
+reason judge their lines with the shared `classify` of `tests/common`, which
+does it too. A line `classify` finds risky for anything but an elevation must
+not be `ReadsOnly`.
 
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
