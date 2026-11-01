@@ -3184,3 +3184,64 @@ fn an_inline_read_of_a_path_that_starts_in_a_key_folder_is_read_secret() {
         &[("cat /home/me/.ssh/$n", Rule::ReadSecret)],
     );
 }
+
+// The merge of the package runners and the subcommands of `bun` and `deno`
+// with the inline reader: code a runner hands on is read too.
+
+#[test]
+fn code_given_inline_through_a_runner_or_a_bun_option_is_read() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "npx node -e 'console.log(1)'",
+            "bun x node -e 'console.log(1)'",
+            "bun --cwd app -e 'console.log(1)'",
+            "bun -F x run -e 'console.log(1)'",
+            "uvx python -c 'print(1)'",
+            "deno eval 'console.log(1)'",
+            "python3 - <<'PY'\nprint(1)\nPY",
+        ],
+        &[
+            (
+                r#"npx node -e "require('fs').rmSync('/home/me',{recursive:true})""#,
+                Rule::Delete,
+            ),
+            (
+                r#"bun x node -e "require('fs').rmSync('/home/me',{recursive:true})""#,
+                Rule::Delete,
+            ),
+            (
+                r#"bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})""#,
+                Rule::Delete,
+            ),
+            (
+                r#"uvx python -c "import shutil; shutil.rmtree('/home/me')""#,
+                Rule::Delete,
+            ),
+            (
+                r#"sudo deno eval "Deno.removeSync('/home/me',{recursive:true})""#,
+                Rule::Delete,
+            ),
+            // The REPL reads its input under a POSIX shell.
+            ("deno repl", Rule::Unknown),
+            ("bun repl", Rule::Unknown),
+            (
+                "python3 - <<'PY'\nimport shutil; shutil.rmtree('/home/me')\nPY",
+                Rule::Delete,
+            ),
+        ],
+    );
+    // Under cmd and PowerShell the code is not read: `unknown`.
+    for shell in [Shell::Cmd, Shell::PowerShell] {
+        check(
+            shell,
+            &windows(),
+            &["bun --version", "deno --version"],
+            &[
+                (r#"bun -e "console.log(1)""#, Rule::Unknown),
+                (r#"deno eval "console.log(1)""#, Rule::Unknown),
+            ],
+        );
+    }
+}

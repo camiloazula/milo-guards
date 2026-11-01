@@ -63,7 +63,113 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root.
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
+`noglob -- rm` runs a program named `--`), and `coproc`.
+
+**Package runners** come off too, with each runner's own options skipped:
+`npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
+`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
+program the runner names is judged, with a version after the package taken
+off (`npx rimraf@5`). Where the runner names the package apart from the
+program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
+after the options. An option that takes a value is skipped with it, because
+one that is missed would turn its value into the program, so each table is
+the runner's own list and not a guess: npm's is every setting of its config
+definitions that is not a boolean with its shorthands (`npm -C dir`, `npx
+--editor vim`, `npm exec --logs-dir x`), read as npm reads them (an
+unambiguous start of a name is the option, `--ed vim`; `npm exec` takes a
+`true` or `false` after a boolean; `npx` first puts its own `--` before the
+program, so a word it took for a value that npm did not is the program);
+pnpm's is its own string and number settings, `exec`'s `--resume-from`,
+`dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
+the options of `yarn --help` that name a folder, a host, a number or a type;
+bun's is the `--option=<val>` options of `bun --help` that also take the next
+word (not `-c`, `--config` and `--inspect`, whose value only follows `=`);
+bun itself takes the first word that does not start with a dash as its
+subcommand, before any option reads a value (`bun -c rimraf a` runs `rimraf`,
+`bun -F x echo` runs `bunx echo`, `bun --title repl` opens the REPL), so that
+word is read too, and when it is `x`, `run`, `exec`, `repl` or a delete tool
+both readings are judged and the riskier one counts (the two share the wrappers a line may have and at most 32 such forks are made in a line, past which it is unreadable, so a line that forks at every `bun` is too wrapped like any other, not slow); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
+options real uv still takes a value for (`--python-preference`,
+`--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
+(`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
+`--` for themselves, before the program or after it (`npm exec sh -- -c
+'cmd'` runs `sh -c 'cmd'`); `npx` hands it on. `npx -c`, `npm exec -c` and
+`pnpm -c exec` (the option may stand before `exec` too) run a shell command,
+and so does `yarn exec`, whose arguments are a script. npm's `-c` is found as
+npm reads it, among every option before the program, also before `exec`: at
+the end of a bundle (`npx -yc 'cmd'`), spelt `--c`, given its value after `=`
+(`npx -c='cmd'`), or put before the subcommand (`npm -c 'cmd' exec`). A bundle
+of any length is read to its end, never given up on as the program. Each is
+read as a script: in cmd where the line is for Windows (npm and pnpm start the system
+shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
+`yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete tool by its
+name (`yarn run rimraf dist`). `pnpm NAME` runs the script NAME of the project
+and, with none by that name, the program (pnpm: "will execute the command as a
+shell script"), so it is read as `pnpm exec NAME` unless NAME is a command of
+pnpm, its alias, or an npm command it passes on (`pnpm rm lodash` removes a
+dependency): `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+`pnpm recursive exec rm -rf ~` is read as `pnpm -r exec rm -rf ~`; `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
+the program, `pnpm rimraf dist` is a delete tool, and an unknown script name
+(`pnpm lint`, `pnpm dev`, `pnpm build`) is safe. `bun run name`
+also starts any program on the path when it is no script (`bun run rm -rf
+x` deletes): a word after `bun run` and its options that is no file (no
+folder in it, no extension) is judged as the program, so `bun run build` is
+safe as an unknown name and `bun run sh -c 'rm -rf ~'` is read like `sh -c`.
+Bare `bun name` runs only scripts and bins of the project, so only a delete
+tool is read there. The delete tools that come as packages (`rimraf`, `del`
+and `del-cli`, `premove`, `rmrf`) delete their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
+are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
+run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
+guard knows. What a runner starts is a program, never a builtin of the shell,
+so `npx cd src` does not move the rest of the line to `src`.
+
+`bun` and `deno` are interpreters. The code given to `bun -e`, `--eval`, `-p`,
+`--print` (also in a bundle, `bun -pe 'code'`, or with the code attached, `bun
+-e'code'`) and `deno eval` is read and judged like the code of `node -e` (see
+[Inline code](#inline-code)); in cmd and PowerShell lines it is not read, and
+comes back as `Unknown`. `bun repl`, `deno repl`, a bare `deno` and a script
+read from the input (`bun run -`, `deno run -`, `uv run -`) run code the guard
+does not read: `Unknown`, or `RunDownloaded` after a download; in cmd and
+PowerShell lines a REPL reads its input only when something is piped into it
+(`echo x | deno`), and in cmd lines so does a script read from the input
+(`type x.js | bun run -`). The options before the
+subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
+inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
+-c`. `bun run file`, `deno run file` and `bun file` are judged like `node
+file`, so a script the same line writes is not read, also after options (`bun
+--hot run file`) and after deno's `watch`, which is `run --hmr`. So is `uv run
+file.py`, and `uv run --script file`: `uv` runs Python on the file, like
+`python file`. `deno run npm:pkg` runs the package's program like a runner,
+and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
+is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+these runner parts of `bun`, `deno` and `dx` are read as in the other shells
+(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
+`dx rimraf C:\`); what they read of an interpreter (a script from the input
+that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
+there. `deno -v` and `deno --help=full` only
+print. The options of `deno` that take their value
+only after `=` (`--reload`, `--env-file`) do not take the next word.
+
+`coproc` is read as the shells read it. A simple command takes no name, so the
+first word is the program (`coproc NAME cat` runs `NAME`); a group may take
+one (`coproc NAME { … }`). The program is the first word past the name, the
+`{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
+both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
+-rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
+the `rm`. The grammar has no `coproc`, so three forms are not read, and are
+risky:
+
+- A loop, conditional, `case` or function after it, or inside its group
+  (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
+  into pieces whose body hides behind the program `do`: `Unreadable`.
+- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
+  `coproc > out rm -rf ~`): the grammar takes the words after its target for
+  more targets, so the command is not among the arguments: `Unreadable`.
+- A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
+  grammar reads `{rm` as a program of that name: `Unreadable`.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -189,6 +295,55 @@ nested script in a process of its own does not reach the rest of the line;
 `eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
+so it is read as written, before the path is joined to where a `cd` moved:
+`cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
+overwrite of a file only known when it runs. `$null` is the device only in
+PowerShell, and only as the null value itself. In a POSIX shell it is the variable
+`null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
+is a file name like any other, joined to where the `cd` went.
+
+In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
+place is only known when it runs.
+
+In PowerShell a bare `NUL` or `CON` is the device only on the file system.
+After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
+a place only known when it runs (it may be a registry key), it is an ordinary
+item name there, so deleting, moving or changing it (`Remove-Item NUL`,
+`Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
+that name, and a bare name is joined to where the `cd` went like any other.
+Writes by a file system path (`> NUL`, `Out-File NUL`, `Tee-Object NUL`,
+`Invoke-WebRequest -OutFile NUL`) fail in such a provider and stay harmless.
+`Set-Content`, `Add-Content` and `Clear-Content` do not: the `Env:`,
+`Variable:`, `Function:` and `Alias:` providers take content, so
+`cd Function:; Set-Content NUL ...; NUL` defines and runs a function named `NUL`,
+and they are judged as an item of the folder like a delete. So is the
+destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
+A `$null` destination of those is no destination, so the item goes to the
+folder the line is in. So does a `$null` or missing path of `New-Item` (with
+`-Name` the path is optional). With `-Name` the item is `Path\Name`, judged as
+that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
+is never the item itself. `$null` is the null value in any provider.
+
+In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
+drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
+system only when the folder before it is (a disk, or no earlier `cd` at all).
+When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
+so is the rooted path. `~` is the home of the provider the folder is in, and
+only the file system has one: after a `cd` to the registry, `Function:`, a
+provider path, or a place only known when it runs, `cd ~` fails and the line
+stays where it was, so a path starting with `~` is only known when it runs, and
+so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
+first stage of its pipeline gets its path from the pipeline, not from home. A
+drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+name before a colon, other than one letter, is a drive that is not a disk. Once
+the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
+even after the `cd` (a function body, a loop), a single letter in a `cd`
+(`cd X:`) may be that drive and not a disk, so the place is only known when it
+runs. Without one, a letter is a disk.
+After a `cd` to a known place on the file system, the device is read as
+written for every command. cmd and POSIX have no other provider.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
@@ -238,12 +393,21 @@ folder a `cd` moved to.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
   `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
   them in this shell. They count when the unit is reached directly or through
-  `command`, `builtin`, `time`, `!` or `eval`. Behind `env`, `nohup`,
-  `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
-  their own and change nothing. In a pipeline, after `&`, on the right of `&&`
-  or `||`, in an `if`, `case`, loop or function body, they change nothing
-  either: the line may not run them, or runs them in a subshell, so the rest
-  stays judged with the option on.
+  `command`, `builtin`, `time`, `!` or `eval`, except that zsh's `command` does
+  not count for zsh's flag (it looks up programs only) and `time` counts only
+  in front (later it is the program of that name). zsh's `noglob`, `nocorrect` and
+  `-` count for zsh's flag only: in bash and sh they are not found and the
+  builtin after them never runs, so `shopt -s dotglob; noglob shopt -u dotglob;
+  rm -rf *git` is still risky and `setopt globdots; noglob unsetopt globdots;
+  rm -rf *git` is not. `nocorrect` is a reserved word in zsh, so like `time` it
+  counts only in front, alone or after a leading `time` or `nocorrect`; after
+  `noglob`, `-` or `builtin` zsh looks it up as a command and fails, so
+  `setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git` is still
+  risky. Behind `env`, `nohup`, `timeout`, `nice`, `stdbuf`,
+  `sudo` or `find -exec` they run in a process of their own and change nothing.
+  In a pipeline, after `&`, on the right of `&&` or `||`, in an `if`, `case`,
+  loop or function body, they change nothing either: the line may not run them,
+  or runs them in a subshell, so the rest stays judged with the option on.
 - **Where it reaches.** It stays on for the rest of the line. A subshell,
   `$(…)`, and a script in a process of its own (`bash -c '…'`) give it back as
   it was: an option set inside `bash -c 'shopt -s dotglob'` does not reach the
@@ -282,25 +446,270 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
-| `run_downloaded` | Runs a script it downloads. |
+| `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
-| `stop_system` | Shuts the computer down, restarts it, or stops every process. |
+| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
+| `drop_data` | Deletes data in a database. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
 The wire names never change. A reason is a few plain words that follow from
 the rule: `deletes your home directory`, `runs code the guard does not read`.
+
+### Stopping processes by name
+
+`killall`, `pkill`, `taskkill` and `Stop-Process` (also `kill`, `spps`) are
+judged one way. Stopping a process by a plain name is everyday work (your own
+dev server, `killall Finder`) and is safe: `killall node` and `pkill node` are
+the same line. It is `stop_system` when the line stops more than a name:
+
+- **Every process.** A pattern that matches every process: `pkill -f .`,
+  `pkill ''`, `pkill '.*'`, `killall -r .`, `Stop-Process -Name *`,
+  `taskkill /IM *`. `pkill` and `killall -r` read a regular expression, and the
+  guard asks whether every match must hold a letter or digit the expression
+  spells out; `a*`, `(a|)`, `^` and `\w` do not. An expression it cannot read
+  (an unclosed `(` or `[`) counts as matching everything. `Stop-Process -Name`
+  and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
+  after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
+  process but the ones named) are always `stop_system`.
+- **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
+  `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
+  `taskkill /FI "USERNAME eq me"`, given no name. With a name
+  (`pkill -u me node`) it is the name that is judged. `killall -c name` is a
+  name too, judged as the operands are (`killall -c loginwindow`,
+  `killall -m -c .`).
+- **Every process a selection picks.** `pkill` given no pattern stops whatever
+  its selection picks: `-P`/`--parent`, `-s`/`--session` and `-g`/`--pgroup` of
+  0 or 1, or of a value only known when it runs (`pkill -P 1`, the children of
+  `launchd` or `init`, which is every app and daemon; `pkill -s 0`, the
+  session of the shell that runs the line, which is the terminal's processes;
+  `pkill -P "$(pgrep -x launchd)"`), and `-O`/`--older`, `-r`/`--runstates`,
+  `--cgroup`, `--ns`, `--nslist`, `--env`, `-t`/`--terminal` with any value
+  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$` (the shell's own
+  children, read by its source text), `pkill -F pids.txt`, `pkill -s 1234` and
+  `pkill -P 1 node` (the name is judged) are not. A value an option takes is
+  never a pattern (`pkill -q 1 -u me`, `-r R`).
+- **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
+  `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
+  "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
+  `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
+  stops the programs that hang, are read; with `/IM`, `/PID` or an
+  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
+  names are judged.
+- **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
+  `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
+  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `.exe` or a folder in front (`killall /sbin/init` picks the process by its
+  file, so the last part of the name is the name). `pkill` and `killall
+  -r`/`-m` search their regular expression in the name, so it is compared two
+  ways, per alternative: whole, without its anchors and brackets (`^init$`,
+  `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
+  can match a system name at all. A name is searched for in the system name:
+  `pkill login`, `pkill launch` and `pkill Window` stop `loginwindow`,
+  `launchd` and `WindowServer`. A leading `^` wants the name to start with it,
+  a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
+  server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
+  -I`). The expression is read with its syntax, never skipped for having
+  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
+  and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
+  (an escape, a collating element, `\b`, a back reference) it is read as
+  matching more, so `pkill '[l]aunchd'`, `pkill 'log.n'`, `pkill 'login(window)?'`,
+  `pkill 'a+'` and `pkill '[[:alpha:]]x'` are `stop_system` while `pkill
+  '[n]ode'` and `pkill -f 'node.*server'` are not. Without `-f` a `/` ends
+  a folder, so what follows it is the name (`pkill '/sbin/[i]nit'`); `-f`
+  matches the whole command line, so there the pattern is also searched, `/`
+  and all, in the usual command lines of the system processes
+  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
+  the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
+  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
+  two with (its jobs for them run `loginwindow console` and `WindowServer
+  -daemon`), and a match that is still going at the end of the line and can
+  go on into a space counts, since any further arguments are not known:
+  `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
+  -f -- -daemon`, `pkill -f 'WindowServer -daemon'` and `pkill -f 'systemd
+  --user'` are `stop_system` while `pkill -f 'node server.js'`, `pkill -f
+  vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
+  not. `killall` without
+  `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
+  matches one is the same (`Stop-Process -Name s*`).
+- **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
+  `xargs pkill`.
+- **A listing into `Stop-Process`.** `Stop-Process` is read by its own
+  parameters: `-Name` and its alias `-ProcessName`, `-Id`, `-InputObject`,
+  `-Force`, `-PassThru`, `-WhatIf`, `-Confirm` and the common ones, each
+  written in full or as any prefix that is not another's (`-N`, `-Proc`).
+  With no `-Name`, `-Id` or `-InputObject`, it stops what the first stage
+  lists: `Get-Process node | Stop-Process` is the name `node`, and any other
+  first stage (`$procs | Stop-Process`) is known only when it runs. A
+  `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
+  `Stop-Process -Id` does, and is safe; one given no name lists every
+  process. A stage between the listing and `Stop-Process` is never "every
+  process": `Where-Object` is read when it only compares `Name` or
+  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
+  `-Property Name`) keep some of the same processes; a `Select-Object` given
+  `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
+  or a script block) hands on other objects, such as a process's parent, and
+  is any other stage. Any other filter is "picked by a filter only known when
+  it runs", and any other stage, which may hand on other processes, is known
+  only when it runs. What follows a named listing, when it only picks from it,
+  can only narrow it, so the names are judged.
+  The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
+  `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
+  `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
+  of a pipeline that starts with `Get-Process`. Any other `-Id` or
+  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
+  processes the guard does not read and is safe. Only a member that is the
+  process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
+  any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
+  as `-ExpandProperty` does, and is any other stage: `Stop-Process
+  -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
+  an app's usual parent, and is `stop_system` as `((Get-Process
+  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. The
+  same holds for `$_` in a `ForEach-Object` block after a `Get-Process`:
+  `.Id`, `.Name` and `.ProcessName` pass the listing on, and any other
+  member (`$_.Parent`, `$_.Parent.Id`, `$_.Threads`) is "stops processes only
+  known when it runs". A wrapped item is read through what only wraps it,
+  parentheses, `$( )`, `@( )`, a cast (`[int]`) and a string that is one
+  expansion (`"$($_.Id)"`): `Stop-Process ($_)` and `-Id ([int]$_.Id)` are
+  judged like the pipeline (every process after a bare `Get-Process`, the
+  name after `Get-Process node`); a value that does anything else with `$_`
+  (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
+  processes only known when it runs". After a first stage that is not a
+  `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
+  `$_` is not a process and the value is read as any other `-Id`. A
+  `Get-Process` anywhere else in the arguments, inside another command or a
+  block, is read as one such listing, once, however many there are: the
+  arguments are read in one pass that never goes below a command, so the time
+  is the line's length however deeply they nest.
+- **A fork bomb.** A function that calls itself in the background or as one
+  side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
+  `stop_system` however it is called, even when the line only defines it, and
+  however the call is written: `\f`, `"f"` and `'f'` call the function `f`, as
+  `\rm` is read as `rm`. A
+  function defined inside another is judged on its own, by its own name, and
+  its commands are not also read as the outer one's. A bomb split over two
+  functions that call each other is not read.
+
+`killall`'s and `pkill`'s options are read as they read them: bundled letters,
+`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,
+`-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
+and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
+(`--pa 1` is `--parent 1`; a prefix that fits several is read as the
+riskier). Options written after the first name are read both ways, because
+the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
+and `pkill` stop reading options at the first name, so every later word is a
+name too, a `-u` and its user included. Every word after the first name is
+therefore also a name, with the value an option takes, and the options are
+read as well, so the riskier reading counts: `killall node -u loginwindow`,
+`killall node -s WindowServer` and `pkill node -u launchd` are `stop_system`
+(the names `loginwindow`, `WindowServer` and `launchd`), while `killall node -s
+HUP` and `pkill vite -9` are not. `pgrep` stops nothing and is safe.
+
+A caller that used to stop on `killall node` stops seeing it: it was
+`stop_system` ("stops every process with a name") and is now safe.
+
+### Unpacking archives
+
+An archive unpacked into a folder writes into that folder, and the folder is
+judged as the destination of `cp` is, by where it resolves (see Paths). With
+no folder given, it is the working directory, as moved by a `cd`. The paths
+stored inside the archive are not in the line and are not read.
+
+| Program | Folder | Writes nothing |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `-C dir`, `-Cdir`, `--directory dir`, `--directory=dir`, `--one-top-level=dir` (every one given); an old-style first argument (`tar xf x.tar -C dir`) is read too | no `-x`/`--extract`/`--get`; `-t`, `-c`, `-r`, `-u`, `-A`, `-d`; `-O`/`--to-stdout` |
+| `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
+| `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
+| `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+
+`tar` takes a long option written as a unique prefix, which the guard reads
+for the modes and `--to-stdout` as well as `--directory`: `--ext` and `--extr`
+are `--extract` (at least three letters; `--to-s` is `--to-stdout`). A tar line
+whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
+-C ~`) is judged as if it extracted, unless a mode letter or long mode is
+read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
+
+The reasons say `unpacks into your home directory`, `unpacks into a folder
+outside the workspace`, `unpacks into a folder only known when it runs`. A
+folder that is the workspace, inside it or a temporary file is not risky.
+
+### Archiving that removes what it archives
+
+Three options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+members named on the line are judged as the operands of `rm` are (see
+Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
+your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
+and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
+Packing without the option is no `delete`: `tar -cf x.tar src` is safe. What
+it packs is still read, so `tar -cf x.tar ~` is `read_secret` (it reads your
+home directory, and the keys in it).
+
+| Program | Option | Members |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
+
+A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
+--remove-files`) is judged as if it packed. A `tar` option that takes a value
+in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
+a member. An operand only known when it runs is a member known only when it
+runs; with `zip`, so is a first operand that is, since it may be the archive
+and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
+the files the stage before it lists. With `7z`, an argument whose readable
+start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
+(`$OPTS`) may be a switch too, so the default `*` stays among the members when
+the operands that are certain are only the command and the archive. With
+`zip`, an argument only known when it runs inside a `-x` or `-i` list may
+start with `-` or be `@`, which end the list, so the names after it are
+operands again.
+
+`7z` matches a wildcard itself, quoted or not, and a name that starts with a
+dot is among the matches. `zip` does so on Windows; on Unix it matches
+wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
+names inside the archive, so there `zip -m x.zip 'a*'` and
+`zip -mr x.zip '*git'` delete nothing. The guard judges the members of `zip` and `7z` alike, with the wildcards matching names that start
+with a dot, whatever the shell. For `zip` on Unix this is a cautious choice,
+not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
+`.git`, and so is the unquoted `zip -mr x.zip *git`.
+
+`tar` is given the names the shell expands, so `tar -cf x.tar *git
+--remove-files` leaves `.git` as `rm -rf *git` does.
+
+### Git tags and submodules
+
+`git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
+has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
+is `git_discard` too: it throws away the submodule's changes; without `-f`
+git refuses when there are some. Deleting a tag on a remote (`git push
+--delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+### Running a download through `Invoke-Expression`
+
+`iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
+`Invoke-Expression` (`iex`) is given a download when one of its arguments holds
+a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
+`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+(`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
+(`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
+bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
+`unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
+`unknown`.
 
 ### The rule enum is exhaustive on purpose
 
@@ -353,9 +762,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device. In a longer PowerShell word `$null` is
-  the empty string: `$null\Windows` is `\Windows`, a folder at the top of the
-  disk.
+- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).
@@ -1049,10 +1456,12 @@ A line is never safe because the guard gave up on it. These come back risky:
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
   `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
-  from a file it is redirected from. Python and JavaScript given inline are
-  read, and what they do is judged (see [Inline code](#inline-code)); what
-  cannot be followed in them is risky too.
+  from a file it is redirected from. Python and JavaScript given inline
+  (`python3 -c`, `node -e`, `bun -e`, `deno eval`) are read, and what they do
+  is judged (see [Inline code](#inline-code)); what cannot be followed in
+  them is risky too.
 - A .NET call that deletes, writes or starts a program.
+- A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
@@ -1182,6 +1591,282 @@ when it runs (`curl -d @$F`); a connection opened with `exec 3<>/dev/tcp/…`;
 a key with an unusual name); and a `find -exec` whose filter picks secrets by a
 name the guard does not know (`-name '*.pem'`).
 
+## Data in a database
+
+`drop_data` is for a statement a database client is given that drops,
+truncates or empties something. The guard sees files and disks, and a database
+is neither: `psql -c 'DROP TABLE users'` touches no path the line names.
+Reading, inserting, creating and a statement that picks its rows are safe.
+
+**Where the statement is.** Only text on the line itself is read: an option, an
+operand, a here-document or here-string fed to the client, or the text a
+piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
+says. A `cat` reads its input, and passes the text fed to it on, when it has
+no file operand, or has `-` or `/dev/stdin` among its operands, whatever its
+options (`cat - <<< 'DROP TABLE t' | psql`, `cat schema.sql - <<EOF | psql`,
+`cat -s <<EOF | psql`); a `cat` of files only ignores its input. An operand
+only known when it runs may be `-`. The grammar leaves a lone `-` that is the
+last word before a here-document out of its tree, so the guard puts it back.
+On PowerShell a value that is piped
+on says its text as `Write-Output` would: a string or a here-string
+(`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
+variable, `(Get-Content q.sql)`, `$x.y`, `"a" + "b"`) says what is only known
+when it runs, so it is `unknown`. In a double-quoted string or a
+double-quoted here-string a backtick makes the character PowerShell gives it
+(`` `n `` and `` `r `` a line break, `` `t `` a tab, `` `0 ``, `` `a ``, `` `b ``,
+`` `e ``, `` `f ``, `` `v `` and `` `u{…} `` the others), so `"SELECT 1;`nDROP
+TABLE t"` is two statements and `iex @"` … `"@` runs the lines that a
+backtick breaks. A `` `u{…} `` that makes a character PowerShell reads as more
+than a character when the text runs as code (a space that is not an ASCII one,
+such as U+00A0 or U+3000, which splits words; a dash from U+2013 to U+2015; a
+typographic quote from U+2018 to U+201E) leaves a script read from the string
+known only when it runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"`
+is `unknown`. So is a script that holds such a character wherever it is read
+from: `cmd /c "pwsh -c Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"` hands
+PowerShell only part of the string, and the guard asks about the character, not
+the whole string. As a path or any other argument the string is the text it holds:
+`Get-Content "~\x`u{a0}\..\.ssh\id_rsa"` reads the key.
+Several arguments to `Write-Output` or `echo` are one line
+each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;
+`cmd`'s `echo` joins them with a space. A stage that is a group (`{ echo 'BEGIN;';
+echo 'DELETE FROM t;'; } |
+psql`) is read program by program, and as the one text they say in turn
+(`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
+format: `\n \t \\ \xHH` and the other single-character escapes, `\NNN` as one
+to three octal digits with the 0 in front counting as one (`\0121` is a newline
+and a `1`), and `%s`, `%b`, `%d` and `%%` filled from the arguments, the format
+used again while arguments are left; any other directive or escape (and `\c`,
+which shells read differently in a format) makes the text `unknown`. `%b` and
+`echo -e` take `\0NNN`, and `\c` ends their output. `echo` is read as written
+and as decoded, since `sh`, `zsh` and `echo -e` turn `\n` into a newline.
+Where shells differ in what they decode, the text is read as each of bash, zsh
+and dash prints it, and a statement any of them shows counts: dash leaves
+`\xHH` as written (and decodes `\n` next to it), bash's `echo -e` and zsh's
+leave `\NNN` with no 0 in front, and zsh and dash leave `\"`, `\'` and `\?` in a
+format. A file of statements (`psql -f
+migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
+the workspace's own code and is safe, as `python3 scripts/gen.py` is.
+
+An unquoted here-document is read as the shell feeds it: the shell treats its
+body as the inside of a double-quoted word, so a backslash before a newline
+joins the lines (`DR\` then `OP TABLE t` is `DROP TABLE t`), a backslash
+before `$`, a backtick or a backslash goes and leaves the character (`\\!`
+is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
+DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
+backtick is an expansion, as in a double-quoted word, so the body is a
+template; a body with both an escaped and an expanding `$` or backtick is
+`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+(`<<'EOF'`, `<<\EOF`) feeds the body as it is.
+
+What a stage says is worked out once and read once for each client language,
+whatever the number of clients after it, so the time grows with the line and
+not with the clients times the programs. A stage that says more than 256 KB
+is `unknown`, and a `printf` stops printing when the stage's share is used
+up.
+
+| Client | Statement |
+| --- | --- |
+| `psql` | `-c`, `--command` |
+| `mysql`, `mariadb` | `-e`, `--execute`, `--init-command` |
+| `sqlite3` | the operands after the file, `-cmd` |
+| `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
+| `mongosh`, `mongo` | `--eval` |
+| `redis-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `cqlsh` | `-e`, `--execute` |
+
+Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
+`--command=SQL`), and a long option may be any unique start of one of the
+client's long options, as `getopt_long` reads it: `psql --co` is `--command`,
+while `--c` starts both `--command` and `--csv`, is ambiguous, and psql
+refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
+(`--init_command`). A password option that takes its value only when it is
+attached leaves the next word alone: in `mongosh` (which reads its options as
+yargs does) a word that starts with `-` is never the value of any option, and
+`clickhouse-client --password` takes none from one, so `mongosh -u admin -p
+--eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
+TABLE t'` read the statement option after the password. A statement option
+followed by such a word reads the word as the statement too.
+
+**What destroys.**
+
+- **SQL.** `DROP` (a table, database, schema, index, view, anything; also
+  `ALTER TABLE … DROP`), `TRUNCATE`, `DELETE` and `UPDATE` with no `WHERE`. A
+  `WHERE` that picks every row (`WHERE 1`, `WHERE true`, `WHERE 1 = 1`) is
+  none. A `WHERE` belongs to its own statement: in a batch with no `;`, the
+  `WHERE` of a later `SELECT`, `EXEC` or `PRINT` is not the `UPDATE`'s
+  (`UPDATE t SET a = 1 SELECT 1 WHERE b = 2` updates every row).
+  `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT UPDATE` and `THEN
+  DELETE` after a `WHEN [NOT] MATCHED` of a `MERGE` are parts of other
+  statements, and `TRUNCATE(x)` is a function; a `THEN DELETE` anywhere else
+  (`IF x THEN DELETE FROM t`, `EXCEPTION WHEN OTHERS THEN DELETE FROM t`) is
+  a statement. `ON DELETE` and `ON UPDATE` are a rule, not a statement, only
+  when the word after the verb is a referential action or rule word
+  (`CASCADE`, `SET`, `RESTRICT`, `NO`, `TO`, `CURRENT_TIMESTAMP`, `NOW`,
+  `LOCALTIME`, `LOCALTIMESTAMP`): `ON DELETE CASCADE`, `ON UPDATE SET NULL`,
+  `CREATE RULE r AS ON DELETE TO t`. `SET NOCOUNT ON DELETE FROM t` is a
+  statement: in a T-SQL batch with no `;` the `ON` ends a `SET`, and `DELETE
+  FROM` or `UPDATE t SET` after it are the next statement. `ON COMMIT DELETE
+  ROWS` empties a temporary table at the end of a transaction, and is none.
+  A `DROP` that takes away no data is none: `DROP NOT NULL`, `DROP DEFAULT`,
+  `DROP CONSTRAINT`, `ON COMMIT DROP`, ClickHouse's `SYSTEM DROP DNS CACHE`,
+  and `DROP IDENTITY` and `DROP EXPRESSION` only after `ALTER [COLUMN]
+  <name>` (the word `COLUMN` is optional and neither word is reserved, so
+  `ALTER TABLE users DROP identity` drops a column called `identity`);
+  `DROP COLUMN`, `DROP PARTITION` and a bare `DROP` are. `DELETE` and
+  `UPDATE` inside a `WITH` or after
+  `EXPLAIN ANALYZE` count. `DO $$ … $$` and `DO '…'` (any string) are read as
+  the statements they hold, and PL/pgSQL's `EXECUTE` in the body (not
+  `EXECUTE FUNCTION`) runs text only known when it runs, so it is `unknown`.
+  Text given to something that runs it is read as SQL where it is a literal:
+  `EXEC('…')` and `EXECUTE('…')`, `sp_executesql`, `sp_MSforeachtable` and
+  `sp_MSforeachdb` (the literal text of every argument) in T-SQL, and
+  `PREPARE s FROM '…'` in MySQL; text that is not a literal (`EXEC('DROP ' +
+  @t)`, `sp_executesql @sql`, `PREPARE s FROM @q`) is `unknown`. A string
+  inside a string is read up to eight levels deep, and deeper is `unknown`.
+  In SQLite and DuckDB, `.restore` replaces the whole database with a file,
+  so it destroys. Both shells take any start of a dot command's name for the
+  command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
+  `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
+  command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
+  `.output`, `.once`, `.import`, `.restore`, `.backup` and `.save`.
+  `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace the file they are
+  given, whatever database they copy from and `-readonly` or not, so the last
+  word is judged like any file: in the workspace, a temporary directory or
+  memory it is safe, anywhere else it is `drop_data`. The names are the
+  shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
+  not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
+  refuse a file that exists and are safe.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+  `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
+  calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
+  `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
+  redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
+  deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
+  runs the command on every node, and is read as the command.
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
+  command key), `deleteMany` and `remove` with no filter or `{}`.
+- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
+  drop`, MariaDB's name for it. `mysqladmin` runs a
+  command from any unique start of its name (`mysqladmin proc stat` works),
+  so a command word of two letters or more that starts `drop`, in any case,
+  is `drop`: `dro`, `dr`.
+
+**How a statement is read.** A keyword reader over the text, with no SQL
+grammar. It skips comments and string literals, splits on `;`, and reads each
+client as its own dialect, with only the quoting that client has, so that what
+one dialect hides is not hidden in another:
+
+| Dialect | Quoting and comments |
+| --- | --- |
+| PostgreSQL (`psql`) | `$tag$ … $tag$` and `E'…'` strings, block comments that nest, backslash commands; no backtick |
+| SQLite (`sqlite3`) | backtick and `[…]` identifiers, dot commands, a line that starts with `#` when no statement is pending is skipped; no `$tag$`, no `E'…'` |
+| DuckDB | PostgreSQL's parser: `$tag$ … $tag$` and `E'…'` strings, dot commands, `#` lines as SQLite's; a block comment that holds `/*` is `unknown`, since it is not known whether it nests |
+| SQL Server (`sqlcmd`) | `[…]` identifiers, block comments that nest |
+| MySQL, MariaDB | `#` comments, backslash escapes, backticks, `/*! … */` comments that run, `--` needing a space, `\g` and `\G` ending a statement, `\!` |
+| ClickHouse | `#` comments, block comments that nest, backslash escapes, backticks, `$tag$` strings, `\G` |
+| CQL (`cqlsh`) | `//` comments, `$$` strings |
+
+A construct a dialect is not known to have is not read as hiding anything, so
+what it holds is read as code. Whether a backslash escapes in a string is a
+server setting the line can change, so the text is read with the other rule
+too, in the two dialects where the setting exists, and what any reading shows
+counts: MySQL and MariaDB also with no backslash escapes
+(`NO_BACKSLASH_ESCAPES`) and with them in `'…'` strings only (`ANSI_QUOTES`,
+where `"a\"` is an identifier), PostgreSQL also with them in `'…'` strings
+(`standard_conforming_strings` off). `mysql -e "SET
+sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; -- '"` drops the
+table, as does a `psql` text that sets `standard_conforming_strings = off`
+and then has `'a\'' ; DROP TABLE t; --'`, where the string takes `\'`. The
+`mysql` and `mariadb` clients send each statement as its `;` arrives, and
+`psql` reading its input does the same, so in a reading where a string is never
+closed the statements that end before it still run: they are judged, and only
+the open tail, which no client sends as a statement, is left out. `SELECT
+'it\'s'` is safe in MySQL, and `SELECT 'a\'; DROP TABLE t; SELECT '` is not. A
+`--` that no space follows is no comment in MySQL, so `SELECT "a\"; DROP TABLE
+t; --"` leaves only `--"` open, and the `DROP` runs.
+The same text without the `SET`, `SELECT 'a\'; DROP TABLE t; -- '`, is
+`drop_data` for the same reason: a server set that way runs the `DROP`.
+
+In `psql` a backslash outside a string starts a
+command that ends at the end of its line or at the next backslash outside a
+quote, which starts the next command (or is `\\`, and the SQL goes on after
+it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
+touch f` runs `touch`. A here-document whose first line starts with a
+backslash is read from that line. `\gexec` and
+`\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
+a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
+followed by `|` run a program. A statement the reader has to guess at is
+`unknown`, never safe: a string, a comment or a `$$` string that is never
+closed.
+
+A variable the client fills in is only known when it runs, and where it starts
+a statement the statement is `unknown`: `psql`'s `:name`, `:'name'` and
+`:"name"` (`psql -v q='DROP TABLE t' <<< ':q'`, a `\set q …` and then `:q`) and
+`sqlcmd`'s `$(name)` (`sqlcmd -v s="DROP TABLE t" -Q '$(s)'`). A `:name` or
+`$(name)` further in is read as a word (`WHERE a = :x`), as a shell expansion
+is, and `::` is a cast.
+
+A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
+q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
+a database statement only known when it runs`. In a double-quoted
+POSIX statement the expansions stand as words, so `psql -c "DELETE FROM users
+WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
+`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A `$` that starts
+an expansion ends the word before it, since the expansion may be empty:
+`psql -c "DROP$x TABLE t"`, `"TRUNCATE$x t"` and `"DELETE$opts FROM t"` are
+`drop_data`, and so is `mongosh --eval "db.dropDatabase$x()"`. A template
+with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
+) $x"`, `echo "SELECT 1 \`; DROP TABLE t; \` $x" | psql`) is `unknown`, as an
+unquoted here-document with both is: the shell passes the escaped text to the
+client as it is, and the reader would take `\$(`, `\${` and a pair of
+backticks for one expansion that hides the text between them; this covers
+`echo`, `printf` and `Write-Output` too. On PowerShell and
+cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
+`%id%`) is not read as a word, so any statement with one is `unknown`
+(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
+(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
+PowerShell word has none. A client command that runs a
+program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
+`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
+and `system` in `mysql` (it is no command of another client: ClickHouse's
+`SYSTEM FLUSH LOGS` is a statement).
+A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
+when it runs is `unknown` too.
+
+**A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
+database file are judged like any file: inside the workspace or a temporary
+directory, in memory (`:memory:`, no file) or opened `-readonly`, a `DROP`
+is safe; anywhere else, or a file only known when it runs, it is `drop_data`.
+`ATTACH`, `.open` and `.attach` reach another file, so they make the file
+given not the only one, and the statements are judged as a file outside the
+workspace, `-readonly` or not. A name with a scheme is read from its path when
+it is a `file:` URI (`file:/home/me/x.db`, `file:///home/me/x.db`,
+`file://localhost/…`, `%HH` decoded; `mode=memory` is in memory) and is not
+the agent's own otherwise (`md:`, `motherduck:`, `s3://`); a Windows drive
+(`C:`) is a path. The options that take a value are the ones `sqlite3 -help`
+lists, the two-value `-lookaside` and `-pagecache` included, so none moves the
+file onto its value. Every server database is risky, because the line cannot
+tell a scratch database from production.
+
+Migrations run by the project's own tool (`sqlx migrate run`, `rails
+db:migrate`) are safe: the guard reads no program that is not on its list.
+
+Not read, so the caller has to account for them: a statement behind a program
+the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
+-c …`); a statement handed over by a file, a process substitution
+(`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
+`cat` (`echo … | sed … | psql`); stored procedures (`CALL p()`, `EXEC p`),
+whatever they run; the
+text of a prepared statement that is not on the line (`EXECUTE s` after a
+`PREPARE` in an earlier call; one in the same text is read); a `WHERE`
+that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
+a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
+(`WHERE a = :x`: it is read as a word, and may hold more than a value);
+`sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
+tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+
 ## Reads only
 
 `classify` says whether a line is safe to run without asking. A caller that
@@ -1199,7 +1884,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&
@@ -1225,10 +1910,11 @@ inside the workspace.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
-`-exec` makes), and only with options the guard knows: any other option
-makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
-`sudo -s` and `-i` start a shell, `env -P` changes where programs are found, `env -C` the folder they run in).
+`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
+`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with
+options the guard knows: any other option makes the line `Unknown`, since it
+could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
+`env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. A shell started with a

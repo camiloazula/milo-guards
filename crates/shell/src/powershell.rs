@@ -2,11 +2,13 @@
 //! aliases, and how a cmdlet's parameters are read.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use tree_sitter::Node;
 
+use crate::detect::DOWNLOADERS;
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, Between, Listing, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -52,13 +54,15 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split.reassign(&name);
         split.set(&name);
     }
-    Walker {
+    let mut walker = Walker {
         source: text,
         depth,
         split,
         item: None,
-    }
-    .walk(tree.root_node(), None, 0);
+        holds: HashSet::new(),
+    };
+    walker.mark_listings(tree.root_node());
+    walker.walk(tree.root_node(), None, 0);
 }
 
 /// The cmdlets that register a script block to run when an event happens:
@@ -113,6 +117,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
+        "ndr" | "mount" => "new-psdrive",
         "ren" | "rni" => "rename-item",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
@@ -126,6 +131,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "icm" => "invoke-command",
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
+        "gps" | "ps" => "get-process",
         "%" | "foreach" => "foreach-object",
         "tee" => "tee-object",
         "cd" | "sl" | "chdir" => "set-location",
@@ -136,8 +142,13 @@ pub(crate) fn canonical(name: &str) -> &str {
     }
 }
 
-/// What `$null` is as a word: the device. In a longer word it is nothing.
-const NULL: &str = "$null";
+/// How a value uses `$_` (see [`Walker::item_use`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ItemUse {
+    Absent,
+    Own,
+    Other,
+}
 
 struct Walker<'a> {
     source: &'a str,
@@ -145,6 +156,10 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// Inside a `ForEach-Object` block: the stage whose input `$_` is.
     item: Option<Stage>,
+    /// The nodes with a `Get-Process` somewhere below them, worked out once
+    /// for the whole tree so that each `Stop-Process` reads only the nodes
+    /// that lead to a listing.
+    holds: HashSet<usize>,
 }
 
 impl Walker<'_> {
@@ -158,14 +173,20 @@ impl Walker<'_> {
             "pipeline_chain" => {
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
+                let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for (index, child) in stages.iter().enumerate() {
+                    // A value that is piped on (`'DROP TABLE t' | psql`) is
+                    // a stage that says it, as `Write-Output` would.
+                    if child.kind() == "logical_expression" && index + 1 < stages.len() {
+                        self.value_stage(*child, Stage { pipeline, index });
+                    }
                     // The first command in a `ForEach-Object` block reads
                     // `$_` from the stage the block is.
                     let stage = match (index, self.item) {
                         (0, Some(item)) => item,
                         _ => Stage { pipeline, index },
                     };
-                    self.walk(child, Some(stage), level + 1);
+                    self.walk(*child, Some(stage), level + 1);
                 }
             }
             "command" => {
@@ -211,6 +232,40 @@ impl Walker<'_> {
         }
     }
 
+    /// A stage that is an expression and not a command: it says its value
+    /// to the next stage, as `Write-Output value` does. A string says its
+    /// text; a variable or anything computed says what is only known when it
+    /// runs.
+    fn value_stage(&mut self, node: Node<'_>, stage: Stage) {
+        let mut node = node;
+        // The chain of expressions a value is wrapped in, one child each.
+        while matches!(
+            node.kind(),
+            "logical_expression"
+                | "bitwise_expression"
+                | "comparison_expression"
+                | "additive_expression"
+                | "multiplicative_expression"
+                | "format_expression"
+                | "range_expression"
+        ) {
+            let mut cursor = node.walk();
+            let mut children = node.named_children(&mut cursor);
+            match (children.next(), children.next()) {
+                (Some(only), None) => node = only,
+                _ => break,
+            }
+        }
+        let value = self.expr(node);
+        let program = Arg::Known("Write-Output".to_string());
+        self.split.push(Unit::new(
+            Shell::PowerShell,
+            program,
+            vec![value],
+            Some(stage),
+        ));
+    }
+
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -224,6 +279,11 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        // Whether an argument is a download, as `iex (iwr url)` runs one.
+        let mut downloads = false;
+        let program_key = program
+            .known()
+            .map(|program| unit::key(program, Shell::PowerShell));
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -237,32 +297,38 @@ impl Walker<'_> {
                     }
                     continue;
                 }
+                downloads |= self.downloads(element);
                 match element.kind() {
                     "command_argument_sep" => {
                         if unit::text(&element, self.source).contains(':') {
-                            if let Some(Arg::Known(param)) = args.last_mut() {
-                                if param.starts_with('-') && !param.ends_with(':') {
-                                    param.push(':');
-                                }
-                            }
+                            attach_colon(&mut args);
                         }
                     }
                     "redirection" | "comment" => {}
                     "array_literal_expression" => {
                         let mut items = element.walk();
                         for item in element.named_children(&mut items) {
-                            args.push(self.expr(item));
+                            args.extend(self.element_args(item, program_key.as_deref()));
                         }
                     }
-                    _ => args.push(self.expr(element)),
+                    _ => args.extend(self.element_args(element, program_key.as_deref())),
                 }
             }
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
-        let unit = Unit::new(Shell::PowerShell, program, args, stage);
+        let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
+        // The processes a `Stop-Process` is handed by a listing in its own
+        // arguments: `-InputObject (Get-Process)`.
+        if key.as_deref() == Some("stop-process") {
+            if let Some(elements) = node.child_by_field_name("command_elements") {
+                unit.listings = self.listings(elements);
+                unit.unread_item = self.item.is_some() && self.unread_item(elements);
+            }
+        }
         // A block known only when it runs (`-Action $block`, an action given
         // by position or in a splat) is a script the guard cannot read, run
         // by the event.
@@ -277,6 +343,430 @@ impl Walker<'_> {
         }
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// The arguments an element stands for: one, or three when it is the
+    /// block of a `Where-Object` that only compares a process's name
+    /// (`{ $_.ProcessName -eq 'node' }`), read as `ProcessName -eq node`.
+    fn element_args(&self, element: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+        // A value a `Stop-Process` in a block builds on `$_`: the item, when
+        // it unwraps to the item or one of the process's own members, and
+        // only known when it runs for anything else.
+        if program == Some("stop-process") && self.item.is_some() {
+            match self.item_use(element) {
+                ItemUse::Absent => {}
+                ItemUse::Own => return vec![Arg::Input],
+                ItemUse::Other => {
+                    return vec![Arg::Unknown(unit::text(&element, self.source).to_string())]
+                }
+            }
+        }
+        if program == Some("where-object") && is_script_block(element) {
+            if let Some(filter) = self.name_filter(element) {
+                return filter.to_vec();
+            }
+        }
+        vec![self.expr(element)]
+    }
+
+    /// How a value uses `$_`, the item of a `ForEach-Object` block: not at
+    /// all; as the item or one of the process's own members (`.Id`, `.Name`,
+    /// `.ProcessName`), through any parentheses, `$( )`, `@( )`, cast or
+    /// string that holds nothing else; or as anything else (`$_.Parent`,
+    /// `$_ + 1`, a call), which is not the processes the pipeline hands on.
+    fn item_use(&self, node: Node<'_>) -> ItemUse {
+        let mut holds = false;
+        unit::for_each_node(node, |inner| {
+            holds |= inner.kind() == "variable" && self.is_item(unit::text(&inner, self.source));
+        });
+        if !holds {
+            return ItemUse::Absent;
+        }
+        let mut node = node;
+        loop {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            let next = match (node.kind(), children.as_slice()) {
+                ("variable", _) => {
+                    return if self.is_item(unit::text(&node, self.source)) {
+                        ItemUse::Own
+                    } else {
+                        ItemUse::Other
+                    };
+                }
+                ("member_access", [object, member]) => {
+                    let own = object.kind() == "variable"
+                        && self.is_item(unit::text(object, self.source))
+                        && member.kind() == "member_name"
+                        && ["id", "name", "processname"]
+                            .iter()
+                            .any(|own| unit::text(member, self.source).eq_ignore_ascii_case(own));
+                    return if own { ItemUse::Own } else { ItemUse::Other };
+                }
+                // `"$_"` and `"$($_.Id)"`: a string that is one expansion.
+                ("string_literal", [literal]) if literal.kind() == "expandable_string_literal" => {
+                    match literal
+                        .named_children(&mut literal.walk())
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                    {
+                        [only]
+                            if only.start_byte() == literal.start_byte() + 1
+                                && only.end_byte() + 1 == literal.end_byte() =>
+                        {
+                            *only
+                        }
+                        _ => return ItemUse::Other,
+                    }
+                }
+                // `[int]$_.Id`: a cast of the value, which the grammar holds
+                // in an operator's layer (`-not $_.Id` is one too, and not a
+                // cast).
+                ("expression_with_unary_operator", [cast]) if cast.kind() == "cast_expression" => {
+                    *cast
+                }
+                // `[int]$_.Id`: a cast of the value.
+                ("cast_expression", [kind, value]) if kind.kind() == "type_literal" => *value,
+                (
+                    "parenthesized_expression"
+                    | "sub_expression"
+                    | "array_expression"
+                    | "statement_list"
+                    | "pipeline"
+                    | "pipeline_chain"
+                    | "unary_expression"
+                    | "array_literal_expression"
+                    | "logical_expression"
+                    | "bitwise_expression"
+                    | "comparison_expression"
+                    | "additive_expression"
+                    | "multiplicative_expression"
+                    | "format_expression"
+                    | "range_expression",
+                    [only],
+                ) => *only,
+                _ => return ItemUse::Other,
+            };
+            node = next;
+        }
+    }
+
+    /// Whether any value given to a `Stop-Process` (`elements`, its
+    /// arguments) is built on `$_` into something that is not the item.
+    fn unread_item(&self, elements: Node<'_>) -> bool {
+        let mut cursor = elements.walk();
+        let other = elements.named_children(&mut cursor).any(|element| {
+            if element.kind() == "array_literal_expression" {
+                let mut items = element.walk();
+                let other = element
+                    .named_children(&mut items)
+                    .any(|item| self.item_use(item) == ItemUse::Other);
+                other
+            } else {
+                self.item_use(element) == ItemUse::Other
+            }
+        });
+        other
+    }
+
+    /// `{ $_.Name -eq 'x' }`: the property, the operator and the value of a
+    /// block that is only a comparison of a process's name, with `-eq` or
+    /// `-like` (and their case-sensitive and -insensitive spellings).
+    fn name_filter(&self, block: Node<'_>) -> Option<[Arg; 3]> {
+        // The block's one statement, through the grammar's layers.
+        let mut node = block;
+        for kind in [
+            "script_block_expression",
+            "script_block",
+            "script_block_body",
+            "statement_list",
+        ] {
+            while node.kind() != kind {
+                node = only_child(node)?;
+            }
+            node = only_child(node)?;
+        }
+        while node.kind() != "comparison_expression" {
+            node = only_child(node)?;
+        }
+        let mut cursor = node.walk();
+        let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        let [left, operator, right] = parts.as_slice() else {
+            return None;
+        };
+        let operator = unit::text(operator, self.source).to_ascii_lowercase();
+        if !matches!(
+            operator.as_str(),
+            "-eq" | "-ieq" | "-ceq" | "-like" | "-ilike" | "-clike"
+        ) {
+            return None;
+        }
+        let mut member = *left;
+        while member.kind() != "member_access" {
+            member = only_child(member)?;
+        }
+        let mut cursor = member.walk();
+        let parts: Vec<Node<'_>> = member.named_children(&mut cursor).collect();
+        let [item, property] = parts.as_slice() else {
+            return None;
+        };
+        if item.kind() != "variable"
+            || !matches!(
+                unit::text(item, self.source).to_ascii_lowercase().as_str(),
+                "$_" | "$psitem"
+            )
+            || property.kind() != "member_name"
+        {
+            return None;
+        }
+        let property = unit::text(property, self.source).to_ascii_lowercase();
+        if !matches!(property.as_str(), "name" | "processname") {
+            return None;
+        }
+        let mut value = *right;
+        while value.kind() != "string_literal" {
+            value = only_child(value)?;
+        }
+        let Arg::Known(value) = self.expr(value) else {
+            return None;
+        };
+        Some([
+            Arg::Known(property),
+            Arg::Known(operator),
+            Arg::Known(value),
+        ])
+    }
+
+    /// The arguments of a command as its rules read them, with no side
+    /// effects.
+    fn plain_args(&self, command: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+        let mut args = Vec::new();
+        let Some(elements) = command.child_by_field_name("command_elements") else {
+            return args;
+        };
+        let mut cursor = elements.walk();
+        for element in elements.named_children(&mut cursor) {
+            match element.kind() {
+                "command_argument_sep" => {
+                    if unit::text(&element, self.source).contains(':') {
+                        attach_colon(&mut args);
+                    }
+                }
+                "redirection" | "comment" => {}
+                "array_literal_expression" => {
+                    let mut items = element.walk();
+                    for item in element.named_children(&mut items) {
+                        args.extend(self.element_args(item, program));
+                    }
+                }
+                _ => args.extend(self.element_args(element, program)),
+            }
+        }
+        args
+    }
+
+    /// The key of a command node's program, when it is written out.
+    fn command_key(&self, command: Node<'_>) -> Option<String> {
+        let name = command.child_by_field_name("command_name")?;
+        let name = self.name(name);
+        name.known()
+            .map(|program| unit::key(program, Shell::PowerShell))
+    }
+
+    /// Mark every node that has a `Get-Process` below it. Each climb stops at
+    /// a node already marked, so the marking is linear in the tree; the path
+    /// is kept by the walk, because asking a node for its parent costs the
+    /// depth of the tree.
+    fn mark_listings(&mut self, root: Node<'_>) {
+        let mut holds = HashSet::new();
+        let mut path: Vec<usize> = Vec::new();
+        let mut cursor = root.walk();
+        loop {
+            let node = cursor.node();
+            if node.kind() == "command" && self.command_key(node).as_deref() == Some("get-process")
+            {
+                for id in path.iter().rev() {
+                    if !holds.insert(*id) {
+                        break;
+                    }
+                }
+            }
+            if cursor.goto_first_child() {
+                path.push(node.id());
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    self.holds = holds;
+                    return;
+                }
+                path.pop();
+            }
+        }
+    }
+
+    /// The `Get-Process` listings a `Stop-Process`'s arguments (`elements`)
+    /// hand it: each one that nothing but a pipeline, parentheses and the
+    /// members `Id`, `Name` and `ProcessName` lie between it and the
+    /// arguments, with what follows it in its pipeline. A listing anywhere
+    /// else is one more listing, `Between::Other`, however many there are:
+    /// the walk goes in one pass, never below a command, and reads only the
+    /// nodes that lead to a `Get-Process`.
+    fn listings(&self, elements: Node<'_>) -> Vec<Listing> {
+        let mut found = Vec::new();
+        let mut other = false;
+        let mut stack: Vec<(Node<'_>, Node<'_>)> = Vec::new();
+        self.push_towards_listings(elements, &mut stack);
+        while let Some((node, parent)) = stack.pop() {
+            if node.kind() == "command" {
+                if self.command_key(node).as_deref() == Some("get-process") {
+                    match self.listing(node, parent) {
+                        Some(listing) => found.push(listing),
+                        None => other = true,
+                    }
+                }
+                // A `Get-Process` below a command (in its arguments, or in
+                // a block it runs) is not what this `Stop-Process` is handed.
+                other |= self.holds.contains(&node.id());
+            } else if self.passes(node) {
+                self.push_towards_listings(node, &mut stack);
+            } else {
+                // It holds a listing, which it may change.
+                other = true;
+            }
+        }
+        if other {
+            found.push(Listing {
+                args: Vec::new(),
+                between: vec![Between::Other],
+            });
+        }
+        found
+    }
+
+    /// Push the children of `node` that can lead to a listing, each with
+    /// `node`, the last first so that they are read in order.
+    fn push_towards_listings<'tree>(
+        &self,
+        node: Node<'tree>,
+        stack: &mut Vec<(Node<'tree>, Node<'tree>)>,
+    ) {
+        let mut cursor = node.walk();
+        let from = stack.len();
+        for child in node.named_children(&mut cursor) {
+            if self.holds.contains(&child.id()) || child.kind() == "command" {
+                stack.push((child, node));
+            }
+        }
+        stack[from..].reverse();
+    }
+
+    /// Whether a node between a `Get-Process` and the arguments of the
+    /// `Stop-Process` hands on the processes the listing gives: a pipeline,
+    /// parentheses, and a member that is a process's own (`.Id`, `.Name`,
+    /// `.ProcessName`), not one that leads to others (`.Parent`, `.Threads`).
+    fn passes(&self, node: Node<'_>) -> bool {
+        match node.kind() {
+            "pipeline"
+            | "pipeline_chain"
+            | "parenthesized_expression"
+            | "sub_expression"
+            | "statement_list"
+            | "array_literal_expression"
+            | "unary_expression" => true,
+            // The grammar wraps an expression in a layer for each operator
+            // that binds looser; one with no operand but its own is only
+            // that wrapping (`((Get-Process node).Id)`).
+            "logical_expression"
+            | "bitwise_expression"
+            | "comparison_expression"
+            | "additive_expression"
+            | "multiplicative_expression"
+            | "format_expression"
+            | "range_expression" => node.named_child_count() == 1,
+            "member_access" => {
+                let mut cursor = node.walk();
+                let member = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "member_name")
+                    .map(|member| unit::text(&member, self.source));
+                member.is_some_and(|member| {
+                    ["id", "name", "processname"]
+                        .iter()
+                        .any(|own| member.eq_ignore_ascii_case(own))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// One `Get-Process` that starts at the arguments: its own arguments and
+    /// the stages after it in its pipeline. None when something comes before
+    /// it in the pipeline, which may hand it other processes.
+    fn listing(&self, command: Node<'_>, parent: Node<'_>) -> Option<Listing> {
+        let mut between = Vec::new();
+        if parent.kind() == "pipeline_chain" {
+            let mut cursor = parent.walk();
+            let mut stages = parent.named_children(&mut cursor);
+            if stages.next()?.id() != command.id() {
+                return None;
+            }
+            between = stages.map(|stage| self.stage(stage)).collect();
+        }
+        Some(Listing {
+            args: self.plain_args(command, Some("get-process")),
+            between,
+        })
+    }
+
+    /// A stage that follows a listing.
+    fn stage(&self, stage: Node<'_>) -> Between {
+        if stage.kind() != "command" {
+            return Between::Other;
+        }
+        match self.command_key(stage).as_deref() {
+            Some("where-object") => Between::Where(self.plain_args(stage, Some("where-object"))),
+            Some("select-object" | "select") => {
+                Between::select(&self.plain_args(stage, Some("select-object")))
+            }
+            Some("sort-object" | "sort") => Between::Narrows,
+            _ => Between::Other,
+        }
+    }
+
+    /// Whether the code under `node` downloads: a download cmdlet or a .NET
+    /// call such as `(New-Object Net.WebClient).DownloadString(…)`.
+    fn downloads(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node(node, |inner| match inner.kind() {
+            "command" => {
+                if let Some(Arg::Known(name)) = inner
+                    .child_by_field_name("command_name")
+                    .map(|name| self.name(name))
+                {
+                    found |= DOWNLOADERS.contains(&unit::key(&name, Shell::PowerShell).as_str());
+                }
+            }
+            // `(…).DownloadString('url')`, which the grammar reads as a member
+            // and its call, or a member alone when it is an argument.
+            "invokation_expression" | "member_access" => {
+                let mut cursor = inner.walk();
+                let member = inner
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "member_name")
+                    .map(|member| unit::text(&member, self.source).to_ascii_lowercase());
+                // `GetString` decodes bytes (`Encoding.GetString`) and
+                // downloads nothing; `HttpClient.GetStringAsync` does.
+                found |= member.is_some_and(|member| {
+                    member.starts_with("download") || member == "getstringasync"
+                });
+            }
+            _ => {}
+        });
+        found
     }
 
     /// Whether the action of a `Register-*Event` command is not a script
@@ -424,24 +914,30 @@ impl Walker<'_> {
                     .unwrap_or(text)
                     .replace("''", "'"),
             ),
-            "expandable_string_literal" => {
-                let start = literal.start_byte() + 1;
-                let end = literal.end_byte().saturating_sub(1).max(start);
+            "expandable_string_literal" | "expandable_here_string_literal" => {
+                // `"…"` or `@"` … `"@`.
+                let here = literal.kind() == "expandable_here_string_literal";
+                let quotes = if here { 2 } else { 1 };
+                let start = literal.start_byte() + quotes;
+                let end = literal.end_byte().saturating_sub(quotes).max(start);
                 let mut value = String::new();
                 let mut nulls = false;
+                let mut splits = Vec::new();
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
-                    value.push_str(&unescape(
+                    let (before, made) = unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
-                    ));
+                    );
+                    splits.extend(made);
+                    value.push_str(&before);
                     if child.kind() != "variable" {
                         return Arg::Unknown(source.to_string());
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         // Inside a string `$null` is the empty string, so
                         // `"$null\Windows"` is `\Windows`.
-                        Arg::Known(text) if text == NULL => nulls = true,
+                        Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
                             return Arg::Unknown(source.to_string())
@@ -449,12 +945,24 @@ impl Walker<'_> {
                     }
                     at = child.end_byte();
                 }
-                value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
-                // A string of nothing but `$null` is still the device.
+                let (rest, made) =
+                    unescape_expandable(self.source.get(at..end).unwrap_or_default());
+                splits.extend(made);
+                value.push_str(&rest);
+                // A string of nothing but `$null` is still the null value.
                 if nulls && value.is_empty() {
-                    return Arg::Known(NULL.to_string());
+                    return Arg::Null;
                 }
-                Arg::Known(value.replace("\"\"", "\""))
+                let value = if here {
+                    // The lines between the two markers.
+                    value.trim_matches(['\r', '\n']).to_string()
+                } else {
+                    value.replace("\"\"", "\"")
+                };
+                // The value is the string as an argument; only a script read
+                // from it is not what it says (see `Split::note_splitting`).
+                self.split.note_splitting(&splits);
+                Arg::Known(value)
             }
             "verbatim_here_string_characters" => Arg::Known(
                 text.trim_start_matches("@'")
@@ -467,7 +975,11 @@ impl Walker<'_> {
     }
 
     fn is_item(&self, source: &str) -> bool {
-        self.item.is_some() && matches!(source.to_ascii_lowercase().as_str(), "$_" | "$psitem")
+        self.item.is_some()
+            && matches!(
+                source.to_ascii_lowercase().as_str(),
+                "$_" | "$psitem" | "${_}" | "${psitem}"
+            )
     }
 
     /// The variables that name a known place, as paths the resolver reads;
@@ -482,6 +994,9 @@ impl Walker<'_> {
             .and_then(|rest| rest.strip_suffix('}'))
             .or_else(|| lower.strip_prefix('$'))
             .unwrap_or_default();
+        if name == "null" {
+            return Arg::Null;
+        }
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
@@ -581,6 +1096,23 @@ impl Walker<'_> {
     }
 }
 
+/// The one named child of `node`, when it has just one.
+fn only_child(node: Node<'_>) -> Option<Node<'_>> {
+    (node.named_child_count() == 1)
+        .then(|| node.named_child(0))
+        .flatten()
+}
+
+/// A colon right after a parameter (`-Name:value`) binds the next argument
+/// to it: the parameter ends in `:`.
+fn attach_colon(args: &mut [Arg]) {
+    if let Some(Arg::Known(param)) = args.last_mut() {
+        if param.starts_with('-') && !param.ends_with(':') {
+            param.push(':');
+        }
+    }
+}
+
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
@@ -595,6 +1127,76 @@ fn unescape(text: &str) -> String {
         }
     }
     value
+}
+
+/// What a backtick makes of the text in an expandable string or here-string:
+/// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
+/// other character after it is itself (`` `$ ``, `` `" ``). The second value
+/// holds each character a `` `u{…} `` made that PowerShell reads as more than
+/// a character once the text is run as code (a space that is not an ASCII one,
+/// a dash or a quote that looks like another): as an argument the string is
+/// the text it holds, but read again as a script it is not the words it runs
+/// as.
+fn unescape_expandable(text: &str) -> (String, Vec<char>) {
+    let mut splits = Vec::new();
+    let mut value = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '`' {
+            value.push(c);
+            continue;
+        }
+        let Some(next) = chars.next() else { break };
+        match next {
+            '0' => value.push('\0'),
+            'a' => value.push('\x07'),
+            'b' => value.push('\x08'),
+            'e' => value.push('\x1b'),
+            'f' => value.push('\x0c'),
+            'n' => value.push('\n'),
+            'r' => value.push('\r'),
+            't' => value.push('\t'),
+            'v' => value.push('\x0b'),
+            'u' if chars.peek() == Some(&'{') => {
+                chars.next();
+                let mut digits = String::new();
+                while let Some(digit) = chars.next_if(char::is_ascii_hexdigit) {
+                    digits.push(digit);
+                }
+                let closed = chars.next_if_eq(&'}').is_some();
+                let decoded = u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .filter(|_| closed)
+                    .and_then(char::from_u32);
+                if let Some(decoded) = decoded {
+                    if splits_words(decoded) {
+                        splits.push(decoded);
+                    }
+                    value.push(decoded);
+                } else {
+                    // Not a character: PowerShell does not run the line.
+                    value.push_str("`u{");
+                    value.push_str(&digits);
+                    if closed {
+                        value.push('}');
+                    }
+                }
+            }
+            other => value.push(other),
+        }
+    }
+    (value, splits)
+}
+
+/// Whether PowerShell reads `c`, run as code, as something other than the
+/// character it is: a space that is not an ASCII one (U+00A0, U+0085,
+/// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) splits
+/// words, a dash (U+2013 to U+2015) starts a parameter, and a typographic
+/// quote (U+2018 to U+201E) opens or closes a string. The guard's own read of
+/// a nested line does not know them, so a script with one in it is not read.
+fn splits_words(c: char) -> bool {
+    (!c.is_ascii() && c.is_whitespace())
+        || matches!(c, '\u{2013}'..='\u{2015}' | '\u{2018}'..='\u{201e}')
 }
 
 /// Switch parameters (they take no value) that the rules meet.
@@ -619,10 +1221,11 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 45] = [
+const VALUES: [&str; 46] = [
     "path",
     "literalpath",
     "destination",
+    "destinationpath",
     "filepath",
     "argumentlist",
     "verb",
@@ -709,6 +1312,48 @@ impl<'a> Params<'a> {
         params
     }
 
+    /// One cmdlet's arguments, read by its own parameters: each name given
+    /// is resolved to the parameter it names (its name or alias, or a prefix
+    /// of one), and only a parameter that takes a value takes the next
+    /// argument. A name that fits several is read as the first of them in
+    /// `own`, then the common parameters, so a cmdlet's own parameters win
+    /// and what the cmdlet might take as a value is not left for a rule to
+    /// see as something else. A name that fits none takes no value.
+    pub(crate) fn cmdlet(args: &'a [Arg], own: &[Param]) -> Self {
+        let mut params = Self::default();
+        let mut iter = args.iter().peekable();
+        while let Some(arg) = iter.next() {
+            let Some(name) = parameter(arg) else {
+                params.positional.push(arg);
+                continue;
+            };
+            let colon = name.ends_with(':');
+            let typed = name.trim_end_matches(':').to_ascii_lowercase();
+            let found = Param::resolve(&typed, own);
+            let takes_value = colon || found.is_some_and(|param| param.value);
+            let value = if takes_value
+                && iter
+                    .peek()
+                    .is_some_and(|next| parameter(next).is_none() || colon)
+            {
+                iter.next()
+            } else {
+                None
+            };
+            let name = found.map_or(typed, |param| param.name.to_string());
+            params.named.push((name, value));
+        }
+        params
+    }
+
+    /// Whether any of the parameters `fulls` was given, by a name that
+    /// [`Params::cmdlet`] resolved to it.
+    pub(crate) fn has(&self, fulls: &[&str]) -> bool {
+        self.named
+            .iter()
+            .any(|(name, _)| fulls.contains(&name.as_str()))
+    }
+
     /// The values of the parameters that abbreviate one of `fulls`.
     pub(crate) fn values(&self, fulls: &[&str]) -> Vec<&'a Arg> {
         self.named
@@ -718,6 +1363,67 @@ impl<'a> Params<'a> {
             .collect()
     }
 }
+
+/// A cmdlet's parameter, for [`Params::cmdlet`].
+pub(crate) struct Param {
+    /// Its name, in lower case.
+    pub(crate) name: &'static str,
+    /// The other names it answers to.
+    pub(crate) aliases: &'static [&'static str],
+    /// Whether it takes a value, or is a switch.
+    pub(crate) value: bool,
+}
+
+impl Param {
+    pub(crate) const fn value(name: &'static str, aliases: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            aliases,
+            value: true,
+        }
+    }
+
+    pub(crate) const fn switch(name: &'static str, aliases: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            aliases,
+            value: false,
+        }
+    }
+
+    /// Whether `typed` is a prefix of the parameter's name or an alias.
+    fn starts_with(&self, typed: &str) -> bool {
+        self.name.starts_with(typed) || self.aliases.iter().any(|alias| alias.starts_with(typed))
+    }
+
+    /// The parameter `typed` names: an exact name or alias first, then a
+    /// prefix of one, the first that fits.
+    fn resolve<'p>(typed: &str, own: &'p [Param]) -> Option<&'p Param> {
+        if typed.is_empty() {
+            return None;
+        }
+        let all = || own.iter().chain(COMMON.iter());
+        all()
+            .find(|param| param.name == typed || param.aliases.contains(&typed))
+            .or_else(|| all().find(|param| param.starts_with(typed)))
+    }
+}
+
+/// The parameters every cmdlet takes.
+const COMMON: [Param; 12] = [
+    Param::switch("verbose", &["vb"]),
+    Param::switch("debug", &["db"]),
+    Param::value("erroraction", &["ea"]),
+    Param::value("warningaction", &["wa"]),
+    Param::value("informationaction", &["infa", "ia"]),
+    Param::value("progressaction", &["proga"]),
+    Param::value("errorvariable", &["ev"]),
+    Param::value("warningvariable", &["wv"]),
+    Param::value("informationvariable", &["iv"]),
+    Param::value("outvariable", &["ov"]),
+    Param::value("outbuffer", &["ob"]),
+    Param::value("pipelinevariable", &["pv"]),
+];
 
 /// A parameter's name with its `-`, when `arg` is one.
 fn parameter(arg: &Arg) -> Option<&str> {
@@ -919,7 +1625,6 @@ fn place_variable(name: &str) -> Option<&'static str> {
         "env:systemroot" | "env:windir" => "C:\\Windows",
         "env:programfiles" => "C:\\Program Files",
         "env:programdata" => "C:\\ProgramData",
-        "null" => "$null",
         _ => return None,
     })
 }
@@ -956,10 +1661,11 @@ mod tests {
     /// a cmdlet's own value parameters belong to its reader (`Get-ChildItem
     /// -Depth` is in `effect`), and this list changes only with a row for each
     /// name in `tests/windows.rs`.
-    const PINNED: [&str; 45] = [
+    const PINNED: [&str; 46] = [
         "path",
         "literalpath",
         "destination",
+        "destinationpath",
         "filepath",
         "argumentlist",
         "verb",

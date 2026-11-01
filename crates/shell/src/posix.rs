@@ -1,6 +1,6 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
-use tree_sitter::Node;
+use tree_sitter::{Node, TreeCursor};
 
 use crate::dotglob;
 use crate::launch;
@@ -155,6 +155,26 @@ fn piped_heredoc(node: Node<'_>) -> bool {
     }
 }
 
+/// How many words of `rest`, the text after a command, are a lone `-` that
+/// the grammar leaves out: those that stand between the command and a
+/// here-document (`<<`, not the here-string `<<<`).
+fn dashes_before_heredoc(rest: &str) -> usize {
+    let mut rest = rest.trim_start_matches([' ', '\t']);
+    let mut found = 0;
+    while let Some(after) = rest.strip_prefix('-') {
+        if !after.starts_with([' ', '\t', '<']) {
+            return 0;
+        }
+        found += 1;
+        rest = after.trim_start_matches([' ', '\t']);
+    }
+    if found > 0 && rest.starts_with("<<") && !rest.starts_with("<<<") {
+        found
+    } else {
+        0
+    }
+}
+
 /// The variables the line sets anywhere: assignments (also after `export`
 /// or `local`), `for` variables, `unset` and `read`.
 fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
@@ -278,6 +298,35 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
+
+/// Whether `command`, a `coproc`, has a redirect in front of the command it
+/// starts (`coproc { 2>/dev/null rm -rf ~; }`, `coproc > out rm -rf ~`). The
+/// grammar takes the words after the redirect's target for more targets, so
+/// the command is not among the arguments and cannot be read.
+fn words_lost_after_redirect(command: Node<'_>) -> bool {
+    let Some(parent) = command
+        .parent()
+        .filter(|parent| parent.kind() == "redirected_statement")
+        .filter(|parent| {
+            parent
+                .child_by_field_name("body")
+                .is_some_and(|body| body.id() == command.id())
+        })
+    else {
+        return false;
+    };
+    let mut cursor = parent.walk();
+    let lost = parent
+        .children_by_field_name("redirect", &mut cursor)
+        .any(|redirect| {
+            let mut cursor = redirect.walk();
+            redirect
+                .children_by_field_name("destination", &mut cursor)
+                .count()
+                > 1
+        });
+    lost
+}
 
 struct Walker<'a> {
     source: &'a str,
@@ -414,7 +463,9 @@ impl Walker<'_> {
                     .child_by_field_name("name")
                     .filter(|_| node.kind() == "function_definition")
                 {
-                    self.split.define_function(unit::text(&name, self.source));
+                    let name = unit::text(&name, self.source);
+                    self.split.define_function(name);
+                    self.fork_bomb(node, name);
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
@@ -481,6 +532,54 @@ impl Walker<'_> {
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// A function that starts itself in the background, or as one side of a
+    /// pipeline, starts copies of itself without end: `:(){ :|:& };:`.
+    fn fork_bomb(&mut self, function: Node<'_>, name: &str) {
+        let Some(body) = function.child_by_field_name("body") else {
+            return;
+        };
+        // A function defined inside is judged when the walk reaches it, so
+        // its commands are not read again here: each node is read once. Each
+        // level of the walk says whether what it holds runs apart, so the
+        // scan never climbs back up: it is linear in the nodes.
+        let mut cursor = body.walk();
+        let mut stack = vec![Level::of(body, false, &mut cursor)];
+        let mut bomb = false;
+        while let Some(level) = stack.last_mut() {
+            let Some(&inner) = level.children.get(level.at) else {
+                stack.pop();
+                continue;
+            };
+            let apart = level.apart
+                || level.staged
+                || level
+                    .children
+                    .get(level.at + 1)
+                    .is_some_and(|next| next.kind() == "&");
+            level.at += 1;
+            if inner.kind() == "function_definition" {
+                continue;
+            }
+            if apart
+                && inner.kind() == "command"
+                && inner
+                    .child_by_field_name("name")
+                    .is_some_and(|called| self.arg(called).known() == Some(name))
+            {
+                bomb = true;
+                break;
+            }
+            stack.push(Level::of(inner, apart, &mut cursor));
+        }
+        if bomb {
+            self.split.problem(
+                Rule::StopSystem,
+                "starts copies of itself without end",
+                Some(name),
+            );
         }
     }
 
@@ -589,13 +688,19 @@ impl Walker<'_> {
                 args.push(self.arg(arg));
             }
         }
+        // The grammar leaves a `-` that is the last word before a
+        // here-document out of the tree (`cat a - <<EOF` has the argument
+        // `a` only): it is an argument all the same.
+        let lost = dashes_before_heredoc(self.source.get(node.end_byte()..).unwrap_or_default());
+        args.extend(std::iter::repeat_n(Arg::Known("-".to_string()), lost));
         // A here-document or here-string is the program's input. tree-sitter
         // drops a lone `-` before the redirect (`python3 - <<'PY'`), which
-        // names that input, so it is put back.
+        // names that input, so it is put back when the lines above did not.
         let mut stdin = None;
         if let Some((input, from)) = self.input(node) {
             let gap = self.source.get(node.start_byte()..from).unwrap_or_default();
-            if gap.split_whitespace().any(|word| word == "-")
+            if lost == 0
+                && gap.split_whitespace().any(|word| word == "-")
                 && !args.iter().any(|arg| arg.known() == Some("-"))
             {
                 args.push(Arg::Known("-".to_string()));
@@ -637,6 +742,13 @@ impl Walker<'_> {
                 .is_some_and(|name| self.split.defines_function(name))
         {
             self.split.hide_functions();
+        }
+        if program.known() == Some("coproc") && words_lost_after_redirect(node) {
+            self.split.problem(
+                Rule::Unreadable,
+                "starts a command after a redirect that cannot be read",
+                Some(unit::text(&node, self.source)),
+            );
         }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
@@ -872,6 +984,9 @@ impl Walker<'_> {
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
+            }
         }
     }
 
@@ -935,6 +1050,9 @@ impl Walker<'_> {
                 self.split.redirect(own.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
+            }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
             }
             for inside in inside {
                 self.split.nest(own.clone(), inside);
@@ -1036,6 +1154,62 @@ impl Walker<'_> {
         (!text.is_empty()).then_some(Arg::Unknown(text))
     }
 
+    /// The text a here-string or a here-document feeds, as written, whether
+    /// or not it holds an expansion (a template when it does): the
+    /// statements a database client reads from its input.
+    fn fed_literal(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "herestring_redirect" => Some(self.arg(node.named_children(&mut cursor).next()?)),
+            "heredoc_redirect" => {
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let kind = |kind: &str| children.iter().find(|child| child.kind() == kind);
+                let body = kind("heredoc_body");
+                let opened = kind("heredoc_start").map(|start| start.end_position().row);
+                // A first line that starts with a backslash is read as
+                // arguments of the redirect, not as the start of the body;
+                // the body is what is on the lines after the one that
+                // opens it.
+                let mut arguments = node.walk();
+                let lost: Vec<Node<'_>> = node
+                    .children_by_field_name("argument", &mut arguments)
+                    .filter(|argument| {
+                        opened.is_some_and(|row| argument.start_position().row > row)
+                    })
+                    .collect();
+                let from = lost
+                    .iter()
+                    .map(Node::start_byte)
+                    .chain(body.map(Node::start_byte))
+                    .min();
+                let end = kind("heredoc_end")
+                    .map(Node::start_byte)
+                    .or_else(|| body.map(Node::end_byte));
+                let (Some(from), Some(end)) = (from, end) else {
+                    return Some(Arg::Known(String::new()));
+                };
+                // From the start of its line.
+                let from = self
+                    .source
+                    .get(..from)
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |newline| newline + 1);
+                let raw = self.source.get(from..end).unwrap_or_default();
+                // The delimiter is quoted when any part of it is: `'EOF'`,
+                // `"EOF"`, `\EOF`.
+                let quoted = kind("heredoc_start").is_some_and(|start| {
+                    unit::text(start, self.source).contains(['\'', '"', '\\'])
+                });
+                let strips = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
+                Some(heredoc_fed(raw, strips, quoted))
+            }
+            _ => None,
+        }
+    }
+
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
     /// file rather than a descriptor.
     fn redirect(&mut self, node: Node<'_>) {
@@ -1104,7 +1278,7 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(&text);
                         }
-                        Arg::Unknown(_) | Arg::Input
+                        Arg::Unknown(_) | Arg::Input | Arg::Null
                             if matches!(
                                 part.kind(),
                                 "simple_expansion" | "expansion" | "command_substitution"
@@ -1113,7 +1287,9 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(OPAQUE);
                         }
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 if partial {
@@ -1165,7 +1341,7 @@ impl Walker<'_> {
                         value.push_str(&text);
                         template.push_str(&text);
                     }
-                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
                         template.push_str(OPAQUE);
                     }
@@ -1204,6 +1380,82 @@ impl Walker<'_> {
             Some("PWD") => Arg::Known(".".to_string()),
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
+        }
+    }
+}
+
+/// The text a here-document feeds, from the lines of its body as written.
+/// `<<-` takes the tabs off the front of each line, whatever the delimiter.
+/// With a quoted delimiter the body is fed as it is. With an unquoted one the
+/// shell reads it as the inside of a double-quoted word, without the quotes:
+/// a backslash before a newline joins the lines, and before `$`, a backtick
+/// or a backslash it goes and leaves the character; any other backslash
+/// stays. What is left of `$` or a backtick is an expansion, so the text is a
+/// template (`$$` is the shell's process id, and tree-sitter does not read it
+/// as an expansion). A body with both an escaped and an expanding `$` or
+/// backtick is known only when it runs: a template reads each `$` it holds as
+/// an expansion, and would take a character the client gets as it is for one.
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+    let lines: String = if strips {
+        raw.split_inclusive('\n')
+            .map(|line| line.trim_start_matches('\t'))
+            .collect()
+    } else {
+        raw.to_string()
+    };
+    if quoted {
+        return Arg::Known(lines);
+    }
+    let mut text = String::with_capacity(lines.len());
+    let (mut escaped, mut expands) = (false, false);
+    let mut chars = lines.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('\\', Some('\n')) => {
+                chars.next();
+            }
+            ('\\', Some(next @ ('$' | '`' | '\\'))) => {
+                chars.next();
+                text.push(next);
+                escaped |= next != '\\';
+            }
+            ('$' | '`', _) => {
+                expands = true;
+                text.push(c);
+            }
+            _ => text.push(c),
+        }
+    }
+    match (escaped, expands) {
+        (true, true) => Arg::Unknown(raw.to_string()),
+        (false, true) => Arg::Template {
+            text,
+            source: raw.to_string(),
+        },
+        (_, false) => Arg::Known(text),
+    }
+}
+
+/// One node of the fork-bomb scan, with its children still to read.
+struct Level<'t> {
+    children: Vec<Node<'t>>,
+    /// The next child to read.
+    at: usize,
+    /// Whether the node, or one it is inside (up to the function's body), is
+    /// followed by `&` or is a stage of a pipeline: what it holds runs as a
+    /// process of its own.
+    apart: bool,
+    /// Whether the children are the stages of a pipeline of more than one.
+    staged: bool,
+}
+
+impl<'t> Level<'t> {
+    fn of(node: Node<'t>, apart: bool, cursor: &mut TreeCursor<'t>) -> Self {
+        Self {
+            children: node.children(cursor).collect(),
+            at: 0,
+            apart,
+            staged: node.kind() == "pipeline" && node.named_child_count() > 1,
         }
     }
 }

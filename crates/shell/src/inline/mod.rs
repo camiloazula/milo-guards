@@ -15,8 +15,8 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use crate::launch::{self, Launch};
-use crate::unit::{self, Arg, Reads, Split, Unit};
+use crate::launch;
+use crate::unit::{self, Arg, Split, Unit};
 use crate::{Rule, Shell};
 
 mod javascript;
@@ -572,7 +572,7 @@ fn writes(mode: Option<&str>) -> bool {
 }
 
 /// The inline code an interpreter is given, and where it runs.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Code {
     /// Every piece of code the options name: `node -e A -e B` runs both, the
     /// second after the first, so each is read.
@@ -916,35 +916,6 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
         }
     }
     false
-}
-
-/// `bun` and `deno`: inline code is read; a file or a subcommand is the
-/// workspace's own business. Code read from the input (`bun -`, `deno run -`,
-/// a REPL) is the caller's to see, or the here-document it is handed.
-/// `console` is whether a line with nothing to run reads its input: always
-/// under a POSIX shell, and under cmd and PowerShell only when something is
-/// piped into it.
-pub(crate) fn runner(key: &str, args: &[Arg], console: bool) -> Launch {
-    if let Some(source) = code(key, args) {
-        return Launch::Inline(Language::JavaScript, source);
-    }
-    let known = |test: &dyn Fn(&str) -> bool| args.iter().any(|arg| arg.known().is_some_and(test));
-    let evals = known(&|text| match key {
-        "deno" => text == "eval",
-        _ => matches!(text, "-e" | "-p" | "--eval" | "--print") || text.starts_with("--eval="),
-    });
-    let first = args
-        .iter()
-        .filter_map(Arg::known)
-        .find(|text| !text.starts_with('-'));
-    // `deno --version` and `deno --help` print and exit: no subcommand and
-    // none of these reads the input, which is the REPL.
-    let repl = first == Some("repl") || (key == "deno" && first.is_none() && !prints(key, args));
-    if evals || (repl && console) || known(&|text| text == "-") {
-        Launch::Reads(Reads::Interpreter)
-    } else {
-        Launch::Itself
-    }
 }
 
 /// Read `pieces` of code in `language`, run `depth` levels deep, from the
