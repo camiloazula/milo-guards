@@ -501,23 +501,34 @@ when it runs, is `Unknown`.
   open: a quoted pattern or value could itself start with `-` and be read as an
   option.
 - **Switches and options that name a file or folder are places too.** In cmd,
-  `findstr /F:file` (a list of files), `/G:file` (the search strings) and
-  `/D:dir;dir` (the folders to search) open what they name, and `/D:` is a
-  list split at `;`; `/C:string` is data, and `/G:` or `/C:` makes every operand
-  a file, where otherwise the first operand is what to search for (a first
-  operand known only when it runs could be a switch, so it is a place).
-  `dir`'s `/A:`, `/O:` and `/T:` are data, and `type` has no switch. A switch
-  is read as `/X` or `/X:value`, and `/s/b` is two; `//server/share` is not
-  one. In PowerShell, `-Path` and `-LiteralPath` (`Get-ChildItem`, `Get-Item`,
+  `findstr` takes its switches with `/` or `-` (`/f:file`, `-f:file`) and runs
+  letters together after one prefix, the one that takes a value last (`/smf:file`,
+  `-if:file`); `/s/b` is two runs. A switch is never an operand. A run with a
+  letter `findstr` does not know, or a value switch that is not last, makes the
+  line `Unknown`. Three switches name files: `/G:file` holds the search
+  strings and `/D:dir;dir` the folders to search (a list split at `;`), and
+  their values are places; `/F:file` is a list of files to open, which the
+  guard never sees, so it is `Unknown` whatever it names. `/C:string` and
+  `/A:attr` are data. With `/G:` or `/C:` every operand is a file, where
+  otherwise the first operand is what to search for (one known only when it
+  runs could be a switch, so it is a place). `dir`'s `/A:`, `/O:` and `/T:` are
+  data, and `type` has no switch. `//server/share` is no switch.
+- **An option that reads its list of files to open from another file is
+  `Unknown`, whatever its value**, since the list could name a share:
+  `findstr /F:`, `wc` and `du` and `sort` `--files0-from`, `file -f` and
+  `--files-from`, `find -files0-from`, and `xargs -a` and `--arg-file`. An
+  option whose file holds patterns, not paths, is read as a place only:
+  `grep -f`, `rg -f`, `findstr /G:`. Of GNU's other long options, `diff
+  --from-file` and `--to-file`, `grep` and `rg` `--file`, `du` and `diff`
+  `--exclude-from`, `sort --random-source` and `realpath --relative-to` name a
+  file, and the file is a place.
+- In PowerShell, `-Path` and `-LiteralPath` (`Get-ChildItem`, `Get-Item`,
   `Get-Content`, `Select-String`, `Test-Path`, `Resolve-Path`) and
   `Resolve-Path -RelativeBasePath` are places; `-Filter`, `-Include`,
   `-Exclude`, `-Stream`, `-Encoding`, `-Delimiter`, `-Tail`, `-TotalCount`,
-  `-Pattern`, `-PathType` and `-OlderThan` are not. Of GNU's long options,
-  `wc` and `du` `--files0-from`, `diff` `--from-file` and `--to-file`, `grep`
-  and `rg` `--file`, `du` and `diff` `--exclude-from`, `sort`
-  `--random-source`, and `realpath` `--relative-to` take a file. None of the
-  readers in the cmd and PowerShell tables has a switch that writes; `sort
-  /O`, `more`, `where` and `find` of cmd are not in them and are `Unknown`.
+  `-Pattern`, `-PathType` and `-OlderThan` are not. None of the readers in the
+  cmd and PowerShell tables has a switch that writes; `sort /O`, `more`,
+  `where` and `find` of cmd are not in them and are `Unknown`.
 - **A pipeline into a reader** (`xargs cat`, and in PowerShell `Get-Item`,
   `Get-ChildItem`, `Test-Path`, `Resolve-Path`, `Get-Content` and `Select-String`
   with no path of their own) hands it paths, so the stage before it must list

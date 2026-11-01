@@ -92,9 +92,9 @@ fn readers_only_read() {
             "which cargo",
             "true",
             "ls; cat a.txt; pwd",
-            "wc --files0-from=list.txt",
             "diff --from-file=a b",
-            "du --files0-from list.txt",
+            "grep -f words.txt a.txt",
+            "rg -f words.txt src",
             // Only what a program opens is a place: a pattern, a count or an
             // author known only when it runs is not.
             "git ls-files | xargs grep x",
@@ -338,6 +338,17 @@ fn what_cannot_be_read_is_unknown() {
             "printf \"$fmt\" a",
             // An option that names a file takes a place like any operand.
             "wc --files0-from=\"$f\"",
+            // A file that lists the files to open is a list the guard never
+            // sees, whatever it is called.
+            "wc --files0-from=list.txt",
+            "wc --files0-from list.txt",
+            "du --files0-from list.txt",
+            "sort --files0-from=list.txt",
+            "file -f list.txt",
+            "file --files-from=list.txt",
+            "find -files0-from list.txt",
+            "ls | xargs -a list.txt cat",
+            "xargs --arg-file=list.txt cat",
             "wc --files0-from \"$f\"",
             "du --files0-from=\"$f\"",
             "diff --from-file=\"$f\" a",
@@ -795,10 +806,16 @@ fn cmd_readers_only_read() {
             "",
             "type \"C:\\Users\\me\\a.txt\"",
             "dir \\\\?\\C:\\Users\\me",
-            "findstr /i /f:list.txt x",
             "findstr /c:x y",
             "findstr /g:pat.txt y",
             "findstr /d:src;lib x *",
+            "findstr /i /g:words.txt y",
+            "findstr -i x *.rs",
+            "findstr /ir x *.rs",
+            "findstr /smi x *.rs",
+            "findstr /off x y",
+            "findstr -c:x y",
+            "findstr -s -i /c:x *.rs",
             "findstr /s /i x *.rs",
             "dir /s/b",
             "dir /a:d /o:n",
@@ -847,6 +864,30 @@ fn cmd_unknown_is_unknown() {
             "findstr x 0< %F%",
             // The switches of `findstr` that open files.
             "findstr /i /f:\\\\evil\\s\\x x",
+            // Switches with `-` or `/`, and runs of letters with the value one
+            // last.
+            "findstr -f:\\\\evil\\x y",
+            "findstr -f://evil/x y",
+            "findstr -g:\\\\evil\\x y",
+            "findstr -d:\\\\evil\\s x *",
+            "findstr /if:\\\\evil\\x y",
+            "findstr /smf:\\\\evil\\x y",
+            "findstr /mg:\\\\evil\\x y",
+            "findstr /id:\\\\evil\\s x *",
+            "findstr /IF://evil/x y",
+            "findstr -if:\\\\evil\\x y",
+            "findstr -s -i /g:\\\\evil\\x y",
+            // A list of files, whatever it is called.
+            "findstr /f:files.txt todo",
+            "findstr /i /f:list.txt x",
+            "findstr -f:list.txt x",
+            // A run with a letter `findstr` does not know, or a value switch
+            // that is not last.
+            "findstr /z x y",
+            "findstr -z x y",
+            "findstr /fi:x y",
+            "findstr /iq x y",
+            "findstr /c x y:z",
             "findstr /F:\\\\evil\\s\\x x",
             "findstr x /f:\\\\evil\\s\\x",
             "findstr /c:x /f:\\\\evil\\s\\x",

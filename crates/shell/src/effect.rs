@@ -334,7 +334,7 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
         },
         "xargs" => Options {
             flags: "0rtxpo",
-            valued: "nPLsdEeaRSIJil",
+            valued: "nPLsdEeRSIJil",
             longs: &[
                 "null",
                 "no-run-if-empty",
@@ -351,7 +351,6 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
                 "max-chars",
                 "delimiter",
                 "eof",
-                "arg-file",
                 "replace",
                 "process-slot-var",
             ],
@@ -684,6 +683,10 @@ fn find(args: &[Arg]) -> Effect {
         .any(|text| WRITES.contains(&text))
     {
         return Effect::Changes;
+    }
+    // The start points are read from a file, which the guard never sees.
+    if args.iter().any(|arg| arg.known() == Some("-files0-from")) {
+        return Effect::Unknown;
     }
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {

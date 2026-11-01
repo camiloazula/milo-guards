@@ -244,6 +244,10 @@ struct Spec {
     /// Short options whose value is a file the program reads.
     files: &'static str,
     file_longs: &'static [&'static str],
+    /// Options whose value is a file that lists files to open: the guard
+    /// never sees the list, so the line is `Unknown` whatever it names.
+    lists: &'static str,
+    list_longs: &'static [&'static str],
     /// Whether the first operand is a pattern.
     pattern: bool,
     /// The options that give the pattern or the places instead, so that no
@@ -292,7 +296,7 @@ const STAT: Spec = Spec {
     ..none()
 };
 const WC: Spec = Spec {
-    file_longs: &["files0-from"],
+    list_longs: &["files0-from"],
     ..none()
 };
 const DU: Spec = Spec {
@@ -306,7 +310,8 @@ const DU: Spec = Spec {
         "time-style",
     ],
     files: "X",
-    file_longs: &["exclude-from", "files0-from"],
+    file_longs: &["exclude-from"],
+    list_longs: &["files0-from"],
     ..none()
 };
 const DF: Spec = Spec {
@@ -344,13 +349,16 @@ const SORT: Spec = Spec {
         "parallel",
         "batch-size",
     ],
-    file_longs: &["random-source", "files0-from"],
+    file_longs: &["random-source"],
+    list_longs: &["files0-from"],
     ..none()
 };
 const FILE: Spec = Spec {
     valued: "eP",
-    files: "fm",
-    file_longs: &["files-from", "magic-file"],
+    files: "m",
+    file_longs: &["magic-file"],
+    lists: "f",
+    list_longs: &["files-from"],
     ..none()
 };
 const LESS: Spec = Spec {
@@ -382,6 +390,7 @@ const GREP: Spec = Spec {
     pattern: true,
     given: "ef",
     given_longs: &["regexp", "file"],
+    ..none()
 };
 const RG: Spec = Spec {
     valued: "gtTmABCjEMrde",
@@ -423,6 +432,7 @@ const RG: Spec = Spec {
     pattern: true,
     given: "ef",
     given_longs: &["regexp", "file", "files", "type-list", "help", "version"],
+    ..none()
 };
 const FD: Spec = Spec {
     valued: "eEtdSjco",
@@ -455,6 +465,8 @@ const fn none() -> Spec {
         valued_longs: &[],
         files: "",
         file_longs: &[],
+        lists: "",
+        list_longs: &[],
         pattern: false,
         given: "",
         given_longs: &[],
@@ -501,45 +513,53 @@ fn borrowed(args: Vec<&Arg>) -> Vec<Cow<'_, Arg>> {
     args.into_iter().map(Cow::Borrowed).collect()
 }
 
-/// The places a cmd program names. Its switches are `/X` or `/X:value`, and
-/// `/s/b` is two; `findstr` has three that name files: `/F:file` (a list of
-/// files), `/G:file` (the search strings) and `/D:dir;dir` (the folders to
-/// search). With `/G:` or `/C:` every operand is a file; without either, the
-/// first operand is what to search for. The other switches of `findstr` and
-/// of `dir` (`/A:`, `/O:`, `/T:`) take attributes, orders and kinds of time:
-/// data. `type` has no switch. A value known only when it runs, or an
-/// operand that is, is an operand, and so a place.
+/// The places a cmd program names. `findstr` takes switches with `/` or `-`
+/// and runs letters together after one prefix, the one with a value last
+/// (`/smf:file`, `-if:file`); `/s/b` is two runs. Three of its switches name
+/// files: `/F:file` is a list of files to open, which the guard never sees, so
+/// it is `Unknown` whatever it names; `/G:file` holds the search strings and
+/// `/D:dir;dir` the folders to search, and their values are places. `/C:string`
+/// and `/A:attr` are data. With `/G:` or `/C:` every operand is a file;
+/// without either, the first operand is what to search for. A run with a letter
+/// `findstr` does not know, or a value switch that is not last, is `Unknown`.
+/// `dir` has `/`-switches that are all data (`/A:`, `/O:`, `/T:`) and `type`
+/// has none. A value known only when it runs, or an operand that is, is an
+/// operand, and so a place.
 fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
     let mut paths = Vec::new();
     let mut operands: Vec<&Arg> = Vec::new();
     let findstr = key == "findstr";
     let mut given = false;
+    let unknown = || Cow::Owned(Arg::Unknown("a switch the guard does not read".to_string()));
     for arg in args {
-        let Some((names, value)) = arg.known().and_then(switches) else {
-            operands.push(arg);
-            continue;
-        };
-        let Some(&last) = names.last() else {
-            continue;
-        };
-        let value = value.unwrap_or_default();
-        if !findstr {
-            continue;
-        }
-        match last.to_ascii_lowercase().as_str() {
-            "g" => {
-                given = true;
-                paths.push(Cow::Owned(Arg::Known(value.to_string())));
+        let text = arg.known();
+        if findstr {
+            match text.map(findstr_switch) {
+                Some(Switch::Run { value, text }) => {
+                    given |= matches!(value, Some('c' | 'g'));
+                    match (value, text) {
+                        (Some('g'), Some(text)) => {
+                            paths.push(Cow::Owned(Arg::Known(text.to_string())));
+                        }
+                        (Some('d'), Some(text)) => paths.extend(
+                            text.split(';')
+                                .map(|folder| Cow::Owned(Arg::Known(folder.to_string()))),
+                        ),
+                        (Some('f'), _) => paths.push(unknown()),
+                        _ => {}
+                    }
+                    continue;
+                }
+                Some(Switch::Unread) => {
+                    paths.push(unknown());
+                    continue;
+                }
+                Some(Switch::Operand) | None => {}
             }
-            "c" => given = true,
-            "f" => paths.push(Cow::Owned(Arg::Known(value.to_string()))),
-            "d" => paths.extend(
-                value
-                    .split(';')
-                    .map(|folder| Cow::Owned(Arg::Known(folder.to_string()))),
-            ),
-            _ => {}
+        } else if text.and_then(switches).is_some() {
+            continue;
         }
+        operands.push(arg);
     }
     // The first operand is what to search for, when it is known: one known
     // only when it runs could be a switch.
@@ -555,8 +575,71 @@ fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
     paths
 }
 
-/// A cmd switch run: the names of `/s/b` or `/F:file`, and the value after
-/// the first `:`. `None` for what is not one, such as `//server/share`.
+/// What an argument of `findstr` is.
+enum Switch<'a> {
+    /// Not a switch: `//server/share`, a lone `-`, a name.
+    Operand,
+    /// A switch run the guard does not read.
+    Unread,
+    /// A switch run read, and the switch in it that takes a value (`a`, `c`,
+    /// `d`, `f`, `g`), with the value.
+    Run {
+        value: Option<char>,
+        text: Option<&'a str>,
+    },
+}
+
+/// A `findstr` argument read as the switches it is: `/` or `-`, then letters
+/// of `findstr`'s switches (`B E L R S I X V N M O P`, `OFF`, `OFFLINE`, and
+/// `A C D F G`, which take `:value`, the last letter only); `/` also
+/// separates runs (`/s/b`).
+fn findstr_switch(text: &str) -> Switch<'_> {
+    let slash = text.starts_with('/');
+    let Some(body) = text
+        .strip_prefix('/')
+        .or_else(|| text.strip_prefix('-'))
+        .filter(|body| !body.is_empty())
+    else {
+        return Switch::Operand;
+    };
+    let (names, text) = match body.split_once(':') {
+        Some((names, value)) => (names, Some(value)),
+        None => (body, None),
+    };
+    let runs: Vec<&str> = if slash {
+        names.split('/').collect()
+    } else {
+        vec![names]
+    };
+    if runs.iter().any(|run| run.is_empty()) {
+        return Switch::Operand;
+    }
+    let mut value = None;
+    for (at, run) in runs.iter().enumerate() {
+        let lower = run.to_ascii_lowercase();
+        if matches!(lower.as_str(), "off" | "offline") {
+            continue;
+        }
+        for (place, letter) in lower.char_indices() {
+            let last = at + 1 == runs.len() && place + letter.len_utf8() == lower.len();
+            match letter {
+                'b' | 'e' | 'l' | 'r' | 's' | 'i' | 'x' | 'v' | 'n' | 'm' | 'o' | 'p' => {}
+                'a' | 'c' | 'd' | 'f' | 'g' if last => value = Some(letter),
+                _ => return Switch::Unread,
+            }
+        }
+    }
+    // A value given to a run that ends in a switch that takes none, or a
+    // switch that takes one given none.
+    if text.is_some() != value.is_some() {
+        return Switch::Unread;
+    }
+    Switch::Run { value, text }
+}
+
+/// A cmd switch run for a program other than `findstr`: the names of `/s/b`
+/// or `/A:d`, and the value after the first `:`. `None` for what is not one,
+/// such as `//server/share`.
 fn switches(text: &str) -> Option<(Vec<&str>, Option<&str>)> {
     let body = text.strip_prefix('/')?;
     let (names, value) = match body.split_once(':') {
@@ -679,7 +762,12 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
                 continue;
             }
             given |= spec.given_longs.contains(&name);
-            if spec.file_longs.contains(&name) {
+            if spec.list_longs.contains(&name) {
+                paths.push(Cow::Owned(Arg::Unknown(head.to_string())));
+                if value.is_none() {
+                    iter.next();
+                }
+            } else if spec.file_longs.contains(&name) {
                 match value {
                     // An unknown value is the argument itself; a known one
                     // is judged as the place it is.
@@ -701,6 +789,13 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
             let rest = &bundle[at + letter.len_utf8()..];
             let attached = !rest.is_empty() || tail;
             given |= spec.given.contains(letter);
+            if spec.lists.contains(letter) {
+                paths.push(Cow::Owned(Arg::Unknown(head.to_string())));
+                if !attached {
+                    iter.next();
+                }
+                break;
+            }
             if spec.files.contains(letter) {
                 if tail {
                     paths.push(Cow::Borrowed(arg));
