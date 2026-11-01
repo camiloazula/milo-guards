@@ -240,6 +240,10 @@ fn hostile(name: &str, size: usize) -> String {
         "bearers" => repeat("Bearer "),
         "basics" => repeat("Basic AAAAAAAA "),
         "wide characters" => repeat("é日本😀"),
+        "spans of escaped names" => repeat("password=\"%22"),
+        "spans of escaped keys" => repeat("%41KIAQ7FAKE2TESTK3YZW "),
+        "spans of escaped values" => repeat("%41 password=F4kePass9 "),
+        "escaped tokens" => repeat("Q7wE9%41rT2yU4%42iO6pA8sD0%43kL1zX3 "),
         "rejected values" => repeat("token=["),
         "rejected references" => repeat("password=${"),
         "documented examples" => repeat("password=EXAMPLE"),
@@ -259,7 +263,7 @@ fn hostile(name: &str, size: usize) -> String {
     }
 }
 
-const HOSTILE: [&str; 50] = [
+const HOSTILE: [&str; 54] = [
     "one character",
     "digits",
     "spaces",
@@ -295,6 +299,10 @@ const HOSTILE: [&str; 50] = [
     "bearers",
     "basics",
     "wide characters",
+    "spans of escaped names",
+    "spans of escaped keys",
+    "spans of escaped values",
+    "escaped tokens",
     "rejected values",
     "rejected references",
     "documented examples",
@@ -317,7 +325,7 @@ fn timed(text: &str, runs: usize) -> Duration {
     (0..runs)
         .map(|_| {
             let started = Instant::now();
-            let _ = find(text);
+            let _ = find_spans(text);
             let _ = find_high_entropy(text, 4.5);
             started.elapsed()
         })

@@ -36,6 +36,7 @@ const ADDRESS: text::Standin<'static> = text::Standin {
     word: None,
     quoted: false,
     address: true,
+    env_file: false,
 };
 
 /// What a row does once its pattern has matched.
@@ -299,6 +300,7 @@ fn netrc(candidate: &Candidate<'_>) -> bool {
                 word: Some("password"),
                 quoted: false,
                 address: false,
+                env_file: false,
             },
         )
 }

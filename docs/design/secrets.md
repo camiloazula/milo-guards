@@ -199,10 +199,13 @@ secret stays in a scrubbed text.
     The stems are `changeme`, `replaceme`, `replace`, `dummy`, `placeholder`,
     `example`, `sample`, `todo`, `fixme`, `your`. One followed by other
     characters (`Example#2024`, `Sample1234`, `Replace!Me9x`) is a value;
-  - **a constant**, only when unquoted and not in an address: upper snake case
+  - **a constant**, only when unquoted, not in an address and not on a line
+    of an environment file (`NAME=value`, `export NAME=value`), which has no
+    constants to name: upper snake case
     of capital letters (a last word of one or two digits is allowed):
-    `DEFAULT_TOKEN`, `REPLACE_ME`. `K7X_93QZ_M2PL_W8RT` and a quoted
-    `"QZ7W_P3XK_M2LV"` are values;
+    `DEFAULT_TOKEN`, `REPLACE_ME`. `K7X_93QZ_M2PL_W8RT`, a quoted
+    `"QZ7W_P3XK_M2LV"` and `DB_PASSWORD=HUNTER_TWO` in an environment file are
+    values;
   - **a mask, two kinds of character, or an elision**: `****`, `xxxxxxxx`,
     `abababab`; or a short head that ends in `_` or `-` (or is capitals, as
     `AKIA`) and then a run of `.`, `…`, `*` (three), or `x`, `0`, `#` (eight) to
@@ -261,8 +264,9 @@ These are Safe, and each has a row in the tests:
   `${TOKEN}`, `<password>`, `YOUR_TOKEN_HERE`, `REPLACE_ME`, `DEFAULT_TOKEN`,
   `changeme`, `dummy_password`, `api_key=api_key`, `sk-...`, `[REDACTED]`,
   helm's `existingSecret: my-secret-2`. Each key row
-  (the JWT and the Slack webhook apart) requires the last 32 characters to
-  have six different ones at least: a placeholder is not random and a key is,
+  (the JWT and the Slack webhook apart) requires the last 32 characters after
+  the provider's fixed prefix (`sk_live_`, `glpat-`) to have six different ones at
+  least: a placeholder is not random and a key is,
   and a key that is random in its front and repeats at its end is still one.
 - The pair RFC 7617 writes its `Basic` example with (`Aladdin:open sesame`).
 - A header or a prefix alone: `-----BEGIN PRIVATE KEY-----` with no body, the
@@ -325,6 +329,9 @@ prompt:
 - **Flags** (`--password hunter22`, `curl -u user:pass`, `mysql -pSecret`) are
   the shell's: the shell guard reads a command line. A name assigned a value
   with `=`, as `--password=hunter22`, is found.
+- **A value equal to its name is Safe, one that holds it is not**: `password=PASSWORD`
+  is a stand-in, `password=MyPassword!` is a value. The equality rule cannot tell
+  a stand-in written with a prefix or a suffix from a password.
 - **A word that holds the name's** (`password=Password1`, `secret=mysecret2`,
   helm's `existingSecret: my-secret-2`) is a value and is found, even when it
   is the name of a secret in a cluster and no password. It is Safe only as the

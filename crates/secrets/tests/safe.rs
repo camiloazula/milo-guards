@@ -330,9 +330,11 @@ fn a_stand_in_is_safe_by_the_shape_of_the_whole_value() {
     let rows = [
         // a constant: upper snake case, letters only, not in quotes
         "password: DEFAULT_PASSWORD",
-        "token=DEFAULT_TOKEN",
+        "x = connect(host, token=DEFAULT_TOKEN)",
+        "options = {token: DEFAULT_TOKEN}",
         "def auth(self, password=None, token=DEFAULT_TOKEN):",
         "CLIENT_SECRET=REPLACE_ME",
+        "export API_KEY=YOUR_API_KEY_HERE",
         "API_KEY=YOUR_API_KEY_HERE",
         "secret: SECRET_FROM_VAULT",
         "secret = MY_SECRET_2",
@@ -420,6 +422,11 @@ fn a_value_that_only_looks_like_a_stand_in_is_found() {
         "secret = \"MY_SECRET_2\"",
         "postgres://u:PROD_PW_7X3K@db.fake.test/x",
         "JWT_SECRET=MY_APP_JWT_KEY_2024",
+        // an environment file has no constants to name
+        "DB_PASSWORD=HUNTER_TWO",
+        "export DB_PASSWORD=HUNTER_TWO",
+        "  TOKEN=DEFAULT_TOKEN",
+        "token=DEFAULT_TOKEN",
         // a head and a tail around dots, a long mask-like password
         "password=ab...cd9X",
         "password=Zq9!aaaaaaaaaaaaaaaaaa",
@@ -449,5 +456,49 @@ fn a_stand_in_shape_does_not_hide_a_value_that_is_one() {
         "postgres://app:F4kePass9word1@db.fake.test/app",
     ] {
         assert!(!find(row).is_safe(), "{row:?}");
+    }
+}
+
+#[test]
+fn a_placeholder_key_is_safe_by_what_follows_the_providers_prefix() {
+    // The letters of a prefix (`sk_live_`, `glpat-`) are not variety.
+    for (prefix, length) in [
+        ("sk_live_", 24),
+        ("sk_test_", 24),
+        ("rk_live_", 24),
+        ("glpat-", 20),
+        ("npm_", 36),
+        ("ghp_", 36),
+        ("hf_", 34),
+        ("shpat_", 32),
+        ("sk-ant-api03-", 93),
+        ("xoxb-", 24),
+        ("whsec_", 32),
+    ] {
+        for filler in ["x", "0", "ab"] {
+            let key = format!(
+                "{prefix}{}",
+                filler
+                    .repeat(length)
+                    .chars()
+                    .take(length)
+                    .collect::<String>()
+            );
+            assert!(find(&key).is_safe(), "{key} {:?}", find(&key).findings());
+            let line = format!("KEY={key}");
+            assert!(find(&line).is_safe(), "{line}");
+        }
+    }
+    // And a key that is random behind its prefix is one.
+    for key in [
+        format!("sk_live_{}", fill("Q7wE9rT2yU4iO6pA8sD0", 24)),
+        format!("glpat-{}", fill("Q7wE9rT2yU4iO6pA8sD0", 20)),
+        format!(
+            "sk_test_{}{}",
+            fill("Q7wE9rT2yU4iO6pA8sD0", 12),
+            "x".repeat(12)
+        ),
+    ] {
+        assert!(!find(&key).is_safe(), "{key}");
     }
 }

@@ -107,7 +107,8 @@ pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
         // Whatever is decided, the scan goes on after the value.
         at = at.max(reading.read_point(value.after));
         let raw = written.get(value.start..value.end).unwrap_or_default();
-        if accept(word, raw, value.quoted, tied) {
+        let env_file = tied && is_env_line(written, name_at);
+        if accept(word, raw, value.quoted, tied, env_file) {
             out.push(Hit {
                 rule: Rule::GenericSecret,
                 reason: "holds a password or secret",
@@ -339,9 +340,19 @@ fn secret_word(name: &str) -> Option<&'static str> {
     whole.then_some("pass")
 }
 
+/// Whether the name at `at` begins a line, or follows `export` on one: a line
+/// of an environment file or a shell script that only sets it.
+fn is_env_line(written: &str, at: usize) -> bool {
+    let head = written.get(..at).unwrap_or_default();
+    let line = head
+        .rfind('\n')
+        .map_or(head, |newline| &head[newline + 1..]);
+    matches!(line.trim(), "" | "export" | "declare -x")
+}
+
 /// Whether the value read after a name that ends in `word` is a secret.
 /// `raw` is the value as it was written.
-fn accept(word: &str, raw: &str, quoted: bool, tied: bool) -> bool {
+fn accept(word: &str, raw: &str, quoted: bool, tied: bool, env_file: bool) -> bool {
     let decoded = Reading::new(raw);
     let whole = decoded.text();
     // What closes a statement or a list is not part of the word before it.
@@ -358,6 +369,7 @@ fn accept(word: &str, raw: &str, quoted: bool, tied: bool) -> bool {
                 word: Some(word),
                 quoted,
                 address: false,
+                env_file,
             },
         )
     {

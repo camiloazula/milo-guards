@@ -152,10 +152,16 @@ impl<'a> Reading<'a> {
             .and_then(|head| head.char_indices().next_back());
         let end = match last {
             Some((place, c)) => {
+                // Edits are in order, so the ones at `place` are found by
+                // bisection: a few dropped characters, then at most one escape.
+                let first = self.edits.partition_point(|edit| edit.decoded < place);
                 let escaped = self
                     .edits
+                    .get(first..)
+                    .unwrap_or_default()
                     .iter()
-                    .find(|edit| edit.decoded == place && edit.decoded_len == 1);
+                    .take_while(|edit| edit.decoded == place)
+                    .find(|edit| edit.decoded_len == 1);
                 // An escape ends where its last character does.
                 escaped.map_or(self.original_start(place) + c.len_utf8(), |edit| {
                     edit.original + edit.original_len

@@ -24,13 +24,26 @@ pub(crate) fn alone(text: &str, start: usize, end: usize) -> bool {
         && !after(text, end).is_some_and(|c| c.is_ascii_alphanumeric())
 }
 
-/// Whether the last 32 characters of `secret` have six different ones at
-/// least. A key is random; a placeholder (`xxxxxxxx`, `00000000`, `abababab`,
-/// after however long a prefix) is not, and writing one in a README is not a
-/// leak. A key that is random in its front and repeats at its end is still a
-/// key.
+/// Whether the last 32 characters of `secret`, after the fixed prefix of the
+/// provider (what ends at the last `_`, `-` or `.` of its first 16 characters:
+/// `sk_live_`, `glpat-`, `sk-ant-api03-`), have six different ones at least. A
+/// key is random; a placeholder (`xxxxxxxx`, `00000000`, `abababab`, after
+/// however long a prefix) is not, and writing one in a README is not a leak. A
+/// key that is random in its front and repeats at its end is still a key.
 pub(crate) fn varied(secret: &str) -> bool {
-    let mut body: Vec<char> = secret.chars().rev().take(32).collect();
+    let prefix = secret
+        .char_indices()
+        .take(16)
+        .filter(|(_, c)| matches!(c, '_' | '-' | '.'))
+        .last()
+        .map_or(0, |(at, c)| at + c.len_utf8());
+    let mut body: Vec<char> = secret
+        .get(prefix..)
+        .unwrap_or_default()
+        .chars()
+        .rev()
+        .take(32)
+        .collect();
     body.sort_unstable();
     body.dedup();
     body.len() >= 6
@@ -154,6 +167,9 @@ pub(crate) struct Standin<'a> {
     pub(crate) quoted: bool,
     /// Whether it is the password of an address.
     pub(crate) address: bool,
+    /// Whether it is on a line that is only `NAME=value` or `export NAME=value`:
+    /// an environment file, which has no constants to name.
+    pub(crate) env_file: bool,
 }
 
 /// Whether `value` is a stand-in for a value. **A stand-in is recognised by
@@ -166,7 +182,8 @@ pub(crate) struct Standin<'a> {
 /// - **a literal**: `string`, `null`, `true`, …;
 /// - **a stem** of a closed list, alone or with the name's word, and up to
 ///   three digits: `changeme123`, `dummy_password`, `your_api_key_here`;
-/// - **a constant**, unquoted and not in an address: upper snake case, letters
+/// - **a constant**, unquoted, not in an address and not on a line of an
+///   environment file (`NAME=value`, which has no constants): upper snake case, letters
 ///   only (a trailing number of one or two digits is allowed): `DEFAULT_TOKEN`,
 ///   `REPLACE_ME`. `K7X_93QZ_M2PL` is a value;
 /// - **a mask** (`****`, `xxxxxxxx`), **few characters** repeated
@@ -210,7 +227,7 @@ pub(crate) fn is_placeholder(value: &str, context: &Standin<'_>) -> bool {
             });
     let documented = matches!(value.len(), 20 | 40)
         && (value.ends_with("EXAMPLE") || value.ends_with("EXAMPLEKEY"));
-    let constant = !context.quoted && !context.address && is_constant(value);
+    let constant = !context.quoted && !context.address && !context.env_file && is_constant(value);
     own || LITERALS.contains(&squeezed.as_str())
         || stem
         || constant
