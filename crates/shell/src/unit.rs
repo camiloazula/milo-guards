@@ -664,6 +664,12 @@ impl Split {
         self.dir.clone()
     }
 
+    /// Whether the line makes the shell keep the physical path (`cd -P`,
+    /// `set -P`), which follows a link before it applies a `..`.
+    pub(crate) fn physical(&self) -> bool {
+        self.pwd.physical
+    }
+
     /// Whether `$PWD` is plain text here: the line has not moved, or moved to
     /// a name it wrote out that holds no code (`sub`). After a `cd` to one
     /// that may (`d$(rm -rf ~)`, `d\044(…)`, `"$x"`, a wildcard that matches
