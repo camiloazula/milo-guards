@@ -96,3 +96,161 @@ fn what_they_run_decides_the_effect() {
     );
     check_effect(Shell::Posix, &paths, Effect::Unknown, &["noglob $CMD"]);
 }
+
+/// The group's commands are read where the shell runs them: past the name,
+/// the `{` words, `NAME=value` words and `!`, and a loop, conditional or
+/// function inside the group is as unreadable as one after a bare `coproc`.
+#[test]
+fn coproc_reads_the_program_inside_a_group() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "coproc { { ls; }; }",
+            "coproc NAME { { ls; }; }",
+            "coproc { FOO=1 ls; }",
+            "coproc { ! ls; }",
+            "coproc NAME { ! ls; }",
+            "coproc FOO=1 ls",
+            "coproc { > out; ls; }",
+        ],
+        &[
+            (
+                "coproc NAME { while true; do rm -rf ~; done; }",
+                Rule::Unreadable,
+            ),
+            (
+                "coproc NAME { if true; then rm -rf ~; fi; }",
+                Rule::Unreadable,
+            ),
+            (
+                "coproc NAME { for i in 1; do rm -rf ~; done; }",
+                Rule::Unreadable,
+            ),
+            (
+                "coproc { { while true; do rm -rf ~; done; }; }",
+                Rule::Unreadable,
+            ),
+            (
+                "coproc { ! while true; do rm -rf ~; done; }",
+                Rule::Unreadable,
+            ),
+            ("coproc { { rm -rf ~; }; }", Rule::Delete),
+            ("coproc NAME { { rm -rf ~; }; }", Rule::Delete),
+            ("coproc { { { rm -rf ~; }; }; }", Rule::Delete),
+        ],
+    );
+}
+
+/// What stands before the command in a simple command or a group is read
+/// past, as it is without `coproc`.
+#[test]
+fn coproc_reads_past_assignments_and_a_bang() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("coproc FOO=1 rm -rf ~", Rule::Delete),
+            ("coproc A=1 B=2 rm -rf ~", Rule::Delete),
+            ("coproc PATH=/x rm -rf ~", Rule::Delete),
+            ("coproc FOO+=1 rm -rf ~", Rule::Delete),
+            ("coproc FOO=1 { rm -rf ~; }", Rule::Delete),
+            ("coproc ! rm -rf ~", Rule::Delete),
+            ("coproc { FOO=1 rm -rf ~; }", Rule::Delete),
+            ("coproc { ! rm -rf ~; }", Rule::Delete),
+            ("coproc { FOO=1 BAR=2 ! rm -rf ~; }", Rule::Delete),
+            ("coproc { FOO=1 { rm -rf ~; }; }", Rule::Delete),
+            ("coproc NAME { ! rm -rf ~; }", Rule::Delete),
+            ("coproc NAME { FOO=1 rm -rf ~; }", Rule::Delete),
+            ("coproc FOO=1 sudo rm -rf ~", Rule::Elevated),
+            ("coproc $X=1 rm -rf ~", Rule::Unknown),
+            ("coproc GLOBIGNORE=x bash -c 'rm -rf *git'", Rule::Delete),
+        ],
+    );
+}
+
+/// The grammar takes the words after a redirect's target for more targets,
+/// so a command that follows a redirect in a `coproc` is not among the
+/// arguments: it cannot be read.
+#[test]
+fn coproc_command_after_a_redirect_is_unreadable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("coproc { 2>/dev/null rm -rf ~; }", Rule::Unreadable),
+            ("coproc { > out rm -rf ~; }", Rule::Unreadable),
+            ("coproc { < in rm -rf ~; }", Rule::Unreadable),
+            ("coproc { 2>&1 rm -rf ~; }", Rule::Unreadable),
+            ("coproc NAME { 2>/dev/null rm -rf ~; }", Rule::Unreadable),
+            ("coproc NAME { > out rm -rf ~; }", Rule::Unreadable),
+            ("coproc > out rm -rf ~", Rule::Unreadable),
+            ("coproc 2>/dev/null rm -rf ~", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_coproc_assignment_is_a_variable_set_for_effect() {
+    let paths = posix();
+    check_effect(
+        Shell::Posix,
+        &paths,
+        Effect::Unknown,
+        &[
+            "coproc PATH=/x ls",
+            "coproc FOO=1 ls",
+            "coproc NAME { PATH=/x ls; }",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &paths,
+        Effect::ReadsOnly,
+        &["coproc LANG=C ls", "env LANG=C ls"],
+    );
+    check_effect(
+        Shell::Posix,
+        &paths,
+        Effect::Changes,
+        &["coproc LANG=C rm -rf ~", "coproc { { rm -rf ~; }; }"],
+    );
+}
+
+/// `noglob`, `nocorrect` and `-` are zsh's modifiers: in bash and sh they
+/// are not found, so the builtin after them never runs and bash's flag
+/// stays on. zsh's own flag does go off.
+#[test]
+fn a_zsh_modifier_turns_zshs_flag_off_and_never_bashs() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "setopt globdots; noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; nocorrect unsetopt globdots; rm -rf *git",
+            "setopt globdots; - unsetopt globdots; rm -rf *git",
+            "setopt globdots; noglob command unsetopt globdots; rm -rf *git",
+            "shopt -s dotglob; command shopt -u dotglob; rm -rf *git",
+        ],
+        &[
+            (
+                "shopt -s dotglob; noglob shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; nocorrect shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; - shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; noglob command shopt -u dotglob; rm -rf *git",
+                Rule::Delete,
+            ),
+        ],
+    );
+}

@@ -67,9 +67,15 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             split.push(unit);
             return;
         };
-        // `env X=1 cmd` and `env -u X cmd` change the program's environment.
-        if split.kept.on && key == "env" && unit.shell != Shell::Cmd {
-            for name in env_sets(&unit.args) {
+        // `env X=1 cmd` and `env -u X cmd` change the program's environment,
+        // as `coproc X=1 cmd` does.
+        if split.kept.on && unit.shell != Shell::Cmd {
+            let names = match key.as_str() {
+                "env" => env_sets(&unit.args),
+                "coproc" if unit.shell == Shell::Posix => coproc_sets(&unit.args),
+                _ => Vec::new(),
+            };
+            for name in names {
                 split.set(&name);
             }
         }
@@ -501,29 +507,67 @@ fn launch(key: &str, unit: &Unit) -> Launch {
     }
 }
 
-/// What `coproc` runs: the program after a `{` that opens a group (which
-/// may follow a name), else the first word. A loop, a conditional or a
-/// function after it (`coproc while …; do …; done`) is cut into pieces by
-/// the grammar, its body behind the program `do`, so it is not read.
+/// What `coproc` runs: the first word past an optional name, the `{` words
+/// that open a group (`coproc NAME { { cmd; }; }`), and what stands before a
+/// command (`NAME=value` words, `!`). A loop, a conditional or a function
+/// after it (`coproc while …; do …; done`, also inside a group) is cut into
+/// pieces by the grammar, its body behind the program `do`, so it is not
+/// read.
 fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
-    if [word(0), word(1)]
-        .iter()
-        .flatten()
-        .any(|text| COMPOUND.contains(text))
-    {
+    let opens = |at: usize| word(at).is_some_and(opens_group);
+    let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
+    // A name stands before a group or a compound command; before a simple
+    // command the first word is the program.
+    let mut at = usize::from(!opens(0) && (opens(1) || compound(1)));
+    while opens(at) || word(at).is_some_and(|text| text == "!" || is_assignment(text)) {
+        at += 1;
+    }
+    if compound(at) {
         Launch::Opaque("starts a compound command that cannot be read")
-    } else if word(0) == Some("{") {
-        runs(args, Some(1))
-    } else if word(1) == Some("{") {
-        runs(args, Some(2))
     } else {
-        runs(args, Some(0))
+        runs(args, Some(at))
     }
 }
 
 /// The words that open a compound command with a body of its own.
 const COMPOUND: [&str; 7] = ["while", "until", "if", "for", "select", "case", "function"];
+
+/// Whether `text` is the `{` of a group, or several of them in one word: the
+/// grammar reads `{ {` as one.
+fn opens_group(text: &str) -> bool {
+    text.starts_with('{') && text.chars().all(|c| c == '{' || c.is_whitespace())
+}
+
+/// Whether `text` is a `NAME=value` assignment, which the shell takes off
+/// before the command (`NAME+=value` and `NAME[i]=value` too).
+fn is_assignment(text: &str) -> bool {
+    let Some((name, _)) = text.split_once('=') else {
+        return false;
+    };
+    let name = name.strip_suffix('+').unwrap_or(name);
+    let name = name.split_once('[').map_or(name, |(name, _)| name);
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The variables a `coproc` sets for the command it runs, read as [`coproc`]
+/// reads its words, for `effect`.
+fn coproc_sets(args: &[Arg]) -> Vec<String> {
+    let Launch::Runs(start) = coproc(args) else {
+        return Vec::new();
+    };
+    args.get(..start)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Arg::known)
+        .filter(|text| is_assignment(text))
+        .filter_map(|text| text.split(['=', '+', '[']).next())
+        .map(str::to_string)
+        .collect()
+}
 
 /// A script path that is the program's own input: what is piped into it.
 pub(super) fn is_stdin(path: &str) -> bool {

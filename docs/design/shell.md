@@ -62,12 +62,23 @@ Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
 `Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
-`noglob -- rm` runs a program named `--`), and `coproc`. `coproc rm -rf ~` and
-`coproc { rm -rf ~; }` (also `coproc NAME { … }`) judge the `rm`: a simple
-command takes no name, so the word after `coproc` is the program, and a group
-is read through its `{`. The grammar has no `coproc`, so a loop, conditional or
-function after it (`coproc while …; do …; done`) is cut into pieces whose
-body hides behind the program `do`: it is unreadable, hence risky.
+`noglob -- rm` runs a program named `--`), and `coproc`.
+
+`coproc` is read as the shells read it. A simple command takes no name, so the
+first word is the program (`coproc NAME cat` runs `NAME`); a group may take
+one (`coproc NAME { … }`). The program is the first word past the name, the
+`{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
+both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
+-rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
+the `rm`. The grammar has no `coproc`, so two forms are not read, and are
+risky:
+
+- A loop, conditional, `case` or function after it, or inside its group
+  (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
+  into pieces whose body hides behind the program `do`: `Unreadable`.
+- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
+  `coproc > out rm -rf ~`): the grammar takes the words after its target for
+  more targets, so the command is not among the arguments: `Unreadable`.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -204,12 +215,15 @@ folder a `cd` moved to.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
   `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
   them in this shell. They count when the unit is reached directly or through
-  `command`, `builtin`, `noglob`, `nocorrect`, `-`, `time`, `!` or `eval`. Behind `env`, `nohup`,
-  `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
-  their own and change nothing. In a pipeline, after `&`, on the right of `&&`
-  or `||`, in an `if`, `case`, loop or function body, they change nothing
-  either: the line may not run them, or runs them in a subshell, so the rest
-  stays judged with the option on.
+  `command`, `builtin`, `time`, `!` or `eval`. zsh's `noglob`, `nocorrect` and
+  `-` count for zsh's flag only: in bash and sh they are not found and the
+  builtin after them never runs, so `shopt -s dotglob; noglob shopt -u dotglob;
+  rm -rf *git` is still risky and `setopt globdots; noglob unsetopt globdots;
+  rm -rf *git` is not. Behind `env`, `nohup`, `timeout`, `nice`, `stdbuf`,
+  `sudo` or `find -exec` they run in a process of their own and change nothing.
+  In a pipeline, after `&`, on the right of `&&` or `||`, in an `if`, `case`,
+  loop or function body, they change nothing either: the line may not run them,
+  or runs them in a subshell, so the rest stays judged with the option on.
 - **Where it reaches.** It stays on for the rest of the line. A subshell,
   `$(…)`, and a script in a process of its own (`bash -c '…'`) give it back as
   it was: an option set inside `bash -c 'shopt -s dotglob'` does not reach the
@@ -464,10 +478,11 @@ never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly` and `Elevated`.
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
 `time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
-`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with options the guard knows: any other option
-makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
-`sudo -s` and `-i` start a shell, `env -P` changes where programs are found).
-`time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
+`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with
+options the guard knows: any other option makes the line `Unknown`, since it
+could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
+`env -P` changes where programs are found). `time -o FILE` and
+`time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. A shell started with a
 script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the

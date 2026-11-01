@@ -7,7 +7,7 @@
 //! the one unit that changes the option, or a shell started with it on;
 //! [`crate::unit::Split`] carries it to the units after.
 
-use crate::unit::Arg;
+use crate::unit::{Arg, Flag};
 
 /// What a unit does to the option. A shell has two of them, bash's and zsh's,
 /// and an off switch of one shell is an error in the other, so each is kept
@@ -63,13 +63,21 @@ const BASHOPTS: &str = "BASHOPTS";
 /// The wrappers a unit may sit behind and still change this shell's options:
 /// each runs the builtin itself. Any other (`env`, `nohup`, `timeout`,
 /// `find -exec`) starts a process of its own.
-const IN_SHELL: [&str; 6] = ["command", "builtin", "time", "noglob", "nocorrect", "-"];
+const IN_SHELL: [&str; 3] = ["command", "builtin", "time"];
 
-/// Whether a unit behind `wrappers` runs in this shell.
-pub(crate) fn in_shell(wrappers: &[String]) -> bool {
-    wrappers
-        .iter()
-        .all(|wrapper| IN_SHELL.contains(&wrapper.as_str()))
+/// zsh's precommand modifiers, which run the builtin after them in zsh. In
+/// bash and sh they are not words the shell knows, so nothing runs behind
+/// them.
+const ZSH_MODIFIERS: [&str; 3] = ["noglob", "nocorrect", "-"];
+
+/// Whether a unit behind `wrappers` runs in the shell whose `flag` it
+/// changes.
+pub(crate) fn in_shell(wrappers: &[String], flag: Flag) -> bool {
+    wrappers.iter().all(|wrapper| {
+        let wrapper = wrapper.as_str();
+        IN_SHELL.contains(&wrapper)
+            || (matches!(flag, Flag::Zsh) && ZSH_MODIFIERS.contains(&wrapper))
+    })
 }
 
 /// Whether giving the variable `name` the value `value` switches the option
@@ -461,19 +469,28 @@ mod tests {
         let wrappers = |names: &[&str]| -> Vec<String> {
             names.iter().map(|name| (*name).to_string()).collect()
         };
-        assert!(in_shell(&[]));
-        assert!(in_shell(&wrappers(&[
-            "command",
-            "builtin",
-            "time",
-            "noglob",
-            "nocorrect",
-            "-"
-        ])));
-        for name in [
-            "env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo", "coproc",
-        ] {
-            assert!(!in_shell(&wrappers(&[name])), "{name}");
+        for flag in [Flag::Bash, Flag::Zsh] {
+            assert!(in_shell(&[], flag));
+            assert!(in_shell(&wrappers(&["command", "builtin", "time"]), flag));
+            for name in [
+                "env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo", "coproc",
+            ] {
+                assert!(!in_shell(&wrappers(&[name]), flag), "{name}");
+            }
+        }
+    }
+
+    /// `noglob`, `nocorrect` and `-` are zsh's: in bash the command after them
+    /// is not found, so the builtin never runs.
+    #[test]
+    fn zsh_modifiers_run_the_builtin_in_zsh_only() {
+        for name in ["noglob", "nocorrect", "-"] {
+            let wrappers = vec![name.to_string()];
+            assert!(in_shell(&wrappers, Flag::Zsh), "{name}");
+            assert!(!in_shell(&wrappers, Flag::Bash), "{name}");
+            let mixed = vec!["command".to_string(), name.to_string()];
+            assert!(in_shell(&mixed, Flag::Zsh), "command {name}");
+            assert!(!in_shell(&mixed, Flag::Bash), "command {name}");
         }
     }
 }
