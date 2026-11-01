@@ -117,11 +117,7 @@ impl Checker<'_> {
                 args,
                 FLY_VALUES,
                 3,
-                |before, word| {
-                    matches!(word, "destroy" | "delete")
-                        || (matches!(before, Some("machine" | "machines"))
-                            && matches!(word, "rm" | "remove"))
-                },
+                |_, word| matches!(word, "destroy" | "delete" | "rm" | "remove"),
                 "destroys a Fly.io app, machine or volume",
             ),
             "vercel" => cloud(
@@ -201,10 +197,23 @@ impl Checker<'_> {
             Unread(Some(reason)) => self.add(Rule::Unknown, reason, None),
             Unread(None) => self.add(
                 Rule::Unknown,
-                format!("runs a {key} command only known when it runs"),
+                format!(
+                    "runs {} {key} command only known when it runs",
+                    article(key)
+                ),
                 None,
             ),
         }
+    }
+}
+
+/// The article before a program's name: `an aws command`, `a docker command`.
+/// Programs read as letters (`sst`) count by the sound of the first one.
+fn article(program: &str) -> &'static str {
+    if program.starts_with(['a', 'e', 'i', 'o', 'u']) || matches!(program, "sst" | "sls" | "scw") {
+        "an"
+    } else {
+        "a"
     }
 }
 
@@ -361,12 +370,9 @@ const MINIKUBE_VALUES: &[&str] = &[
     "--log_dir",
     "--log_file",
     "--log_file_max_size",
-    "--logtostderr",
     "--stderrthreshold",
-    "--skip_log_headers",
     "-o",
     "--output",
-    "--rootless",
 ];
 
 /// Options of k3d, kind and microk8s that take a value.
@@ -382,7 +388,16 @@ const PULUMI_VALUES: &[&str] = &[
     "--tracing",
     "-v",
     "--verbose",
-    "--logflow",
+    "-s",
+    "--stack",
+    "-t",
+    "--target",
+    "-m",
+    "--message",
+    "-p",
+    "--parallel",
+    "--config-file",
+    "--policy-pack",
 ];
 
 /// Options of terragrunt that take a value.
@@ -417,15 +432,6 @@ const CDK_VALUES: &[&str] = &[
     "--toolkit-stack-name",
     "-t",
     "--build",
-    "--asset-metadata",
-    "--path-metadata",
-    "--lookups",
-    "--staging",
-    "--notices",
-    "--ignore-errors",
-    "-j",
-    "--json",
-    "--version-reporting",
 ];
 
 /// Options of sst that take a value.
@@ -455,7 +461,6 @@ const AWS_VALUES: &[&str] = &[
     "--cli-read-timeout",
     "--cli-connect-timeout",
     "--cli-binary-format",
-    "--cli-auto-prompt",
 ];
 
 /// Options of gcloud that take a value, global and common to its commands.
@@ -476,8 +481,6 @@ const GCLOUD_VALUES: &[&str] = &[
     "--limit",
     "--sort-by",
     "--page-size",
-    "--user-output-enabled",
-    "--log-http",
 ];
 
 /// Options of gsutil that take a value.
@@ -632,9 +635,13 @@ fn is_one_of(arg: Option<&Arg>, names: &[&str]) -> bool {
 }
 
 /// Whether an operand names more than one thing, or something only known
-/// when it runs and not as one value: a substitution, a pipe's input, an
-/// unquoted variable (the shell splits it into words). A quoted variable is
-/// one word, as a PowerShell variable always is.
+/// when it runs and not as one value: a substitution, a pipe's input, a
+/// variable the shell splits into words. In a POSIX shell that is an unquoted
+/// variable, and a quoted one that holds an array (`"$@"`, `"${ids[@]}"`)
+/// since it expands to one word per element. PowerShell passes an array to a
+/// program as one argument per element, so a variable (not `$env:`) and a
+/// splat (`@ids`) are computed; a quoted one is a string. cmd expands
+/// `%VAR%` and `!VAR!` as text, so an unquoted one is several words.
 fn computed(arg: &Arg, shell: Shell) -> bool {
     match arg {
         Arg::Known(_) => false,
@@ -644,8 +651,24 @@ fn computed(arg: &Arg, shell: Shell) -> bool {
                 || text.contains('`')
                 || text.contains("<(")
                 || match shell {
-                    Shell::Posix => !text.starts_with('"'),
-                    _ => text.starts_with('(') || text.starts_with("@("),
+                    Shell::Posix => {
+                        !text.starts_with('"')
+                            || text.contains("$@")
+                            || text.contains("${@")
+                            || text.contains("[@]")
+                    }
+                    Shell::PowerShell => {
+                        text.starts_with('(')
+                            || text.starts_with("@(")
+                            || (text.starts_with('$')
+                                && !text
+                                    .get(..5)
+                                    .is_some_and(|head| head.eq_ignore_ascii_case("$env:")))
+                            || (text.starts_with('@') && text.len() > 1)
+                    }
+                    Shell::Cmd => {
+                        !text.starts_with('"') && (text.contains('%') || text.contains('!'))
+                    }
                 }
         }
     }
@@ -703,19 +726,37 @@ fn cloud<'a>(
 ) -> Say<'a> {
     let words = words(args, values);
     let mut before = None;
+    let mut unread = false;
+    let mut leaf = false;
     for (at, word) in words.iter().take(depth).enumerate() {
-        if let Some(text) = word.known() {
-            if hit(before, text) {
-                return Destroys(reason, words.get(at + 1).copied());
+        match word.known() {
+            Some(text) => {
+                if hit(before, text) {
+                    return Destroys(reason, words.get(at + 1).copied());
+                }
+                // A verb that does not delete takes operands, not another
+                // verb: `describe $vm` names a machine.
+                leaf = leaf || LEAF_VERBS.contains(&text);
             }
+            None => unread = unread || !leaf,
         }
         before = word.known();
     }
-    match words.first() {
-        Some(word) if word.known().is_none() => Unread(None),
-        _ => Safe,
+    if unread {
+        Unread(None)
+    } else {
+        Safe
     }
 }
+
+/// Verbs of the cloud CLIs that read, create or change one thing and take
+/// operands after them: a word that is only known when it runs behind one is
+/// an operand, not the verb that might delete.
+const LEAF_VERBS: &[&str] = &[
+    "list", "ls", "describe", "get", "show", "create", "add", "set", "update", "read", "logs",
+    "status", "info", "inspect", "start", "stop", "restart", "reboot", "resize", "ssh", "scp",
+    "deploy", "login", "whoami", "version",
+];
 
 /// Whether a kubectl line only rehearses: `--dry-run=client` or `=server`
 /// (or bare, as older versions took it), the last one written.
@@ -955,12 +996,10 @@ fn helm(args: &[Arg]) -> Say<'_> {
         return Safe;
     };
     match cmd.known() {
-        Some("uninstall" | "un" | "delete" | "del") if !has_flag(rest, None, Some("dry-run")) => {
-            Destroys(
-                "uninstalls a Helm release",
-                words(rest, HELM_VALUES).first().copied(),
-            )
-        }
+        Some("uninstall" | "un" | "delete" | "del") if !go_flag(rest, "dry-run") => Destroys(
+            "uninstalls a Helm release",
+            words(rest, HELM_VALUES).first().copied(),
+        ),
         Some(_) => Safe,
         None => Unread(None),
     }
@@ -975,6 +1014,8 @@ fn kind(args: &[Arg]) -> Say<'_> {
             let what = words(rest, SMALL_CLUSTER_VALUES);
             if is_one_of(what.first().copied(), &["cluster", "clusters"]) {
                 Destroys("deletes a local Kubernetes cluster", None)
+            } else if what.first().is_some_and(|word| word.known().is_none()) {
+                Unread(None)
             } else {
                 Safe
             }
@@ -993,6 +1034,8 @@ fn k3d(args: &[Arg]) -> Say<'_> {
             let what = words(rest, SMALL_CLUSTER_VALUES);
             if is_one_of(what.first().copied(), &["delete", "del", "rm", "remove"]) {
                 Destroys("deletes a local Kubernetes cluster", None)
+            } else if what.first().is_some_and(|word| word.known().is_none()) {
+                Unread(None)
             } else {
                 Safe
             }
@@ -1029,10 +1072,17 @@ fn terragrunt(args: &[Arg]) -> Say<'_> {
     if named(&["destroy", "destroy-all"]) || (named(&["apply"]) && go_flag(args, "destroy")) {
         return Destroys("destroys the infrastructure a configuration manages", None);
     }
-    match words.first() {
-        Some(word) if word.known().is_none() => Unread(None),
-        _ => Safe,
+    // A word only known when it runs where the command goes: nothing but
+    // `run-all`, `run` and their like come before it.
+    let mut before_command = true;
+    for word in words.iter().take(4) {
+        match word.known() {
+            None if before_command => return Unread(None),
+            Some("run-all" | "run" | "hcl" | "exec") => {}
+            _ => before_command = false,
+        }
     }
+    Safe
 }
 
 fn pulumi(args: &[Arg]) -> Say<'_> {
@@ -1040,13 +1090,15 @@ fn pulumi(args: &[Arg]) -> Say<'_> {
         return Safe;
     };
     match cmd.known() {
-        Some("destroy" | "down") if !has_flag(rest, None, Some("preview-only")) => {
+        Some("destroy" | "down") if !go_flag(rest, "preview-only") => {
             Destroys("destroys the resources of a Pulumi stack", None)
         }
         Some("stack") => {
-            let what = words(rest, &["-s", "--stack"]);
+            let what = words(rest, PULUMI_VALUES);
             if is_one_of(what.first().copied(), &["rm", "remove"]) {
                 Destroys("deletes a Pulumi stack", None)
+            } else if what.first().is_some_and(|word| word.known().is_none()) {
+                Unread(None)
             } else {
                 Safe
             }

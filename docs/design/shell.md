@@ -739,10 +739,15 @@ cannot tell, and the reason says what it deletes, not where.
 prune`, `machine rm` and `kube down` destroy. `rm` is read by what it takes:
 one named container is safe, forced or not (`docker rm -f web`); several
 forced at once, a choice made when the line runs (`$(docker ps -aq)`, a
-pipe's input, an unquoted variable the shell splits into words), podman's
-`rm -a` and `--filter`, and `-v` (the container's volumes) are not. A quoted
-variable is one word, as is a PowerShell variable, so `docker rm -f "$name"`
-is safe. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
+pipe's input, a variable that expands to several words), podman's `rm -a`
+and `--filter`, and `-v` (the container's volumes) are not. Which variables
+expand to several words depends on the shell: in a POSIX shell an unquoted
+one, and a quoted one holding an array (`"$@"`, `"${ids[@]}"`, one word per
+element), but not `"$name"`; in PowerShell any variable except `$env:` and a
+splat (`@ids`), since an array handed to a program is one argument per
+element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
+which is expanded as text. So `docker rm -f "$name"` is safe and `docker rm -f
+$ids` in PowerShell is not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
 `image prune` without `-a` are safe, as are `network rm` and `builder prune`.
 The global options of each program that take a value (`-H`, `--context`,
 `-n`) are skipped to find the command.
@@ -753,14 +758,15 @@ a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
 are safe, the last one written counting. A replica count only known when it
 runs is `unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
 `minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
-`--dry-run`; `kind delete cluster`, `minikube delete` and `k3d cluster
+`--dry-run` (not `--dry-run=false`); `kind delete cluster`, `minikube delete` and `k3d cluster
 delete` (also `node` and `registry`).
 
 **Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
 (a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
 `-destroy=false`); `plan -destroy` is safe. `terragrunt` the same, also behind
 `run-all` and `run --all --`. `pulumi destroy` (also `down`, unless
-`--preview-only`) and `pulumi stack rm`; `cdk destroy`, `cdktf destroy`, `sst
+`--preview-only`, a Go-style flag that `--preview-only=false` turns off) and
+`pulumi stack rm`; `cdk destroy`, `cdktf destroy`, `sst
 remove`, `serverless remove` (also `sls`), `vagrant destroy`, `sam delete`.
 
 **Cloud.** Each CLI has a table of delete verbs in
@@ -771,14 +777,21 @@ so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
 `--dry-run` and `s3`'s `--dryrun` make it safe. `gcloud` (a `delete` or
 `destroy` among the first words, and `storage rm`), `gsutil rm`, `rb` and
 `rsync -d`, `az` (`delete`, `delete-*`, `purge`), `doctl` (`delete`, `d`,
-`rm`), `flyctl` and `fly` (`destroy`, `delete`, `machine rm`), `vercel`
+`rm`), `flyctl` and `fly` (`destroy`, `delete`, `rm` and `remove` under any
+word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
 (`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
 (`apps:destroy`, `addons:destroy`), `wrangler` (`delete` at any depth,
 `kv:namespace delete`), `firebase` (`…:delete`), `hcloud`, `scw`, `oci`,
 `eksctl` and `kops` (`delete`).
 
 A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
-s3 $verb`) is `unknown`: the line may be any of the above.
+s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
+run-all $cmd`) is `unknown`: the line may be any of the above. For the cloud
+CLIs that read a verb at any depth, a word behind a verb that only reads or
+changes one thing (`gcloud compute instances describe $vm`) is that verb's
+operand, so it stays safe. The options of each CLI that take a value are
+listed, and a boolean flag is never in a list: a flag listed by mistake eats
+the command word after it (`cdk --json destroy`).
 
 Not read, so the caller has to account for them: a verb that deletes under
 another name (`kubectl patch` removing finalizers, `terraform apply` of a plan

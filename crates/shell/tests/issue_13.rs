@@ -733,7 +733,12 @@ fn powershell_and_cmd() {
             ),
         ],
     );
-    assert!(rules("docker rm -f $name", Shell::PowerShell, &windows()).is_empty());
+    assert_eq!(
+        rules("docker rm -f $name", Shell::PowerShell, &windows()),
+        vec![DESTROY]
+    );
+    assert!(rules("docker rm -f \"$name\"", Shell::PowerShell, &windows()).is_empty());
+    assert!(rules("docker rm -f $env:NAME", Shell::PowerShell, &windows()).is_empty());
     check(
         Shell::Cmd,
         &windows(),
@@ -751,4 +756,211 @@ fn powershell_and_cmd() {
             ("docker volume rm %VOL%", DESTROY),
         ],
     );
+}
+
+#[test]
+fn a_flag_without_a_value_does_not_hide_the_command() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cdk --json synth",
+            "minikube --logtostderr status",
+            "pulumi --logflow preview",
+            "aws --cli-auto-prompt s3 ls",
+            "gcloud --log-http storage ls gs://b",
+            "pulumi --stack dev preview",
+        ],
+        &[
+            ("cdk --json destroy", DESTROY),
+            ("cdk -j destroy", DESTROY),
+            ("cdk --ignore-errors destroy", DESTROY),
+            ("cdk --lookups destroy", DESTROY),
+            ("cdk --staging destroy", DESTROY),
+            ("cdk --notices destroy", DESTROY),
+            ("cdk --version-reporting destroy", DESTROY),
+            ("cdk --asset-metadata destroy", DESTROY),
+            ("cdk --path-metadata destroy", DESTROY),
+            ("cdk --app 'node app.js' destroy", DESTROY),
+            ("minikube --logtostderr delete --all", DESTROY),
+            ("minikube --skip_log_headers delete", DESTROY),
+            ("minikube --rootless delete", DESTROY),
+            ("minikube --profile dev delete", DESTROY),
+            ("pulumi --logflow destroy --yes", DESTROY),
+            ("aws --cli-auto-prompt s3 rb s3://x --force", DESTROY),
+            ("gcloud --log-http storage rm -r gs://b", DESTROY),
+            ("gcloud --user-output-enabled storage rm -r gs://b", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn pulumi_is_found_behind_its_own_stack_option() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("pulumi --stack dev destroy --yes", DESTROY),
+            ("pulumi -s dev destroy", DESTROY),
+            ("pulumi --stack dev down", DESTROY),
+            ("pulumi --stack=dev destroy", DESTROY),
+            ("pulumi -s dev stack rm", DESTROY),
+            ("pulumi --stack dev stack rm dev", DESTROY),
+            ("pulumi --target urn:x destroy", DESTROY),
+            ("pulumi -m msg -s dev destroy", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn a_word_only_known_when_it_runs_is_unknown_past_the_first() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "gcloud compute instances describe $VM",
+            "gcloud compute instances list --filter=$F",
+            "az vm show -g rg -n $VM",
+            "az vm show --ids $ID",
+            "doctl compute droplet get $ID",
+            "kind create cluster --name $N",
+            "kind load docker-image $IMG",
+            "k3d cluster create $name",
+            "pulumi stack select $S",
+            "terragrunt plan $dir",
+            "terragrunt run-all plan $dir",
+        ],
+        &[
+            ("gcloud projects $verb prod", Rule::Unknown),
+            ("gcloud compute instances \"$action\" vm", Rule::Unknown),
+            ("az group $verb -n rg", Rule::Unknown),
+            ("doctl compute droplet $verb web", Rule::Unknown),
+            ("fly apps $verb app", Rule::Unknown),
+            ("kind delete $what", Rule::Unknown),
+            ("k3d cluster $verb dev", Rule::Unknown),
+            ("pulumi stack $verb dev", Rule::Unknown),
+            ("terragrunt run-all $cmd", Rule::Unknown),
+            ("terragrunt run --all -- $cmd", Rule::Unknown),
+            ("gcloud $group delete prod", DESTROY),
+            ("gcloud projects delete $id", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn a_variable_that_expands_to_several_words_is_computed() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["docker rm -f \"$name\"", "docker rm -f \"$*\""],
+        &[
+            ("docker rm -f \"$@\"", DESTROY),
+            ("docker rm -f \"${@}\"", DESTROY),
+            ("docker rm -f \"${ids[@]}\"", DESTROY),
+            ("docker rm \"$@\"", DESTROY),
+            ("docker rm -f ${ids[@]}", DESTROY),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "docker rm -f \"$ids\"",
+            "docker rm -f $env:NAME",
+            "docker rm -f web",
+        ],
+        &[
+            ("docker rm -f $ids", DESTROY),
+            ("docker rm $ids", DESTROY),
+            ("docker rm -f @ids", DESTROY),
+            ("docker rm -f $containers.Id", DESTROY),
+            ("$ids = docker ps -aq; docker rm -f $ids", DESTROY),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["docker rm -f \"%IDS%\"", "docker rm -f web"],
+        &[
+            ("docker rm -f %IDS%", DESTROY),
+            ("docker rm %IDS%", DESTROY),
+            ("docker rm -f !IDS!", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn a_rehearsal_turned_off_is_not_one() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pulumi destroy --preview-only",
+            "pulumi destroy --yes --preview-only=true",
+            "helm uninstall api --dry-run",
+            "helm uninstall api --dry-run=true",
+        ],
+        &[
+            ("pulumi destroy --yes --preview-only=false", DESTROY),
+            ("pulumi destroy --preview-only=false", DESTROY),
+            (
+                "pulumi destroy --preview-only --preview-only=false",
+                DESTROY,
+            ),
+            ("helm uninstall api --dry-run=false", DESTROY),
+            ("helm uninstall api --dry-run --dry-run=false", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn flyctl_aliases_are_read() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "fly apps list",
+            "fly machine list",
+            "fly m list",
+            "fly vol list",
+        ],
+        &[
+            ("fly m rm abc", DESTROY),
+            ("fly m remove abc", DESTROY),
+            ("fly m destroy abc", DESTROY),
+            ("fly vol rm v", DESTROY),
+            ("fly vol delete v", DESTROY),
+            ("fly volumes remove v", DESTROY),
+            ("fly apps rm app", DESTROY),
+            ("fly apps remove app", DESTROY),
+            ("flyctl apps rm app", DESTROY),
+            ("fly -a app apps rm app", DESTROY),
+        ],
+    );
+}
+
+#[test]
+fn the_reason_for_an_unknown_command_reads_right() {
+    for (line, expected) in [
+        (
+            "aws $service",
+            "runs an aws command only known when it runs",
+        ),
+        ("az $x", "runs an az command only known when it runs"),
+        ("oc $x", "runs an oc command only known when it runs"),
+        ("oci $x", "runs an oci command only known when it runs"),
+        (
+            "eksctl $x",
+            "runs an eksctl command only known when it runs",
+        ),
+        ("sst $x", "runs an sst command only known when it runs"),
+        ("gcloud $x", "runs a gcloud command only known when it runs"),
+    ] {
+        let assessment = classify(line, Shell::Posix, &posix());
+        let findings = assessment.findings();
+        assert_eq!(findings.len(), 1, "{line}: {findings:?}");
+        assert_eq!(findings[0].rule, Rule::Unknown, "{line}");
+        assert_eq!(findings[0].reason, expected, "{line}");
+    }
 }
