@@ -160,9 +160,26 @@ const TAR_LONG_VALUES: &[&str] = &[
     "passphrase",
 ];
 
-/// Long options of `tar` that are a prefix of one that takes a value, and
-/// take none (`--sparse`, `--checkpoint[=N]`, `--xattrs`).
-const TAR_LONG_FLAGS: [&str; 3] = ["sparse", "checkpoint", "xattrs"];
+/// Long options of `tar` that take none, and that a name could stand for as
+/// well as for one that takes a value (`--sparse`, `--checkpoint[=N]`,
+/// `--xattrs`; `--inc` is `--incremental` in GNU tar and `--include` in
+/// bsdtar). A name that may be one of them is read as the flag, which takes
+/// no argument: the next one is then a member, the riskier reading.
+const TAR_LONG_FLAGS: [&str; 4] = ["sparse", "checkpoint", "xattrs", "incremental"];
+
+/// The longest folder, in bytes, that a chain of `-C` is followed to. Each
+/// `-C` is joined to the one before it, so a longer chain is a path only
+/// known when it runs; that bounds the cost of reading a long line of them.
+const TAR_FOLDER_LIMIT: usize = 512;
+
+/// Where `-C folder` moves the members that follow, from where `under` had
+/// moved them.
+fn moved(under: Option<&Arg>, folder: &Arg, shell: Shell) -> Arg {
+    match within(under, folder, shell) {
+        Arg::Known(text) if text.len() > TAR_FOLDER_LIMIT => Arg::Unknown(text),
+        folder => folder,
+    }
+}
 
 /// What `tar` is asked to do. A mode that only the line's run shows (`tar
 /// "$mode" -f x.tar`) counts as extracting, and as packing.
@@ -225,7 +242,7 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
                     None => iter.next().map(|(_, folder)| folder.clone()),
                 };
                 if let Some(folder) = folder {
-                    under = Some(within(under.as_ref(), &folder, shell));
+                    under = Some(moved(under.as_ref(), &folder, shell));
                     folders.push(folder);
                 }
             } else if is("add-file") {
@@ -242,7 +259,7 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
                 }
                 members.push(Arg::Unknown("<files from a list>".to_string()));
             } else if attached.is_none()
-                && !TAR_LONG_FLAGS.contains(&name)
+                && !TAR_LONG_FLAGS.iter().any(|flag| is(flag))
                 && TAR_LONG_VALUES.iter().any(|full| is(full))
             {
                 iter.next();
@@ -270,7 +287,7 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
                 };
                 match (letter, value) {
                     ('C', Some(folder)) => {
-                        under = Some(within(under.as_ref(), &folder, shell));
+                        under = Some(moved(under.as_ref(), &folder, shell));
                         folders.push(folder);
                     }
                     // The members are in a file the line does not show.
@@ -427,9 +444,9 @@ const ZIP_LONG_VALUES: &[&str] = &[
     "password",
     "split-size",
     "compression-method",
-    "test-command",
+    "unzip-command",
     "dot-size",
-    "log-file",
+    "logfile-path",
 ];
 
 /// The files `zip` deletes after adding them, which `-m` (or `--move`) asks
@@ -484,10 +501,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                 list = attached.is_none().then_some(ZipList::Exclude);
             } else if is("include") {
                 list = attached.is_none().then_some(ZipList::Include);
-            } else if attached.is_none()
-                && name != "test"
-                && ZIP_LONG_VALUES.iter().any(|full| is(full))
-            {
+            } else if attached.is_none() && ZIP_LONG_VALUES.iter().any(|full| is(full)) {
                 iter.next();
             }
             continue;
@@ -496,8 +510,12 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
         let mut before = None;
         for (at, letter) in letters.char_indices() {
             let rest = &letters[at + letter.len_utf8()..];
-            // `-db`, `-sb` and `-ws` are flags, not letters with a value.
-            let flag = matches!((before, letter), (Some('d' | 's'), 'b') | (Some('w'), 's'));
+            // `-db`, `-sb`, `-ws` and `-li` are flags, not letters with a
+            // value or a list.
+            let flag = matches!(
+                (before, letter),
+                (Some('d' | 's'), 'b') | (Some('w'), 's') | (Some('l'), 'i')
+            );
             before = Some(letter);
             if flag {
                 continue;

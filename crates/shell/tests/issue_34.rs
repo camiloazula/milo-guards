@@ -590,3 +590,73 @@ fn seven_zip_without_names_packs_everything_in_the_folder() {
         ],
     );
 }
+
+#[test]
+fn zip_li_is_a_flag_and_opens_no_include_list() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["zip -mr x.zip src -li", "zip -mr x.zip src -li keep"],
+        &[
+            ("zip -mr x.zip src -li ~", Rule::Delete),
+            ("zip -m x.zip src -rli ~", Rule::Delete),
+            ("zip -mr x.zip src -lli ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn tar_long_option_that_may_be_a_flag_takes_no_value() {
+    // `--inc` is `--incremental` in GNU tar, which takes no value, and
+    // `--include` in bsdtar, which does; the next argument is a member.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["tar -cf x.tar --inc src --remove-files"],
+        &[
+            ("gtar -cf x.tar --inc ~ --remove-files", Rule::Delete),
+            ("tar -cf x.tar --incremental ~ --remove-files", Rule::Delete),
+            ("tar -xf x.tar --inc -C /etc", Rule::Overwrite),
+            ("gtar -xf x.tar --inc -C /etc", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn zip_long_values_are_the_names_zip_has() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "zip -mr --logfile-path log x.zip src",
+            "zip -mr --logfile-path=log x.zip src",
+        ],
+        &[
+            ("zip -mr --unzip-command cmd x.zip ~", Rule::Delete),
+            ("zip -mr --logfile-path log x.zip ~", Rule::Delete),
+            ("zip -mr --test x.zip ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn a_long_chain_of_dash_c_is_read_quickly() {
+    // Each `-C` is joined to the one before it; the chain must stay bounded,
+    // not be copied onto every later member.
+    let mut line = "tar -cf x.tar --remove-files".to_string();
+    line.push_str(&" -Ca".repeat(8_000));
+    line.push_str(&" *".repeat(3_000));
+    assert!(line.len() <= 64 * 1024, "{}", line.len());
+    let started = std::time::Instant::now();
+    let assessment = classify(&line, Shell::Posix, &posix());
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(200),
+        "took {took:?}"
+    );
+    assert!(!assessment.findings().is_empty());
+}
