@@ -386,3 +386,50 @@ fn reading_takes_time_in_proportion_to_the_text() {
         );
     }
 }
+
+#[test]
+fn a_long_line_of_hits_costs_the_same_per_hit_as_a_short_one() {
+    // Every hit on one line asks where the line begins, and where an escape
+    // ends: a read that looks back over the line for each (it was once
+    // `rfind('\n')`) takes four times the text sixteen times as long.
+    // The sizes are large enough that the difference is not noise.
+    for name in [
+        "spans of escaped names",
+        "spans of escaped values",
+        "spans of escaped keys",
+    ] {
+        let small = hostile(name, 256 << 10);
+        let large = hostile(name, 1 << 20);
+        for (read, label) in [
+            (
+                (|text: &str| {
+                    let _ = find(text);
+                }) as fn(&str),
+                "find",
+            ),
+            (
+                |text: &str| {
+                    let _ = find_spans(text);
+                },
+                "find_spans",
+            ),
+            (
+                |text: &str| {
+                    let _ = find_high_entropy(text, 4.5);
+                },
+                "find_high_entropy",
+            ),
+        ] {
+            let time = |text: &str| {
+                let started = Instant::now();
+                read(text);
+                started.elapsed()
+            };
+            let (a, b) = (time(&small), time(&large));
+            assert!(
+                b < a.max(Duration::from_millis(25)) * 10,
+                "{name} by {label}: {a:?} for 256 KiB, {b:?} for 1 MiB"
+            );
+        }
+    }
+}

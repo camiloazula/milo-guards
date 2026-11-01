@@ -86,6 +86,8 @@ pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
     let read = reading.text();
     let written = reading.written();
     let mut at = 0;
+    // Built when a name is first tied to a value.
+    let mut lines: Option<LineIndex> = None;
     while let Some(captures) = regex.captures_at(read, at) {
         let (Some(whole), Some(name)) = (captures.get(0), captures.get(1)) else {
             break;
@@ -107,7 +109,10 @@ pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
         // Whatever is decided, the scan goes on after the value.
         at = at.max(reading.read_point(value.after));
         let raw = written.get(value.start..value.end).unwrap_or_default();
-        let env_file = tied && is_env_line(written, name_at);
+        let env_file = tied
+            && lines
+                .get_or_insert_with(|| LineIndex::new(written))
+                .is_env_line(written, name_at);
         if accept(word, raw, value.quoted, tied, env_file) {
             out.push(Hit {
                 rule: Rule::GenericSecret,
@@ -340,14 +345,51 @@ fn secret_word(name: &str) -> Option<&'static str> {
     whole.then_some("pass")
 }
 
-/// Whether the name at `at` begins a line, or follows `export` on one: a line
-/// of an environment file or a shell script that only sets it.
-fn is_env_line(written: &str, at: usize) -> bool {
-    let head = written.get(..at).unwrap_or_default();
-    let line = head
-        .rfind('\n')
-        .map_or(head, |newline| &head[newline + 1..]);
-    matches!(line.trim(), "" | "export" | "declare -x")
+/// Where each line of the written text begins, and where its first
+/// character that is not blank is, found in one pass: a hit asks which line
+/// it is on by bisection, so a long line costs nothing per hit.
+struct LineIndex {
+    /// For each line: where it starts, and where its content does.
+    lines: Vec<(usize, usize)>,
+}
+
+impl LineIndex {
+    fn new(written: &str) -> Self {
+        let bytes = written.as_bytes();
+        let mut lines = Vec::new();
+        let mut start = 0;
+        loop {
+            let blanks = bytes
+                .get(start..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count();
+            lines.push((start, start + blanks));
+            let Some(newline) = bytes
+                .get(start + blanks..)
+                .and_then(|rest| rest.iter().position(|b| *b == b'\n'))
+            else {
+                break;
+            };
+            start += blanks + newline + 1;
+        }
+        Self { lines }
+    }
+
+    /// Whether the name at `at` begins its line, or follows `export` on it: a
+    /// line of an environment file or a shell script that only sets it.
+    fn is_env_line(&self, written: &str, at: usize) -> bool {
+        let line = self.lines.partition_point(|(start, _)| *start <= at);
+        let Some((_, content)) = line.checked_sub(1).and_then(|last| self.lines.get(last)) else {
+            return false;
+        };
+        let before = written
+            .get(*content..at)
+            .unwrap_or_default()
+            .trim_end_matches([' ', '\t']);
+        matches!(before, "" | "export" | "declare -x")
+    }
 }
 
 /// Whether the value read after a name that ends in `word` is a secret.
