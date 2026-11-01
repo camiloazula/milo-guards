@@ -385,7 +385,9 @@ a script `sh -c` reads), so no rule knows a language.
 
 **Where the code comes from.** `python`, `python3` (and `python3.12`),
 `python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
-`nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`). `bun`:
+`nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`); a `--import`,
+`--loader` or `--experimental-loader` whose value is a `data:` URL (or only known
+when it runs) runs code that is not read, so the line is `unknown`. `bun`:
 the same flags, and `--cwd DIR` (`--cwd=DIR`), which the code's relative paths
 are read from, as after a `cd`. `node` and `bun` run the last of several `-e`
 (`node -e A -e B`), so every piece of code is read, not the first; `-p` takes
@@ -395,7 +397,9 @@ option, and all that follows `--`, is read as code, because which options
 take the next word (`-L info`) and which only a value after `=` (`--reload`,
 `--v8-flags`, `--env-file`) is not worth getting wrong; the words after the
 first are only `Deno.args`, read as code they come out harmless, or unreadable
-when a path is not code. And a here-document or here-string handed to
+when a path is not code. `deno --version`, `-V`, `--help` and `-h` print and
+exit: only a `deno` with no subcommand and none of them reads its input as the
+REPL. And a here-document or here-string handed to
 `python3`, `python3 -`, `node`, `node -`, `bun -`, `bun run -`, `deno run -`,
 when its text is plain: a quoted
 delimiter (`<<'PY'`), or an unquoted one with nothing in the body the shell
@@ -429,7 +433,7 @@ global object in `node -e`).
 | Does | Python | JavaScript (Node, Bun, Deno) |
 | --- | --- | --- |
 | Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()` and `.unlink()`, `rimraf` |
-| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
+| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `readFile`, `readFileSync`, `createReadStream` and `readJson` given a `flag` or `flags` that writes or is only known when it runs (`w` truncates the file it reads), `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
 | Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
 | Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
 | Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` `` |
@@ -448,8 +452,11 @@ started, each `chdir` target, and the places the `chdir`s lead to one after
 another. When every target is an absolute folder, or every one is a folder below
 the one before (`sub`), those are all the places there are. When they mix, one
 goes up with `..` or is only known when it runs, `os.fchdir(fd)` is a directory
-only known when it runs, or a nested piece of code (`exec("…")`) has a `chdir`
-of its own, a relative path is only known when it runs. In Python a `dir_fd`,
+only known when it runs, or a nested piece of code (`exec("…")`, `eval("…")`)
+has a `chdir` of its own, a relative path is only known when it runs. The nested
+code is read, in its own language and at any depth, not searched for the word:
+`getattr(os, 'ch' + 'dir')` and ``process[`ch${'dir'}`]`` are `chdir`s, and code
+that cannot be read, or is too long or too deep to, may hold one. In Python a `dir_fd`,
 `src_dir_fd` or `dst_dir_fd` makes a path count from a directory handle only
 known when it runs, so the path is too.
 
@@ -518,6 +525,16 @@ A JavaScript call to `rmSync`, `unlinkSync`, `writeFileSync`, `execSync`,
 have, with `Sync`) that is not a call the reader can tell, because the object
 it is called on cannot be named (`make().rmSync(p)`, `x['unlinkSync'](p)`,
 `const r = x.rmSync`), is `unknown`: an alias the reader cannot follow is.
+
+Names are read as the language reads them too. Python reads a name in its NFKC
+form (`ｒｅｍｏｖｅ` is `remove`) and JavaScript reads `\u0072mSync` as `rmSync`:
+the reader computes neither, so a Python name that is not ASCII and a JavaScript
+name written with an escape are `unknown`. A name bound in the body of a Python
+class is an attribute of the class (`class C: o = os`, then `C.o.remove(…)`): an
+import there, or an assignment of a module or of a call the reader knows, is
+`unknown`. Code in a `data:` URL runs where it is written and is not read: an
+`import` or `export … from` of one, an `import()` of one, and node's `--import`
+and `--loader` of one are `unknown`.
 
 A string's escapes are read as the language reads them: Python's `\n`, `\x41`,
 octal and `\u`, JavaScript's, which also takes the legacy octal escapes
