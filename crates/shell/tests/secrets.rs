@@ -1330,3 +1330,55 @@ fn a_bare_variable_and_path_in_powershell_is_read_and_the_line_stays_unreadable(
     }
     assert!(rules(r"Get-Content $HOME\x", Shell::PowerShell, &paths).contains(&Rule::Unreadable));
 }
+
+#[test]
+fn a_folder_read_all_the_way_down_can_be_the_parent_when_a_part_can_match_dot_dot() {
+    // From `~/work` the parent is the home directory, which holds the keys:
+    // `..` is read so, and so is a final `.*`, which bash 3.2 and dash match
+    // against `..`.
+    let work = Paths::new("/home/me/work", "/home/me", ["/home/me/work"]);
+    let lines = [
+        "grep -r x ..",
+        "cp -r .. /tmp/x",
+        "tar czf /tmp/x.tgz ..",
+        "find .. -exec cat {} +",
+        "grep -r x .*",
+        "grep -r x .?",
+        "grep -r x .[.]",
+        "grep -r x .[!a]",
+        "cp -r .* /tmp/x",
+        "tar czf /tmp/x.tgz .*",
+        "find .* -exec cat {} +",
+        "find .? -type f | xargs cat",
+        "rg -uuu x .*",
+        "rg x .?",
+        "diff -r .* /tmp/x",
+        "cp -r ./.* /tmp/x",
+        "cp -r .*/. /tmp/x",
+    ];
+    check(Shell::Posix, &work, &[], &risky(&lines));
+    // Where the parent holds no key, none of them is a finding: a workspace
+    // below the home directory's own folder of work, a root of its own, a Mac.
+    let sub = Paths::new("/home/me/work/repo/sub", "/home/me", ["/home/me/work/repo"]);
+    let root = Paths::new("/work/repo", "/home/me", ["/work/repo"]);
+    for (paths, name) in [(&sub, "sub"), (&root, "root"), (&macos(), "mac")] {
+        for line in [
+            "grep -r x .*",
+            "cp -r .* /tmp/x",
+            "tar czf /tmp/x.tgz .*",
+            "rg -uuu x .?",
+        ] {
+            assert!(
+                !rules(line, Shell::Posix, paths).contains(&SECRET),
+                "{name}: {line}"
+            );
+        }
+    }
+    // A name that cannot be `..` is not read that way.
+    for line in ["grep -r x .*rc", "cp -r .git* /tmp/x", "rg x .cache"] {
+        assert!(
+            !rules(line, Shell::Posix, &work).contains(&SECRET),
+            "{line}"
+        );
+    }
+}

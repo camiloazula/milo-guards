@@ -468,7 +468,10 @@ home, all by [core](core.md). The shell's syntax adds:
   stands for `.` and `..` as well as the names it picks, since bash 3.2 (macOS's
   `/bin/sh`) and dash match them and the guard cannot know which shell runs
   the line: `cat .*/.*/.ssh/id_rsa` from `~/work/repo` reads `~/.ssh/id_rsa`.
-  Core does this for every rule that resolves a pattern, so `rm -rf
+  A folder read all the way down is read so too: from `~/work`, `grep -r x .*`
+  reads the home directory and its keys, as `grep -r x ..` does. Core does
+  this for every rule that resolves a pattern (`Resolver::places` gives each
+  reading), so `rm -rf
   .*/.*/.agent` is judged against the parent as well. `cat .*rc` cannot match
   `..` and is not read that way. PowerShell and cmd wildcards are not.
 - A wildcard picks what it can match, as for a protected path:

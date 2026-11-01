@@ -428,7 +428,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Four questions are `Resolver` methods, since a guard needs them resolved: the
+Five questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -441,6 +441,10 @@ path made absolute, with the working directory and `~` applied.
   what is not. It answers `None` on Windows, where the device namespace is a
   `Disk`. It does not change `place`, so the shell guard's verdicts stay
   what they were.
+- `places(path, flavour, hidden)` is every place a path can land: as written,
+  then as each other reading of a POSIX part that can match `..` puts it. `place`
+  is the most serious of them. A guard that asks another question of the places
+  (is it the home directory?) asks of each.
 - `picks_secret(path, flavour, hidden)` is `Some(words)` for a pattern that can
   name a key or a credential: `~/.s*/id_rsa` picks `~/.ssh/id_rsa`,
   `/etc/sh*dow` the system's password hashes, `/home/*/.ssh` any user's keys,

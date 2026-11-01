@@ -976,15 +976,39 @@ impl Resolver {
     /// expands `.*/.*/.ssh/id_rsa` to `../../.ssh/id_rsa`, and the guard cannot
     /// know which shell runs the line.
     fn place_as(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool, holding: bool) -> Place {
-        let first = self.place_one(path, flavour, hidden, holding);
-        let mut best = first;
-        for variant in climbing(path.text(), flavour) {
-            let place = self.place_one(respell(path, &variant), flavour, hidden, holding);
+        let mut readings = self.readings(path, flavour, hidden, holding).into_iter();
+        let mut best = readings.next().unwrap_or(Place::Unknown);
+        for place in readings {
             if severity(place) > severity(best) {
                 best = place;
             }
         }
         best
+    }
+
+    /// Every place a path can land: where it is read as written, then where
+    /// each other reading of a POSIX pattern part that can match `..` puts it
+    /// (see `place_as`). A guard that asks a different question of the places
+    /// than `place` does (the shell guard asks whether a folder read all the
+    /// way down holds a secret) asks of each, so none keeps its own reading of
+    /// a pattern.
+    #[must_use]
+    pub fn places(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Vec<Place> {
+        self.readings(path, flavour, hidden, true)
+    }
+
+    fn readings(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+    ) -> Vec<Place> {
+        let mut places = vec![self.place_one(path, flavour, hidden, holding)];
+        for variant in climbing(path.text(), flavour) {
+            places.push(self.place_one(respell(path, &variant), flavour, hidden, holding));
+        }
+        places
     }
 
     fn place_one(

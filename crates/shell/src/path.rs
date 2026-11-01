@@ -290,12 +290,31 @@ impl Resolver {
             return None;
         }
         let arg = within(dir, arg, shell);
-        match self.place_of(arg.known()?, shell, hidden, true) {
-            place @ (Place::Home { .. } | Place::Top("the root of the disk")) => {
-                Some(place.words())
-            }
-            _ => None,
+        let text = arg.known()?;
+        let holds = |place: Place| {
+            matches!(
+                place,
+                Place::Home { .. } | Place::Top("the root of the disk")
+            )
+            .then(|| place.words())
+        };
+        if let Some(words) = holds(self.place_of(text, shell, hidden, true)) {
+            return Some(words);
         }
+        // A POSIX pattern part that can match `..` (`.*`) may be the parent:
+        // each reading core gives is asked, as `place` asks them all.
+        if shell != Shell::Posix || !glob::has_wildcard(text) || brace_list(text) {
+            return None;
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return None,
+        };
+        self.core
+            .places(spelling, Flavour::Posix, hidden)
+            .into_iter()
+            .find_map(holds)
     }
 
     /// What the kernel serves that `text` names, in a POSIX shell: see
