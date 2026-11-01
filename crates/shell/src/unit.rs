@@ -447,10 +447,10 @@ impl Split {
             .filter(|_| unit.shell == Shell::Posix)
             .and_then(|key| dotglob::change(&key, &unit.args))
         {
-            // Behind `env` or `nohup` a builtin runs in a process of its own.
-            let own = dotglob::in_shell(&unit.wrappers);
-            let certain = own && unit.stage.is_none();
             for (flag, on) in [(Flag::Bash, change.bash), (Flag::Zsh, change.zsh)] {
+                // Behind `env` or `nohup` a builtin runs in a process of its
+                // own, and behind zsh's `noglob` bash runs nothing.
+                let certain = dotglob::in_shell(&unit.wrappers, flag) && unit.stage.is_none();
                 match on {
                     Some(true) => self.set_flag(flag, true),
                     Some(false) => self.show(flag, certain),

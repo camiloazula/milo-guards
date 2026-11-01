@@ -42,6 +42,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs commands the grammar cannot read, said in the reason.
+    Opaque(&'static str),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -66,9 +68,15 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             split.push(unit);
             return;
         };
-        // `env X=1 cmd` and `env -u X cmd` change the program's environment.
-        if split.kept.on && key == "env" && unit.shell != Shell::Cmd {
-            for name in env_sets(&unit.args) {
+        // `env X=1 cmd` and `env -u X cmd` change the program's environment,
+        // as `coproc X=1 cmd` does.
+        if split.kept.on && unit.shell != Shell::Cmd {
+            let names = match key.as_str() {
+                "env" => env_sets(&unit.args),
+                "coproc" if unit.shell == Shell::Posix => coproc_sets(&unit.args),
+                _ => Vec::new(),
+            };
+            for name in names {
                 split.set(&name);
             }
         }
@@ -187,6 +195,11 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             }
             Launch::Reads(reads) => {
                 unit.reads = reads;
+                split.push(unit);
+                return;
+            }
+            Launch::Opaque(reason) => {
+                split.problem(Rule::Unreadable, reason, Some(unit.program.text()));
                 split.push(unit);
                 return;
             }
@@ -394,6 +407,17 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // command its arguments. A POSIX program with one of these names is
         // rare enough to read the same way.
         "and" | "or" | "not" if unit.shell == Shell::Posix => runs(args, Some(0)),
+        // zsh's precommand modifiers `noglob`, `nocorrect` and `-` take no
+        // options: the next word is the program (`noglob -- rm` runs a
+        // program named `--`). A POSIX program of one of these names is rare
+        // enough to read the same way.
+        "noglob" | "nocorrect" | "-" if unit.shell == Shell::Posix => runs(args, Some(0)),
+        // `coproc` starts a command in the background. A simple command
+        // takes no name (`coproc NAME cmd` runs a program called `NAME`),
+        // a group may: `coproc { cmd; }`, `coproc NAME { cmd; }`. The
+        // grammar has no `coproc`, so a group reads as the word `{` and the
+        // commands after it, and what comes after is judged as it is.
+        "coproc" if unit.shell == Shell::Posix => coproc(args),
         "flock" if posix => option_value(args, "-c", "--command").map_or_else(
             || {
                 runs(
@@ -492,6 +516,74 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         _ => Launch::Itself,
     }
+}
+
+/// What `coproc` runs: the first word past an optional name, the `{` words
+/// that open a group (`coproc NAME { { cmd; }; }`), and what stands before a
+/// command (`NAME=value` words, `!`). A loop, a conditional or a function
+/// after it (`coproc while …; do …; done`, also inside a group) is cut into
+/// pieces by the grammar, its body behind the program `do`, so it is not
+/// read.
+fn coproc(args: &[Arg]) -> Launch {
+    let word = |at: usize| args.get(at).and_then(Arg::known);
+    let opens = |at: usize| word(at).is_some_and(opens_group);
+    let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
+    // A `{` stuck to a word (`{rm`) is a group zsh runs, but not one the
+    // grammar reads as such: the word is not read as a program.
+    let stuck =
+        |at: usize| word(at).is_some_and(|text| text.starts_with('{') && !opens_group(text));
+    // A name stands before a group or a compound command; before a simple
+    // command the first word is the program.
+    let mut at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
+    while opens(at) || word(at).is_some_and(|text| text == "!" || is_assignment(text)) {
+        at += 1;
+    }
+    if compound(at) {
+        Launch::Opaque("starts a compound command that cannot be read")
+    } else if stuck(at) {
+        Launch::Opaque("starts a group whose commands cannot be read")
+    } else {
+        runs(args, Some(at))
+    }
+}
+
+/// The words that open a compound command with a body of its own.
+const COMPOUND: [&str; 7] = ["while", "until", "if", "for", "select", "case", "function"];
+
+/// Whether `text` is the `{` of a group, or several of them in one word: the
+/// grammar reads `{ {` as one.
+fn opens_group(text: &str) -> bool {
+    text.starts_with('{') && text.chars().all(|c| c == '{' || c.is_whitespace())
+}
+
+/// Whether `text` is a `NAME=value` assignment, which the shell takes off
+/// before the command (`NAME+=value` and `NAME[i]=value` too).
+fn is_assignment(text: &str) -> bool {
+    let Some((name, _)) = text.split_once('=') else {
+        return false;
+    };
+    let name = name.strip_suffix('+').unwrap_or(name);
+    let name = name.split_once('[').map_or(name, |(name, _)| name);
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The variables a `coproc` sets for the command it runs, read as [`coproc`]
+/// reads its words, for `effect`.
+fn coproc_sets(args: &[Arg]) -> Vec<String> {
+    let Launch::Runs(start) = coproc(args) else {
+        return Vec::new();
+    };
+    args.get(..start)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Arg::known)
+        .filter(|text| is_assignment(text))
+        .filter_map(|text| text.split(['=', '+', '[']).next())
+        .map(str::to_string)
+        .collect()
 }
 
 /// A script path that is the program's own input: what is piped into it.
