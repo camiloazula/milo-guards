@@ -154,6 +154,26 @@ fn piped_heredoc(node: Node<'_>) -> bool {
     }
 }
 
+/// How many words of `rest`, the text after a command, are a lone `-` that
+/// the grammar leaves out: those that stand between the command and a
+/// here-document (`<<`, not the here-string `<<<`).
+fn dashes_before_heredoc(rest: &str) -> usize {
+    let mut rest = rest.trim_start_matches([' ', '\t']);
+    let mut found = 0;
+    while let Some(after) = rest.strip_prefix('-') {
+        if !after.starts_with([' ', '\t', '<']) {
+            return 0;
+        }
+        found += 1;
+        rest = after.trim_start_matches([' ', '\t']);
+    }
+    if found > 0 && rest.starts_with("<<") && !rest.starts_with("<<<") {
+        found
+    } else {
+        0
+    }
+}
+
 /// The variables the line sets anywhere: assignments (also after `export`
 /// or `local`), `for` variables, `unset` and `read`.
 fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
@@ -647,6 +667,11 @@ impl Walker<'_> {
                 args.push(self.arg(arg));
             }
         }
+        // The grammar leaves a `-` that is the last word before a
+        // here-document out of the tree (`cat a - <<EOF` has the argument
+        // `a` only): it is an argument all the same.
+        let lost = dashes_before_heredoc(self.source.get(node.end_byte()..).unwrap_or_default());
+        args.extend(std::iter::repeat_n(Arg::Known("-".to_string()), lost));
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.
@@ -748,6 +773,9 @@ impl Walker<'_> {
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
+            }
         }
     }
 
@@ -811,6 +839,9 @@ impl Walker<'_> {
                 self.split.redirect(own.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
+            }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
             }
             for inside in inside {
                 self.split.nest(own.clone(), inside);
@@ -910,6 +941,62 @@ impl Walker<'_> {
             _ => return None,
         };
         (!text.is_empty()).then_some(Arg::Unknown(text))
+    }
+
+    /// The text a here-string or a here-document feeds, as written, whether
+    /// or not it holds an expansion (a template when it does): the
+    /// statements a database client reads from its input.
+    fn fed_literal(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "herestring_redirect" => Some(self.arg(node.named_children(&mut cursor).next()?)),
+            "heredoc_redirect" => {
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let kind = |kind: &str| children.iter().find(|child| child.kind() == kind);
+                let body = kind("heredoc_body");
+                let opened = kind("heredoc_start").map(|start| start.end_position().row);
+                // A first line that starts with a backslash is read as
+                // arguments of the redirect, not as the start of the body;
+                // the body is what is on the lines after the one that
+                // opens it.
+                let mut arguments = node.walk();
+                let lost: Vec<Node<'_>> = node
+                    .children_by_field_name("argument", &mut arguments)
+                    .filter(|argument| {
+                        opened.is_some_and(|row| argument.start_position().row > row)
+                    })
+                    .collect();
+                let from = lost
+                    .iter()
+                    .map(Node::start_byte)
+                    .chain(body.map(Node::start_byte))
+                    .min();
+                let end = kind("heredoc_end")
+                    .map(Node::start_byte)
+                    .or_else(|| body.map(Node::end_byte));
+                let (Some(from), Some(end)) = (from, end) else {
+                    return Some(Arg::Known(String::new()));
+                };
+                // From the start of its line.
+                let from = self
+                    .source
+                    .get(..from)
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |newline| newline + 1);
+                let raw = self.source.get(from..end).unwrap_or_default();
+                // The delimiter is quoted when any part of it is: `'EOF'`,
+                // `"EOF"`, `\EOF`.
+                let quoted = kind("heredoc_start").is_some_and(|start| {
+                    unit::text(start, self.source).contains(['\'', '"', '\\'])
+                });
+                let strips = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
+                Some(heredoc_fed(raw, strips, quoted))
+            }
+            _ => None,
+        }
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
@@ -1083,6 +1170,58 @@ impl Walker<'_> {
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+}
+
+/// The text a here-document feeds, from the lines of its body as written.
+/// `<<-` takes the tabs off the front of each line, whatever the delimiter.
+/// With a quoted delimiter the body is fed as it is. With an unquoted one the
+/// shell reads it as the inside of a double-quoted word, without the quotes:
+/// a backslash before a newline joins the lines, and before `$`, a backtick
+/// or a backslash it goes and leaves the character; any other backslash
+/// stays. What is left of `$` or a backtick is an expansion, so the text is a
+/// template (`$$` is the shell's process id, and tree-sitter does not read it
+/// as an expansion). A body with both an escaped and an expanding `$` or
+/// backtick is known only when it runs: a template reads each `$` it holds as
+/// an expansion, and would take a character the client gets as it is for one.
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+    let lines: String = if strips {
+        raw.split_inclusive('\n')
+            .map(|line| line.trim_start_matches('\t'))
+            .collect()
+    } else {
+        raw.to_string()
+    };
+    if quoted {
+        return Arg::Known(lines);
+    }
+    let mut text = String::with_capacity(lines.len());
+    let (mut escaped, mut expands) = (false, false);
+    let mut chars = lines.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('\\', Some('\n')) => {
+                chars.next();
+            }
+            ('\\', Some(next @ ('$' | '`' | '\\'))) => {
+                chars.next();
+                text.push(next);
+                escaped |= next != '\\';
+            }
+            ('$' | '`', _) => {
+                expands = true;
+                text.push(c);
+            }
+            _ => text.push(c),
+        }
+    }
+    match (escaped, expands) {
+        (true, true) => Arg::Unknown(raw.to_string()),
+        (false, true) => Arg::Template {
+            text,
+            source: raw.to_string(),
+        },
+        (_, false) => Arg::Known(text),
     }
 }
 

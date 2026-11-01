@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -334,6 +335,11 @@ pub(crate) struct Split {
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
+    /// The text fed to units by a here-string or a here-document, as
+    /// written: the statements a database client reads from its input.
+    texts: Vec<Arg>,
+    /// For each unit that is fed text, which of `texts` feed it, in order.
+    fed: HashMap<usize, Vec<usize>>,
     /// What runs for a command inside its own arguments.
     pub(crate) nested: Vec<Nested>,
     /// The variables set from a substitution.
@@ -359,6 +365,12 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// The characters a backtick `u{…}` made in a PowerShell string that are
+    /// a space that is not an ASCII one, a dash or a typographic quote: as a
+    /// path or an argument each is the text it holds, but a script that holds
+    /// one is not. Noted while a string is read, which only borrows the
+    /// walker.
+    splitting: RefCell<Vec<char>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -580,6 +592,25 @@ impl Split {
             input: true,
             text: true,
         });
+    }
+
+    /// Note that the text `text`, a here-string or a here-document, is fed to
+    /// `units`, as written.
+    pub(crate) fn text_fed(&mut self, units: Range<usize>, text: Arg) {
+        let index = self.texts.len();
+        for unit in units {
+            self.fed.entry(unit).or_default().push(index);
+        }
+        self.texts.push(text);
+    }
+
+    /// The text fed to the unit at `at` by a here-string or a here-document.
+    pub(crate) fn fed_to(&self, at: usize) -> impl Iterator<Item = &Arg> {
+        self.fed
+            .get(&at)
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| self.texts.get(index))
     }
 
     /// Note that the variable `name` is set from what runs in `inside` and
@@ -906,6 +937,26 @@ impl Split {
             .any(|known| known.eq_ignore_ascii_case(name))
     }
 
+    /// Note the characters a backtick `u{…}` made in a PowerShell string that
+    /// PowerShell reads as more than a character when the text runs as code.
+    pub(crate) fn note_splitting(&self, made: &[char]) {
+        let mut splitting = self.splitting.borrow_mut();
+        for c in made {
+            if !splitting.contains(c) {
+                splitting.push(*c);
+            }
+        }
+    }
+
+    /// Whether `script` holds a character noted by [`Split::note_splitting`]:
+    /// run as code, its words are not the ones the guard's reading of the
+    /// text finds. The script need not be a whole noted string: one reached
+    /// through `cmd /c` or `bash -c` is only part of the string that holds it.
+    fn splits_script(&self, script: &str) -> bool {
+        let splitting = self.splitting.borrow();
+        !splitting.is_empty() && script.chars().any(|c| splitting.contains(&c))
+    }
+
     /// A new pipeline's number; `parent` is the stage of another pipeline it
     /// runs in.
     pub(crate) fn pipeline(&mut self, parent: Option<Stage>) -> usize {
@@ -1175,6 +1226,14 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if let Some(why) = too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
+        return;
+    }
+    if shell == Shell::PowerShell && split.splits_script(text) {
+        split.problem(
+            Rule::Unknown,
+            "runs a script only known when it runs",
+            Some(text),
+        );
         return;
     }
     if depth > 0 {
