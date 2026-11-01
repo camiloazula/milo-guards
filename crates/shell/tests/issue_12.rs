@@ -241,7 +241,6 @@ fn mysql_and_mariadb() {
             "mysql app < dump.sql",
             "mysql --execute='SHOW TABLES'",
             "mysql -e 'SELECT 1 # DROP TABLE t'",
-            "mysql -e 'SELECT \"a\\\"; DROP TABLE t; --\"'",
             "mysql -e \"SELECT * FROM t WHERE a = '\\\\''\"",
             "mysqldump app > dump.sql",
             "mysqladmin ping",
@@ -279,6 +278,12 @@ fn mysql_and_mariadb() {
             ("mysql -e 'SELECT 1 /*! ; DROP TABLE t */'", Rule::DropData),
             ("mysql -e 'SELECT 1 --x; DROP TABLE t'", Rule::DropData),
             ("mysql -e \"SELECT 'a\\\\''; DROP TABLE t\"", Rule::DropData),
+            // With NO_BACKSLASH_ESCAPES the client sends `SELECT "a\"` and
+            // then `DROP TABLE t`, which runs.
+            (
+                "mysql -e 'SELECT \"a\\\"; DROP TABLE t; --\"'",
+                Rule::DropData,
+            ),
             ("mysql --init-command='DROP TABLE t'", Rule::DropData),
             ("mariadb -e 'DROP DATABASE prod'", Rule::DropData),
             ("mysql -e \"$Q\"", Rule::Unknown),
@@ -672,6 +677,83 @@ fn a_word_that_only_looks_like_a_client_is_safe() {
     assert!(rules("grep FLUSHALL notes.txt", Shell::Posix, &posix()).is_empty());
     assert!(rules("git log --grep='DROP TABLE'", Shell::Posix, &posix()).is_empty());
     assert!(rules("psqlx -c 'DROP TABLE t'", Shell::Posix, &posix()).is_empty());
+}
+
+/// Statements that end before a string that never closes still run: a client
+/// sends each one as its `;` arrives.
+#[test]
+fn statements_before_an_open_string_run() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "mysql -e \"SELECT 'it\\'s'\"",
+            "mysql -e \"SELECT 'it\\'s'; SELECT 1\"",
+            "mariadb -e \"SELECT 'it\\'s'\"",
+        ],
+        &[
+            (
+                "mysql -e \"SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '\"",
+                Rule::DropData,
+            ),
+            (
+                "mariadb -e \"SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '\"",
+                Rule::DropData,
+            ),
+            (
+                "mysql <<'EOF'\nSET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '\nEOF",
+                Rule::DropData,
+            ),
+            (
+                "mysql -e \"SET sql_mode='ANSI_QUOTES'; SELECT \\\"a\\\\\\\"; DROP TABLE t; SELECT \\\"\"",
+                Rule::DropData,
+            ),
+            (
+                "mysql -e \"SELECT 'a\\'; DROP TABLE t; SELECT '\"",
+                Rule::DropData,
+            ),
+            (
+                "psql <<'EOF'\nSET standard_conforming_strings = off;\nSELECT 'a\\''; DROP TABLE t; SELECT ';\nEOF",
+                Rule::DropData,
+            ),
+        ],
+    );
+}
+
+/// A `` `u{…} `` that makes a space PowerShell splits words on is not text
+/// the guard can read as one word.
+#[test]
+fn a_backtick_u_that_makes_a_space_is_not_read_as_a_word() {
+    let nl = "\n";
+    let lines = [
+        "iex \"Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse\"".to_string(),
+        "iex \"rm`u{a0}-r`u{a0}-fo`u{a0}~\"".to_string(),
+        "iex \"Remove-Item`u{2028}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{85}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{3000}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{2000}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{1680}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{202f}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{2029}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{205f}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Remove-Item`u{200a}C:\\Windows -Recurse\"".to_string(),
+        "iex \"Format-Volume`u{a0}-DriveLetter`u{a0}C\"".to_string(),
+        "iex \"git`u{a0}push`u{a0}--force\"".to_string(),
+        "iex \"Set-ExecutionPolicy`u{a0}Unrestricted\"".to_string(),
+        "iex \"Get-Content`u{a0}~\\.ssh\\id_rsa\"".to_string(),
+        "powershell -Command \"Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse\"".to_string(),
+        "pwsh -c \"Remove-Item`u{a0}C:\\Windows -Recurse\"".to_string(),
+        // A dash that starts a parameter, a quote that opens a string.
+        "iex \"Remove-Item C:\\Windows `u{2013}Recurse\"".to_string(),
+        "iex \"Remove-Item C:\\Windows `u{2014}Recurse\"".to_string(),
+        "iex \"Remove-Item `u{2018}C:\\Windows`u{2019} -Recurse\"".to_string(),
+        "iex \"Remove-Item `u{201c}C:\\Windows`u{201d} -Recurse\"".to_string(),
+        format!("Invoke-Expression @\"{nl}Remove-Item`u{{a0}}C:\\Windows`u{{a0}}-Recurse{nl}\"@"),
+    ];
+    for line in &lines {
+        let assessment = classify(line, Shell::PowerShell, &windows());
+        assert!(!assessment.findings().is_empty(), "safe: {line}");
+    }
 }
 
 #[test]

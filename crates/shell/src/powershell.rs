@@ -475,9 +475,12 @@ impl Walker<'_> {
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
-                    value.push_str(&unescape_expandable(
+                    let Some(before) = unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
-                    ));
+                    ) else {
+                        return Arg::Unknown(source.to_string());
+                    };
+                    value.push_str(&before);
                     if child.kind() != "variable" {
                         return Arg::Unknown(source.to_string());
                     }
@@ -492,9 +495,11 @@ impl Walker<'_> {
                     }
                     at = child.end_byte();
                 }
-                value.push_str(&unescape_expandable(
-                    self.source.get(at..end).unwrap_or_default(),
-                ));
+                let Some(rest) = unescape_expandable(self.source.get(at..end).unwrap_or_default())
+                else {
+                    return Arg::Unknown(source.to_string());
+                };
+                value.push_str(&rest);
                 // A string of nothing but `$null` is still the device.
                 if nulls && value.is_empty() {
                     return Arg::Known(NULL.to_string());
@@ -648,8 +653,12 @@ fn unescape(text: &str) -> String {
 
 /// What a backtick makes of the text in an expandable string or here-string:
 /// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
-/// other character after it is itself (`` `$ ``, `` `" ``).
-fn unescape_expandable(text: &str) -> String {
+/// other character after it is itself (`` `$ ``, `` `" ``). `None` when a
+/// `` `u{…} `` makes a character that PowerShell reads as more than a
+/// character once the text is run as code (a space that is not an ASCII one,
+/// a dash or a quote that looks like another): the text the string holds is
+/// then not the words it runs as, so the string is only known when it runs.
+fn unescape_expandable(text: &str) -> Option<String> {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -680,6 +689,9 @@ fn unescape_expandable(text: &str) -> String {
                     .filter(|_| closed)
                     .and_then(char::from_u32);
                 if let Some(decoded) = decoded {
+                    if splits_words(decoded) {
+                        return None;
+                    }
                     value.push(decoded);
                 } else {
                     // Not a character: PowerShell does not run the line.
@@ -693,7 +705,18 @@ fn unescape_expandable(text: &str) -> String {
             other => value.push(other),
         }
     }
-    value
+    Some(value)
+}
+
+/// Whether PowerShell reads `c`, run as code, as something other than the
+/// character it is: a space that is not an ASCII one (U+00A0, U+0085,
+/// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) splits
+/// words, a dash (U+2013 to U+2015) starts a parameter, and a typographic
+/// quote (U+2018 to U+201E) opens or closes a string. The guard's own read of
+/// a nested line does not know them, so the text with one in it is not read.
+fn splits_words(c: char) -> bool {
+    (!c.is_ascii() && c.is_whitespace())
+        || matches!(c, '\u{2013}'..='\u{2015}' | '\u{2018}'..='\u{201e}')
 }
 
 /// Switch parameters (they take no value) that the rules meet.

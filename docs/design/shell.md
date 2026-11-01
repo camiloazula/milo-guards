@@ -828,7 +828,12 @@ double-quoted here-string a backtick makes the character PowerShell gives it
 (`` `n `` and `` `r `` a line break, `` `t `` a tab, `` `0 ``, `` `a ``, `` `b ``,
 `` `e ``, `` `f ``, `` `v `` and `` `u{…} `` the others), so `"SELECT 1;`nDROP
 TABLE t"` is two statements and `iex @"` … `"@` runs the lines that a
-backtick breaks. Several arguments to `Write-Output` or `echo` are one line
+backtick breaks. A `` `u{…} `` that makes a character PowerShell reads as more
+than a character when the text runs as code (a space that is not an ASCII one,
+such as U+00A0 or U+3000, which splits words; a dash from U+2013 to U+2015; a
+typographic quote from U+2018 to U+201E) leaves the string known only when it
+runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"` is `unknown`.
+Several arguments to `Write-Output` or `echo` are one line
 each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;
 `cmd`'s `echo` joins them with a space. A stage that is a group (`{ echo 'BEGIN;';
 echo 'DELETE FROM t;'; } |
@@ -980,8 +985,14 @@ where `"a\"` is an identifier), PostgreSQL also with them in `'…'` strings
 (`standard_conforming_strings` off). `mysql -e "SET
 sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; -- '"` drops the
 table, as does a `psql` text that sets `standard_conforming_strings = off`
-and then has `'a\'' ; DROP TABLE t; --'`, where the string takes `\'`. A reading in which a string is never closed is not
-one the text can have, and is left out: `SELECT 'it\'s'` is safe in MySQL.
+and then has `'a\'' ; DROP TABLE t; --'`, where the string takes `\'`. The
+`mysql` and `mariadb` clients send each statement as its `;` arrives, and
+`psql` reading its input does the same, so in a reading where a string is never
+closed the statements that end before it still run: they are judged, and only
+the open tail, which no client sends as a statement, is left out. `SELECT
+'it\'s'` is safe in MySQL, and `SELECT 'a\'; DROP TABLE t; SELECT '` is not. A
+`--` that no space follows is no comment in MySQL, so `SELECT "a\"; DROP TABLE
+t; --"` leaves only `--"` open, and the `DROP` runs.
 The same text without the `SET`, `SELECT 'a\'; DROP TABLE t; -- '`, is
 `drop_data` for the same reason: a server set that way runs the `DROP`.
 
