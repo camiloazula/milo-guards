@@ -41,7 +41,7 @@ mod posix;
 mod powershell;
 mod unit;
 
-pub use effect::{Effect, Reach};
+pub use effect::{Effect, How, Reach, ReadPath};
 pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
@@ -263,4 +263,92 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
     let reading = Reading::new(command, shell, paths, true);
     effect::of(&reading.split, &reading.findings, &reading.resolver)
+}
+
+/// The places `command`, run by `shell` with the directories in `paths`,
+/// reads and how each is read, when [`effect`] says it only reads; `None` for
+/// any other line.
+///
+/// A guard never touches the disk, so [`effect`] places each read by how it
+/// is spelled, and a symbolic link in the workspace that points out of it
+/// (`link -> ~/.ssh`, then `cat link/id_rsa`) is [`Reach::Workspace`]. A caller
+/// that can check the disk needs the places the line reads, and how the
+/// program reaches from each: a pattern is expanded by the shell, a recursive
+/// search walks a folder, and either can cross a link that a bare path would
+/// not show. This is the list [`effect`] judged, from the same reading, not a
+/// second one.
+///
+/// What it holds, as [`effect`] reads the line: every file operand and the
+/// source of every `<` redirect, the folder a lister lists, the target of a
+/// `cd`, the working directory when a reader with no file operand reads it
+/// without being told (`ls`, `rg TODO`, `git status`), the root of a deep
+/// read, and for `git` the repository at the working directory or at the
+/// folders `-C` chains. A git revision or pathspec is listed as a path too, as
+/// `effect` places it (`git show HEAD:a.rs` also lists `a.rs`, from the
+/// working directory and from every workspace folder). A line run after a
+/// `cd` reads from where the `cd` went.
+///
+/// Every [`ReadPath::path`] is absolute, spelled as the guard resolves it
+/// (`~` is the home directory, `.` and `..` are applied, a relative path starts
+/// at the working directory or at where a `cd` went), and nothing is read from
+/// the disk, so a link is not followed. The list is sorted and holds each
+/// entry once, so the answer is the same every time. A read that is not a
+/// place on a disk (the null device, a registry hive, a path on another
+/// drive's own working directory) has no path and is not listed; [`effect`]
+/// has judged it by its place. A path in a temporary folder is listed like any
+/// other: it is [`Reach::Workspace`] by that rule, not because it is inside the
+/// workspace.
+///
+/// Each entry says how it is read ([`How`]), which says what a caller checks:
+///
+/// - [`How::Exact`]: one path. Canonicalize it (a path that does not exist is
+///   resolved by its nearest existing ancestor, with the rest of the names put
+///   back).
+/// - [`How::Glob`]: a pattern the shell expands, as the fixed folder and the
+///   rest of the pattern. Expand it on disk the way the shell does, and
+///   canonicalize the folder and every match: the shell crosses a link while it
+///   expands (`cat src/*/x.rs` with `src/a -> ~`).
+/// - [`How::Tree`]: a folder the program walks, or whose names it hands to a
+///   program that opens them (`ls src | xargs cat`, `find src -exec cat {} +`).
+///   Canonicalize the root. When `follows_links` is `false` (`grep -r`, `rg`,
+///   `find`, `ls -R`, `du`, `git`, given only flags known not to follow links)
+///   that is the whole check. When it is `true` (`grep -R`, `rg -L`, `find -L`,
+///   `ls -RL`, `du -L`, a walk whose names are opened, any other flag, any
+///   reader the guard does not know to stay out of links) a link anywhere below the root
+///   can lead out, and a caller may simply treat the line as reading beyond
+///   the workspace.
+///
+/// Treat the line as reading beyond the workspace when anything a check finds
+/// leaves it. The workspace folders are what the caller compares with, after
+/// canonicalizing them too, and the temporary folders [`effect`] allows: on
+/// macOS `/tmp` is `/private/tmp` and `/var/folders` is `/private/var/folders`.
+///
+/// ```
+/// use std::path::PathBuf;
+/// use milo_guards_shell::{effect_paths, How, Paths, ReadPath, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let exact = |path: &str| ReadPath { path: PathBuf::from(path), how: How::Exact };
+/// let read = |line| effect_paths(line, Shell::Posix, &paths);
+/// assert_eq!(read("cat link/id_rsa"), Some(vec![exact("/work/app/link/id_rsa")]));
+/// assert_eq!(read("cat ~/.ssh/config"), Some(vec![exact("/home/me/.ssh/config")]));
+/// // A pattern: the folder it expands in, and the rest of it.
+/// let glob = ReadPath { path: PathBuf::from("/work/app"), how: How::Glob("*.rs".into()) };
+/// assert_eq!(read("cat *.rs"), Some(vec![glob]));
+/// // A walk, and whether it opens what it finds through links.
+/// let walk = |path: &str, follows_links| ReadPath {
+///     path: PathBuf::from(path),
+///     how: How::Tree { follows_links },
+/// };
+/// assert_eq!(read("rg TODO src"), Some(vec![walk("/work/app/src", false)]));
+/// assert_eq!(read("grep -R TODO src"), Some(vec![walk("/work/app/src", true)]));
+/// assert_eq!(read("ls src | xargs cat"), Some(vec![walk("/work/app/src", true)]));
+/// // A line that changes something, or cannot be read, has no list.
+/// assert_eq!(read("mkdir x"), None);
+/// assert_eq!(read("$CMD"), None);
+/// ```
+#[must_use = "the paths are the answer: they are what the line reads"]
+pub fn effect_paths(command: &str, shell: Shell, paths: &Paths) -> Option<Vec<ReadPath>> {
+    let reading = Reading::new(command, shell, paths, true);
+    effect::paths(&reading.split, &reading.findings, &reading.resolver)
 }

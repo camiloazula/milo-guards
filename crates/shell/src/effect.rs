@@ -11,18 +11,21 @@
 //! reads land is [`Reach`]: the `reach` module says what a unit reads.
 
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 
 use crate::path::{self, Place, Resolver};
 
 mod git;
 pub(crate) mod operands;
+mod paths;
 mod reach;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use operands::{dashed, inert, operands, place_effect, substituted, unquoted, Context};
-use reach::How;
+use reach::Manner;
+
+pub use paths::{How, ReadPath};
 
 /// What a line does to the machine, as far as the guard can read: the answer
 /// of [`effect`](fn@crate::effect), beside [`classify`](crate::classify)'s.
@@ -98,6 +101,35 @@ pub(crate) enum Kind {
 /// uses the same `split` and `findings`, so the two answers cannot disagree
 /// about what the units are.
 pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Effect {
+    read(split, findings, resolver, false).effect
+}
+
+/// The places a line that only reads reads, and how each is read, from the
+/// same reading as [`of`]: `None` for any other line. Absolute, sorted,
+/// without repeats. A read that is not a place on a disk (a device, a path on
+/// another drive's own working directory) has none and is left out; it is
+/// judged by its place already.
+pub(crate) fn paths(
+    split: &Split,
+    findings: &[Finding],
+    resolver: &Resolver,
+) -> Option<Vec<ReadPath>> {
+    let reads = read(split, findings, resolver, true);
+    matches!(reads.effect, Effect::ReadsOnly(_))
+        .then(|| paths::resolve(&reads.landed, &reads.followed, resolver))
+}
+
+/// What reading a line gave: its effect, and when the paths were asked for,
+/// where each read landed and which pipeline stages hand names on to a
+/// program that opens them.
+struct Read {
+    effect: Effect,
+    landed: Vec<paths::Landed>,
+    followed: BTreeSet<(usize, usize)>,
+}
+
+/// Read the line once: its effect, and the paths when `collect` asks.
+fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool) -> Read {
     let mut seen = Seen::default();
     for finding in findings {
         seen.add(rule_effect(finding.rule));
@@ -125,6 +157,9 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         resolver,
         producers,
         beyond: Cell::new(false),
+        landed: collect.then(|| RefCell::new(Vec::new())),
+        followed: RefCell::default(),
+        stage: Cell::new(None),
     };
     for read in &split.reads {
         seen.add(place_effect(
@@ -132,10 +167,11 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
             read.shell,
             read.dir.as_ref(),
             &read.target,
-            How::default(),
+            Manner::default(),
         ));
     }
     for (at, unit) in split.units.iter().enumerate() {
+        context.stage.set(unit.stage);
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.
         let enclosing: Vec<_> = split
@@ -152,7 +188,12 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
             None => seen.add(unit_effect(unit, &context)),
         }
     }
-    seen.effect(context.beyond.get())
+    let effect = seen.effect(context.beyond.get());
+    Read {
+        effect,
+        landed: context.landed.map(RefCell::into_inner).unwrap_or_default(),
+        followed: context.followed.into_inner(),
+    }
 }
 
 /// What has been seen so far: a change beats not knowing, which beats
@@ -308,7 +349,7 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
         // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
         let place = resolver.place(&at, unit.shell, unit.hidden);
-        context.land(unit.shell, None, &at, place, How::default());
+        context.land(unit.shell, None, &at, place, Manner::default());
         if matches!(place, Place::Unknown) {
             Kind::Unknown
         } else {

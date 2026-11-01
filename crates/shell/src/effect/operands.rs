@@ -8,14 +8,15 @@
 //! places.
 
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 
-use super::reach::{self, How};
+use super::paths::Landed;
+use super::reach::{self, Manner};
 use super::{git, git_subcommand, Kind};
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
-use crate::unit::{Arg, Binding, Unit};
+use crate::unit::{Arg, Binding, Stage, Unit};
 use crate::Shell;
 
 /// What judging a unit needs besides the unit.
@@ -26,6 +27,14 @@ pub(super) struct Context<'a> {
     /// Whether a read of the line landed beyond the workspace so far, for
     /// [`super::Reach`].
     pub(super) beyond: Cell<bool>,
+    /// Where each read landed, as written, when the caller asks for the
+    /// paths (`None` otherwise, so that `effect` pays nothing for them).
+    pub(super) landed: Option<RefCell<Vec<Landed>>>,
+    /// The pipeline stages whose listing a later stage hands to a program that
+    /// opens the names, as (pipeline, index).
+    pub(super) followed: RefCell<BTreeSet<(usize, usize)>>,
+    /// The stage of the unit being read.
+    pub(super) stage: Cell<Option<Stage>>,
 }
 
 /// Whether reading from `arg`, written from `dir`, is a read of a place the
@@ -39,7 +48,7 @@ pub(super) fn place_effect(
     shell: Shell,
     dir: Option<&Arg>,
     arg: &Arg,
-    how: How,
+    how: Manner,
 ) -> Kind {
     let (kind, place) = place_kind(context.resolver, shell, dir, arg, how.hidden);
     if let Some(place) = place {
@@ -109,7 +118,7 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
         }
     }
     let opened = path_args(unit, key);
-    let how = reach::how(unit, key);
+    let how = reach::how(unit, key, context.landed.is_some());
     // A folder `-C` names is judged like a place; where it lands is the
     // repository's, which the folders chained together make.
     for dir in &opened.dirs {
@@ -282,6 +291,8 @@ pub(crate) fn passes(unit: &Unit) -> bool {
 /// through any stage that only passes them on. `text` says strings and
 /// search results do as well, for a cmdlet that searches them rather than
 /// opens them.
+///
+/// It also notes the stage that lists, in `context.followed`, for the paths.
 fn fed_by_listing(unit: &Unit, context: &Context<'_>, text: bool) -> bool {
     let mut at = unit.stage;
     while let Some(stage) = at.filter(|stage| stage.index > 0) {
@@ -293,6 +304,10 @@ fn fed_by_listing(unit: &Unit, context: &Context<'_>, text: bool) -> bool {
             return false;
         };
         if lists(producer) {
+            // The names are opened by the stage that is handed them, so the
+            // folder that was listed is read through whatever is in it.
+            let lister = (stage.pipeline, stage.index - 1);
+            context.followed.borrow_mut().insert(lister);
             return true;
         }
         if text

@@ -7,6 +7,8 @@
 //! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
 //! lists, and a `cd` that moved the line.
 
+use std::path::PathBuf;
+
 use milo_guards_core::spelling::glob;
 use milo_guards_core::{Flavour, Paths, Sensitivity, Spelling};
 
@@ -249,6 +251,37 @@ impl Resolver {
                 Some(format!("{letter}:~|{}", parts.to_ascii_lowercase()))
             }
             Start::Unknown => None,
+        }
+    }
+
+    /// The absolute path `text` (already joined to where an earlier `cd`
+    /// moved) names, by its spelling: `~` and `..` applied, the working
+    /// directory in front of a relative one, nothing read from the disk. `None`
+    /// for what is not a place on a disk: a device, a PowerShell drive that is
+    /// not a disk (`HKLM:`, `Env:`), a path on another drive's own working
+    /// directory, and what cannot be spelled out (`~user`).
+    pub(crate) fn absolute(&self, text: &str, shell: Shell) -> Option<PathBuf> {
+        if brace_list(text) || device(text, shell).is_some() {
+            return None;
+        }
+        let flavour = flavour(shell);
+        // `FileSystem::C:\x` is the provider's own path to `C:\x`.
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.absolute(rest, shell))
+                    .flatten();
+            }
+        }
+        match start(text, shell) {
+            Start::Plain => self.core.absolute(Spelling::Plain(text), flavour),
+            Start::Home(rest) => self.core.absolute(Spelling::Home(rest), flavour),
+            Start::DriveRelative(letter, rest) => self
+                .on_cwd_drive(letter, rest)
+                .and_then(|rest| self.core.absolute(Spelling::Plain(rest), flavour)),
+            Start::Provider(..) | Start::Unknown => None,
         }
     }
 
