@@ -689,20 +689,44 @@ const STARTUP_WORDS: &str = "a file a tool runs on its own";
 /// judged then. This lists the places known to run code; it is not a proof
 /// that nowhere else does (`.vscode/settings.json` and a tool's own config
 /// are not in it).
-const STARTUP: [(&[&str], bool); 29] = [
+const STARTUP: &[(&[&str], bool)] = &[
     // An editor's tasks and launch configurations, and the servers it starts.
     (&[".vscode", "tasks.json"], false),
     (&[".vscode", "launch.json"], false),
     (&[".vscode", "mcp.json"], false),
+    // Its settings run what they name: a terminal profile, a formatter, a
+    // language server, an interpreter path.
+    (&[".vscode", "settings.json"], false),
+    (&[".zed", "tasks.json"], false),
     (&[".cursor", "mcp.json"], false),
     (&[".mcp.json"], false),
+    // Other agent tools' hooks and servers, which run a command of their own:
+    // each starts what its configuration names when the tool is opened or
+    // calls a tool.
+    (&[".cursor", "hooks.json"], false),
+    (&[".windsurf", "hooks.json"], false),
+    (&[".claude", "settings.json"], false),
+    (&[".claude", "settings.local.json"], false),
+    (&[".gemini", "settings.json"], false),
+    (&[".codex", "config.toml"], false),
+    (&[".roo", "mcp.json"], false),
+    (&[".amazonq", "mcp.json"], false),
+    (&[".kiro", "settings", "mcp.json"], false),
+    (&[".kiro", "hooks"], true),
+    (&[".continue", "mcpServers"], true),
     // A JetBrains editor's run configurations, which a person starts by name
     // and a before-launch step or a startup task can start by itself.
     (&[".idea", "runConfigurations"], true),
-    // direnv loads it on `cd`.
+    // direnv loads it on `cd`, and mise runs its hooks and sets its
+    // environment from its files on `cd`.
     (&[".envrc"], false),
+    (&["mise.toml"], false),
+    (&[".mise.toml"], false),
+    (&["mise.local.toml"], false),
+    (&[".mise.local.toml"], false),
     // Hooks git runs.
     (&[".husky"], true),
+    (&[".githooks"], true),
     (&[".pre-commit-config.yaml"], false),
     (&["lefthook.yml"], false),
     (&["lefthook.yaml"], false),
@@ -715,6 +739,10 @@ const STARTUP: [(&[&str], bool); 29] = [
     // What CI runs, with the repository's secrets.
     (&[".github", "workflows"], true),
     (&[".github", "actions"], true),
+    (&[".gitea", "workflows"], true),
+    (&[".forgejo", "workflows"], true),
+    (&[".woodpecker"], true),
+    (&[".woodpecker.yml"], false),
     (&[".gitlab-ci.yml"], false),
     (&[".circleci"], true),
     (&[".buildkite"], true),
@@ -723,10 +751,45 @@ const STARTUP: [(&[&str], bool); 29] = [
     (&["Jenkinsfile"], false),
     (&["azure-pipelines.yml"], false),
     (&["bitbucket-pipelines.yml"], false),
+    // A cloud workspace runs the tasks its file names when it starts.
+    (&[".gitpod.yml"], false),
     // What builds a development container, and runs in it.
     (&[".devcontainer"], true),
     (&[".devcontainer.json"], false),
 ];
+
+/// Names that end like this are on the list whatever comes before: an editor
+/// opens a workspace file and runs the tasks and settings it holds.
+const STARTUP_SUFFIXES: &[&str] = &[".code-workspace"];
+
+/// Whether `part` is a name that ends in one of [`STARTUP_SUFFIXES`], by the
+/// widest fold; on Windows also by a short name (`PROJ~1.COD`, which keeps
+/// three characters of the extension).
+fn has_startup_suffix(part: &str, windows: bool) -> bool {
+    let folded: String = part.chars().map(fold).collect();
+    STARTUP_SUFFIXES.iter().any(|suffix| {
+        folded.ends_with(suffix)
+            || (windows
+                && part.contains('~')
+                && part.rsplit_once('.').is_some_and(|(_, extension)| {
+                    suffix.strip_prefix('.').is_some_and(|full| {
+                        extension.len() == 3 && full.starts_with(&extension.to_lowercase())
+                    })
+                }))
+    })
+}
+
+/// Whether a pattern part can pick a name that ends in one of
+/// [`STARTUP_SUFFIXES`]: it ends in one, or it picks a name made of any stem
+/// and the suffix.
+fn picks_startup_suffix(part: &str, flavour: Flavour, hidden: bool, windows: bool) -> bool {
+    STARTUP_SUFFIXES.iter().any(|suffix| {
+        part.to_lowercase().ends_with(suffix)
+            || ["x", "xx", ""].iter().any(|stem| {
+                pattern_matches(part, &format!("{stem}{suffix}"), flavour, hidden, windows)
+            })
+    })
+}
 
 /// Whether a pattern part is nothing but `*` and `?`.
 fn bare(part: &str) -> bool {
@@ -748,52 +811,63 @@ fn runs_on_its_own(
 ) -> bool {
     let windows = folder.windows();
     let names = &folder.parts;
-    STARTUP.iter().any(|(entry, is_folder)| {
-        // The place is among the names (a pattern is below it, or is it).
-        let spelled = entry.len() <= names.len()
-            && names.windows(entry.len()).any(|run| {
-                run.iter()
-                    .zip(*entry)
-                    .all(|(part, name)| same_name(part, name, windows))
-            });
-        if spelled {
-            return true;
-        }
-        // The names end in the first `k` names of the place (none, for a
-        // pattern that starts above it), and what is left of it is below.
-        (0..entry.len()).any(|k| {
-            let held = k <= names.len()
-                && names[names.len() - k..]
-                    .iter()
-                    .zip(*entry)
-                    .all(|(part, name)| same_name(part, name, windows));
-            if !held {
-                return false;
+    // A name that ends like a workspace file: among the names, or what a
+    // pattern's last part can pick.
+    let suffixed = names.iter().any(|part| has_startup_suffix(part, windows))
+        || tail.is_some_and(|tail| {
+            let hidden = hidden || flavour == Flavour::Windows;
+            tail.last().is_some_and(|part| {
+                !bare(part) && picks_startup_suffix(part, flavour, hidden, windows)
+            })
+        });
+    suffixed
+        || STARTUP.iter().any(|(entry, is_folder)| {
+            // The place is among the names (a pattern is below it, or is it).
+            let spelled = entry.len() <= names.len()
+                && names.windows(entry.len()).any(|run| {
+                    run.iter()
+                        .zip(*entry)
+                        .all(|(part, name)| same_name(part, name, windows))
+                });
+            if spelled {
+                return true;
             }
-            match tail {
-                Some(tail) => {
-                    let rest: Vec<String> = entry[k..].iter().map(|n| (*n).to_string()).collect();
-                    let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
-                    let hidden = hidden || flavour == Flavour::Windows;
-                    let matches = |part: &str, name: &str| {
-                        pattern_matches(part, name, flavour, hidden, windows)
-                    };
-                    // The pattern starts where the names end, so it reads the
-                    // rest of the place from its first part; from above the
-                    // place it can go down any number of folders first, and
-                    // a pattern of nothing but wildcards (`src/*`) takes
-                    // whatever is there without naming a place.
-                    let starts = if k == 0 { tail.len() } else { 1 };
-                    (0..starts).any(|from| {
-                        let tail = &tail[from..];
-                        !(k == 0 && tail.iter().all(|part| bare(part)))
-                            && picks(tail, &rest, !below, *is_folder, &matches)
-                    })
+            // The names end in the first `k` names of the place (none, for a
+            // pattern that starts above it), and what is left of it is below.
+            (0..entry.len()).any(|k| {
+                let held = k <= names.len()
+                    && names[names.len() - k..]
+                        .iter()
+                        .zip(*entry)
+                        .all(|(part, name)| same_name(part, name, windows));
+                if !held {
+                    return false;
                 }
-                None => below && k > 0,
-            }
+                match tail {
+                    Some(tail) => {
+                        let rest: Vec<String> =
+                            entry[k..].iter().map(|n| (*n).to_string()).collect();
+                        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+                        let hidden = hidden || flavour == Flavour::Windows;
+                        let matches = |part: &str, name: &str| {
+                            pattern_matches(part, name, flavour, hidden, windows)
+                        };
+                        // The pattern starts where the names end, so it reads the
+                        // rest of the place from its first part; from above the
+                        // place it can go down any number of folders first, and
+                        // a pattern of nothing but wildcards (`src/*`) takes
+                        // whatever is there without naming a place.
+                        let starts = if k == 0 { tail.len() } else { 1 };
+                        (0..starts).any(|from| {
+                            let tail = &tail[from..];
+                            !(k == 0 && tail.iter().all(|part| bare(part)))
+                                && picks(tail, &rest, !below, *is_folder, &matches)
+                        })
+                    }
+                    None => below && k > 0,
+                }
+            })
         })
-    })
 }
 
 /// Keys and credentials the system itself keeps, under the root of a POSIX

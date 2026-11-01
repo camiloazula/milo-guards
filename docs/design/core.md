@@ -177,18 +177,29 @@ itself.
   - **A workspace's own files that a tool runs on its own** are `Startup` for a
     write (see `startup` below), and not for a read or a delete, which stay the
     agent's own: `.vscode/tasks.json`, `.vscode/launch.json`,
-    `.vscode/mcp.json`, `.cursor/mcp.json`, `.mcp.json`, the folder
-    `.idea/runConfigurations`, `.envrc`, the folder `.husky`,
-    `.pre-commit-config.yaml`, `lefthook.yml` and `lefthook.yaml` (also with a
-    leading dot or `-local`), the folders `.github/workflows` and
-    `.github/actions`, `.gitlab-ci.yml`, the folders `.circleci` and
-    `.buildkite`, `.travis.yml`, `.drone.yml`, `Jenkinsfile`,
-    `azure-pipelines.yml`, `bitbucket-pipelines.yml`, the folder
-    `.devcontainer` and `.devcontainer.json`. Each is found at any depth
+    `.vscode/mcp.json`, `.vscode/settings.json`, any `*.code-workspace`,
+    `.zed/tasks.json`, `.cursor/mcp.json`, `.mcp.json`, the folder
+    `.idea/runConfigurations`, `.envrc`, `mise.toml`, `.mise.toml`,
+    `mise.local.toml` and `.mise.local.toml`, the folders `.husky` and
+    `.githooks`, `.pre-commit-config.yaml`, `lefthook.yml` and
+    `lefthook.yaml` (also with a leading dot or `-local`), the folders
+    `.github/workflows`, `.github/actions`, `.gitea/workflows`,
+    `.forgejo/workflows`, `.woodpecker`, `.circleci` and `.buildkite`,
+    `.gitlab-ci.yml`, `.woodpecker.yml`, `.travis.yml`, `.drone.yml`,
+    `Jenkinsfile`, `azure-pipelines.yml`, `bitbucket-pipelines.yml`,
+    `.gitpod.yml`, the folder `.devcontainer` and `.devcontainer.json`, and
+    the hook and server configurations of other agent tools that run a command
+    of their own: `.cursor/hooks.json`, `.windsurf/hooks.json`,
+    `.claude/settings.json`, `.claude/settings.local.json`,
+    `.gemini/settings.json`, `.codex/config.toml`, `.roo/mcp.json`,
+    `.amazonq/mcp.json`, `.kiro/settings/mcp.json`, the folders `.kiro/hooks`
+    and `.continue/mcpServers`. Each is found at any depth
     below a workspace folder, as a `.git` is, and anything below a folder on
     the list counts. A file that only runs when someone types the command
     (`Makefile`, `justfile`, `package.json`, `.cargo/config.toml`,
-    `.vscode/settings.json`) is not on it. Names compare as the sensitive
+    `.vscode/extensions.json`) is not on it. A `*.code-workspace` is a suffix,
+    not a name: a name that ends so (by the widest fold, and on Windows by its
+    short name, `PROJ~1.COD`) counts wherever it is. Names compare as the sensitive
     places do: without case on every host, by the widest fold, and on Windows
     by short name (`VSCODE~1\TASKS~1.JSO`, `GITHUB~1\WORKFL~1`, `ENVRC~1`,
     `LEFTHO~1.YML`) and without the trailing dots and spaces Windows drops.

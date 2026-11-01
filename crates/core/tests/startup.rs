@@ -144,7 +144,8 @@ fn a_posix_machine_finds_every_spelling() {
             ("x.envrc", false),
             (".env", false),
             (".vscode", false),
-            (".vscode/settings.json", false),
+            (".vscode/settings.json", true),
+            (".vscode/extensions.json", false),
             (".vscodex/tasks.json", false),
             (".github", false),
             (".github/workflows-old/x", false),
@@ -233,8 +234,10 @@ fn windows_reads_every_spelling_as_one_name() {
             // Plain names.
             ("PROGRA~1", false),
             ("ENVRCX~1", false),
-            (r"VSCODE~1\SETTIN~1.JSO", false),
-            (r".vscode\settings.json", false),
+            (r"VSCODE~1\SETTIN~1.JSO", true),
+            (r"VSCODE~1\EXTENS~1.JSO", false),
+            (r".vscode\settings.json", true),
+            (r".vscode\extensions.json", false),
             ("Makefile", false),
             (r"C:\Users\me\other\.envrc", false),
         ],
@@ -333,8 +336,9 @@ fn a_pattern_that_can_pick_one_is_one() {
             ("src/*.js", false),
             ("*.md", false),
             ("*.json", false),
-            ("*.toml", false),
-            (".vscode/s*", false),
+            ("*.toml", true),
+            (".vscode/s*", true),
+            (".vscode/e*", false),
             (".vscode/*.txt", false),
             (".github/*.md", false),
             (".github/ISSUE_*/*", false),
@@ -419,7 +423,7 @@ fn a_pattern_that_goes_below_a_folder_by_a_dot_dot_is_read_where_it_lands() {
             ("src/*/../../.envrc", true),
             ("src/*/../../.vscode/tasks.json", true),
             ("src/*/../x", false),
-            ("src/*/../../.vscode/settings.json", false),
+            ("src/*/../../.vscode/extensions.json", false),
         ],
         |path| startup(&paths, POSIX, path),
     );
@@ -477,4 +481,132 @@ fn a_protected_path_wins() {
     );
     assert_eq!(startup(&paths, POSIX, ".github/workflows/ci.yml"), None);
     assert_eq!(startup(&paths, POSIX, ".vscode/tasks.json"), Some(WORDS));
+}
+
+/// The places added after the first list, each as a file or below a folder.
+#[test]
+fn more_places_are_found() {
+    let paths = posix();
+    let rows: Vec<(&str, bool)> = [
+        ".vscode/settings.json",
+        "proj.code-workspace",
+        ".code-workspace",
+        "a/b/My Project.code-workspace",
+        "x.CODE-WORKSPACE",
+        "mise.toml",
+        ".mise.toml",
+        "mise.local.toml",
+        ".mise.local.toml",
+        "sub/mise.toml",
+        ".zed/tasks.json",
+        ".gitpod.yml",
+        ".gitea/workflows/ci.yml",
+        ".forgejo/workflows/ci.yml",
+        ".woodpecker.yml",
+        ".woodpecker/build.yml",
+        ".githooks/pre-commit",
+        ".githooks",
+        ".cursor/hooks.json",
+        ".windsurf/hooks.json",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".gemini/settings.json",
+        ".codex/config.toml",
+        ".roo/mcp.json",
+        ".amazonq/mcp.json",
+        ".kiro/settings/mcp.json",
+        ".kiro/hooks/x.kiro.hook",
+        ".continue/mcpServers/x.yaml",
+    ]
+    .iter()
+    .map(|path| (*path, true))
+    .chain(
+        [
+            ".vscode/extensions.json",
+            "x.code-workspace.bak",
+            "code-workspace",
+            "x.code-workspaces",
+            "mise.toml.bak",
+            "mise.lock",
+            ".mise",
+            ".zed/settings.json",
+            ".zed/tasks.json.bak",
+            ".gitpod.yaml",
+            ".gitpod/Dockerfile",
+            ".gitea/ISSUE_TEMPLATE/x.md",
+            ".forgejo/ISSUE_TEMPLATE/x.md",
+            ".woodpecker.yaml",
+            ".githooksx/x",
+            ".githook/x",
+            ".cursor/rules/x.mdc",
+            ".claude/commands/x.md",
+            ".gemini/GEMINI.md",
+            ".codex/prompts/x.md",
+            ".kiro/steering/x.md",
+            ".continue/rules/x.md",
+            ".github/hooks/x",
+            ".github/ISSUE_TEMPLATE/x.md",
+        ]
+        .iter()
+        .map(|path| (*path, false)),
+    )
+    .collect();
+    wrong(&rows, |path| startup(&paths, POSIX, path));
+    // A short name keeps three characters of the extension.
+    let paths = windows();
+    wrong(
+        &[
+            ("PROJ~1.COD", true),
+            ("proj~1.cod", true),
+            (r"src\MY-PRO~1.COD", true),
+            ("proj.code-workspace", true),
+            ("PROJ.CODE-WORKSPACE.", true),
+            ("PROJ~1.TXT", false),
+            ("PROJ~1.CODE", false),
+            ("PROJ.COD", false),
+            ("MISE~1.TOM", true),
+            ("MISE~1.TXT", false),
+            ("MISE.TOML", true),
+            (r"GITHOO~1\pre-commit", true),
+            (r"GITHOO~1", true),
+            (r"GITEA~1\WORKFL~1\ci.yml", true),
+            (r"FORGEJ~1\workflows\ci.yml", true),
+            ("WOODPE~1.YML", true),
+            (r"WOODPE~1\build.yml", true),
+            (".GITPOD.YML", true),
+            ("GITPOD~1.YML", true),
+            (r"ZED~1\tasks.json", true),
+            (r".zed\TASKS~1.JSO", true),
+        ],
+        |path| startup(&paths, WINDOWS, path),
+    );
+}
+
+#[test]
+fn a_pattern_can_pick_a_workspace_file() {
+    let paths = posix();
+    wrong(
+        &[
+            ("*.code-workspace", true),
+            ("src/*.code-workspace", true),
+            ("*.code-*", true),
+            ("*.c*", true),
+            ("*.[c]ode-workspace", true),
+            ("*work?pace", true),
+            ("proj.code-workspace", true),
+            ("*.workspace", false),
+            ("*.code", false),
+            ("*", false),
+            ("src/*", false),
+            ("mise.*", true),
+            ("*.toml", true),
+            (".woodpecker/*", true),
+            (".githooks/*", true),
+            (".gitea/workflows/*", true),
+            (".gitea/*/ci.yml", true),
+            (".kiro/hooks/*", true),
+            (".kiro/*/mcp.json", true),
+        ],
+        |path| startup(&paths, POSIX, path),
+    );
 }
