@@ -653,11 +653,16 @@ fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>) -> Effect {
     match key.as_str() {
         "popd" => return Effect::Moves(None),
         "pushd" => {
-            return Effect::Moves(
-                target
-                    .known()
-                    .and_then(|text| crate::path::drive_of(text).or(drive)),
-            );
+            // A network path is mapped to a drive letter the line does not
+            // name, so the line is on an unknown drive then.
+            let network = |text: &str| text.starts_with("\\\\") || text.starts_with("//");
+            return Effect::Moves(target.known().and_then(|text| {
+                if network(text) {
+                    None
+                } else {
+                    crate::path::drive_of(text).or(drive)
+                }
+            }));
         }
         "cd" | "chdir" => {}
         // `cd..`, `cd\`: no drive in them.

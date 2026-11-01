@@ -87,3 +87,22 @@ fn a_cd_that_may_or_may_not_move_leaves_the_line_somewhere_unknown() {
         &[(r"cd D:\ws\a & rd /s /q b", Rule::Delete)],
     );
 }
+
+#[test]
+fn a_pushd_to_a_network_path_puts_the_line_on_a_drive_it_does_not_name() {
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[r"pushd D:\ws\a & rd /s /q b"],
+        &[
+            (
+                r"pushd \\host\share & cd C:\Users\me\repo & rd /s /q build",
+                Rule::Delete,
+            ),
+            (
+                r"pushd \\host\share\x & cd C:\Users\me\repo\a & rd /s /q b",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
