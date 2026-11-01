@@ -13,8 +13,11 @@ use std::collections::HashMap;
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
+mod archives;
 mod code;
 mod files;
+mod processes;
+mod regex;
 mod secrets;
 mod send;
 mod system;
@@ -33,7 +36,7 @@ const ELEVATORS: [&str; 8] = [
 
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
-const DOWNLOADERS: [&str; 10] = [
+pub(crate) const DOWNLOADERS: [&str; 10] = [
     "curl",
     "wget",
     "fetch",
@@ -70,6 +73,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        lengths: HashMap::new(),
+        pipelines: HashMap::new(),
         flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
@@ -90,6 +95,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
+            *length = (*length).max(stage.index + 1);
         }
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -143,6 +150,11 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// The number of stages of each pipeline.
+    lengths: HashMap<usize, usize>,
+    /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
+    /// first asks for it.
+    pipelines: HashMap<usize, Option<std::rc::Rc<processes::Pipeline>>>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
@@ -327,6 +339,11 @@ impl Checker<'_> {
         self.write_as(shell, scope, target, verb, Access::Content);
     }
 
+    /// A write into a folder, as an archive unpacked into it makes.
+    fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        self.write_to(shell, scope, target, verb, "a folder", Access::Content);
+    }
+
     /// A write of `target`, by how it reaches it (see [`Access`]).
     fn write_as(
         &mut self,
@@ -336,6 +353,19 @@ impl Checker<'_> {
         verb: &str,
         access: Access,
     ) {
+        self.write_to(shell, scope, target, verb, "a file", access);
+    }
+
+    /// A write to `target`, which is a `what` in the words of a reason.
+    fn write_to(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        what: &str,
+        access: Access,
+    ) {
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
@@ -343,12 +373,12 @@ impl Checker<'_> {
             Place::Registry => self.add(Rule::SystemSettings, "changes the registry", Some(target)),
             Place::Outside => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file outside the workspace"),
+                format!("{verb} {what} outside the workspace"),
                 Some(target),
             ),
             Place::Unknown => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file only known when it runs"),
+                format!("{verb} {what} only known when it runs"),
                 Some(target),
             ),
             place => self.add(
