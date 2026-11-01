@@ -1,10 +1,11 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
-//! a line it could not read safe.
+//! a line it could not read safe; and the same for `effect`, which never
+//! calls such a line reads-only.
 
 mod common;
 
-use common::{posix, windows};
-use milo_guards_shell::{classify, Rule, Shell};
+use common::{disagreements, posix, windows};
+use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
 
 /// Pieces of shell syntax, joined at random into lines no grammar expects.
 const PIECES: [&str; 40] = [
@@ -83,6 +84,11 @@ fn random_lines_never_panic() {
                 windows()
             };
             let _ = classify(&line, shell, &paths);
+            // The same noise through `effect`, which must also agree with
+            // `classify` on every line: one it flags does not only read.
+            let _ = effect(&line, shell, &paths);
+            let wrong = disagreements(shell, &paths, [line.as_str()]);
+            assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
         }
     }
 }
@@ -94,6 +100,7 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
+    assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
     // Deep enough to overflow the stack if the walk had no limit.
     for (open, close, shell) in [
         ("(", ")", Shell::Posix),
@@ -112,6 +119,15 @@ fn a_line_too_long_or_too_nested_is_not_read() {
                 .findings()
                 .iter()
                 .any(|finding| finding.rule == Rule::Unreadable),
+            "{shell:?} {open}"
+        );
+        // `effect` reads the same tree. Past the depth limit (400) is
+        // enough for it, and quicker than 30,000 levels: cmd's grammar alone
+        // takes seconds to parse those in a debug build.
+        let shallow = open.repeat(2_000) + "echo" + &close.repeat(2_000);
+        assert_eq!(
+            effect(&shallow, shell, &paths),
+            Effect::Unknown,
             "{shell:?} {open}"
         );
     }
@@ -223,6 +239,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
+    assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
     // A few reads of a short script are fine.
     assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
 }

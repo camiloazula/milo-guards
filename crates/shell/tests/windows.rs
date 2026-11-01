@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{check, rules, windows};
-use milo_guards_shell::{classify, Paths, Protected, Rule, Shell};
+use common::{check, classify, rules, windows};
+use milo_guards_shell::{Paths, Protected, Rule, Shell};
 
 #[test]
 fn everyday_powershell_is_safe() {

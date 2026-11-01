@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{check, macos, posix, rules};
-use milo_guards_shell::{classify, Protected, Rule, Shell};
+use common::{check, classify, macos, posix, rules};
+use milo_guards_shell::{Protected, Rule, Shell};
 
 #[test]
 fn everyday_commands_are_safe() {

@@ -6,6 +6,7 @@ Windows `cmd`.
 
 ```rust
 classify(line, shell, &paths) -> Assessment
+effect(line, shell, &paths) -> Effect
 ```
 
 `shell` is a `Shell` (`Posix`, `PowerShell` or `Cmd`), which is
@@ -15,6 +16,9 @@ caller's `match` on it needs a fallback arm. `paths` comes from
 The answer is `Safe`, or `Risky` with every finding: a rule, a reason a prompt
 can show, and the argument it is about. The guard reads the line and never runs
 it. It touches neither the file system nor the environment.
+
+`effect` is a second answer from the same split: does the line only read? See
+[Reads only](#reads-only).
 
 The guard only reports. What to do about a finding is the caller's choice, and
 nothing here knows about asking, refusing or modes. The types are core's; see
@@ -414,6 +418,251 @@ Some risks only show when units are read together.
   that run nothing. An `/e` flag, `@{[...]}`, backticks or any other code make
   it risky.
 
+## Reads only
+
+`classify` says whether a line is safe to run without asking. A caller that
+asks on every line in a careful mode has a second question: does this line only
+read? `ls`, `git status`, `cat src/main.rs` and `rg TODO` change nothing, and a
+caller may run them without a question where it asks on `mkdir build`, which is
+safe but changes the disk. Safe and reads-only are different answers, so
+`effect` answers the second beside `classify`, and it is not a rule: it adds
+nothing to `Rule`, and what a caller does with it is its policy.
+
+```rust
+effect(line, shell, &paths) -> Effect   // ReadsOnly, Changes or Unknown
+```
+
+| Answer | When |
+| --- | --- |
+| `ReadsOnly` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation. |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`). |
+| `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
+
+A line with a known writer is `Changes` whatever else it holds: `mkdir build &&
+./script.sh` changes things, and not knowing the rest does not take that back.
+`Unknown` is for a line with nothing known to change and something unread.
+
+`effect` and `classify` come from one code path. A line is split once and
+judged once, and both answers are read from that split and its findings, never
+from the raw text, so they cannot disagree about what the units are. The
+answers are independent, and a caller reads both. **Safe is not reads-only and
+reads-only is not Safe**: `cat ~/.ssh/id_ed25519` reads only (and is
+`ReadSecret` after #46), and `mkdir build` is safe and changes the disk. One
+direction does hold, and `tests/` checks it on every row of every table and on
+random noise: a line `classify` finds risky for anything but an elevation is
+never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly` and `Elevated`.
+
+**Wrappers** come off as `classify` takes them off, and what they run decides:
+`sudo cat` reads only. Only the wrappers that just run the next program are
+let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
+`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
+`-exec` makes), and only with options the guard knows: any other option
+makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
+`sudo -s` and `-i` start a shell, `env -P` changes where programs are found).
+`time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
+`flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
+start sessions: those wrap a reader into `Unknown`. A shell started with a
+script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
+table does not know, so it is `Unknown` even when the script it holds only
+reads.
+
+### The readers
+
+The table is short on purpose. A program not in it is `Unknown`. A reader that
+takes a flag which writes is `Changes` when the flag is given; one that takes a
+flag which runs another program, or can be handed one by an argument known only
+when it runs, is `Unknown`.
+
+| Shell | Reads only |
+| --- | --- |
+| POSIX | `ls`, `cat`, `head`, `tail`, `wc`, `stat`, `pwd`, `echo`, `printf`, `grep`, `egrep`, `fgrep`, `diff`, `du`, `df`, `which`, `realpath`, `basename`, `dirname`, `true`, `false`, `test`, `[`; `less`, `sort`, `file`, `rg`, `fd`, `find` and `git` with the care below; `cd`, `pushd` and `popd` when the guard follows them. |
+| PowerShell | `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Item`, `Get-Location`, `Test-Path`, `Resolve-Path`, `Write-Output`, `Write-Host`, `Where-Object`, `Select-Object`, `Sort-Object`, `Measure-Object` and the aliases `cat`, `gc`, `type`, `sls`, `echo`, `pwd` (and `ls`, `dir`, `gci`, which `classify` already reads as `Get-ChildItem`); `git`; `Set-Location` when followed. |
+| cmd | `dir`, `type`, `findstr`, `echo`; `git`; `cd` when followed. |
+
+- GNU `sort`, `file` and `less` take any unambiguous prefix of a long option
+  (`sort --outp=x` is `--output=x`, `file --comp` is `--compile`, `less
+  --log=x` is `--log-file=x`). So a long option of theirs reads only when it
+  is exactly one the guard names (`sort --reverse`, `file --brief`, `less
+  --quit-if-one-screen`); a prefix of the option that writes is `Changes`
+  (names compare without case, as `less` does), and any other is `Unknown`.
+  The other readers have no long option that writes or runs a program, and `git`
+  and `rg` refuse abbreviations.
+- `sort -o` and `sort --output` write (`Changes`); `--compress-program` runs a
+  program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, `less -k`
+  reads a lesskey file (whose `#env` section can set `LESSOPEN`), and an
+  argument that starts with `+` is a `less` command. `rg --pre`, `rg
+  --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one.
+  `printf -v NAME` sets a variable. All the others in the first group have no
+  flag that writes or runs anything.
+- `find` is `Changes` with `-delete`, `-fprint`, `-fprint0`, `-fprintf` or
+  `-fls`. `-exec`, `-execdir`, `-ok` and `-okdir` are not a reason of their own:
+  the program they run is a unit, as for `classify`, and is judged as one
+  (`find . -exec cat {} +` reads only, `find . -exec rm {} +` changes).
+- `git` is read for the subcommands `status`, `log`, `diff`, `show`, `blame`,
+  `rev-parse` and `ls-files`, `remote` alone and `remote -v`, and `branch` and
+  `tag` when they only list: every flag a listing one, and no operand that
+  would create (`git branch topic` makes a branch; `git branch --list 'x*'`
+  lists). `--output=FILE` writes. Each of the other reading subcommands has a
+  list of the options it knows as reading ones, in `effect/git.rs`, and any
+  other option is `Unknown` (`--ext-diff`, `--textconv`, `--help`, and any option
+  added later); git refuses abbreviated long options, so a name matches
+  exactly. `log`, `show` and `diff` share what they print about a change
+  (`--stat`, `--name-only`, `-p`, `-w`, `-M`, `--color`, ...) and `log` and
+  `show` what they walk (`--oneline`, `--graph`, `--decorate`, `--all`,
+  `--author`, `--since`, `-n`, `-L`, ...); `status` has `-s`, `-b`,
+  `--porcelain`, `-u`, `--ignored`; `blame` `-L`, `-w`, `-M`, `-C`, `-e`,
+  `--porcelain`; `rev-parse` `--show-toplevel`, `--abbrev-ref`, `--git-dir`,
+  `--verify`, `--short`; `ls-files` `-c`, `-d`, `-m`, `-o`, `-s`,
+  `--exclude-standard`. Of these, the options that take a file are places: `blame
+  --contents`, `--ignore-revs-file` and `-S`, `-O` and `--orderfile` on `diff`,
+  `log` and `show`, and `ls-files -X` and `--exclude-from`; a value known only
+  when it runs there is `Unknown`. An option that git takes with an optional
+  value takes it only after `=` (`--pretty`, `--format`, `--date`, `--color`,
+  `--stat`, `-U3`, `-M90%`, `-uno`): alone it takes nothing, so the next word is
+  not swallowed. `log --show-signature` is not in the list, since it runs the
+  `gpg.program` the repository's config names. `shortlog`, `describe`, `reflog`,
+  `cat-file`, `ls-tree`, `grep`, `merge-base` and `rev-list` are not yet read, and
+  are `Unknown`. The writing subcommands (`add`, `commit`, `push`, `checkout`, ...) are
+  `Changes`, the rest `Unknown`. Only `-C`, `--no-pager`, `-P` and
+  `--no-optional-locks` may come before the subcommand: `-c` and the others
+  can make git run a command. What the repository's own config makes git run
+  is not read, and a caller should know it: `diff.external` and textconv
+  drivers (which `diff`, `show`, `log -p` and `blame` run on the files they
+  show), `core.fsmonitor` (which `status` runs), and the lazy fetches of a
+  partial clone (which any of them may make over the network). Each runs a
+  program or touches the network from configuration the guard cannot see.
+- Package managers and build tools (`cargo`, `npm`, `pip`, `make`, `brew`,
+  `dotnet`, ...) are `Changes` whatever their subcommand.
+- A program named with a folder is the program the shell finds by that name
+  only in a system folder (`/bin`, `/usr/bin`, `/usr/local/bin`,
+  `/opt/homebrew/bin`): `./cat`, `bin/ls` and `/tmp/x/ls` are `Unknown`, as are
+  `cat.bat` and, in a POSIX shell, `ls.exe`.
+- A variable the line sets or unsets makes it `Unknown`: `PATH=. ls`, `env
+  PATH=. ls`, `env -u PATH ls`, `export PATH=...`, `GIT_PAGER=x git log`, and
+  in PowerShell and cmd any assignment (`$env:PATH = ...`, `set X=1`). A
+  language or a display setting is let through (`LC_ALL=C sort`, `LANG`, `TZ`,
+  `TERM`, `COLUMNS`, `LINES`, `NO_COLOR`). A `for` loop's own variable is not a
+  setting, unless its name could be one that changes what runs (`PATH`, or in
+  zsh `path`).
+- A PowerShell method call (`[IO.File]::ReadAllText(...)`, `$x.Delete()`) is
+  no unit, and the rules know only some of them: it is `Unknown`. So is a
+  backtick substitution in an unquoted here-document, which the grammar does
+  not read and the shell runs.
+- **A path known only when it runs makes the line `Unknown`.** A reader's file
+  operand or the source of a `<` redirect (`cat $f`, `cat < "$F"`, `cat
+  "$(pwd)/x"`, `grep x "$f"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may
+  name anything, a network device or a share included, and what cannot be read
+  is not reads-only. The paths the guard names stay known: `~`, `$HOME`,
+  `$TMPDIR`, `$env:TEMP` and the other forms [Core](core.md) resolves, and a
+  glob, which is a pattern over known folders (`cat *.rs` reads only).
+- **Only a path is judged as a path.** Each reader's table entry says which
+  arguments the program opens as files. A pattern, a count or an author is
+  data: `grep -rn "$PATTERN" .`, `rg "$x" src`, `head -n "$N" x`, `sort -k
+  "$K" x` and `git log --author="$NAME"` read only. For `grep` and `rg` the
+  first operand is the pattern, unless `-e` or `-f` gives it (`-f FILE` and
+  `rg --ignore-file FILE` are paths, and so is every operand of `rg --files`);
+  a value of an option that takes one is data, unless the option takes a file;
+  for `find`, the places are the arguments before the first test, and the
+  value of `-name` and the like is data. For `git`, the places are the value
+  of `-C`, what comes after `--`, and every operand of `--no-index`; the other
+  operands are revisions and pathspecs inside the work tree, which git does
+  not take outside it. A value counts as data only when it is known or every
+  expansion in it is in double quotes: unquoted, `$x` splits into more
+  arguments, options among them, and is an operand. An operand known only when
+  it runs is `Unknown` for `git`, since it could be an option. What stays
+  open: a quoted pattern or value could itself start with `-` and be read as an
+  option.
+- **Switches and options that name a file or folder are places too.** In cmd,
+  `findstr` takes its switches with `/` or `-` (`/f:file`, `-f:file`) and runs
+  letters together after one prefix, the one that takes a value last (`/smf:file`,
+  `-if:file`); `/s/b` is two runs. A switch is never an operand. A run with a
+  letter `findstr` does not know, or a value switch that is not last, makes the
+  line `Unknown`. Three switches name files: `/G:file` holds the search
+  strings and `/D:dir;dir` the folders to search (a list split at `;`), and
+  their values are places; `/F:file` is a list of files to open, which the
+  guard never sees, so it is `Unknown` whatever it names. `/C:string` and
+  `/A:attr` are data. With `/G:` or `/C:` every operand is a file, where
+  otherwise the first operand is what to search for (one known only when it
+  runs could be a switch, so it is a place). `dir`'s `/A:`, `/O:` and `/T:` are
+  data, and `type` has no switch. `//server/share` is no switch.
+- **An option that reads its list of files to open from another file is
+  `Unknown`, whatever its value**, since the list could name a share:
+  `findstr /F:`, `wc` and `du` and `sort` `--files0-from`, `file -f` and
+  `--files-from`, `find -files0-from`, and `xargs -a` and `--arg-file`. An
+  option whose file holds patterns, not paths, is read as a place only:
+  `grep -f`, `rg -f`, `findstr /G:`. Of GNU's other long options, `diff
+  --from-file` and `--to-file`, `grep` and `rg` `--file`, `du` and `diff`
+  `--exclude-from`, `sort --random-source` and `realpath --relative-to` name a
+  file, and the file is a place.
+- In PowerShell, `-Path` and `-LiteralPath` (`Get-ChildItem`, `Get-Item`,
+  `Get-Content`, `Select-String`, `Test-Path`, `Resolve-Path`) and
+  `Resolve-Path -RelativeBasePath` are places; `-Filter`, `-Include`,
+  `-Exclude`, `-Stream`, `-Encoding`, `-Delimiter`, `-Tail`, `-TotalCount`,
+  `-Pattern`, `-PathType` and `-OlderThan` are not. None of the readers in the
+  cmd and PowerShell tables has a switch that writes; `sort /O`, `more`,
+  `where` and `find` of cmd are not in them and are `Unknown`.
+- **An option never swallows an option.** Whenever a reader's option takes
+  its value from the next word and that word starts with `-` (a number such as
+  `head -n -5` is a value), the line is `Unknown`, in every reader's option
+  parser, so an option listed as taking a value that git or another program
+  also takes bare can never hide a real option behind it.
+- **PowerShell quotes inside a word are taken off as PowerShell takes them**
+  before the word is judged: `--contents="\\evil\s"` reaches the program as
+  `--contents=\\evil\s`, and a doubled quote inside quotes of its kind is one.
+- **A pipeline into a reader** (`xargs cat`, and in PowerShell `Get-Item`,
+  `Get-ChildItem`, `Test-Path`, `Resolve-Path`, `Get-Content` and `Select-String`
+  with no path of their own) hands it paths, so the stage before it must list
+  known places: `ls`, `fd`, `dir`, `Get-ChildItem`, `git ls-files`, or a `find`
+  that prints only what it finds (`-printf` and `-exec` print any text), through
+  stages that only select or order (`head`, `tail`, `sort`, `grep` with no file
+  of its own; `Where-Object`, `Sort-Object` and `Select-Object -First`, with no
+  `-Property`). `ls | xargs cat` and `Get-ChildItem | Get-Content` read only;
+  `echo a | xargs cat` and `'\\evil\share' | Test-Path` do not. A
+  `Select-String` also takes the text of `Get-Content` or another search.
+  Programs that only print their operands (`echo`, `printf`, `basename`, `test`,
+  `Write-Output`) are not readers of them.
+- **A `for` over words written out** (no expansion in the list) is read with
+  each word in place of the variable, as if the body were written out, the
+  network check included: `for f in *.txt; do wc -l "$f"; done` reads only,
+  `for f in /dev/tcp/h/80; do cat $f; done` does not. A glob stands for itself.
+  Not read this way, so `Unknown`: a list with an expansion (`for f in $(ls)`),
+  no list (`for f; do`), a body that sets the variable (assignment, `unset`,
+  `read`, `((`, `${f:=}`, a loop of the same name) or defines a function, a
+  variable in the program's own name, and a `<` redirect in the body. More than
+  64 combinations of words are not read either.
+- A read that contacts the network is `Unknown`, judged on the path's known
+  value after quotes are resolved, never on its spelling. Every reader's
+  arguments get that check, and so does every value inside one: after the
+  `=` of a long option or the `:` of a switch, and attached to a short option
+  (`-O//evil/s/x`, `--exclude-from=\\evil\s\x`, `/a:\\evil\s`), so the option
+  nobody listed is caught too. Only the spelling of a share or a device is
+  checked in a value, not whether it is known: `--author="$NAME"` still reads
+  only. In PowerShell a variable inside a bare token (`--contents=$p`) is
+  expanded, so such a value is a path known only when it runs. The names are: a path naming bash's
+  `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, as an operand or as the source
+  of a `<` redirect (`cat < /dev/tcp/evil.example/80`; a spelling that hides
+  it, such as `/dev/$'\x74'cp/...` or `/dev/${X}tcp/...`, is a path known only
+  when it runs); and in PowerShell and cmd a UNC path (`\\server\share`,
+  `//server/share`, `\\?\UNC\server\share`, `\\.\UNC\server\share`,
+  and `GLOBALROOT` after `\\?\` or `\\.\`, which reaches the share through
+  the device namespace), which offers the user's credentials to the server. A
+  long path or device that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) is
+  not a share. Repeated separators and `.` parts are folded as Windows folds
+  them (`\\.\\UNC\host\share`), and a path with `..` in its root counts. A
+  `<` redirect is read in cmd too, with a handle in front (`0<`).
+- Not read, so the caller has to account for them: an alias or function
+  defined outside the line, the `PATH` the shell runs with, and an option set
+  by a start-up file. A name in the table is taken to be the program that
+  name means.
+- `echo` and `printf` count as reading: with no redirect they change nothing.
+  `echo hi > out.txt` is `Changes` through its redirect.
+
+`effect` is an enum of its own and not a field of an explanation of the line.
+It is exhaustive, as `Rule` is and for the same reason: the three answers are
+the whole question, and a fourth would change what a caller's gate means by
+"reads only", so it must break every caller's `match` at compile time. (A
+caller that only asks `effect(..) == Effect::ReadsOnly` is unaffected by one.)
+
 ## Tests
 
 The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
@@ -421,9 +670,16 @@ PowerShell and cmd, built on core's test kit. Each table has a list of safe
 lines and a list of risky lines with the rule each must break. A new rule
 comes with rows of both kinds.
 
+`tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
+line of `posix.rs` and `windows.rs` also goes through `effect`: the shared
+`check` does it for each row of a table, and the tests that name a finding's
+reason judge their lines with the shared `classify` of `tests/common`, which
+does it too. A line `classify` finds risky for anything but an elevation must
+not be `ReadsOnly`.
+
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
 until it is named there. `tests/robust.rs` feeds the guard random lines and
 checks that it never panics, and that a line too long or too nested comes back
-unreadable.
+unreadable (and `Unknown` for `effect`).

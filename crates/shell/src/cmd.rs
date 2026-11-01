@@ -32,6 +32,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     });
     for name in names {
         split.reassign(&name);
+        split.set(&name);
     }
     Walker {
         source: &text,
@@ -213,6 +214,10 @@ impl Walker<'_> {
         };
         let writes = operator.is_some_and(|op| op.contains('>') && !op.ends_with('&'));
         let target_text = unit::text(target, self.source);
+        // `<` and `0<`.
+        if operator.is_some_and(|op| op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<") {
+            self.split.read(Shell::Cmd, self.value(&[*target]));
+        }
         if writes && !target_text.starts_with('&') {
             self.split.write(Shell::Cmd, self.value(&[*target]));
         }
