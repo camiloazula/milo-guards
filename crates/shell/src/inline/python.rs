@@ -326,6 +326,10 @@ fn kind(name: &str) -> Option<Kind> {
 /// imported.
 const PATHS: [&str; 4] = ["Path", "PurePath", "PosixPath", "PurePosixPath"];
 
+/// The most strings noted for one name: a name set to more is read as the
+/// first of them.
+const MAX_CONSTANTS: usize = 64;
+
 /// The calls that give a method of a `pathlib.Path` away when named without
 /// being called (`map(Path.unlink, paths)`).
 const METHODS: [&str; 7] = [
@@ -371,6 +375,13 @@ struct Reader<'s> {
     /// Whether literal code given to `exec` or `eval` in this code, or in
     /// code inside it, binds or uses a name the reader follows.
     shared: bool,
+    /// The strings each name is set to in the code, as the reader knows
+    /// them.
+    constants: HashMap<String, Vec<String>>,
+    /// Whether a name is put back as its constant. Only where a file is
+    /// read: a path the reader cannot name is no more than unknown, and a
+    /// delete or a write to it is judged as such.
+    constants_on: bool,
 }
 
 /// What a name stands for in code that has bound nothing: itself, and the
@@ -462,13 +473,99 @@ impl<'s> Reader<'s> {
             reading: Reading::default(),
             nesting,
             shared: false,
+            constants: HashMap::new(),
+            constants_on: false,
         }
+    }
+
+    /// Note each string a name is set to anywhere in the code, for the reads
+    /// of files ([`Self::read_target`]): by an assignment, or by a loop over
+    /// strings written out. Whatever else the name is set to adds none.
+    fn collect_constants(&mut self, root: Node<'_>) {
+        let mut found = Vec::new();
+        unit::for_each_node(root, |node| match node.kind() {
+            "assignment" | "named_expression" | "for_statement" | "for_in_clause" => {
+                found.push(node);
+            }
+            _ => {}
+        });
+        self.constants_on = true;
+        for node in found {
+            let looped = matches!(node.kind(), "for_statement" | "for_in_clause");
+            let (name, value) = match node.kind() {
+                "named_expression" => (
+                    node.child_by_field_name("name"),
+                    node.child_by_field_name("value"),
+                ),
+                _ => (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ),
+            };
+            let (Some(name), Some(value)) = (name, value) else {
+                continue;
+            };
+            if name.kind() != "identifier" {
+                continue;
+            }
+            let mut values = Vec::new();
+            if !looped {
+                // `a = b = 'x'` is no string to `a` here: `b` is set to it.
+                if value.kind() != "assignment" {
+                    values.extend(self.value(value, 0));
+                }
+            } else if matches!(value.kind(), "list" | "tuple" | "set") {
+                // `for f in ['a', 'b']`: each in turn.
+                let mut cursor = value.walk();
+                let items: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
+                values.extend(items.into_iter().filter_map(|item| self.value(item, 0)));
+            }
+            let known = self
+                .constants
+                .entry(self.text(name).to_string())
+                .or_default();
+            for value in values {
+                if known.len() < MAX_CONSTANTS && !known.contains(&value) {
+                    known.push(value);
+                }
+            }
+        }
+        self.constants_on = false;
+    }
+
+    /// The paths the argument at `at` of a call that reads a file may name:
+    /// a name the code sets to a string is read as each string it is set
+    /// to.
+    fn read_target(&mut self, args: &Args<'_>, at: usize, names: &[&str]) -> Vec<Arg> {
+        match args.get(at, names) {
+            Some(node) if !args.dir_fd => self.read_arg(node),
+            _ => self.target(args, at, names).into_iter().collect(),
+        }
+    }
+
+    /// `node`, the argument or the object a file method is called on, as the
+    /// paths to read (see [`Self::read_target`]).
+    fn read_arg(&mut self, node: Node<'_>) -> Vec<Arg> {
+        let text = self.text(node);
+        if node.kind() == "identifier" {
+            if let Some(values) = self.constants.get(text).filter(|values| values.len() > 1) {
+                return values
+                    .iter()
+                    .map(|value| path(Some(value.clone()), text))
+                    .collect();
+            }
+        }
+        self.constants_on = true;
+        let target = self.arg(node);
+        self.constants_on = false;
+        vec![target]
     }
 
     /// Read every node under `root`, once the names `import` bound are
     /// known. The walk stops once the code is found to nest too deeply to
     /// read: the line is unreadable whatever else is in it.
     fn walk_all(&mut self, root: Node<'_>) {
+        self.collect_constants(root);
         self.walking = true;
         walk(root, |node, field, above| {
             // Python reads a name in its NFKC form (`ｒｅｍｏｖｅ` is `remove`),
@@ -896,6 +993,12 @@ impl<'s> Reader<'s> {
                 }
             }
             "call" => self.value_of_call(node, level),
+            "identifier" if self.constants_on => {
+                match self.constants.get(self.text(node)).map(Vec::as_slice) {
+                    Some([constant]) => Some(constant.clone()),
+                    _ => None,
+                }
+            }
             "attribute" => {
                 let object = node.child_by_field_name("object")?;
                 let attribute = node.child_by_field_name("attribute")?;
@@ -1077,6 +1180,15 @@ impl<'s> Reader<'s> {
                 self.act(target.map(Act::Remove));
             }
             Some(Kind::Copy) => {
+                // The source of a copy is read, unless it is a URL.
+                if !matches!(
+                    name.as_deref(),
+                    Some("urllib.request.urlretrieve" | "wget.download")
+                ) {
+                    for source in self.read_target(&args, 0, &["src", "fsrc"]) {
+                        self.reading.acts.push(Act::Read(source));
+                    }
+                }
                 let target = self.target(&args, 1, &["dst", "extract_dir", "filename", "out"]);
                 self.act(target.map(Act::Write));
             }
@@ -1147,6 +1259,10 @@ impl<'s> Reader<'s> {
                 if writes_file {
                     let target = self.target(&args, 0, &["file", "filename", "name"]);
                     self.act(target.map(Act::Write));
+                } else {
+                    for source in self.read_target(&args, 0, &["file", "filename", "name"]) {
+                        self.reading.acts.push(Act::Read(source));
+                    }
                 }
             }
             Some(Kind::OsOpen) => {
@@ -1155,7 +1271,11 @@ impl<'s> Reader<'s> {
                     self.text(flags) == "0"
                         || self.qualified(flags, 0).as_deref() == Some("os.O_RDONLY")
                 });
-                if !reads {
+                if reads {
+                    for source in self.read_target(&args, 0, &["path"]) {
+                        self.reading.acts.push(Act::Read(source));
+                    }
+                } else {
                     let target = self.target(&args, 0, &["path"]);
                     self.act(target.map(Act::Write));
                 }
@@ -1494,6 +1614,12 @@ impl<'s> Reader<'s> {
                 let target = self.arg(receiver);
                 self.reading.acts.push(Act::Write(target));
             }
+            // `Path.read_text()` and `Path.read_bytes()`.
+            "read_text" | "read_bytes" => {
+                for source in self.read_arg(receiver) {
+                    self.reading.acts.push(Act::Read(source));
+                }
+            }
             // `Path.rename(target)` and `Path.replace(target=…)`; a string's
             // `replace(old, new)` has two.
             "rename" | "replace"
@@ -1550,6 +1676,9 @@ impl<'s> Reader<'s> {
             {
                 let target = args.get(0, &["target", "target_dir"]);
                 let target = target.map(|node| self.arg(node));
+                for source in self.read_arg(receiver) {
+                    self.reading.acts.push(Act::Read(source));
+                }
                 self.act(target.map(Act::Write));
             }
             "copy" | "copy_into"
@@ -1586,6 +1715,14 @@ impl<'s> Reader<'s> {
                 if writes_file {
                     let target = self.arg(receiver);
                     self.reading.acts.push(Act::Write(target));
+                } else {
+                    // A path opened to read; any other object's `open` is
+                    // not known to be a file.
+                    for source in self.read_arg(receiver) {
+                        if source.known().is_some() {
+                            self.reading.acts.push(Act::Read(source));
+                        }
+                    }
                 }
             }
             "symlink_to" | "hardlink_to" | "link_to" => {

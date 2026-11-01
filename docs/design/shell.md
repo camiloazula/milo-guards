@@ -527,7 +527,12 @@ exits reads no input: `--version`, `-V`, `--help` and `-h` for `python`, `-v`,
 (`perl`, `ruby`, `php`, `lua`). `python3 -v` is verbose mode, which reads the
 input. A flag that is the value of the option before it (`python -W
 --version`), or that follows `--`, where the script's name comes, is not one,
-and the line reads its input. Only a `deno` with no subcommand and none of
+and the line reads its input. For `perl`, `ruby`, `php` and `lua` any long
+option ahead of the flag, but one that carries its value (`--enable=gems`), may
+have taken it (ruby's `--enable`, `--disable`, `--dump`, `--crash-report`, php's
+`--define`, `--php-ini`, `--zend-extension` take the next word whatever it
+starts with, as `-d`, `-c` and `-z` do), so `ruby --enable --version <<'RB'`
+reads its input; not telling the long options apart only errs toward asking. Only a `deno` with no subcommand and none of
 these reads its input as the REPL. And a here-document or here-string handed to
 `python3`, `python3 -`, `node`, `node -`, `bun -`, `bun run -`, `deno run -`,
 when its text is plain: a quoted
@@ -583,6 +588,10 @@ global object in `node -e`).
 | Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod`, `shutil.copymode` and `copystat` (a `chmod` of the second argument) | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
 | Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` ``, `execa`/`execaSync`/`execaCommand`/`execaCommandSync`, `execa`'s `command`, `commandSync` and `$` (also `` $`…` `` and `$.sync`), `cross-spawn`'s `spawn` and `sync` |
 | Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
+| Reads | `open(path)` with a mode that reads, `os.open` with `O_RDONLY`, `Path.read_text`, `read_bytes`, `Path.open()`, `shutil.copy*`/`copytree`/`unpack_archive` and `Path.copy` (the source) | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `copyFileSync`/`cpSync` (the source), their async and `promises` forms, `Deno.readTextFile`, `readFile`, `Deno.open` |
+
+A read is judged as `cat PATH` is, so it is a finding only where the path is a
+secret (see [Reading a key](#reading-a-key)); it adds nothing for any other.
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -614,7 +623,11 @@ home directory; `os.getcwd()` and `process.cwd()`; `os.path.join`,
 a path is the home directory wherever it comes in the code, as the shell reads
 it (code in a double-quoted argument had `$HOME` put in as `~`, so a literal
 tilde cannot be told from it). Anything else, such as a variable or a
-computed value, is a path only known when it runs, as `rm -rf "$DIR"` is.
+computed value, is a path only known when it runs, as `rm -rf "$DIR"` is. A
+read is the one place a name is put back as the string the code sets it to
+(see [Reading a key](#what-is-not-a-finding)): a delete or a write to `k` is
+still a path only known when it runs, since a name set later or by a loop may
+be another.
 
 **What stays `unknown`**, with the reason `runs code the guard does not read`
 and the code that is the reason as the target: code that does not parse;
@@ -658,6 +671,16 @@ value goes to `print`); `__import__('os.path')` is `os` unless a non-empty
 runs (`child_process.execSync(process.argv[1])`, an f-string with a
 substitution) is `unknown` too. Code with none of the calls above and
 nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
+
+A spread (`spawn(...args)`, `execa('rm', ...rest)`, `new Deno.Command(...args)`)
+in a call that starts a program may hold the program, its arguments or its
+options, so the call is `unknown`, as `fork`'s is. `cross-spawn` and `execa` are
+functions that start a program and have members: only the ones read as calls
+are (`spawn`, `sync` of `cross-spawn`, `default`; `execa`, `execaSync`,
+`execaCommand`, `command`, `sync` and `$` of `execa`, `sync` of `$`). `call`,
+`apply`, `bind` and any other member of one hand the program on to a call the
+guard does not see, and are `unknown`, whether reached through a name
+(`spawn.call(null, 'rm')`), `require('cross-spawn').call(…)` or `.default`.
 
 **What changes what a call that starts a program does.** `cwd` (`subprocess.run(…,
 cwd=DIR)`, `{ cwd: DIR }` for `child_process`, `Deno.Command`, `Bun.spawn`,
@@ -931,9 +954,23 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   a line run unasked when it is `ReadsOnly` asks. A reader whose file is known
   and is not a secret is safe, with its own row.
 - **A program the guard does not know opens a file.** `jq`, `yq`, `ssh-keygen
-  -y -f`, an editor, `column`, an interpreter's own `open()`. The list above is
-  what is known; a program outside it is `effect`'s `Unknown`, and a script or
-  an interpreter's code is already `unknown`.
+  -y -f`, an editor, `column`. The list above is what is known; a program
+  outside it is `effect`'s `Unknown`, and a script file is the workspace's own
+  code and not read.
+- **Inline code that opens a file is a read of it.** Python and JavaScript
+  given inline are read (see [Inline code](#inline-code)), and an `open()` in a
+  mode that reads, `Path.read_text` and `read_bytes`, `readFileSync`,
+  `readFile`, `fs.promises.readFile`, `createReadStream`, `openSync`,
+  `Deno.readTextFile`, and the source of `shutil.copy*`, `copytree` and
+  `copyFileSync` are judged as `cat <path>` is: `read_secret` exactly when
+  the path is a place core marks `Secret`, with the same words. A path is read
+  as the code gives it: a literal, `os.path.expanduser('~/…')`, `Path.home()
+  / …`, `os.homedir() + …`, or a name the code sets to one of those, or to a
+  list a loop goes over (every string a name is set to anywhere in the code is
+  read, in any order). A path only known when the code runs (`open(sys.argv[1])`,
+  `open(input())`) is not a finding, as `cat $f` is not; the line is `unknown`
+  for `effect` as every line with inline code is. Code the guard cannot read, a
+  program the code starts and a name it does not follow stay `unknown` as above.
 - **A program that reads a secret without being given its path**: `gpg
   --export-secret-keys`, `security find-generic-password -w`, `printenv`.
 - **What leaves the machine** is `SendSecret`'s, as above: `curl -d @key` and

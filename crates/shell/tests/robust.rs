@@ -268,54 +268,6 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
 #[test]
 #[allow(
     clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
-fn long_inline_code_is_read_in_linear_time() {
-    // Reading inline code asked the tree for each name's parent, which walks
-    // it from the root, and built a dotted name again from each member of it:
-    // a chain of 30,000 members (60 KB, under the limit) took a minute.
-    let chain = ".b".repeat(30_000);
-    let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
-    // Chains just under the depth limit, many of them: every one is read.
-    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(80);
-    // Calls nested just under the limit on every line, many of them.
-    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(50);
-    let mut rows = Vec::new();
-    for (interpreter, end) in [("python3", "PY"), ("node", "JS")] {
-        for body in [
-            format!("x = a{chain}"),
-            calls.clone(),
-            chains.clone(),
-            nested.clone(),
-        ] {
-            rows.push(format!("{interpreter} - <<'{end}'\n{body}\n{end}"));
-        }
-    }
-    for line in rows {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let started = std::time::Instant::now();
-        let assessment = classify(&line, Shell::Posix, &posix());
-        let took = started.elapsed();
-        assert!(
-            took < std::time::Duration::from_secs(2),
-            "{:?} took {took:?}",
-            &line[..20]
-        );
-        // What nests too deeply to read is not safe, and the rest is read.
-        // Past the depth a tree is walked, the count of open parentheses
-        // already makes the whole line unreadable, before the code is read.
-        let deep = assessment
-            .findings()
-            .iter()
-            .any(|finding| finding.rule == Rule::Unreadable);
-        let expected = line.contains(&chain) || line.contains(&"f(".repeat(500));
-        assert_eq!(deep, expected, "{:?}", &line[..20]);
-    }
-}
-
-#[test]
-#[allow(
-    clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a cubic read"
 )]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {

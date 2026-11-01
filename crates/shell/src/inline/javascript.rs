@@ -172,6 +172,9 @@ fn whole(name: &str) -> Option<Kind> {
         "Deno.chdir" | "process.chdir" => Kind::Chdir,
         "process.kill" | "Deno.kill" => Kind::Kill,
         "Deno.open" | "Deno.openSync" => Kind::DenoOpen,
+        "Deno.readTextFile" | "Deno.readTextFileSync" | "Deno.readFile" | "Deno.readFileSync" => {
+            Kind::ReadFile
+        }
         "Deno.run" | "Bun.spawn" | "Bun.spawnSync" => Kind::Argv,
         "Deno.Command" => Kind::DenoCommand,
         "Bun.write" => Kind::BunWrite,
@@ -346,6 +349,35 @@ const DISTINCT: [&str; 29] = [
     "writeJsonSync",
 ];
 
+/// The most strings noted for one name: a name set to more is read as the
+/// first of them.
+const MAX_CONSTANTS: usize = 64;
+
+/// Whether `property` of `module`, a module that is itself a function that
+/// starts a program (`cross-spawn`, `execa`, `$` of execa), is a member the
+/// reader reads as the call it is. Any other member of such a function
+/// (`call`, `apply`, `bind`, or a name it does not know) hands the program
+/// on to a call the reader does not see.
+fn readable_member(module: &str, property: &str) -> bool {
+    let members: &[&str] = match module {
+        "cross-spawn" | "cross-spawn.default" => &["spawn", "sync", "default"],
+        "execa" => &[
+            "execa",
+            "execaSync",
+            "execaCommand",
+            "execaCommandSync",
+            "command",
+            "commandSync",
+            "sync",
+            "$",
+            "default",
+        ],
+        "execa.$" => &["sync", "s"],
+        _ => return true,
+    };
+    members.contains(&property)
+}
+
 /// The properties of an options object whose truth means a file is written.
 const WRITE_OPTIONS: [&str; 5] = ["write", "append", "create", "createNew", "truncate"];
 
@@ -410,6 +442,13 @@ struct Reader<'s> {
     /// Whether literal code given to `eval` in this code, or in code inside
     /// it, binds or uses a name the reader follows.
     shared: bool,
+    /// The strings each name is set to in the code, as the reader knows
+    /// them.
+    constants: HashMap<String, Vec<String>>,
+    /// Whether a name is put back as its constant. Only where a file is
+    /// read: a path the reader cannot name is no more than unknown, and a
+    /// delete or a write to it is judged as such.
+    constants_on: bool,
 }
 
 /// The shells whose `-c` reads a command line: another program named by
@@ -468,7 +507,96 @@ impl<'s> Reader<'s> {
             reading: Reading::default(),
             nesting,
             shared: false,
+            constants: HashMap::new(),
+            constants_on: false,
         }
+    }
+
+    /// Note each string a name is set to anywhere in the code, for the reads
+    /// of files ([`Self::read_target`]): by an assignment, or by a loop over
+    /// strings written out. Whatever else the name is set to adds none.
+    fn collect_constants(&mut self, root: Node<'_>) {
+        let mut found = Vec::new();
+        unit::for_each_node(root, |node| match node.kind() {
+            "variable_declarator" | "assignment_expression" | "for_in_statement" => {
+                found.push(node);
+            }
+            _ => {}
+        });
+        self.constants_on = true;
+        for node in found {
+            let looped = node.kind() == "for_in_statement";
+            let (name, value) = if node.kind() == "variable_declarator" {
+                (
+                    node.child_by_field_name("name"),
+                    node.child_by_field_name("value"),
+                )
+            } else {
+                (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                )
+            };
+            let (Some(name), Some(value)) = (name, value) else {
+                continue;
+            };
+            if name.kind() != "identifier" {
+                continue;
+            }
+            let mut values = Vec::new();
+            if !looped {
+                // `a = b = 'x'` is no string to `a` here: `b` is set to it.
+                if value.kind() != "assignment_expression" {
+                    values.extend(self.value(value, 0));
+                }
+            } else if value.kind() == "array" {
+                // `for (const f of ['a', 'b'])`: each in turn.
+                let mut cursor = value.walk();
+                let items: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
+                values.extend(items.into_iter().filter_map(|item| self.value(item, 0)));
+            }
+            let known = self
+                .constants
+                .entry(self.text(name).to_string())
+                .or_default();
+            for value in values {
+                if known.len() < MAX_CONSTANTS && !known.contains(&value) {
+                    known.push(value);
+                }
+            }
+        }
+        self.constants_on = false;
+    }
+
+    /// The file the first argument names, written or read.
+    fn open_file(&mut self, args: &Args<'_>, writes_file: bool) {
+        if writes_file {
+            let target = self.target(args, 0);
+            self.act(target.map(Act::Write));
+        } else {
+            for source in self.read_target(args, 0) {
+                self.reading.acts.push(Act::Read(source));
+            }
+        }
+    }
+
+    /// The paths the argument at `at` of a call that reads a file may name:
+    /// a name the code sets to a string is read as each string it is set
+    /// to.
+    fn read_target(&mut self, args: &Args<'_>, at: usize) -> Vec<Arg> {
+        if let Some(node) = args.get(at).filter(|node| node.kind() == "identifier") {
+            let text = self.text(node);
+            if let Some(values) = self.constants.get(text).filter(|values| values.len() > 1) {
+                return values
+                    .iter()
+                    .map(|value| path(Some(value.clone()), text))
+                    .collect();
+            }
+        }
+        self.constants_on = true;
+        let target = self.target(args, at);
+        self.constants_on = false;
+        target.into_iter().collect()
     }
 
     /// Read every node under `root`, once the names `require`, `import` and
@@ -476,6 +604,7 @@ impl<'s> Reader<'s> {
     /// to nest too deeply to read: the line is unreadable whatever else is
     /// in it.
     fn walk_all(&mut self, root: Node<'_>) {
+        self.collect_constants(root);
         self.walking = true;
         walk(root, |node, field, above| {
             // A name written with an escape (`\u0072mSync`) is the name it
@@ -936,6 +1065,12 @@ impl<'s> Reader<'s> {
                 Some(format!("{left}{right}"))
             }
             "member_expression" | "identifier" | "subscript_expression" => {
+                if self.constants_on && node.kind() == "identifier" {
+                    if let Some([constant]) = self.constants.get(self.text(node)).map(Vec::as_slice)
+                    {
+                        return Some(constant.clone());
+                    }
+                }
                 let name = self.qualified(node, level + 1)?;
                 let variable = name
                     .strip_prefix("process.env.")
@@ -1091,6 +1226,9 @@ impl<'s> Reader<'s> {
                 self.act(target.map(Act::Write));
             }
             Some(Kind::Copy) => {
+                for source in self.read_target(&args, 0) {
+                    self.reading.acts.push(Act::Read(source));
+                }
                 let target = self.target(&args, 1);
                 self.act(target.map(Act::Write));
             }
@@ -1142,20 +1280,14 @@ impl<'s> Reader<'s> {
                     Some(node) => self.literal(node).is_none_or(|flags| writes(Some(&flags))),
                     None => args.splat,
                 };
-                if writes_file {
-                    let target = self.target(&args, 0);
-                    self.act(target.map(Act::Write));
-                }
+                self.open_file(&args, writes_file);
             }
             Some(Kind::ReadFile) => {
                 let writes_file = match args.get(1) {
                     Some(node) => self.read_flag_writes(node),
                     None => args.splat,
                 };
-                if writes_file {
-                    let target = self.target(&args, 0);
-                    self.act(target.map(Act::Write));
-                }
+                self.open_file(&args, writes_file);
             }
             Some(Kind::DenoOpen) => {
                 let writes_file = match args.get(1) {
@@ -1163,10 +1295,7 @@ impl<'s> Reader<'s> {
                     Some(_) => true,
                     None => args.splat,
                 };
-                if writes_file {
-                    let target = self.target(&args, 0);
-                    self.act(target.map(Act::Write));
-                }
+                self.open_file(&args, writes_file);
             }
             Some(Kind::BunWrite) => {
                 let target = match args.get(0) {
@@ -1202,6 +1331,7 @@ impl<'s> Reader<'s> {
                 }
                 self.act(Some(Act::Program(words)));
             }
+            Some(Kind::DenoCommand) if args.splat => self.reading.unread(self.text(call)),
             Some(Kind::DenoCommand) => {
                 let program = args.get(0).map(|node| self.arg(node));
                 let options = args.get(1).filter(|node| node.kind() == "object");
@@ -1276,6 +1406,25 @@ impl<'s> Reader<'s> {
                             });
                     if !called {
                         self.reading.unread(self.text(call));
+                    }
+                } else if let Some(parent) = above
+                    .last()
+                    .filter(|parent| parent.node.kind() == "member_expression")
+                    .filter(|_| field == Some("object"))
+                {
+                    // `require('cross-spawn').call(null, 'rm')`: a function
+                    // that starts a program, and a member of it that is not
+                    // a call the reader reads.
+                    let loaded = source
+                        .and_then(|node| self.literal(node))
+                        .map(|loaded| module(&loaded));
+                    let property = parent.node.child_by_field_name("property");
+                    if let (Some(loaded), Some(property)) = (loaded, property) {
+                        if matches!(loaded.as_str(), "cross-spawn" | "execa")
+                            && !readable_member(&loaded, self.text(property))
+                        {
+                            self.reading.unread(self.text(parent.node));
+                        }
                     }
                 }
             }
@@ -1616,6 +1765,12 @@ impl<'s> Reader<'s> {
     /// the command and its arguments are one command line a shell reads.
     /// Gives the directory its options start it in.
     fn spawn(&mut self, args: &Args<'_>, call: Node<'_>) -> Option<Arg> {
+        // A spread may hold the program, its arguments or the options, and
+        // may come before any of them: the call is not read.
+        if args.splat {
+            self.reading.unread(self.text(call));
+            return None;
+        }
         let command = args.get(0)?;
         let program = self.arg(command);
         let mut words = vec![program];
@@ -1745,14 +1900,19 @@ impl<'s> Reader<'s> {
         };
         // `$` of execa is called as it is, and `$.sync` is the call the
         // reader looks at: the object it is a member of is not the call.
-        if name == "execa.$" && parent.node.kind() == "member_expression" && is("object") {
-            return;
-        }
         // The same for `cross-spawn`, which is itself a call and has `spawn`
-        // and `sync` members: `spawn.sync(…)` is read as the call it is.
-        if matches!(name.as_str(), "cross-spawn" | "cross-spawn.default")
-            && parent.node.kind() == "member_expression"
+        // and `sync` members: `spawn.sync(…)` is read as the call it is. Not
+        // so for any other member of a function (`spawn.call(null, 'rm')`,
+        // `.apply`, `.bind`): the program it starts is not read.
+        if matches!(
+            name.as_str(),
+            "cross-spawn" | "cross-spawn.default" | "execa.$"
+        ) && parent.node.kind() == "member_expression"
             && is("object")
+            && parent
+                .node
+                .child_by_field_name("property")
+                .is_some_and(|property| readable_member(&name, self.text(property)))
         {
             return;
         }

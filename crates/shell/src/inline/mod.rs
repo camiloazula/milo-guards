@@ -44,6 +44,9 @@ pub(super) enum Act {
     Remove(Arg),
     /// Writes into a file, makes one, or truncates it.
     Write(Arg),
+    /// Reads a file (`open(path)`, `readFileSync(path)`, the source of a
+    /// copy): judged as `cat PATH` is, so a key it names is a read of one.
+    Read(Arg),
     /// `mv FROM TO`.
     Move { from: Arg, to: Arg },
     /// `ln TARGET LINK`.
@@ -544,6 +547,7 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
     // value, even one that starts with a dash (`perl -I --version`). Any of
     // them ahead of a print flag may have taken it, so the line reads its
     // input; an option of another interpreter named here only errs that way.
+    // So does any long option of theirs, below.
     const OTHER_VALUES: [&str; 14] = [
         "-I", "-E", "-d", "-c", "-z", "-f", "-l", "-e", "-B", "-R", "-F", "-S", "-t", "-a",
     ];
@@ -566,6 +570,14 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
             Some("--") | None => return false,
             Some(text) if flags.contains(&text) => return true,
             Some(text) if VALUES.contains(&text) || (others && OTHER_VALUES.contains(&text)) => {
+                iter.next();
+            }
+            // Their long options too: ruby's `--enable`, `--disable`,
+            // `--dump`, `--encoding`, php's `--define`, `--php-ini`,
+            // `--zend-extension` take the next word whatever it starts with,
+            // and the rest of them are not known one by one. A long option
+            // with its value joined (`--enable=gems`) takes none.
+            Some(text) if others && text.starts_with("--") && !text.contains('=') => {
                 iter.next();
             }
             Some(_) => {}
@@ -775,6 +787,7 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
     match act {
         Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
         Act::Write(path) => split.write(Shell::Posix, path),
+        Act::Read(path) => run(split, "cat", vec![flag("--"), path], depth),
         Act::Move { from, to } => run(split, "mv", vec![flag("--"), from, to], depth),
         Act::Link { target, link } => {
             run(
