@@ -672,15 +672,18 @@ Some risks only show when units are read together.
 
 ## Secrets that leave the machine
 
-`send_secret` is for a secret sent to another machine. Reading one here
-(`cat .env`, `cat ~/.ssh/config`) is safe, and so is sending a file that is not
-one (`scp build/pkg.tar host:/srv/`, `curl -d @payload.json https://api.example`).
+`send_secret` is for a secret sent to another machine. Reading one here is not
+this rule: `cat ~/.ssh/config` is [`read_secret`](#reading-a-key). Sending a
+file that is not one is safe (`scp build/pkg.tar host:/srv/`,
+`curl -d @payload.json https://api.example`).
 
 **What is a secret.**
 
-- A path core calls sensitive: `~/.ssh`, `~/.aws`, `~/.gnupg`, the keychains,
-  shell startup files and the rest of its table. The repository's own `.git`
-  is not one, and neither is a public key (`id_ed25519.pub`).
+- A path core marks as holding a key or a credential: `~/.ssh`, `~/.aws`,
+  `~/.gnupg`, the keychains and the rest of its table of secrets. Shell
+  startup files and the repository's history are sensitive in core too, but
+  they hold no secret, so sending one is not this rule. A public key
+  (`id_ed25519.pub`) is not one either.
 - An `.env` file anywhere, in the workspace too: `.env` and `.env.*`, not a
   folder, and not a template (`.env.example`, `.sample`, `.template`, `.dist`).
   A pattern that can name one (`.env*`, `.e*`, `.*`) counts when the shell
@@ -776,7 +779,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&
