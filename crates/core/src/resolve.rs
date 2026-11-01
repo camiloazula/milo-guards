@@ -1605,6 +1605,103 @@ impl Resolver {
 }
 
 impl Resolver {
+    /// Whether reading what `path` names can reach a secret
+    /// ([`Sensitivity::Secret`] place) below it, that [`place`](Self::place)
+    /// does not say. A path that is itself a secret, or inside one, is
+    /// `place`'s to say; this is for a folder read whole, and for a pattern.
+    ///
+    /// With `deep`, what the path names is read with everything below it (a
+    /// recursive search, a listing of every name), so a folder holding a
+    /// secret reaches it, and so does a pattern that picks a folder holding
+    /// one. Without it only what the path names is read: a folder is not
+    /// opened, and a pattern reaches a secret only when it picks the secret
+    /// itself (or goes below it).
+    ///
+    /// A pattern is read as the shell reads it, with `hidden` for a shell
+    /// whose wildcards match a leading dot (`dotglob`); Windows wildcards
+    /// always do. A path known only when it runs may reach any, so it does.
+    #[must_use]
+    pub fn reaches_secret(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        deep: bool,
+    ) -> bool {
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return true;
+        }
+        let text = path.text();
+        let marked = mark_wildcards(text, flavour);
+        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
+        let wildcards: Vec<&str> = text
+            .split(flavour.separators())
+            .filter(|part| part.contains(WILDCARDS))
+            .collect();
+        // The pattern's parts from the first wildcard part on, as text.
+        let mut tail: Vec<String> = Vec::new();
+        if let Some(at) = loc.parts.iter().position(|part| part.starts_with(WILDCARD)) {
+            tail = loc.parts[at..]
+                .iter()
+                .map(|part| match part.strip_prefix(WILDCARD) {
+                    Some(n) => n
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| wildcards.get(n).copied())
+                        .unwrap_or("*")
+                        .to_string(),
+                    None => part.clone(),
+                })
+                .collect();
+            loc.parts.truncate(at);
+        }
+        let stripped = loc.stripped();
+        let folder = stripped.as_ref().unwrap_or(&loc);
+        let secrets = || {
+            self.sensitive
+                .iter()
+                .filter(|(_, _, kind)| *kind == Sensitivity::Secret)
+        };
+        if secrets().any(|(entry, ..)| below(folder, entry)) {
+            return true;
+        }
+        let holds_homes = deep && self.holds_homes(folder);
+        if tail.is_empty() {
+            return holds_homes || (deep && secrets().any(|(entry, ..)| above(folder, entry)));
+        }
+        let windows = folder.windows();
+        let hidden = hidden || flavour == Flavour::Windows;
+        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+        holds_homes
+            || secrets().any(|(entry, ..)| {
+                above(folder, entry)
+                    && picks(
+                        &tail,
+                        &entry.parts[folder.parts.len()..],
+                        !deep,
+                        true,
+                        &|part, name| pattern_matches(part, name, flavour, hidden, windows),
+                    )
+            })
+    }
+
+    /// Whether `folder` is, or holds, another user's home directory or the
+    /// root user's, whose own secrets are in it.
+    fn holds_homes(&self, folder: &Loc) -> bool {
+        self.root_homes.iter().any(|home| above(folder, home))
+            || self.neighbours.iter().any(|homes| {
+                let shorter = folder.parts.len().min(homes.parts.len());
+                folder.parts.len() <= homes.parts.len() + 1
+                    && folder.root.same(&homes.root)
+                    && folder.parts[..shorter]
+                        .iter()
+                        .zip(&homes.parts)
+                        .all(|(spelled, name)| same_name(spelled, name, folder.windows()))
+            })
+    }
+
     /// The words of a protected path that a pattern can pick, by name.
     /// `folder` is where the pattern starts (the folder before its first
     /// wildcard part), `tail` the pattern's parts from there, and `place`

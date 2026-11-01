@@ -437,7 +437,7 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
         "rg" if has_flag(args, None, Some("files")) => Vec::new(),
         "cat" | "head" | "tail" | "wc" | "grep" | "egrep" | "fgrep" | "rg" | "diff" | "sort"
         | "less" => {
-            let mut places = table::path_args(unit, key);
+            let mut places = table::path_places(unit, key);
             // A search that goes down into folders and is given none is of
             // the working directory, unless a pipeline gives it its text.
             if places.is_empty() && recursive(unit, key) && !from_pipe(unit) {
@@ -495,7 +495,7 @@ fn powershell<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg
         }
         return operands.into_iter().map(Cow::Borrowed).collect();
     }
-    let places = table::path_args(unit, key);
+    let places = table::path_places(unit, key);
     // A cmdlet given no path of its own opens what the pipeline hands it.
     if places.is_empty() && table::binds_pipeline(key) && from_pipe(unit) {
         return vec![Cow::Owned(Arg::Input)];
@@ -541,7 +541,7 @@ fn cmd<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
             Vec::new()
         }
         // `findstr` takes switches of its own, which the table reads.
-        "findstr" => table::path_args(unit, key),
+        "findstr" => table::path_places(unit, key),
         // Any other word may be a path: `type /dev/sda` is not a switch, and a
         // switch (`/s`) is no place a secret is at.
         _ => args.iter().map(Cow::Borrowed).collect(),
@@ -613,7 +613,7 @@ fn lister(unit: &Unit) -> Option<Vec<Arg>> {
             let params = Params::read(&unit.args);
             return Some(params.positional.into_iter().cloned().collect());
         }
-        "fd" if unit.shell == Shell::Posix => table::path_args(unit, "fd"),
+        "fd" if unit.shell == Shell::Posix => table::path_places(unit, "fd"),
         "git" if table::lists(unit) => table::git_reads(&unit.args),
         _ => return None,
     };

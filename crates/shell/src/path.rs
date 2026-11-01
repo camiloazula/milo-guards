@@ -107,6 +107,8 @@ pub(crate) struct Resolver {
     /// The drive the working directory is on, upper case; `None` when it is
     /// on no drive.
     cwd_drive: Option<char>,
+    /// The directories, kept for `effect` only (see [`Resolver::keep`]).
+    paths: Option<Paths>,
 }
 
 impl Resolver {
@@ -116,6 +118,102 @@ impl Resolver {
             clear: core.cwd_is_clear(),
             core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
+            paths: None,
+        }
+    }
+
+    /// Keep the directories, for what only `effect` asks: whether a path is
+    /// inside a workspace folder whatever else it is, and the workspace
+    /// folders themselves. `classify` does not keep them.
+    pub(crate) fn keep(&mut self, paths: &Paths) {
+        self.paths = Some(paths.clone());
+    }
+
+    /// The workspace folders, as spelled, when kept.
+    pub(crate) fn workspaces(&self) -> Vec<String> {
+        self.paths.as_ref().map_or_else(Vec::new, |paths| {
+            paths
+                .workspaces
+                .iter()
+                .map(|folder| folder.to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    /// Whether `arg` (already joined to where an earlier `cd` moved) is a path
+    /// inside a workspace folder, or the folder itself, however else it is
+    /// judged: a protected path or a startup file in the workspace is inside
+    /// it, which the place of either does not say. Judged by the spelling
+    /// alone, as the paths are (their keys, which are the same for every
+    /// spelling of one file); a pattern by the folder it starts in. `false`
+    /// for what cannot be read that far.
+    pub(crate) fn inside_workspace(&self, arg: &Arg, shell: Shell) -> bool {
+        let (Some(text), Some(paths)) = (arg.known(), self.paths.as_ref()) else {
+            return false;
+        };
+        if brace_list(text) {
+            return false;
+        }
+        let flavour = flavour(shell);
+        let folder = pattern_folder(text);
+        let spelling = match start(&folder, shell) {
+            Start::Plain => Spelling::Plain(&folder),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return false,
+        };
+        let Some(key) = self.core.key(spelling, flavour) else {
+            return false;
+        };
+        paths.workspaces.iter().any(|workspace| {
+            let text = workspace.to_string_lossy();
+            self.core
+                .key(Spelling::Plain(&text), flavour)
+                .is_some_and(|folder| {
+                    key == folder
+                        || key.starts_with(&folder)
+                            && (folder.ends_with('|') || key[folder.len()..].starts_with('/'))
+                })
+        })
+    }
+
+    /// Whether reading `arg` (joined to where an earlier `cd` moved), as a
+    /// pattern the shell expands or, when `deep`, as a folder read with
+    /// everything below it, can reach a secret that its place does not say.
+    /// What cannot be spelled out can.
+    pub(crate) fn reaches_secret(&self, arg: &Arg, shell: Shell, hidden: bool, deep: bool) -> bool {
+        let Some(text) = arg.known() else {
+            return true;
+        };
+        if brace_list(text) {
+            return true;
+        }
+        if device(text, shell).is_some() {
+            return false;
+        }
+        let flavour = flavour(shell);
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider.eq_ignore_ascii_case("filesystem")
+                    && self.reaches_secret(&Arg::Known(rest.to_string()), shell, hidden, deep);
+            }
+        }
+        match start(text, shell) {
+            Start::Plain => self
+                .core
+                .reaches_secret(Spelling::Plain(text), flavour, hidden, deep),
+            Start::Home(rest) => {
+                self.core
+                    .reaches_secret(Spelling::Home(rest), flavour, hidden, deep)
+            }
+            Start::Provider(..) => false,
+            Start::DriveRelative(letter, rest) => {
+                self.on_cwd_drive(letter, rest).is_some_and(|rest| {
+                    self.core
+                        .reaches_secret(Spelling::Plain(rest), flavour, hidden, deep)
+                })
+            }
+            Start::Unknown => true,
         }
     }
 
@@ -517,5 +615,38 @@ pub(crate) fn listed(text: &str, filtered: bool) -> String {
         format!("{text}/x")
     } else {
         text.to_string()
+    }
+}
+
+/// The parent folder a wildcard part can also pick, written as a path to
+/// read: a part that starts with a dot and matches `..` (`.*`, `.?`) is
+/// `..` in the shells whose patterns match it, so `cat .*/x` can read the
+/// folder above. `None` when no part can.
+pub(crate) fn climb(text: &str, shell: Shell) -> Option<String> {
+    let flavour = flavour(shell);
+    let mut start = 0;
+    for part in text.split(flavour.separators()) {
+        if part.starts_with('.')
+            && glob::has_wildcard(part)
+            && glob::matches(part, "..", flavour, true)
+        {
+            return Some(format!("{}..", &text[..start]));
+        }
+        start += part.len() + 1;
+    }
+    None
+}
+
+/// The folder a pattern starts in: what comes before its first wildcard,
+/// up to the last separator before it (`.` when nothing does), or the text
+/// itself when it holds none.
+pub(crate) fn pattern_folder(text: &str) -> String {
+    let Some(wild) = text.find(['*', '?', '[']) else {
+        return text.to_string();
+    };
+    match text[..wild].rfind(['/', '\\']) {
+        Some(0) => text[..1].to_string(),
+        Some(at) => text[..at].to_string(),
+        None => ".".to_string(),
     }
 }

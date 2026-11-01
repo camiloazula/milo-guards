@@ -7,7 +7,7 @@
 mod common;
 
 use common::{check, classify, macos, posix, rules, windows};
-use milo_guards_shell::{effect, Effect, Paths, Protected, Rule, Shell};
+use milo_guards_shell::{effect, Effect, Paths, Protected, Reach, Rule, Shell};
 
 const SECRET: Rule = Rule::ReadSecret;
 
@@ -462,7 +462,7 @@ fn the_wrappers_come_off() {
     );
     assert_eq!(
         effect("sudo cat ~/.ssh/id_ed25519", Shell::Posix, &paths),
-        Effect::ReadsOnly
+        Effect::ReadsOnly(Reach::Beyond)
     );
 }
 
@@ -845,9 +845,12 @@ fn a_read_of_a_key_reads_only_and_the_finding_says_which() {
     // What `effect` says of the program is still what it says: `cat` reads
     // only, `base64` is not a program it knows, and `cp` changes the disk.
     for (line, expected) in [
-        ("cat ~/.ssh/id_ed25519", Effect::ReadsOnly),
-        ("head -c 100 ~/.aws/credentials", Effect::ReadsOnly),
-        ("ls ~/.ssh | xargs cat", Effect::ReadsOnly),
+        ("cat ~/.ssh/id_ed25519", Effect::ReadsOnly(Reach::Beyond)),
+        (
+            "head -c 100 ~/.aws/credentials",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        ("ls ~/.ssh | xargs cat", Effect::ReadsOnly(Reach::Beyond)),
         ("base64 < ~/.ssh/id_rsa", Effect::Unknown),
         ("cp ~/.ssh/id_ed25519 keys/", Effect::Changes),
     ] {
@@ -1257,7 +1260,7 @@ fn a_quoted_redirect_source_is_read_with_its_quotes_off() {
     }
     assert_eq!(
         effect(r#"type < "src\main.rs""#, Shell::Cmd, &windows()),
-        Effect::ReadsOnly
+        Effect::ReadsOnly(Reach::Workspace)
     );
 }
 
@@ -1381,4 +1384,54 @@ fn a_folder_read_all_the_way_down_can_be_the_parent_when_a_part_can_match_dot_do
             "{line}"
         );
     }
+}
+
+#[test]
+fn a_read_of_a_key_reaches_beyond_the_workspace_and_is_still_reads_only() {
+    // With the reach, the answer for a key is `ReadsOnly(Beyond)` and the
+    // finding says which file: `effect` does not make it a change, and
+    // `classify` carries the rule.
+    let paths = posix();
+    for line in [
+        "cat ~/.ssh/id_rsa",
+        "base64 < ~/.ssh/id_rsa",
+        "head -c 10 /etc/shadow",
+        "sudo cat ~/.ssh/id_rsa",
+        "ls ~/.ssh | xargs cat",
+    ] {
+        assert!(
+            rules(line, Shell::Posix, &paths).contains(&SECRET),
+            "{line}"
+        );
+    }
+    for line in [
+        "cat ~/.ssh/id_rsa",
+        "head -c 10 /etc/shadow",
+        "sudo cat ~/.ssh/id_rsa",
+    ] {
+        assert_eq!(
+            effect(line, Shell::Posix, &paths),
+            Effect::ReadsOnly(Reach::Beyond),
+            "{line}"
+        );
+    }
+    // A key inside a workspace that is the home directory is beyond the
+    // project as well, and a plain file in it is not.
+    let home = Paths::new("/home/me", "/home/me", ["/home/me"]);
+    assert_eq!(
+        effect("cat .ssh/id_rsa", Shell::Posix, &home),
+        Effect::ReadsOnly(Reach::Beyond)
+    );
+    assert!(rules("cat .ssh/id_rsa", Shell::Posix, &home).contains(&SECRET));
+    assert_eq!(
+        effect("cat src/main.rs", Shell::Posix, &home),
+        Effect::ReadsOnly(Reach::Workspace)
+    );
+    // A read that is no secret and stays in the workspace is `Workspace`
+    // with no finding.
+    assert_eq!(
+        effect("cat src/main.rs", Shell::Posix, &paths),
+        Effect::ReadsOnly(Reach::Workspace)
+    );
+    assert!(rules("cat src/main.rs", Shell::Posix, &paths).is_empty());
 }

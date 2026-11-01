@@ -428,7 +428,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Five questions are `Resolver` methods, since a guard needs them resolved: the
+Six questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -471,6 +471,16 @@ path made absolute, with the working directory and `~` applied.
   workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the
   repository's history` for the rest. `place` still reads only the
   workspace's own `.git`, so the shell guard's verdicts are unchanged.
+- `reaches_secret(path, flavour, hidden, deep)` says whether reading what a
+  path names can reach a secret (`Sensitivity::Secret`) below it, which `place`
+  does not say: `place` says what the path itself is, and a folder or a pattern
+  holds or picks more. With `deep` the path is read with everything below it (a
+  recursive search, a listing), so a folder that holds a secret, another user's
+  home, or a pattern that picks a folder holding one, reaches it; without it
+  only a pattern that picks the secret itself, or goes below it, does. A
+  pattern is read as the shell reads it, `hidden` being a shell whose wildcards
+  match a leading dot (Windows ones always do). A path known only when it runs
+  may reach any, so it does. It does not change `place`.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 

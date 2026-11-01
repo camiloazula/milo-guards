@@ -55,7 +55,7 @@ pub fn disagreements<'a>(
                 .map(|finding| finding.rule)
                 .filter(|rule| !matches!(rule, Rule::Elevated | Rule::ReadSecret))
                 .collect();
-            (!flagged.is_empty() && effect(line, shell, paths) == Effect::ReadsOnly)
+            (!flagged.is_empty() && matches!(effect(line, shell, paths), Effect::ReadsOnly(_)))
                 .then(|| format!("reads only, but classify finds {flagged:?}: {line}"))
         })
         .collect()
