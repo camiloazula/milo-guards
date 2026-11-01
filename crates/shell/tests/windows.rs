@@ -51,6 +51,12 @@ fn risky_powershell() {
         &windows(),
         &[],
         &[
+            // A value parameter of `Get-ChildItem` is not one of `Remove-Item`: it
+            // must not swallow the target.
+            ("Remove-Item -Depth ~ -Recurse", Rule::Delete),
+            ("Remove-Item -at C:\\ -Recurse", Rule::Delete),
+            ("ri -Attributes ~ -Recurse -Force", Rule::Delete),
+            ("rm -dep ~ -r", Rule::Delete),
             ("Remove-Item -Recurse -Force ~", Rule::Delete),
             ("Remove-Item -Recurse -Force $env:USERPROFILE", Rule::Delete),
             ("rm -r -fo $HOME\\Documents", Rule::Delete),
@@ -1387,6 +1393,57 @@ fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
             (r"robocopy src conf\app /S", Rule::Overwrite),
             (r"robocopy src conf\app x.yaml", Rule::Overwrite),
             (r"robocopy src conf\app", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_letter_ntfs_does_not_fold_is_not_the_workspaces_letter() {
+    // The Kelvin sign, the Ångström sign, the Ohm sign and the capital sharp
+    // s look like `k`, `å`, `ω` and `ß` to the widest case fold, but not to
+    // NTFS: a folder by those names is another folder, so deleting it is a
+    // delete beyond the workspace.
+    for (workspace, other) in [
+        ("work", "wor\u{212a}"),
+        ("wor\u{e5}", "wor\u{212b}"),
+        ("wor\u{3c9}", "wor\u{2126}"),
+        ("stra\u{df}e", "stra\u{1e9e}e"),
+    ] {
+        let dir = format!(r"C:\Users\me\{workspace}");
+        let paths = Paths::new(dir.as_str(), r"C:\Users\me", [dir.as_str()]);
+        for (shell, remove) in [
+            (Shell::Cmd, "rd /s /q"),
+            (Shell::PowerShell, "Remove-Item -Recurse -Force"),
+        ] {
+            let inside = format!(r"{remove} C:\Users\me\{workspace}\x");
+            let folded = format!(r"{remove} C:\Users\me\{other}\x");
+            let whole = format!(r"{remove} C:\Users\me\{other}");
+            check(
+                shell,
+                &paths,
+                &[inside.as_str()],
+                &[
+                    (folded.as_str(), Rule::Delete),
+                    (whole.as_str(), Rule::Delete),
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+fn a_long_path_to_the_workspace_is_the_workspace() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            r"rd /s /q \\?\C:\Users\me\dev\repo\x",
+            "rd /s /q //?/C:/Users/me/dev/repo/x",
+        ],
+        &[
+            (r"rd /s /q \\?\C:\Users\me\dev", Rule::Delete),
+            (r"rd /s /q \\?\C:\Windows", Rule::Delete),
+            (r"rd /s /q \\?\C:\Users\me\.ssh", Rule::Delete),
         ],
     );
 }

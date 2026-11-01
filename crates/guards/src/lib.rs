@@ -33,12 +33,14 @@
 //!
 //! | Feature | Module | Judges |
 //! | --- | --- | --- |
-//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads |
+//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace |
+//! | `file` (default) | `file` | one read or write of a path through a file API |
 //! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
+//! | `secrets` | `secrets` | a text: the keys, tokens, passwords and personal data in it, and where; `secrets::find_spans` gives the ranges to scrub |
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
-//! use milo_local_guards::shell::{classify, effect, Effect, Rule, Shell};
+//! use milo_local_guards::shell::{classify, effect, Effect, Reach, Rule, Shell};
 //! use milo_local_guards::Paths;
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
@@ -53,10 +55,39 @@
 //! assert_eq!(finding.rule.name(), "delete");
 //! assert_eq!(finding.target.as_deref(), Some("~"));
 //!
+//! // So is reading a key, with the file guard's answer for the same file.
+//! let assessment = classify("cat ~/.ssh/id_ed25519", Shell::Posix, &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
+//! assert_eq!(assessment.findings()[0].reason, "reads your SSH keys");
+//!
 //! // Whether a line only reads is a second answer, from the same split.
-//! assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly);
+//! assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Workspace));
+//! // A read can still leave the project: the answer says where it lands.
+//! assert_eq!(effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Beyond));
 //! assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
 //! assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
+//! # }
+//! ```
+//!
+//! The file guard judges one read or write of one path, with the same
+//! `Paths`:
+//!
+//! ```
+//! # #[cfg(feature = "file")] {
+//! use milo_local_guards::file::{judge, Access, Rule};
+//! use milo_local_guards::Paths;
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+//!
+//! // Reading and editing the workspace's files is the agent's own business.
+//! assert!(judge(Access::Read, "src/main.rs", &paths).is_safe());
+//! assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
+//!
+//! // Reading a key is a finding; so is writing beyond the workspace.
+//! let assessment = judge(Access::Read, "~/.ssh/id_ed25519", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
+//! let assessment = judge(Access::Write, "../other/x", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::WriteOutside);
 //! # }
 //! ```
 //!
@@ -82,6 +113,28 @@
 //! # }
 //! ```
 //!
+//! A text is read for what it must not carry, with the `secrets` feature (off
+//! by default). A finding never holds the secret, and its span says where it
+//! is, so a caller can scrub it:
+//!
+//! ```
+//! # #[cfg(feature = "secrets")] {
+//! use milo_local_guards::secrets::{find, find_spans, Rule};
+//!
+//! assert!(find("let sha = \"3f786850e387550fdab836ed7e6dc881de23001b\";").is_safe());
+//!
+//! let text = "DATABASE_URL=postgres://app:fakePass0word1@db.internal/app";
+//! let assessment = find(text);
+//! let finding = &assessment.findings()[0];
+//! assert_eq!(finding.rule, Rule::ConnectionString);
+//! assert_eq!(finding.rule.name(), "connection_string");
+//! assert_eq!(finding.target.as_deref(), Some("… (14 chars)"));
+//!
+//! let span = find_spans(text)[0];
+//! assert_eq!(&text[span.start..span.end], "fakePass0word1");
+//! # }
+//! ```
+//!
 //! What the caller gates with is named in the same `Paths`. It is judged as a
 //! protected path even inside the workspace, and a reason uses the caller's
 //! words:
@@ -100,20 +153,45 @@
 //! assert!(classify("cat ~/.agent/config.yaml", Shell::Posix, &paths).is_safe());
 //! # }
 //! ```
+//!
+//! The file guard reports a write to the same path with the caller's words
+//! and a rule of its own, so a caller can refuse this one and only ask on the
+//! others:
+//!
+//! ```
+//! # #[cfg(feature = "file")] {
+//! use milo_local_guards::file::{judge, Access, Rule};
+//! use milo_local_guards::{Paths, Protected};
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
+//!     .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+//!
+//! let assessment = judge(Access::Write, "~/.agent/config.yaml", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::WriteProtected);
+//! assert_eq!(assessment.findings()[0].reason, "writes to the agent's settings");
+//! assert!(judge(Access::Read, "~/.agent/config.yaml", &paths).is_safe());
+//! # }
+//! ```
 
 pub use milo_guards_core::{Assessment, Finding, Paths, Protected, ProtectedKind, RuleName};
 
 #[cfg(feature = "shell")]
 pub use milo_guards_shell as shell;
 
+#[cfg(feature = "file")]
+pub use milo_guards_file as file;
+
 #[cfg(feature = "url")]
 pub use milo_guards_url as url;
+
+#[cfg(feature = "secrets")]
+pub use milo_guards_secrets as secrets;
 
 /// The README's example, compiled and run with the doctests so it cannot
 /// drift from the code. Only rustdoc's doctest pass reads the file, so
 /// building this crate never needs the README: a build that vendors only
 /// this crate's folder still works.
-#[cfg(all(doctest, feature = "shell"))]
+#[cfg(all(doctest, feature = "shell", feature = "file"))]
 #[allow(
     clippy::disallowed_macros,
     reason = "the README include is read by rustdoc's doctest pass only"

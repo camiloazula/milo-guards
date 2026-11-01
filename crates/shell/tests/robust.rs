@@ -221,6 +221,36 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
+)]
+fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
+    // A word of many brace lists would make the product of their sizes in
+    // words; a redirect in a loop is read with each word in place.
+    let lists = "{a,b}".repeat(12_000);
+    let loops = "for a in 1 2 3; do cat < ~/x$a; done; ".repeat(800);
+    let wide = format!("for a in 1 2 3; do {}; done", "cat < ~/x$a; ".repeat(2_000));
+    for line in [
+        format!("cat ~/.ssh/{lists}"),
+        format!("cat {lists}"),
+        format!("cp ~/{lists} /tmp"),
+        loops,
+        wide,
+    ] {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let _ = classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "took {took:?} for {}",
+            &line[..40]
+        );
+    }
+}
+
+#[test]
 fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     // Each `eval` reads everything after it as a script, so each of the
     // seven reads the whole payload: more than the line may have read.

@@ -392,9 +392,9 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
-                let start = self.split.units.len();
+                let start = (self.split.units.len(), self.split.reads.len());
                 self.children(node, stage, level);
-                if node.kind() == "for_statement" && self.split.kept.on {
+                if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
                 self.split.bodies -= usize::from(body);
@@ -461,9 +461,10 @@ impl Walker<'_> {
     }
 
     /// A `for` over words written out (no expansion in the list), whose body
-    /// does not set the variable and defines no function: `effect` reads each
-    /// body unit with every word in place of the variable.
-    fn bind_loop(&mut self, node: Node<'_>, start: usize) {
+    /// does not set the variable and defines no function: `effect` and the
+    /// rule about reading a key read each body unit and each `<` redirect in
+    /// it with every word in place of the variable.
+    fn bind_loop(&mut self, node: Node<'_>, start: (usize, usize)) {
         let (Some(variable), Some(body)) = (
             node.child_by_field_name("variable"),
             node.child_by_field_name("body"),

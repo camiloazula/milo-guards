@@ -1,10 +1,10 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, sources_and_destination, Checker};
+use super::{downloads_to, sources_and_destination, Checker, COPY_VALUED};
 use crate::launch::{find_targets, perl_edits};
 use crate::path::Place;
 use crate::powershell::Params;
-use crate::unit::{has_flag, has_switch, operands, plain, Arg, Unit};
+use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -65,12 +65,7 @@ impl Checker<'_> {
                     && (has_flag(args, Some('r'), Some("recursive"))
                         || has_flag(args, Some('R'), None)
                         || has_flag(args, Some('a'), Some("archive")));
-                if let (sources, Some(destination)) = sources_and_destination(
-                    args,
-                    &[
-                        "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
-                    ],
-                ) {
+                if let (sources, Some(destination)) = sources_and_destination(args, &COPY_VALUED) {
                     let leaves = leaves(unit, &sources);
                     self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
@@ -81,14 +76,7 @@ impl Checker<'_> {
                 // whatever it points at.
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 for source in &sources {
-                    let place = self.place(shell, unit.scope(), source);
-                    if !place.harmless() && !matches!(place, Place::Workspace { exact: true }) {
-                        self.add(
-                            Rule::Overwrite,
-                            format!("links to {}", place.words()),
-                            Some(source),
-                        );
-                    }
+                    self.links_to(shell, unit.scope(), source);
                 }
                 if let Some(destination) = destination {
                     self.copy_to(
@@ -136,35 +124,7 @@ impl Checker<'_> {
                 }
             }
             "rsync" => {
-                let operands = operands(
-                    args,
-                    &[
-                        "-e",
-                        "--rsh",
-                        "--exclude",
-                        "--include",
-                        "--filter",
-                        "-f",
-                        "--files-from",
-                        "--exclude-from",
-                        "--include-from",
-                        "--log-file",
-                        "--password-file",
-                        "--port",
-                        "--backup-dir",
-                        "--suffix",
-                        "-T",
-                        "--temp-dir",
-                        "--chmod",
-                        "--chown",
-                        "--compare-dest",
-                        "--copy-dest",
-                        "--link-dest",
-                        "--partial-dir",
-                        "--timeout",
-                        "--bwlimit",
-                    ],
-                );
+                let operands = rsync_operands(args);
                 if operands.len() >= 2 {
                     if let Some(destination) =
                         operands.last().filter(|destination| !remote(destination))
@@ -231,6 +191,65 @@ impl Checker<'_> {
                 }
             }
 
+            // Renaming: the new name is a name in the source's folder, and
+            // that is where the file lands.
+            "rename-item" if shell == Shell::PowerShell => {
+                // `-NewName` (and what abbreviates it) is read as `-Name`,
+                // which takes a value: the shared list of value parameters
+                // is not changed for one cmdlet's own.
+                let renamed_args: Vec<Arg> = args
+                    .iter()
+                    .map(|arg| {
+                        let named = arg.known().and_then(|text| text.strip_prefix('-'));
+                        let (name, colon) = match named {
+                            Some(name) => match name.strip_suffix(':') {
+                                Some(name) => (name, ":"),
+                                None => (name, ""),
+                            },
+                            None => return arg.clone(),
+                        };
+                        if name.len() >= 2 && "newname".starts_with(&name.to_ascii_lowercase()) {
+                            Arg::Known(format!("-Name{colon}"))
+                        } else {
+                            arg.clone()
+                        }
+                    })
+                    .collect();
+                let params = Params::read(&renamed_args);
+                let mut sources = params.values(&["path", "literalpath"]);
+                let mut positional = params.positional.iter().copied();
+                if sources.is_empty() {
+                    sources.extend(positional.next());
+                }
+                if sources.is_empty() && from_pipe(unit) {
+                    sources.push(&Arg::Input);
+                }
+                let name = params
+                    .values(&["name"])
+                    .first()
+                    .copied()
+                    .or_else(|| positional.next());
+                self.rename(unit, &sources, name);
+            }
+            "ren" | "rename" if shell == Shell::Cmd => {
+                let operands = builtin(&plain(args));
+                if let [source, name, ..] = operands.as_slice() {
+                    self.rename(unit, &[source], Some(name));
+                }
+            }
+            // `rename` is util-linux's or perl's; the others are only perl's.
+            "rename" | "rename.ul" if shell == Shell::Posix => self.rename_files(unit, false),
+            "perl-rename" | "prename" | "file-rename" if shell == Shell::Posix => {
+                self.rename_files(unit, true);
+            }
+            // `mklink [/d|/h|/j] link target` makes `link`.
+            "mklink" if shell == Shell::Cmd => {
+                if let [link, target, ..] = plain(args).as_slice() {
+                    self.write(shell, unit.scope(), link, "writes to");
+                    self.links_to(shell, unit.scope(), target);
+                }
+            }
+
             // Writing into files.
             "truncate" => {
                 for target in operands(args, &["-s", "--size", "-r", "--reference"]) {
@@ -244,12 +263,16 @@ impl Checker<'_> {
                     args,
                     &["-m", "--mode", "-r", "--reference", "-d", "--date", "-t"],
                 ) {
-                    self.write(shell, unit.scope(), target, "creates");
+                    if key == "mkdir" {
+                        self.make_folder(shell, unit.scope(), target);
+                    } else {
+                        self.write(shell, unit.scope(), target, "creates");
+                    }
                 }
             }
             "md" if shell == Shell::Cmd => {
                 for target in plain(args) {
-                    self.write(shell, unit.scope(), target, "creates");
+                    self.make_folder(shell, unit.scope(), target);
                 }
             }
             "sed" if has_flag(args, Some('i'), Some("in-place")) => {
@@ -269,18 +292,70 @@ impl Checker<'_> {
             }
             "set-content" | "add-content" | "out-file" | "tee-object" | "new-item"
             | "clear-content" => {
+                // `-Type` is `New-Item`'s other name for `-ItemType`.
+                let owned: Vec<Arg>;
+                let args = if key == "new-item" {
+                    owned = args
+                        .iter()
+                        .map(|arg| match arg.known() {
+                            Some(text) if text.eq_ignore_ascii_case("-type") => {
+                                Arg::Known("-ItemType".to_string())
+                            }
+                            _ => arg.clone(),
+                        })
+                        .collect();
+                    owned.as_slice()
+                } else {
+                    args
+                };
                 let params = Params::read(args);
-                let mut targets = params.values(&["path", "literalpath", "filepath"]);
+                let mut targets: Vec<Arg> = params
+                    .values(&["path", "literalpath", "filepath"])
+                    .into_iter()
+                    .cloned()
+                    .collect();
                 if targets.is_empty() {
-                    targets.extend(params.positional.first().copied());
+                    targets.extend(params.positional.first().copied().cloned());
+                }
+                // With `-Name`, `-Path` is the folder it is made in.
+                if key == "new-item" {
+                    if let Some(name) = params.values(&["name"]).first() {
+                        targets = if targets.is_empty() {
+                            vec![renamed(&Arg::Known(String::new()), name)]
+                        } else {
+                            targets
+                                .iter()
+                                .map(|folder| renamed(&joined(folder), name))
+                                .collect()
+                        };
+                    }
                 }
                 let verb = if key == "clear-content" {
                     "empties"
                 } else {
                     "writes to"
                 };
-                for target in targets {
-                    self.write(shell, unit.scope(), target, verb);
+                let kind = params.values(&["itemtype"]);
+                let kind = kind.first().and_then(|kind| kind.known());
+                // `New-Item -ItemType Directory` makes a folder, not a file.
+                let folder = key == "new-item"
+                    && kind.is_some_and(|kind| kind.to_ascii_lowercase().starts_with('d'));
+                for target in &targets {
+                    if folder {
+                        self.make_folder(shell, unit.scope(), target);
+                    } else {
+                        self.write(shell, unit.scope(), target, verb);
+                    }
+                }
+                // A link reaches what it names, as `ln` does.
+                let link = kind.is_some_and(|kind| {
+                    let kind = kind.to_ascii_lowercase();
+                    ["s", "h", "j"].iter().any(|first| kind.starts_with(first))
+                });
+                if key == "new-item" && link {
+                    for value in params.values(&["value"]) {
+                        self.links_to(shell, unit.scope(), value);
+                    }
                 }
             }
             "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
@@ -319,6 +394,170 @@ impl Checker<'_> {
             _ => {}
         }
     }
+}
+
+impl Checker<'_> {
+    /// A link whose target is `source`: a later write through the link lands
+    /// on whatever it points at, so a target beyond the workspace is a
+    /// finding.
+    fn links_to(&mut self, shell: Shell, scope: Scope<'_>, source: &Arg) {
+        let place = self.place(shell, scope, source);
+        if !place.harmless() && !matches!(place, Place::Workspace { exact: true }) {
+            self.add(
+                Rule::Overwrite,
+                format!("links to {}", place.words()),
+                Some(source),
+            );
+        }
+    }
+
+    /// A rename of `sources` to the name `name`: what is moved away is
+    /// judged as `mv` judges it, and the new name, in each source's folder,
+    /// is written. A name that is not known, or a source whose folder is
+    /// not, is a file only known when it runs.
+    fn rename(&mut self, unit: &Unit, sources: &[&Arg], name: Option<&Arg>) {
+        let moved: Vec<&Arg> = sources
+            .iter()
+            .copied()
+            .filter(|source| **source != Arg::Input)
+            .collect();
+        self.move_away(unit, &moved);
+        let Some(name) = name else { return };
+        let none = Arg::Known(String::new());
+        let sources = if sources.is_empty() {
+            vec![&none]
+        } else {
+            sources.to_vec()
+        };
+        for source in sources {
+            let (found, _) = self.expand(unit, source);
+            for from in found {
+                let to = renamed(&from, name);
+                self.write(unit.shell, unit.scope(), &to, "writes to");
+            }
+        }
+    }
+
+    /// The `rename` of util-linux (`perl` says it is perl's), `rename FROM TO file...`, whose new names
+    /// are plain text: the first `FROM` in each name (every one, with `-a`)
+    /// becomes `TO`. Only these options are read: `-v`, `-n`, `-o`, `-s`,
+    /// `-i`, `-a` and their long forms; any other changes what the new name
+    /// is, and so does an expression, which is perl's `rename` and code the
+    /// guard does not read. Both leave the new name of each file, in its own
+    /// folder, unknown. What is renamed away is judged as `mv` judges it.
+    fn rename_files(&mut self, unit: &Unit, perl: bool) {
+        const KNOWN: [&str; 6] = [
+            "--verbose",
+            "--no-act",
+            "--no-overwrite",
+            "--symlink",
+            "--interactive",
+            "--all",
+        ];
+        let mut all = false;
+        let mut unread = false;
+        let mut operands: Vec<&Arg> = Vec::new();
+        let mut options = true;
+        for arg in &unit.args {
+            let Some(text) = arg.known().filter(|_| options) else {
+                operands.push(arg);
+                continue;
+            };
+            if text == "--" {
+                options = false;
+            } else if let Some(long) = text.strip_prefix("--") {
+                unread |= !KNOWN.contains(&text) || long.contains('=');
+                all |= text == "--all";
+            } else if let Some(bundle) = text.strip_prefix('-').filter(|b| !b.is_empty()) {
+                unread |= !bundle.chars().all(|c| "vnosia".contains(c));
+                all |= bundle.contains('a');
+            } else {
+                operands.push(arg);
+            }
+        }
+        // An expression is perl's: it takes the place of `FROM TO`, so there
+        // are fewer than three operands, or the first is not plain text.
+        let code = perl
+            || operands.len() < 3
+            || operands[0].known().is_none_or(|first| {
+                first.contains(|c: char| "$@;(){}=|\\[]*+?^'\"`".contains(c) || c.is_whitespace())
+            });
+        if code && !unread && !operands.is_empty() {
+            self.add(
+                Rule::Unknown,
+                "runs code the guard does not read",
+                operands.first().copied(),
+            );
+        } else if unread {
+            self.add(
+                Rule::Unknown,
+                "renames with options the guard does not read",
+                operands.first().copied(),
+            );
+        }
+        let pair = match operands.as_slice() {
+            [from, to, ..] if !code && !unread => from.known().zip(to.known()),
+            _ => None,
+        };
+        let Some((from, to)) = pair else {
+            // Every operand can be a file, and what it becomes is unknown: a
+            // `TO` only known when it runs is no better.
+            // The expression is the first operand, and no file.
+            let named = if code && !unread && !operands.is_empty() {
+                &operands[1..]
+            } else {
+                &operands[..]
+            };
+            self.move_away(unit, named);
+            for operand in named {
+                let to = Arg::Unknown(operand.text().to_string());
+                self.write(unit.shell, unit.scope(), &to, "writes to");
+            }
+            return;
+        };
+        let files = &operands[2..];
+        for file in files {
+            let new = match file.known() {
+                Some(text) if !from.is_empty() => Arg::Known(replace(text, from, to, all)),
+                Some(text) => Arg::Known(text.to_string()),
+                None => Arg::Unknown(file.text().to_string()),
+            };
+            if file.known() == new.known() && new.known().is_some() {
+                continue;
+            }
+            self.move_away(unit, &[file]);
+            self.write(unit.shell, unit.scope(), &new, "writes to");
+        }
+    }
+}
+
+/// `text` with the first `from` in it (every one, with `all`) replaced.
+fn replace(text: &str, from: &str, to: &str, all: bool) -> String {
+    if all {
+        text.replace(from, to)
+    } else {
+        text.replacen(from, to, 1)
+    }
+}
+
+/// A folder as the text a name is joined to: with a separator at its end.
+fn joined(folder: &Arg) -> Arg {
+    match folder {
+        Arg::Known(text) if !text.is_empty() && !text.ends_with(['/', '\\']) => {
+            Arg::Known(format!("{text}\\"))
+        }
+        other => other.clone(),
+    }
+}
+
+/// The path of the name `name` in the folder `from` is in (`from` itself
+/// ends in a separator when it is the folder); unknown when either is.
+fn renamed(from: &Arg, name: &Arg) -> Arg {
+    let (Some(from), Some(name)) = (from.known(), name.known()) else {
+        return Arg::Unknown(name.text().to_string());
+    };
+    let folder = from.rfind(['/', '\\']).map_or("", |at| &from[..=at]);
+    Arg::Known(format!("{folder}{name}"))
 }
 
 /// Whether a PowerShell cmdlet given no path works on its pipeline input.
@@ -383,8 +622,8 @@ fn sed_files(args: &[Arg]) -> Vec<&Arg> {
     operands
 }
 
-/// An rsync `host:path` destination, which is not on this machine.
-fn remote(arg: &Arg) -> bool {
+/// An rsync `host:path` operand, which is not on this machine.
+pub(super) fn remote(arg: &Arg) -> bool {
     arg.known().is_some_and(|text| {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
@@ -428,4 +667,38 @@ fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
         })
         .flatten()
         .collect()
+}
+
+/// What rsync is given to copy and where: the operands, not the values of
+/// its options that take one.
+pub(super) fn rsync_operands(args: &[Arg]) -> Vec<&Arg> {
+    operands(
+        args,
+        &[
+            "-e",
+            "--rsh",
+            "--exclude",
+            "--include",
+            "--filter",
+            "-f",
+            "--files-from",
+            "--exclude-from",
+            "--include-from",
+            "--log-file",
+            "--password-file",
+            "--port",
+            "--backup-dir",
+            "--suffix",
+            "-T",
+            "--temp-dir",
+            "--chmod",
+            "--chown",
+            "--compare-dest",
+            "--copy-dest",
+            "--link-dest",
+            "--partial-dir",
+            "--timeout",
+            "--bwlimit",
+        ],
+    )
 }
