@@ -1845,3 +1845,133 @@ fn pkill_f_reads_the_usual_arguments_of_the_system_processes() {
         ],
     );
 }
+
+#[test]
+fn pkill_inverse_with_only_a_selection_stops_every_other_process() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("pkill -v -P 1234", Rule::StopSystem),
+            ("pkill -v -P $$", Rule::StopSystem),
+            ("pkill -v -F pids.txt", Rule::StopSystem),
+            ("pkill --inverse -F pids.txt", Rule::StopSystem),
+            ("pkill -v -t ttys000", Rule::StopSystem),
+            ("pkill -v -s 1234", Rule::StopSystem),
+            ("pkill -v -g 1234", Rule::StopSystem),
+            ("pkill -v --older 1", Rule::StopSystem),
+            ("pkill --inv -P 99", Rule::StopSystem),
+            ("pkill -vP 1234", Rule::StopSystem),
+            ("pkill -v", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_member_of_the_item_other_than_the_process_s_own_is_another_process() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-Process notepad | % { Stop-Process -Id $_.Id }",
+            "Get-Process notepad | % { Stop-Process -InputObject $_ }",
+            "Get-Process notepad | % { Stop-Process $_.Id }",
+            "Get-Process notepad | % { Stop-Process -Id $PSItem.Id -Force }",
+            "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id ($_.OwningProcess) }",
+        ],
+        &[
+            (
+                "Get-Process notepad | % { Stop-Process -InputObject $_.Parent }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process $_.Parent }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process -Id $_.Parent.Id -Force }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process -Id $_.Threads.Id }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process -Id ($_.Parent.Id) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process -Id ($_.Id + 1) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process notepad | % { Stop-Process -Id $_.Id, $_.Parent.Id }",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_wrapped_item_in_a_block_is_read_like_the_item() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-Process node | % { Stop-Process -Id ($_.Id) }",
+            "Get-Process node | % { Stop-Process ($_) }",
+            "Get-Process node | % { Stop-Process @($_) }",
+            "Get-Process node | % { Stop-Process -InputObject ($_) }",
+            "Get-Process node | % { Stop-Process -Id $($_.Id) }",
+            "Get-Process node | % { Stop-Process -Id \"$($_.Id)\" }",
+            "Get-Process node | % { Stop-Process -Id ([int]$_.Id) }",
+            "Get-Process node | % { Stop-Process -Id \"$_\" }",
+        ],
+        &[
+            ("Get-Process | % { Stop-Process ($_) }", Rule::StopSystem),
+            ("Get-Process | % { Stop-Process @($_) }", Rule::StopSystem),
+            (
+                "Get-Process | % { Stop-Process -InputObject ($_) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -Id ($_.Id) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -Id $($_.Id) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -Id \"$($_.Id)\" }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | % { Stop-Process -Id ([int]$_.Id) }",
+                Rule::StopSystem,
+            ),
+            // Not the item or one of its own members: only known when it runs.
+            (
+                "Get-Process node | % { Stop-Process -Id (-not $_.Id) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | % { Stop-Process -Id ($_.Id + 1) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | % { Stop-Process -Id \"1$($_.Id)\" }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | % { Stop-Process -Id ([int]$_.Parent.Id) }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process node | % { Stop-Process -Id $(Get-Process explorer | % { $_.Id }) }",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+}
