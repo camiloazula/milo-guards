@@ -23,19 +23,15 @@ fn packing_without_removing_stays_safe() {
         &posix(),
         &[
             "tar -cf x.tar src",
-            "tar -cf x.tar ~",
             "tar -cf x.tar *",
             "tar -czf out.tgz -C ~ notes",
             "tar czf out.tgz -C ~/work/repo/src .",
-            "tar -rf x.tar ~",
             "tar -xf x.tar",
             "tar -tf x.tar",
             "zip x.zip src",
-            "zip -r x.zip ~",
             "zip -r x.zip *",
             "zip x.zip /etc/hosts",
             "7z a x.7z src",
-            "7z a x.7z ~",
             "7z a x.7z *",
         ],
         &[],
@@ -66,7 +62,6 @@ fn removing_what_is_inside_the_workspace_is_safe() {
             "tar -cf x.tar --remove-files --file-not-an-option src",
             "tar -xf x.tar --remove-files",
             "tar -xf x.tar notes --remove-files",
-            "tar -tf x.tar ~ --remove-files",
             "zip -m x.zip src/a.txt",
             "zip -mr x.zip src",
             "zip -r -m x.zip src docs",
@@ -81,7 +76,6 @@ fn removing_what_is_inside_the_workspace_is_safe() {
             "zip -mr -tt 20200101 x.zip src",
             "zip -mr -n .zip x.zip src",
             "zip -mr -sf x.zip src",
-            "zip -r x.zip ~ --no-dir-entries",
             "7z a x.7z src -sdel",
             "7z a -sdel x.7z src",
             "7z u x.7z src/a.txt -sdel",
@@ -422,7 +416,7 @@ fn seven_zip_sdel_on_windows() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["7z a x.7z src -sdel", "7z a x.7z ~ ", "7z x a.7z -sdel"],
+        &["7z a x.7z src -sdel", "7z x a.7z -sdel"],
         &[
             ("7z a x.7z ~ -sdel", Rule::Delete),
             ("7z a x.7z $HOME -sdel", Rule::Delete),
@@ -618,6 +612,11 @@ fn tar_long_option_that_may_be_a_flag_takes_no_value() {
             ("tar -cf x.tar --incremental ~ --remove-files", Rule::Delete),
             ("tar -xf x.tar --inc -C /etc", Rule::Overwrite),
             ("gtar -xf x.tar --inc -C /etc", Rule::Overwrite),
+            // `--mod` is `--mode` in GNU tar and the only prefix of
+            // `--modification-time` (`-m`) in bsdtar, which takes no value.
+            ("tar -xf x.tar --mod -C /etc", Rule::Overwrite),
+            ("bsdtar -xf x.tar --mod -C /etc", Rule::Overwrite),
+            ("tar -xpf x.tar --mod -C ~", Rule::Overwrite),
         ],
     );
 }
@@ -666,12 +665,7 @@ fn zip_a_value_attached_to_its_option_ends_the_bundle() {
     check(
         Shell::Posix,
         &posix(),
-        &[
-            "zip -r -s100m x.zip ~",
-            "zip -r -n.mp3 x.zip ~",
-            "zip -r -ds10m x.zip ~",
-            "zip -r -lfmain.log x.zip ~",
-        ],
+        &[],
         &[
             ("zip -m -lfout x.zip ~", Rule::Delete),
             ("zip -m -n.dat x.zip ~", Rule::Delete),
@@ -731,6 +725,45 @@ fn seven_zip_switch_with_a_value_only_known_when_it_runs_is_no_operand() {
         &[],
         &[("7z a -sdel -p%PW% x.7z", Rule::Delete)],
     );
+}
+
+#[test]
+fn archiving_the_home_without_removing_it_reads_but_does_not_delete() {
+    // Packing the home folder reads the keys in it (`read_secret`), but with
+    // no option that deletes what it archives it is no `delete`.
+    let paths = posix();
+    for line in [
+        "tar -cf x.tar ~",
+        "tar -rf x.tar ~",
+        "zip -r x.zip ~",
+        "tar -tf x.tar ~ --remove-files",
+        "zip -r x.zip ~ --no-dir-entries",
+        "zip -r -s100m x.zip ~",
+        "zip -r -n.mp3 x.zip ~",
+        "zip -r -ds10m x.zip ~",
+        "zip -r -lfmain.log x.zip ~",
+    ] {
+        let found = common::rules(line, Shell::Posix, &paths);
+        assert!(
+            found.contains(&Rule::ReadSecret),
+            "expected ReadSecret: {line}"
+        );
+        assert!(!found.contains(&Rule::Delete), "unexpected Delete: {line}");
+    }
+}
+
+#[test]
+fn seven_zip_packing_the_home_without_removing_it_does_not_delete() {
+    // `7z a` adds a named folder with everything under it, so this reads the
+    // keys in the home as well; that read is not judged yet (a followup), so
+    // these rows are held only to "no `delete`", not to Safe.
+    for (shell, paths, line) in [
+        (Shell::Posix, posix(), "7z a x.7z ~"),
+        (Shell::PowerShell, windows(), "7z a x.7z ~ "),
+    ] {
+        let found = common::rules(line, shell, &paths);
+        assert!(!found.contains(&Rule::Delete), "unexpected Delete: {line}");
+    }
 }
 
 #[test]
