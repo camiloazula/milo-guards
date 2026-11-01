@@ -412,7 +412,11 @@ itself.
   read (`[[:punct:]]git` and `[.[:alpha:]]git` match `.git` with `hidden`).
   An unknown class name, `[=a=]`, `[.a.]`, and a range that starts or ends on
   one are not read exactly, so that bracket takes any character, a leading dot
-  included (a pattern that reads wider is a risk, never a false safe). Its
+  included (a pattern that reads wider is a risk, never a false safe). A
+  `[` that nothing closes is a plain `[`, and a long run of them is read in
+  linear time: a `[` after the last `]` is plain without a scan, and a scan
+  that fails marks the places it stepped on, so the next `[` stops at the
+  first (a bracket whose only `]`s close `[:a:]` elements is such a run). Its
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
   sets it on `Windows`, and on `Posix` when the caller passes it to
   `place_hidden`.

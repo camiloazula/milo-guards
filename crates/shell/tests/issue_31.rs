@@ -467,3 +467,47 @@ fn an_arithmetic_chain_that_assigns_globignore_turns_hidden_names_on() {
         ],
     );
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
+    // A bracket whose only `]`s close `[:a:]`-style elements has no end, and
+    // each `[` after it must not scan to the end of the word again: a run of
+    // them read in minutes before.
+    let runs = [
+        "[[:a:]".repeat(10_600),
+        "[[.x.]".repeat(10_600),
+        "[[=x=]".repeat(10_600),
+        "[[:alpha:]".repeat(6_300),
+        "[[::]".repeat(12_700),
+    ];
+    for run in runs {
+        // `mv` takes a part of the run (the work per word is high in the
+        // debug build); the others take the whole of it.
+        let short = &run[..12_000];
+        for line in [
+            format!("mv {short} x"),
+            format!("rm -rf {run}"),
+            format!("rm -rf **/{run}(D)"),
+            format!("shopt -s dotglob; rm -rf **/{run}"),
+        ] {
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let started = std::time::Instant::now();
+            let assessment = milo_guards_shell::classify(&line, Shell::Posix, &posix());
+            let took = started.elapsed();
+            // The read is linear: well under two seconds in the debug build.
+            // The quadratic one took ten seconds for the `mv` line alone in
+            // a release build, and minutes at the full length.
+            assert!(
+                took < std::time::Duration::from_secs(6),
+                "took {took:?} for a line of {} bytes: {}",
+                line.len(),
+                &line[..line.len().min(40)]
+            );
+            drop(assessment);
+        }
+    }
+}

@@ -385,6 +385,11 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
     // A `[` after the last `]` has nothing to close it: it is a plain `[`.
     // Finding that once keeps a long run of `[` linear.
     let last_close = chars.iter().rposition(|c| *c == ']');
+    // A bracket whose only `]`s sit inside `[:a:]`-style elements has a last
+    // close and still no end. The places a failed scan stepped on are marked
+    // here, so the next `[` stops at the first one: from there it can only
+    // fail the same way, and no place is stepped on twice.
+    let mut dead = vec![false; chars.len()];
     let mut out = Vec::new();
     let mut at = 0;
     while at < chars.len() {
@@ -403,7 +408,7 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
             }
             '?' => out.push(Token::Any),
             '[' if last_close.is_some_and(|close| at <= close) => {
-                match class(&chars[at..], windows) {
+                match class(&chars[at..], windows, &mut dead[at..]) {
                     Some((token, used)) => {
                         out.push(token);
                         at += used;
@@ -425,7 +430,13 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
 /// `[=a=]` and `[.a.]` are an equivalence class and a collating symbol. The
 /// first is read; the others, an unknown class name, and a range that starts
 /// or ends on one are not read exactly, so the bracket takes any character.
-fn class(chars: &[char], windows: bool) -> Option<(Token, usize)> {
+///
+/// `dead` is as long as `chars`. A place past the first that a scan stepped
+/// on is marked in it: what follows such a place does not depend on where the
+/// scan began, so a scan that comes to a marked place is one that failed, and
+/// fails at once. A scan that closes leaves marks only before the next
+/// bracket starts. This keeps a run of brackets that never close linear.
+fn class(chars: &[char], windows: bool, dead: &mut [bool]) -> Option<(Token, usize)> {
     let negated = !windows && matches!(chars.first(), Some('!' | '^'));
     let mut at = usize::from(negated);
     let mut ranges = Vec::new();
@@ -434,6 +445,14 @@ fn class(chars: &[char], windows: bool) -> Option<(Token, usize)> {
     let mut first = true;
     loop {
         let here = at;
+        // The first step reads a `]` as a member, so it is not the same step
+        // for a scan that began elsewhere: only the later ones are marked.
+        if !first {
+            if *dead.get(here)? {
+                return None;
+            }
+            dead[here] = true;
+        }
         let mut low = *chars.get(at)?;
         at += 1;
         if low == ']' && !first {
@@ -742,6 +761,89 @@ mod tests {
         assert!(!matches(&equals, ".git", Flavour::Posix, true));
         let dots = format!("[{}]", "[.".repeat(40_000));
         assert!(!matches(&dots, ".git", Flavour::Posix, true));
+        // A bracket whose only `]`s close elements never closes itself, and
+        // each `[` after it must not scan to the end again.
+        for element in ["[[:a:]", "[[.x.]", "[[=x=]", "[[:alpha:]", "[[::]"] {
+            let run = element.repeat(10_000);
+            for pattern in [run.clone(), format!("{run}]"), format!("x{run}y")] {
+                assert!(!matches(&pattern, ".git", Flavour::Posix, true));
+            }
+        }
+        // The `]` that closes is still found after a run that did not.
+        assert!(matches("[[:a:][[:a:]]x", "[x", Flavour::Posix, true));
+        assert!(matches("[[:a:][[:a:][[:a:]]x", "[x", Flavour::Posix, true));
+        assert!(matches("[[:a:][[:a:]]]x", "?]x", Flavour::Posix, true));
+    }
+
+    /// What each `[` of `pattern` that can be closed reads, the way [`tokens`]
+    /// asks `class`; `shared` keeps the marks of failed scans from one `[` to
+    /// the next, as `tokens` does, and otherwise each scan starts clean.
+    fn brackets(pattern: &str, windows: bool, shared: bool) -> Vec<Option<(Token, usize)>> {
+        let chars: Vec<char> = pattern.chars().collect();
+        let last_close = chars.iter().rposition(|c| *c == ']');
+        let mut dead = vec![false; chars.len()];
+        let (mut at, mut out) = (0, Vec::new());
+        while at < chars.len() {
+            let c = chars[at];
+            at += 1;
+            match c {
+                '`' if windows && at < chars.len() => at += 1,
+                '[' if last_close.is_some_and(|close| at <= close) => {
+                    let mut clean = vec![false; chars.len()];
+                    let marks = if shared { &mut dead } else { &mut clean };
+                    let read = class(&chars[at..], windows, &mut marks[at..]);
+                    if let Some((_, used)) = &read {
+                        at += used;
+                    }
+                    out.push(read);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_failed_scan_marks_only_what_fails_the_same_way_from_elsewhere() {
+        // Every pattern of up to six of the characters that make or break a
+        // bracket: each `[` reads the same with the marks of the scans
+        // before it as with none.
+        let alphabet = ['[', ']', ':', '=', '.', 'a', '-', '!', '`'];
+        let mut patterns = vec![String::new()];
+        let mut from = 0;
+        for _ in 0..6 {
+            let to = patterns.len();
+            for at in from..to {
+                for c in alphabet {
+                    let mut longer = patterns[at].clone();
+                    longer.push(c);
+                    patterns.push(longer);
+                }
+            }
+            from = to;
+        }
+        for pattern in &patterns {
+            for windows in [false, true] {
+                assert_eq!(
+                    brackets(pattern, windows, true),
+                    brackets(pattern, windows, false),
+                    "{pattern:?} windows: {windows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bracket_after_a_failed_scan_is_still_read() {
+        let posix = Flavour::Posix;
+        // The first `[` fails: its only `]` closes an element. It is a plain
+        // `[`, and the `[` of the element opens a bracket of its own.
+        assert!(matches("[[:a:]", "[a", posix, false));
+        assert!(matches("[[:a:]", "[:", posix, false));
+        assert!(!matches("[[:a:]", "[b", posix, false));
+        assert!(matches("[a[:a:]", "[aa", posix, false));
+        assert!(matches("[a[:a:]", "[a:", posix, false));
+        assert!(!matches("[a[:a:]", "[ab", posix, false));
     }
 
     #[test]
