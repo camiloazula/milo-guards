@@ -543,6 +543,10 @@ fn a_drop_that_deletes_no_data_is_safe() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_group_too_large_to_read_is_unknown_and_quick() {
     let echoes = "echo a; ".repeat(300);
     check(

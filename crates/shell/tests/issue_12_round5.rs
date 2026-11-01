@@ -249,6 +249,10 @@ fn sqlite_backup_and_save_replace_the_file_they_are_given() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn what_a_stage_backs_up_is_judged_where_each_client_runs() {
     posix_rows(
         &[
@@ -299,6 +303,10 @@ fn mariadb_admin_is_mysqladmin() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_where_is_found_for_every_verb_in_one_pass() {
     // Each verb that needs a `WHERE` used to look for it to the end of the
     // text, and a verb in an open parenthesis never found the end.
