@@ -339,8 +339,10 @@ a path.
   (`*`, `.g*`, `.git`) hands on `.git`, and a recursive one (`-Recurse`,
   `-Depth`) hands on every hidden folder, since `-Filter config` finds
   `.git\config`; `-Force -Filter *.tmp | Move-Item -Destination trash` stays
-  safe, and `-Exclude` leaves the listing whole. `-Depth` and `-Attributes`
-  take a value, which is never read as the path. A common parameter's value
+  safe, and `-Exclude` leaves the listing whole. `-Force -Recurse -Include
+  *.tmp` is a `delete` for the same reason, while `-Filter *.log | Remove-Item`
+  and `-Recurse -Include *.tmp | Remove-Item` without `-Force` stay safe.
+  `-Depth` and `-Attributes` take a value, which is never read as the path. A common parameter's value
   (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
@@ -353,6 +355,20 @@ a path.
   (`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER*`) is judged on the
   provider's own path.
   A drive's root listed (`C:\*`) is the root, not the drive's working directory.
+- `del /s` and `erase /s` search every folder below the one they start in.
+  From the workspace folder, a name pattern that can match one of the files
+  `.git` holds (`HEAD`, `config`, `index`, `packed-refs`, `description`,
+  `COMMIT_EDITMSG`, a pack, or a branch named `main` or `master`) is a
+  `delete`: `del /s /q HEAD`, `del /s /q *.` (every name without an
+  extension), `del /s /q ?????`. `del /s /q *.obj`, `*.tmp`, `*.pyc` and
+  `Thumbs.db` stay safe, and so does a pattern started deeper in the
+  workspace (`del /s /q src\HEAD`), since only the workspace's own `.git`
+  is the model's to protect. Without `/s` the name is one file in the folder
+  (`del HEAD` is safe). Whether `del /s` descends into hidden folders has
+  not been checked on a Windows machine; it is taken to, since a false safe is
+  the worse mistake, and the rows relax if it is found not to. Only the names
+  listed are tried, so a pattern that fits some other branch or object name is
+  not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.

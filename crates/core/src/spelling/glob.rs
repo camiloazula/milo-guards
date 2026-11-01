@@ -42,6 +42,47 @@ const GIT_ENTRIES: [&str; 18] = [
     "sequencer",
 ];
 
+/// Files deeper in `.git` whose loss hurts as much (a branch's tip, the
+/// repository's description, the last message, a pack): a name search of
+/// every folder that finds one of these takes history with it.
+const GIT_FILES: [&str; 7] = [
+    "description",
+    "COMMIT_EDITMSG",
+    "FETCH_HEAD",
+    "main",
+    "master",
+    "pack-0.pack",
+    "pack-0.idx",
+];
+
+/// Whether the name pattern `pattern` can match the name of something a
+/// repository's `.git` holds: one of its top-level entries (`HEAD`, `config`,
+/// `index`, `objects`, ...) or a well-known file deeper in (`description`,
+/// `COMMIT_EDITMSG`, a pack, a branch named `main` or `master`).
+///
+/// It is for a search that goes into every folder below one (`del /s`), which
+/// finds `.git`'s own files whatever folder they lie in. A trailing dot or
+/// space is not part of a Windows name, so it is read both ways. Only the
+/// names above are tried: a pattern that matches a branch or an object with
+/// some other name is not told.
+///
+/// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
+#[must_use]
+pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
+    let trimmed = if flavour == Flavour::Windows {
+        pattern.trim_end_matches(['.', ' '])
+    } else {
+        pattern
+    };
+    [pattern, trimmed].iter().any(|pattern| {
+        !pattern.is_empty()
+            && GIT_ENTRIES
+                .iter()
+                .chain(&GIT_FILES)
+                .any(|name| matches(pattern, name, flavour, true))
+    })
+}
+
 /// Whether the pattern part `pattern` matches the file name `name`.
 ///
 /// `*` is any run of characters, `?` is one character, and `[...]` is one
@@ -301,6 +342,49 @@ fn catch_all(part: &str, flavour: Flavour) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_search_can_find_the_files_of_git() {
+        let windows = Flavour::Windows;
+        for pattern in [
+            "HEAD",
+            "head",
+            "config",
+            "index",
+            "*",
+            "*.*",
+            "*.",
+            "H*",
+            "?????",
+            "pack-*",
+            "*.pack",
+            "*.idx",
+            "com*",
+            "HEAD.",
+            "ma?n",
+            "[a-z]ndex",
+        ] {
+            assert!(can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        for pattern in [
+            "",
+            ".",
+            "..",
+            "*.obj",
+            "*.tmp",
+            "*.log",
+            "*.exe",
+            "Thumbs.db",
+            "a.txt",
+            "x*y",
+            "*.sample",
+        ] {
+            assert!(!can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        assert!(can_match_git_entry("HEAD", Flavour::Posix));
+        assert!(!can_match_git_entry("head", Flavour::Posix));
+        assert!(!can_match_git_entry("HEAD.", Flavour::Posix));
+    }
 
     #[test]
     fn a_pattern_takes_the_shape_of_its_last_part() {
