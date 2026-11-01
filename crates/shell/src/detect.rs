@@ -2,7 +2,8 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, is_stdin, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, find_targets, is_stdin, powershell_file, uv_script, BUN_VALUES, DENO_VALUES,
+    INTERPRETERS, SHELLS,
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
@@ -479,8 +480,27 @@ impl Checker<'_> {
     }
 
     /// A shell or interpreter that runs a script the same line writes, so
-    /// what it does is not in the line.
+    /// what it does is not in the line. PowerShell runs a file by `-File`
+    /// (`pwsh`, a first word that is not a parameter, too) and
+    /// `Invoke-Command -FilePath`, and a name with no extension may be the
+    /// `.ps1` it tries first.
     fn write_then_run(&mut self, unit: &Unit, key: &str) {
+        let file = match key {
+            "powershell" | "pwsh" => powershell_file(&unit.args),
+            "invoke-command" if unit.shell == Shell::PowerShell => Params::read(&unit.args)
+                .values(&["filepath"])
+                .first()
+                .map(|file| (*file).clone()),
+            _ => None,
+        };
+        if let Some(file) = file {
+            let before = self.found.len();
+            self.runs_written(unit, &file, unit.dir.as_ref());
+            if self.found.len() == before {
+                self.extension_then_run(unit, &file);
+            }
+            return;
+        }
         let runner = SHELLS.contains(&key)
             || INTERPRETERS.contains(&key)
             || key == "uv"
@@ -509,12 +529,7 @@ impl Checker<'_> {
         let Some(program) = unit.program.known() else {
             return;
         };
-        let separators: &[char] = if unit.shell == Shell::Posix {
-            &['/']
-        } else {
-            &['/', '\\']
-        };
-        let by_path = program.contains(separators);
+        let by_path = program.contains(separators(unit.shell));
         if !by_path && unit.shell != Shell::Cmd {
             return;
         }
@@ -528,18 +543,27 @@ impl Checker<'_> {
             self.add_run_written(&unit.program);
             return;
         }
-        let last = program.rsplit(separators).next().unwrap_or(program);
+        self.extension_then_run(unit, &unit.program);
+    }
+
+    /// `script`, a name with no extension, run on a Windows shell: it may be
+    /// the file the line writes with one of the executable extensions, and
+    /// PowerShell tries `.ps1` first.
+    fn extension_then_run(&mut self, unit: &Unit, script: &Arg) {
+        let Some(name) = script.known() else {
+            return;
+        };
+        let last = name.rsplit(separators(unit.shell)).next().unwrap_or(name);
         if unit.shell == Shell::Posix || last.contains('.') {
             return;
         }
-        // PowerShell tries `.ps1` first for a name with no extension.
-        let script = (unit.shell == Shell::PowerShell).then_some(".ps1");
-        if script
+        let first = (unit.shell == Shell::PowerShell).then_some(".ps1");
+        if first
             .into_iter()
             .chain(WINDOWS_EXTENSIONS)
-            .any(|extension| self.names_written(unit, &format!("{program}{extension}")))
+            .any(|extension| self.names_written(unit, &format!("{name}{extension}")))
         {
-            self.add_run_written(&unit.program);
+            self.add_run_written(script);
         }
     }
 
@@ -919,6 +943,15 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     }
     files.retain(|file| file.known() != Some("-"));
     files
+}
+
+/// The characters that separate the parts of a path in `shell`.
+fn separators(shell: Shell) -> &'static [char] {
+    if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    }
 }
 
 /// The script a shell or interpreter runs from a file: its first operand

@@ -22,7 +22,7 @@ pub(crate) use interpreters::{
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
-pub(crate) use wrappers::{uv_script, RUNNERS};
+pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
