@@ -3,9 +3,11 @@
 //! calls such a line reads-only.
 
 mod common;
+mod noise;
 
 use common::{disagreements, posix, windows};
 use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
+use noise::Lcg;
 
 /// Pieces of shell syntax, joined at random into lines no grammar expects.
 const PIECES: [&str; 40] = [
@@ -51,19 +53,6 @@ const PIECES: [&str; 40] = [
     "é",
 ];
 
-/// A small deterministic generator, so a failure names its seed.
-struct Lcg(u64);
-
-impl Lcg {
-    fn next(&mut self) -> usize {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (self.0 >> 33) as usize
-    }
-}
-
 #[test]
 fn random_lines_never_panic() {
     let mut random = Lcg(7);
@@ -101,7 +90,9 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
-    // Deep enough to overflow the stack if the walk had no limit.
+    // Every `(` row is stopped before it is parsed, by the count of open
+    // `(`; the walk's own depth limit is tested on lines without one, in
+    // `issue_16.rs`.
     for (open, close, shell) in [
         ("(", ")", Shell::Posix),
         ("$(", ")", Shell::Posix),
