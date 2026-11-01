@@ -56,6 +56,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/shell",
+    "crates/file",
     "crates/url",
     "crates/guards",
 ]
@@ -71,6 +72,7 @@ rust-version = "1.99"
 [workspace.dependencies]
 milo-guards-core  = { path = "crates/core" }
 milo-guards-shell = { path = "crates/shell" }
+milo-guards-file  = { path = "crates/file" }
 milo-guards-url   = { path = "crates/url" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole

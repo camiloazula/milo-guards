@@ -3,7 +3,7 @@
 mod common;
 
 use common::{check, classify, macos, posix, rules};
-use milo_guards_shell::{Protected, Rule, Shell};
+use milo_guards_shell::{Paths, Protected, Rule, Shell};
 
 #[test]
 fn everyday_commands_are_safe() {
@@ -1815,6 +1815,42 @@ fn only_a_protected_folder_lets_a_pattern_go_below_its_name() {
             ("rm -rf **/*.rs", Rule::Delete),
             ("rm -rf cfg", Rule::Delete),
             ("rm cfg/rules", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_workspace_that_is_the_home_directory_keeps_its_keys_and_startup_files() {
+    let home = Paths::new("/home/me", "/home/me", ["/home/me"]);
+    check(
+        Shell::Posix,
+        &home,
+        &["rm -rf project", "rm -rf src/main.rs", "touch notes.txt"],
+        &[
+            ("rm -rf .ssh", Rule::Delete),
+            ("rm -rf .SSH", Rule::Delete),
+            ("rm -rf ~/.zshrc", Rule::Delete),
+            ("echo x >> .bashrc", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn the_data_volume_is_the_root_on_a_mac() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "rm -rf /System/Volumes/Data/Users/me/dev/repo/x",
+            "rm -rf /System/Volumes/Data/tmp/x",
+        ],
+        &[
+            ("rm -rf /System/Volumes/Data/Users/me/.ssh", Rule::Delete),
+            (
+                "rm -rf ../../../../System/Volumes/Data/Users/me",
+                Rule::Delete,
+            ),
+            ("rm -rf /Volumes/Macintosh\\ HD/Users/me/.ssh", Rule::Delete),
         ],
     );
 }
