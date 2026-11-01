@@ -7,12 +7,13 @@
 //! x`) is not, and each reader's table entry says which arguments are
 //! places.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::{git_subcommand, Effect};
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
-use crate::unit::{plain, Arg, Binding, Unit};
+use crate::unit::{Arg, Binding, Unit};
 use crate::Shell;
 
 /// What judging a unit needs besides the unit.
@@ -69,7 +70,7 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect 
         }
     }
     for arg in path_args(unit, key) {
-        let own = match arg {
+        let own = match arg.as_ref() {
             Arg::Input if fed_by_listing(unit, context, false) => Effect::ReadsOnly,
             Arg::Input => Effect::Unknown,
             known => place_effect(context.resolver, unit.shell, unit.dir.as_ref(), known),
@@ -290,6 +291,10 @@ const STAT: Spec = Spec {
     valued_longs: &["format", "printf"],
     ..none()
 };
+const WC: Spec = Spec {
+    file_longs: &["files0-from"],
+    ..none()
+};
 const DU: Spec = Spec {
     valued: "dBtI",
     valued_longs: &[
@@ -301,7 +306,7 @@ const DU: Spec = Spec {
         "time-style",
     ],
     files: "X",
-    file_longs: &["exclude-from"],
+    file_longs: &["exclude-from", "files0-from"],
     ..none()
 };
 const DF: Spec = Spec {
@@ -326,7 +331,7 @@ const DIFF: Spec = Spec {
         "show-function-line",
     ],
     files: "SX",
-    file_longs: &["starting-file", "exclude-from"],
+    file_longs: &["starting-file", "exclude-from", "from-file", "to-file"],
     ..none()
 };
 const SORT: Spec = Spec {
@@ -456,15 +461,20 @@ const fn none() -> Spec {
     }
 }
 
-/// The arguments of `unit` that are places its program opens.
-fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<&'a Arg> {
+/// The arguments of `unit` that are places its program opens, and the places
+/// that switches name (`findstr /F:file`), which are not whole arguments.
+fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
     let args = unit.args.as_slice();
     if takes_no_paths(unit.shell, key) {
         return Vec::new();
     }
-    match (unit.shell, key) {
+    if key == "git" {
+        return borrowed(git_paths(args));
+    }
+    let paths = match (unit.shell, key) {
         (Shell::Posix, "ls") => paths_of(args, &LS),
-        (Shell::Posix, "cat" | "wc") => paths_of(args, &none()),
+        (Shell::Posix, "cat") => paths_of(args, &none()),
+        (Shell::Posix, "wc") => paths_of(args, &WC),
         (Shell::Posix, "head") => paths_of(args, &HEAD),
         (Shell::Posix, "tail") => paths_of(args, &TAIL),
         (Shell::Posix, "stat") => paths_of(args, &STAT),
@@ -478,23 +488,85 @@ fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<&'a Arg> {
         (Shell::Posix, "grep" | "egrep" | "fgrep") => paths_of(args, &GREP),
         (Shell::Posix, "rg") => paths_of(args, &RG),
         (Shell::Posix, "fd") => paths_of(args, &FD),
-        (Shell::Posix, "find") => find_starts(args),
-        (Shell::Posix, "git") => git_paths(args),
-        (Shell::PowerShell, _) => powershell_paths(key, args),
-        (Shell::Cmd, "findstr") => {
-            // The first argument is what to search for, unless `/c:` or `/g:`
-            // gives it.
-            let operands = plain(args);
-            let given = args.iter().filter_map(Arg::known).any(|text| {
-                let lower = text.to_ascii_lowercase();
-                lower.starts_with("/c:") || lower.starts_with("/g:")
-            });
-            operands.into_iter().skip(usize::from(!given)).collect()
-        }
-        (Shell::Cmd, _) => plain(args),
+        (Shell::Posix, "find") => borrowed(find_starts(args)),
+        (Shell::PowerShell, _) => borrowed(powershell_paths(key, args)),
+        (Shell::Cmd, _) => cmd_paths(key, args),
         // A reader this table has no entry for: every argument.
-        _ => args.iter().collect(),
+        _ => borrowed(args.iter().collect()),
+    };
+    paths
+}
+
+fn borrowed(args: Vec<&Arg>) -> Vec<Cow<'_, Arg>> {
+    args.into_iter().map(Cow::Borrowed).collect()
+}
+
+/// The places a cmd program names. Its switches are `/X` or `/X:value`, and
+/// `/s/b` is two; `findstr` has three that name files: `/F:file` (a list of
+/// files), `/G:file` (the search strings) and `/D:dir;dir` (the folders to
+/// search). With `/G:` or `/C:` every operand is a file; without either, the
+/// first operand is what to search for. The other switches of `findstr` and
+/// of `dir` (`/A:`, `/O:`, `/T:`) take attributes, orders and kinds of time:
+/// data. `type` has no switch. A value known only when it runs, or an
+/// operand that is, is an operand, and so a place.
+fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
+    let mut paths = Vec::new();
+    let mut operands: Vec<&Arg> = Vec::new();
+    let findstr = key == "findstr";
+    let mut given = false;
+    for arg in args {
+        let Some((names, value)) = arg.known().and_then(switches) else {
+            operands.push(arg);
+            continue;
+        };
+        let Some(&last) = names.last() else {
+            continue;
+        };
+        let value = value.unwrap_or_default();
+        if !findstr {
+            continue;
+        }
+        match last.to_ascii_lowercase().as_str() {
+            "g" => {
+                given = true;
+                paths.push(Cow::Owned(Arg::Known(value.to_string())));
+            }
+            "c" => given = true,
+            "f" => paths.push(Cow::Owned(Arg::Known(value.to_string()))),
+            "d" => paths.extend(
+                value
+                    .split(';')
+                    .map(|folder| Cow::Owned(Arg::Known(folder.to_string()))),
+            ),
+            _ => {}
+        }
     }
+    // The first operand is what to search for, when it is known: one known
+    // only when it runs could be a switch.
+    if findstr
+        && !given
+        && operands
+            .first()
+            .is_some_and(|first| first.known().is_some())
+    {
+        operands.remove(0);
+    }
+    paths.extend(operands.into_iter().map(Cow::Borrowed));
+    paths
+}
+
+/// A cmd switch run: the names of `/s/b` or `/F:file`, and the value after
+/// the first `:`. `None` for what is not one, such as `//server/share`.
+fn switches(text: &str) -> Option<(Vec<&str>, Option<&str>)> {
+    let body = text.strip_prefix('/')?;
+    let (names, value) = match body.split_once(':') {
+        Some((names, value)) => (names, Some(value)),
+        None => (body, None),
+    };
+    let list: Vec<&str> = names.split('/').collect();
+    list.iter()
+        .all(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '?'))
+        .then_some((list, value))
 }
 
 /// The places a `find` searches: its arguments before the first test or
@@ -544,11 +616,16 @@ fn git_paths(args: &[Arg]) -> Vec<&Arg> {
     paths
 }
 
-/// The places a PowerShell cmdlet names: its `-Path` and `-LiteralPath`, and
-/// its positional arguments (the first, for `Select-String`, is the pattern).
+/// The places a PowerShell cmdlet names: `-Path` and `-LiteralPath` (of
+/// `Get-ChildItem`, `Get-Item`, `Get-Content`, `Select-String`, `Test-Path`
+/// and `Resolve-Path`), `Resolve-Path -RelativeBasePath`, and the positional
+/// arguments (the first, for `Select-String`, is the pattern). The other
+/// parameters of these name no place: `-Filter`, `-Include`, `-Exclude`,
+/// `-Stream` (a stream's name), `-Encoding`, `-Delimiter`, `-Tail`,
+/// `-TotalCount`, `-Pattern`, `-PathType`, `-OlderThan`. None writes.
 fn powershell_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<&'a Arg> {
     let params = Params::read(args);
-    let mut paths = params.values(&["path", "literalpath"]);
+    let mut paths = params.values(&["path", "literalpath", "relativebasepath"]);
     let searching = matches!(key, "select-string" | "sls");
     let pattern = params.values(&["pattern"]);
     let skip = usize::from(searching && pattern.is_empty());
@@ -574,12 +651,13 @@ fn shape(arg: &Arg) -> Option<(&str, bool)> {
 /// a place, or a pattern, is left out when it is known or its expansions
 /// are quoted: an unquoted one could split into more arguments, options
 /// among them, and counts as an operand.
-fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<&'a Arg> {
-    let mut paths = Vec::new();
+fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
+    let mut paths: Vec<Cow<'a, Arg>> = Vec::new();
     let mut operands: Vec<&Arg> = Vec::new();
     let mut given = false;
     let mut options = true;
     let mut iter = args.iter();
+    let known = |text: &str| Cow::Owned(Arg::Known(text.to_string()));
     while let Some(arg) = iter.next() {
         let flag =
             shape(arg).filter(|(head, _)| options && head.starts_with('-') && head.len() > 1);
@@ -592,49 +670,54 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<&'a Arg> {
             continue;
         }
         if let Some(long) = head.strip_prefix("--") {
-            let (name, equals) = long
+            let (name, value) = long
                 .split_once('=')
-                .map_or((long, false), |(name, _)| (name, true));
+                .map_or((long, None), |(name, value)| (name, Some(value)));
             // `--name$x`: the name itself is not known.
-            if tail && !equals {
+            if tail && value.is_none() {
                 operands.push(arg);
                 continue;
             }
             given |= spec.given_longs.contains(&name);
             if spec.file_longs.contains(&name) {
-                if equals {
-                    paths.extend(tail.then_some(arg));
-                } else {
-                    paths.extend(iter.next());
+                match value {
+                    // An unknown value is the argument itself; a known one
+                    // is judged as the place it is.
+                    Some(_) if tail => paths.push(Cow::Borrowed(arg)),
+                    Some(value) => paths.push(known(value)),
+                    None => paths.extend(iter.next().map(Cow::Borrowed)),
                 }
-            } else if equals {
+            } else if value.is_some() {
                 if tail && !inert(arg) {
-                    paths.push(arg);
+                    paths.push(Cow::Borrowed(arg));
                 }
             } else if spec.valued_longs.contains(&name) {
-                paths.extend(iter.next().filter(|value| !inert(value)));
+                paths.extend(iter.next().filter(|value| !inert(value)).map(Cow::Borrowed));
             }
             continue;
         }
         let bundle = &head[1..];
         for (at, letter) in bundle.char_indices() {
-            let attached = at + letter.len_utf8() < bundle.len() || tail;
+            let rest = &bundle[at + letter.len_utf8()..];
+            let attached = !rest.is_empty() || tail;
             given |= spec.given.contains(letter);
             if spec.files.contains(letter) {
-                if attached {
-                    paths.extend(tail.then_some(arg));
+                if tail {
+                    paths.push(Cow::Borrowed(arg));
+                } else if attached {
+                    paths.push(known(rest));
                 } else {
-                    paths.extend(iter.next());
+                    paths.extend(iter.next().map(Cow::Borrowed));
                 }
                 break;
             }
             if spec.valued.contains(letter) {
                 if attached {
                     if tail && !inert(arg) {
-                        paths.push(arg);
+                        paths.push(Cow::Borrowed(arg));
                     }
                 } else {
-                    paths.extend(iter.next().filter(|value| !inert(value)));
+                    paths.extend(iter.next().filter(|value| !inert(value)).map(Cow::Borrowed));
                 }
                 break;
             }
@@ -643,10 +726,10 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<&'a Arg> {
     if spec.pattern && !given && !operands.is_empty() {
         let pattern = operands.remove(0);
         if !inert(pattern) {
-            paths.push(pattern);
+            paths.push(Cow::Borrowed(pattern));
         }
     }
-    paths.extend(operands);
+    paths.extend(operands.into_iter().map(Cow::Borrowed));
     paths
 }
 
