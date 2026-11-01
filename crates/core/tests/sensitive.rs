@@ -625,15 +625,73 @@ fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled(
             ("Users/me/.ssh/id_rsa", sshkey),
         ],
     );
-    // Only ASCII case is folded for a link: matching more would make another
-    // folder look like the workspace's.
-    assert_ne!(
-        at(
-            &mac(),
-            "/\u{17f}ystem/Volumes/Data/Users/me/dev/repo/x",
-            POSIX
-        ),
-        Place::Inside
+    // A Mac's file system folds the long s to `s`: the same folders.
+    rows(
+        &mac(),
+        POSIX,
+        &[
+            ("/Sy\u{17f}tem/Volumes/Data/Users/me/.ssh/id_rsa", sshkey),
+            ("/Volume\u{17f}/Macintosh HD/Users/me/.ssh/id_rsa", sshkey),
+            (
+                "/Sy\u{17f}tem/Volumes/Data/Users/me/dev/repo/x",
+                Place::Inside,
+            ),
+            (
+                "/Volume\u{17f}/Macinto\u{17f}h HD/Users/me/dev/repo/x",
+                Place::Inside,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_macs_links_are_read_only_on_a_mac() {
+    // A Mac has its home under `/Users`. On any other system the paths do
+    // not exist: a write creates folders, so they must not be the root.
+    for paths in [posix(), Paths::new("/srv/x", "/srv/x", ["/srv/x"])] {
+        rows(
+            &paths,
+            POSIX,
+            &[
+                ("/Volumes/Macintosh HD/home/me/work/repo/x", Place::Outside),
+                (
+                    "/System/Volumes/Data/home/me/.ssh/id_rsa",
+                    Place::Top("a system folder"),
+                ),
+                ("/Volumes/Macintosh HD/etc/shadow", Place::Outside),
+            ],
+        );
+    }
+    let linux = Resolver::new(&posix());
+    for path in [
+        "/System/Volumes/Data/dev/mem",
+        "/Volumes/Macintosh HD/dev/mem",
+    ] {
+        assert_eq!(linux.kernel(Spelling::Plain(path), POSIX), None, "{path}");
+        assert!(
+            Resolver::new(&mac())
+                .kernel(Spelling::Plain(path), POSIX)
+                .is_some(),
+            "{path}"
+        );
+    }
+    // A Mac spelled by its data volume is still a Mac.
+    let data = Paths::new(
+        "/System/Volumes/Data/Users/me/dev/repo",
+        "/System/Volumes/Data/Users/me",
+        ["/System/Volumes/Data/Users/me/dev/repo"],
+    );
+    rows(
+        &data,
+        POSIX,
+        &[
+            ("/Users/me/dev/repo/x", Place::Inside),
+            ("x", Place::Inside),
+            (
+                "/Volumes/Macintosh HD/Users/me/.ssh/id_rsa",
+                secret("your SSH keys"),
+            ),
+        ],
     );
 }
 
@@ -839,8 +897,6 @@ fn the_kernel_serves_files_that_are_not_files() {
         "/DEV/MEM",
         "/dev/../dev/mem",
         "/dev/./mem",
-        "/System/Volumes/Data/dev/mem",
-        "/Volumes/Macintosh HD/dev/mem",
         "/proc/self/environ",
         "/proc/1/environ",
         "/proc/thread-self/environ",

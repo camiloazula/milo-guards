@@ -167,9 +167,6 @@ fn every_spelling_of_a_key_is_the_key() {
         "/home/me/.ssh/id_rsa/",
         "/home/me/.ssh/id_rsa/.",
         "/home/me/.ssh/id_rsa/..",
-        // The data volume of a Mac is the root, on any POSIX host.
-        "/System/Volumes/Data/home/me/.ssh/id_rsa",
-        "/system/volumes/data/home/me/.ssh/id_rsa",
     ];
     for access in [Access::Read, Access::Write] {
         let rows: Vec<(&str, Rule)> = spellings
@@ -210,7 +207,6 @@ fn every_spelling_of_a_workspace_file_is_safe() {
         "/home/me/work/other/../repo/src/main.rs",
         "~/work/repo/src/main.rs",
         "~/work/../work/repo/src/main.rs",
-        "/System/Volumes/Data/home/me/work/repo/src/main.rs",
     ];
     for access in [Access::Read, Access::Write] {
         safe(access, &posix(), &spellings);
@@ -830,6 +826,10 @@ fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled(
             rows("/Volumes/Macintosh HD/private/etc/master.passwd"),
             rows("/Volumes/Macintosh HD/dev/mem"),
             rows("/System/Volumes/Data/proc/self/environ"),
+            rows("/Sy\u{17f}tem/Volumes/Data/Users/me/.ssh/id_rsa"),
+            rows("/Volume\u{17f}/Macintosh HD/Users/me/.ssh/id_rsa"),
+            rows("/Volumes/Macinto\u{17f}h HD/Users/me/.ssh/id_rsa"),
+            rows("/Sy\u{17f}tem/Volume\u{17f}/Data/Users/me/.ssh/id_rsa"),
         ],
     );
     // A working directory at the root, with the workspace elsewhere.
@@ -854,6 +854,10 @@ fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled(
             "/Volumes/Macintosh HD/Users/me/dev/repo/x",
             "../../../../Volumes/Macintosh HD/Users/me/dev/repo/x",
             "../../../../System/Volumes/Data/tmp/x",
+            // A Mac's file system folds the long s to `s`: the same folders.
+            "/Sy\u{17f}tem/Volumes/Data/Users/me/dev/repo/x",
+            "/Volume\u{17f}/Macintosh HD/Users/me/dev/repo/x",
+            "/volume\u{17f}/macinto\u{17f}h hd/Users/me/dev/repo/x",
         ],
     );
     risky(
@@ -872,11 +876,6 @@ fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled(
             (
                 "~/../../Volumes/Macintosh HD/Users/me/.zshrc",
                 Rule::WriteSensitive,
-            ),
-            // Only ASCII case counts for a link, so this is not the root.
-            (
-                "/\u{17f}ystem/Volumes/Data/Users/me/dev/repo/x",
-                Rule::WriteOutside,
             ),
         ],
     );
@@ -1192,6 +1191,104 @@ fn a_write_to_a_device_is_beyond_the_workspace_unless_it_discards() {
             ("/dev/stderr", &[][..]),
             ("/dev/fd/1", &[][..]),
             ("/dev/tty", &[][..]),
+        ],
+    );
+}
+
+#[test]
+fn a_macs_links_to_the_root_are_not_links_on_any_other_system() {
+    // On Linux these paths do not exist, and a write creates folders outside
+    // the workspace: they are not the workspace's, and not the root.
+    for path in [
+        "/Volumes/Macintosh HD/home/me/work/repo/x",
+        "/System/Volumes/Data/home/me/work/repo/x",
+        "/volumes/macintosh hd/home/me/work/repo/x",
+        "/Volume\u{17f}/Macintosh HD/home/me/work/repo/x",
+        "/Sy\u{17f}tem/Volumes/Data/home/me/work/repo/x",
+        "/Volumes/Macintosh HD - Data/home/me/work/repo/x",
+        "../../../../Volumes/Macintosh HD/home/me/work/repo/x",
+        "/System/Volumes/Data/tmp/x",
+    ] {
+        exactly(
+            Access::Write,
+            &posix(),
+            &[(path, &[Rule::WriteOutside][..])],
+        );
+    }
+    // A read lands where it is spelled: outside, and no key.
+    safe(
+        Access::Read,
+        &posix(),
+        &[
+            "/Volumes/Macintosh HD/home/me/.ssh/id_rsa",
+            "/System/Volumes/Data/home/me/.ssh/id_rsa",
+            "/System/Volumes/Data/etc/shadow",
+            "/System/Volumes/Data/proc/self/environ",
+            "/Volumes/Macintosh HD/dev/mem",
+        ],
+    );
+    // On a Mac, whose home is under `/Users`, the same paths are the root.
+    risky(
+        Access::Read,
+        &macos(),
+        &[
+            ("/Volumes/Macintosh HD/etc/shadow", Rule::ReadSecret),
+            ("/System/Volumes/Data/etc/shadow", Rule::ReadSecret),
+        ],
+    );
+}
+
+#[test]
+fn a_containers_secrets_and_the_memory_a_system_keeps_on_disk_are_secrets() {
+    risky(
+        Access::Read,
+        &posix(),
+        &[
+            ("/run/secrets/x", Rule::ReadSecret),
+            ("/run/secrets", Rule::ReadSecret),
+            ("/RUN/Secrets/db_password", Rule::ReadSecret),
+            (
+                "/var/run/secrets/kubernetes.io/serviceaccount/token",
+                Rule::ReadSecret,
+            ),
+            (
+                "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+                Rule::ReadSecret,
+            ),
+            ("/var/vm/sleepimage", Rule::ReadSecret),
+            ("/private/var/vm/sleepimage", Rule::ReadSecret),
+            ("/private/var/vm/swapfile0", Rule::ReadSecret),
+            ("/private/var/vm/swapfile1.encrypted", Rule::ReadSecret),
+        ],
+    );
+    risky(
+        Access::Read,
+        &macos(),
+        &[
+            ("/private/var/vm/sleepimage", Rule::ReadSecret),
+            (
+                "/System/Volumes/Data/private/var/vm/sleepimage",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+    safe(
+        Access::Read,
+        &posix(),
+        &[
+            "/run/user/1000/x",
+            "/run/secrets-x/y",
+            "/var/run/docker.pid",
+            "/var/vmx/x",
+            "/var/lib/x",
+        ],
+    );
+    risky(
+        Access::Write,
+        &posix(),
+        &[
+            ("/run/secrets/x", Rule::WriteSensitive),
+            ("/private/var/vm/sleepimage", Rule::WriteSensitive),
         ],
     );
 }

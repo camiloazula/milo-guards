@@ -166,7 +166,7 @@ impl Loc {
         if let Some((root, rest)) = windows_root(text) {
             return Self::at(root).walk(rest, Flavour::Windows);
         }
-        Self::at(Root::Unix).walk(text, Flavour::Posix).firm()
+        Self::at(Root::Unix).walk(text, Flavour::Posix)
     }
 
     /// What macOS names the root and the data volume by. The data volume is
@@ -176,8 +176,9 @@ impl Loc {
     /// `/Volumes/Macintosh HD/Users/me` are `/Users/me`. The leading parts
     /// are dropped, as often as they come, however the path was spelled:
     /// every path is made absolute first (`~` and `..` applied, the working
-    /// directory prepended). Names compare without case, in ASCII only, since
-    /// matching too much here would make a path look like the workspace's.
+    /// directory prepended). Names compare as a Mac's file system does, by
+    /// the widest fold (`/Syſtem/Volumes/Data` is `/System/Volumes/Data`
+    /// there). Only a Mac's paths are read this way.
     fn firm(mut self) -> Self {
         const LINKS: [&[&str]; 3] = [
             &["System", "Volumes", "Data"],
@@ -191,7 +192,7 @@ impl Loc {
                         .parts
                         .iter()
                         .zip(**link)
-                        .all(|(part, name)| part.eq_ignore_ascii_case(name))
+                        .all(|(part, name)| same_fold(part, name))
             });
             match link {
                 Some(link) => {
@@ -645,7 +646,7 @@ const SENSITIVE: [(&[&str], &str, Sensitivity); 60] = [
 
 /// Keys and credentials the system itself keeps, under the root of a POSIX
 /// system (and under `/private`, where macOS keeps `/etc` and `/var`).
-const POSIX_SECRETS: [(&[&str], &str); 14] = [
+const POSIX_SECRETS: [(&[&str], &str); 17] = [
     (&["etc", "shadow"], "the system's password hashes"),
     (&["etc", "gshadow"], "the system's password hashes"),
     (&["etc", "master.passwd"], "the system's password hashes"),
@@ -664,6 +665,9 @@ const POSIX_SECRETS: [(&[&str], &str); 14] = [
     ),
     (&["etc", "ppp"], "your saved network passwords"),
     (&["var", "db", "dslocal"], "the system's password hashes"),
+    (&["run", "secrets"], "the container's secrets"),
+    (&["var", "run", "secrets"], "the container's secrets"),
+    (&["var", "vm"], "the memory the system keeps on disk"),
     (&["Library", "Keychains"], "the system's keychains"),
     (
         &["System", "Library", "Keychains"],
@@ -743,6 +747,8 @@ struct Workspace {
 #[derive(Debug, Clone)]
 pub struct Resolver {
     cwd: Loc,
+    /// Whether this is a Mac: see [`Loc::firm`].
+    mac: bool,
     home: Loc,
     workspaces: Vec<Workspace>,
     temps: Vec<Loc>,
@@ -765,13 +771,30 @@ impl Resolver {
     /// makes it a Windows machine (its temporary and system folders are
     /// Windows ones); any other makes it a POSIX one.
     pub fn new(paths: &Paths) -> Self {
-        let cwd = Loc::absolute(&paths.cwd.to_string_lossy());
+        // A Mac has a home under `/Users`, and only a Mac links its root and
+        // its data volume at other names (`/System/Volumes/Data`,
+        // `/Volumes/Macintosh HD`): on any other system those paths do not
+        // exist, and reading them as the root would make a path that
+        // creates folders outside the workspace look inside it.
         let home = Loc::absolute(&paths.home.to_string_lossy());
-        let workspaces: Vec<Loc> = paths
-            .workspaces
-            .iter()
-            .map(|folder| Loc::absolute(&folder.to_string_lossy()))
-            .collect();
+        let mac = matches!(home.root, Root::Unix)
+            && home
+                .clone()
+                .firm()
+                .parts
+                .first()
+                .is_some_and(|first| first.eq_ignore_ascii_case("Users"));
+        let absolute = |text: &std::path::Path| {
+            let loc = Loc::absolute(&text.to_string_lossy());
+            if mac {
+                loc.firm()
+            } else {
+                loc
+            }
+        };
+        let cwd = absolute(&paths.cwd);
+        let home = absolute(&paths.home);
+        let workspaces: Vec<Loc> = paths.workspaces.iter().map(|f| absolute(f)).collect();
         let (temps, system) = if home.windows() {
             let drive = Loc::at(home.root.clone());
             (
@@ -848,6 +871,7 @@ impl Resolver {
         }
         let mut resolver = Self {
             cwd,
+            mac,
             home: home.clone(),
             workspaces: Vec::new(),
             temps: Vec::new(),
@@ -870,7 +894,7 @@ impl Resolver {
             .iter()
             .map(|entry| {
                 (
-                    Loc::absolute(&entry.path.to_string_lossy()),
+                    absolute(&entry.path),
                     entry.words,
                     entry.kind == ProtectedKind::Folder,
                 )
@@ -1065,7 +1089,12 @@ impl Resolver {
 
     /// The location a path names, made absolute however it was spelled.
     fn locate(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
-        self.locate_raw(path, flavour).firm()
+        let loc = self.locate_raw(path, flavour);
+        if self.mac {
+            loc.firm()
+        } else {
+            loc
+        }
     }
 
     fn locate_raw(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {

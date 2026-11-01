@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{exactly, posix, safe, windows};
+use common::{exactly, posix, risky, safe, windows};
 use milo_guards_file::{Access, Paths, Protected, Rule};
 
 #[test]
@@ -103,4 +103,32 @@ fn a_company_onedrive_folder_is_not_the_onedrive_folder() {
             &[Rule::WriteOutside][..],
         )],
     );
+}
+
+#[test]
+fn a_few_places_are_accepted_false_alarms_for_a_read() {
+    // The folder and the descriptors folder themselves, and a process's
+    // status: anything under `/dev` and `/proc` that is not on the short
+    // whitelist is refused.
+    risky(
+        Access::Read,
+        &posix(),
+        &[
+            ("/dev", Rule::ReadSecret),
+            ("/dev/fd", Rule::ReadSecret),
+            ("/proc/self/status", Rule::ReadSecret),
+        ],
+    );
+    // A workspace directly under `/home` is a home directory to core, so its
+    // own `.npmrc` is a login.
+    let paths = Paths::new("/home/ws", "/home/me", ["/home/ws"]);
+    risky(
+        Access::Read,
+        &paths,
+        &[
+            (".npmrc", Rule::ReadSecret),
+            ("/home/ws/.ssh/config", Rule::ReadSecret),
+        ],
+    );
+    safe(Access::Read, &paths, &["src/main.rs", "package.json"]);
 }

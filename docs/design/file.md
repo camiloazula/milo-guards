@@ -210,6 +210,10 @@ Not covered, on purpose, and what to do:
   (the caller who can read the disk can resolve first, and hand the result in).
   The links the system itself makes are read by name: a Mac's links to the
   root and the kernel's `/proc/self/root`.
+- **Places that are findings though they are not secrets**: `/dev`, `/dev/fd`
+  and `/proc/self/status` are `read_secret` (the whitelist is of what is safe),
+  and a workspace directly under `/home` is another user's home directory to
+  core, so its own `.npmrc` is `read_secret`.
 - **A workspace of `/`** makes a write anywhere Safe, since the caller said the
   agent may write there; keys, startup files and `.git` stay findings. That is
   the caller's choice to make.

@@ -168,7 +168,9 @@ itself.
   - the system's own secrets, as `Secret`: `/etc/shadow` and its kin, the
     host SSH keys, private TLS keys, WireGuard and Kerberos keys, saved
     network passwords, the macOS keychains and password database (under
-    `/private` too), and on Windows the account database in
+    `/private` too), a container's `/run/secrets` and `/var/run/secrets`, the
+    memory a system keeps on disk (`/var/vm`, `sleepimage` and the swap files),
+    and on Windows the account database in
     `System32\config`, the DPAPI keys and `ProgramData\ssh`.
 
   A workspace's own `.git` is `History`.
@@ -194,13 +196,15 @@ itself.
 - A name is also its Windows 8.3 short name, in the home directory and the
   sensitive places as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
   is `C:\Users\Camilo Azula\.ssh\id_rsa`. A POSIX name has no short form.
-- On POSIX macOS's links to the root are read: `/System/Volumes/Data/...`,
-  `/Volumes/Macintosh HD/...` and `/Volumes/Macintosh HD - Data/...` are
-  `/...`, as often as they come. Every path is made absolute first (`~`
+- On a Mac (a home directory under `/Users`) macOS's links to the root are
+  read: `/System/Volumes/Data/...`, `/Volumes/Macintosh HD/...` and
+  `/Volumes/Macintosh HD - Data/...` are `/...`, as often as they come. On any
+  other system those paths do not exist, a write to one creates folders, and
+  they are what they are spelled as. Every path is made absolute first (`~`
   and `..` applied, the working directory prepended), and then the links are
   dropped, so `../../../../System/Volumes/Data/Users/me/.ssh` and `~/../..`
-  spellings are read as `/Users/me/.ssh`. Their names compare by ASCII case
-  only.
+  spellings are read as `/Users/me/.ssh`. Their names compare as a Mac's file
+  system does, by the widest fold: `/Syſtem/Volumes/Data` is the same folder.
 - A protected path, and anything under it, is `Protected`. **Protected wins over
   the workspace**, and over a temporary folder: a protected file inside a
   workspace folder is `Protected`, not `Inside`, because the caller named it on
