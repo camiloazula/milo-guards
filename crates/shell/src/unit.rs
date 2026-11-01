@@ -85,8 +85,11 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
-    /// How many shells deep the script it came from is nested: `0` for the
-    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`.
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line the grammar reads again (what follows the
+    /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
+    /// It is what the depth limit counts.
     pub(crate) depth: usize,
 }
 

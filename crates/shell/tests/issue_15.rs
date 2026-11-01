@@ -89,6 +89,67 @@ fn arguments_come_as_written_and_as_resolved() {
 }
 
 #[test]
+fn a_known_argument_has_its_quotes_taken_off_and_others_keep_the_source() {
+    let explanation = explain(r#"rm 'a b' $X "c $Y""#, Shell::Posix, &posix());
+    let args: Vec<_> = explanation.units[0]
+        .args
+        .iter()
+        .map(|arg| (arg.written.as_str(), arg.kind))
+        .collect();
+    assert_eq!(
+        args,
+        [
+            ("a b", ArgKind::Known),
+            ("$X", ArgKind::Unknown),
+            ("\"c $Y\"", ArgKind::Template),
+        ]
+    );
+    let explanation = explain("bash -c 'git reset --hard'", Shell::Posix, &posix());
+    assert_eq!(explanation.units[0].args[1].written, "git reset --hard");
+}
+
+#[test]
+fn a_reread_part_of_a_line_counts_one_level_of_depth() {
+    // No shell wraps `del`, but the grammar reads what follows the `&&` of a
+    // `set` again, and the depth limit counts it.
+    let explanation = explain(r"set X=1 && del /q C:\Windows\x", Shell::Cmd, &windows());
+    assert_eq!(units(&explanation), [("del", 1, vec![])]);
+    assert!(explanation.to_string().contains("nested 1 deep"));
+}
+
+#[test]
+fn control_characters_never_pose_as_tree_lines_or_reach_a_terminal() {
+    let line =
+        "cat > notes.txt <<EOF\nhi\nEOF\nbash -c 'git status\n  safe\nunit 4: x\u{1b}[2J'\tz";
+    let explanation = explain(line, Shell::Posix, &posix());
+    let tree = explanation.to_string();
+    assert!(
+        !tree.chars().any(|c| c.is_control() && c != '\n'),
+        "{tree:?}"
+    );
+    // The raw field keeps what the line held.
+    assert!(explanation
+        .units
+        .iter()
+        .flat_map(|unit| &unit.args)
+        .any(|arg| arg.written.contains('\n') && arg.written.contains('\u{1b}')));
+    // Every line of the tree is one of its own shapes, and the forged ones
+    // stay inside the argument that held them.
+    let units = tree.lines().filter(|l| l.starts_with("unit ")).count();
+    assert_eq!(units, explanation.units.len(), "{tree}");
+    assert!(!tree.contains("\nunit 4: x"), "{tree}");
+    assert!(
+        tree.contains(r"git status\n  safe\nunit 4: x\u{1b}[2J"),
+        "{tree}"
+    );
+    // The redirect target and a `cd` folder go through the same escape.
+    let tree = explain("cd 'a\nb' && echo hi > 'c\nd'", Shell::Posix, &posix()).to_string();
+    assert!(tree.contains("runs from: a\\nb\n"), "{tree}");
+    assert!(tree.contains("redirect: writes to c\\nd"), "{tree}");
+    assert!(!tree.contains("\nb\n"), "{tree}");
+}
+
+#[test]
 fn a_template_and_a_pipeline_input_are_told_apart() {
     let explanation = explain("echo \"a $X\" | xargs rm", Shell::Posix, &posix());
     assert_eq!(explanation.units[0].args[0].kind, ArgKind::Template);

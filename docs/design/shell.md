@@ -671,10 +671,13 @@ explain(line, shell, &paths) -> Explanation
 ```
 
 When a line comes out wrong, the reason is in the split, which is private.
-`explain` returns it: every unit as the rules saw it (the program and the
-arguments as written, where each argument would land if read as a path, the
+`explain` returns it: every unit as the rules saw it (the program as written, the
+arguments (a known one with its quotes taken off, an unknown or template one as
+written), where each argument would land if read as a path, the
 folder it runs from after a `cd`, the wrappers taken off, the shell and the
-nesting depth it came from, its stage in a pipeline) with the findings that
+nesting depth it came from, its stage in a pipeline; a part of the line the
+grammar reads again, like what follows the `&&` in cmd's `set X=1 && del y`,
+counts one level, as the depth limit does) with the findings that
 unit produced, each redirect's write the same way, and the findings of the line
 itself (a part that cannot be read, a program known only when it runs, a limit
 hit). Every known argument that is not an option gets a place, whether or not

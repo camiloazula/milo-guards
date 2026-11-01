@@ -7,6 +7,19 @@ use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
 use milo_guards_shell::{classify as judge, effect, explain, Effect, Paths, Rule, Shell};
 
+/// A text as the tree prints it: a control character written as an escape.
+pub fn as_printed(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                c.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
 /// `classify`, and the line's `effect` and `explain` held to agree with it
 /// (see [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge
 /// every line through this, so each line they name goes through both too.
@@ -64,7 +77,7 @@ pub fn disagreements<'a>(
             let unshown = assessment
                 .findings()
                 .iter()
-                .any(|finding| !tree.contains(&finding.reason));
+                .any(|finding| !tree.contains(&as_printed(&finding.reason)));
             let explained = (explanation.assessment() != assessment
                 || explanation.findings() != assessment.findings()
                 || unshown)

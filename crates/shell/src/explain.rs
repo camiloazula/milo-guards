@@ -30,8 +30,11 @@ pub enum ArgKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ArgExplanation {
-    /// The argument as written, quotes and all; a placeholder (`<input>`)
-    /// for what a pipeline hands on.
+    /// A known argument holds its value with the quotes taken off: `a b`
+    /// for `'a b'`, `git reset --hard` for the script of `bash -c 'git reset
+    /// --hard'`. An unknown or template argument keeps its source text
+    /// (`"$X"`, quotes and all), since it has no value yet. For what a
+    /// pipeline hands on it is a placeholder (`<input>`).
     pub written: String,
     /// How its value is known.
     pub kind: ArgKind,
@@ -65,8 +68,11 @@ pub struct PipelineStage {
 pub struct UnitExplanation {
     /// The shell whose grammar read it.
     pub shell: Shell,
-    /// How many shells deep the script it came from is nested: `0` for the
-    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`.
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line that the grammar reads again (what follows
+    /// the `&&` in cmd's `set X=1 && del y`, the stage after `--%` in
+    /// PowerShell). It is the number the depth limit counts.
     pub depth: usize,
     /// The program as written, after its wrappers came off.
     pub program: String,
@@ -284,11 +290,35 @@ fn is_option(text: &str, shell: Shell) -> bool {
     (text.len() > 1 && text.starts_with('-')) || (shell != Shell::Posix && unit::is_switch(text))
 }
 
+/// A text as the tree prints it: a control character (a newline, a tab, an
+/// ESC) is written as an escape (`\n`, `\u{1b}`), so what the line holds can
+/// neither pose as a line of the tree nor reach a terminal as a sequence.
+/// The fields stay raw; only the tree escapes.
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for c in self.0.chars() {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                write!(f, "{}", c.escape_debug())?;
+            } else {
+                write!(f, "{c}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Display for Explanation {
     /// A short indented tree: the line, each unit with what it was read as
     /// and what it found, the redirects, and what the line found itself.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "line ({}): {}", shell_name(self.shell), self.command)?;
+        writeln!(
+            f,
+            "line ({}): {}",
+            shell_name(self.shell),
+            Escaped(&self.command)
+        )?;
         match self.findings.len() {
             0 => writeln!(f, "verdict: safe")?,
             1 => writeln!(f, "verdict: risky, 1 finding")?,
@@ -312,9 +342,9 @@ impl fmt::Display for Explanation {
 
 impl UnitExplanation {
     fn write(&self, f: &mut fmt::Formatter<'_>, number: usize) -> fmt::Result {
-        write!(f, "unit {number}: {}", self.program)?;
+        write!(f, "unit {number}: {}", Escaped(&self.program))?;
         if let Some(key) = self.key.as_deref().filter(|key| *key != self.program) {
-            write!(f, " (read as {key})")?;
+            write!(f, " (read as {})", Escaped(key))?;
         }
         writeln!(f)?;
         write!(f, "  shell: {}", shell_name(self.shell))?;
@@ -323,13 +353,20 @@ impl UnitExplanation {
         }
         writeln!(f)?;
         if !self.wrappers.is_empty() {
-            writeln!(f, "  wrappers: {}", self.wrappers.join(", "))?;
+            write!(f, "  wrappers: ")?;
+            for (at, wrapper) in self.wrappers.iter().enumerate() {
+                if at > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", Escaped(wrapper))?;
+            }
+            writeln!(f)?;
         }
         if let Some(stage) = self.stage {
             writeln!(f, "  pipeline {}, stage {}", stage.pipeline, stage.index)?;
         }
         if let Some(dir) = &self.dir {
-            writeln!(f, "  runs from: {dir}")?;
+            writeln!(f, "  runs from: {}", Escaped(dir))?;
         }
         if self.hidden {
             writeln!(f, "  wildcards match hidden names")?;
@@ -337,9 +374,9 @@ impl UnitExplanation {
         if !self.args.is_empty() {
             writeln!(f, "  args")?;
             for arg in &self.args {
-                write!(f, "    {}", arg.written)?;
+                write!(f, "    {}", Escaped(&arg.written))?;
                 match (&arg.resolved, arg.kind) {
-                    (Some(place), _) => write!(f, " (as a path: {place})")?,
+                    (Some(place), _) => write!(f, " (as a path: {})", Escaped(place))?,
                     (None, ArgKind::Unknown) => write!(f, " (known only when it runs)")?,
                     (None, ArgKind::Template) => {
                         write!(f, " (partly known only when it runs)")?;
@@ -356,15 +393,15 @@ impl UnitExplanation {
 
 impl RedirectExplanation {
     fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "redirect: writes to {}", self.target)?;
+        write!(f, "redirect: writes to {}", Escaped(&self.target))?;
         if let Some(place) = &self.resolved {
-            write!(f, " (as a path: {place})")?;
+            write!(f, " (as a path: {})", Escaped(place))?;
         }
         writeln!(f)?;
         write!(f, "  shell: {}", shell_name(self.shell))?;
         writeln!(f)?;
         if let Some(dir) = &self.dir {
-            writeln!(f, "  runs from: {dir}")?;
+            writeln!(f, "  runs from: {}", Escaped(dir))?;
         }
         write_findings(f, &self.findings)
     }
@@ -382,9 +419,14 @@ fn write_findings(f: &mut fmt::Formatter<'_>, findings: &[Finding]) -> fmt::Resu
 }
 
 fn write_finding(f: &mut fmt::Formatter<'_>, indent: &str, finding: &Finding) -> fmt::Result {
-    write!(f, "{indent}{}: {}", finding.rule.name(), finding.reason)?;
+    write!(
+        f,
+        "{indent}{}: {}",
+        finding.rule.name(),
+        Escaped(&finding.reason)
+    )?;
     if let Some(target) = &finding.target {
-        write!(f, " ({target})")?;
+        write!(f, " ({})", Escaped(target))?;
     }
     writeln!(f)
 }
