@@ -15,6 +15,7 @@ use crate::{Finding, Rule, Shell};
 
 mod archives;
 mod code;
+mod data;
 mod files;
 mod processes;
 mod regex;
@@ -73,6 +74,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        stages: HashMap::new(),
+        scans_keys: None,
+        data: data::Cache::default(),
         lengths: HashMap::new(),
         pipelines: HashMap::new(),
         flow: send::Flow::default(),
@@ -95,6 +99,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
         }
@@ -150,6 +159,14 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Every unit at each pipeline stage, by its index in the split: a stage
+    /// can be a group of several.
+    stages: HashMap<(usize, usize), Vec<usize>>,
+    /// Whether the line lists keys in Redis, once worked out: every
+    /// `redis-cli del` that is given keys asks, and the answer is the line's.
+    scans_keys: Option<bool>,
+    /// What the line says to its database clients, read once for each stage.
+    data: data::Cache,
     /// The number of stages of each pipeline.
     lengths: HashMap<usize, usize>,
     /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
@@ -189,6 +206,7 @@ impl Checker<'_> {
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.send(at, unit, &key);
+        self.data(at, unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }
