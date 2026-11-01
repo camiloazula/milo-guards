@@ -348,12 +348,15 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// starts with the workspace and is not in it. The `..` of a `cd` is the
 /// exception, since the shell applies it by spelling and goes to the folded
 /// folder; but bash and zsh go to the path as written, the physical one, when
-/// the folded folder does not exist, which happens when a part of it came after
-/// a `..` that climbed out of a part. So a `cd` target like that is listed both
+/// they find a folder missing before a `..`, which happens when a part came
+/// after a `..` that climbed out of a part, anywhere in the text (`link/../etc`,
+/// `link/../etc/..`, `a/../b/..`). So a `cd` target like that is listed both
 /// ways, folded and kept, and each read from there from each: `cd
 /// link/../etc && cat hosts` lists `<cwd>/etc`, `<cwd>/etc/hosts`,
 /// `<cwd>/link/../etc` and `<cwd>/link/../etc/hosts`; `cd link/.. && cat x`
-/// lists `<cwd>` and `<cwd>/x`. A path the line writes out whole (absolute, or `~`) is
+/// lists `<cwd>` and `<cwd>/x`. A line that keeps the physical path (`cd -P`,
+/// `-P` anywhere) is listed both ways for every `cd`, since each `cd` has its
+/// own flags and the last of `-L` and `-P` wins. A path the line writes out whole (absolute, or `~`) is
 /// not joined to the folder and keeps its `..` as written, whatever it spells
 /// like the folder. [`effect`] keeps judging by spelling. The list is
 /// sorted and holds each

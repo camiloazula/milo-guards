@@ -393,11 +393,15 @@ fn a_cd_that_keeps_the_physical_path_follows_links_before_its_dotdot() {
             .into_iter()
             .filter(|read| !read.path.ends_with("-P"))
             .collect();
+        // Which `cd` of a line is physical is not told (see the next test),
+        // so the folded way is listed beside the kept one.
         assert_eq!(
             list,
             vec![
+                exact("/home/me/work/repo"),
                 exact("/home/me/work/repo/link/.."),
                 exact("/home/me/work/repo/link/../x"),
+                exact("/home/me/work/repo/x"),
             ],
             "{line}"
         );
@@ -406,7 +410,11 @@ fn a_cd_that_keeps_the_physical_path_follows_links_before_its_dotdot() {
             .iter()
             .map(|read| resolve(&read.path.to_string_lossy()))
             .collect();
-        assert_eq!(places, ["/", "/x"], "{line}");
+        assert_eq!(
+            places,
+            ["/home/me/work/repo", "/", "/x", "/home/me/work/repo/x"],
+            "{line}"
+        );
     }
 }
 
@@ -553,19 +561,90 @@ fn a_cd_target_with_a_part_after_a_dotdot_is_listed_both_ways() {
     ] {
         assert!(listed.contains(&exact(want)), "{line}: {listed:?}");
     }
-    // The physical path (`cd -P`) has the one way.
+    // The physical path (`cd -P`) is both ways too: which `cd` is physical is
+    // not told, so the folded way is kept beside the kept one.
     let line = "cd -P link/../etc && cat hosts";
     let list: Vec<ReadPath> = effect_paths(line, Shell::Posix, &paths)
         .unwrap()
         .into_iter()
         .filter(|read| !read.path.ends_with("-P"))
         .collect();
-    assert_eq!(
-        list,
+    assert_eq!(list, four);
+}
+
+#[test]
+fn a_cd_with_a_part_after_a_later_dotdot_is_listed_both_ways() {
+    // bash, zsh and dash check the folder before every `..` that follows a
+    // part (`cd a/../nonexist/..` fails although the folded folder exists),
+    // and bash and zsh then go to the path as written: with `link -> /etc`
+    // and no `etc` beside `link`, `cd link/../etc/..` goes to `/`.
+    let paths = posix();
+    let folded_and_kept = |kept: &str| {
         vec![
-            exact("/home/me/work/repo/link/../etc"),
-            exact("/home/me/work/repo/link/../etc/hosts"),
+            exact(ROOT),
+            exact(kept),
+            exact(&format!("{kept}/x")),
+            exact(&format!("{ROOT}/x")),
         ]
+    };
+    let kept = "/home/me/work/repo/link/../etc/..";
+    for line in [
+        "cd link/../etc/.. && cat x",
+        "cd link/../etc && cd .. && cat x",
+        "pushd link/../etc/.. && cat x",
+    ] {
+        let listed = effect_paths(line, Shell::Posix, &paths).unwrap();
+        for want in folded_and_kept(kept) {
+            assert!(listed.contains(&want), "{line}: {listed:?}");
+        }
+    }
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            (
+                "cd link/../a/b/../.. && cat x",
+                folded_and_kept("/home/me/work/repo/link/../a/b/../.."),
+            ),
+            (
+                "cd src/../x/.. && cat y",
+                vec![
+                    exact(ROOT),
+                    exact("/home/me/work/repo/src/../x/.."),
+                    exact("/home/me/work/repo/src/../x/../y"),
+                    exact("/home/me/work/repo/y"),
+                ],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_cd_of_the_line_that_keeps_the_physical_path_does_not_hide_the_folded_way_of_another() {
+    // The physical flag is the line's, but each `cd` has its own: the last of
+    // `-L` and `-P` decides it, and a `cd` before the `-P` is logical. With
+    // `link -> sub/deep` and `x -> ~/.ssh/id_rsa`, `cat x` after
+    // `cd link/..` opens the key, and the folded `<cwd>/x` is that read.
+    let paths = posix();
+    for line in [
+        "cd link/.. && cat x; cd -P .",
+        "cd -P -L link/.. && cat x",
+        "cd -PL link/.. && cat x",
+        "cd -P sub && cd ../link/.. && cat x",
+        "(cd -P sub); cd link/.. && cat x",
+        "cd link/.. && cat x; pushd -P sub",
+    ] {
+        let listed = effect_paths(line, Shell::Posix, &paths).unwrap();
+        assert!(
+            listed.contains(&exact("/home/me/work/repo/x")),
+            "{line}: {listed:?}"
+        );
+    }
+    // The kept way is listed beside it.
+    let listed = effect_paths("cd link/.. && cat x; cd -P .", Shell::Posix, &paths).unwrap();
+    assert!(
+        listed.contains(&exact("/home/me/work/repo/link/../x")),
+        "{listed:?}"
     );
 }
 
@@ -589,10 +668,6 @@ fn a_cd_with_no_part_after_its_dotdot_is_one_way() {
             (
                 "cd ../.. && cat x",
                 vec![exact("/home/me"), exact("/home/me/x")],
-            ),
-            (
-                "cd src/../x/.. && cat y",
-                vec![exact(ROOT), exact("/home/me/work/repo/y")],
             ),
             (
                 "cd link/.. && cd .. && ls",

@@ -36,7 +36,9 @@ pub(super) struct Context<'a> {
     /// The stage of the unit being read.
     pub(super) stage: Cell<Option<Stage>>,
     /// Whether the line keeps the physical path as its working directory
-    /// (`cd -P`): then a `cd` follows links before it applies a `..`.
+    /// (`cd -P`) somewhere: a `cd` of it may follow links before it applies a
+    /// `..`, so a read is listed both ways, as the flag is the line's and not
+    /// each `cd`'s.
     pub(super) physical: bool,
     /// The folder the unit being read runs in, where a `cd` moved the line,
     /// as written.

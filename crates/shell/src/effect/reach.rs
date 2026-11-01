@@ -178,18 +178,19 @@ impl Context<'_> {
     /// like the folder. The rest is opened by a program, which gets a `..`
     /// after the link before it.
     ///
-    /// A line that keeps the physical path (`cd -P`) has no folded part. And
-    /// bash and zsh fall back to the path as written when the folded folder
-    /// does not exist: with `link -> /etc` and no `etc` beside it, `cd
-    /// link/../etc` goes to `/etc`, not to the folded `<cwd>/etc`. So a part
-    /// after a `..` that follows a part in the folder gives a second way, the
-    /// text with every `..` kept (a `0`), and both are returned for a caller
-    /// to check. A folder that ends at its `..` (`cd link/..`) exists, so it
-    /// has one way.
+    /// A line that keeps the physical path (`cd -P`, `set -P`) may keep it for
+    /// one `cd` and not another: the flag is the line's, and the last of `-L`
+    /// and `-P` decides each `cd`, so which `cd` is physical is not told here.
+    /// Such a line has the kept way (a `0`) as well as the folded one, and a
+    /// caller checks both. And bash and zsh fall back to the path as written
+    /// when the folded folder does not exist, and check the folder before
+    /// every `..` that follows a part: with `link -> /etc` and no `etc` beside
+    /// it, `cd link/../etc/..` goes to `/`, not to the folded `<cwd>`. So a
+    /// part after a `..` that climbed out of a part, anywhere in the folder,
+    /// gives a second way, the text with every `..` kept (a `0`), and both are
+    /// returned for a caller to check. A folder with no part after such a `..`
+    /// (`cd link/..`, `cd src/../..`) has one way.
     fn foldings(&self, text: &str, joined: bool, shell: Shell) -> Vec<usize> {
-        if self.physical {
-            return vec![0];
-        }
         let (folded, second_way) = if self.cd_target.get() {
             (text.len(), dots_before_a_part(text, shell))
         } else {
@@ -204,7 +205,7 @@ impl Context<'_> {
                 None => (0, false),
             }
         };
-        if second_way {
+        if (second_way || self.physical) && folded != 0 {
             vec![folded, 0]
         } else {
             vec![folded]
@@ -232,29 +233,42 @@ impl Context<'_> {
     }
 }
 
-/// Whether the folder a POSIX `text` folds to, by spelling, has a part that
-/// came after a `..` which climbed out of a part (`link/../etc`, `/a/b/../c`;
-/// not `link/..`, `a/../b/..`, `src/../..`, `../x`). The shell applies a `..`
-/// by spelling, but bash and zsh go to the path as written when the folded
-/// folder does not exist, and it can fail to exist only then: a folded folder
-/// made of leading parts of the text exists when the text does, and a `..`
-/// with no part before it climbs from the folder the line is in, which is
-/// known.
+/// Whether a POSIX `text` has a part that came after a `..` which climbed out
+/// of a part, anywhere in it, whether or not the part is still there at the
+/// end (`link/../etc`, `link/../etc/..`, `a/../b/..`, `/a/b/../c`; not
+/// `link/..`, `src/../..`, `../x`). The shell applies a `..` by spelling, but
+/// bash and zsh check the folder before every `..` that follows a part, and go
+/// to the path as written when that check fails (`cd a/../nonexist/..` fails
+/// in them although the folded folder exists). Only a part after such a `..`
+/// can fail to exist: the folder before it is a leading part of the text, which
+/// exists when the text does, and a `..` with no part before it climbs from
+/// the folder the line is in, which is known.
 fn dots_before_a_part(text: &str, shell: Shell) -> bool {
     if shell != Shell::Posix {
         return false;
     }
-    // The parts that remain, each as whether it came after such a `..`.
-    let mut kept: Vec<bool> = Vec::new();
+    // The parts that remain, and whether a part has come after a `..` that
+    // climbed out of one.
+    let mut kept = 0usize;
     let mut dotted = false;
     for name in text.split('/') {
         match name {
             "" | "." => {}
-            ".." => dotted |= kept.pop().is_some(),
-            _ => kept.push(dotted),
+            ".." => {
+                if kept > 0 {
+                    kept -= 1;
+                    dotted = true;
+                }
+            }
+            _ => {
+                if dotted {
+                    return true;
+                }
+                kept += 1;
+            }
         }
     }
-    kept.contains(&true)
+    false
 }
 
 /// The place a read of `text` opens on disk, and for a pattern what follows

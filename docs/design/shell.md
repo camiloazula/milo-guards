@@ -2299,12 +2299,18 @@ the workspace, and `effect_paths` lists it like any other.
   `/bin/sh` fail instead). So with `link -> /etc` and no `etc` beside `link`,
   `cd link/../etc` goes to `/etc`, and `cat hosts` after it reads
   `/etc/hosts`, while `<cwd>/etc` is where it goes when that exists. The
-  folded folder can fail to exist only when a part of it came after a `..` that
-  climbed out of a part (`link/../etc`, `src/deep/../../x`): a folder that ends
-  at its `..` (`link/..`, `a/../b/..`) is a leading part of the text, which
-  exists when the text does, and a `..` with nothing before it (`../x`) climbs
-  from the folder the line is in, which is known. So a `cd` target of the first
-  kind is listed both ways: folded, as the folder the line moved to, and kept,
+  shell checks the folder before every `..` that follows a part (`cd
+  a/../nonexist/..` fails in bash, zsh and dash although the folded folder
+  exists), so the check can fail only for a part that came after a `..` that
+  climbed out of a part, anywhere in the text, whether or not the part is still
+  there at the end (`link/../etc`, `link/../etc/..`, `a/../b/..`,
+  `src/deep/../../x`). A folder with no part after such a `..` (`link/..`,
+  `src/../..`) is a leading part of the text, which exists when the text does,
+  and a `..` with nothing before it (`../x`) climbs from the folder the line is
+  in, which is known. A later `cd ..` after a `cd` of the first kind counts as
+  well (`cd link/../etc && cd ..` is the text `link/../etc/..`). So a `cd`
+  target of the first kind is listed both ways: folded, as the folder the line
+  moved to, and kept,
   as the target the system opens, and each read from that folder is listed from
   each, so a caller checks both (`cd link/../etc && cat hosts` lists
   `<cwd>/etc`, `<cwd>/etc/hosts`, `<cwd>/link/../etc` and
@@ -2314,8 +2320,10 @@ the workspace, and `effect_paths` lists it like any other.
   /w/link/../etc/hosts` lists only `/w/link/../etc/hosts` for the read. A `..`
   the program opens (`cd src && cat ../x`) is kept. A chain of such `cd`s lists
   all of them folded and all of them kept, not each mix. A line that keeps the
-  physical path (`cd -P`) follows the link first, so its `..` are all kept, one
-  way. On Windows the system folds a `..` before it looks at the disk, which
+  physical path (`cd -P`) follows the link first for that `cd`, so its `..` are
+  all kept; but the flag is the line's, and each `cd` has its own (the last of
+  `-L` and `-P` wins, and a `cd` before the `-P` is logical), so such a line is
+  listed both ways, the kept one beside the folded one, for every `cd`. On Windows the system folds a `..` before it looks at the disk, which
   resolving the path as the system does gives too. `effect`
   does not change: it judges the place by spelling, as before, so a `..`
   after a link is still a place inside the workspace there. A walk or a
