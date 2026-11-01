@@ -4,6 +4,7 @@
 use crate::launch::{find_targets, INTERPRETERS, SHELLS};
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
+use milo_guards_core::spelling::glob;
 
 use std::collections::HashMap;
 
@@ -254,6 +255,33 @@ impl Checker<'_> {
             .place_into(&path::within(scope.dir, arg, shell), shell, scope.hidden)
     }
 
+    /// The words of a file a tool runs on its own that a write to `arg` is,
+    /// run from `dir` where a `cd` moved; with `below`, one that a recursive
+    /// copy to it can replace.
+    fn startup(
+        &self,
+        shell: Shell,
+        scope: Scope<'_>,
+        arg: &Arg,
+        below: bool,
+    ) -> Option<&'static str> {
+        self.resolver.startup(
+            &path::within(scope.dir, arg, shell),
+            shell,
+            scope.hidden,
+            below,
+        )
+    }
+
+    /// A folder made at `target`: as a write, except that an empty folder is
+    /// no code, so one on the list of what a tool runs on its own is not a
+    /// finding (`mkdir -p .github/workflows`); what is written into it is.
+    fn make_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg) {
+        if self.startup(shell, scope, target, false).is_none() {
+            self.write(shell, scope, target, "creates");
+        }
+    }
+
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
         match self.place_into(shell, scope, target) {
             place if place.harmless() => {}
@@ -306,14 +334,27 @@ impl Checker<'_> {
             }
             None => self.write(shell, scope, destination, "writes to"),
         }
+        // A recursive copy can replace anything below a folder that holds a
+        // file a tool runs on its own (`cp -r x .github`).
+        if recursive {
+            if let Some(words) = self.startup(shell, scope, destination, true) {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
+        }
         let Some(text) = destination.known() else {
             return;
         };
-        let folder = text.trim_end_matches(if shell == Shell::Posix {
+        let separators = if shell == Shell::Posix {
             &['/'][..]
         } else {
             &['/', '\\'][..]
-        });
+        };
+        let folder = text.trim_end_matches(separators);
+        // Several sources, a trailing separator, `.` and `..` can only be a
+        // folder (`-t` is made one by `sources_and_destination`).
+        let folder_for_sure = leaves.len() > 1
+            || text.ends_with(separators)
+            || matches!(text.rsplit(separators).next(), Some("." | ".."));
         for leaf in leaves {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
@@ -322,6 +363,17 @@ impl Checker<'_> {
                 self.place_into(shell, scope, &landing)
             };
             if let Some(words) = protected(place) {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
+            // The file lands at its own name, which can be one a tool runs
+            // on its own (`cp lefthook.yml sub/`). A destination that may be
+            // a file as well as a folder (`cp .envrc .envrc.bak`) is not read
+            // as a folder here, nor is a source that is a pattern read as a
+            // name: only a destination that is a folder for certain is.
+            let started = self
+                .startup(shell, scope, &landing, recursive)
+                .filter(|_| folder_for_sure && !glob::has_wildcard(leaf));
+            if let Some(words) = started {
                 self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
             }
         }
@@ -444,6 +496,15 @@ fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
         .collect()
 }
 
+/// A destination given by `-t`, which is a folder: spelled with a trailing
+/// separator, so that what lands in it is read as landing in a folder.
+fn folder(arg: &Arg) -> Arg {
+    match arg {
+        Arg::Known(text) if !text.ends_with('/') => Arg::Known(format!("{text}/")),
+        other => other.clone(),
+    }
+}
+
 /// The options of `cp`, `install`, `mv` and `ln` that take a value, which is
 /// not an operand.
 const COPY_VALUED: [&str; 8] = [
@@ -469,9 +530,9 @@ fn sources_and_destination<'a>(
         if text == "--" {
             options = false;
         } else if text == "-t" || text == "--target-directory" {
-            target = iter.next().cloned();
+            target = iter.next().map(folder);
         } else if let Some(dir) = text.strip_prefix("--target-directory=") {
-            target = Some(Arg::Known(dir.to_string()));
+            target = Some(folder(&Arg::Known(dir.to_string())));
         } else if takes_value.contains(&text) {
             iter.next();
         } else if text.starts_with("--") {
@@ -481,9 +542,9 @@ fn sources_and_destination<'a>(
             if let Some(at) = bundle.find('t') {
                 let rest = &bundle[at + 1..];
                 target = if rest.is_empty() {
-                    iter.next().cloned()
+                    iter.next().map(folder)
                 } else {
-                    Some(Arg::Known(rest.to_string()))
+                    Some(folder(&Arg::Known(rest.to_string())))
                 };
             }
         } else {

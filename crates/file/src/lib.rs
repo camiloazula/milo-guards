@@ -19,8 +19,10 @@
 //! - A **write** (an edit, a create, an append, a rename's target) is safe
 //!   inside a workspace folder, to a temporary file and to the null device.
 //!   Anywhere else it is a finding: beyond the workspace
-//!   ([`Rule::WriteOutside`]), to a key, a startup file or the repository's
-//!   history ([`Rule::WriteSensitive`]), or to what the caller gates with
+//!   ([`Rule::WriteOutside`]), to a key, a startup file, a file a tool runs
+//!   on its own (`.envrc`, `.vscode/tasks.json`, `.github/workflows/*`) or the
+//!   repository's history ([`Rule::WriteSensitive`]), or to what the caller
+//!   gates with
 //!   ([`Rule::WriteProtected`]).
 //! - A path that is not one literal path, or that cannot be placed, is
 //!   [`Rule::Unreadable`]; one on another machine is
@@ -85,7 +87,8 @@ pub enum Rule {
     /// Writes beyond the workspace: outside it, a system folder, the home
     /// directory, the workspace folder itself, a disk.
     WriteOutside,
-    /// Writes to a key, a credential, a shell startup file or the
+    /// Writes to a key, a credential, a shell startup file, a file a tool
+    /// runs on its own (`.envrc`, `.vscode/tasks.json`, a CI workflow) or the
     /// repository's history.
     WriteSensitive,
     /// Writes to a path the caller named in `Paths::protected`, with the
@@ -195,6 +198,15 @@ pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
         // A git folder at any depth, a hook named for what it does.
         if let Some(words) = resolver
             .git(*reading, flavour)
+            .filter(|_| access == Access::Write)
+        {
+            add(Rule::WriteSensitive, format!("writes to {words}"));
+        }
+        // A file a tool runs on its own, in a workspace folder at any depth
+        // (`.vscode/tasks.json`, `.envrc`, `.github/workflows/ci.yml`): to
+        // write one is to plant code. Reading one is everyday work.
+        if let Some(words) = resolver
+            .startup(*reading, flavour, true)
             .filter(|_| access == Access::Write)
         {
             add(Rule::WriteSensitive, format!("writes to {words}"));

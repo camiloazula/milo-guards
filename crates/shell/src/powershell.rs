@@ -113,6 +113,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
+        "ren" | "rni" => "rename-item",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
         "ac" => "add-content",

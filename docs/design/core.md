@@ -104,7 +104,7 @@ tell reading a key from reading a startup file without matching on the words:
 | Kind | What it is | A read | A write |
 | --- | --- | --- | --- |
 | `Secret` | A key or a credential: SSH, GPG, cloud and registry logins, keychains, the system's password hashes and host keys. | Exposes it. | Replaces it. |
-| `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login. | Harmless. | Plants a command. |
+| `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login, and a workspace's own files that a tool runs on its own. | Harmless. | Plants a command. |
 | `History` | The repository's history: a workspace's own `.git`. | The agent's everyday work. | Loses work. |
 
 `Sensitivity` is exhaustive, unlike `Place`: what a read of each kind means is
@@ -174,6 +174,39 @@ itself.
     `System32\config`, the DPAPI keys and `ProgramData\ssh`.
 
   A workspace's own `.git` is `History`.
+  - **A workspace's own files that a tool runs on its own** are `Startup` for a
+    write (see `startup` below), and not for a read or a delete, which stay the
+    agent's own: `.vscode/tasks.json`, `.vscode/launch.json`,
+    `.vscode/mcp.json`, `.vscode/settings.json`, any `*.code-workspace`,
+    `.zed/tasks.json`, `.cursor/mcp.json`, `.mcp.json`, the folder
+    `.idea/runConfigurations`, `.envrc`, `mise.toml`, `.mise.toml`,
+    `mise.local.toml` and `.mise.local.toml`, the folders `.husky` and
+    `.githooks`, `.pre-commit-config.yaml`, `lefthook.yml` and
+    `lefthook.yaml` (also with a leading dot or `-local`), the folders
+    `.github/workflows`, `.github/actions`, `.gitea/workflows`,
+    `.forgejo/workflows`, `.woodpecker`, `.circleci` and `.buildkite`,
+    `.gitlab-ci.yml`, `.woodpecker.yml`, `.travis.yml`, `.drone.yml`,
+    `Jenkinsfile`, `azure-pipelines.yml`, `bitbucket-pipelines.yml`,
+    `.gitpod.yml`, the folder `.devcontainer` and `.devcontainer.json`, and
+    the hook and server configurations of other agent tools that run a command
+    of their own: `.cursor/hooks.json`, `.windsurf/hooks.json`,
+    `.claude/settings.json`, `.claude/settings.local.json`,
+    `.gemini/settings.json`, `.codex/config.toml`, `.roo/mcp.json`,
+    `.amazonq/mcp.json`, `.kiro/settings/mcp.json`, the folders `.kiro/hooks`
+    and `.continue/mcpServers`. Each is found at any depth
+    below a workspace folder, as a `.git` is, and anything below a folder on
+    the list counts. A file that only runs when someone types the command
+    (`Makefile`, `justfile`, `package.json`, `.cargo/config.toml`,
+    `.vscode/extensions.json`) is not on it. A `*.code-workspace` is a suffix,
+    not a name: a name that ends so (by the widest fold, and on Windows by its
+    short name, `PROJ~1.COD`) counts wherever it is. Names compare as the sensitive
+    places do: without case on every host, by the widest fold, and on Windows
+    by short name (`VSCODE~1\TASKS~1.JSO`, `GITHUB~1\WORKFL~1`, `ENVRC~1`,
+    `LEFTHO~1.YML`) and without the trailing dots and spaces Windows drops.
+    They are matched against the whole path, the names above the workspace
+    folder included, as for `.git`. A path that is already something else (the
+    repository's history, a protected path, a key, beyond the workspace, a
+    temporary folder) keeps its own place.
   - **A workspace that holds a sensitive place does not make it the agent's.**
     When the home directory is the workspace (or a folder above it, or
     another user's home), `.ssh/id_rsa` is `Secret` and `.git` stays
@@ -231,7 +264,8 @@ itself.
   - **A write into a folder is not a write of what it holds.**
     `Resolver::place_into` is `place_hidden` without the holding rule, for a
     path something is written into (a copy's destination, a redirect's
-    target): `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
+    target), and it answers `Sensitive` with `Startup` for a workspace's own
+    file that a tool runs on its own, which no other question does: `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
     beside a protected `conf/app/x.yaml`, while a write to the protected path
     or a pattern that picks it is still protected. The shell guard asks it for
     writes and `place_hidden` for everything else. A copy, move or link into a
@@ -471,6 +505,23 @@ path made absolute, with the working directory and `~` applied.
   workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the
   repository's history` for the rest. `place` still reads only the
   workspace's own `.git`, so the shell guard's verdicts are unchanged.
+- `startup(path, flavour, hidden)` is `Some(words)` (`a file a tool runs on
+  its own`) for a write to a workspace's own file on the list under "What core
+  judges", at any depth, and for a pattern that can pick one: the pattern's
+  parts are matched against the place's names, from above it (`*/Jenkinsfile`,
+  `**/.envrc`, `*.yml` for `lefthook.yml`) or from where its folder ends
+  (`.vscode/*.json`, `.github/workflows/*`, `.husky/pre-*`); one made of
+  nothing but `*` and `?` that starts above the place (`src/*`) names none,
+  and a wildcard matches a leading dot where `hidden` says so (always on
+  Windows), the pattern that can pick `.git` being the repository's history
+  already. It is `None` for every path that `place` does not call `Inside`,
+  so what is beyond the workspace, the history, a protected path or a key is
+  never changed by it. `startup_below` is the same for a write that can
+  replace anything below the path (a recursive copy): a path that ends in the
+  first names of a place also counts (`.github` holds `.github/workflows`,
+  `.vscode` holds `.vscode/tasks.json`), but a workspace folder or any other
+  folder, which can hold one that a name cannot tell, does not. Both are
+  spelling alone, like everything here.
 - `reaches_secret(path, flavour, hidden, deep)` says whether reading what a
   path names can reach a secret (`Sensitivity::Secret`) below it, which `place`
   does not say: `place` says what the path itself is, and a folder or a pattern

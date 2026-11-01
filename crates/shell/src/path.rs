@@ -480,6 +480,59 @@ impl Resolver {
         }
     }
 
+    /// The words of a file a tool runs on its own that a write to `arg`
+    /// is, in a workspace folder at any depth (`.envrc`,
+    /// `.github/workflows/ci.yml`); with `below`, one a recursive copy to it
+    /// can replace, so a folder that holds one counts too (`.github`).
+    /// `None` for any other path, and for one the shell reads another way
+    /// (a brace list, a device, a registry or other provider path).
+    pub(crate) fn startup(
+        &self,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        below: bool,
+    ) -> Option<&'static str> {
+        self.startup_of(arg.known()?, shell, hidden, below)
+    }
+
+    fn startup_of(
+        &self,
+        text: &str,
+        shell: Shell,
+        hidden: bool,
+        below: bool,
+    ) -> Option<&'static str> {
+        if brace_list(text) || device(text, shell).is_some() {
+            return None;
+        }
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.startup_of(rest, shell, hidden, below))
+                    .flatten();
+            }
+        }
+        let flavour = flavour(shell);
+        let ask = |spelling| {
+            if below {
+                self.core.startup_below(spelling, flavour, hidden)
+            } else {
+                self.core.startup(spelling, flavour, hidden)
+            }
+        };
+        match start(text, shell) {
+            Start::Plain => ask(Spelling::Plain(text)),
+            Start::Home(rest) => ask(Spelling::Home(rest)),
+            Start::DriveRelative(letter, rest) => {
+                ask(Spelling::Plain(self.on_cwd_drive(letter, rest)?))
+            }
+            Start::Provider(..) | Start::Unknown => None,
+        }
+    }
+
     fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
         let place_core = |spelling, flavour| {
             if holding {

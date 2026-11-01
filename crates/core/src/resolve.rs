@@ -678,6 +678,217 @@ const SENSITIVE: [(&[&str], &str, Sensitivity); 60] = [
     ),
 ];
 
+/// How a path is touched, for what a write to it can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Writes {
+    /// Not written: a read, a delete, or anything else.
+    No,
+    /// Written: only the place itself.
+    To,
+    /// Written, and anything below it can be replaced (a recursive copy).
+    Below,
+}
+
+/// What a reason calls a file a tool runs on its own.
+const STARTUP_WORDS: &str = "a file a tool runs on its own";
+
+/// Places in a workspace that something runs on its own, without anyone
+/// typing a command: an editor opens its tasks, direnv loads `.envrc` on
+/// `cd`, git runs hooks, CI runs its workflows with the repository's secrets,
+/// a container builds from its folder, an editor starts the servers an MCP
+/// file names. Each is a run of names and whether it is a folder (everything
+/// below it counts, and a pattern can go below it). They are found at any
+/// depth below a workspace folder, as a `.git` is, and compared as every
+/// sensitive name is: without case, by Windows short name on Windows.
+///
+/// A write to one plants code that runs later, so it is `Sensitive`; a read
+/// is the agent's everyday work. A file that only runs when someone asks for
+/// it (`Makefile`, `justfile`, `package.json`, `.cargo/config.toml`) is not
+/// here: a person types the command that runs it, and the line that does is
+/// judged then. This lists the places known to run code; it is not a proof
+/// that nowhere else does (`.vscode/settings.json` and a tool's own config
+/// are not in it).
+const STARTUP: &[(&[&str], bool)] = &[
+    // An editor's tasks and launch configurations, and the servers it starts.
+    (&[".vscode", "tasks.json"], false),
+    (&[".vscode", "launch.json"], false),
+    (&[".vscode", "mcp.json"], false),
+    // Its settings run what they name: a terminal profile, a formatter, a
+    // language server, an interpreter path.
+    (&[".vscode", "settings.json"], false),
+    (&[".zed", "tasks.json"], false),
+    (&[".cursor", "mcp.json"], false),
+    (&[".mcp.json"], false),
+    // Other agent tools' hooks and servers, which run a command of their own:
+    // each starts what its configuration names when the tool is opened or
+    // calls a tool.
+    (&[".cursor", "hooks.json"], false),
+    (&[".windsurf", "hooks.json"], false),
+    (&[".claude", "settings.json"], false),
+    (&[".claude", "settings.local.json"], false),
+    (&[".gemini", "settings.json"], false),
+    (&[".codex", "config.toml"], false),
+    (&[".roo", "mcp.json"], false),
+    (&[".amazonq", "mcp.json"], false),
+    (&[".kiro", "settings", "mcp.json"], false),
+    (&[".kiro", "hooks"], true),
+    (&[".continue", "mcpServers"], true),
+    // A JetBrains editor's run configurations, which a person starts by name
+    // and a before-launch step or a startup task can start by itself.
+    (&[".idea", "runConfigurations"], true),
+    // direnv loads it on `cd`, and mise runs its hooks and sets its
+    // environment from its files on `cd`.
+    (&[".envrc"], false),
+    (&["mise.toml"], false),
+    (&[".mise.toml"], false),
+    (&["mise.local.toml"], false),
+    (&[".mise.local.toml"], false),
+    // Hooks git runs.
+    (&[".husky"], true),
+    (&[".githooks"], true),
+    (&[".pre-commit-config.yaml"], false),
+    (&["lefthook.yml"], false),
+    (&["lefthook.yaml"], false),
+    (&[".lefthook.yml"], false),
+    (&[".lefthook.yaml"], false),
+    (&["lefthook-local.yml"], false),
+    (&["lefthook-local.yaml"], false),
+    (&[".lefthook-local.yml"], false),
+    (&[".lefthook-local.yaml"], false),
+    // What CI runs, with the repository's secrets.
+    (&[".github", "workflows"], true),
+    (&[".github", "actions"], true),
+    (&[".gitea", "workflows"], true),
+    (&[".forgejo", "workflows"], true),
+    (&[".woodpecker"], true),
+    (&[".woodpecker.yml"], false),
+    (&[".gitlab-ci.yml"], false),
+    (&[".circleci"], true),
+    (&[".buildkite"], true),
+    (&[".travis.yml"], false),
+    (&[".drone.yml"], false),
+    (&["Jenkinsfile"], false),
+    (&["azure-pipelines.yml"], false),
+    (&["bitbucket-pipelines.yml"], false),
+    // A cloud workspace runs the tasks its file names when it starts.
+    (&[".gitpod.yml"], false),
+    // What builds a development container, and runs in it.
+    (&[".devcontainer"], true),
+    (&[".devcontainer.json"], false),
+];
+
+/// Names that end like this are on the list whatever comes before: an editor
+/// opens a workspace file and runs the tasks and settings it holds.
+const STARTUP_SUFFIXES: &[&str] = &[".code-workspace"];
+
+/// Whether `part` is a name that ends in one of [`STARTUP_SUFFIXES`], by the
+/// widest fold; on Windows also by a short name (`PROJ~1.COD`, which keeps
+/// three characters of the extension).
+fn has_startup_suffix(part: &str, windows: bool) -> bool {
+    let folded: String = part.chars().map(fold).collect();
+    STARTUP_SUFFIXES.iter().any(|suffix| {
+        folded.ends_with(suffix)
+            || (windows
+                && part.contains('~')
+                && part.rsplit_once('.').is_some_and(|(_, extension)| {
+                    suffix.strip_prefix('.').is_some_and(|full| {
+                        extension.len() == 3 && full.starts_with(&extension.to_lowercase())
+                    })
+                }))
+    })
+}
+
+/// Whether a pattern part can pick a name that ends in one of
+/// [`STARTUP_SUFFIXES`]: it ends in one, or it picks a name made of any stem
+/// and the suffix.
+fn picks_startup_suffix(part: &str, flavour: Flavour, hidden: bool, windows: bool) -> bool {
+    STARTUP_SUFFIXES.iter().any(|suffix| {
+        part.to_lowercase().ends_with(suffix)
+            || ["x", "xx", ""].iter().any(|stem| {
+                pattern_matches(part, &format!("{stem}{suffix}"), flavour, hidden, windows)
+            })
+    })
+}
+
+/// Whether a pattern part is nothing but `*` and `?`.
+fn bare(part: &str) -> bool {
+    part.bytes().all(|b| matches!(b, b'*' | b'?'))
+}
+
+/// Whether the path `folder` (for a pattern, the folder before its first
+/// wildcard part, with `tail` the pattern's parts from there) is a place on
+/// the [`STARTUP`] list: one of its places is among its names, or a pattern
+/// can pick one below it. `below` asks for more: that a write can replace
+/// anything below the path, so a path that ends in the first names of a place
+/// holds it.
+fn runs_on_its_own(
+    folder: &Loc,
+    tail: Option<&[String]>,
+    flavour: Flavour,
+    hidden: bool,
+    below: bool,
+) -> bool {
+    let windows = folder.windows();
+    let names = &folder.parts;
+    // A name that ends like a workspace file: among the names, or what a
+    // pattern's last part can pick.
+    let suffixed = names.iter().any(|part| has_startup_suffix(part, windows))
+        || tail.is_some_and(|tail| {
+            let hidden = hidden || flavour == Flavour::Windows;
+            tail.last().is_some_and(|part| {
+                !bare(part) && picks_startup_suffix(part, flavour, hidden, windows)
+            })
+        });
+    suffixed
+        || STARTUP.iter().any(|(entry, is_folder)| {
+            // The place is among the names (a pattern is below it, or is it).
+            let spelled = entry.len() <= names.len()
+                && names.windows(entry.len()).any(|run| {
+                    run.iter()
+                        .zip(*entry)
+                        .all(|(part, name)| same_name(part, name, windows))
+                });
+            if spelled {
+                return true;
+            }
+            // The names end in the first `k` names of the place (none, for a
+            // pattern that starts above it), and what is left of it is below.
+            (0..entry.len()).any(|k| {
+                let held = k <= names.len()
+                    && names[names.len() - k..]
+                        .iter()
+                        .zip(*entry)
+                        .all(|(part, name)| same_name(part, name, windows));
+                if !held {
+                    return false;
+                }
+                match tail {
+                    Some(tail) => {
+                        let rest: Vec<String> =
+                            entry[k..].iter().map(|n| (*n).to_string()).collect();
+                        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+                        let hidden = hidden || flavour == Flavour::Windows;
+                        let matches = |part: &str, name: &str| {
+                            pattern_matches(part, name, flavour, hidden, windows)
+                        };
+                        // The pattern starts where the names end, so it reads the
+                        // rest of the place from its first part; from above the
+                        // place it can go down any number of folders first, and
+                        // a pattern of nothing but wildcards (`src/*`) takes
+                        // whatever is there without naming a place.
+                        let starts = if k == 0 { tail.len() } else { 1 };
+                        (0..starts).any(|from| {
+                            let tail = &tail[from..];
+                            !(k == 0 && tail.iter().all(|part| bare(part)))
+                                && picks(tail, &rest, !below, *is_folder, &matches)
+                        })
+                    }
+                    None => below && k > 0,
+                }
+            })
+        })
+}
+
 /// Keys and credentials the system itself keeps, under the root of a POSIX
 /// system (and under `/private`, where macOS keeps `/etc` and `/var`).
 const POSIX_SECRETS: [(&[&str], &str); 17] = [
@@ -973,36 +1184,92 @@ impl Resolver {
     /// wildcards always do, and nothing for a path without a wildcard.
     #[must_use]
     pub fn place_hidden(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
-        self.place_as(path, flavour, hidden, true)
+        self.place_as(path, flavour, hidden, true, Writes::No).0
     }
 
     /// As [`place_hidden`](Self::place_hidden), for a path something is
     /// written *into* (a copy's destination, a redirect's target): a folder
     /// that merely holds a protected path is not a write of that path, so it
     /// is not `Protected`, where `place_hidden` answers `Protected` for it.
-    /// Everything else is the same.
+    /// A file a tool runs on its own (see [`startup`](Self::startup)) is
+    /// `Sensitive` with [`Sensitivity::Startup`]: writing it plants code, so
+    /// a path that only a write reaches says so, and a delete or a read, which
+    /// use [`place`](Self::place), do not. Everything else is the same.
     #[must_use]
     pub fn place_into(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
-        self.place_as(path, flavour, hidden, false)
+        match self.place_as(path, flavour, hidden, false, Writes::To) {
+            (Place::Inside, Some(words)) => Place::Sensitive(words, Sensitivity::Startup),
+            (place, _) => place,
+        }
+    }
+
+    /// The words of a file a tool runs on its own that a write to `path` is,
+    /// in a workspace folder, at any depth: `.vscode/tasks.json`, `.envrc`,
+    /// `.husky/pre-commit`, `.github/workflows/ci.yml`... (the list is
+    /// `STARTUP`). A pattern that can pick one is one too. `None` for any
+    /// other path, and for one that is already something else (the
+    /// repository's history, a protected path, a key, beyond the workspace):
+    /// what those are is their own place's to say. Names compare as the
+    /// sensitive places do: without case on every host, by Windows short name
+    /// on Windows. Reading one is the agent's everyday work and is not
+    /// judged here.
+    #[must_use]
+    pub fn startup(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        self.place_as(path, flavour, hidden, true, Writes::To).1
+    }
+
+    /// As [`startup`](Self::startup), for a write that can replace anything
+    /// below `path` (a recursive copy): a folder that holds one counts too,
+    /// when the path itself ends in the first names of a place on the list
+    /// (`.github` holds `.github/workflows`, `.vscode` holds
+    /// `.vscode/tasks.json`). A workspace folder or any other folder holds
+    /// some below it that a name cannot tell, so it does not count.
+    #[must_use]
+    pub fn startup_below(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        self.place_as(path, flavour, hidden, true, Writes::Below).1
     }
 
     /// `holding` says whether a harmless folder that holds a protected path
-    /// is judged as that path.
+    /// is judged as that path. `writes` says whether the path is written,
+    /// and then the words of a file a tool runs on its own come with the
+    /// place when it is the workspace's own (for every reading, if any gives
+    /// them: the most serious place wins, and only an `Inside` one has them).
     ///
     /// A POSIX pattern with a part that can match `..` (`.*`, `.?`, `.[.]`)
     /// is judged as every way that part can be read, `.` and `..` as well as
     /// a name, and the most serious place wins: an old shell (bash 3.2, dash)
     /// expands `.*/.*/.ssh/id_rsa` to `../../.ssh/id_rsa`, and the guard cannot
     /// know which shell runs the line.
-    fn place_as(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool, holding: bool) -> Place {
-        let mut readings = self.readings(path, flavour, hidden, holding).into_iter();
-        let mut best = readings.next().unwrap_or(Place::Unknown);
-        for place in readings {
-            if severity(place) > severity(best) {
-                best = place;
+    fn place_as(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+        writes: Writes,
+    ) -> (Place, Option<&'static str>) {
+        let mut readings = self
+            .readings(path, flavour, hidden, holding, writes)
+            .into_iter();
+        let mut best = readings.next().unwrap_or((Place::Unknown, None));
+        let mut words = best.1;
+        for reading in readings {
+            words = words.or(reading.1);
+            if severity(reading.0) > severity(best.0) {
+                best = reading;
             }
         }
-        best
+        (best.0, words.filter(|_| best.0 == Place::Inside))
     }
 
     /// Every place a path can land: where it is read as written, then where
@@ -1013,7 +1280,10 @@ impl Resolver {
     /// a pattern.
     #[must_use]
     pub fn places(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Vec<Place> {
-        self.readings(path, flavour, hidden, true)
+        self.readings(path, flavour, hidden, true, Writes::No)
+            .into_iter()
+            .map(|(place, _)| place)
+            .collect()
     }
 
     fn readings(
@@ -1022,10 +1292,11 @@ impl Resolver {
         flavour: Flavour,
         hidden: bool,
         holding: bool,
-    ) -> Vec<Place> {
-        let mut places = vec![self.place_one(path, flavour, hidden, holding)];
+        writes: Writes,
+    ) -> Vec<(Place, Option<&'static str>)> {
+        let mut places = vec![self.place_one(path, flavour, hidden, holding, writes)];
         for variant in climbing(path.text(), flavour) {
-            places.push(self.place_one(respell(path, &variant), flavour, hidden, holding));
+            places.push(self.place_one(respell(path, &variant), flavour, hidden, holding, writes));
         }
         places
     }
@@ -1036,10 +1307,11 @@ impl Resolver {
         flavour: Flavour,
         hidden: bool,
         holding: bool,
-    ) -> Place {
+        writes: Writes,
+    ) -> (Place, Option<&'static str>) {
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
-                return device;
+                return (device, None);
             }
         }
         // A long path (`\\?\C:\x`) is the plain path it names.
@@ -1047,23 +1319,37 @@ impl Resolver {
         let path = long.as_deref().map_or(path, Spelling::Plain);
         let text = path.text();
         if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
-            return Place::Unknown;
+            return (Place::Unknown, None);
         }
         let (loc, tail) = self.cut(path, text, flavour);
         let pattern = tail.is_some();
         // A pattern is judged by the folder before its first wildcard part,
         // and what it can pick is read from its parts below.
         let place = self.judge(&loc, flavour, holding && !pattern);
-        if !pattern {
-            return place;
-        }
-        let place = Self::pattern_place(place, text, tail.as_deref(), flavour, hidden);
-        let stripped = loc.stripped();
-        let strip = stripped.as_ref().unwrap_or(&loc);
-        match self.picks_protected(strip, tail.as_deref(), flavour, hidden, place, holding) {
-            Some(words) => Place::Protected(words),
-            None => place,
-        }
+        let place = if pattern {
+            let place = Self::pattern_place(place, text, tail.as_deref(), flavour, hidden);
+            let stripped = loc.stripped();
+            let strip = stripped.as_ref().unwrap_or(&loc);
+            match self.picks_protected(strip, tail.as_deref(), flavour, hidden, place, holding) {
+                Some(words) => Place::Protected(words),
+                None => place,
+            }
+        } else {
+            place
+        };
+        // Only the workspace's own paths: what is beyond it is risky already.
+        let startup = (writes != Writes::No && place == Place::Inside)
+            .then(|| {
+                runs_on_its_own(
+                    &loc,
+                    tail.as_deref(),
+                    flavour,
+                    hidden,
+                    writes == Writes::Below,
+                )
+            })
+            .and_then(|runs| runs.then_some(STARTUP_WORDS));
+        (place, startup)
     }
 
     /// Where a path is cut at its first wildcard part: the location before
