@@ -4,7 +4,7 @@
 use tree_sitter::Node;
 
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, Origin, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -124,7 +124,7 @@ impl Walker<'_> {
             .iter()
             .find(|child| child.kind() == "argument_list")
             .copied();
-        let mut args = list.map(|list| self.args(list)).unwrap_or_default();
+        let (mut args, mut origins) = list.map(|list| self.args(list)).unwrap_or_default();
         // `start "title" program …`: cmd takes a first quoted argument as
         // the window's title, which the values here no longer show.
         if program
@@ -136,10 +136,11 @@ impl Walker<'_> {
                 .is_some_and(|first| first.kind() == "string")
         {
             args.remove(0);
+            origins.remove(0);
         }
         launch::add(
             self.split,
-            Unit::new(Shell::Cmd, program, args, stage),
+            Unit::new(Shell::Cmd, program, args, stage).with_origins(origins),
             self.depth,
         );
     }
@@ -147,29 +148,41 @@ impl Walker<'_> {
     /// The arguments of a list. cmd splits arguments at spaces only, so the
     /// pieces the grammar gives that touch (`%USERPROFILE%` and `\x`) are
     /// one argument.
-    fn args(&self, list: Node<'_>) -> Vec<Arg> {
+    fn args(&self, list: Node<'_>) -> (Vec<Arg>, Vec<Origin>) {
         let mut cursor = list.walk();
         let pieces: Vec<Node<'_>> = list.named_children(&mut cursor).collect();
         let mut args = Vec::new();
+        let mut origins = Vec::new();
         let mut group: Vec<Node<'_>> = Vec::new();
         for piece in pieces {
             if group
                 .last()
                 .is_some_and(|last| last.end_byte() != piece.start_byte())
             {
-                args.push(self.value(&group));
+                let (arg, origin) = self.value_from(&group);
+                args.push(arg);
+                origins.push(origin);
                 group.clear();
             }
             group.push(piece);
         }
         if !group.is_empty() {
-            args.push(self.value(&group));
+            let (arg, origin) = self.value_from(&group);
+            args.push(arg);
+            origins.push(origin);
         }
-        args
+        (args, origins)
     }
 
     /// One argument made of touching pieces.
     fn value(&self, pieces: &[Node<'_>]) -> Arg {
+        self.value_from(pieces).0
+    }
+
+    /// One argument made of touching pieces, and where its value came from:
+    /// from a system folder's variable anywhere in it, else from a variable
+    /// under home at its very start.
+    fn value_from(&self, pieces: &[Node<'_>]) -> (Arg, Origin) {
         let source = match (pieces.first(), pieces.last()) {
             (Some(first), Some(last)) => self
                 .source
@@ -177,7 +190,9 @@ impl Walker<'_> {
                 .unwrap_or_default(),
             _ => "",
         };
+        let unknown = || (Arg::Unknown(source.to_string()), Origin::Typed);
         let mut value = String::new();
+        let mut origin = Origin::Typed;
         for piece in pieces {
             let text = unit::text(piece, self.source);
             let text = match piece.kind() {
@@ -186,14 +201,21 @@ impl Walker<'_> {
                     .map_or(text, |inner| inner.strip_suffix('"').unwrap_or(inner)),
                 "command_name" | "command_option" | "argument_value" | "variable_reference"
                 | "redirect_target" => text,
-                _ => return Arg::Unknown(source.to_string()),
+                _ => return unknown(),
             };
-            match expand(text, self.split) {
-                Some(text) => value.push_str(&text),
-                None => return Arg::Unknown(source.to_string()),
-            }
+            let Some((text, from)) = expand(text, self.split) else {
+                return unknown();
+            };
+            origin = match (origin, from) {
+                (Origin::System, _) | (_, Origin::System) => Origin::System,
+                // Only a variable at the start of the whole value puts it
+                // under home.
+                (Origin::Typed, Origin::Home) if value.is_empty() => Origin::Home,
+                (kept, _) => kept,
+            };
+            value.push_str(&text);
         }
-        Arg::Known(value)
+        (Arg::Known(value), origin)
     }
 
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
@@ -250,14 +272,17 @@ fn unquoted_operator(text: &str) -> Option<usize> {
 }
 
 /// `text` with cmd's escapes taken off (`^&` is `&`) and the variables that
-/// name a known place put in; `None` when any other variable (`%X%`, `%%f`,
-/// `!X!`), or one the line sets, makes it known only when it runs.
-fn expand(text: &str, split: &Split) -> Option<String> {
+/// name a known place put in, and where the value came from: [`Origin::Home`]
+/// when it starts with a variable under home, [`Origin::System`] when it
+/// holds a system folder's variable; `None` when any other variable (`%X%`,
+/// `%%f`, `!X!`), or one the line sets, makes it known only when it runs.
+fn expand(text: &str, split: &Split) -> Option<(String, Origin)> {
     let text = unescape(text);
     if text.matches('!').count() >= 2 {
         return None;
     }
     let mut value = String::with_capacity(text.len());
+    let mut origin = Origin::Typed;
     let mut rest = text.as_str();
     while let Some(at) = rest.find('%') {
         value.push_str(&rest[..at]);
@@ -267,26 +292,34 @@ fn expand(text: &str, split: &Split) -> Option<String> {
         if split.reassigned(name) {
             return None;
         }
-        value.push_str(place(name)?);
+        let (path, from) = place(name)?;
+        origin = match (origin, from) {
+            (Origin::System, _) | (_, Origin::System) => Origin::System,
+            (Origin::Typed, Origin::Home) if value.is_empty() => Origin::Home,
+            (kept, _) => kept,
+        };
+        value.push_str(path);
         rest = &after[end + 1..];
     }
     value.push_str(rest);
-    Some(value)
+    Some((value, origin))
 }
 
-/// The variables that name a known place, as paths the resolver reads.
-fn place(name: &str) -> Option<&'static str> {
+/// The variables that name a known place, as paths the resolver reads, and
+/// what kind of place: under home (on home's drive), a system folder (whose
+/// drive is a guess, as Windows may not be on `C:`), or neither.
+fn place(name: &str) -> Option<(&'static str, Origin)> {
     Some(match name.to_ascii_lowercase().as_str() {
-        "userprofile" => "~",
-        "cd" => ".",
-        "temp" | "tmp" => "~\\AppData\\Local\\Temp",
-        "appdata" => "~\\AppData\\Roaming",
-        "localappdata" => "~\\AppData\\Local",
-        "systemroot" | "windir" => "C:\\Windows",
-        "systemdrive" => "C:",
-        "programfiles" => "C:\\Program Files",
-        "programfiles(x86)" => "C:\\Program Files (x86)",
-        "programdata" => "C:\\ProgramData",
+        "userprofile" => ("~", Origin::Home),
+        "cd" => (".", Origin::Typed),
+        "temp" | "tmp" => ("~\\AppData\\Local\\Temp", Origin::Home),
+        "appdata" => ("~\\AppData\\Roaming", Origin::Home),
+        "localappdata" => ("~\\AppData\\Local", Origin::Home),
+        "systemroot" | "windir" => ("C:\\Windows", Origin::System),
+        "systemdrive" => ("C:", Origin::System),
+        "programfiles" => ("C:\\Program Files", Origin::System),
+        "programfiles(x86)" => ("C:\\Program Files (x86)", Origin::System),
+        "programdata" => ("C:\\ProgramData", Origin::System),
         _ => return None,
     })
 }

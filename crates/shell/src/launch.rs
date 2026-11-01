@@ -5,7 +5,7 @@
 
 use crate::dotglob;
 use crate::powershell::Params;
-use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
+use crate::unit::{self, has_flag, Arg, Origin, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
 mod find;
@@ -196,10 +196,12 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
     let Unit {
         shell,
         args,
+        origins,
         mut wrappers,
         stage,
         ..
     } = unit;
+    let origins: Vec<Origin> = origins.into_iter().skip(start + 1).collect();
     let mut rest = args.into_iter().skip(start);
     let program = rest.next().unwrap_or(Arg::Unknown(String::new()));
     let mut args: Vec<Arg> = rest.collect();
@@ -222,6 +224,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         shell,
         program,
         args,
+        origins,
         wrappers,
         stage,
         reads: Reads::Nothing,

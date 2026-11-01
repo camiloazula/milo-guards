@@ -6,7 +6,9 @@ use tree_sitter::Node;
 mod blocks;
 
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use std::cell::Cell;
+
+use crate::unit::{self, Arg, Origin, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -38,6 +40,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         split,
         item: None,
+        system: Cell::new(false),
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -131,6 +134,9 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// Inside a `ForEach-Object` block: the stage whose input `$_` is.
     item: Option<Stage>,
+    /// Whether a value read since it was last cleared came from a system
+    /// folder's variable (`$env:SystemRoot`), whose drive is a guess.
+    system: Cell<bool>,
 }
 
 impl Walker<'_> {
@@ -206,6 +212,7 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        let mut origins = Vec::new();
         let mut shapes = Vec::new();
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -234,12 +241,12 @@ impl Walker<'_> {
                     "array_literal_expression" => {
                         let mut items = element.walk();
                         for (index, item) in element.named_children(&mut items).enumerate() {
-                            args.push(self.expr(item));
+                            args.push(self.arg(item, &mut origins));
                             shapes.push(self.shape(item, index > 0));
                         }
                     }
                     _ => {
-                        args.push(self.expr(element));
+                        args.push(self.arg(element, &mut origins));
                         shapes.push(self.shape(element, false));
                     }
                 }
@@ -259,7 +266,7 @@ impl Walker<'_> {
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
-        let unit = Unit::new(Shell::PowerShell, program, args, stage);
+        let unit = Unit::new(Shell::PowerShell, program, args, stage).with_origins(origins);
         let key = unit.key();
         // A block known only when it runs (`-Action $block`, an action given
         // by position or in a splat) is a script the guard cannot read, run
@@ -386,6 +393,19 @@ impl Walker<'_> {
         }
     }
 
+    /// A value as [`Self::expr`] reads it, with where it came from put in
+    /// `origins`.
+    fn arg(&self, node: Node<'_>, origins: &mut Vec<Origin>) -> Arg {
+        self.system.set(false);
+        let arg = self.expr(node);
+        origins.push(if self.system.replace(false) {
+            Origin::System
+        } else {
+            Origin::Typed
+        });
+        arg
+    }
+
     /// A value: a token, a string, a variable the guard can name; anything
     /// computed is only known when it runs.
     fn expr(&self, node: Node<'_>) -> Arg {
@@ -497,6 +517,9 @@ impl Walker<'_> {
             "null" => "$null",
             _ => return Arg::Unknown(source.to_string()),
         };
+        if value.starts_with("C:") {
+            self.system.set(true);
+        }
         Arg::Known(value.to_string())
     }
 

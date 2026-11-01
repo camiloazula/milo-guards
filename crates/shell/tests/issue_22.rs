@@ -228,9 +228,9 @@ fn a_cd_to_a_place_under_home_goes_to_the_drive_home_is_on() {
 }
 
 #[test]
-fn a_cd_to_a_network_path_leaves_the_line_where_it_was() {
-    // cmd refuses a network path as a working directory, so each of these
-    // really deletes `C:\Windows\System32`.
+fn a_cd_to_a_network_path_may_leave_the_line_where_it_was() {
+    // cmd may refuse a network path as a working directory, and then each of
+    // these deletes `C:\Windows\System32`: where the line is is not known.
     let paths = Paths::new(
         r"C:\Users\me\repo",
         r"C:\Users\me",
@@ -285,4 +285,99 @@ fn a_powershell_move_to_a_drive_puts_a_later_cmd_on_that_drive() {
             ),
         ],
     );
+}
+
+#[test]
+fn a_cd_to_a_device_or_network_path_leaves_the_line_somewhere_unknown() {
+    // Nothing shows that cmd refuses `\\?\C:\` or `\\.\C:\` as a working
+    // directory, and it may take them, so the folder after one is not known.
+    let paths = Paths::new(
+        r"C:\Users\me\repo",
+        r"C:\Users\me",
+        [r"C:\Users\me\repo", r"D:\ws"],
+    );
+    let risky: Vec<_> = [
+        r"cd \\?\C:\Windows & rd /s /q System32",
+        r"cd /d \\?\C:\Windows & rd /s /q System32",
+        r"chdir \\.\C:\Windows & rd /s /q System32",
+        r"cd\\?\C:\Windows & rd /s /q System32",
+        r"cd \\.\C:\Windows & rd /s /q System32",
+        r"cd //?/C:/Windows & rd /s /q System32",
+        r"cd //host/outside & rd /s /q build",
+        r"chdir //host/outside & rd /s /q build",
+        r"cd /d //host/outside & rd /s /q build",
+    ]
+    .into_iter()
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    check(Shell::Cmd, &paths, &[], &risky);
+}
+
+#[test]
+fn a_drive_from_a_system_folder_variable_is_only_a_guess() {
+    // Windows may be on `D:`: the `C:` in `%SystemRoot%` is not a drive the
+    // line named, so a `cd` to it neither leaves the line where it was nor
+    // makes the drive certain.
+    let risky: Vec<_> = [
+        r"cd %SystemRoot% & rd /s /q System32",
+        r"cd %windir%\System32 & del /q *.dll",
+        r"cd %SystemDrive%\ & rd /s /q Windows",
+        r"cd %ProgramFiles% & rd /s /q x",
+        r"cd %ProgramFiles(x86)% & rd /s /q x",
+        r"cd %ProgramData% & rd /s /q x",
+        r"chdir %SystemRoot% & rd /s /q System32",
+        r"cd /d %SystemRoot% & rd /s /q System32",
+        r"pushd %SystemRoot% & rd /s /q System32",
+    ]
+    .into_iter()
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    check(Shell::Cmd, &home_elsewhere(), &[], &risky);
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[],
+        &[
+            // The move to `%SystemRoot%` may land on another drive, where
+            // the `cd C:` that follows does not leave it.
+            (
+                r"cd /d %SystemRoot% & cd C:\Users\me\repo & rd /s /q b",
+                Rule::Delete,
+            ),
+            (
+                r"pushd %SystemRoot% & cd C:\Users\me\repo & rd /s /q b",
+                Rule::Delete,
+            ),
+            (
+                r"cd %SystemRoot% & cd D:\ws\a & rd /s /q ..\..",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &two_drives(),
+        &[],
+        &[(
+            r#"Set-Location $env:SystemRoot; cmd /c "cd D:\ws\a & rd /s /q b""#,
+            Rule::Delete,
+        )],
+    );
+}
+
+#[test]
+fn a_tilde_typed_in_cmd_is_a_folder_not_home() {
+    // cmd never expands `~`: `~\..\..` from `D:\ws\repo` is `D:\ws`, and the
+    // line stays on `D:`. Only a variable (`%USERPROFILE%`, `%TEMP%`) puts a
+    // path under home.
+    let risky: Vec<_> = [
+        r"cd ~\..\.. & rd /s /q repo",
+        r"cd ~\..\..\x & rd /s /q repo\y",
+        r"cd ~ & rd /s /q ..\..",
+        r"chdir ~\.. & rd /s /q repo",
+    ]
+    .into_iter()
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    check(Shell::Cmd, &home_elsewhere(), &[], &risky);
 }

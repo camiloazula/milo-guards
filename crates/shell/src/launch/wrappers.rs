@@ -281,6 +281,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         shell: unit.shell,
         program: program.clone(),
         args,
+        origins: Vec::new(),
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,

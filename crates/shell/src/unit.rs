@@ -49,6 +49,23 @@ impl Arg {
     }
 }
 
+/// Where a cmd or PowerShell argument's value came from, which says whether
+/// the drive in it was named by the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Origin {
+    /// Written out in the line (a literal `~` in cmd is a folder called `~`).
+    #[default]
+    Typed,
+    /// Starts with a variable that names a place under home (`%USERPROFILE%`,
+    /// `%TEMP%`, `%TMP%`, `%APPDATA%`, `%LOCALAPPDATA%` in cmd): on home's
+    /// drive.
+    Home,
+    /// Holds a variable for a system folder (`%SystemRoot%`, `%windir%`,
+    /// `%SystemDrive%`, `%ProgramFiles%`, `%ProgramData%`, `$env:SystemRoot`):
+    /// the `C:` in its value is a guess, as Windows may be on another drive.
+    System,
+}
+
 /// Where a unit sits in a pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stage {
@@ -74,6 +91,9 @@ pub(crate) struct Unit {
     pub(crate) shell: Shell,
     pub(crate) program: Arg,
     pub(crate) args: Vec<Arg>,
+    /// Where each argument's value came from, by position (shorter than
+    /// `args`, or empty, for the ones that were typed).
+    pub(crate) origins: Vec<Origin>,
     /// The wrappers taken off in front of it, by name: `sudo`, `env`.
     pub(crate) wrappers: Vec<String>,
     pub(crate) stage: Option<Stage>,
@@ -101,12 +121,29 @@ impl Unit {
             shell,
             program,
             args,
+            origins: Vec::new(),
             wrappers: Vec::new(),
             stage,
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
         }
+    }
+
+    /// The unit with where each of its arguments came from.
+    pub(crate) fn with_origins(mut self, origins: Vec<Origin>) -> Self {
+        self.origins = origins;
+        self
+    }
+
+    /// Where the value of `arg`, one of this unit's arguments, came from.
+    fn origin_of(&self, arg: &Arg) -> Origin {
+        self.args
+            .iter()
+            .position(|other| std::ptr::eq(other, arg))
+            .and_then(|at| self.origins.get(at))
+            .copied()
+            .unwrap_or_default()
     }
 
     pub(crate) fn scope(&self) -> Scope<'_> {
@@ -336,17 +373,17 @@ impl Split {
         if self.bodies > 0 {
             self.in_body.push(self.units.len());
         }
-        if let Some(target) = moves_to(&unit) {
+        if let Some((target, origin)) = moves_to(&unit) {
             let effect = match unit.shell {
                 Shell::Cmd => cmd_effect(
                     &unit,
-                    &target,
+                    (&target, origin),
                     (self.drive, self.drive_sure),
                     self.home_drive,
                 ),
                 Shell::PowerShell => ps_effect(
                     &unit,
-                    &target,
+                    (&target, origin),
                     (self.drive, self.drive_sure),
                     self.home_drive,
                 ),
@@ -665,7 +702,8 @@ enum Effect {
     Unsure(Option<char>),
 }
 
-/// Whether `text` names a network path (`\\host\share`, `//host/share`).
+/// Whether `text` names a network path (`\\host\share`, `//host/share`) or a
+/// device path (`\\?\C:\`, `\\.\C:\`), which also start with two separators.
 fn is_network(text: &str) -> bool {
     text.starts_with("\\\\") || text.starts_with("//")
 }
@@ -688,31 +726,40 @@ enum Named {
 }
 
 /// The drive `text` names, from its letter or from the home directory it
-/// starts at.
-fn named_drive(text: &str, home_drive: Option<char>) -> Named {
+/// starts at. In cmd a `~` is home only when a variable put it there
+/// (`origin` is [`Origin::Home`]): a `~` typed in the line is a folder of
+/// that name, on the line's own drive. PowerShell expands a typed `~`.
+fn named_drive(text: &str, shell: Shell, origin: Origin, home_drive: Option<char>) -> Named {
+    let home = match shell {
+        Shell::Cmd => origin == Origin::Home && at_home(text),
+        _ => at_home(text),
+    };
     if let Some(letter) = crate::path::drive_of(text) {
         Named::On(letter)
-    } else if at_home(text) {
+    } else if home {
         home_drive.map_or(Named::Nowhere, Named::On)
     } else {
         Named::None
     }
 }
 
-/// What the cmd unit `unit`, which moves to `target`, does to where the line
-/// is, the line being on `drive` (with whether that is certain) and the home
-/// directory on `home_drive`. `cd` without `/d` does not change the drive:
-/// for a path on another drive it sets that drive's own working directory
-/// and the line stays; `/d` changes both, as `pushd` and `D:` do. None of
-/// them can change the drive when it names the drive the line is on; to
-/// another drive each may sit in a branch or a pipe stage, or fail, so the
-/// drive is then only a guess, and a `cd` without `/d` to a path on a drive
-/// other than the guess leaves the line somewhere unknown. cmd refuses a
-/// network path as a working directory, so a `cd` to one leaves the line
-/// where it was.
+/// What the cmd unit `unit`, which moves to `target` (with where its value
+/// came from), does to where the line is, the line being on `drive` (with
+/// whether that is certain) and the home directory on `home_drive`. `cd`
+/// without `/d` does not change the drive: for a path on another drive it
+/// sets that drive's own working directory and the line stays; `/d` changes
+/// both, as `pushd` and `D:` do. None of them can change the drive when it
+/// names the drive the line is on; to another drive each may sit in a branch
+/// or a pipe stage, or fail, so the drive is then only a guess, and a `cd`
+/// without `/d` to a path on a drive other than the guess leaves the line
+/// somewhere unknown. Nothing shows that cmd refuses a network or device
+/// path (`\\host\share`, `\\?\C:\`) as a working directory, so a `cd` to one
+/// leaves the line somewhere unknown. The drive in a system folder's
+/// variable (`%SystemRoot%`) is only a guess, so it never leaves the line
+/// where it was and puts it on an unknown drive.
 fn cmd_effect(
     unit: &Unit,
-    target: &Arg,
+    (target, origin): (&Arg, Origin),
     (drive, sure): (Option<char>, bool),
     home_drive: Option<char>,
 ) -> Effect {
@@ -722,13 +769,6 @@ fn cmd_effect(
         return onto(Some(letter));
     }
     let key = unit.key().unwrap_or_default();
-    let refused = || {
-        if sure {
-            Effect::Stays
-        } else {
-            Effect::Unsure(None)
-        }
-    };
     match key.as_str() {
         "popd" => return Effect::Moves(None, false),
         "pushd" => {
@@ -736,7 +776,8 @@ fn cmd_effect(
             // name, so the line is on an unknown drive then.
             return match target.known() {
                 Some(text) if is_network(text) => Effect::Moves(None, false),
-                Some(text) => match named_drive(text, home_drive) {
+                Some(_) if origin == Origin::System => Effect::Moves(None, false),
+                Some(text) => match named_drive(text, Shell::Cmd, origin, home_drive) {
                     Named::On(there) => onto(Some(there)),
                     Named::Nowhere => Effect::Moves(None, false),
                     Named::None => onto(drive),
@@ -748,7 +789,7 @@ fn cmd_effect(
         // `cd..`, `cd\`: no drive in them, but a network path can follow.
         _ => {
             return match target.known() {
-                Some(text) if is_network(text) => refused(),
+                Some(text) if is_network(text) => Effect::Unsure(None),
                 _ => Effect::Moves(drive, sure),
             };
         }
@@ -764,9 +805,16 @@ fn cmd_effect(
         };
     };
     if is_network(text) {
-        return refused();
+        return Effect::Unsure(None);
     }
-    let there = match named_drive(text, home_drive) {
+    if origin == Origin::System {
+        return if leading {
+            Effect::Moves(None, false)
+        } else {
+            Effect::Unsure(None)
+        };
+    }
+    let there = match named_drive(text, Shell::Cmd, origin, home_drive) {
         Named::On(there) => there,
         // Home is on no drive: where it is, and whether `cd` leaves the
         // line, cannot be told.
@@ -791,11 +839,12 @@ fn cmd_effect(
 /// line that may run `cmd` is: a move to a path with a drive letter (or at
 /// home) is onto that drive, only a guess unless the line was certainly
 /// there; a relative path keeps the drive and whether it is certain; a
-/// provider path (`Env:`, `HKLM:`), a network path or an unknown one leaves
-/// the drive unknown.
+/// provider path (`Env:`, `HKLM:`), a network path, a system folder's
+/// variable (`$env:SystemRoot`, whose drive is a guess) or an unknown one
+/// leaves the drive unknown.
 fn ps_effect(
     unit: &Unit,
-    target: &Arg,
+    (target, origin): (&Arg, Origin),
     (drive, sure): (Option<char>, bool),
     home_drive: Option<char>,
 ) -> Effect {
@@ -806,10 +855,10 @@ fn ps_effect(
     let Some(text) = target.known() else {
         return Effect::Moves(None, false);
     };
-    if is_network(text) {
+    if is_network(text) || origin == Origin::System {
         return Effect::Moves(None, false);
     }
-    match named_drive(text, home_drive) {
+    match named_drive(text, Shell::PowerShell, origin, home_drive) {
         Named::On(there) => onto(Some(there)),
         Named::Nowhere => Effect::Moves(None, false),
         // A provider path (`Env:`, `Microsoft.PowerShell.Core\Registry::`).
@@ -818,14 +867,16 @@ fn ps_effect(
     }
 }
 
-/// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
-fn moves_to(unit: &Unit) -> Option<Arg> {
+/// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one, and
+/// where the target's value came from.
+fn moves_to(unit: &Unit) -> Option<(Arg, Origin)> {
+    let typed = |target: Arg| Some((target, Origin::Typed));
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
     // show.
     if let Some(letter) = drive_switch(unit) {
-        return Some(Arg::Unknown(format!("{letter}:")));
+        return typed(Arg::Unknown(format!("{letter}:")));
     }
     // `cd..` and `cd\`: cmd and PowerShell read them as one program name.
     if unit.shell != Shell::Posix {
@@ -834,16 +885,16 @@ fn moves_to(unit: &Unit) -> Option<Arg> {
                 .strip_prefix(verb)
                 .is_some_and(|rest| rest.starts_with(['.', '\\', '/']))
             {
-                return Some(Arg::Known(program[verb.len()..].to_string()));
+                return typed(Arg::Known(program[verb.len()..].to_string()));
             }
         }
     }
     let key = unit.key()?;
     match (unit.shell, key.as_str()) {
         (Shell::Posix, "cd" | "chdir") => match operands(&unit.args, &[]).first() {
-            Some(Arg::Known(dash)) if dash == "-" => Some(Arg::Unknown(dash.clone())),
-            Some(target) => Some((*target).clone()),
-            None => Some(Arg::Known("~".to_string())),
+            Some(Arg::Known(dash)) if dash == "-" => typed(Arg::Unknown(dash.clone())),
+            Some(target) => typed((*target).clone()),
+            None => typed(Arg::Known("~".to_string())),
         },
         // `pushd` alone swaps the top of the stack and `pushd +1` rotates
         // it: neither names where it goes.
@@ -853,25 +904,37 @@ fn moves_to(unit: &Unit) -> Option<Arg> {
                     && target.len() > 1
                     && target[1..].chars().all(|c| c.is_ascii_digit())) =>
             {
-                Some(Arg::Known(target.clone()))
+                typed(Arg::Known(target.clone()))
             }
-            Some(other) => Some(Arg::Unknown(other.text().to_string())),
-            None => Some(Arg::Unknown(key)),
+            Some(other) => typed(Arg::Unknown(other.text().to_string())),
+            None => typed(Arg::Unknown(key)),
         },
         (Shell::Posix | Shell::Cmd, "popd") | (Shell::PowerShell, "pop-location") => {
-            Some(Arg::Unknown(key))
+            typed(Arg::Unknown(key))
         }
-        (Shell::Cmd, "cd" | "chdir" | "pushd") => {
-            plain(&unit.args).first().map(|target| (*target).clone())
-        }
+        // A target that starts `//` looks like a switch (`/x`), but it can be
+        // a network or device path (`//host/share`, `//?/C:/`): it is read
+        // as the target, whose place is then not known.
+        (Shell::Cmd, "cd" | "chdir" | "pushd") => plain(&unit.args)
+            .first()
+            .copied()
+            .or_else(|| {
+                unit.args
+                    .iter()
+                    .find(|arg| arg.known().is_some_and(|text| text.starts_with("//")))
+            })
+            .map(|target| (target.clone(), unit.origin_of(target))),
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
             let target = params
                 .values(&["path", "literalpath"])
                 .first()
                 .or(params.positional.first())
-                .map(|target| (*target).clone());
-            Some(target.unwrap_or_else(|| Arg::Known("~".to_string())))
+                .copied();
+            match target {
+                Some(target) => Some((target.clone(), unit.origin_of(target))),
+                None => typed(Arg::Known("~".to_string())),
+            }
         }
         _ => None,
     }

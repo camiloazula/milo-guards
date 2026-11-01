@@ -164,10 +164,18 @@ A path that starts at home (`~`, which `%TEMP%`, `%TMP%`, `%USERPROFILE%`,
 `%APPDATA%` and `%LOCALAPPDATA%` become) is on the home directory's drive, and
 is read like a path with that drive letter: `cd %TEMP%` from `D:\ws\repo`
 leaves the line on `D:` when home is on `C:`. When home is on no drive, a `cd`
-to it leaves the line somewhere unknown. cmd refuses a network path
-(`\\host\share`, `//host/share`) as a working directory, so a `cd` or `chdir`
-to one, with or without `/d`, leaves the line where it was (somewhere unknown
-while the drive is only a guess). A PowerShell `Set-Location`, `cd` or
+to it leaves the line somewhere unknown. Only a variable puts a path under
+home in cmd, which never expands a `~` typed in the line: `cd ~\..\..` from
+`D:\ws\repo` goes to `D:\ws`, so a typed `~` names a folder on the line's own
+drive and never makes the line stay. The `C:` in `%SystemRoot%`, `%windir%`,
+`%SystemDrive%`, `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%ProgramData%`
+(and `$env:SystemRoot` and the like) is a guess, since Windows may be on
+another drive: a `cd` to one never leaves the line where it was, and puts it
+on an unknown drive (somewhere unknown, without `/d`), whatever drive the line
+was certainly on. Nothing shows that cmd refuses a network path
+(`\\host\share`, `//host/share`) or a device path (`\\?\C:\`, `\\.\C:\`) as a
+working directory, so a `cd` or `chdir` to one, with or without `/d`, leaves
+the line somewhere unknown. A PowerShell `Set-Location`, `cd` or
 `Push-Location` to a path with a drive letter, or at home, moves the line onto
 that drive as a guess, as `cd /d` does; a relative one keeps the drive and
 whether it is sure; a provider path (`Env:`), a network path or an unknown one
