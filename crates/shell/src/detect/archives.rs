@@ -386,7 +386,7 @@ fn seven_zip(args: &[Arg]) -> Option<Vec<Arg>> {
         let (text, known) = match arg {
             Arg::Known(text) => (text, true),
             Arg::Unknown(text) | Arg::Template { source: text, .. } => (text, false),
-            Arg::Input => continue,
+            Arg::Input | Arg::Null => continue,
         };
         // Switches are not case-sensitive; `-ao` is another switch.
         let Some(folder) = text
@@ -625,7 +625,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
 fn readable(arg: &Arg) -> &str {
     match arg {
         Arg::Known(text) | Arg::Unknown(text) | Arg::Template { text, .. } => text,
-        Arg::Input => "",
+        Arg::Input | Arg::Null => "",
     }
 }
 

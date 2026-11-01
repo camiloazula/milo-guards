@@ -28,13 +28,18 @@ pub(crate) enum Arg {
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
+    /// PowerShell's `$null`, the null value: handed to a file parameter it is
+    /// the null device, or no value at all. Its own form, since no quoted
+    /// literal (`'$null'`, a file named that) is it; in cmd it is a file name,
+    /// and in a POSIX shell the variable `null`.
+    Null,
 }
 
 impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
-            Self::Unknown(_) | Self::Template { .. } | Self::Input => None,
+            Self::Unknown(_) | Self::Template { .. } | Self::Input | Self::Null => None,
         }
     }
 
@@ -49,6 +54,7 @@ impl Arg {
         match self {
             Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
             Self::Input => "<input>",
+            Self::Null => "$null",
         }
     }
 }
@@ -346,6 +352,10 @@ pub(crate) struct Split {
     pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
+    /// `mount`) anywhere, before or after a `cd` in its text: a single letter
+    /// in a `cd` may be one of another provider, not a disk.
+    psdrive: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -514,10 +524,21 @@ impl Split {
         if self.bodies > 0 {
             self.in_body.push(self.units.len());
         }
+        if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
+            self.psdrive = true;
+        }
         if let Some(target) = moves_to(&unit) {
             self.moves += 1;
             self.moved += 1;
-            self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
+            let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
+            // Once the line makes a drive, a drive letter may name it: the
+            // place is only known when it runs.
+            self.dir = Some(match dir {
+                Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
+                    Arg::Unknown(text)
+                }
+                dir => dir,
+            });
         }
         self.units.push(unit);
     }
@@ -956,12 +977,37 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         }
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
+            // `--` ends the parameters, so it is not the path: `cd -- -` is
+            // the history step and `cd -- X` goes to X.
+            let mut positional = params.positional.iter().copied();
+            let end = params
+                .positional
+                .iter()
+                .position(|arg| arg.known() == Some("--"));
+            let first = match end {
+                Some(0) => positional.nth(1),
+                _ => positional.next(),
+            };
             let target = params
                 .values(&["path", "literalpath"])
                 .first()
-                .or(params.positional.first())
-                .map(|target| (*target).clone());
-            Some(target.unwrap_or_else(|| Arg::Known("~".to_string())))
+                .copied()
+                .or(first)
+                .map(|target| match target {
+                    // PowerShell 6.2+ reads `-` and `+` as a step back or
+                    // forward in location history, not a folder.
+                    Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
+                    other => (*other).clone(),
+                });
+            Some(target.unwrap_or_else(|| {
+                // With no path, a stage after the first takes it from the
+                // pipeline; the first goes home.
+                if unit.stage.is_some_and(|stage| stage.index > 0) {
+                    Arg::Unknown(key)
+                } else {
+                    Arg::Known("~".to_string())
+                }
+            }))
         }
         _ => None,
     }
@@ -1074,6 +1120,15 @@ pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
+    if split.psdrive {
+        // A drive the line makes may be entered before the text that makes
+        // it (a function body, a loop), so read the line again knowing it.
+        split = Split {
+            psdrive: true,
+            ..Split::default()
+        };
+        script(&mut split, command, shell, 0);
+    }
     split.hide_bodies();
     split.settle_later();
     split

@@ -5,7 +5,7 @@
 //! left alone.
 
 use super::Checker;
-use crate::path::Place;
+use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -220,7 +220,7 @@ fn nft_commands(words: &[&Arg]) -> Vec<Vec<NftWord>> {
     for arg in words {
         let text = match arg {
             Arg::Known(text) | Arg::Template { text, .. } => text.as_str(),
-            Arg::Unknown(_) | Arg::Input => {
+            Arg::Unknown(_) | Arg::Input | Arg::Null => {
                 current.push(None);
                 continue;
             }
@@ -487,7 +487,7 @@ impl Checker<'_> {
         let holds_json = json
             && words.iter().any(|arg| match arg {
                 Arg::Known(text) | Arg::Template { text, .. } => text.contains(['{', '[']),
-                Arg::Unknown(_) | Arg::Input => false,
+                Arg::Unknown(_) | Arg::Input | Arg::Null => false,
             });
         if holds_json
             || nft_commands(&words)
@@ -697,9 +697,10 @@ impl Checker<'_> {
             _ => return,
         };
         let own = !paths.is_empty()
-            && paths
-                .iter()
-                .all(|path| self.place(unit.shell, unit.scope(), path).harmless());
+            && paths.iter().all(|path| {
+                self.place(unit.shell, unit.scope(), path, Access::Item)
+                    .harmless()
+            });
         if !(own || sub == "unload" && paths.is_empty()) {
             self.add(
                 Rule::SystemSettings,
@@ -777,7 +778,7 @@ impl Checker<'_> {
                 None => true,
                 Some(text) if text.contains('/') => {
                     matches!(
-                        self.place(unit.shell, unit.scope(), domain),
+                        self.place(unit.shell, unit.scope(), domain, Access::Item),
                         Place::Top(_) | Place::Unknown
                     )
                 }
