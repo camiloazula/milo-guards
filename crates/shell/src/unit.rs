@@ -321,6 +321,11 @@ pub(crate) struct Split {
     /// starts, and not to itself: `GLOBIGNORE=x bash -c '…'`. The shell that
     /// expands the command's own wildcards has run them before it applies.
     scoped_dotglob: bool,
+    /// Whether the command being added has a word with zsh's `(D)` glob
+    /// qualifier, which lets that command's wildcards match a leading dot
+    /// without any option on: `rm -rf *git(D)`. It belongs to the command
+    /// alone, so it is not part of [`Split::dotglob`].
+    qualified: bool,
     /// How deep the line is inside something that may not run, or runs in
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
@@ -698,7 +703,13 @@ impl Split {
 
     /// Whether a wildcard in what comes next may match a leading dot.
     pub(crate) fn hidden(&self) -> bool {
-        self.dotglob.any()
+        self.dotglob.any() || self.qualified
+    }
+
+    /// Say the command being added has a word with a `(D)` glob qualifier,
+    /// and say what it was, for the caller to put back after the command.
+    pub(crate) fn qualify(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.qualified, on)
     }
 
     /// Whether the command being added hands the option to a shell it
