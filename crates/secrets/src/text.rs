@@ -12,6 +12,16 @@ pub(crate) fn after(text: &str, at: usize) -> Option<char> {
     text.get(at..)?.chars().next()
 }
 
+/// The first byte after `at` where a character begins, or the end of `text`
+/// when there is none.
+pub(crate) fn next_boundary(text: &str, at: usize) -> usize {
+    let mut next = at + 1;
+    while next < text.len() && !text.is_char_boundary(next) {
+        next += 1;
+    }
+    next
+}
+
 /// Whether `text[start..end]` stands alone: no ASCII letter or digit touches
 /// it on either side. A letter or digit beside a token means the token is a
 /// piece of something longer (a base64 blob, an identifier), which is not
