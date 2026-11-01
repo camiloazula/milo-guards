@@ -18,7 +18,8 @@ can show, and the argument it is about. The guard reads the line and never runs
 it. It touches neither the file system nor the environment.
 
 `effect` is a second answer from the same split: does the line only read? See
-[Reads only](#reads-only).
+[Reads only](#reads-only). `explain` shows how a line was read, for a person
+debugging a verdict: see [Explaining a line](#explaining-a-line).
 
 The guard only reports. What to do about a finding is the caller's choice, and
 nothing here knows about asking, refusing or modes. The types are core's; see
@@ -68,6 +69,44 @@ A script handed to a shell is split again, in its own grammar: `bash -c`,
 counts as far as a depth limit, and the text of all the nested scripts read
 for one line as far as a budget a few times the longest line. Past either, the
 line is unreadable.
+
+The other limits, each read as unreadable past it, and each pinned by a test
+that finds the edge by measuring it and asserts both sides (see Tests):
+
+| Limit | Value | What it bounds |
+| --- | --- | --- |
+| Line length | 64 KiB | text parsed at all |
+| Parse tree depth | 400 levels | the walk, so the stack |
+| Shells in shells | 8 | `bash -c "sh -c '…'"` |
+| Wrappers in front of a program | 15 | `sudo env nice … rm` |
+| `find` inside `find -exec` | 16 | the walk, so the stack |
+| `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
+| Opening `(` with none closed | 400 | counted before parsing, blind to quoting; only `(` is counted, not `{` or `[`: cmd's grammar takes time that grows with the square of the depth |
+| `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
+| Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more); with no command before the `<<` the grammar is slow, see the noise below |
+
+The grammars themselves take time that grows with the square of the line on
+some noise that none of the counts above covers. Measured in a release build
+at 65,000 bytes (the longest line), in POSIX: `)` repeated takes about 10 s, `)a`
+repeated (32,000 times, so not only a run of one character) about 9 s, `a|`
+repeated 19.7 s, `|` or `>` repeated 4 to 5 s, and `<` repeated 3 s; here-documents
+with no command before the `<<`, which the count above does not reach because
+each is closed or on a line of its own: `<<A\nA\n` repeated 3.6 s, `<<A;\n`
+4.0 s, `<<A\n` 4.9 s, and `<<A;` sixteen to a line (under the count) 5.4 s (`cat <<A\n` repeated
+takes 1 ms, so the cost is in the missing command); in PowerShell, `echo ` then
+`${` repeated 17 s, and `"${` repeated 3.5 s; in cmd, `@` repeated about 10 s.
+Another machine took twice as long (20 s for `)` and for cmd's `@`, 9.5 s for
+`|` and `>`, 6.7 s for `<`, 19 s for `)a`). A debug build is about three times
+slower (29 s for `)`). cmd's `&` and `|` are counted above. A real line
+never has them, and they come back risky, so the guard is slow there, never
+wrong.
+
+The open-`(` count does not catch brackets that close. Balanced ones take
+time too, measured in a release build at 64 KiB on the same branch: in POSIX,
+`()` repeated 9.0 s and `f() ` repeated 1.1 s; in cmd, `(echo) ` repeated
+5.2 s, and `echo ` then `$((1<<2)); echo ` repeated 3.2 s. These are examples
+of what was measured, not every slow shape: a new measurement can find
+another, and the list is not a promise that anything else is fast.
 
 ### Actions that run later
 
@@ -1224,6 +1263,45 @@ the whole question, and a fourth would change what a caller's gate means by
 "reads only", so it must break every caller's `match` at compile time. (A
 caller that only asks whether `effect(..)` is `ReadsOnly(_)` is unaffected by one.)
 
+## Explaining a line
+
+```rust
+explain(line, shell, &paths) -> Explanation
+```
+
+When a line comes out wrong, the reason is in the split, which is private.
+`explain` returns it: every unit as the rules saw it (the program as written, the
+arguments (a known one with its quotes taken off, an unknown or template one as
+written), where each argument would land if read as a path, the
+folder it runs from after a `cd`, the wrappers taken off, the shell and the
+nesting depth it came from, its stage in a pipeline; a part of the line the
+grammar reads again, like what follows the `&&` in cmd's `set X=1 && del y`,
+counts one level, as the depth limit does) with the findings that
+unit produced, each redirect's write the same way, and the findings of the line
+itself (a part that cannot be read, a program known only when it runs, a limit
+hit). Every known argument that is not an option gets a place, whether or not
+the program takes it as a path (`reset` in `git reset` lands inside the
+workspace); which arguments are paths is the rules' business, not the tree's.
+
+`classify` is `explain` without the tree: both take their answer from one
+reading of the line (`effect` too, from the same split), so `Explanation::findings`
+is what `classify` reports, and a test holds them equal for every row of the
+tables. `Explanation` implements `Display` as a short indented tree. It builds
+the string and prints nothing, so the contract test over `src/` still passes.
+
+The example in the shell crate prints that tree. It is the one place that reads
+arguments and prints, and it lives outside `src/`:
+
+```text
+cargo run -p milo-guards-shell --example explain -- \
+    --shell posix --cwd /work/app --home /home/me --workspace /work/app \
+    'sudo rm -rf ~ && bash -c "git reset --hard"'
+```
+
+`--shell` is `posix` (the default), `powershell` or `cmd`; `--workspace` can be
+repeated. A caller gets `explain` as `milo_local_guards::shell::explain`
+through the front door, which has no logic and no example of its own.
+
 ## Tests
 
 The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
@@ -1236,7 +1314,9 @@ line of `posix.rs` and `windows.rs` also goes through `effect`: the shared
 `check` does it for each row of a table, and the tests that name a finding's
 reason judge their lines with the shared `classify` of `tests/common`, which
 does it too. A line `classify` finds risky for anything but an elevation or a
-read of a key must not be `ReadsOnly`.
+read of a key must not be `ReadsOnly`. The same check runs `explain` over each
+row: its findings and assessment must be `classify`'s, and its tree must show
+every finding. `tests/issue_15.rs` holds what `explain` shows.
 
 `tests/secrets.rs` holds the rows of `read_secret`: the everyday lines that
 stay safe, a line for every program the rule knows, a redirect, a listing
@@ -1260,6 +1340,55 @@ a list (`common::path_disagreement`). Core's `absolute` has its own in
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
-until it is named there. `tests/robust.rs` feeds the guard random lines and
-checks that it never panics, and that a line too long or too nested comes back
-unreadable (and `Unknown` for `effect`).
+until it is named there. Three files feed the guard random and extreme lines and
+check what no line may do to it, for each of the three shells. `tests/robust.rs`
+holds six tests (seeded noise that never panics, a line too long or too nested
+being unreadable, a line whose nested scripts are read too often being
+unreadable, and three that time a nasty line against a 200 ms bound);
+`tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
+
+- **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
+  is `wide_random_lines_never_panic_and_stay_quick` in `tests/timing.rs`;
+  `tests/robust.rs` keeps the narrower `random_lines_never_panic`.) Thousands of
+  seeded random lines (a small linear congruential generator, so a failure
+  names its seed) joined from a wide set of pieces: quotes, substitutions and
+  brackets left open, here-documents with no end, here-strings, NUL, a line cut
+  through a character or with bytes no text holds read back lossily, and
+  PowerShell and cmd metacharacters. The same noise goes through `effect` and
+  `explain`, which must agree with `classify`.
+- **A line left open is risky, and a delete is never safe.** (In `tests/limits.rs`.) Safe is a verdict
+  the guard has to earn, so the tests say what a safe line may be, apart from
+  the guard. A line of plain words, separators and one delete (written for the
+  shell) is never safe: nothing in it can make the delete inert. A line of
+  plain words that ends in a quote, substitution, bracket or here-document left
+  open, or an operator with nothing after it, is never safe either, unless its
+  shell reads that ending as a plain word: the test keeps a list of those per
+  shell (cmd has no single quotes or backticks; PowerShell's grammar reads `<<`
+  as a word, though PowerShell itself refuses the line, so nothing runs), and
+  a table pins both sides. That a line is read at all is not the
+  claim: a program the guard does not know is safe.
+- **A line too long or too nested comes back unreadable** (and `Unknown` for
+  `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
+  are.)
+- **The time.** (In `tests/timing.rs`, which runs its tests one at a time, and
+  in a binary of its own: cargo runs test binaries one after another, so no
+  heavy test shares the machine with a clock. The three bounded at 200 ms in
+  `tests/robust.rs` stay there.) The worst of the random lines, and a line at the length limit
+  in each of fourteen shapes in each shell (a chain, a pipeline and a
+  conjunction with each shell's own separator: `;` is no separator in cmd, `&`
+  is), classify and give `effect` within a bound that holds in the debug build
+  `just verify` runs (500 ms and 2 s). In a release build the longest takes
+  under 100 ms, and most are far quicker. Lines that made `find -exec` build
+  gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
+  ones of several levels, are timed the same.
+- **The limits.** (In `tests/limits.rs`, another binary of its own, for the
+  same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
+  the longest line, the deepest bracket nesting for each opener in each shell,
+  the most shells in shells, wrappers in front of a program, finds in finds,
+  here-documents started on a line, the `find -exec` work (in places, at a
+  fixed weight), brackets still open and cmd's `&` and `|` that still read:
+  the last two inside a string, where the grammar sees no nesting, so the count
+  alone is measured. One past each is unreadable, so a later
+  change to a limit, or to how deep a grammar nests, fails loudly. `find`s
+  eight places wide and sixteen deep, and five thousand deep, are unreadable
+  and return at once.

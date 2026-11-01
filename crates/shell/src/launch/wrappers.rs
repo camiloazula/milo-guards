@@ -326,6 +326,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        depth: unit.depth,
     }))
 }
 

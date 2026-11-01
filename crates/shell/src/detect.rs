@@ -44,7 +44,22 @@ const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
-pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
+/// What the rules found in a split line: the findings of the whole line,
+/// and where each came from.
+#[derive(Debug, Default)]
+pub(crate) struct Judged {
+    /// Every finding, each once: what `classify` answers.
+    pub(crate) found: Vec<Finding>,
+    /// What splitting itself found: what could not be read, scripts known
+    /// only when they run.
+    pub(crate) line: Vec<Finding>,
+    /// What each unit produced, in the order of `Split::units`.
+    pub(crate) units: Vec<Vec<Finding>>,
+    /// What each redirect's write produced, in the order of `Split::writes`.
+    pub(crate) writes: Vec<Vec<Finding>>,
+}
+
+pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let mut checker = Checker {
         split,
         resolver,
@@ -82,16 +97,33 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
     checker.flow = checker.trace();
+    // What each step adds to `found` is what that step found: the findings
+    // from `split.findings` come first, and are the line's own.
+    let mut line = checker.found.clone();
+    let mut units = Vec::with_capacity(split.units.len());
     for (at, unit) in split.units.iter().enumerate() {
+        let before = checker.found.len();
         checker.unit(at, unit);
+        units.push(checker.found[before..].to_vec());
     }
+    // A read through `<` is not a unit's: it belongs to the line.
+    let before = checker.found.len();
     checker.redirected_reads();
+    line.extend_from_slice(&checker.found[before..]);
+    let mut writes = Vec::with_capacity(split.writes.len());
     for write in &split.writes {
+        let before = checker.found.len();
         checker.write(write.shell, write.scope(), &write.target, "writes to");
+        writes.push(checker.found[before..].to_vec());
     }
     let mut seen = std::collections::HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
-    checker.found
+    Judged {
+        found: checker.found,
+        line,
+        units,
+        writes,
+    }
 }
 
 struct Checker<'a> {

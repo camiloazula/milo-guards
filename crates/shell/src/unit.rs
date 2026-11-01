@@ -89,6 +89,12 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line the grammar reads again (what follows the
+    /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
+    /// It is what the depth limit counts.
+    pub(crate) depth: usize,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -110,6 +116,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            depth: 0,
         }
     }
 
@@ -319,6 +326,14 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How deep the line is inside `find … -exec find … -exec …`: each
+    /// level is read once for every place the one outside it searches.
+    pub(crate) find_depth: usize,
+    /// How much work `find -exec` has been read to do, in all, counted in
+    /// bytes built (each `{}` replaced by the place it stands for) and
+    /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
+    /// a line must not make this grow without bound.
+    pub(crate) find_work: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -906,6 +921,91 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
+/// The most here-documents a POSIX script may start on one line before it is
+/// not read: the bash grammar holds each until the line ends and takes time
+/// that grows with the square of how many are waiting (a second, at the
+/// length limit), and no real script starts this many on a line. Here-
+/// documents on lines of their own that follow a command (`cat <<A` and a
+/// line break, repeated) cost no more than the text does, and here-strings
+/// (`<<<`) are not here-documents. Here-documents with no command before the
+/// `<<` are slow without being counted (`<<A` and a line break, repeated to
+/// the length limit, takes seconds in a release build) and are listed with
+/// the other slow noise in `docs/design/shell.md`.
+const MAX_HEREDOCS: usize = 256;
+
+/// The most `&`, and the most `|`, a cmd line may hold before it is not
+/// read: cmd's grammar nests a chain one level for each, so a line past
+/// the depth the walk goes is unreadable whatever else it holds, and its
+/// grammar takes time that grows with the square of the chain to find that
+/// out (seconds, at the length limit).
+const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+
+/// Whether the grammar of `shell` would take too long over `text`, and why,
+/// found by counting bytes without parsing:
+///
+/// - more `(` opened (`{` and `[` are not counted), with none closed in
+///   between, than a parse tree is walked deep (the line is unreadable whatever the grammar makes of it,
+///   and cmd's takes seconds to find that out at the length limit);
+/// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
+///   `||` count once);
+/// - in a POSIX shell, more here-documents started on one line (a `\` before
+///   the line break continues it) than [`MAX_HEREDOCS`].
+///
+/// The count ignores quoting, so it can only err towards unreadable.
+fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
+    let bytes = text.as_bytes();
+    let (mut open, mut heredocs) = (0_usize, 0_usize);
+    let (mut ands, mut pipes) = (0_usize, 0_usize);
+    // How many `<` in a row end just before `at`, and whether the `&` or `|`
+    // just before it was the second of a pair.
+    let (mut run, mut paired) = (0_usize, false);
+    // A line break after the text settles a run of `<` at its end.
+    for (at, byte) in bytes
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'\n'))
+        .enumerate()
+    {
+        if byte == b'<' {
+            run += 1;
+            continue;
+        }
+        // `<<EOF` starts a here-document, `<<<` a here-string; more than
+        // three in a row is noise, which counts.
+        if shell == Shell::Posix && (run == 2 || run >= 4) {
+            heredocs += 1;
+            if heredocs > MAX_HEREDOCS {
+                return Some("starts too many here-documents to read");
+            }
+        }
+        run = 0;
+        match byte {
+            b'(' => {
+                open += 1;
+                if open > MAX_TREE_DEPTH {
+                    return Some("nests too deeply to read");
+                }
+            }
+            b')' => open = open.saturating_sub(1),
+            b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
+            b'&' | b'|' if shell == Shell::Cmd => {
+                // The second of two the same is part of `&&` or `||`.
+                let second = !paired && at >= 1 && bytes[at - 1] == byte;
+                paired = second;
+                if !second {
+                    let count = if byte == b'&' { &mut ands } else { &mut pipes };
+                    *count += 1;
+                    if *count > MAX_CMD_SEPARATORS {
+                        return Some("chains too many commands to read");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Split `command`; `effect` says it is also read for [`crate::effect`].
 pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
@@ -934,6 +1034,10 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if text.len() > MAX_LEN {
         split.problem(Rule::Unreadable, "is too long to read", None);
+        return;
+    }
+    if let Some(why) = too_tangled(text, shell) {
+        split.problem(Rule::Unreadable, why, None);
         return;
     }
     if depth > 0 {
@@ -1073,13 +1177,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
+/// Whether `text` is a `/X`-style switch, not a path.
+pub(crate) fn is_switch(text: &str) -> bool {
+    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+}
+
 /// The arguments that are not `/X`-style switches.
 pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
     args.iter()
-        .filter(|arg| {
-            !arg.known().is_some_and(|text| {
-                text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
-            })
-        })
+        .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
 }
