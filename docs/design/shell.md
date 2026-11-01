@@ -1444,6 +1444,20 @@ Some risks only show when units are read together.
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
   A line that writes nothing has no such script.
+  The file may be run as the program itself, not only handed to a shell: a
+  program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
+  file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x
+  run; ./run` are `unknown` with the same reason, however the program is
+  wrapped (`sudo`, `env`, `nohup`, `xargs`, `find -exec`, `bash -c`) or when it
+  runs (a trap whose action runs `./x.sh` before the line writes it). A bare
+  name (`x.sh`) is looked up in `PATH`, not in the folder, so it is not the
+  file; `./gradlew build` with nothing written first stays safe. On Windows
+  file names are not case sensitive and a name with no extension runs the file
+  with `.bat`, `.cmd`, `.com` or `.exe` (`a` runs `a.bat`), and PowerShell
+  tries `.ps1` first (`.\a` runs `a.ps1`); cmd looks in the
+  working folder first, so a bare name there is the file the line writes when
+  it names one (it is not judged when it cannot be placed: `dir` and `echo`
+  are programs of cmd, not files).
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
