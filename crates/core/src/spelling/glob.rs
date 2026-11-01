@@ -43,12 +43,14 @@ const GIT_ENTRIES: [&str; 18] = [
 ];
 
 /// Files deeper in `.git` whose loss hurts as much (a branch's tip, the
-/// repository's description, the last message, a pack): a name search of
+/// repository's description, the last message, `stash`, which is the only
+/// reference to every stash entry, a pack): a name search of
 /// every folder that finds one of these takes history with it.
-const GIT_FILES: [&str; 7] = [
+const GIT_FILES: [&str; 8] = [
     "description",
     "COMMIT_EDITMSG",
     "FETCH_HEAD",
+    "stash",
     "main",
     "master",
     "pack-0.pack",
@@ -128,7 +130,26 @@ pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
                 .any(|name| matches(pattern, name, flavour, true))
                 || can_match_shape(pattern, flavour, &hex_shapes(false)));
     }
-    can_match_cmd(pattern, names.chain(&GIT_SHORT_NAMES), &hex_shapes(true))
+    can_match_cmd(
+        pattern,
+        names.chain(&GIT_SHORT_NAMES),
+        &hex_shapes(true),
+        true,
+    )
+}
+
+/// As [`can_match_git_entry`] on Windows, for PowerShell's own matching (an
+/// `-Include`), where cmd's DOS wildcards (`<`, `>`, `"`) are plain
+/// characters.
+#[must_use]
+pub fn can_match_git_entry_powershell(pattern: &str) -> bool {
+    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
+    can_match_cmd(
+        pattern,
+        names.chain(&GIT_SHORT_NAMES),
+        &hex_shapes(true),
+        false,
+    )
 }
 
 /// One position of a name's shape: the characters it can be.
@@ -182,6 +203,9 @@ fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape]) -> boo
     })
 }
 
+/// The name of the repository's folder.
+const GIT_FOLDER_NAME: &str = ".git";
+
 /// The 8.3 short name of the `.git` folder itself on a drive that creates
 /// them.
 const GIT_FOLDER_SHORT_NAME: &str = "GIT~1";
@@ -197,22 +221,38 @@ const GIT_FOLDER_SHORT_NAME: &str = "GIT~1";
 /// `.git`.
 #[must_use]
 pub fn can_match_git_short_name(pattern: &str) -> bool {
-    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter(), &[])
+    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter(), &[], true)
+}
+
+/// Whether the name pattern `pattern`, handed to the file system's own
+/// matching (a `-Filter`), can match the `.git` folder: by its long name or
+/// its short one, read as cmd reads a wildcard (see [`can_match_git_entry`]),
+/// so `.gi<`, `<` and `.git"` find it.
+#[must_use]
+pub fn can_match_git_folder(pattern: &str) -> bool {
+    can_match_cmd(
+        pattern,
+        [GIT_FOLDER_NAME, GIT_FOLDER_SHORT_NAME].iter(),
+        &[],
+        true,
+    )
 }
 
 /// Whether the cmd pattern `pattern` (or, without its trailing dots and
-/// spaces, which are not part of a name) can match one of `names`.
+/// spaces, which are not part of a name) can match one of `names`; `dos`
+/// reads cmd's own `<`, `>` and `"` as wildcards.
 fn can_match_cmd<'a>(
     pattern: &str,
     names: impl Iterator<Item = &'a &'a str> + Clone,
     shapes: &[NameShape],
+    dos: bool,
 ) -> bool {
     let trimmed = pattern.trim_end_matches(['.', ' ']);
     [pattern, trimmed].iter().any(|pattern| {
         if pattern.is_empty() {
             return false;
         }
-        let (tokens, optional) = cmd_tokens(pattern);
+        let (tokens, optional) = cmd_tokens(pattern, dos);
         names
             .clone()
             .any(|name| matches_cmd(&tokens, &optional, name))
@@ -225,12 +265,16 @@ fn can_match_cmd<'a>(
 }
 
 /// The tokens of a cmd pattern and which of them can match nothing: a `?` in
-/// a run at the end or just before a `.`, and a `.` followed only by `*` or
-/// `?` to the end (a `*` can always match nothing).
-fn cmd_tokens(pattern: &str) -> (Vec<Token>, Vec<bool>) {
-    let tokens = tokens(pattern, Flavour::Windows);
-    let mut optional = vec![false; tokens.len()];
-    let wild = |token: &Token| matches!(token, Token::Star | Token::Any);
+/// a run at the end or just before a `.`, a `.` followed only by `*` or
+/// `?` to the end (a `*` can always match nothing), and cmd's own `>` and `"`
+/// anywhere.
+fn cmd_tokens(pattern: &str, dos: bool) -> (Vec<Token>, Vec<bool>) {
+    let tokens = tokens_in(pattern, Flavour::Windows, dos);
+    let mut optional: Vec<bool> = tokens
+        .iter()
+        .map(|token| matches!(token, Token::DosAny | Token::DosDot))
+        .collect();
+    let wild = |token: &Token| matches!(token, Token::Star | Token::Any | Token::DosAny);
     // The tail of wildcards at the end, and the dot before it.
     let tail = tokens
         .iter()
@@ -245,7 +289,7 @@ fn cmd_tokens(pattern: &str) -> (Vec<Token>, Vec<bool>) {
             let run = tokens[..at]
                 .iter()
                 .rev()
-                .take_while(|token| **token == Token::Any)
+                .take_while(|token| matches!(token, Token::Any | Token::DosAny))
                 .count();
             optional[at - run..at].fill(true);
         }
@@ -390,6 +434,10 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
 enum Token {
     Star,
     Any,
+    /// cmd's `>`: any one character, or nothing.
+    DosAny,
+    /// cmd's `"`: a dot, or nothing.
+    DosDot,
     Literal(char),
     Class {
         negated: bool,
@@ -415,7 +463,8 @@ impl Token {
         };
         match self {
             Self::Star => false,
-            Self::Any => true,
+            Self::Any | Self::DosAny => true,
+            Self::DosDot => c == '.',
             Self::Literal(literal) => same(*literal, c),
             Self::Class { negated, ranges } => {
                 let within = |c: char, low: char, high: char| low <= c && c <= high;
@@ -436,6 +485,14 @@ impl Token {
 }
 
 fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
+    tokens_in(pattern, flavour, false)
+}
+
+/// The tokens of `pattern`; with `dos`, also cmd's own wildcards, which the
+/// file system's matching reads and PowerShell's own does not: `<` is a `*`
+/// (that stops at the last dot, taken here as a `*`), `>` is a `?` that can
+/// match nothing, and `"` is a `.` that can match nothing.
+fn tokens_in(pattern: &str, flavour: Flavour, dos: bool) -> Vec<Token> {
     let windows = flavour == Flavour::Windows;
     let chars: Vec<char> = pattern.chars().collect();
     // A `[` after the last `]` has nothing to close it: it is a plain `[`.
@@ -451,13 +508,15 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
                 out.push(Token::Literal(chars[at]));
                 at += 1;
             }
-            '*' => {
+            _ if c == '*' || (dos && c == '<') => {
                 // `**` is `*`.
                 if out.last() != Some(&Token::Star) {
                     out.push(Token::Star);
                 }
             }
             '?' => out.push(Token::Any),
+            '>' if dos => out.push(Token::DosAny),
+            '"' if dos => out.push(Token::DosDot),
             '[' if last_close.is_some_and(|close| at <= close) => {
                 match class(&chars[at..], windows) {
                     Some((token, used)) => {
@@ -562,6 +621,29 @@ fn catch_all(part: &str, flavour: Flavour) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dos_wildcards_are_read_by_the_file_system_only() {
+        let windows = Flavour::Windows;
+        for pattern in [
+            "HEA<", "<", "a<", "o<", "HEA>", "HEAD>>", "HEAD\"", "stash\"", "sta>>",
+        ] {
+            assert!(can_match_git_entry(pattern, windows), "{pattern}");
+            assert!(!can_match_git_entry_powershell(pattern), "{pattern}");
+        }
+        for pattern in [".gi<", "<", ".git>", ".gi>>", ".git\"", ".g>it", "<.git"] {
+            assert!(can_match_git_folder(pattern), "{pattern}");
+        }
+        for pattern in ["x<", ".gx>", "node_modules\"", "*.t>", ">"] {
+            assert!(!can_match_git_folder(pattern), "{pattern}");
+        }
+        for pattern in ["*.t>", "x<.tmp", "node_modules\"", "b>>n"] {
+            assert!(!can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        assert!(can_match_git_entry("stash", windows));
+        assert!(can_match_git_entry("*stash*", Flavour::Posix));
+        assert!(can_match_git_entry_powershell("stash"));
+    }
 
     #[test]
     fn a_name_search_can_find_the_files_of_git() {

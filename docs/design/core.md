@@ -243,7 +243,7 @@ resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
 (`has_wildcard`, `matches`, `reaches_git`, `can_match_git_entry`,
-`can_match_git_short_name`, and `shape` with its `Shape`, which is
+`can_match_git_entry_powershell`, `can_match_git_short_name`, `can_match_git_folder`, and `shape` with its `Shape`, which is
 `#[non_exhaustive]`).
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.

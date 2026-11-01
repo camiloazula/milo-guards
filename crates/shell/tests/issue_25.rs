@@ -534,3 +534,148 @@ fn del_s_reaches_the_objects_of_git_by_the_shape_of_their_names() {
         ],
     );
 }
+
+#[test]
+fn a_filter_reads_the_dos_wildcards_of_the_file_system() {
+    let rows: Vec<(String, Rule)> = [
+        "'<'", "'.gi<'", "'.g>>>'", "'.git>'", "'.git\"'", "'.gi\"t'", "'.gi>t'", "'<.git'", "'.<'",
+    ]
+    .iter()
+    .flat_map(|filter| {
+        [
+            format!("Get-ChildItem -Force -Filter {filter} | Remove-Item -Recurse -Force"),
+            format!("Get-ChildItem -Recurse -Force -Filter {filter} | Remove-Item -Recurse -Force"),
+        ]
+    })
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    let rows: Vec<(&str, Rule)> = rows
+        .iter()
+        .map(|(line, rule)| (line.as_str(), *rule))
+        .collect();
+    check(Shell::PowerShell, &windows(), &[], &rows);
+}
+
+#[test]
+fn a_recursive_filter_with_dos_wildcards_reaches_the_names_of_git() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "Get-ChildItem -Recurse -Force -Filter \"HEA<\" | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter 'HEA>' | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter \"a<\" | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter \"o<\" | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter 'HEAD\"' | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter 'conf>>>' | Remove-Item -Force",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_include_reads_the_dos_characters_as_plain_ones() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Force -Include '<' | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Include '.gi<' | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Recurse -Force -Include 'HEA<' | Remove-Item -Force",
+            "Get-ChildItem -Recurse -Force -Include 'HEA>' | Remove-Item -Force",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_filter_with_dos_characters_that_cannot_reach_git_stays_everyday() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Recurse -Force -Filter '*.t>' | Remove-Item -Force",
+            "Get-ChildItem -Recurse -Force -Filter 'node_modules\"' | Remove-Item -Force",
+            "Get-ChildItem -Recurse -Force -Filter 'x<.tmp' | Remove-Item -Force",
+            "Get-ChildItem -Force -Filter 'b>>n' | Remove-Item -Force",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn del_s_reads_the_dos_wildcards() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del /s /q \"foo<.obj\"",
+            "del /s /q \"a>>.txt\"",
+            "del /s /q \"*.ob>\"",
+            "del /s /q main.obj",
+        ],
+        &[
+            ("del /s /q \"HEA>\"", Rule::Delete),
+            ("del /s /q \"HEA<\"", Rule::Delete),
+            ("del /s /q \"<\"", Rule::Delete),
+            ("del /s /q \"conf>>>\"", Rule::Delete),
+            ("del /s /q \"mai<\"", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn stash_is_one_of_the_names_git_holds() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "Get-ChildItem -Recurse -Force -Filter stash | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Filter *stash* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Force -Include stash | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Recurse -Hidden -Filter sta* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("del /s /q stash", Rule::Delete),
+            ("del /s /q *stash*", Rule::Delete),
+            ("del /s /q STASH", Rule::Delete),
+            ("del /s /q sta??", Rule::Delete),
+        ],
+    );
+}

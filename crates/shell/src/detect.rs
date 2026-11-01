@@ -511,10 +511,21 @@ fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<A
             match &pattern.arg {
                 Arg::Known(text) => {
                     found.push(Arg::Known(inside(folder, text)));
-                    let names_git = glob::matches(text, ".git", Flavour::Windows, true)
-                        || (pattern.filter && glob::can_match_git_short_name(text));
-                    if names_git || (recurses && glob::can_match_git_entry(text, Flavour::Windows))
-                    {
+                    // A `-Filter` is the file system's own matching: cmd's
+                    // wildcards, the short name and all. `-Include` is
+                    // PowerShell's, against the long name.
+                    let names_git = if pattern.filter {
+                        glob::can_match_git_folder(text)
+                    } else {
+                        glob::matches(text, ".git", Flavour::Windows, true)
+                    };
+                    let reaches_below = recurses
+                        && if pattern.filter {
+                            glob::can_match_git_entry(text, Flavour::Windows)
+                        } else {
+                            glob::can_match_git_entry_powershell(text)
+                        };
+                    if names_git || reaches_below {
                         found.push(Arg::Known(inside(folder, ".git")));
                     }
                 }
