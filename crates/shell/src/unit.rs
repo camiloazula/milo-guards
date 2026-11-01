@@ -262,8 +262,9 @@ pub(crate) struct Split {
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
     /// How much work `find -exec` has been read to do, in all, counted in
-    /// arguments handed on: the levels multiply, so a line must not make
-    /// this grow without bound.
+    /// bytes built (each `{}` replaced by the place it stands for) and
+    /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
+    /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.

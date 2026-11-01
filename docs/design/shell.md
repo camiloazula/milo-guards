@@ -753,17 +753,23 @@ and assessment must be `classify`'s, and its tree must show every finding.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
-until it is named there. `tests/robust.rs` feeds the guard random lines and
-checks what no line may do to the guard, for each of the three shells:
+until it is named there. Four files feed the guard random and extreme lines and
+check what no line may do to it, for each of the three shells. `tests/robust.rs`
+holds six tests (seeded noise that never panics, a line too long or too nested
+being unreadable, a line whose nested scripts are read too often being
+unreadable, and three that time a nasty line against a 200 ms bound);
+`tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
-- **Never panics, and `classify`, `effect` and `explain` agree.** Thousands of
+- **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
+  is `wide_random_lines_never_panic_and_stay_quick` in `tests/timing.rs`;
+  `tests/robust.rs` keeps the narrower `random_lines_never_panic`.) Thousands of
   seeded random lines (a small linear congruential generator, so a failure
   names its seed) joined from a wide set of pieces: quotes, substitutions and
   brackets left open, here-documents with no end, here-strings, NUL, a line cut
   through a character or with bytes no text holds read back lossily, and
   PowerShell and cmd metacharacters. The same noise goes through `effect` and
   `explain`, which must agree with `classify`.
-- **A line left open is risky, and a delete is never safe.** Safe is a verdict
+- **A line left open is risky, and a delete is never safe.** (In `tests/limits.rs`.) Safe is a verdict
   the guard has to earn, so the tests say what a safe line may be, apart from
   the guard. A line of plain words, separators and one delete (written for the
   shell) is never safe: nothing in it can make the delete inert. A line of
@@ -775,7 +781,8 @@ checks what no line may do to the guard, for each of the three shells:
   a table pins both sides. That a line is read at all is not the
   claim: a program the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
-  `effect`).
+  `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
+  are.)
 - **The time.** (In `tests/timing.rs`, which runs its tests one at a time, and
   in a binary of its own: cargo runs test binaries one after another, so no
   heavy test shares the machine with a clock. The three bounded at 200 ms in

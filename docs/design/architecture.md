@@ -86,8 +86,8 @@ What enforces each promise, and where:
 | --- | --- |
 | No I/O, no environment | `contract.rs` and the `disallowed-*` lists in `clippy.toml` |
 | Dependency direction | `contract.rs` |
-| Never panics | each guard's `tests/robust.rs` (seeded random noise through every grammar, and the time a line may take); clippy warns on `unwrap`, `expect` and `panic!` outside tests |
-| What cannot be read is risky | each guard's `tests/robust.rs` for a line that is too long, too deeply nested or left open, and for the limits; the guard's own tables of risky lines for the rest |
+| Never panics | each guard's `tests/robust.rs` (seeded random noise through every grammar), and for the shell guard also `tests/timing.rs` (wider noise, and the time a line may take); clippy warns on `unwrap`, `expect` and `panic!` outside tests |
+| What cannot be read is risky | each guard's `tests/robust.rs` for a line that is too long or too deeply nested; for the shell guard also `tests/limits.rs` for a line left open and for the limits; the guard's own tables of risky lines for the rest |
 | Deterministic | no test of its own: it follows from the first promise |
 | No policy | no test of its own: a guard's API only reports findings |
 
