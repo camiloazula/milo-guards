@@ -334,6 +334,10 @@ fn timed(text: &str, runs: usize) -> Duration {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_megabyte_of_one_character_and_of_nested_quotes_is_read_in_a_bound() {
     for name in [
         "one character",
@@ -353,6 +357,10 @@ fn a_megabyte_of_one_character_and_of_nested_quotes_is_read_in_a_bound() {
 const LIMIT: Duration = Duration::from_secs(10);
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn every_hostile_text_is_read_in_a_bound() {
     for name in HOSTILE {
         let text = hostile(name, 128 << 10);
@@ -372,6 +380,10 @@ fn check_answer_spans_only(text: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn reading_takes_time_in_proportion_to_the_text() {
     // Four times the text takes about four times as long to read; a read
     // that rescans takes sixteen. The bound is ten, with a floor under the
@@ -388,6 +400,10 @@ fn reading_takes_time_in_proportion_to_the_text() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_line_of_hits_costs_the_same_per_hit_as_a_short_one() {
     // Every hit on one line asks where the line begins, and where an escape
     // ends: a read that looks back over the line for each (it was once

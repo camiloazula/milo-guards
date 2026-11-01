@@ -43,6 +43,314 @@ const GIT_ENTRIES: [&str; 18] = [
     "sequencer",
 ];
 
+/// Files deeper in `.git` whose loss hurts as much (a branch's tip, the
+/// repository's description, the last message, `stash`, which is the only
+/// reference to every stash entry, a pack): a name search of
+/// every folder that finds one of these takes history with it.
+const GIT_FILES: [&str; 8] = [
+    "description",
+    "COMMIT_EDITMSG",
+    "FETCH_HEAD",
+    "stash",
+    "main",
+    "master",
+    "pack-0.pack",
+    "pack-0.idx",
+];
+
+/// Folders below the top level whose loss takes history with it: the packs
+/// (`objects/pack`), every branch tip and its reflog (`refs/heads`,
+/// `logs/refs/heads`), the tags, the remote-tracking branches and the default
+/// remote, `origin`, which is as well known as `main`.
+const GIT_FOLDERS: [&str; 5] = ["pack", "heads", "tags", "remotes", "origin"];
+
+/// The hex digits an object's name is spelled with (lower case, as git writes
+/// them; a Windows name compares without case).
+const HEX: &str = "0123456789abcdef";
+
+/// The digits of an 8.3 short name's `~n` tail.
+const TAIL_DIGITS: &str = "123456789";
+
+/// The 8.3 short names Windows gives the long names above on a drive that
+/// creates them (the system drive does by default): cmd matches its wildcards
+/// against these as well as the long names, which is why `*.pac` finds a pack.
+/// A name of at most eight characters with an extension of at most three has
+/// none.
+const GIT_SHORT_NAMES: [&str; 12] = [
+    "PACKED~1",
+    "COMMIT~1",
+    "DESCRI~1",
+    "ORIG_H~1",
+    "FETCH_~1",
+    "MERGE_~1",
+    "REBASE~1",
+    "REBASE~2",
+    "SEQUEN~1",
+    "WORKTR~1",
+    "PACK-0~1.PAC",
+    "PACK-0~1.IDX",
+];
+
+/// Whether the name pattern `pattern` can match the name of something a
+/// repository's `.git` holds: one of its top-level entries (`HEAD`, `config`,
+/// `index`, `objects`, ...), a well-known file deeper in (`description`,
+/// `COMMIT_EDITMSG`, a branch named `main` or `master`), a well-known folder
+/// deeper in (`pack`, `heads`, `tags`, `remotes`, `origin`), or an object by
+/// the shape of its name: a loose object's folder (two hex digits), its file
+/// (thirty-eight) and a pack (`pack-` and forty hex digits, then `.pack` or
+/// `.idx`).
+///
+/// It is for a search that goes into every folder below one (`del /s`, a
+/// recursive `Get-ChildItem`), which finds `.git`'s own files whatever folder
+/// they lie in. On Windows the pattern is read as cmd reads it, which is not
+/// how PowerShell does:
+/// - a trailing dot or space is not part of a name, so the pattern is read
+///   both with and without it;
+/// - a `.` followed by `*` or `?` also matches nothing, as cmd turns it into
+///   a DOS dot (`main.*` finds `main`, as `dir foo.*` lists `foo`, and
+///   `HEAD.*.*` finds `HEAD`);
+/// - a run of `?` at the end of the pattern, or just before a `.`, can match
+///   nothing (`HEAD?` finds `HEAD`, `main?.x` finds `main.x`);
+/// - the 8.3 short names of the long ones are tried as well (`PACKED~1`,
+///   `*.pac`, and the six hex digits and `~1` of a loose object's).
+///
+/// A hex-shaped name is judged by shape: the pattern is asked whether it can
+/// match some string of that many hex digits, so `??`, `1*` and `*7*` are
+/// told, and `bin`, `obj`, `*.tmp` and `*.log` are not. Only the names above
+/// are tried: a pattern that matches a branch with some other name (`dev`) is
+/// not told.
+///
+/// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
+#[must_use]
+pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
+    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
+    if flavour != Flavour::Windows {
+        return !pattern.is_empty()
+            && (names
+                .clone()
+                .any(|name| matches(pattern, name, flavour, true))
+                || can_match_shape(pattern, flavour, &hex_shapes(false)));
+    }
+    can_match_cmd(
+        pattern,
+        names.chain(&GIT_SHORT_NAMES),
+        &hex_shapes(true),
+        true,
+    )
+}
+
+/// As [`can_match_git_entry`] on Windows, for PowerShell's own matching (an
+/// `-Include`), where cmd's DOS wildcards (`<`, `>`, `"`) are plain
+/// characters.
+#[must_use]
+pub fn can_match_git_entry_powershell(pattern: &str) -> bool {
+    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
+    can_match_cmd(
+        pattern,
+        names.chain(&GIT_SHORT_NAMES),
+        &hex_shapes(true),
+        false,
+    )
+}
+
+/// One position of a name's shape: the characters it can be.
+type Slot = Vec<char>;
+
+/// A name's shape: what each of its positions can be.
+type NameShape = Vec<Slot>;
+
+/// The shape of a name that is `head`, then `hex` positions that can each be
+/// a hex digit, then `tail`.
+fn shape_of(head: &str, hex: usize, tail: &[Slot]) -> NameShape {
+    let mut slots: NameShape = head.chars().map(|c| vec![c]).collect();
+    slots.extend((0..hex).map(|_| HEX.chars().collect::<Slot>()));
+    slots.extend(tail.iter().cloned());
+    slots
+}
+
+/// The shapes of the names git gives objects: a loose object's folder and
+/// file, and a pack with its index. With `short`, the 8.3 short names of the
+/// long ones as well (six hex digits and `~n`, `PACK-` and a digit, `~n`, and
+/// the three-letter extension).
+fn hex_shapes(short: bool) -> Vec<NameShape> {
+    let literal = |text: &str| -> Vec<Slot> { text.chars().map(|c| vec![c]).collect() };
+    let mut shapes = vec![
+        shape_of("", 2, &[]),
+        shape_of("", 38, &[]),
+        shape_of("pack-", 40, &literal(".pack")),
+        shape_of("pack-", 40, &literal(".idx")),
+    ];
+    if short {
+        let tilde_n: Vec<Slot> = vec![vec!['~'], TAIL_DIGITS.chars().collect()];
+        shapes.push(shape_of("", 6, &tilde_n));
+        for extension in [".pac", ".idx"] {
+            let mut tail = tilde_n.clone();
+            tail.extend(literal(extension));
+            shapes.push(shape_of("pack-", 1, &tail));
+        }
+    }
+    shapes
+}
+
+/// Whether the (non-cmd) pattern can match a name of one of `shapes`.
+fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape]) -> bool {
+    let tokens = tokens(pattern, flavour);
+    let optional = vec![false; tokens.len()];
+    let fold = flavour == Flavour::Windows;
+    shapes.iter().any(|shape| {
+        matches_by(&tokens, &optional, shape.len(), &|at, token| {
+            shape[at].iter().any(|c| token.takes(*c, fold))
+        })
+    })
+}
+
+/// The name of the repository's folder.
+const GIT_FOLDER_NAME: &str = ".git";
+
+/// The 8.3 short name of the `.git` folder itself on a drive that creates
+/// them.
+const GIT_FOLDER_SHORT_NAME: &str = "GIT~1";
+
+/// Whether the name pattern `pattern` can match `GIT~1`, the 8.3 short name
+/// of the `.git` folder, read as cmd reads a wildcard (see
+/// [`can_match_git_entry`]).
+///
+/// It is for a search that hands its pattern to the file system's own
+/// matching, as Windows PowerShell's `-Filter` does through `FindFirstFile`,
+/// which compares a pattern with the short name as well as the long one: `g*`,
+/// `*~1`, `GIT~?` and `?????` find `.git` there, though none matches the name
+/// `.git`.
+#[must_use]
+pub fn can_match_git_short_name(pattern: &str) -> bool {
+    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter(), &[], true)
+}
+
+/// Whether the name pattern `pattern`, handed to the file system's own
+/// matching (a `-Filter`), can match the `.git` folder: by its long name or
+/// its short one, read as cmd reads a wildcard (see [`can_match_git_entry`]),
+/// so `.gi<`, `<` and `.git"` find it.
+#[must_use]
+pub fn can_match_git_folder(pattern: &str) -> bool {
+    can_match_cmd(
+        pattern,
+        [GIT_FOLDER_NAME, GIT_FOLDER_SHORT_NAME].iter(),
+        &[],
+        true,
+    )
+}
+
+/// Whether the cmd pattern `pattern` (or, without its trailing dots and
+/// spaces, which are not part of a name) can match one of `names`; `dos`
+/// reads cmd's own `<`, `>` and `"` as wildcards.
+fn can_match_cmd<'a>(
+    pattern: &str,
+    names: impl Iterator<Item = &'a &'a str> + Clone,
+    shapes: &[NameShape],
+    dos: bool,
+) -> bool {
+    let trimmed = pattern.trim_end_matches(['.', ' ']);
+    [pattern, trimmed].iter().any(|pattern| {
+        if pattern.is_empty() {
+            return false;
+        }
+        let (tokens, optional) = cmd_tokens(pattern, dos);
+        names
+            .clone()
+            .any(|name| matches_cmd(&tokens, &optional, name))
+            || shapes.iter().any(|shape| {
+                matches_by(&tokens, &optional, shape.len(), &|at, token| {
+                    shape[at].iter().any(|c| token.takes(*c, true))
+                })
+            })
+    })
+}
+
+/// The tokens of a cmd pattern and which of them can match nothing: a `?` in
+/// a run at the end or just before a `.`, a `.` followed by `*` or `?`
+/// (cmd's DOS dot, which can match nothing at the end of a name; any such dot
+/// is taken to, to err to Risky), and cmd's own `>` and `"` anywhere.
+fn cmd_tokens(pattern: &str, dos: bool) -> (Vec<Token>, Vec<bool>) {
+    let tokens = tokens_in(pattern, Flavour::Windows, dos);
+    let mut optional: Vec<bool> = tokens
+        .iter()
+        .map(|token| matches!(token, Token::DosAny | Token::DosDot))
+        .collect();
+    let wild = |token: &Token| matches!(token, Token::Star | Token::Any | Token::DosAny);
+    // The tail of wildcards at the end, and the dot before it.
+    let tail = tokens
+        .iter()
+        .rposition(|token| !wild(token))
+        .map_or(0, |at| at + 1);
+    optional[tail..].fill(true);
+    if tail > 0 && tokens[tail - 1] == Token::Literal('.') {
+        optional[tail - 1] = true;
+    }
+    for (at, token) in tokens.iter().enumerate() {
+        if *token == Token::Literal('.') {
+            if matches!(tokens.get(at + 1), Some(Token::Star | Token::Any)) {
+                optional[at] = true;
+            }
+            let run = tokens[..at]
+                .iter()
+                .rev()
+                .take_while(|token| matches!(token, Token::Any | Token::DosAny))
+                .count();
+            optional[at - run..at].fill(true);
+        }
+    }
+    (tokens, optional)
+}
+
+/// Whether the cmd pattern given as `tokens` (see [`cmd_tokens`]) matches
+/// `name`, with no case and with the leading dot open to wildcards.
+fn matches_cmd(tokens: &[Token], optional: &[bool], name: &str) -> bool {
+    let name: Vec<char> = name.chars().collect();
+    matches_by(tokens, optional, name.len(), &|at, token| {
+        token.takes(name[at], true)
+    })
+}
+
+/// Whether `tokens` can match a name of `len` characters, where
+/// `takes(at, token)` says whether the token (not a `*`) takes the character
+/// at position `at`. A token marked in `optional` can also match nothing. The
+/// name is read position by position, so a position that can be any of
+/// several characters is asked once.
+fn matches_by(
+    tokens: &[Token],
+    optional: &[bool],
+    len: usize,
+    takes: &dyn Fn(usize, &Token) -> bool,
+) -> bool {
+    // The token positions the name read so far can stand at, after skipping
+    // every token that can match nothing.
+    let settle = |states: &mut Vec<bool>| {
+        for at in 0..tokens.len() {
+            if states[at] && (tokens[at] == Token::Star || optional[at]) {
+                states[at + 1] = true;
+            }
+        }
+    };
+    let mut states = vec![false; tokens.len() + 1];
+    states[0] = true;
+    settle(&mut states);
+    for position in 0..len {
+        let mut next = vec![false; tokens.len() + 1];
+        for at in 0..tokens.len() {
+            if !states[at] {
+                continue;
+            }
+            if tokens[at] == Token::Star {
+                next[at] = true;
+            } else if takes(position, &tokens[at]) {
+                next[at + 1] = true;
+            }
+        }
+        settle(&mut next);
+        states = next;
+    }
+    states[tokens.len()]
+}
+
 /// Whether the pattern part `pattern` matches the file name `name`.
 ///
 /// `*` is any run of characters, `?` is one character, and `[...]` is one
@@ -248,6 +556,10 @@ fn matches_short_git(part: &str, flavour: Flavour) -> bool {
 enum Token {
     Star,
     Any,
+    /// cmd's `>`: any one character, or nothing.
+    DosAny,
+    /// cmd's `"`: a dot, or nothing.
+    DosDot,
     Literal(char),
     Class {
         negated: bool,
@@ -279,7 +591,8 @@ impl Token {
         };
         match self {
             Self::Star => false,
-            Self::Any => true,
+            Self::Any | Self::DosAny => true,
+            Self::DosDot => c == '.',
             Self::Literal(literal) => same(*literal),
             Self::Class { negated, ranges } => {
                 let within = |c: char, low: char, high: char| low <= c && c <= high;
@@ -298,6 +611,14 @@ impl Token {
 }
 
 fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
+    tokens_in(pattern, flavour, false)
+}
+
+/// The tokens of `pattern`; with `dos`, also cmd's own wildcards, which the
+/// file system's matching reads and PowerShell's own does not: `<` is a `*`
+/// (that stops at the last dot, taken here as a `*`), `>` is a `?` that can
+/// match nothing, and `"` is a `.` that can match nothing.
+fn tokens_in(pattern: &str, flavour: Flavour, dos: bool) -> Vec<Token> {
     let windows = flavour == Flavour::Windows;
     let chars: Vec<char> = pattern.chars().collect();
     // A `[` after the last `]` has nothing to close it: it is a plain `[`.
@@ -313,13 +634,15 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
                 out.push(Token::Literal(chars[at]));
                 at += 1;
             }
-            '*' => {
+            _ if c == '*' || (dos && c == '<') => {
                 // `**` is `*`.
                 if out.last() != Some(&Token::Star) {
                     out.push(Token::Star);
                 }
             }
             '?' => out.push(Token::Any),
+            '>' if dos => out.push(Token::DosAny),
+            '"' if dos => out.push(Token::DosDot),
             '[' if last_close.is_some_and(|close| at <= close) => {
                 match class(&chars[at..], windows) {
                     Some((token, used)) => {
@@ -424,6 +747,132 @@ fn catch_all(part: &str, flavour: Flavour) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dos_wildcards_are_read_by_the_file_system_only() {
+        let windows = Flavour::Windows;
+        for pattern in [
+            "HEA<", "<", "a<", "o<", "HEA>", "HEAD>>", "HEAD\"", "stash\"", "sta>>",
+        ] {
+            assert!(can_match_git_entry(pattern, windows), "{pattern}");
+            assert!(!can_match_git_entry_powershell(pattern), "{pattern}");
+        }
+        for pattern in [".gi<", "<", ".git>", ".gi>>", ".git\"", ".g>it", "<.git"] {
+            assert!(can_match_git_folder(pattern), "{pattern}");
+        }
+        for pattern in ["x<", ".gx>", "node_modules\"", "*.t>", ">"] {
+            assert!(!can_match_git_folder(pattern), "{pattern}");
+        }
+        for pattern in ["*.t>", "x<.tmp", "node_modules\"", "b>>n"] {
+            assert!(!can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        assert!(can_match_git_entry("stash", windows));
+        assert!(can_match_git_entry("*stash*", Flavour::Posix));
+        assert!(can_match_git_entry_powershell("stash"));
+    }
+
+    #[test]
+    fn a_name_search_can_find_the_files_of_git() {
+        let windows = Flavour::Windows;
+        for pattern in [
+            "HEAD",
+            "head",
+            "config",
+            "index",
+            "*",
+            "*.*",
+            "*.",
+            "H*",
+            "?????",
+            "pack-*",
+            "*.pack",
+            "*.idx",
+            "com*",
+            "HEAD.",
+            "ma?n",
+            "[a-z]ndex",
+            "main.*",
+            "HEAD.*",
+            "HEAD.*.*",
+            "*.?.?",
+            "*.*.*.*",
+            "HEAD?",
+            "main.?",
+            "????????",
+            "ma?n?.*",
+            "*.pac",
+            "COMMIT~1",
+            "PACK-0~1.IDX",
+            "pack",
+            "Heads",
+            "tags",
+            "remotes",
+            "ORIGIN",
+            "pac?",
+            "??",
+            "???",
+            "pack?",
+            "1*",
+            "*7*",
+            "[a-f]?",
+            "?a",
+            "*ff",
+            "0*",
+            "pack-1*",
+            "pack-*.idx",
+            "*.pack",
+            "pack-?*.pack",
+            "??????~1",
+            "AB*~1",
+            "PACK-A~1.PAC",
+            "*~1.IDX",
+        ] {
+            assert!(can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        for pattern in [
+            "",
+            ".",
+            "..",
+            "*.obj",
+            "*.tmp",
+            "*.log",
+            "*.exe",
+            "Thumbs.db",
+            "a.txt",
+            "x*y",
+            "*.sample",
+            "main.obj",
+            "*.orig",
+            "foo.*",
+            "foo?.*",
+            "HEAD?.x",
+            "mainx.*",
+            "bin",
+            "obj",
+            "Debug",
+            "node_modules",
+            "target",
+            "?x",
+            "[g-z]?",
+            "x*",
+            "*.d",
+            "*.o",
+            "pack-x*",
+            "*.packx",
+        ] {
+            assert!(!can_match_git_entry(pattern, windows), "{pattern}");
+        }
+        assert!(can_match_git_entry("HEAD", Flavour::Posix));
+        assert!(!can_match_git_entry("head", Flavour::Posix));
+        assert!(!can_match_git_entry("HEAD.", Flavour::Posix));
+        assert!(!can_match_git_entry("main.*", Flavour::Posix));
+        assert!(!can_match_git_entry("*.pac", Flavour::Posix));
+        // An object's name is lower case on a case-sensitive file system.
+        assert!(can_match_git_entry("1*", Flavour::Posix));
+        assert!(can_match_git_entry("??", Flavour::Posix));
+        assert!(!can_match_git_entry("A?", Flavour::Posix));
+        assert!(!can_match_git_entry("??????~1", Flavour::Posix));
+    }
 
     #[test]
     fn a_pattern_takes_the_shape_of_its_last_part() {
