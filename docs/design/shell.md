@@ -749,9 +749,17 @@ element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
 which is expanded as text. A POSIX word also splits when an unquoted `$`
 follows a quoted head (`"$a"$b`) and when it holds an unquoted brace list or
 sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the
-parser has already unquoted counts as bare. So `docker rm -f "$name"` is safe
-and `docker rm -f $ids` in PowerShell is not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
-`image prune` without `-a` are safe, as are `network rm` and `builder prune`.
+parser has already unquoted counts as bare. A quoted variable that a loop sets
+is every item of the loop, not one: in a POSIX shell the variable of a `for`
+or of a `read` (`for c in $(docker ps -aq); do docker rm -f "$c"; done`,
+`docker ps -aq | while read c; do docker rm -f "$c"; done`), in PowerShell a
+`foreach` variable and the `$_` or `$PSItem` of a pipeline block (`docker ps
+-aq | % { docker rm -f "$_" }`, `foreach ($c in docker ps -aq) { docker rm -f
+"$c" }`). So `for c in web db; do docker rm -f "$c"; done` is risky too, as
+several forced at once. A variable set any other way (`id=web`) is one value.
+So `docker rm -f "$name"` is safe and `docker rm -f $ids` in PowerShell is
+not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a `image
+prune` without `-a` are safe, as are `network rm` and `builder prune`.
 The global options of each program that take a value (`-H`, `--context`,
 `-n`) are skipped to find the command.
 
@@ -768,15 +776,15 @@ delete` (also `node` and `registry`).
 **Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
 (a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
 `-destroy=false`; any `-destroy` turned on before `--` counts, even with a
-`=false` after it, since a value option may have taken that word); `plan -destroy` is safe. `terragrunt` the same, also behind
-`run-all` and `run --all --`: the word after `--` is the terraform command
-(or `terraform` behind `exec --`), and every word before it is read, the
-options that take a value (`--queue-include-dir`, `--parallelism`)
-skipped. `pulumi destroy` (also `down`, unless
-`--preview-only`, a Go-style flag that `--preview-only=false` or a value only
-known when it runs turns off) and
-`pulumi stack rm`; `cdk destroy`, `cdktf destroy`, `sst
-remove`, `serverless remove` (also `sls`), `vagrant destroy`, `sam delete`.
+`=false` after it, since a value option may have taken that word); `plan
+-destroy` is safe. `terragrunt` the same, also behind `run-all` and `run --all
+--`: the word after `--` is the terraform command (or `terraform` behind `exec
+--`), and every word before it is read, the options that take a value
+(`--queue-include-dir`, `--parallelism`) skipped. `pulumi destroy` (also
+`down`, unless `--preview-only`, a Go-style flag that `--preview-only=false`
+or a value only known when it runs turns off) and `pulumi stack rm`; `cdk
+destroy`, `cdktf destroy`, `sst remove`, `serverless remove` (also `sls`),
+`vagrant destroy`, `sam delete`.
 
 **Cloud.** Each CLI has a table of delete verbs in
 `detect/resources.rs`, with the options before the command that take a value,
@@ -785,14 +793,17 @@ so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
 `batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
 `--dry-run` and `s3`'s `--dryrun` make it safe, unless a later `--no-dry-run`
 turns it off (the CLI takes the last). `gcloud` (a `delete` or
-`destroy` among the first words, and `storage rm`), `gsutil rm`, `rb` and
-`rsync -d`, `az` (`delete`, `delete-*`, `purge`), `doctl` (`delete`, `d`,
-`rm`), `flyctl` and `fly` (`destroy`, `delete`, `rm` and `remove` under any
+`destroy` among the first words, `storage rm`, and `storage rsync` with
+`--delete-unmatched-destination-objects`, which `gsutil rsync -d` and `aws s3
+sync --delete` match), `gsutil rm`, `rb` and `rsync -d`, `az` (`delete`,
+`delete-*`, `purge`, `storage remove`), `doctl` (`delete`, `d`, `rm`), `flyctl`
+and `fly` (`destroy`, `delete`, `rm` and `remove` under any
 word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
 (`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
 (`apps:destroy`, `addons:destroy`), `wrangler` (`delete` at any depth,
-`kv:namespace delete`), `firebase` (`…:delete`), `hcloud`, `scw`, `oci`,
-`eksctl` and `kops` (`delete`).
+`kv:namespace delete`), `firebase` (`…:delete` and `…:remove`, as in
+`database:remove`), `hcloud`, `scw`, `oci` (`delete`, `bulk-delete`,
+`terminate`), `eksctl` and `kops` (`delete`).
 
 A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
 before `--` and not as the value of an option that takes a value, since pflag
@@ -814,8 +825,8 @@ the command word after it (`cdk --json destroy`).
 Not read, so the caller has to account for them: a verb that deletes under
 another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
-`gcloud storage rsync --delete-unmatched-destination-objects`, `docker rmi -f`
-of every image); a program run on another machine (`ssh host docker system
+`docker rmi -f` of every image); a program run on another machine (`ssh host
+docker system
 prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf /`); a command a
 tool reads from a file or its environment (`TF_CLI_ARGS=-destroy`, a
 `kubectl` plugin, a shell alias); and the `delete` verb of a resource that is

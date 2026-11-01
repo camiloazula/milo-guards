@@ -34,6 +34,24 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in names {
         split.reassign(&name);
     }
+    // `foreach ($c in …)`: the variable holds one item of what it walks.
+    unit::for_each_node(tree.root_node(), |node| {
+        if node.kind() == "foreach_statement" {
+            let mut cursor = node.walk();
+            let variable = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "variable");
+            if let Some(variable) = variable {
+                let name = unit::text(&variable, text).trim();
+                let name = name
+                    .strip_prefix("${")
+                    .and_then(|rest| rest.strip_suffix('}'))
+                    .or_else(|| name.strip_prefix('$'))
+                    .unwrap_or(name);
+                split.loop_variable(name);
+            }
+        }
+    });
     Walker {
         source: text,
         depth,

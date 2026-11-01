@@ -278,6 +278,10 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Variables a `for` loop or a `read` sets (lower case): each holds one
+    /// item of what the loop walks, so a rule that counts what a command
+    /// reaches reads `"$c"` as every item, not one.
+    looped: Vec<String>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -692,6 +696,21 @@ impl Split {
         if !self.reassigned.contains(&name) {
             self.reassigned.push(name);
         }
+    }
+
+    /// Record that a loop or a `read` sets the variable `name`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        if !self.looped.contains(&name) {
+            self.looped.push(name);
+        }
+    }
+
+    /// Whether a loop or a `read` in the line sets the variable `name`.
+    pub(crate) fn looped(&self, name: &str) -> bool {
+        self.looped
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
     }
 
     /// Whether the line sets the variable `name` anywhere.

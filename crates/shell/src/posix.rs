@@ -17,6 +17,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in assigned(tree.root_node(), text) {
         split.reassign(&name);
     }
+    for name in looped(tree.root_node(), text) {
+        split.loop_variable(&name);
+    }
     Walker {
         source: text,
         depth,
@@ -180,10 +183,6 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
             node.child_by_field_name("name")
                 .map(|name| unit::text(&name, source).to_string()),
         ),
-        "for_statement" => names.extend(
-            node.child_by_field_name("variable")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
         "unset_command" => {
             let mut cursor = node.walk();
             names.extend(
@@ -191,21 +190,40 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
                     .map(|name| unit::text(&name, source).to_string()),
             );
         }
+        _ => names.extend(loop_variables(node, source)),
+    });
+    names
+}
+
+/// The variables a `for` loop or a `read` sets: each holds one item of what
+/// the loop walks or the input it reads.
+fn looped(root: Node<'_>, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    unit::for_each_node(root, |node| names.extend(loop_variables(node, source)));
+    names
+}
+
+/// The variable of a `for` statement, or the names a `read` is given.
+fn loop_variables(node: Node<'_>, source: &str) -> Vec<String> {
+    match node.kind() {
+        "for_statement" => node
+            .child_by_field_name("variable")
+            .map(|name| unit::text(&name, source).to_string())
+            .into_iter()
+            .collect(),
         "command"
             if node
                 .child_by_field_name("name")
                 .is_some_and(|name| unit::text(&name, source) == "read") =>
         {
             let mut cursor = node.walk();
-            names.extend(
-                node.children_by_field_name("argument", &mut cursor)
-                    .map(|arg| unit::text(&arg, source).to_string())
-                    .filter(|arg| !arg.starts_with('-')),
-            );
+            node.children_by_field_name("argument", &mut cursor)
+                .map(|arg| unit::text(&arg, source).to_string())
+                .filter(|arg| !arg.starts_with('-'))
+                .collect()
         }
-        _ => {}
-    });
-    names
+        _ => Vec::new(),
+    }
 }
 
 /// What stands for an expansion in a template: a variable the guard cannot

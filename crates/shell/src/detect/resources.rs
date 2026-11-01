@@ -9,7 +9,7 @@
 
 use super::Checker;
 use crate::path::brace_list;
-use crate::unit::{has_flag, Arg, Unit};
+use crate::unit::{has_flag, Arg, Split, Unit};
 use crate::{Rule, Shell};
 
 /// What a program's line says.
@@ -35,7 +35,7 @@ impl Checker<'_> {
         }
         let said = match key {
             // Containers.
-            "docker" | "podman" | "nerdctl" => engine(args, unit.shell),
+            "docker" | "podman" | "nerdctl" => engine(args, unit.shell, self.split),
             "docker-compose" | "podman-compose" => compose(args),
             // Clusters.
             "kubectl" | "oc" => kubectl(args),
@@ -81,23 +81,15 @@ impl Checker<'_> {
             ),
             // Cloud.
             "aws" => aws(args),
-            "gcloud" => cloud(
-                args,
-                &values,
-                6,
-                |before, word| {
-                    matches!(word, "delete" | "destroy")
-                        || (before == Some("storage") && word == "rm")
-                },
-                "deletes Google Cloud resources",
-            ),
+            "gcloud" => gcloud(args, &values),
             "gsutil" => gsutil(args),
             "az" => cloud(
                 args,
                 &values,
                 5,
-                |_, word| {
-                    word == "delete"
+                |before, word| {
+                    (before == Some("storage") && word == "remove")
+                        || word == "delete"
                         || word == "purge"
                         || word.starts_with("delete-")
                         || word.starts_with("purge-")
@@ -143,7 +135,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 1,
-                |_, word| word.ends_with(":delete"),
+                |_, word| word.ends_with(":delete") || word.ends_with(":remove"),
                 "deletes Firebase resources",
             ),
             "hcloud" => cloud(
@@ -164,7 +156,7 @@ impl Checker<'_> {
                 args,
                 &values,
                 6,
-                |_, word| matches!(word, "delete" | "terminate"),
+                |_, word| matches!(word, "delete" | "bulk-delete" | "terminate"),
                 "deletes Oracle Cloud resources",
             ),
             "eksctl" => cloud(
@@ -734,7 +726,11 @@ fn is_one_of(arg: Option<&Arg>, names: &[&str]) -> bool {
 /// program as one argument per element, so a variable (not `$env:`) and a
 /// splat (`@ids`) are computed; a quoted one is a string. cmd expands
 /// `%VAR%` and `!VAR!` as text, so an unquoted one is several words.
-fn computed(arg: &Arg, shell: Shell) -> bool {
+///
+/// A quoted variable that a loop sets (a `for` or `read` in a POSIX shell, a
+/// `foreach` or the `$_` of a pipeline in PowerShell) holds one item of what
+/// the loop walks, so it names every one of them and counts as computed.
+fn computed(arg: &Arg, shell: Shell, split: &Split) -> bool {
     match arg {
         // The quotes are gone from a known word: a brace list in it was
         // written bare or quoted, and bare is the likelier.
@@ -751,9 +747,16 @@ fn computed(arg: &Arg, shell: Shell) -> bool {
                             || text.contains("${@")
                             || text.contains("[@]")
                             || splits(text)
+                            || names_variable(text, |name| split.looped(name))
                     }
                     Shell::PowerShell => {
-                        text.starts_with('(')
+                        (text.starts_with('"')
+                            && names_variable(text, |name| {
+                                split.looped(name)
+                                    || name == "_"
+                                    || name.eq_ignore_ascii_case("psitem")
+                            }))
+                            || text.starts_with('(')
                             || text.starts_with("@(")
                             || (text.starts_with('$')
                                 && !text
@@ -767,6 +770,19 @@ fn computed(arg: &Arg, shell: Shell) -> bool {
                 }
         }
     }
+}
+
+/// Whether `text` reads a variable (`$name`, `${name}`, `${name:-x}`) that
+/// `is` accepts by name.
+fn names_variable(text: &str, is: impl Fn(&str) -> bool) -> bool {
+    text.split('$').skip(1).any(|rest| {
+        let rest = rest.strip_prefix('{').unwrap_or(rest);
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        rest.get(..end)
+            .is_some_and(|name| !name.is_empty() && is(name))
+    })
 }
 
 /// Whether a word of a POSIX shell is read as several words when it runs
@@ -978,7 +994,7 @@ fn count(value: Option<&Arg>) -> Replicas {
     }
 }
 
-fn engine(args: &[Arg], shell: Shell) -> Say<'_> {
+fn engine<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
     let Some((cmd, rest)) = command(args, ENGINE_VALUES) else {
         return Safe;
     };
@@ -986,7 +1002,7 @@ fn engine(args: &[Arg], shell: Shell) -> Say<'_> {
         return Unread(None);
     };
     match name {
-        "rm" => return remove_containers(rest, shell),
+        "rm" => return remove_containers(rest, shell, split),
         "compose" => return compose(rest),
         "system" | "volume" | "container" | "image" | "network" | "stack" | "service" | "pod"
         | "machine" | "kube" => {}
@@ -1007,14 +1023,14 @@ fn engine(args: &[Arg], shell: Shell) -> Say<'_> {
         ("system", "reset") => Destroys("deletes every container, image and volume", target),
         ("volume", "rm" | "remove") => Destroys("deletes volumes", target),
         ("volume", "prune") => Destroys("deletes unused volumes", target),
-        ("container", "rm" | "remove") => remove_containers(after, shell),
+        ("container", "rm" | "remove") => remove_containers(after, shell, split),
         ("container", "prune") => Destroys("deletes every stopped container", target),
         ("image", "prune") if has_flag(after, Some('a'), Some("all")) => {
             Destroys("deletes every unused image", target)
         }
         ("network", "prune") => Destroys("deletes unused networks", target),
         ("stack" | "service", "rm" | "remove") => Destroys("removes swarm services", target),
-        ("pod", "rm") => remove_containers(after, shell),
+        ("pod", "rm") => remove_containers(after, shell, split),
         ("pod", "prune") => Destroys("deletes every stopped pod", target),
         ("machine", "rm") => Destroys("deletes a virtual machine and its containers", target),
         ("kube", "down") => Destroys("removes the pods a file created", target),
@@ -1025,7 +1041,7 @@ fn engine(args: &[Arg], shell: Shell) -> Say<'_> {
 /// `docker rm`: one named container is safe, even forced. Several forced at
 /// once, a choice made when the line runs, every container, and a container's
 /// volumes are not.
-fn remove_containers(args: &[Arg], shell: Shell) -> Say<'_> {
+fn remove_containers<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
     let operands = words(args, RM_VALUES);
     let target = operands.first().copied();
     if has_flag(args, Some('a'), Some("all")) {
@@ -1034,7 +1050,7 @@ fn remove_containers(args: &[Arg], shell: Shell) -> Say<'_> {
     if has_flag(args, None, Some("filter")) {
         return Destroys("removes the containers a filter picks", target);
     }
-    if operands.iter().any(|arg| computed(arg, shell)) {
+    if operands.iter().any(|arg| computed(arg, shell, split)) {
         return Destroys("removes containers chosen when it runs", target);
     }
     if has_flag(args, Some('v'), Some("volumes")) {
@@ -1359,6 +1375,34 @@ fn rehearses(args: &[Arg]) -> bool {
         }
     }
     on
+}
+
+/// `gcloud`: a delete or destroy verb, `storage rm`, and `storage rsync`
+/// with `--delete-unmatched-destination-objects`, which deletes what the
+/// source does not have like `gsutil rsync -d`.
+fn gcloud<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+    let said = cloud(
+        args,
+        values,
+        6,
+        |before, word| {
+            matches!(word, "delete" | "destroy") || (before == Some("storage") && word == "rm")
+        },
+        "deletes Google Cloud resources",
+    );
+    if !matches!(said, Safe) {
+        return said;
+    }
+    let words = words(args, values);
+    let storage_rsync = words.first().is_some_and(|w| w.known() == Some("storage"))
+        && words.get(1).is_some_and(|w| w.known() == Some("rsync"));
+    if storage_rsync && has_flag(args, None, Some("delete-unmatched-destination-objects")) {
+        return Destroys(
+            "deletes the objects the source does not have",
+            words.get(2).copied(),
+        );
+    }
+    said
 }
 
 fn gsutil(args: &[Arg]) -> Say<'_> {
