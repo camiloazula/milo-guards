@@ -1154,7 +1154,14 @@ a path.
   the line is in, which may be one the `cd` never reached. The folder of every
   other drive is unknown too after a `cd` given a variable (`cd %X%`, which
   may name any drive) and after a `call` (a batch file or label that runs in
-  the same process and may `cd` anywhere). When the
+  the same process and may `cd` anywhere), and so after a batch file run
+  without `call` (`x.bat`, `x.cmd`), which runs in the same process the same
+  way, and after a name with no extension (`x`, `npm`, `mvn`), which PATHEXT
+  may resolve to a batch file (`x.bat`, `npm.cmd`). A cmd builtin, a drive
+  switch and a name with another extension (`x.exe`) change nothing. A file
+  the command redirects is read before the command runs, so it is resolved
+  before the folders are given up. This changes how a drive's folder and
+  `C:x` are read only: a plain relative path after `npm install` is as before. When the
   folder is not known (the drive is only a guess, or the `cd` named a path from
   the drive's own working directory that nothing set), `C:x` is unknown after a
   `cd`, except that after `cd C:` a relative path is `C:x`, a path on that

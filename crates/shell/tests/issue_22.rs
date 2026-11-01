@@ -915,6 +915,74 @@ fn a_call_may_cd_on_any_drive() {
 }
 
 #[test]
+fn a_batch_file_run_without_call_may_cd_on_any_drive_too() {
+    // A batch file runs in the line's own process whether or not `call`
+    // names it, and a name with no extension may find one through PATHEXT.
+    let mut risky = deletes(&[
+        r"cd D:\ws\a & x.bat & rd /s /q D:b",
+        r"cd D:\ws\a & x.cmd & rd /s /q D:b",
+        r"cd D:\ws\a & X.BAT & rd /s /q D:b",
+        r#"cd D:\ws\a & "x.bat" & rd /s /q D:b"#,
+        r"cd D:\ws\a & D:\ws\x.bat & rd /s /q D:b",
+        r"cd D:\ws\a & D:x.bat & rd /s /q D:b",
+        r"cd D:\ws\a & x.bat arg & rd /s /q D:b",
+        r"cd D:\ws\a & x.bat && rd /s /q D:b",
+        r"cd D:\ws\a & x & rd /s /q D:b",
+        r"cd D:\ws\a & build & rd /s /q D:b",
+        r"cd D:\ws\a & npm install & rd /s /q D:b",
+        r"cd D:\ws\a & gradlew build & rd /s /q D:b",
+        r"cd D:\ws\a & mvn package & rd /s /q D:b",
+        r"cd D:\ws\a & %X% & rd /s /q D:b",
+        // What it redirects is read first, but what follows it is after.
+        r"cd D:\ws\a & x.bat > nul & rd /s /q D:b",
+        r"cd D:\ws\a & x.bat < nul & rd /s /q D:b",
+        r"(cd D:\ws\a & x.bat & rd /s /q D:b) > out.txt",
+        // On the own drive, with `C:x` read as under the folder.
+        r"cd a & x.bat & rd /s /q C:Users",
+        r"cd a\b & x.bat & rd /s /q C:..",
+        r"cd a\b & npm install & rd /s /q C:..",
+        // The same from PowerShell, which hands the line to cmd.
+        r#"cmd /c "cd D:\ws\a & x.bat & rd /s /q D:b""#,
+    ]);
+    risky.extend([
+        (
+            r"cd D:\ws\a & npm install & echo x > D:b.txt",
+            Rule::Overwrite,
+        ),
+        (
+            r"cd D:\ws\a & x.bat & copy C:a.txt D:b.txt",
+            Rule::Overwrite,
+        ),
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &risky);
+    check(
+        Shell::PowerShell,
+        &two_drives(),
+        &[],
+        &[(
+            r#"cmd /c "cd D:\ws\a & x.bat & rd /s /q D:b""#,
+            Rule::Delete,
+        )],
+    );
+    // A builtin, a drive switch and a program that is not a batch file run
+    // nothing in this process that could `cd`: the folder is still known,
+    // and a plain relative path was never affected.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[
+            r"cd sub & npm install & del *.obj",
+            r"cd sub & x.bat & del *.obj",
+            r"cd D:\ws\a & echo hi & rd /s /q D:b",
+            r"cd D:\ws\a & dir & rd /s /q D:b",
+            r"cd D:\ws\a & x.exe & rd /s /q D:b",
+            r"cd D:\ws\a & D:\ws\x.exe & rd /s /q D:b",
+        ],
+        &[],
+    );
+}
+
+#[test]
 fn a_path_on_the_own_drive_is_put_under_the_folder_only_when_every_cd_surely_ran() {
     // If the `cd` did not run, `C:..` is `C:\Users\me\repo\..`, which is
     // `C:\Users\me`, home.

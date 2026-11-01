@@ -42,13 +42,69 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     .walk(tree.root_node(), None, 0);
 }
 
+/// The commands cmd runs itself, with no program and no batch file.
+const BUILTINS: &[&str] = &[
+    "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date", "del", "dir", "echo",
+    "endlocal", "erase", "exit", "for", "ftype", "goto", "if", "md", "mkdir", "mklink", "move",
+    "path", "pause", "popd", "prompt", "pushd", "rd", "rem", "ren", "rename", "rmdir", "set",
+    "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
+];
+
+/// Whether a command whose name is written `word` may run a batch file in
+/// the line's own process, which may `cd` on any drive: a name ending in
+/// `.bat` or `.cmd`, or one with no extension (PATHEXT may find `x.bat` for
+/// `x`, `npm.cmd` for `npm`). A cmd builtin, a drive switch (`D:`), and a
+/// name with another extension (`x.exe`) are not. A name written with a
+/// character cmd reads differently, or one that holds a second colon, may be
+/// anything.
+fn may_be_batch(word: &str) -> bool {
+    if word.contains(['^', ';', ',', '=', '%', '!']) {
+        return true;
+    }
+    // cmd drops the quotes of a name.
+    let lower = word.replace('"', "").to_ascii_lowercase();
+    // `D:x.bat`, `D:\ws\x.bat`: the drive is not part of the file's name,
+    // and `D:` alone is a drive switch.
+    let mut chars = lower.chars();
+    let lower =
+        if chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':') {
+            let rest = &lower[2..];
+            if rest.is_empty() {
+                return false;
+            }
+            rest.to_string()
+        } else {
+            lower
+        };
+    if lower.contains(':') {
+        return true;
+    }
+    let file = lower.rsplit(['\\', '/']).next().unwrap_or_default();
+    if BUILTINS.contains(&file) {
+        return false;
+    }
+    // `cd..`, `cd\`: a `cd` with its path written against the name.
+    for cd in ["chdir", "cd"] {
+        if lower
+            .strip_prefix(cd)
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| matches!(c, '.' | '\\')))
+        {
+            return false;
+        }
+    }
+    match file.rsplit_once('.') {
+        Some((_, extension)) if !extension.is_empty() => matches!(extension, "bat" | "cmd"),
+        _ => true,
+    }
+}
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
     split: &'a mut Split,
 }
 
-impl Walker<'_> {
+impl<'a> Walker<'a> {
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         if level > unit::MAX_TREE_DEPTH {
             self.split
@@ -56,9 +112,12 @@ impl Walker<'_> {
             return;
         }
         match node.kind() {
+            // `x.bat`, `npm install`: a batch file named, or one the name may
+            // find through PATHEXT, runs in this very process as `call` does.
             "cmd" => {
-                self.command(node, stage);
-                self.children(node, None, level);
+                if self.simple(node, stage, level) {
+                    self.split.called();
+                }
             }
             // `call x.bat`, `call :label`: runs in this very process, and
             // may `cd` on any drive.
@@ -107,12 +166,19 @@ impl Walker<'_> {
                 let mut cursor = node.walk();
                 let mut inputs = Vec::new();
                 let mut own: Option<std::ops::Range<usize>> = None;
+                // cmd opens what is redirected before it runs the command,
+                // so a batch file the command names `cd`s only after.
+                let mut called = false;
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "redirection" {
                         inputs.extend(self.redirect(child));
                     } else {
                         let first = self.split.units.len();
-                        self.walk(child, stage, level + 1);
+                        if child.kind() == "cmd" {
+                            called |= self.simple(child, stage, level + 1);
+                        } else {
+                            self.walk(child, stage, level + 1);
+                        }
                         let range = first..self.split.units.len();
                         own = Some(own.map_or(range.clone(), |own| own.start..range.end));
                     }
@@ -122,6 +188,9 @@ impl Walker<'_> {
                         let target = self.split.on_drive(Shell::Cmd, target);
                         self.split.redirect(own.clone(), target, true);
                     }
+                }
+                if called {
+                    self.split.called();
                 }
             }
             "redirection" => {
@@ -142,6 +211,15 @@ impl Walker<'_> {
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A command and its arguments, and whether it may be a batch file that
+    /// runs in this very process, which the caller then notes with
+    /// `Split::called` once it has read what the command redirects.
+    fn simple(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) -> bool {
+        let program = self.command(node, stage);
+        self.children(node, None, level);
+        program.as_deref().is_none_or(may_be_batch)
     }
 
     /// The stages of `node`, numbered from `first` in `pipeline`, and the
@@ -197,23 +275,22 @@ impl Walker<'_> {
         }
     }
 
-    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) {
+    /// Runs the command `node` holds, and returns how its name is written.
+    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) -> Option<String> {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // `call %X%` names its program with a variable: the first piece is
         // the program whatever its kind, so no command goes unread.
-        let Some(name) = children
+        let name = children
             .iter()
             .find(|child| child.kind() == "command_name")
             .or_else(|| {
                 children
                     .iter()
                     .find(|child| child.kind() != "argument_list")
-            })
-        else {
-            return;
-        };
+            })?;
         let program = self.value(&[*name]);
+        let named = self.word(name).to_string();
         let list = children
             .iter()
             .find(|child| child.kind() == "argument_list")
@@ -238,6 +315,17 @@ impl Walker<'_> {
             self.depth,
         );
         self.unread_name(name);
+        Some(named)
+    }
+
+    /// The name of a command as written, to the space or separator that
+    /// ends it.
+    fn word(&self, name: &Node<'_>) -> &'a str {
+        let rest = self.source.get(name.start_byte()..).unwrap_or_default();
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | '<' | '>' | '(' | ')'))
+            .unwrap_or(rest.len());
+        &rest[..end]
     }
 
     /// cmd reads the name of a command differently from the grammar when it
@@ -250,11 +338,7 @@ impl Walker<'_> {
     /// is a plain word, and only quotes that make a `cd` or a drive of the
     /// word count.
     fn unread_name(&mut self, name: &Node<'_>) {
-        let rest = self.source.get(name.start_byte()..).unwrap_or_default();
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | '<' | '>' | '(' | ')'))
-            .unwrap_or(rest.len());
-        let word = &rest[..end];
+        let word = self.word(name);
         let cleaned: String = word
             .chars()
             .filter(|c| !matches!(c, '^' | '"'))
