@@ -1014,8 +1014,12 @@ where it is made. `add`, `write` and `read` are read only on a name the code
 set to an archive or a config parser: any other object has those methods
 (`set.add`, `file.write`, `file.read`). `.open()` of a `pathlib` path (`Path(…)`,
 a name set to one, what `/`, `joinpath` and `.parent` make of one) opens the
-file it names, also when its value is not known; the `open` of any other
-object is not known to open a file.
+file it names, also when its value is not known, and reads it only for a mode
+that is a string literal that reads (or none): a mode that is a value only known
+when it runs, an expression, a name, `mode=` of one, or `*args` or `**kwargs`
+that may carry one (`Path(p).open(sys.argv[1])`, `.open('r' + '+')`) is a write
+of the path, as the builtin `open` is; the `open` of any other object is not
+known to open a file.
 
 **A call the reader does not know.** Code that calls something the reader has
 no row for may read, write or delete a file, or run anything
@@ -1067,7 +1071,13 @@ another. When every target is an absolute folder, or every one is a folder below
 the one before (`sub`), those are all the places there are. When they mix, one
 goes up with `..` or is only known when it runs, `os.fchdir(fd)` is a directory
 only known when it runs, or a nested piece of code (`exec("…")`, `eval("…")`)
-has a `chdir` of its own, a relative path is only known when it runs. The nested
+has a `chdir` of its own, a relative path is only known when it runs: a read of
+one (`open('.ssh/id_rsa')`, `readFileSync`) is `unknown`, as is a program, a
+script or nested code run from there (`os.system('cat .ssh/id_rsa')`,
+`subprocess.run([…])`, `exec("…")`), and a delete or a write of one is judged
+as the shell judges one from a place unknown. A path that is absolute or in the
+home directory is the same from anywhere, so a key it names is `read_secret`
+as before. The nested
 code is read, in its own language and at any depth, not searched for the word:
 `getattr(os, 'ch' + 'dir')` and ``process[`ch${'dir'}`]`` are `chdir`s, and code
 that cannot be read, or is too long or too deep to, may hold one. In Python a `dir_fd`,
@@ -1106,8 +1116,16 @@ runs), and the ones that load code, `pickle` and `marshal` (`load`, `loads`),
 `load_module`, `cProfile.Profile`; every call of `pdb` (`run`, `runeval`,
 `runcall`, `main`, `Pdb`), which starts a debugger that reads commands from the
 input; `__import__`, `getattr`,
-`import()` and `require` of a computed name, a computed member of `fs` or
+`import()` (awaited or not) and `require` of a computed name, a computed member of `fs` or
 `os`; `globals`, `locals`, `vars`, `__dict__`, `__builtins__`, `.constructor`;
+an assignment, `setattr`, `Object.defineProperty`, `Object.assign` or
+`Reflect.set` to a member of a module, of a name bound to one, of a builtin
+class or its `prototype`, of any `__proto__`, or of `process`, `Deno` or `Bun`
+(`os.path.join = f`, `path.resolve = f`, `process.cwd = f`,
+`String.prototype.concat = f`, `Path.__truediv__ = f`), which changes what the
+calls the reader models do (`process.exitCode`, `process.title`,
+`module.exports` and a variable of `process.env` that names no directory change
+nothing it models);
 a call to a name above used as a value (`r = os.remove`,
 `map(fs.unlinkSync, files)`, `(0, rm)(p)`, a default value `def f(p,
 r=os.remove)`), since the reader cannot follow the alias; a module

@@ -1103,7 +1103,7 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
     }
     for piece in &code.pieces {
         match piece {
-            Arg::Known(text) => apply(split, language, text, depth),
+            Arg::Known(text) => apply(split, language, text, depth, false),
             other => split.problem(
                 Rule::Unknown,
                 "runs code only known when it runs",
@@ -1127,12 +1127,20 @@ pub(crate) fn apply_input(split: &mut Split, language: Language, code: &str, dep
             Some(&shorten(code)),
         );
     }
-    apply(split, language, code, depth);
+    apply(split, language, code, depth, false);
 }
 
 /// Read `code` in `language`, run `depth` levels deep, and add what it does
-/// to the split.
-pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: usize) {
+/// to the split. `unplaced` is whether the code starts in a directory only
+/// known when it runs (it is a piece of nested code run after a `chdir` the
+/// reader cannot place).
+pub(crate) fn apply(
+    split: &mut Split,
+    language: Language,
+    code: &str,
+    depth: usize,
+    unplaced: bool,
+) {
     if !unit::within_limits(split, code, depth) {
         return;
     }
@@ -1145,7 +1153,7 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
     let places = places(&reading.acts, depth);
     if places.len() == 1 {
         for act in reading.acts {
-            perform(split, act, depth);
+            perform(split, act, depth, unplaced);
         }
     } else {
         // The code can be in any of these places when it runs an act: a
@@ -1156,7 +1164,7 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
         for act in reading.acts {
             if matches!(act, Act::Chdir(_)) {
                 // Only where it goes is read here; the places hold the rest.
-                perform(split, act, depth);
+                perform(split, act, depth, unplaced);
                 split.restore_dir(outer.clone());
                 continue;
             }
@@ -1164,7 +1172,8 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
                 for dir in place {
                     run(split, "cd", vec![flag("--"), dir.clone()], depth);
                 }
-                perform(split, act.clone(), depth);
+                let unplaced = after(unplaced, place);
+                perform(split, act.clone(), depth, unplaced);
                 split.restore_dir(outer.clone());
             }
         }
@@ -1248,19 +1257,23 @@ fn places(acts: &[Act], depth: usize) -> Vec<Vec<Arg>> {
 
 /// Add what one act does to the split, as the shell command that does the
 /// same.
-fn perform(split: &mut Split, act: Act, depth: usize) {
+///
+/// `unplaced` is whether the code is in a directory only known when it runs:
+/// a path that counts from there, and a program or script run from there, is
+/// only known when it runs too, so each is `unknown` (a delete or a write is
+/// judged as the shell judges one from such a place, and a path of its own
+/// that is absolute or in the home directory is judged as it is anywhere).
+fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
     match act {
         Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
         Act::Write(path) => split.write(Shell::Posix, path),
         Act::Read(path) => {
-            let whole = matches!(path, Arg::Known(_));
-            let doubt = (!whole).then_some(PARTIAL);
+            let doubt = read_doubt(&path, unplaced);
             opened(split, "cat", vec![flag("--")], path, doubt, depth);
         }
         Act::ReadTree(path) => {
-            let whole = matches!(path, Arg::Known(_));
+            let doubt = read_doubt(&path, unplaced);
             let args = vec![flag("-r"), flag("--"), Arg::Known("x".to_string())];
-            let doubt = (!whole).then_some(PARTIAL);
             opened(split, "grep", args, path, doubt, depth);
         }
         Act::Opaque(path) => opened(split, "cat", vec![flag("--")], path, Some(HANDED), depth),
@@ -1285,20 +1298,30 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
         Act::Chdir(path) => run(split, "cd", vec![flag("--"), path], depth),
         Act::In(dir, acts) => {
             let outer = split.dir_snapshot();
+            let unplaced = after(unplaced, std::slice::from_ref(&dir));
             run(split, "cd", vec![flag("--"), dir], depth);
             for act in acts {
-                perform(split, act, depth);
+                perform(split, act, depth, unplaced);
             }
             split.restore_dir(outer);
         }
-        Act::Script(script) => run(split, "sh", vec![flag("-c"), script], depth),
+        Act::Script(script) => {
+            if unplaced {
+                split.problem(Rule::Unknown, UNPLACED_RUN, Some(script.text()));
+            }
+            run(split, "sh", vec![flag("-c"), script], depth);
+        }
         Act::Program(mut words) => {
             if !words.is_empty() {
+                if unplaced {
+                    let shown = words.iter().map(Arg::text).collect::<Vec<_>>().join(" ");
+                    split.problem(Rule::Unknown, UNPLACED_RUN, Some(&shown));
+                }
                 let program = words.remove(0);
                 launch::add(split, Unit::new(Shell::Posix, program, words, None), depth);
             }
         }
-        Act::Code(language, text) => apply(split, language, &text, depth + 1),
+        Act::Code(language, text) => apply(split, language, &text, depth + 1, unplaced),
         Act::Unread(code) => split.problem(
             Rule::Unknown,
             "runs code the guard does not read",
@@ -1317,6 +1340,39 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
             "loads code from outside the workspace",
             Some(&code),
         ),
+    }
+}
+
+/// Why a path that counts from a directory only known when the code runs is
+/// `unknown`.
+const UNPLACED_READ: &str = "opens a file from a directory only known when the code runs";
+
+/// Why a program or script run from a directory only known when the code
+/// runs is `unknown`.
+const UNPLACED_RUN: &str = "runs from a directory only known when the code runs";
+
+/// Whether the code is still in a directory only known when it runs after the
+/// `cd`s of `dirs` from a start that was (`unplaced`) or was not: an absolute
+/// folder places it, one below where it was or above it (`..`) keeps it
+/// where it was, and one only known when it runs leaves it unplaced.
+fn after(unplaced: bool, dirs: &[Arg]) -> bool {
+    dirs.iter().fold(unplaced, |state, dir| match dir.known() {
+        Some(text) if text.starts_with(['/', '~']) => false,
+        Some(_) => state,
+        None => true,
+    })
+}
+
+/// Why a read of `path` is `unknown`, if it is: the path is only known when
+/// the code runs, or known in part, or counts from a directory only known
+/// when it runs (`unplaced`). A path of the home directory or an absolute one
+/// is the same wherever the code is, and so is a key it names (which the unit
+/// finds and says as `read_secret`).
+fn read_doubt(path: &Arg, unplaced: bool) -> Option<&'static str> {
+    match path.known() {
+        None => Some(PARTIAL),
+        Some(text) if unplaced && !text.starts_with(['/', '~']) => Some(UNPLACED_READ),
+        Some(_) => None,
     }
 }
 

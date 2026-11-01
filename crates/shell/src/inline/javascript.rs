@@ -282,6 +282,35 @@ const ROOTS: [&str; 11] = [
     "os",
 ];
 
+/// The builtin classes whose members, and whose `prototype`'s, the reader
+/// models: an assignment to one changes the calls it follows for every value.
+const BUILTIN_CLASSES: [&str; 24] = [
+    "String",
+    "Array",
+    "Object",
+    "Number",
+    "Boolean",
+    "Symbol",
+    "BigInt",
+    "Function",
+    "Date",
+    "RegExp",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Promise",
+    "JSON",
+    "Math",
+    "Reflect",
+    "Buffer",
+    "URL",
+    "Error",
+    "Uint8Array",
+    "Intl",
+    "TextDecoder",
+];
+
 /// What `globalThis`, `global` and `window` are named, once the reader
 /// has put them back: a member of it is the name alone (`globalThis.require`
 /// is `require`).
@@ -1300,7 +1329,13 @@ impl<'s> Reader<'s> {
             }
             match node.kind() {
                 "import_statement" | "export_statement" => self.module_source(node),
-                "call_expression" | "new_expression" => self.call(node, field, above),
+                "call_expression" | "new_expression" => {
+                    self.member_definition(node);
+                    self.call(node, field, above);
+                }
+                "assignment_expression" | "augmented_assignment_expression" => {
+                    self.member_assignment(node);
+                }
                 "member_expression"
                 | "identifier"
                 | "shorthand_property_identifier"
@@ -1988,6 +2023,151 @@ impl<'s> Reader<'s> {
         (self.qualified(function, 0).as_deref() == Some(name)).then(|| Args::read(node))
     }
 
+    /// An assignment (also augmented) to a member of a module, of a name
+    /// bound to one, of `process`, `Deno` or `Bun`, of a builtin class or its
+    /// `prototype`, or of any `__proto__` (`path.resolve = f`,
+    /// `String.prototype.concat = f`) changes what the calls the reader
+    /// models do: code the reader does not follow.
+    fn member_assignment(&mut self, node: Node<'_>) {
+        if let Some(left) = node.child_by_field_name("left") {
+            if self.assigns_to_global_member(left, 0) {
+                self.reading.unread(self.text(node));
+            }
+        }
+    }
+
+    /// Whether `target` is a member of such an object, other than the few
+    /// members of `process` that change nothing the reader models
+    /// (`process.exitCode`, `process.title`, a variable of `process.env` that
+    /// is not a directory).
+    fn assigns_to_global_member(&mut self, target: Node<'_>, level: usize) -> bool {
+        if level > MAX_TREE_DEPTH {
+            self.reading.deep = true;
+            return false;
+        }
+        let (object, member) = match target.kind() {
+            "parenthesized_expression" => {
+                return target
+                    .named_child(0)
+                    .is_some_and(|inner| self.assigns_to_global_member(inner, level + 1));
+            }
+            "member_expression" => (
+                target.child_by_field_name("object"),
+                target
+                    .child_by_field_name("property")
+                    .map(|property| self.text(property).to_string()),
+            ),
+            "subscript_expression" => {
+                let index = target
+                    .child_by_field_name("index")
+                    .and_then(|index| self.literal(index));
+                (target.child_by_field_name("object"), index)
+            }
+            _ => return false,
+        };
+        let Some(object) = object else {
+            return false;
+        };
+        if !self.is_global_object(object, level + 1) {
+            return false;
+        }
+        let name = self.qualified(object, 0);
+        !match (name.as_deref(), member.as_deref()) {
+            (Some("process"), Some("exitCode" | "title")) | (Some("module"), Some("exports")) => {
+                true
+            }
+            (Some("module.exports"), _) => true,
+            (Some("process.env"), Some(variable)) => environment(variable).is_none(),
+            _ => false,
+        }
+    }
+
+    /// Whether `object` is a module, a name bound to one, `process`, `Deno`,
+    /// `Bun`, the global object, a builtin class or a `prototype` of one, or
+    /// a `__proto__` or `Object.getPrototypeOf(…)` of anything.
+    fn is_global_object(&mut self, object: Node<'_>, level: usize) -> bool {
+        // A `__proto__` anywhere in the chain is a builtin prototype once it
+        // is reached from a value (`''.__proto__`).
+        let mut at = object;
+        for _ in 0..MAX_TREE_DEPTH {
+            let next = match at.kind() {
+                "member_expression" => {
+                    if at
+                        .child_by_field_name("property")
+                        .is_some_and(|property| self.text(property) == "__proto__")
+                    {
+                        return true;
+                    }
+                    at.child_by_field_name("object")
+                }
+                "subscript_expression" => {
+                    let index = at
+                        .child_by_field_name("index")
+                        .and_then(|index| self.literal(index));
+                    if index.as_deref() == Some("__proto__") {
+                        return true;
+                    }
+                    at.child_by_field_name("object")
+                }
+                "parenthesized_expression" => at.named_child(0),
+                _ => None,
+            };
+            match next {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        if let Some(name) = self.qualified(object, level) {
+            let root = name.split('.').next().unwrap_or(&name);
+            return self.is_module(&name)
+                || self.is_module(root)
+                || BUILTIN_CLASSES.contains(&root);
+        }
+        object.kind() == "call_expression"
+            && object
+                .child_by_field_name("function")
+                .and_then(|function| self.qualified(function, level))
+                .is_some_and(|function| {
+                    matches!(
+                        function.as_str(),
+                        "Object.getPrototypeOf" | "Reflect.getPrototypeOf"
+                    )
+                })
+    }
+
+    /// `Object.defineProperty(String.prototype, …)`, `Object.assign(path, …)`,
+    /// `Reflect.set(fs, …)`, `Object.setPrototypeOf(…)`: an assignment to a
+    /// member of the first argument, which is code the reader does not follow
+    /// when that is a module or a builtin prototype.
+    fn member_definition(&mut self, call: Node<'_>) {
+        let Some(function) = call.child_by_field_name("function") else {
+            return;
+        };
+        let defines = self.qualified(function, 0).is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "Object.defineProperty"
+                    | "Object.defineProperties"
+                    | "Object.assign"
+                    | "Object.setPrototypeOf"
+                    | "Reflect.set"
+                    | "Reflect.defineProperty"
+                    | "Reflect.setPrototypeOf"
+            )
+        });
+        if !defines {
+            return;
+        }
+        let args = Args::read(call);
+        let into_global = match args.positional.first().copied() {
+            Some(first) => args.splat_at == Some(0) || self.is_global_object(first, 0),
+            None => args.splat,
+        };
+        if into_global {
+            self.reading.unread(self.text(call));
+        }
+    }
+
     fn call<'t>(&mut self, call: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
         let function = if call.kind() == "new_expression" {
             call.child_by_field_name("constructor")
@@ -2304,7 +2484,9 @@ impl<'s> Reader<'s> {
             }
             // The code in a `data:` URL runs where it is written.
             let data = specifier.as_deref().is_some_and(super::data_url);
-            if !awaited || data || self.escapes(call, field, above) {
+            // A module named by a value only known when it runs is code the
+            // reader cannot follow, awaited or not.
+            if specifier.is_none() || !awaited || data || self.escapes(call, field, above) {
                 self.reading.unread(self.text(call));
             }
         }

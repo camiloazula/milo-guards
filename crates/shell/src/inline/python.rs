@@ -423,7 +423,15 @@ const NAMES_ONLY: &[&str] = &[
     "secrets.",
     "platform.",
     "locale.",
-    "argparse.",
+    // Not `argparse.FileType`: what it makes opens the file it is given (for
+    // writing, with `'w'`) when the parser or the caller calls it.
+    "argparse.Argument",
+    "argparse.Namespace",
+    "argparse.Action",
+    "argparse.BooleanOptionalAction",
+    "argparse.HelpFormatter",
+    "argparse.Raw",
+    "argparse.MetavarTypeHelpFormatter",
     "warnings.",
     "urllib.parse.",
     "logging.getLogger",
@@ -813,6 +821,31 @@ fn fresh(name: &str) -> String {
         rebase(name)
     }
 }
+
+/// The classes of the language whose members the reader models, which an
+/// assignment to a member of (`str.join = f`) changes for every value.
+const BUILTIN_CLASSES: [&str; 20] = [
+    "str",
+    "bytes",
+    "bytearray",
+    "int",
+    "float",
+    "bool",
+    "complex",
+    "list",
+    "tuple",
+    "dict",
+    "set",
+    "frozenset",
+    "object",
+    "type",
+    "range",
+    "property",
+    "super",
+    "memoryview",
+    "slice",
+    "enumerate",
+];
 
 /// The modules that stand for others without having been imported by name:
 /// `os.path` imports `os`.
@@ -1565,6 +1598,16 @@ impl<'s> Reader<'s> {
             }
             if matches!(node.kind(), "assignment" | "augmented_assignment") {
                 self.sys_path_assignment(node);
+            }
+            if matches!(
+                node.kind(),
+                "assignment"
+                    | "augmented_assignment"
+                    | "for_statement"
+                    | "for_in_clause"
+                    | "as_pattern"
+            ) {
+                self.member_assignment(node);
             }
             !self.reading.deep
         });
@@ -2685,6 +2728,85 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// An assignment (also augmented, or the target of a `for`, `with ... as`)
+    /// to a member of a module, of a name bound to one, or of a builtin class
+    /// (`os.path.join = f`, `Path.__truediv__ = f`, `str.join = f`) changes
+    /// what the calls the reader models do: code the reader does not follow.
+    fn member_assignment(&mut self, node: Node<'_>) {
+        let target = match node.kind() {
+            "as_pattern" => node.child_by_field_name("alias"),
+            _ => node.child_by_field_name("left"),
+        };
+        if target.is_some_and(|target| self.assigns_to_global_member(target, 0)) {
+            self.reading.unread(self.text(node));
+        }
+    }
+
+    /// Whether `target`, or a part of it when it unpacks, is a member of a
+    /// module or of a builtin class.
+    fn assigns_to_global_member(&mut self, target: Node<'_>, level: usize) -> bool {
+        if level > MAX_TREE_DEPTH {
+            self.reading.deep = true;
+            return false;
+        }
+        match target.kind() {
+            "attribute" => target
+                .child_by_field_name("object")
+                .is_some_and(|object| self.is_global_object(object, level + 1)),
+            "pattern_list"
+            | "tuple_pattern"
+            | "list_pattern"
+            | "list_splat_pattern"
+            | "parenthesized_expression"
+            | "as_pattern_target" => {
+                let mut cursor = target.walk();
+                let parts: Vec<Node<'_>> = target.named_children(&mut cursor).collect();
+                parts
+                    .into_iter()
+                    .any(|part| self.assigns_to_global_member(part, level + 1))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `object` is a module, a name bound to one, a class of the
+    /// language, or a member of one (`os`, `os.path`, `p` after `p = os.path`,
+    /// `Path`, `str`, `sys.modules['os']`, `__import__(name)`).
+    fn is_global_object(&mut self, object: Node<'_>, level: usize) -> bool {
+        if level > MAX_TREE_DEPTH {
+            self.reading.deep = true;
+            return false;
+        }
+        if let Some(name) = self.qualified(object, 0) {
+            let root = name.split('.').next().unwrap_or(&name);
+            return self.is_module(&name)
+                || self.is_module(root)
+                || BUILTIN_CLASSES.contains(&root)
+                || self.aliases.contains_key(root);
+        }
+        match object.kind() {
+            "subscript" => object
+                .child_by_field_name("value")
+                .is_some_and(|value| self.is_global_object(value, level + 1)),
+            "attribute" | "parenthesized_expression" => {
+                let inner = if object.kind() == "attribute" {
+                    object.child_by_field_name("object")
+                } else {
+                    object.named_child(0)
+                };
+                inner.is_some_and(|inner| self.is_global_object(inner, level + 1))
+            }
+            // `__import__(name)`, `importlib.import_module(name)`, `getattr`.
+            "call" => object
+                .child_by_field_name("function")
+                .and_then(|function| self.qualified(function, 0))
+                .as_deref()
+                .and_then(kind)
+                .is_some_and(|kind| matches!(kind, Kind::Import | Kind::Getattr)),
+            _ => false,
+        }
+    }
+
     /// `fileinput.input(files, inplace=True)` and `fileinput.FileInput(…)`:
     /// with `inplace` on (or only known when it runs) each file is rewritten
     /// as `sed -i` does it, so each is a write. Files given as anything but a
@@ -3086,6 +3208,24 @@ impl<'s> Reader<'s> {
                     writes_file |= self
                         .value(node, 0)
                         .is_some_and(|literal| opens_for_writing(&literal));
+                }
+                // A `pathlib` path is known to be a file, so its `open` is
+                // read as the builtin is: the call reads only when its mode
+                // is a string literal that reads (or is left out), and may
+                // write when the mode is a value only known when it runs, is
+                // spread in, or is not a string.
+                if !writes_file && self.path_like(receiver, 0) {
+                    let mode = args.get(0, &["mode"]);
+                    writes_file = args.splat_at == Some(0)
+                        || match mode {
+                            Some(node) => {
+                                node.kind() != "string"
+                                    || self
+                                        .value(node, 0)
+                                        .is_none_or(|literal| opens_for_writing(&literal))
+                            }
+                            None => args.splat,
+                        };
                 }
                 if writes_file {
                     let target = self.arg(receiver);
