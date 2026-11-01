@@ -184,12 +184,8 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Rename-Item -Path src\\a.rs -NewName b.rs",
             "Rename-Item -LiteralPath src\\a.rs -NewName b.rs",
             "Rename-Item -NewName b.rs src\\a.rs",
-            "Rename-Item -Path src\\a.rs -NewName $name",
             "rni src\\a.rs b.rs",
             "ren src\\a.rs b.rs",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
             "Get-ChildItem *.txt | ForEach-Object { Rename-Item $_ -NewName x }",
             "Move-Item src\\a src\\b",
             "Get-ChildItem src | Move-Item -Destination old",
@@ -204,6 +200,47 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Copy-Item HKCU:\\Software\\x src\\y -Force",
         ],
         &[],
+    );
+}
+
+/// A new name only known when it runs may be a startup file's (`.envrc`), so
+/// it is an overwrite even for an item inside the workspace.
+#[test]
+fn a_new_name_only_known_when_it_runs_is_an_overwrite() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "Rename-Item -Path src\\a.rs -NewName $name",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+        ],
     );
 }
 
@@ -321,12 +358,7 @@ fn what_get_item_and_listings_hand_on_inside_the_workspace_stays_safe() {
     check(
         Shell::PowerShell,
         &windows(),
-        &[
-            "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-Item src | Rename-Item -NewName old",
-        ],
+        &["Get-Item src | Rename-Item -NewName old"],
         &[],
     );
 }
@@ -461,12 +493,17 @@ fn rename_item_judges_every_positional_and_path() {
             "Rename-Item src\\a.rs b.rs",
             "Rename-Item -n y src\\x",
             "Rename-Item -- src\\x y",
-            "Rename-Item src\\a.rs $name",
-            "Rename-Item src\\a.rs ($x + '.bak')",
-            "Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
             "Rename-Item -Path src\\a, src\\b -NewName c",
         ],
         &[
+            // A new name made at run time is an overwrite (it may be a
+            // startup file's), but it is never judged as the item renamed.
+            ("Rename-Item src\\a.rs $name", Rule::Overwrite),
+            ("Rename-Item src\\a.rs ($x + '.bak')", Rule::Overwrite),
+            (
+                "Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
+                Rule::Overwrite,
+            ),
             ("Rename-Item -n y HKCU:\\Software\\x", Rule::SystemSettings),
             ("Rename-Item -N y C:\\Windows\\x", Rule::Delete),
             ("Rename-Item -- HKCU:\\Software\\x y", Rule::SystemSettings),
@@ -522,7 +559,7 @@ fn a_force_or_hidden_listing_hands_on_the_hidden_files() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }"],
+        &["Get-ChildItem | Rename-Item -NewName x"],
         &[
             (
                 "Get-ChildItem -Force | Rename-Item -NewName { $_.Name + 1 }",
@@ -554,8 +591,8 @@ fn the_hidden_alias_and_attributes_list_hidden_files_too() {
         Shell::PowerShell,
         &windows(),
         &[
-            "Get-ChildItem -Attributes Directory | Rename-Item -NewName { $_.Name + 1 }",
-            "gci -ad | Rename-Item -NewName { $_.Name + 1 }",
+            "Get-ChildItem -Attributes Directory | Rename-Item -NewName x",
+            "gci -ad | Rename-Item -NewName x",
             "gci -Attributes ReadOnly | Move-Item -Destination old",
         ],
         &[
@@ -598,7 +635,7 @@ fn a_depth_listing_is_not_read_as_a_listing_of_its_value() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["Get-ChildItem -Depth 1 | Rename-Item -NewName { $_.Name + 1 }"],
+        &["Get-ChildItem -Depth 1 | Rename-Item -NewName x"],
         &[
             ("gci -Depth 1 -Force | Rename-Item -NewName x", Rule::Delete),
             ("gci -Force -Depth 1 | Clear-Item", Rule::Overwrite),

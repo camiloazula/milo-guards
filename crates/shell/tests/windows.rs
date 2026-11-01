@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{check, rules, windows};
-use milo_guards_shell::{classify, Paths, Rule, Shell};
+use common::{check, classify, rules, windows};
+use milo_guards_shell::{Paths, Protected, Rule, Shell};
 
 #[test]
 fn everyday_powershell_is_safe() {
@@ -50,6 +50,12 @@ fn risky_powershell() {
         &windows(),
         &[],
         &[
+            // A value parameter of `Get-ChildItem` is not one of `Remove-Item`: it
+            // must not swallow the target.
+            ("Remove-Item -Depth ~ -Recurse", Rule::Delete),
+            ("Remove-Item -at C:\\ -Recurse", Rule::Delete),
+            ("ri -Attributes ~ -Recurse -Force", Rule::Delete),
+            ("rm -dep ~ -r", Rule::Delete),
             ("Remove-Item -Recurse -Force ~", Rule::Delete),
             ("Remove-Item -Recurse -Force $env:USERPROFILE", Rule::Delete),
             ("rm -r -fo $HOME\\Documents", Rule::Delete),
@@ -1198,5 +1204,245 @@ fn a_long_path_prefix_is_outside_the_workspace() {
             "Remove-Item -Recurse -Force '\\\\?\\C:\\Users\\me\\dev\\repo\\.git.'",
             Rule::Delete,
         )],
+    );
+}
+
+/// A Windows spelling of a protected path resolves the same way, in every
+/// shell, and without regard to case.
+#[test]
+fn a_protected_path_is_a_finding_on_windows_too() {
+    let paths = windows().with_protected([
+        Protected::folder(r"C:\Users\me\.agent", "the agent's settings"),
+        Protected::folder(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+    ]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Get-Content C:\Users\me\.agent\config.yaml",
+            r"Get-ChildItem C:\Users\me\.agent",
+            "Remove-Item src\\main.rs",
+            "Remove-Item -Recurse -Force target",
+        ],
+        &[
+            (r"Remove-Item C:\Users\me\.agent\config.yaml", Rule::Delete),
+            (
+                r"Remove-Item -Recurse -Force C:\Users\me\.agent",
+                Rule::Delete,
+            ),
+            (r"Remove-Item c:\users\ME\.AGENT\config.yaml", Rule::Delete),
+            (r"Remove-Item C:/Users/me/.agent/config.yaml", Rule::Delete),
+            (r"Remove-Item $HOME\.agent\config.yaml", Rule::Delete),
+            (r"Remove-Item .agent\rules", Rule::Delete),
+            (r"Remove-Item C:\Users\me\.agent\*", Rule::Delete),
+            (r"'x' > C:\Users\me\.agent\config.yaml", Rule::Overwrite),
+            (r"Set-Content .agent\rules -Value x", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"type C:\Users\me\.agent\config.yaml",
+            r"dir C:\Users\me\.agent",
+            r"del src\main.rs",
+        ],
+        &[
+            (r"del C:\Users\me\.agent\config.yaml", Rule::Delete),
+            (r"del C:\USERS\me\.Agent\config.yaml", Rule::Delete),
+            (r"rd /s /q C:\Users\me\.agent", Rule::Delete),
+            (r"del .agent\rules", Rule::Delete),
+            (r"echo x > C:\Users\me\.agent\config.yaml", Rule::Overwrite),
+            (
+                r"copy x.txt C:\Users\me\.agent\config.yaml",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+    let assessment = classify(
+        r"Remove-Item C:\Users\me\.agent\config.yaml",
+        Shell::PowerShell,
+        &paths,
+    );
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "deletes the agent's settings"
+    );
+}
+
+/// The 8.3 short name of a protected name is the protected name, and a
+/// folder holding a protected path cannot be deleted whole.
+#[test]
+fn a_windows_short_name_and_a_holding_folder_are_protected() {
+    let paths = windows().with_protected([
+        Protected::folder(r"C:\Users\me\dev\repo\.agent", "the agent's settings"),
+        Protected::file(
+            r"C:\Users\me\dev\repo\conf\app\x.yaml",
+            "the agent's settings",
+        ),
+    ]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Remove-Item AGEN~1\rules",
+            r"Remove-Item OTHER~1\rules",
+            r"Remove-Item conf\other.txt",
+            r"Remove-Item src -Recurse",
+            r"Copy-Item a.txt conf\",
+            r"New-Item -ItemType Directory conf\app",
+        ],
+        &[
+            (r"Remove-Item AGENT~1\rules", Rule::Delete),
+            (r"Remove-Item -Recurse agent~1", Rule::Delete),
+            (r"Remove-Item -Recurse conf", Rule::Delete),
+            (r"Remove-Item -Recurse conf\app", Rule::Delete),
+            (r"Remove-Item -Recurse c*", Rule::Delete),
+            (r"Remove-Item conf\app\x.yaml", Rule::Delete),
+            (r"Remove-Item -Recurse AGENT~*", Rule::Delete),
+            (r"'x' > AGENT~1\rules", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"del AGEN~1\rules",
+            r"del conf\other.txt",
+            r"copy a.txt conf\",
+        ],
+        &[
+            (r"del AGENT~1\rules", Rule::Delete),
+            (r"rd /s /q conf", Rule::Delete),
+            (r"rd /s /q AGENT~1", Rule::Delete),
+            (r"echo x > AGENT~1\rules", Rule::Overwrite),
+        ],
+    );
+}
+
+/// A copy or move into the folder of a protected file by its name replaces
+/// it, in every shell; a recursive copy into a folder holding one can.
+#[test]
+fn a_windows_copy_into_a_protected_files_folder_is_a_finding() {
+    let paths = windows().with_protected([Protected::file(
+        r"C:\Users\me\dev\repo\conf\app\x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            r"Copy-Item a.txt conf\app",
+            r"Copy-Item y.yaml conf\app\",
+            r"Move-Item a.txt conf\app",
+            r"Copy-Item -Recurse src dist",
+            r"Copy-Item -Recurse -Force src conf\other",
+            r"Copy-Item *.txt conf\app",
+            r"Copy-Item a.txt,b.txt conf\app",
+            r"Move-Item -Path a.txt,b.txt -Destination conf\app",
+        ],
+        &[
+            (r"Copy-Item x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml conf\app\", Rule::Overwrite),
+            (
+                r"Copy-Item -Path new\x.yaml -Destination conf\app",
+                Rule::Overwrite,
+            ),
+            (r"Move-Item x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item *.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item -Recurse -Force src conf", Rule::Overwrite),
+            (r"Copy-Item -Recurse src conf\app", Rule::Overwrite),
+            (r"Copy-Item -Recurse app conf", Rule::Overwrite),
+            // A comma list of sources.
+            (r"Copy-Item y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml, y.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item x.yaml,y.yaml conf\app\", Rule::Overwrite),
+            (r"Move-Item y,x.yaml conf\app", Rule::Overwrite),
+            (r"Copy-Item -Path y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (
+                r"Copy-Item -Path a,x.yaml -Destination conf\app",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &paths,
+        &[
+            r"copy a.txt conf\app",
+            r"copy a.txt,b.txt conf\app",
+            r"copy /b a.txt+b.txt conf\app",
+            r"move /y a.txt conf\app",
+            r"xcopy /y a.txt conf\app",
+            r"robocopy src dist /E",
+            r"robocopy src conf\other /E",
+            r"xcopy /s /y src dist",
+        ],
+        &[
+            (r"copy /y x.yaml conf\app", Rule::Overwrite),
+            (r"copy y.yaml,x.yaml conf\app", Rule::Overwrite),
+            (r"copy /b y.yaml+x.yaml conf\app", Rule::Overwrite),
+            (r"copy x.yaml+y.yaml conf\app\", Rule::Overwrite),
+            (r"copy x.yaml conf\app\", Rule::Overwrite),
+            (r"move /y x.yaml conf\app", Rule::Overwrite),
+            (r"xcopy /y x.yaml conf\app", Rule::Overwrite),
+            (r"xcopy /s /y src conf", Rule::Overwrite),
+            (r"xcopy /e src conf\app", Rule::Overwrite),
+            (r"robocopy src conf /E", Rule::Overwrite),
+            (r"robocopy src conf\app /S", Rule::Overwrite),
+            (r"robocopy src conf\app x.yaml", Rule::Overwrite),
+            (r"robocopy src conf\app", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_letter_ntfs_does_not_fold_is_not_the_workspaces_letter() {
+    // The Kelvin sign, the Ångström sign, the Ohm sign and the capital sharp
+    // s look like `k`, `å`, `ω` and `ß` to the widest case fold, but not to
+    // NTFS: a folder by those names is another folder, so deleting it is a
+    // delete beyond the workspace.
+    for (workspace, other) in [
+        ("work", "wor\u{212a}"),
+        ("wor\u{e5}", "wor\u{212b}"),
+        ("wor\u{3c9}", "wor\u{2126}"),
+        ("stra\u{df}e", "stra\u{1e9e}e"),
+    ] {
+        let dir = format!(r"C:\Users\me\{workspace}");
+        let paths = Paths::new(dir.as_str(), r"C:\Users\me", [dir.as_str()]);
+        for (shell, remove) in [
+            (Shell::Cmd, "rd /s /q"),
+            (Shell::PowerShell, "Remove-Item -Recurse -Force"),
+        ] {
+            let inside = format!(r"{remove} C:\Users\me\{workspace}\x");
+            let folded = format!(r"{remove} C:\Users\me\{other}\x");
+            let whole = format!(r"{remove} C:\Users\me\{other}");
+            check(
+                shell,
+                &paths,
+                &[inside.as_str()],
+                &[
+                    (folded.as_str(), Rule::Delete),
+                    (whole.as_str(), Rule::Delete),
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+fn a_long_path_to_the_workspace_is_the_workspace() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            r"rd /s /q \\?\C:\Users\me\dev\repo\x",
+            "rd /s /q //?/C:/Users/me/dev/repo/x",
+        ],
+        &[
+            (r"rd /s /q \\?\C:\Users\me\dev", Rule::Delete),
+            (r"rd /s /q \\?\C:\Windows", Rule::Delete),
+            (r"rd /s /q \\?\C:\Users\me\.ssh", Rule::Delete),
+        ],
     );
 }
