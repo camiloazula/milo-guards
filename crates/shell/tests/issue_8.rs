@@ -1127,6 +1127,10 @@ fn a_fork_bomb_in_a_nested_function_is_judged_on_its_own() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a super-linear read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn the_process_rules_read_long_patterns_quickly() {
     let windows = windows();
     let linux = posix();
@@ -1268,6 +1272,10 @@ fn nested(open: &str, close: &str, depth: usize, calls: usize) -> String {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a super-linear read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_fork_bomb_scan_reads_nested_functions_quickly() {
     let linux = posix();
