@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -78,7 +79,11 @@ pub(crate) enum Reads {
 }
 
 /// One program the line runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the walker learned about the unit; none combine into a state"
+)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -95,12 +100,76 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// Whether it sits in a loop or a function body, which runs it again
+    /// with other values: a variable it reads can name a different thing
+    /// each time, so every one of them together.
+    pub(crate) repeated: bool,
+    /// Whether the script it runs is a download (`Invoke-Expression` given
+    /// `(iwr url)`), which only runs when it does.
+    pub(crate) downloaded: bool,
+    /// The `Get-Process` listings written inside the arguments of a
+    /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
+    pub(crate) listings: Vec<Listing>,
+    /// Whether a value given to a `Stop-Process` in a `ForEach-Object` block
+    /// is built on `$_` into something other than the item or one of its
+    /// own members (`$_.Parent`, `$_ + 1`): not the processes the pipeline
+    /// hands it.
+    pub(crate) unread_item: bool,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+}
+
+/// A `Get-Process` written inside an argument: its own arguments, and what
+/// follows it before the value is used.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Listing {
+    pub(crate) args: Vec<Arg>,
+    pub(crate) between: Vec<Between>,
+}
+
+/// A stage between a `Get-Process` listing and the `Stop-Process` it feeds.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Between {
+    /// `Where-Object`, with its arguments (a block that is a simple
+    /// comparison is read into `Name -eq value`).
+    Where(Vec<Arg>),
+    /// `Sort-Object`, and a `Select-Object` that only picks (see
+    /// [`Between::select`]): some of the same processes.
+    Narrows,
+    /// Anything else, which may hand on processes the listing did not.
+    Other,
+}
+
+impl Between {
+    /// A `Select-Object` stage given `args`: it keeps some of the same
+    /// processes, unless it is given `-ExpandProperty` (any prefix of three
+    /// letters or more, written `-exp` or `-exp:Parent`) or a calculated
+    /// property (a hashtable or a script block), which hand on other
+    /// objects, such as a process's parent.
+    pub(crate) fn select(args: &[Arg]) -> Self {
+        let hands_on = args.iter().any(|arg| {
+            let text = arg.text().trim_start();
+            if matches!(arg, Arg::Known(_)) {
+                let name = text
+                    .strip_prefix('-')
+                    .and_then(|name| name.split(':').next());
+                name.is_some_and(|name| {
+                    name.len() >= 3 && "expandproperty".starts_with(&name.to_ascii_lowercase())
+                })
+            } else {
+                text.starts_with("@{") || text.starts_with('{')
+            }
+        });
+        if hands_on {
+            Self::Other
+        } else {
+            Self::Narrows
+        }
+    }
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -122,6 +191,10 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            repeated: false,
+            downloaded: false,
+            listings: Vec::new(),
+            unread_item: false,
             depth: 0,
         }
     }
@@ -271,6 +344,11 @@ pub(crate) struct Split {
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
+    /// The text fed to units by a here-string or a here-document, as
+    /// written: the statements a database client reads from its input.
+    texts: Vec<Arg>,
+    /// For each unit that is fed text, which of `texts` feed it, in order.
+    fed: HashMap<usize, Vec<usize>>,
     /// What runs for a command inside its own arguments.
     pub(crate) nested: Vec<Nested>,
     /// The variables set from a substitution.
@@ -296,6 +374,16 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Variables a `for` loop or a `read` sets (lower case): each holds one
+    /// item of what the loop walks, so a rule that counts what a command
+    /// reaches reads `"$c"` as every item, not one.
+    looped: Vec<String>,
+    /// The characters a backtick `u{…}` made in a PowerShell string that are
+    /// a space that is not an ASCII one, a dash or a typographic quote: as a
+    /// path or an argument each is the text it holds, but a script that holds
+    /// one is not. Noted while a string is read, which only borrows the
+    /// walker.
+    splitting: RefCell<Vec<char>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -312,6 +400,9 @@ pub(crate) struct Split {
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
+    /// How deep the line is inside a loop or a function body, whose
+    /// commands run again with other values.
+    pub(crate) repeats: usize,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
@@ -336,6 +427,9 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How many times the line has forked into two readings, each judged
+    /// (see [`crate::launch::Launch::Either`]).
+    forks: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -438,19 +532,27 @@ impl Later {
 }
 
 impl Split {
+    /// Count one more fork of the line into two readings; `false` once
+    /// `most` forks have been made, when the line is not read any further.
+    pub(crate) fn fork(&mut self, most: usize) -> bool {
+        self.forks += 1;
+        self.forks <= most
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
         unit.hidden = self.hidden();
+        unit.repeated = self.repeats > 0;
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
             .and_then(|key| dotglob::change(&key, &unit.args))
         {
-            // Behind `env` or `nohup` a builtin runs in a process of its own.
-            let own = dotglob::in_shell(&unit.wrappers);
-            let certain = own && unit.stage.is_none();
             for (flag, on) in [(Flag::Bash, change.bash), (Flag::Zsh, change.zsh)] {
+                // Behind `env` or `nohup` a builtin runs in a process of its
+                // own, and behind zsh's `noglob` bash runs nothing.
+                let certain = dotglob::in_shell(&unit.wrappers, flag) && unit.stage.is_none();
                 match on {
                     Some(true) => self.set_flag(flag, true),
                     Some(false) => self.show(flag, certain),
@@ -507,6 +609,25 @@ impl Split {
             input: true,
             text: true,
         });
+    }
+
+    /// Note that the text `text`, a here-string or a here-document, is fed to
+    /// `units`, as written.
+    pub(crate) fn text_fed(&mut self, units: Range<usize>, text: Arg) {
+        let index = self.texts.len();
+        for unit in units {
+            self.fed.entry(unit).or_default().push(index);
+        }
+        self.texts.push(text);
+    }
+
+    /// The text fed to the unit at `at` by a here-string or a here-document.
+    pub(crate) fn fed_to(&self, at: usize) -> impl Iterator<Item = &Arg> {
+        self.fed
+            .get(&at)
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| self.texts.get(index))
     }
 
     /// Note that the variable `name` is set from what runs in `inside` and
@@ -797,7 +918,7 @@ impl Split {
     }
 
     /// Record the variable of a `for` loop, for `effect`.
-    pub(crate) fn loop_variable(&mut self, name: &str) {
+    pub(crate) fn kept_loop(&mut self, name: &str) {
         if self.kept.on {
             self.kept.loops.push(name.to_string());
         }
@@ -826,11 +947,46 @@ impl Split {
         }
     }
 
+    /// Record that a loop or a `read` sets the variable `name`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        if !self.looped.contains(&name) {
+            self.looped.push(name);
+        }
+    }
+
+    /// Whether a loop or a `read` in the line sets the variable `name`.
+    pub(crate) fn looped(&self, name: &str) -> bool {
+        self.looped
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
+    }
+
     /// Whether the line sets the variable `name` anywhere.
     pub(crate) fn reassigned(&self, name: &str) -> bool {
         self.reassigned
             .iter()
             .any(|known| known.eq_ignore_ascii_case(name))
+    }
+
+    /// Note the characters a backtick `u{…}` made in a PowerShell string that
+    /// PowerShell reads as more than a character when the text runs as code.
+    pub(crate) fn note_splitting(&self, made: &[char]) {
+        let mut splitting = self.splitting.borrow_mut();
+        for c in made {
+            if !splitting.contains(c) {
+                splitting.push(*c);
+            }
+        }
+    }
+
+    /// Whether `script` holds a character noted by [`Split::note_splitting`]:
+    /// run as code, its words are not the ones the guard's reading of the
+    /// text finds. The script need not be a whole noted string: one reached
+    /// through `cmd /c` or `bash -c` is only part of the string that holds it.
+    fn splits_script(&self, script: &str) -> bool {
+        let splitting = self.splitting.borrow();
+        !splitting.is_empty() && script.chars().any(|c| splitting.contains(&c))
     }
 
     /// A new pipeline's number; `parent` is the stage of another pipeline it
@@ -854,6 +1010,15 @@ impl Split {
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
+    // What a package runner starts is a program (`npx cd src`), not the
+    // shell's builtin: it cannot move the shell.
+    if unit
+        .wrappers
+        .iter()
+        .any(|wrapper| crate::launch::RUNNERS.contains(&wrapper.as_str()))
+    {
+        return None;
+    }
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -1093,6 +1258,14 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if let Some(why) = too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
+        return;
+    }
+    if shell == Shell::PowerShell && split.splits_script(text) {
+        split.problem(
+            Rule::Unknown,
+            "runs a script only known when it runs",
+            Some(text),
+        );
         return;
     }
     if depth > 0 {

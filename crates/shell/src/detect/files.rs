@@ -20,6 +20,16 @@ impl Checker<'_> {
                 &operands(args, &["-n", "-s", "--iterations", "--size"]),
                 "shreds",
             ),
+            // Delete tools that come as packages (`npx rimraf dist`): the
+            // paths are the operands, as for `rm`. `del --dry-run` only lists.
+            "rimraf" | "del-cli" | "premove" | "rmrf" | "del"
+                if key != "del" || shell == Shell::Posix =>
+            {
+                let dry = matches!(key, "del" | "del-cli") && has_flag(args, None, Some("dry-run"));
+                if !dry {
+                    self.delete(unit, &operands(args, &[]), "deletes");
+                }
+            }
             "find" if shell == Shell::Posix => {
                 if args.iter().any(|arg| arg.known() == Some("-delete")) {
                     let found = find_targets(args);
@@ -315,10 +325,20 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.list_items(unit, &Params::read(args)) {
+                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
                     self.write_as(shell, unit.scope(), &target, verb, Access::Item);
                 }
             }
+
+            // Unpacking an archive writes into the folder it unpacks to;
+            // packing one with `--remove-files`, `-m` or `-sdel` deletes
+            // what it packs.
+            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "unzip" | "expand-archive" => self.unpack(unit, key),
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {

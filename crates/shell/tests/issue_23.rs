@@ -874,6 +874,10 @@ fn the_file_switch_of_a_listing_does_not_take_the_folder() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_hidden_listing_is_read_quickly() {
     // Each place is also judged for the secret it may reach, so a line of
     // this many is slow in the debug build for that alone; these are far
