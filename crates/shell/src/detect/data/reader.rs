@@ -437,8 +437,32 @@ fn psql_command(chars: &[char], at: usize) -> (String, usize) {
 /// text came from a double-quoted shell word, where `$x` and `` `x` `` are
 /// the shell's expansions.
 fn tokenize(text: &str, dialect: Dialect, holes: bool, backslash: Backslash) -> Option<Vec<Token>> {
+    let mut tokens = Vec::new();
+    tokenize_into(text, dialect, holes, backslash, &mut tokens)?;
+    Some(tokens)
+}
+
+/// [`tokenize`], keeping the tokens before the string, comment or `$$` string
+/// that is never closed: `true` when the text was cut whole.
+fn tokenize_prefix(
+    text: &str,
+    dialect: Dialect,
+    holes: bool,
+    backslash: Backslash,
+) -> (Vec<Token>, bool) {
+    let mut tokens = Vec::new();
+    let closed = tokenize_into(text, dialect, holes, backslash, &mut tokens).is_some();
+    (tokens, closed)
+}
+
+fn tokenize_into(
+    text: &str,
+    dialect: Dialect,
+    holes: bool,
+    backslash: Backslash,
+    tokens: &mut Vec<Token>,
+) -> Option<()> {
     let chars: Vec<char> = text.chars().collect();
-    let mut tokens: Vec<Token> = Vec::new();
     let mut at = 0;
     // How many `/*! … */` comments are open: their text runs.
     let mut running = 0usize;
@@ -627,7 +651,7 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool, backslash: Backslash) -> 
             }
         }
     }
-    (running == 0).then_some(tokens)
+    (running == 0).then_some(())
 }
 
 fn is_word(token: Option<&Token>, word: &str) -> bool {
@@ -1160,8 +1184,10 @@ fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Re
 /// What the SQL in `text` does. `holes` says `text` came from a
 /// double-quoted shell word, whose expansions are only known when it runs.
 /// Where the server decides how a backslash in a string reads, it is read
-/// with each rule, and what any of them shows counts; a reading whose strings
-/// do not close is not one the text can have, and is left out.
+/// with each rule, and what any of them shows counts. A client sends each
+/// statement as its `;` arrives, so in such a reading what is before a string
+/// that never closes runs: the statements that end before it count, and only
+/// the open tail, which is not a statement the client sends, is left out.
 pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
     let scope = Scope {
         dialect,
@@ -1172,11 +1198,31 @@ pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
     };
     let mut reading = read_sql(text, scope);
     for &backslash in dialect.other_backslash() {
-        if let Some(other) = try_read_sql(text, Scope { backslash, ..scope }) {
+        if let Some(other) = read_sql_prefix(text, Scope { backslash, ..scope }) {
             reading.merge(other);
         }
     }
     reading
+}
+
+/// What the SQL in `text` does, read in `scope`, as a client that sends each
+/// statement when it ends reads it: if a string, comment or `$$` string is
+/// never closed, the statements before it are read and the open tail is not.
+/// `None` when it is nested too deep.
+fn read_sql_prefix(text: &str, scope: Scope) -> Option<Reading> {
+    if scope.depth > MAX_DEPTH {
+        return None;
+    }
+    let (tokens, closed) = tokenize_prefix(text, scope.dialect, scope.holes, scope.backslash);
+    if closed {
+        return Some(read_tokens(&tokens, scope));
+    }
+    // Up to the last token that ends a statement.
+    let sent = tokens
+        .iter()
+        .rposition(|token| matches!(token, Token::Symbol(';') | Token::Meta(_)))
+        .map_or(0, |last| last + 1);
+    Some(read_tokens(tokens.get(..sent).unwrap_or_default(), scope))
 }
 
 /// What the SQL in `text` does, read in `scope`.
@@ -1192,6 +1238,11 @@ fn try_read_sql(text: &str, scope: Scope) -> Option<Reading> {
         return None;
     }
     let tokens = tokenize(text, scope.dialect, scope.holes, scope.backslash)?;
+    Some(read_tokens(&tokens, scope))
+}
+
+/// What the statements in `tokens` do.
+fn read_tokens(tokens: &[Token], scope: Scope) -> Reading {
     let mut reading = Reading::default();
     let mut start = 0;
     for at in 0..=tokens.len() {
@@ -1209,7 +1260,7 @@ fn try_read_sql(text: &str, scope: Scope) -> Option<Reading> {
             Some(_) => {}
         }
     }
-    Some(reading)
+    reading
 }
 
 /// What the `MongoDB` shell script in `text` does: drops a database or a
@@ -1554,7 +1605,11 @@ mod tests {
     fn quoting_and_comments_follow_the_dialect() {
         let mysql = |text| sql(text, Dialect::MySql, false);
         // A backslash escapes the quote in MySQL, so the string runs on.
-        assert!(!mysql("SELECT 'a\\'; DROP TABLE t; --'").destroys);
+        assert!(!mysql("SELECT 'it\\'s'").destroys);
+        assert!(!mysql("SELECT 'a\\'; SELECT 1").destroys);
+        // With NO_BACKSLASH_ESCAPES the string ends at `\'` and the client
+        // sends the DROP before the tail (`--'` is no comment) is open.
+        assert!(mysql("SELECT 'a\\'; DROP TABLE t; --'").destroys);
         // In the other dialects the string ends and the DROP runs.
         assert!(destroys("SELECT 'a\\'; DROP TABLE t; --'"));
         assert!(!destroys("SELECT E'a\\'; DROP TABLE t; --'"));

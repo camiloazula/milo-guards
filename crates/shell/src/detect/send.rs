@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use milo_guards_core::spelling::glob;
-use milo_guards_core::Flavour;
+use milo_guards_core::{Flavour, Sensitivity};
 
 use super::files::remote;
 use super::Checker;
@@ -24,9 +24,6 @@ const DOTENV: &str = "an .env file";
 const HOME: &str = "your home directory";
 /// What core calls the root of a disk, which holds the home directory.
 const ROOT: &str = "the root of the disk";
-/// What core calls the repository's own history: sensitive to lose, not a
-/// secret to send.
-const HISTORY: &str = "the repository's history";
 
 /// The ends of an `.env` file's name that make it a template, committed
 /// with the code: `.env.example`.
@@ -551,7 +548,7 @@ impl Checker<'_> {
             return None;
         } else {
             match self.place(unit.shell, unit.scope(), arg) {
-                Place::Sensitive(words) if words != HISTORY => words,
+                Place::Sensitive(words, Sensitivity::Secret) => words,
                 Place::Home { .. } if home => HOME,
                 Place::Top(ROOT) if home => HOME,
                 _ => return None,

@@ -60,6 +60,47 @@ pub(super) fn env(args: &[Arg]) -> Launch {
     Launch::Itself
 }
 
+/// The variables `env` sets (`X=1`) or unsets (`-u X`) for the program it
+/// runs, read as [`env`] reads its arguments.
+pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("-S" | "--split-string") => break,
+            Some("-u" | "--unset") => {
+                names.extend(args.get(at + 1).map(|name| name.text().to_string()));
+                at += 2;
+            }
+            Some("-C" | "--chdir") => at += 2,
+            Some(text) if text.starts_with("--unset=") => {
+                names.push(text["--unset=".len()..].to_string());
+                at += 1;
+            }
+            // `-uPATH`, and `-iu PATH` (which `env` reads as `-iu` and then
+            // a program called `PATH`): the name is attached or next.
+            Some(text)
+                if text.starts_with('-') && !text.starts_with("--") && text.contains('u') =>
+            {
+                let rest = text.split_once('u').map_or("", |(_, rest)| rest);
+                if rest.is_empty() {
+                    names.extend(args.get(at + 1).map(|name| name.text().to_string()));
+                } else {
+                    names.push(rest.to_string());
+                }
+                at += 1;
+            }
+            Some(text) if text.starts_with('-') => at += 1,
+            Some(text) if text.contains('=') && !text.starts_with('=') => {
+                names.extend(text.split('=').next().map(str::to_string));
+                at += 1;
+            }
+            _ => break,
+        }
+    }
+    names
+}
+
 /// `xargs`: its options, then the program its input is handed to.
 pub(super) fn xargs(args: &[Arg]) -> Launch {
     let mut replace = None;
@@ -286,6 +327,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         hidden: false,
         repeated: false,
+        depth: unit.depth,
     }))
 }
 
