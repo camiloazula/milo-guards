@@ -67,6 +67,85 @@ run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
 
+**Package runners** come off too, with each runner's own options skipped:
+`npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
+`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
+program the runner names is judged, with a version after the package taken
+off (`npx rimraf@5`). Where the runner names the package apart from the
+program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
+after the options. An option that takes a value is skipped with it, because
+one that is missed would turn its value into the program, so each table is
+the runner's own list and not a guess: npm's is every setting of its config
+definitions that is not a boolean with its shorthands (`npm -C dir`, `npx
+--editor vim`, `npm exec --logs-dir x`), read as npm reads them (an
+unambiguous start of a name is the option, `--ed vim`; `npm exec` takes a
+`true` or `false` after a boolean; `npx` first puts its own `--` before the
+program, so a word it took for a value that npm did not is the program);
+pnpm's is its own string and number settings, `exec`'s `--resume-from`,
+`dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
+the options of `yarn --help` that name a folder, a host, a number or a type;
+bun's is the `--option=<val>` options of `bun --help` that also take the next
+word (not `-c`, `--config` and `--inspect`, whose value only follows `=`);
+bun itself takes the first word that does not start with a dash as its
+subcommand, before any option reads a value (`bun -c rimraf a` runs `rimraf`,
+`bun -F x echo` runs `bunx echo`, `bun --title repl` opens the REPL), so that
+word is read too, and when it is `x`, `run`, `exec`, `repl` or a delete tool
+both readings are judged and the riskier one counts (the two share the wrappers a line may have and at most 32 such forks are made in a line, past which it is unreadable, so a line that forks at every `bun` is too wrapped like any other, not slow); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
+options real uv still takes a value for (`--python-preference`,
+`--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
+(`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
+`--` for themselves, before the program or after it (`npm exec sh -- -c
+'cmd'` runs `sh -c 'cmd'`); `npx` hands it on. `npx -c`, `npm exec -c` and
+`pnpm -c exec` (the option may stand before `exec` too) run a shell command,
+and so does `yarn exec`, whose arguments are a script. npm's `-c` is found as
+npm reads it, among every option before the program, also before `exec`: at
+the end of a bundle (`npx -yc 'cmd'`), spelt `--c`, given its value after `=`
+(`npx -c='cmd'`), or put before the subcommand (`npm -c 'cmd' exec`). A bundle
+of any length is read to its end, never given up on as the program. Each is
+read as a script: in cmd where the line is for Windows (npm and pnpm start the system
+shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
+`yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete tool by its
+name (`yarn run rimraf dist`). `pnpm NAME` runs the script NAME of the project
+and, with none by that name, the program (pnpm: "will execute the command as a
+shell script"), so it is read as `pnpm exec NAME` unless NAME is a command of
+pnpm, its alias, or an npm command it passes on (`pnpm rm lodash` removes a
+dependency): `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+`pnpm recursive exec rm -rf ~` is read as `pnpm -r exec rm -rf ~`; `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
+the program, `pnpm rimraf dist` is a delete tool, and an unknown script name
+(`pnpm lint`, `pnpm dev`, `pnpm build`) is safe. `bun run name`
+also starts any program on the path when it is no script (`bun run rm -rf
+x` deletes): a word after `bun run` and its options that is no file (no
+folder in it, no extension) is judged as the program, so `bun run build` is
+safe as an unknown name and `bun run sh -c 'rm -rf ~'` is read like `sh -c`.
+Bare `bun name` runs only scripts and bins of the project, so only a delete
+tool is read there. The delete tools that come as packages (`rimraf`, `del`
+and `del-cli`, `premove`, `rmrf`) delete their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
+are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
+run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
+guard knows. What a runner starts is a program, never a builtin of the shell,
+so `npx cd src` does not move the rest of the line to `src`.
+
+`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print` (also
+in a bundle, `bun -pe 'code'`, or with the code attached, `bun -e'code'`),
+`bun repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
+input (`bun run -`, `deno run -`, `uv run -`) run code the guard does not
+read: `Unknown`, or `RunDownloaded` after a download. The options before the
+subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
+inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
+-c`. `bun run file`, `deno run file` and `bun file` are judged like `node
+file`, so a script the same line writes is not read, also after options (`bun
+--hot run file`) and after deno's `watch`, which is `run --hmr`. So is `uv run
+file.py`, and `uv run --script file`: `uv` runs Python on the file, like
+`python file`. `deno run npm:pkg` runs the package's program like a runner,
+and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
+is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+these runner parts of `bun`, `deno` and `dx` are read as in the other shells
+(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
+`dx rimraf C:\`); what they read of an interpreter (inline code, a script
+from the input, `bun exec`) is not. `deno -v` and `deno --help=full` only
+print. The options of `deno` that take their value
+only after `=` (`--reload`, `--env-file`) do not take the next word.
+
 `coproc` is read as the shells read it. A simple command takes no name, so the
 first word is the program (`coproc NAME cat` runs `NAME`); a group may take
 one (`coproc NAME { … }`). The program is the first word past the name, the
@@ -746,7 +825,7 @@ A line is never safe because the guard gave up on it. These come back risky:
 
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
+- Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
 - A path built at run time or by a brace list.
