@@ -252,6 +252,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `stop_system` | Shuts the computer down, restarts it, or stops every process. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
 | `drop_data` | Deletes data in a database. |
+| `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
@@ -716,6 +717,80 @@ a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
 (`WHERE a = :x`: it is read as a word, and may hold more than a value);
 `sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
 tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+
+## Containers, clusters, infrastructure and the cloud
+
+`destroy_resources` is for what a delete verb removes that is not a path:
+containers and their volumes, cluster objects, an infrastructure stack and
+what a cloud CLI deletes. `docker volume rm pgdata` names no file the guard
+looks at. The rule reads the program, its global options, its command and
+sub-command like the git rules do, and the few options that change what a
+command does. Listing, describing, creating and building are safe
+(`kubectl get`, `terraform plan`, `aws s3 ls`, `docker build`).
+
+One rule, one meaning: a local target (a `kind` or `minikube` cluster, a
+container on the local daemon) is as risky as a remote one, since the line
+cannot tell, and the reason says what it deletes, not where.
+
+**Containers** (`docker`, `podman`, `nerdctl`, `docker-compose`,
+`podman-compose`). `system prune`, `container prune`, `network prune`,
+`volume rm` and `volume prune`, `image prune -a`, `stack rm`, `service rm`,
+`compose down -v` and `compose rm -v`, and podman's `system reset`, `pod
+prune`, `machine rm` and `kube down` destroy. `rm` is read by what it takes:
+one named container is safe, forced or not (`docker rm -f web`); several
+forced at once, a choice made when the line runs (`$(docker ps -aq)`, a
+pipe's input, an unquoted variable the shell splits into words), podman's
+`rm -a` and `--filter`, and `-v` (the container's volumes) are not. A quoted
+variable is one word, as is a PowerShell variable, so `docker rm -f "$name"`
+is safe. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
+`image prune` without `-a` are safe, as are `network rm` and `builder prune`.
+The global options of each program that take a value (`-H`, `--context`,
+`-n`) are skipped to find the command.
+
+**Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
+a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
+--force`; `apply --prune`. `--dry-run=client` and `=server` only rehearse and
+are safe, the last one written counting. A replica count only known when it
+runs is `unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
+`minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
+`--dry-run`; `kind delete cluster`, `minikube delete` and `k3d cluster
+delete` (also `node` and `registry`).
+
+**Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
+(a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
+`-destroy=false`); `plan -destroy` is safe. `terragrunt` the same, also behind
+`run-all` and `run --all --`. `pulumi destroy` (also `down`, unless
+`--preview-only`) and `pulumi stack rm`; `cdk destroy`, `cdktf destroy`, `sst
+remove`, `serverless remove` (also `sls`), `vagrant destroy`, `sam delete`.
+
+**Cloud.** Each CLI has a table of delete verbs in
+`detect/resources.rs`, with the options before the command that take a value,
+so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
+`--recursive`), `s3 rb`, `s3 sync --delete`, `terminate-*`, `delete-*`,
+`batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
+`--dry-run` and `s3`'s `--dryrun` make it safe. `gcloud` (a `delete` or
+`destroy` among the first words, and `storage rm`), `gsutil rm`, `rb` and
+`rsync -d`, `az` (`delete`, `delete-*`, `purge`), `doctl` (`delete`, `d`,
+`rm`), `flyctl` and `fly` (`destroy`, `delete`, `machine rm`), `vercel`
+(`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
+(`apps:destroy`, `addons:destroy`), `wrangler` (`delete` at any depth,
+`kv:namespace delete`), `firebase` (`…:delete`), `hcloud`, `scw`, `oci`,
+`eksctl` and `kops` (`delete`).
+
+A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
+s3 $verb`) is `unknown`: the line may be any of the above.
+
+Not read, so the caller has to account for them: a verb that deletes under
+another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
+that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
+`gcloud storage rsync --delete-unmatched-destination-objects`, `docker rmi -f`
+of every image); a program run on another machine (`ssh host docker system
+prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf /`); a command a
+tool reads from a file or its environment (`TF_CLI_ARGS=-destroy`, a
+`kubectl` plugin, a shell alias); and the `delete` verb of a resource that is
+named `delete` (`gcloud config set project delete` reads as a delete, because
+the verb is the last word of the command and the guard cannot tell it from a
+name that follows).
 
 ## Tests
 

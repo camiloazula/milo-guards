@@ -24,6 +24,7 @@ fn expected(rule: Rule) -> &'static str {
         Rule::StopSystem => "stop_system",
         Rule::SendSecret => "send_secret",
         Rule::DropData => "drop_data",
+        Rule::DestroyResources => "destroy_resources",
         Rule::Unknown => "unknown",
         Rule::Unreadable => "unreadable",
     }

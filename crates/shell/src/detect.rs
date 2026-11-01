@@ -13,6 +13,7 @@ use crate::{Finding, Rule, Shell};
 mod code;
 mod data;
 mod files;
+mod resources;
 mod send;
 mod system;
 
@@ -156,6 +157,7 @@ impl Checker<'_> {
         self.files(unit, &key);
         self.send(at, unit, &key);
         self.data(at, unit, &key);
+        self.resources(unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }
