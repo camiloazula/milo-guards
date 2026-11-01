@@ -526,9 +526,15 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         key if SHELLS.contains(&key) && posix => shell(args),
         // Also under cmd and PowerShell: the code they are given is not
-        // read there, which comes back as `unknown`.
-        "bun" | "deno" => inline::runner(key, args),
-        key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => interpreter(key, args),
+        // read there, which comes back as `unknown`. A line with nothing to
+        // run (`python --version`, a bare `python`) reads its input only
+        // where it did before: under the POSIX shell for `bun` and `deno`,
+        // under any but cmd for the others, and anywhere when something is
+        // piped into it.
+        "bun" | "deno" => inline::runner(key, args, unit.shell == Shell::Posix || piped(unit)),
+        key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
+            interpreter(key, args, posix || piped(unit))
+        }
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell => {
@@ -550,6 +556,11 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         _ => Launch::Itself,
     }
+}
+
+/// Whether another program's output is piped into the unit.
+fn piped(unit: &Unit) -> bool {
+    unit.stage.is_some_and(|stage| stage.index > 0)
 }
 
 /// A script path that is the program's own input: what is piped into it.

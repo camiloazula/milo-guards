@@ -137,8 +137,10 @@ pub(super) fn trap_inherited(args: &[Arg]) -> bool {
 /// or reads it from its input; a script file or a module is its own
 /// business. The flags that carry inline code differ per interpreter, so a
 /// bundle (`-le`, `-Sc`) is read letter by letter: `-E` is code for perl
-/// but an encoding for ruby.
-pub(super) fn interpreter(key: &str, args: &[Arg]) -> Launch {
+/// but an encoding for ruby. `console` is whether a line with nothing to run
+/// reads its input: always under a POSIX shell, and under cmd and PowerShell
+/// only when something is piped into it.
+pub(super) fn interpreter(key: &str, args: &[Arg], console: bool) -> Launch {
     let (short, long): (&[char], &[&str]) = if key.starts_with("python") {
         (&['c'], &[])
     } else {
@@ -175,7 +177,12 @@ pub(super) fn interpreter(key: &str, args: &[Arg]) -> Launch {
     if key == "perl" && perl_edits(args).is_some() {
         return Launch::Itself;
     }
-    if code || stdin || !file {
+    // `python3 --version` prints and exits: it reads no input.
+    if !code && !stdin && !file && inline::prints(key, args) {
+        return Launch::Itself;
+    }
+    // Nothing to run reads the input (the REPL) where there is one to read.
+    if code || stdin || (!file && console) {
         Launch::Reads(Reads::Interpreter)
     } else {
         Launch::Itself

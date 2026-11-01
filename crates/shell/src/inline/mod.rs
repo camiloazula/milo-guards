@@ -187,6 +187,49 @@ fn mode(literal: &str) -> Option<String> {
     number.ok().map(|number| format!("{number:o}"))
 }
 
+/// The process id a literal gives, as the decimal text `kill` takes: `9`,
+/// `-1`, `(-1)`, `0x1`, `- 1`, `1_0`. `None` for a value only known when it
+/// runs, a float, and a number with a leading zero (an octal in one language
+/// and no number in the other).
+fn pid(literal: &str) -> Option<String> {
+    let mut text: String = literal.chars().filter(|c| !c.is_whitespace()).collect();
+    while text.len() > 1 && text.starts_with('(') && text.ends_with(')') {
+        text = text[1..text.len() - 1].to_string();
+    }
+    let mut negative = false;
+    while let Some(rest) = text.strip_prefix(['-', '+']) {
+        negative ^= text.starts_with('-');
+        text = rest.to_string();
+    }
+    let lower = text.replace('_', "").to_ascii_lowercase();
+    let number = if let Some(digits) = lower.strip_prefix("0x") {
+        i64::from_str_radix(digits, 16)
+    } else if let Some(digits) = lower.strip_prefix("0o") {
+        i64::from_str_radix(digits, 8)
+    } else if let Some(digits) = lower.strip_prefix("0b") {
+        i64::from_str_radix(digits, 2)
+    } else if lower.len() > 1 && lower.starts_with('0')
+        || !lower.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    } else {
+        lower.parse()
+    };
+    let number = number.ok()?;
+    Some(if negative { -number } else { number }.to_string())
+}
+
+/// What `os.kill(PID, …)` and `process.kill(PID, …)` do: the `kill` command
+/// with that process id. A process id only known when it runs may be every
+/// process (`-1`) or the first (`1`), so it comes back as code the guard does
+/// not read.
+fn kill(literal: &str) -> Act {
+    match pid(literal) {
+        Some(pid) => Act::Program(vec![flag("kill"), flag("--"), Arg::Known(pid)]),
+        None => Act::Unread(shorten(literal)),
+    }
+}
+
 /// The value of a quoted-style mode argument (`open`'s `'w'`, `fs.openSync`'s
 /// flags): whether it writes. `None` mode is the default, which reads.
 fn writes(mode: Option<&str>) -> bool {
@@ -474,10 +517,59 @@ fn deno_code(args: &[Arg]) -> Option<Code> {
     (!found.pieces.is_empty()).then_some(found)
 }
 
+/// Whether an interpreter is only asked to print its version or its help and
+/// exit (`python3 --version`, `node -v`, `deno --help`): it reads no code
+/// from its input and runs none. The flags differ: `-v` is the version for
+/// node and bun and verbose mode for python, which then reads its input. A
+/// flag that is the value of the option before it (`python -W --version`) is
+/// not one, and neither is any after `--`, where the script's name comes.
+pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
+    const VALUES: [&str; 14] = [
+        "-W",
+        "-X",
+        "-Q",
+        "-r",
+        "-C",
+        "--require",
+        "--import",
+        "--loader",
+        "--experimental-loader",
+        "--conditions",
+        "--input-type",
+        "--env-file",
+        "--cwd",
+        "--check-hash-based-pycs",
+    ];
+    let flags: &[&str] = if key.starts_with("python") {
+        &["--version", "-V", "-VV", "--help", "-h"]
+    } else {
+        match key {
+            "node" | "nodejs" | "bun" => &["--version", "-v", "--help", "-h"],
+            "deno" => &["--version", "-V", "--help", "-h"],
+            _ => &["--version", "--help", "-h"],
+        }
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("--") | None => return false,
+            Some(text) if flags.contains(&text) => return true,
+            Some(text) if VALUES.contains(&text) => {
+                iter.next();
+            }
+            Some(_) => {}
+        }
+    }
+    false
+}
+
 /// `bun` and `deno`: inline code is read; a file or a subcommand is the
 /// workspace's own business. Code read from the input (`bun -`, `deno run -`,
 /// a REPL) is the caller's to see, or the here-document it is handed.
-pub(crate) fn runner(key: &str, args: &[Arg]) -> Launch {
+/// `console` is whether a line with nothing to run reads its input: always
+/// under a POSIX shell, and under cmd and PowerShell only when something is
+/// piped into it.
+pub(crate) fn runner(key: &str, args: &[Arg], console: bool) -> Launch {
     if let Some(source) = code(key, args) {
         return Launch::Inline(Language::JavaScript, source);
     }
@@ -492,10 +584,8 @@ pub(crate) fn runner(key: &str, args: &[Arg]) -> Launch {
         .find(|text| !text.starts_with('-'));
     // `deno --version` and `deno --help` print and exit: no subcommand and
     // none of these reads the input, which is the REPL.
-    let prints =
-        key == "deno" && known(&|text| matches!(text, "--version" | "-V" | "--help" | "-h"));
-    let repl = first == Some("repl") || (key == "deno" && first.is_none() && !prints);
-    if evals || repl || known(&|text| text == "-") {
+    let repl = first == Some("repl") || (key == "deno" && first.is_none() && !prints(key, args));
+    if evals || (repl && console) || known(&|text| text == "-") {
         Launch::Reads(Reads::Interpreter)
     } else {
         Launch::Itself

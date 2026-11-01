@@ -1639,3 +1639,440 @@ fn deno_options_that_print_do_not_read_the_input() {
         ],
     );
 }
+
+#[test]
+fn fileinput_in_place_rewrites_each_file_as_sed_i_does() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Only read, or a file of the workspace.
+            r#"python3 -c 'import fileinput; [print(l) for l in fileinput.input("/home/me/.zshrc")]'"#,
+            r#"python3 -c 'import fileinput; fileinput.input(["/home/me/.zshrc"], False)'"#,
+            r#"python3 -c 'import fileinput; fileinput.input("/home/me/.zshrc", inplace=False)'"#,
+            r#"python3 -c 'import fileinput; fileinput.FileInput("/home/me/.zshrc", inplace=0)'"#,
+            r#"python3 -c 'import fileinput; fileinput.input("notes.txt", inplace=True)'"#,
+            r#"python3 -c 'import fileinput; fileinput.input(files=["a.txt", "b.txt"], inplace=1)'"#,
+        ],
+        &[
+            (
+                r#"python3 -c 'import fileinput; [print("x") for l in fileinput.input("/home/me/.zshrc", inplace=True)]'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'import fileinput; fileinput.FileInput("/home/me/.zshrc", inplace=True)'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'import fileinput; fileinput.input(files=["/home/me/.zshrc"], inplace=1)'"#,
+                Rule::Overwrite,
+            ),
+            // The files in a tuple, the second argument, any one of them.
+            (
+                r#"python3 -c 'import fileinput; fileinput.input(("a.txt", "/home/me/.zshrc"), True)'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'import fileinput; fileinput.input(files="/home/me/.zshrc", inplace=True, backup=".bak")'"#,
+                Rule::Overwrite,
+            ),
+            // Under another name.
+            (
+                r#"python3 -c 'import fileinput as f; f.input("/home/me/.zshrc", inplace=True)'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from fileinput import FileInput as F; F("/home/me/.zshrc", inplace=True)'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from fileinput import *; input("/home/me/.zshrc", inplace=True)'"#,
+                Rule::Overwrite,
+            ),
+            // `inplace` only known when it runs may be on.
+            (
+                r#"python3 -c 'import fileinput; fileinput.input("/home/me/.zshrc", inplace=flag)'"#,
+                Rule::Overwrite,
+            ),
+            // Files only known when it runs, or the script's own arguments.
+            (
+                r"python3 -c 'import fileinput; fileinput.input(inplace=True)'",
+                Rule::Unknown,
+            ),
+            (
+                r"python3 -c 'import fileinput, sys; fileinput.input(sys.argv[1:], inplace=True)'",
+                Rule::Unknown,
+            ),
+            (
+                r"python3 -c 'import fileinput; fileinput.input([], inplace=True)'",
+                Rule::Unknown,
+            ),
+            (
+                r"python3 -c 'import fileinput; fileinput.input(*a, inplace=True)'",
+                Rule::Unknown,
+            ),
+            (
+                r"python3 -c 'import fileinput; fileinput.input(*a)'",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn pathlibs_move_and_copy_methods_are_read_like_rename_and_shutil_copy() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            r#"python3 -c 'from pathlib import Path; Path("notes.txt").copy("out.txt")'"#,
+            r#"python3 -c 'from pathlib import Path; Path("notes.txt").copy_into("out")'"#,
+            r#"python3 -c 'from pathlib import Path; Path("notes.txt").move("out.txt")'"#,
+            r#"python3 -c 'from pathlib import Path; Path("a").move_into("out")'"#,
+            r#"python3 -c 'from pathlib import Path; Path("/tmp/x").move("/tmp/y")'"#,
+            r#"python3 -c 'from pathlib import Path; Path("/home/me/a").copy("/tmp/y", follow_symlinks=False)'"#,
+            // A call with no target, and the functions of a module.
+            r"python3 -c 'd = {}; print(d.copy())'",
+            r"python3 -c 'import copy; x = copy.copy(y)'",
+            r"python3 -c 'import numpy as np; a = np.copy(b)'",
+            r"python3 -c 'import turtle; turtle.move(5)'",
+        ],
+        &[
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/home/me/.ssh").move("/tmp/x")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/home/me/.ssh").move_into("/tmp")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/home/me/.ssh").move(target="/tmp/x")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/tmp/x").copy("/home/me/.zshrc")'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/tmp/x").copy(target="/home/me/.zshrc")'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/tmp/x").copy_into("/home/me/.ssh")'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/tmp/x").copy_into(target_dir="/home/me/.ssh")'"#,
+                Rule::Overwrite,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; p = Path("/tmp/x"); p.copy("/home/me/.zshrc", preserve_metadata=True)'"#,
+                Rule::Overwrite,
+            ),
+            // The path or its target only known when it runs.
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/tmp/x").copy(*a)'"#,
+                Rule::Unknown,
+            ),
+            (
+                r#"python3 -c 'from pathlib import Path; Path("/home/me/.ssh").move(*a)'"#,
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn killing_a_process_by_a_literal_id_is_the_kill_command() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The process itself and its group, and an ordinary process.
+            r"python3 -c 'import os; os.kill(0, 9)'",
+            r"python3 -c 'import os; os.killpg(0, 9)'",
+            r"python3 -c 'import os, signal; os.kill(4242, signal.SIGTERM)'",
+            "node -e \"process.kill(0, 'SIGKILL')\"",
+            "node -e \"process.kill(4242)\"",
+            "deno eval 'Deno.kill(4242, \"SIGTERM\")'",
+        ],
+        &[
+            (r"python3 -c 'import os; os.kill(-1, 9)'", Rule::StopSystem),
+            (r"python3 -c 'import os; os.kill(-1, 15)'", Rule::StopSystem),
+            (
+                r"python3 -c 'import os, signal; os.kill(-1, signal.SIGKILL)'",
+                Rule::StopSystem,
+            ),
+            (
+                r"python3 -c 'import os; os.kill(pid=-1, sig=9)'",
+                Rule::StopSystem,
+            ),
+            (
+                r"python3 -c 'from os import kill; kill(-1, 9)'",
+                Rule::StopSystem,
+            ),
+            (r"python3 -c 'import os; os.kill(- 1, 9)'", Rule::StopSystem),
+            (
+                r"python3 -c 'import os; os.kill(-0x1, 9)'",
+                Rule::StopSystem,
+            ),
+            (r"python3 -c 'import os; os.kill(1, 9)'", Rule::StopSystem),
+            (r"python3 -c 'import os; os.killpg(1, 9)'", Rule::StopSystem),
+            (
+                r"python3 -c 'import os; os.killpg(-1, 9)'",
+                Rule::StopSystem,
+            ),
+            // A process id only known when it runs may be any of them.
+            (r"python3 -c 'import os; os.kill(pid, 9)'", Rule::Unknown),
+            (
+                r"python3 -c 'import os; os.kill(-1 if a else 2, 9)'",
+                Rule::Unknown,
+            ),
+            (r"python3 -c 'import os; os.kill(*a)'", Rule::Unknown),
+            (r"python3 -c 'import os; os.kill(-01, 9)'", Rule::Unknown),
+            ("node -e \"process.kill(-1, 'SIGKILL')\"", Rule::StopSystem),
+            ("node -e \"process.kill(-1)\"", Rule::StopSystem),
+            ("node -e \"process.kill(1, 'SIGTERM')\"", Rule::StopSystem),
+            (
+                "node -e \"const {kill} = process; kill(-1, 'SIGKILL')\"",
+                Rule::StopSystem,
+            ),
+            ("deno eval 'Deno.kill(-1, \"SIGKILL\")'", Rule::StopSystem),
+            ("node -e \"process.kill(pid, 'SIGKILL')\"", Rule::Unknown),
+            ("node -e \"process.kill(...a)\"", Rule::Unknown),
+            ("node -e \"process.kill(-1.5)\"", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn copying_permission_bits_is_a_chmod_of_the_destination() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            r#"python3 -c 'import shutil; shutil.copymode("a.txt", "b.txt")'"#,
+            r#"python3 -c 'import shutil; shutil.copystat("/home/me/.ssh/id_rsa", "b.txt")'"#,
+            r#"python3 -c 'import shutil; shutil.copystat("a", "/tmp/y", follow_symlinks=False)'"#,
+        ],
+        &[
+            (
+                r#"python3 -c 'import shutil; shutil.copymode("/tmp/x", "/home/me/.ssh/id_rsa")'"#,
+                Rule::Permissions,
+            ),
+            (
+                r#"python3 -c 'import shutil; shutil.copystat("/tmp/x", "/home/me/.ssh/id_rsa")'"#,
+                Rule::Permissions,
+            ),
+            (
+                r#"python3 -c 'import shutil; shutil.copymode("/tmp/x", dst="/home/me/.ssh/id_rsa")'"#,
+                Rule::Permissions,
+            ),
+            (
+                r#"python3 -c 'from shutil import copystat as c; c("/tmp/x", "/home/me/.ssh/id_rsa")'"#,
+                Rule::Permissions,
+            ),
+            (
+                r#"python3 -c 'import shutil; shutil.copymode("/tmp/x", d)'"#,
+                Rule::Permissions,
+            ),
+        ],
+    );
+    // What the shell reads the same way.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[(
+            "chmod --reference=/tmp/x /home/me/.ssh/id_rsa",
+            Rule::Permissions,
+        )],
+    );
+}
+
+#[test]
+fn every_call_of_execa_that_runs_a_command_is_read() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "node -e \"require('execa').command('ls -l')\"",
+            "node -e \"require('execa').commandSync('ls')\"",
+            r#"node --input-type=module -e 'import {$} from "execa"; await $`ls`'"#,
+            r#"node --input-type=module -e 'import {$} from "execa"; $.sync`git status`'"#,
+            "node -e \"require('cross-spawn').sync('ls', ['-l'])\"",
+            "node -e \"require('cross-spawn').spawn('ls')\"",
+            "node -e \"const spawn = require('cross-spawn'); spawn.sync('ls')\"",
+        ],
+        &[
+            (
+                "node -e \"require('execa').execaCommand('rm -rf ~')\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('execa').command('rm -rf ~')\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('execa').commandSync('rm -rf ~')\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"const {command} = require('execa'); command('rm -rf ~')\"",
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e \"import execa from 'execa'; execa.command('rm -rf ~')\"",
+                Rule::Delete,
+            ),
+            // `$`, as a call and as a tagged template, and its `.sync`.
+            (
+                r#"node --input-type=module -e 'import {$} from "execa"; await $`rm -rf /home/me`'"#,
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e 'import {$} from \"execa\"; await $(\"rm -rf /home/me\")'",
+                Rule::Delete,
+            ),
+            (
+                r#"node --input-type=module -e 'import {$} from "execa"; $.sync`rm -rf /home/me`'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const {$} = require("execa"); $.sync`rm -rf /home/me`'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'require("execa").$`rm -rf /home/me`'"#,
+                Rule::Delete,
+            ),
+            // A command only known when it runs.
+            (
+                r#"node --input-type=module -e 'import {$} from "execa"; await $`ls ${x}`'"#,
+                Rule::Unknown,
+            ),
+            // cross-spawn: `spawn` and `sync` are `child_process`'s.
+            (
+                "node -e \"require('cross-spawn').sync('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('cross-spawn').spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"const spawn = require('cross-spawn'); spawn.sync('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e \"import spawn from 'cross-spawn'; spawn.sync('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            // The module called bare stays unknown.
+            (
+                "node -e \"require('cross-spawn')('ls')\"",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_interpreter_asked_to_print_its_version_or_help_reads_no_input() {
+    let printing = [
+        "python --version",
+        "python -V",
+        "python -VV",
+        "python3 --version",
+        "python3.12 --version",
+        "python3 -h",
+        "python3 --help",
+        "node --version",
+        "node -v",
+        "node --help",
+        "nodejs --version",
+        "bun -v",
+        "perl --version",
+        "ruby --version",
+        "php -h",
+        "lua --help",
+    ];
+    // Under any shell: PowerShell and cmd as POSIX.
+    check(Shell::Posix, &posix(), &printing, &[]);
+    check(Shell::PowerShell, &windows(), &printing, &[]);
+    check(Shell::Cmd, &windows(), &printing, &[]);
+    // A flag that is not a print-and-exit one, or is another option's value,
+    // or comes where the script's name does, reads the input; so does
+    // anything that does more than print.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("python3 -v", Rule::Unknown),
+            ("python3 -W --version", Rule::Unknown),
+            ("python3 -X --version", Rule::Unknown),
+            ("python3 -- --version", Rule::Unknown),
+            ("node -r --version", Rule::Unknown),
+            ("node --import --version", Rule::Unknown),
+            ("python3 -V -", Rule::Unknown),
+            ("python3 -i", Rule::Unknown),
+            ("python3", Rule::Unknown),
+            ("node", Rule::Unknown),
+            // The input is read as code, and is.
+            (
+                "python3 -W --version <<'PY'\nimport shutil\nshutil.rmtree('/home/me')\nPY",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn under_cmd_a_python_or_node_with_nothing_to_run_is_as_it_was() {
+    // A line with only a print flag, and a bare program or a script file:
+    // nothing is handed to it to run.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "python",
+            "python3",
+            "node",
+            "deno",
+            "bun",
+            "python --version",
+            "node -v",
+            "node --help",
+            "deno --version",
+            "python build.py",
+            "deno test",
+            "python -v",
+        ],
+        &[
+            // Inline code, the input, and what is piped into it.
+            (r#"python -c "print(1)""#, Rule::Unknown),
+            (r#"node -e "console.log(1)""#, Rule::Unknown),
+            ("python -", Rule::Unknown),
+            ("node -", Rule::Unknown),
+            ("type run.py | python", Rule::Unknown),
+            ("type run.js | node", Rule::Unknown),
+            ("echo print(1) | deno", Rule::Unknown),
+        ],
+    );
+    // PowerShell reads the input of a bare interpreter as the POSIX shell
+    // does; `deno` and `bun` only when something is piped into them.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["deno", "bun", "python --version", "deno --version"],
+        &[
+            ("python", Rule::Unknown),
+            ("node", Rule::Unknown),
+            ("python -", Rule::Unknown),
+            ("'print(1)' | python", Rule::Unknown),
+            ("'1' | deno", Rule::Unknown),
+        ],
+    );
+}

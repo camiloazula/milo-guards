@@ -520,9 +520,15 @@ option, and all that follows `--`, is read as code, because which options
 take the next word (`-L info`) and which only a value after `=` (`--reload`,
 `--v8-flags`, `--env-file`) is not worth getting wrong; the words after the
 first are only `Deno.args`, read as code they come out harmless, or unreadable
-when a path is not code. `deno --version`, `-V`, `--help` and `-h` print and
-exit: only a `deno` with no subcommand and none of them reads its input as the
-REPL. And a here-document or here-string handed to
+when a path is not code. An interpreter given only a flag that prints and
+exits reads no input: `--version`, `-V`, `--help` and `-h` for `python`, `-v`,
+`--version`, `--help` and `-h` for `node` and `bun`, `--version`, `-V`,
+`--help` and `-h` for `deno`, `--version`, `--help` and `-h` for the rest
+(`perl`, `ruby`, `php`, `lua`). `python3 -v` is verbose mode, which reads the
+input. A flag that is the value of the option before it (`python -W
+--version`), or that follows `--`, where the script's name comes, is not one,
+and the line reads its input. Only a `deno` with no subcommand and none of
+these reads its input as the REPL. And a here-document or here-string handed to
 `python3`, `python3 -`, `node`, `node -`, `bun -`, `bun run -`, `deno run -`,
 when its text is plain: a quoted
 delimiter (`<<'PY'`), or an unquoted one with nothing in the body the shell
@@ -542,7 +548,12 @@ after it is read and not taken for part of the comment. A script file
 not read. Neither is code from a pipe or another redirect (`cat x.py |
 python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
 download. Code that PowerShell or cmd hands to an interpreter stays `unknown`:
-its paths and commands are not POSIX ones.
+its paths and commands are not POSIX ones. A line with nothing to run, a bare
+`python3` or `node`, reads its input as the REPL under a POSIX shell and
+PowerShell, but under cmd only when something is piped into it
+(`type x.py | python`); a bare `deno` or `bun` reads its input under a POSIX
+shell, or when something is piped into it, in any shell. A line with only a
+print flag (`python --version`) reads nothing in any of them.
 
 `effect` never answers `ReadsOnly` for a line with inline code: the interpreter
 is not one of its readers (`Unknown`), and a delete, write or command the code
@@ -568,9 +579,10 @@ global object in `node -e`).
 | --- | --- | --- |
 | Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()` and `.unlink()`, `rimraf` |
 | Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `.open(…)` of another object (`Path.open('w')`) with a string that is such a mode, a `tarfile` mode (`w:gz`) or a `dbm` flag (`c`, `n`) among its first two arguments, `mode=` or `flag=` (a string that is not a mode `open` takes, a file name or a URL (`Image.open('a.png')`, `webbrowser.open('http://localhost')`), is not a write), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `readFile`, `readFileSync`, `createReadStream` and `readJson` given a `flag` or `flags` that writes or is only known when it runs (`w` truncates the file it reads), `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
-| Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
-| Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
-| Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` `` |
+| Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename`, `Path.move`, `Path.move_into` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
+| Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod`, `shutil.copymode` and `copystat` (a `chmod` of the second argument) | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
+| Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` ``, `execa`/`execaSync`/`execaCommand`/`execaCommandSync`, `execa`'s `command`, `commandSync` and `$` (also `` $`…` `` and `$.sync`), `cross-spawn`'s `spawn` and `sync` |
+| Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -677,7 +689,30 @@ Python 2's `exec "code"` (also `exec "code" in globals`) is read like
 `exec("code")`: a literal is read as Python, anything else is `unknown`.
 `Path.rename` and `Path.replace` take their target as the one argument or as
 `target=`; given `*args` or `**kwargs` they are `unknown`, unless on a string
-literal, whose `replace` takes two.
+literal, whose `replace` takes two. Python 3.14's `Path.move(target)` and
+`Path.move_into(dir)` are read the same way (`move_into` as `mv` into a
+folder), and `Path.copy(target, …)` and `Path.copy_into(dir, …)` are a write of
+the target, as `shutil.copy` is, from the argument or from `target=` /
+`target_dir=`; a `copy` with no target (`d.copy()`) and a method of a module
+the code imported (`copy.copy(x)`, `np.copy(a)`, `turtle.move(5)`) are not
+this.
+
+`fileinput.input(files, inplace)` and `fileinput.FileInput(files, inplace)`
+with `inplace` on rewrite each file, as `sed -i` does, so each file (a string,
+or a list or tuple of them) is a write; `inplace` only known when it runs may
+be on. Files not given (they come from the script's arguments), given as
+anything but a literal string or list, or as `*args`, are only known when it
+runs, so the call is `unknown`. `os.kill(pid, sig)`, `os.killpg(pgid, sig)`,
+`process.kill(pid, sig)` and `Deno.kill(pid, sig)` are the `kill` command with
+that process id when it is a literal (`-1`, `(-1)`, `-0x1`), so `-1` and `1`
+are `stop_system` and `0` is not; a process id only known when it runs, a float,
+a number with a leading zero or a spread is `unknown`, because it may be any.
+`shutil.copymode(src, dst)` and `shutil.copystat(src, dst)` set the permission
+bits of `dst` and are a `chmod` of it, as `chmod --reference` is. `execa`'s
+`command`, `commandSync` and `$` (called, as a tagged template, and as `$.sync`)
+run a command line as `execaCommand` does, and `cross-spawn`'s `spawn` and
+`sync` start a program as `child_process.spawn` and `spawnSync` do; the module
+called bare is `unknown`, as any module handed on as a value is.
 
 **Names shared with nested code.** Literal code given to `exec`, `eval` or a
 profiler (`cProfile.run`) runs in the namespace of the code around

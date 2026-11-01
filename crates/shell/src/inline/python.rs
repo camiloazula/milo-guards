@@ -107,6 +107,14 @@ enum Kind {
     /// The first argument is written, made or truncated.
     Write,
     Chmod,
+    /// `shutil.copymode(src, dst)` and `shutil.copystat(src, dst)`: the
+    /// permission bits of the second argument are set, as `chmod` does.
+    CopyMode,
+    /// `fileinput.input(files, inplace)` and `fileinput.FileInput(…)`: with
+    /// `inplace` on, each file is rewritten, as `sed -i` does.
+    FileInput,
+    /// `os.kill(pid, sig)` and `os.killpg(pgid, sig)`.
+    Kill,
     Chown,
     Chdir,
     /// `os.fchdir(fd)`: a directory only known when it runs.
@@ -239,6 +247,9 @@ fn kind(name: &str) -> Option<Kind> {
         | "shutil.make_archive"
         | "sqlite3.connect" => Kind::Write,
         "os.chmod" | "os.lchmod" => Kind::Chmod,
+        "shutil.copymode" | "shutil.copystat" => Kind::CopyMode,
+        "fileinput.input" | "fileinput.FileInput" => Kind::FileInput,
+        "os.kill" | "os.killpg" => Kind::Kill,
         "os.chown" | "os.lchown" | "shutil.chown" => Kind::Chown,
         "os.chdir" | "contextlib.chdir" => Kind::Chdir,
         "os.fchdir" => Kind::Fchdir,
@@ -676,7 +687,7 @@ impl<'s> Reader<'s> {
 
     /// `from os import *` makes every name in `os` a bare one.
     fn star_import(&mut self, module: &str) {
-        const MODULES: [&str; 7] = [
+        const MODULES: [&str; 8] = [
             "os",
             "shutil",
             "subprocess",
@@ -684,6 +695,7 @@ impl<'s> Reader<'s> {
             "io",
             "codecs",
             "pty",
+            "fileinput",
         ];
         if !MODULES.contains(&module) {
             return;
@@ -729,6 +741,12 @@ impl<'s> Reader<'s> {
             "execvp",
             "Path",
             "PurePath",
+            "copymode",
+            "copystat",
+            "kill",
+            "killpg",
+            "input",
+            "FileInput",
         ] {
             let qualified = format!("{module}.{name}");
             if kind(&qualified).is_some() || qualified.starts_with("pathlib.") {
@@ -1086,6 +1104,21 @@ impl<'s> Reader<'s> {
                 let mode = self.mode(&args, 1);
                 self.act(path.map(|path| Act::Chmod { path, mode }));
             }
+            Some(Kind::CopyMode) => {
+                let path = self.target(&args, 1, &["dst"]);
+                let mode = Arg::Unknown("the mode of another file".to_string());
+                self.act(path.map(|path| Act::Chmod { path, mode }));
+            }
+            Some(Kind::FileInput) => self.file_input(&args, call),
+            Some(Kind::Kill) => match args.get(0, &["pid", "pgid"]) {
+                // `*args` may hold the process id, or come before it.
+                _ if args.splat => self.reading.unread(self.text(call)),
+                Some(node) => {
+                    let pid = self.text(node);
+                    self.reading.acts.push(super::kill(pid));
+                }
+                None => {}
+            },
             Some(Kind::Chown) => {
                 let target = self.target(&args, 0, &["path"]);
                 self.act(target.map(Act::Chown));
@@ -1165,6 +1198,53 @@ impl<'s> Reader<'s> {
         }
         if matches!(kind, Some(Kind::Script | Kind::Subprocess | Kind::Exec)) {
             self.within(&args, before);
+        }
+    }
+
+    /// `fileinput.input(files, inplace=True)` and `fileinput.FileInput(…)`:
+    /// with `inplace` on (or only known when it runs) each file is rewritten
+    /// as `sed -i` does it, so each is a write. Files given as anything but a
+    /// string or a list of strings, or not given (they then come from the
+    /// arguments of the script), are only known when it runs.
+    fn file_input(&mut self, args: &Args<'_>, call: Node<'_>) {
+        let inplace = match args.get(1, &["inplace"]) {
+            // The default only reads.
+            None => args.splat,
+            Some(node) => !matches!(self.text(node), "False" | "None" | "0"),
+        };
+        if !inplace {
+            return;
+        }
+        let files = args.get(0, &["files"]).filter(|_| !args.splat);
+        let Some(files) = files else {
+            self.reading.unread(self.text(call));
+            return;
+        };
+        if !matches!(files.kind(), "list" | "tuple") {
+            if matches!(files.kind(), "string" | "concatenated_string") {
+                let target = self.arg(files);
+                self.reading.acts.push(Act::Write(target));
+            } else {
+                self.reading.unread(self.text(call));
+            }
+            return;
+        }
+        let mut cursor = files.walk();
+        let elements: Vec<Node<'_>> = files
+            .named_children(&mut cursor)
+            .filter(|element| element.kind() != "comment")
+            .collect();
+        if elements.is_empty()
+            || elements
+                .iter()
+                .any(|element| element.kind() == "list_splat")
+        {
+            self.reading.unread(self.text(call));
+            return;
+        }
+        for element in elements {
+            let target = self.arg(element);
+            self.reading.acts.push(Act::Write(target));
         }
     }
 
@@ -1378,6 +1458,16 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// Whether `node` is the name of a module the code imported (`copy`,
+    /// `np` for `import numpy as np`): a call on it is a function of the
+    /// module, not a method of a path.
+    fn names_module(&mut self, node: Node<'_>) -> bool {
+        matches!(node.kind(), "identifier" | "attribute")
+            && self
+                .qualified(node, 0)
+                .is_some_and(|name| self.is_module(&name))
+    }
+
     /// A method call on something the reader cannot name: `Path` methods,
     /// and files' and archives' own.
     fn method(&mut self, function: Node<'_>, args: &Args<'_>) {
@@ -1418,6 +1508,54 @@ impl<'s> Reader<'s> {
             // `replace` is not.
             "rename" | "replace"
                 if args.splat && !matches!(receiver.kind(), "string" | "concatenated_string") =>
+            {
+                self.reading.unread(self.text(receiver));
+            }
+            // Python 3.14's `Path.move(target)` and `Path.move_into(dir)`
+            // move as `Path.rename` does, the second into a folder, as `mv`
+            // does. A module's own `move` is not a path's.
+            "move" | "move_into"
+                if args.positional.len() + args.keywords.len() == 1
+                    && args
+                        .keywords
+                        .iter()
+                        .all(|(name, _)| name == "target" || name == "target_dir")
+                    && !self.names_module(receiver) =>
+            {
+                let from = self.arg(receiver);
+                let to = args
+                    .get(0, &["target", "target_dir"])
+                    .map(|node| self.arg(node));
+                self.act(to.map(|to| Act::Move { from, to }));
+            }
+            "move" | "move_into"
+                if args.splat
+                    && !matches!(receiver.kind(), "string" | "concatenated_string")
+                    && !self.names_module(receiver) =>
+            {
+                self.reading.unread(self.text(receiver));
+            }
+            // `Path.copy(target, …)` and `Path.copy_into(dir, …)` (3.14) write
+            // the target, as `shutil.copy` does; the options are keywords.
+            // A call with no target (`d.copy()`) and a module's own `copy`
+            // (`copy.copy(x)`, `numpy.copy(a)`) are not this.
+            "copy" | "copy_into"
+                if (!args.positional.is_empty()
+                    || args
+                        .keywords
+                        .iter()
+                        .any(|(name, _)| name == "target" || name == "target_dir"))
+                    && !matches!(receiver.kind(), "string" | "concatenated_string")
+                    && !self.names_module(receiver) =>
+            {
+                let target = args.get(0, &["target", "target_dir"]);
+                let target = target.map(|node| self.arg(node));
+                self.act(target.map(Act::Write));
+            }
+            "copy" | "copy_into"
+                if args.splat
+                    && !matches!(receiver.kind(), "string" | "concatenated_string")
+                    && !self.names_module(receiver) =>
             {
                 self.reading.unread(self.text(receiver));
             }

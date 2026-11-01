@@ -68,6 +68,8 @@ enum Kind {
     Chmod,
     Chown,
     Chdir,
+    /// `process.kill(pid, signal)` and `Deno.kill(pid, signal)`.
+    Kill,
     /// `fs.openSync(path, flags)`.
     Open,
     /// `fs.readFileSync(path, options)`, `fs.createReadStream(path, options)`
@@ -168,6 +170,7 @@ fn whole(name: &str) -> Option<Kind> {
         "Deno.chmod" | "Deno.chmodSync" => Kind::Chmod,
         "Deno.chown" | "Deno.chownSync" => Kind::Chown,
         "Deno.chdir" | "process.chdir" => Kind::Chdir,
+        "process.kill" | "Deno.kill" => Kind::Kill,
         "Deno.open" | "Deno.openSync" => Kind::DenoOpen,
         "Deno.run" | "Bun.spawn" | "Bun.spawnSync" => Kind::Argv,
         "Deno.Command" => Kind::DenoCommand,
@@ -178,11 +181,21 @@ fn whole(name: &str) -> Option<Kind> {
         | "child_process.execSync"
         | "shelljs.exec"
         | "execa.execaCommand"
-        | "execa.execaCommandSync" => Kind::Script,
+        | "execa.execaCommandSync"
+        // The older names of the two, and `$` (also `$.sync`, its alias
+        // `$.s`, and as a tagged template, which is a call with the template
+        // as its argument).
+        | "execa.command"
+        | "execa.commandSync"
+        | "execa.$"
+        | "execa.$.sync"
+        | "execa.$.s" => Kind::Script,
         "child_process.spawn"
         | "child_process.spawnSync"
         | "child_process.execFile"
         | "child_process.execFileSync"
+        | "cross-spawn.spawn"
+        | "cross-spawn.sync"
         | "execa"
         | "execa.execa"
         | "execa.execaSync"
@@ -1112,6 +1125,15 @@ impl<'s> Reader<'s> {
                 let target = self.target(&args, 0);
                 self.act(target.map(Act::Chdir));
             }
+            Some(Kind::Kill) => match args.get(0) {
+                // A spread may hold the process id, or come before it.
+                _ if args.splat => self.reading.unread(self.text(call)),
+                Some(node) => {
+                    let pid = self.text(node);
+                    self.reading.acts.push(super::kill(pid));
+                }
+                None => {}
+            },
             Some(Kind::Open) => {
                 // No flags reads; flags only known when it runs may write.
                 let writes_file = match args.get(1) {
@@ -1706,6 +1728,11 @@ impl<'s> Reader<'s> {
         let Some(name) = self.qualified(node, 0) else {
             return;
         };
+        // `$` of execa is called as it is, and `$.sync` is the call the
+        // reader looks at: the object it is a member of is not the call.
+        if name == "execa.$" && parent.node.kind() == "member_expression" && is("object") {
+            return;
+        }
         if kind(&name).is_some_and(|kind| kind != Kind::Require)
             || (self.is_module(&name) && self.escapes(node, field, above))
         {
