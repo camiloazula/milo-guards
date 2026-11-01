@@ -342,6 +342,7 @@ fn a_common_parameter_before_the_path_does_not_hide_it() {
         "-WarningAction 0",
         "-InformationAction 0",
         "-ProgressAction 0",
+        "-proga 0",
         "-ErrorVariable e",
         "-PipelineVariable p",
     ] {
@@ -737,4 +738,123 @@ fn a_splat_hides_which_argument_is_the_item() {
             ("Rename-ItemProperty y @p", Rule::Overwrite),
         ],
     );
+}
+
+#[test]
+fn a_common_parameter_after_the_destination_does_not_become_it() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Copy-Item src\\a src\\b -proga 0"],
+        &[
+            ("Copy-Item src\\a C:\\Windows\\x -proga 0", Rule::Overwrite),
+            (
+                "Set-ItemProperty -proga 0 HKLM:\\x -Name y -Value 1",
+                Rule::SystemSettings,
+            ),
+            ("Set-Content -proga 0 C:\\Windows\\x y", Rule::Overwrite),
+            ("Out-File -proga 0 C:\\Windows\\x", Rule::Overwrite),
+            ("Set-Acl -proga 0 C:\\Windows\\x $a", Rule::Permissions),
+        ],
+    );
+}
+
+#[test]
+fn start_process_reads_its_program_under_every_alias_of_filepath() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Start-Process -PSPath notepad",
+            "Start-Process -Path notepad",
+        ],
+        &[
+            ("Start-Process -PSPath cmd -Verb RunAs", Rule::Elevated),
+            ("Start-Process -Path cmd -Verb RunAs", Rule::Elevated),
+            ("Start-Process -LiteralPath cmd -Verb RunAs", Rule::Elevated),
+            ("Start-Process -psp cmd -Verb RunAs", Rule::Elevated),
+            ("Start-Process -PSPath $p", Rule::Unknown),
+            ("Start-Process -Path $p", Rule::Unknown),
+            ("saps -PSPath $p", Rule::Unknown),
+            ("start -PSPath $p", Rule::Unknown),
+            (
+                "Start-Process -PSPath powershell -ArgumentList '-c Remove-Item -Recurse ~'",
+                Rule::RunInput,
+            ),
+            (
+                "Start-Process -psp cmd -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_file_switch_of_a_listing_does_not_take_the_folder() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -File src | Rename-Item -NewName x",
+            "ls -File | Rename-Item -NewName x",
+        ],
+        &[
+            ("Get-ChildItem -File ~ | Rename-Item -NewName x", Rule::Delete),
+            (
+                "Get-ChildItem -File ~\\Downloads | Rename-Item -NewName { $_.Name -replace \" \",\"_\" }",
+                Rule::Delete,
+            ),
+            ("ls -File ~ | Rename-Item -NewName x", Rule::Delete),
+            ("dir -File C:\\Windows | ren -NewName x", Rule::Delete),
+            (
+                "Get-ChildItem -File HKCU:\\Software | Rename-Item -NewName x",
+                Rule::SystemSettings,
+            ),
+            ("Get-ChildItem -File ~ | Clear-Item", Rule::Overwrite),
+            (
+                "Get-ChildItem -File ~ | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -File ~ | ForEach-Object { Rename-Item $_ x }",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -File ~ | ForEach-Object { Move-Item $_ old }",
+                Rule::Delete,
+            ),
+            ("Get-ChildItem ~ -File | Rename-Item -NewName x", Rule::Delete),
+            (
+                "Get-ChildItem -File:$true ~ | Rename-Item -NewName x",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn a_long_hidden_listing_is_read_quickly() {
+    let items = "a,".repeat(5000);
+    let words = "b ".repeat(5000);
+    let paths = "-Path x ".repeat(2000);
+    let includes = "a,".repeat(2000);
+    for line in [
+        format!("gci -fo -r -Include {items}a {words} | ren -NewName x"),
+        format!("gci -fo -r {paths} -Include {includes}a | ren -NewName x"),
+        format!("gci -fo -r -Filter a {paths} | ren -NewName x"),
+    ] {
+        let started = std::time::Instant::now();
+        let rules = common::rules(&line, Shell::PowerShell, &windows());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "{} bytes took {took:?}",
+            line.len()
+        );
+        assert!(!rules.is_empty(), "a long hidden listing is read as safe");
+    }
 }

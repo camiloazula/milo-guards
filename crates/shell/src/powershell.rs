@@ -643,8 +643,9 @@ fn unescape(text: &str) -> String {
 }
 
 /// Switch parameters (they take no value) that the rules meet.
-const SWITCHES: [&str; 17] = [
+const SWITCHES: [&str; 18] = [
     "recurse",
+    "file",
     "force",
     "whatif",
     "confirm",

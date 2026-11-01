@@ -471,6 +471,11 @@ fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg>
     if patterns.is_empty() {
         return found;
     }
+    // Every place is matched with every pattern, and each path is resolved:
+    // a long list of both is not read, and is handed on as unknown.
+    if places.len().saturating_mul(patterns.len()) > MAX_HIDDEN_MATCHES {
+        return vec![Arg::Unknown("<hidden listing>".to_string())];
+    }
     for place in places {
         let Arg::Known(folder) = place else {
             continue;
@@ -492,6 +497,10 @@ fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg>
     }
     found
 }
+
+/// The most places times patterns a hidden listing is matched for; more is not
+/// read, as every pair is a path to resolve.
+const MAX_HIDDEN_MATCHES: usize = 256;
 
 /// The paths a listing stage hands on.
 fn listed(unit: &Unit) -> Option<Vec<Arg>> {

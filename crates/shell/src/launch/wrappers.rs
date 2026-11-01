@@ -241,13 +241,14 @@ pub(super) fn powershell(args: &[Arg]) -> Launch {
     Launch::Reads(Reads::Shell)
 }
 
-/// `Start-Process`: the program in `-FilePath` (or first), its arguments in
+/// `Start-Process`: the program in `-FilePath` (`-Path` and `-PSPath` are its
+/// aliases, which `Params` reads as `-LiteralPath`; or first), its arguments in
 /// `-ArgumentList` (or after it), and `-Verb RunAs` to run it elevated.
 pub(super) fn start_process(unit: &Unit) -> Launch {
     let params = Params::read(&unit.args);
     let mut positional = params.positional.iter();
     let program = params
-        .values(&["filepath"])
+        .values(&["filepath", "path", "literalpath"])
         .first()
         .copied()
         .or_else(|| positional.next().copied());
