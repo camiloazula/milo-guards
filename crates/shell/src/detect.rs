@@ -4,7 +4,7 @@
 use crate::launch::{
     after_run, find_targets, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use milo_guards_core::spelling::glob;
 
@@ -252,7 +252,7 @@ impl Checker<'_> {
                 ..unit.scope()
             };
             for arg in found {
-                match self.place(unit.shell, scope, &arg) {
+                match self.place(unit.shell, scope, &arg, Access::Item) {
                     place if place.harmless() => {}
                     Place::Registry => {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
@@ -273,7 +273,7 @@ impl Checker<'_> {
     /// `rm -rf /tmp/x` deletes it).
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
         for source in sources {
-            let place = self.place(unit.shell, unit.scope(), source);
+            let place = self.place(unit.shell, unit.scope(), source, Access::Item);
             if !place.harmless() {
                 self.add(
                     Rule::Delete,
@@ -285,15 +285,15 @@ impl Checker<'_> {
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
-    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
-            .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+            .place(scope.dir, arg, shell, scope.hidden, access)
     }
 
     /// As [`place`](Self::place), for a path something is written into.
-    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
-            .place_into(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+            .place_into(scope.dir, arg, shell, scope.hidden, access)
     }
 
     /// The words of a file a tool runs on its own that a write to `arg` is,
@@ -317,14 +317,26 @@ impl Checker<'_> {
     /// A folder made at `target`: as a write, except that an empty folder is
     /// no code, so one on the list of what a tool runs on its own is not a
     /// finding (`mkdir -p .github/workflows`); what is written into it is.
-    fn make_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg) {
+    fn make_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, access: Access) {
         if self.startup(shell, scope, target, false).is_none() {
-            self.write(shell, scope, target, "creates");
+            self.write_as(shell, scope, target, "creates", access);
         }
     }
 
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
-        match self.place_into(shell, scope, target) {
+        self.write_as(shell, scope, target, verb, Access::Content);
+    }
+
+    /// A write of `target`, by how it reaches it (see [`Access`]).
+    fn write_as(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        access: Access,
+    ) {
+        match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),
@@ -367,13 +379,13 @@ impl Checker<'_> {
             _ => None,
         };
         let words = recursive
-            .then(|| protected(self.place(shell, scope, destination)))
+            .then(|| protected(self.place(shell, scope, destination, Access::Item)))
             .flatten();
         match words {
             Some(words) => {
                 self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
             }
-            None => self.write(shell, scope, destination, "writes to"),
+            None => self.write_as(shell, scope, destination, "writes to", Access::Item),
         }
         // A recursive copy can replace anything below a folder that holds a
         // file a tool runs on its own (`cp -r x .github`).
@@ -399,9 +411,9 @@ impl Checker<'_> {
         for leaf in leaves {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
-                self.place(shell, scope, &landing)
+                self.place(shell, scope, &landing, Access::Item)
             } else {
-                self.place_into(shell, scope, &landing)
+                self.place_into(shell, scope, &landing, Access::Item)
             };
             if let Some(words) = protected(place) {
                 self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
@@ -435,7 +447,7 @@ impl Checker<'_> {
 
     fn permissions(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
         for target in targets {
-            match self.place(unit.shell, unit.scope(), target) {
+            match self.place(unit.shell, unit.scope(), target, Access::Item) {
                 place if place.harmless() => {}
                 Place::Workspace { exact: true } => {}
                 Place::Registry => {
@@ -627,7 +639,9 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             params
                 .values(&["destination"])
                 .first()
-                .map_or_else(Vec::new, |destination| into_folder(destination, &sources))
+                .map_or_else(Vec::new, |destination| {
+                    into_folder(&or_here(destination), &sources)
+                })
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
@@ -643,6 +657,15 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .map(|file| Arg::Known(file.to_string()))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// A `$null` destination of `Copy-Item` or `Move-Item` is no destination, so
+/// the item goes to the folder the line is in.
+fn or_here(destination: &Arg) -> Arg {
+    match destination {
+        Arg::Null => Arg::Known(".".to_string()),
+        other => other.clone(),
     }
 }
 

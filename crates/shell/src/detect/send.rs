@@ -15,7 +15,7 @@ use milo_guards_core::{Flavour, Sensitivity};
 
 use super::files::remote;
 use super::Checker;
-use crate::path::Place;
+use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, referenced, Arg, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -547,7 +547,7 @@ impl Checker<'_> {
         } else if public_key(text) {
             return None;
         } else {
-            match self.place(unit.shell, unit.scope(), arg) {
+            match self.place(unit.shell, unit.scope(), arg, Access::Item) {
                 Place::Sensitive(words, Sensitivity::Secret) => words,
                 Place::Home { .. } if home => HOME,
                 Place::Top(ROOT) if home => HOME,
@@ -686,7 +686,7 @@ fn to_other_machine(arg: &Arg, unknown: bool) -> bool {
                 || (text.starts_with('[') && text.contains("]:"))
         }
         Arg::Unknown(_) | Arg::Template { .. } => unknown || arg.text().contains(':'),
-        Arg::Input => false,
+        Arg::Input | Arg::Null => false,
     }
 }
 

@@ -287,7 +287,10 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
                 "{count} x {group:?} took {took:?}"
             );
             assert!(!assessment.is_safe(), "{count} x {group:?}");
-            assert_ne!(effect(&line, Shell::Posix, &posix()), Effect::ReadsOnly);
+            assert!(!matches!(
+                effect(&line, Shell::Posix, &posix()),
+                Effect::ReadsOnly(_)
+            ));
         }
     }
     // Past the wrappers a line may have, it is too wrapped, as for any other
