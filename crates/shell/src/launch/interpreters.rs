@@ -464,19 +464,21 @@ fn only_runs(unit: &Unit, launch: Launch) -> Launch {
     }
 }
 
+/// Whether the option `text` makes bun run the code that follows it.
+fn bun_evals(text: &str) -> bool {
+    matches!(text, "--eval" | "--print")
+        || text.starts_with("--eval=")
+        || text.starts_with("--print=")
+        || bun_inline(text)
+}
+
 /// `bun` read by the guard's options and by bun's own subcommand, the first
 /// word that does not start with a dash.
 fn bun_launch(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let first = after_options(args, &BUN_VALUES);
     let before = args.get(..first.unwrap_or(args.len())).unwrap_or_default();
-    let eval = before.iter().filter_map(Arg::known).any(|text| {
-        matches!(text, "--eval" | "--print")
-            || text.starts_with("--eval=")
-            || text.starts_with("--print=")
-            || bun_inline(text)
-    });
-    if eval {
+    if before.iter().filter_map(Arg::known).any(bun_evals) {
         return Launch::Reads(Reads::Interpreter);
     }
     let by_value = first.map_or(Launch::Itself, |at| bun_subcommand(unit, at));
@@ -530,6 +532,16 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
             .and_then(|rest| after_options(rest, &BUN_VALUES))
             .map(|at| first + 1 + at)
         {
+            // A code flag among the options of `run` (`bun -F x run -e
+            // CODE`) is code given inline, read as `bun -e CODE` is.
+            Some(at)
+                if args[first + 1..at]
+                    .iter()
+                    .filter_map(Arg::known)
+                    .any(bun_evals) =>
+            {
+                Launch::Reads(Reads::Interpreter)
+            }
             Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
             Some(at) if !is_file(&args[at]) => Launch::Replace(Box::new(running(unit, "bun", at))),
             _ => Launch::Itself,

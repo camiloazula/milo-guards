@@ -540,6 +540,7 @@ impl Walker<'_> {
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
+                self.split.assigned_earlier = true;
                 self.assignment(node);
                 self.assigned(node, level);
             }
@@ -555,6 +556,7 @@ impl Walker<'_> {
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
+                self.split.assigned_earlier = true;
                 let mut cursor = node.walk();
                 let names: Vec<&str> = node
                     .named_children(&mut cursor)

@@ -227,7 +227,14 @@ fn add_launched(
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
-            Launch::Replace(replacement) => unit = *replacement,
+            Launch::Replace(replacement) => {
+                // A package runner puts a venv or `node_modules/.bin` on
+                // `PATH`, passes npm's config on as environment variables
+                // and loads `--env-file`; `bun run` loads `.env`. What it
+                // starts has an environment the line does not show.
+                split.environment += 1;
+                unit = *replacement;
+            }
             Launch::Script(shell, script) => {
                 // A shell started with the option on (`bash -O dotglob -c`,
                 // `zsh -o globdots -c`) runs its script with it on.

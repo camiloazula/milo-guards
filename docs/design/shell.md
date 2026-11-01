@@ -1277,8 +1277,18 @@ questions are answered apart:
    (`FOO=1 python3 -c …`, `PYTHONPATH=… `, `NODE_OPTIONS=…`, `LD_PRELOAD=…`);
    no wrapper that may hand it an environment (`env`, `sudo`, `xargs`, also
    in front of a shell that starts it: `FOO=1 bash -c 'python3 -c …'`; `time`,
-   `nice`, `timeout` and the like only change how it runs); and no `export`,
-   `declare`, `typeset`, `set`, `source` or `.` earlier in the line.
+   `nice`, `timeout` and the like only change how it runs), and no package
+   runner (`npx`, `npm exec`, `pnpm exec`, `pnpm dlx`, `bunx`, `bun x`, `uvx`,
+   `uv run`, `pipx run`, `deno x`, `dx`), which puts a venv or
+   `node_modules/.bin` on `PATH`, passes its config on as environment
+   variables and loads `--env-file`; and no `export`, `declare`, `typeset`,
+   `readonly`, `local`, `set`, `source`, `.`, `read`, `let`, `mapfile`,
+   `readarray`, `getopts`, `unset` or assignment on a line of its own
+   (`NODE_OPTIONS=x; node -e …`, `HOME=/elsewhere; python3 -c …`) earlier in
+   the line: a variable already exported (`PATH`, `HOME`, and whatever the
+   caller has set) is changed for the interpreter, and which are is not known.
+   An option of `bun run` that carries code (`bun -F x run -e CODE`) is
+   an option and a subcommand around the code, not read whole.
 3. **It parses and holds a statement.** A parse error (`python3 -c 'if 1:'`),
    code that is empty or only comments, and an empty block (`node -e '{}'`,
    `if (1) {}`) are not read whole.

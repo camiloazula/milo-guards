@@ -3823,14 +3823,16 @@ fn code_given_inline_through_a_runner_or_a_bun_option_is_read() {
     check(
         Shell::Posix,
         &posix(),
+        &["deno eval 'console.log(1)'"],
         &[
-            "npx node -e 'console.log(1)'",
-            "bun x node -e 'console.log(1)'",
-            "bun -F x run -e 'console.log(1)'",
-            "uvx python -c 'print(1)'",
-            "deno eval 'console.log(1)'",
-        ],
-        &[
+            // A runner hands the interpreter an environment of its own (a
+            // venv or `node_modules/.bin` on `PATH`, npm's config, an
+            // `--env-file`), and `bun -F x run` is an option and a
+            // subcommand besides the code flag: not read whole.
+            ("npx node -e 'console.log(1)'", Rule::Unknown),
+            ("bun x node -e 'console.log(1)'", Rule::Unknown),
+            ("bun -F x run -e 'console.log(1)'", Rule::Unknown),
+            ("uvx python -c 'print(1)'", Rule::Unknown),
             (
                 r#"npx node -e "require('fs').rmSync('/home/me',{recursive:true})""#,
                 Rule::Delete,
@@ -5139,4 +5141,91 @@ fn an_import_run_time_code_or_an_environment_write_is_unknown() {
         "python3 -c 'json = 1'",
         "python3 -c 'open = print; open(\"x\")'",
     ]);
+}
+
+// The review of the strict gate: an environment handed to the interpreter by
+// a package runner, or changed by a plain assignment earlier in the line.
+
+#[test]
+fn a_package_runner_hands_the_interpreter_an_environment() {
+    assert_unknown(&[
+        "uv run python -c 'print(1)'",
+        "uv run --env-file .env python -c 'print(1)'",
+        "uv tool run python -c 'print(1)'",
+        "npx node -e 'console.log(1)'",
+        "npx --yes node -e 'console.log(1)'",
+        "npm exec node -- -e 'console.log(1)'",
+        "pnpm exec node -e 'console.log(1)'",
+        "pnpm dlx node -e 'console.log(1)'",
+        "pnpx node -e 'console.log(1)'",
+        "yarn dlx node -e 'console.log(1)'",
+        "bunx node -e 'console.log(1)'",
+        "bun x node -e 'console.log(1)'",
+        "uvx python -c 'print(1)'",
+        "pipx run python -c 'print(1)'",
+        "dx node -e 'console.log(1)'",
+        "deno x node -e 'console.log(1)'",
+        // A code flag among the options of `bun run` is inline code with an
+        // option and a subcommand around it: not read whole.
+        "bun -F x run -e 'console.log(1)'",
+        "bun run -e 'console.log(1)'",
+        "bun run -p 'console.log(1)'",
+        "bun --filter x run --eval 'console.log(1)'",
+        r#"bun -F x run -e "require('fs').rmSync('/home/me',{recursive:true})""#,
+    ]);
+}
+
+#[test]
+fn a_plain_assignment_earlier_in_the_line_may_change_the_interpreters_environment() {
+    assert_unknown(&[
+        "NODE_OPTIONS=--require=./x.js; node -e 'console.log(1)'",
+        "LD_PRELOAD=./x.so; python3 -c 'print(1)'",
+        "PYTHONHOME=/elsewhere; python3 -c 'print(1)'",
+        "PYTHONPATH=/elsewhere; python3 -c 'print(1)'",
+        "HOME=/elsewhere; python3 -c 'print(1)'",
+        "PATH=.:$PATH; python3 -c 'print(1)'",
+        "PATH=.:$PATH\npython3 -c 'print(1)'",
+        "NODE_OPTIONS=--require=./x.js && node -e 'console.log(1)'",
+        "x=1; python3 -c 'print(1)'",
+        "unset PATH; python3 -c 'print(1)'",
+        "readonly PATH=.; python3 -c 'print(1)'",
+        "read PATH; python3 -c 'print(1)'",
+        "read -r HOME; node -e 'console.log(1)'",
+        "let PATH=1; python3 -c 'print(1)'",
+        "mapfile PATH; python3 -c 'print(1)'",
+        "getopts a PATH; python3 -c 'print(1)'",
+        "f() { PATH=.; }; f; python3 -c 'print(1)'",
+        "(PATH=.); python3 -c 'print(1)'",
+    ]);
+    // The line's own code is still found first.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                r#"HOME=/elsewhere; python3 -c "import shutil; shutil.rmtree('/home/me')""#,
+                Rule::Delete,
+            ),
+            (
+                r#"npx node -e "require('fs').rmSync('/home/me',{recursive:true})""#,
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_assignment_after_the_interpreter_or_none_leaves_the_code_read_whole() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "python3 -c 'print(1)'; x=1",
+            "node -e 'console.log(1)' && echo done",
+            "echo hi; python3 -c 'print(1)'",
+            "time python3 -c 'print(1)'",
+        ],
+        &[],
+    );
 }

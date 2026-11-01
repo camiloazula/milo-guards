@@ -434,6 +434,11 @@ pub(crate) struct Split {
     /// interpreter loads what that environment tells it to, which the code
     /// does not show.
     pub(crate) environment: usize,
+    /// Whether an earlier part of the line assigned, read into or unset a
+    /// variable on a line of its own (`NODE_OPTIONS=x; node -e …`): if the
+    /// variable is already exported, which `PATH` and `HOME` always are, the
+    /// assignment changes what the interpreter is given.
+    pub(crate) assigned_earlier: bool,
     /// What inline code the guard found nothing in comes to when it is not
     /// read whole (see [`crate::inline`]): `unknown`, said once, and only
     /// when the line has no finding of its own, which already asks.
@@ -1184,11 +1189,24 @@ impl Split {
     /// read a file that may set them.
     pub(crate) fn environment_set(&self) -> bool {
         self.environment > 0
+            || self.assigned_earlier
             || self.units.iter().any(|unit| {
                 unit.key().is_some_and(|key| {
                     matches!(
                         key.as_str(),
-                        "export" | "declare" | "typeset" | "set" | "source" | "."
+                        "export"
+                            | "declare"
+                            | "typeset"
+                            | "readonly"
+                            | "local"
+                            | "set"
+                            | "source"
+                            | "."
+                            | "read"
+                            | "let"
+                            | "mapfile"
+                            | "readarray"
+                            | "getopts"
                     )
                 })
             })
