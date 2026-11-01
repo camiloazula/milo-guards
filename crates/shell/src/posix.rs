@@ -994,6 +994,9 @@ impl Walker<'_> {
             .children(&mut cursor)
             .filter(|child| child.kind() == "variable_assignment")
             .collect();
+        // Inline code is not read whole by a program given an environment.
+        let environed = assignments.len();
+        self.split.environment += environed;
         for assignment in assignments {
             self.node_options(assignment);
         }
@@ -1002,6 +1005,7 @@ impl Walker<'_> {
         unit.stdin = stdin;
         unit.startup = startup;
         launch::add(self.split, unit, self.depth);
+        self.split.environment -= environed;
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);

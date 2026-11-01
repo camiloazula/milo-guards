@@ -17,16 +17,9 @@ fn an_interactive_interpreter_reads_the_code_it_is_handed_on_its_input() {
         &posix(),
         &[
             // `-I` is isolated mode, which does not read the input.
-            "python3 -I -c 'print(1)'",
-            "python3 -Ic 'print(1)'",
             // After the code, an `-i` is an argument of the code.
-            "python3 -c 'print(1)' -i",
-            "python3 -c 'print(1)' -i x",
             // Bun's `-i` installs packages.
-            "bun -i -e 1",
             // A flag that only looks like it.
-            "node -e 'console.log(1)' script-arg -i",
-            "python3 -W i -c 'print(1)'",
         ],
         &[
             // CPython's `-i`, alone, bundled and attached to the code.
@@ -95,6 +88,14 @@ fn an_interactive_interpreter_reads_the_code_it_is_handed_on_its_input() {
                 Rule::Unknown,
             ),
             ("python3 -c \"import code; code.interact()\"", Rule::Unknown),
+            // Not read whole by the strict gate: unknown.
+            ("python3 -I -c 'print(1)'", Rule::Unknown),
+            ("python3 -Ic 'print(1)'", Rule::Unknown),
+            ("python3 -c 'print(1)' -i", Rule::Unknown),
+            ("python3 -c 'print(1)' -i x", Rule::Unknown),
+            ("bun -i -e 1", Rule::Unknown),
+            ("node -e 'console.log(1)' script-arg -i", Rule::Unknown),
+            ("python3 -W i -c 'print(1)'", Rule::Unknown),
         ],
     );
 }
@@ -106,16 +107,6 @@ fn names_literal_exec_and_eval_code_binds_or_uses_are_not_read_apart() {
         &posix(),
         &[
             // Names bound to what the reader does not follow.
-            "python3 -c \"exec('x = 1'); print(x)\"",
-            "python3 -c \"exec('print(1)')\"",
-            "python3 -c \"exec('def f(): return 1'); print(f())\"",
-            "python3 -c \"exec('a = [1, 2]'); print(a)\"",
-            "python3 -c \"x = 1; exec('print(x)')\"",
-            "python3 -c \"import json; exec('print(json.dumps(1))')\"",
-            "node -e \"eval('var x = 1'); console.log(x)\"",
-            "node -e \"eval('console.log(1)')\"",
-            "node -e \"var x = 1; eval('console.log(x)')\"",
-            "node -e \"eval('function f() { return 1 }'); console.log(f())\"",
         ],
         &[
             // What a name is bound to in nested code, followed outside it.
@@ -230,6 +221,17 @@ fn names_literal_exec_and_eval_code_binds_or_uses_are_not_read_apart() {
                 "node -e \"eval('require(\\\"fs\\\").rmSync(\\\"/home/me\\\",{recursive:true})')\"",
                 Rule::Delete,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("python3 -c \"exec('x = 1'); print(x)\"", Rule::Unknown),
+            ("python3 -c \"exec('print(1)')\"", Rule::Unknown),
+            ("python3 -c \"exec('def f(): return 1'); print(f())\"", Rule::Unknown),
+            ("python3 -c \"exec('a = [1, 2]'); print(a)\"", Rule::Unknown),
+            ("python3 -c \"x = 1; exec('print(x)')\"", Rule::Unknown),
+            ("python3 -c \"import json; exec('print(json.dumps(1))')\"", Rule::Unknown),
+            ("node -e \"eval('var x = 1'); console.log(x)\"", Rule::Unknown),
+            ("node -e \"eval('console.log(1)')\"", Rule::Unknown),
+            ("node -e \"var x = 1; eval('console.log(x)')\"", Rule::Unknown),
+            ("node -e \"eval('function f() { return 1 }'); console.log(f())\"", Rule::Unknown),
         ],
     );
 }
@@ -241,13 +243,6 @@ fn a_hashbang_line_ends_at_any_javascript_line_terminator() {
         &posix(),
         &[
             // The whole line is the comment.
-            "node -e \"#!x require('fs').rmSync('/home/me',{recursive:true})\"",
-            "node -e \"#!x\nconsole.log(1)\"",
-            "node -e \"#!x\rconsole.log(1)\"",
-            "node -e \"#!x\r\nconsole.log(1)\"",
-            "node -e \"#!x\u{2028}console.log(1)\"",
-            "node -e \"#!x\u{2029}console.log(1)\"",
-            "node <<'JS'\n#!/usr/bin/env node\nconsole.log(1)\nJS",
             // Not at the start of the code, it is a syntax error, not a comment.
             "node -e \"console.log(1)\"",
         ],
@@ -292,6 +287,14 @@ fn a_hashbang_line_ends_at_any_javascript_line_terminator() {
                 "node -e \"eval('#!x\\u2028require(\\\"fs\\\").rmSync(\\\"/home/me\\\",{recursive:true})')\"",
                 Rule::Delete,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("node -e \"#!x require('fs').rmSync('/home/me',{recursive:true})\"", Rule::Unknown),
+            ("node -e \"#!x\nconsole.log(1)\"", Rule::Unknown),
+            ("node -e \"#!x\rconsole.log(1)\"", Rule::Unknown),
+            ("node -e \"#!x\r\nconsole.log(1)\"", Rule::Unknown),
+            ("node -e \"#!x\u{2028}console.log(1)\"", Rule::Unknown),
+            ("node -e \"#!x\u{2029}console.log(1)\"", Rule::Unknown),
+            ("node <<'JS'\n#!/usr/bin/env node\nconsole.log(1)\nJS", Rule::Unknown),
         ],
     );
 }
@@ -303,15 +306,7 @@ fn child_process_calls_that_run_what_the_reader_does_not_read_are_unknown() {
         &posix(),
         &[
             // A module of the workspace's own, as `node worker.js` is.
-            "node -e \"require('child_process').fork('worker.js')\"",
-            "node -e \"require('child_process').fork('worker.js', ['a', 'b'])\"",
-            "node -e \"require('child_process').fork('worker.js', { silent: true })\"",
-            "node -e \"require('child_process').fork('worker.js', ['a'], { cwd: 'sub', silent: true, stdio: 'inherit' })\"",
-            "node -e \"const { fork } = require('child_process'); fork('worker.js')\"",
-            "node -e \"require('child_process').fork('worker.js', [], {})\"",
             // The calls that are read.
-            "node -e \"require('child_process').execSync('echo 1')\"",
-            "node -e \"require('child_process').spawn('echo', ['1'])\"",
         ],
         &[
             // `execArgv` is node's own options: `-e` is code.
@@ -406,6 +401,15 @@ fn child_process_calls_that_run_what_the_reader_does_not_read_are_unknown() {
                 "node -e \"const i = require('inspector'); const s = new i.Session(); s.connect(); s.post('Runtime.evaluate', {expression: 'process.exit()'})\"",
                 Rule::Unknown,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("node -e \"require('child_process').fork('worker.js')\"", Rule::Unknown),
+            ("node -e \"require('child_process').fork('worker.js', ['a', 'b'])\"", Rule::Unknown),
+            ("node -e \"require('child_process').fork('worker.js', { silent: true })\"", Rule::Unknown),
+            ("node -e \"require('child_process').fork('worker.js', ['a'], { cwd: 'sub', silent: true, stdio: 'inherit' })\"", Rule::Unknown),
+            ("node -e \"const { fork } = require('child_process'); fork('worker.js')\"", Rule::Unknown),
+            ("node -e \"require('child_process').fork('worker.js', [], {})\"", Rule::Unknown),
+            ("node -e \"require('child_process').execSync('echo 1')\"", Rule::Unknown),
+            ("node -e \"require('child_process').spawn('echo', ['1'])\"", Rule::Unknown),
         ],
     );
 }
@@ -416,16 +420,8 @@ fn node_options_that_load_a_data_url_make_inline_code_unknown() {
         Shell::Posix,
         &posix(),
         &[
-            "NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'",
-            "NODE_OPTIONS='--max-old-space-size=4096 --no-warnings' node -e 'console.log(1)'",
-            "NODE_OPTIONS='--require ./setup.js' node -e 'console.log(1)'",
-            "NODE_OPTIONS='--import ./setup.mjs' node -e 'console.log(1)'",
-            "NODE_OPTIONS= node -e 'console.log(1)'",
-            "env NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'",
-            "export NODE_OPTIONS=--max-old-space-size=4096; node -e 'console.log(1)'",
             "NODE_OPTIONS=--import=data:text/javascript,1 echo 1",
             // Not read by bun.
-            "NODE_OPTIONS=--import=data:text/javascript,1 bun -e 1",
         ],
         &[
             // A prefix assignment.
@@ -523,6 +519,15 @@ fn node_options_that_load_a_data_url_make_inline_code_unknown() {
                 "NODE_OPTIONS=--max-old-space-size=4096 node -e \"require('fs').rmSync('/home/me',{recursive:true})\"",
                 Rule::Delete,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'", Rule::Unknown),
+            ("NODE_OPTIONS='--max-old-space-size=4096 --no-warnings' node -e 'console.log(1)'", Rule::Unknown),
+            ("NODE_OPTIONS='--require ./setup.js' node -e 'console.log(1)'", Rule::Unknown),
+            ("NODE_OPTIONS='--import ./setup.mjs' node -e 'console.log(1)'", Rule::Unknown),
+            ("NODE_OPTIONS= node -e 'console.log(1)'", Rule::Unknown),
+            ("env NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'", Rule::Unknown),
+            ("export NODE_OPTIONS=--max-old-space-size=4096; node -e 'console.log(1)'", Rule::Unknown),
+            ("NODE_OPTIONS=--import=data:text/javascript,1 bun -e 1", Rule::Unknown),
         ],
     );
 }
@@ -535,15 +540,7 @@ fn an_open_call_is_a_write_only_when_its_argument_can_be_a_mode() {
         &[
             // A file name, a URL, a name with an `a` in it.
             // Reads.
-            "python3 -c \"from pathlib import Path; Path('a.txt').open().read()\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('r')\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('rb')\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open(mode='rt')\"",
             // A string that is not one mode, or one that `open` refuses.
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('rr')\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('rw')\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('bt')\"",
-            "python3 -c \"from pathlib import Path; Path('a.txt').open('+')\"",
         ],
         &[
             (
@@ -604,6 +601,39 @@ fn an_open_call_is_a_write_only_when_its_argument_can_be_a_mode() {
             (
                 "python3 -c \"import gzip; gzip.open('/home/me/a.gz', 'wt')\"",
                 Rule::Overwrite,
+            ),
+            // Not read whole by the strict gate: unknown.
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open().read()\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('r')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('rb')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open(mode='rt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('rr')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('rw')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('bt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('a.txt').open('+')\"",
+                Rule::Unknown,
             ),
         ],
     );

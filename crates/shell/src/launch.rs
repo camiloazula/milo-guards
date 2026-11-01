@@ -71,10 +71,40 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // What a wrapper in front of the program sets is the program's only.
     let options = split.node_options.len();
     let paths = split.python_path.len();
+    let environment = split.environment;
     add_unit(split, unit, depth);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
+    split.environment = environment;
     split.unscope_hidden(outer);
+}
+
+/// Whether the wrapper `key` may hand the program it runs an environment of
+/// its own (`env FOO=1`, `sudo FOO=1`, `xargs`): every wrapper but the few
+/// that only change how the program runs (`time`, `nice`, `timeout`).
+fn sets_environment(key: &str) -> bool {
+    !matches!(
+        key,
+        "time"
+            | "nice"
+            | "ionice"
+            | "nohup"
+            | "builtin"
+            | "timeout"
+            | "gtimeout"
+            | "command"
+            | "exec"
+            | "setsid"
+            | "unbuffer"
+            | "stdbuf"
+            | "caffeinate"
+            | "and"
+            | "or"
+            | "not"
+            | "noglob"
+            | "nocorrect"
+            | "-"
+    )
 }
 
 /// Whether node, given code inline or from its input, is told to run code
@@ -165,6 +195,7 @@ fn add_launched(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                split.environment += usize::from(sets_environment(&key));
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));
@@ -186,6 +217,7 @@ fn add_launched(
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
+                split.environment += usize::from(sets_environment(&key));
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));

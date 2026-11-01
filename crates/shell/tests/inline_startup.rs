@@ -12,8 +12,6 @@ fn a_shell_the_inline_code_starts_runs_the_startup_file() {
         Shell::Posix,
         &posix(),
         &[
-            "BASH_ENV=e.sh python3 -c 'print(1)'",
-            "echo hi > e.sh; python3 -c 'import os; os.system(\"bash -c true\")'",
         ],
         &[
             (
@@ -28,6 +26,9 @@ fn a_shell_the_inline_code_starts_runs_the_startup_file() {
                 "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; python3 -c 'import os; os.system(\"bash -c true\")'",
                 Rule::Unknown,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("BASH_ENV=e.sh python3 -c 'print(1)'", Rule::Unknown),
+            ("echo hi > e.sh; python3 -c 'import os; os.system(\"bash -c true\")'", Rule::Unknown),
         ],
     );
 }

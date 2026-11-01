@@ -19,72 +19,170 @@ fn inline_code_that_touches_nothing_is_safe() {
             "python3 -c \"open('out.txt','w')\"",
             "python -c 'print(\"hi\")'",
             "python3.12 -c 'print(1)'",
-            "node -p 'process.version'",
-            "node -pe '1+1'",
             "node --eval 'console.log(1)'",
-            "node --eval='console.log(1)'",
-            "node -r ts-node/register -e 'console.log(1)'",
-            "python3 -Sc 'print(1)'",
-            "python3 -W ignore -c 'print(1)'",
-            "python3 -cprint\\(1\\)",
             "bun -e 'console.log(1)'",
             "bun --print '1+1'",
             "deno eval 'console.log(1)'",
-            "deno eval -p '1+1'",
             "python3 -c \"import re; print(re.sub('a','b','abc'))\"",
-            "python3 -c \"x = {'a': 1}; print(getattr(x, 'get')('a'))\"",
-            "python3 -c \"import os; print(os.path.expanduser('~'))\"",
             "python3 -c \"print(open('/home/me/.zshrc').read())\"",
             "python3 -c \"print(open('/home/me/.zshrc', 'r').read())\"",
-            "python3 -c \"import os; print(os.listdir('/home/me'))\"",
-            "node -e \"console.log(require('fs').readFileSync('/home/me/.zshrc','utf8'))\"",
             // Work in the workspace and the temporary folder is the agent's own.
-            "python3 -c \"import os; os.remove('build.log')\"",
-            "python3 -c \"import shutil; shutil.rmtree('target')\"",
-            "python3 -c \"import shutil; shutil.rmtree('/tmp/scratch')\"",
-            "python3 -c \"import os; os.makedirs('a/b', exist_ok=True)\"",
-            "python3 -c \"import os; os.chmod('run.sh', 0o755)\"",
-            "python3 -c \"from pathlib import Path; Path('out/x.txt').write_text('x')\"",
-            "python3 -c \"import os; os.chdir('/tmp'); os.remove('x')\"",
-            "python3 -c \"import shutil; shutil.copy('a.txt', 'b.txt')\"",
-            "python3 -c \"import shutil; shutil.move('a.txt', 'b.txt')\"",
-            "python3 -c \"import os; os.rename('a.txt', 'b.txt')\"",
-            "python3 -c \"import os; os.symlink('a', 'link')\"",
             "python3 -c \"open('/tmp/x', 'w').write('x')\"",
-            "python3 -c \"import sqlite3; sqlite3.connect(':memory:')\"",
-            "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-            "node -e \"require('fs').writeFileSync('out.txt','x')\"",
-            "node -e \"require('fs').mkdirSync('dist/a',{recursive:true})\"",
-            "node -e \"require('fs').copyFileSync('a','b')\"",
-            "node -e \"require('fs').renameSync('a','b')\"",
-            "node -e \"require('fs').chmodSync('run.sh',0o755)\"",
-            "node -e \"process.chdir('/tmp'); require('fs').rmSync('x')\"",
-            "node -e \"const fs = require('fs'); fs.unlinkSync('a.txt')\"",
-            "node -e \"require('fs').rmSync(require('path').join('dist','x'))\"",
-            "node -e \"console.log(process.env.HOME)\"",
-            "deno eval 'Deno.removeSync(\"dist\")'",
-            "bun -e 'Bun.write(\"out.txt\", \"x\")'",
-            "bun -e 'await Bun.file(\"tmp.txt\").delete()'",
             // Programs and command lines are judged like the ones typed.
-            "python3 -c \"import subprocess; subprocess.run(['cargo','build'])\"",
-            "python3 -c \"import subprocess; subprocess.run('cargo test', shell=True)\"",
-            "python3 -c \"import os; os.system('ls')\"",
-            "node -e \"require('child_process').execSync('npm test')\"",
-            "node -e \"require('child_process').spawnSync('git', ['status'])\"",
             // A script file is the workspace's own code.
             "python3 scripts/gen.py",
             "python3 -m http.server",
             // A here-document or here-string of code that does nothing.
-            "python3 - <<'PY'\nprint(1)\nPY",
-            "python3 <<'PY'\nimport os\nos.remove('x')\nPY",
-            "python3 - <<PY\nprint(1)\nPY",
-            "python3 - <<< 'print(1)'",
-            "python3 - <<<'print(1)'",
-            "node - <<'JS'\nconsole.log(1)\nJS",
-            "node <<'JS'\nconsole.log(1)\nJS",
-            "python3 - <<-'PY'\n\tprint(1)\nPY",
         ],
-        &[],
+        &[
+            // Not read whole by the strict gate: unknown.
+            ("node -p 'process.version'", Rule::Unknown),
+            ("node -pe '1+1'", Rule::Unknown),
+            ("node --eval='console.log(1)'", Rule::Unknown),
+            (
+                "node -r ts-node/register -e 'console.log(1)'",
+                Rule::Unknown,
+            ),
+            ("python3 -Sc 'print(1)'", Rule::Unknown),
+            ("python3 -W ignore -c 'print(1)'", Rule::Unknown),
+            ("python3 -cprint\\(1\\)", Rule::Unknown),
+            ("deno eval -p '1+1'", Rule::Unknown),
+            (
+                "python3 -c \"x = {'a': 1}; print(getattr(x, 'get')('a'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; print(os.path.expanduser('~'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; print(os.listdir('/home/me'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"console.log(require('fs').readFileSync('/home/me/.zshrc','utf8'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.remove('build.log')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.rmtree('target')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.rmtree('/tmp/scratch')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.makedirs('a/b', exist_ok=True)\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.chmod('run.sh', 0o755)\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"from pathlib import Path; Path('out/x.txt').write_text('x')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.chdir('/tmp'); os.remove('x')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.copy('a.txt', 'b.txt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.move('a.txt', 'b.txt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.rename('a.txt', 'b.txt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import os; os.symlink('a', 'link')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import sqlite3; sqlite3.connect(':memory:')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').writeFileSync('out.txt','x')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').mkdirSync('dist/a',{recursive:true})\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').copyFileSync('a','b')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').renameSync('a','b')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').chmodSync('run.sh',0o755)\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"process.chdir('/tmp'); require('fs').rmSync('x')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"const fs = require('fs'); fs.unlinkSync('a.txt')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('fs').rmSync(require('path').join('dist','x'))\"",
+                Rule::Unknown,
+            ),
+            ("node -e \"console.log(process.env.HOME)\"", Rule::Unknown),
+            ("deno eval 'Deno.removeSync(\"dist\")'", Rule::Unknown),
+            ("bun -e 'Bun.write(\"out.txt\", \"x\")'", Rule::Unknown),
+            (
+                "bun -e 'await Bun.file(\"tmp.txt\").delete()'",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import subprocess; subprocess.run(['cargo','build'])\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import subprocess; subprocess.run('cargo test', shell=True)\"",
+                Rule::Unknown,
+            ),
+            ("python3 -c \"import os; os.system('ls')\"", Rule::Unknown),
+            (
+                "node -e \"require('child_process').execSync('npm test')\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"require('child_process').spawnSync('git', ['status'])\"",
+                Rule::Unknown,
+            ),
+            ("python3 - <<'PY'\nprint(1)\nPY", Rule::Unknown),
+            (
+                "python3 <<'PY'\nimport os\nos.remove('x')\nPY",
+                Rule::Unknown,
+            ),
+            ("python3 - <<PY\nprint(1)\nPY", Rule::Unknown),
+            ("python3 - <<< 'print(1)'", Rule::Unknown),
+            ("python3 - <<<'print(1)'", Rule::Unknown),
+            ("node - <<'JS'\nconsole.log(1)\nJS", Rule::Unknown),
+            ("node <<'JS'\nconsole.log(1)\nJS", Rule::Unknown),
+            ("python3 - <<-'PY'\n\tprint(1)\nPY", Rule::Unknown),
+        ],
     );
 }
 
@@ -900,13 +998,15 @@ fn a_path_is_read_as_the_shell_reads_it() {
         ),
         [Rule::Delete]
     );
+    // The `rm x` after it is the workspace's, so only the code, which is not
+    // read whole (an import off the list), is unknown.
     assert_eq!(
         rules(
             "python3 -c \"import os; os.chdir('/home/me')\"; rm x",
             Shell::Posix,
             &paths
         ),
-        Vec::<Rule>::new()
+        [Rule::Unknown]
     );
 }
 
@@ -919,7 +1019,12 @@ fn code_that_starts_code_is_read_to_a_limit() {
         line = nest(&line);
         let found = rules(&line, Shell::Posix, &paths);
         if level <= 3 {
-            assert!(found.is_empty(), "level {level} is read: {found:?}");
+            // Read through, so not unreadable; the `import os` of each level
+            // is not read whole by the strict gate, so it is unknown.
+            assert!(
+                found.iter().all(|rule| *rule == Rule::Unknown),
+                "level {level} is read: {found:?}"
+            );
         }
     }
     let found = rules(&line, Shell::Posix, &paths);
@@ -947,7 +1052,8 @@ fn code_that_starts_code_is_read_to_a_limit() {
     assert!(!found.is_empty(), "too deep to read must be risky");
 
     let eval = "python3 -c \"exec('exec(\\\\'import os\\\\')')\"";
-    assert!(rules(eval, Shell::Posix, &paths).is_empty());
+    // Read to the end, but `exec` is not on the strict gate's list: unknown.
+    assert_eq!(rules(eval, Shell::Posix, &paths), [Rule::Unknown]);
 }
 
 /// `python3 -c` of Python that runs `line` with `os.system`: the line is
@@ -970,23 +1076,6 @@ fn a_module_under_another_name_is_followed() {
         Shell::Posix,
         &posix(),
         &[
-            "python3 -c 'import os; p = os.path; print(p.join(\"a\"))'",
-            "python3 -c 'import os, sys; print(sys.argv, os.getcwd())'",
-            "python3 -c 'import pathlib; print(list(pathlib.Path(\".\").glob(\"*.py\")))'",
-            "python3 -c 'import os; print([f for f in os.listdir(\".\") if f.endswith(\".pyc\")])'",
-            "node -e 'console.log(process.argv, require(\"os\").homedir())'",
-            "node -e 'JSON.parse(require(\"fs\").readFileSync(\"package.json\"))'",
-            "node --input-type=module -e 'import {execSync as e} from \"node:child_process\"; e(\"echo\")'",
-            "node -e 'require(\"shelljs\").rm(\"-rf\", \"build\")'",
-            "node -e 'require(\"shelljs\").mkdir(\"-p\", \"build\")'",
-            "node -e 'require(\"child_process\").execSync(\"echo hi\", {stdio: \"inherit\"})'",
-            "node -e 'require(\"fs\").openSync(\"in.txt\")'",
-            "node -e 'require(\"fs\").openSync(\"/etc/hosts\", \"r\")'",
-            "deno eval 'Deno.openSync(\"/etc/hosts\", {read: true})'",
-            "deno eval 'Deno.openSync(\"/etc/hosts\", {write: false})'",
-            "deno eval 'Deno.openSync(\"/etc/hosts\")'",
-            "python3 -c \"import os; os.open('/etc/hosts', os.O_RDONLY)\"",
-            "python3 -c \"import os; os.open('/etc/hosts', 0)\"",
         ],
         &[
             (
@@ -1114,6 +1203,24 @@ fn a_module_under_another_name_is_followed() {
                 "python3 -c 'exec(\"import os\\nos.remove(\\\"/home/me\\\")\")'",
                 Rule::Delete,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("python3 -c 'import os; p = os.path; print(p.join(\"a\"))'", Rule::Unknown),
+            ("python3 -c 'import os, sys; print(sys.argv, os.getcwd())'", Rule::Unknown),
+            ("python3 -c 'import pathlib; print(list(pathlib.Path(\".\").glob(\"*.py\")))'", Rule::Unknown),
+            ("python3 -c 'import os; print([f for f in os.listdir(\".\") if f.endswith(\".pyc\")])'", Rule::Unknown),
+            ("node -e 'console.log(process.argv, require(\"os\").homedir())'", Rule::Unknown),
+            ("node -e 'JSON.parse(require(\"fs\").readFileSync(\"package.json\"))'", Rule::Unknown),
+            ("node --input-type=module -e 'import {execSync as e} from \"node:child_process\"; e(\"echo\")'", Rule::Unknown),
+            ("node -e 'require(\"shelljs\").rm(\"-rf\", \"build\")'", Rule::Unknown),
+            ("node -e 'require(\"shelljs\").mkdir(\"-p\", \"build\")'", Rule::Unknown),
+            ("node -e 'require(\"child_process\").execSync(\"echo hi\", {stdio: \"inherit\"})'", Rule::Unknown),
+            ("node -e 'require(\"fs\").openSync(\"in.txt\")'", Rule::Unknown),
+            ("node -e 'require(\"fs\").openSync(\"/etc/hosts\", \"r\")'", Rule::Unknown),
+            ("deno eval 'Deno.openSync(\"/etc/hosts\", {read: true})'", Rule::Unknown),
+            ("deno eval 'Deno.openSync(\"/etc/hosts\", {write: false})'", Rule::Unknown),
+            ("deno eval 'Deno.openSync(\"/etc/hosts\")'", Rule::Unknown),
+            ("python3 -c \"import os; os.open('/etc/hosts', os.O_RDONLY)\"", Rule::Unknown),
+            ("python3 -c \"import os; os.open('/etc/hosts', 0)\"", Rule::Unknown),
         ],
     );
 }

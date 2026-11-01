@@ -21,6 +21,7 @@ use crate::{Finding, Rule, Shell};
 
 mod javascript;
 mod python;
+mod strict;
 
 /// The languages whose code is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +214,7 @@ pub(super) fn walk<'t>(
 }
 
 /// A piece of code short enough to show in a prompt: its first line, cut.
-fn shorten(code: &str) -> String {
+pub(crate) fn shorten(code: &str) -> String {
     let line = code.lines().next().unwrap_or_default().trim();
     let mut short: String = line.chars().take(60).collect();
     if short.len() < line.len() {
@@ -787,6 +788,10 @@ pub(crate) struct Code {
     /// code it is given has run (`python3 -i -c`, `node -i -e`): code the
     /// guard does not read, so the line is unknown, as a bare interpreter is.
     pub(crate) input: bool,
+    /// Whether the code is all the interpreter is given: its flag and one
+    /// piece of code written whole on the line, no other option and no
+    /// argument. A line is only safe for code read whole (see [`strict`]).
+    pub(crate) plain: bool,
 }
 
 /// The inline code an interpreter's own arguments hold, when they say where
@@ -794,11 +799,31 @@ pub(crate) struct Code {
 /// `None` when they do not, or when what comes before it cannot be told from
 /// the code's own arguments; the caller then reads the line as it did before.
 pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
-    match language(key)? {
+    let found = match language(key)? {
         Language::Python => python_code(args),
         Language::JavaScript if key == "deno" => deno_code(args),
         Language::JavaScript => script_code(args, matches!(key, "node" | "nodejs")),
-    }
+    }?;
+    Some(Code {
+        plain: is_plain(key, args),
+        ..found
+    })
+}
+
+/// Whether `args` are exactly the flag that carries code and the code:
+/// `python3 -c CODE`, `node -e CODE` (`-p`, `--eval`, `--print`), `bun` the
+/// same, `deno eval CODE`.
+fn is_plain(key: &str, args: &[Arg]) -> bool {
+    let [flag, code] = args else {
+        return false;
+    };
+    let flags: &[&str] = match key {
+        "node" | "nodejs" | "bun" => &["-e", "-p", "--eval", "--print"],
+        "deno" => &["eval"],
+        key if key.starts_with("python") => &["-c"],
+        _ => &[],
+    };
+    code.known().is_some() && flag.known().is_some_and(|flag| flags.contains(&flag))
 }
 
 /// `python -c CODE`, also in a bundle (`-Sc`) and with the code attached
@@ -844,6 +869,7 @@ fn code_of(piece: Arg, input: bool) -> Code {
         pieces: vec![piece],
         dir: None,
         input,
+        plain: false,
     }
 }
 
@@ -1223,15 +1249,30 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
             ),
         }
     }
+    // Nothing found is only safe for code read whole: written whole on the
+    // line, with no option and no environment around the interpreter, and
+    // nothing in it outside the subset (see [`strict`]).
+    let whole = code.plain
+        && !split.environment_set()
+        && matches!(
+            code.pieces.as_slice(),
+            [Arg::Known(text)] if strict::reads_whole(language, text)
+        );
+    if !whole {
+        split.unread_code(code.pieces.first().map_or("", Arg::text));
+    }
     split.restore_dir(outer);
 }
 
 /// Read code an interpreter takes from its input (a here-document or
 /// here-string), run `depth` levels deep, and add what it does to the split.
-/// Python reads its input as bytes, and honours a coding declaration in the
-/// first two lines that decodes them to other text than the reader sees: such
-/// code is not read.
+/// What it finds is kept, but code that is not written whole on the line is
+/// never read whole, so a line it finds nothing in is `unknown`. Python reads
+/// its input as bytes, and honours a coding declaration in the first two
+/// lines that decodes them to other text than the reader sees: such code is
+/// not read.
 pub(crate) fn apply_input(split: &mut Split, language: Language, code: &str, depth: usize) {
+    split.unread_code(code);
     if language == Language::Python && python::declares_other_encoding(code) {
         split.problem(
             Rule::Unknown,

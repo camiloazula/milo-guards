@@ -429,6 +429,15 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// How many assignments and wrappers hand the program being added an
+    /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
+    /// interpreter loads what that environment tells it to, which the code
+    /// does not show.
+    pub(crate) environment: usize,
+    /// What inline code the guard found nothing in comes to when it is not
+    /// read whole (see [`crate::inline`]): `unknown`, said once, and only
+    /// when the line has no finding of its own, which already asks.
+    pub(crate) unread: Vec<Finding>,
     /// Whether the command being added has a word with zsh's `(D)` glob
     /// qualifier, which lets that command's wildcards match a leading dot
     /// without any option on: `rm -rf *git(D)`. It belongs to the command
@@ -1167,6 +1176,34 @@ impl Split {
             self.parents.insert(self.pipelines, parent);
         }
         self.pipelines
+    }
+
+    /// Whether the environment of a program started now may differ from the
+    /// one the line shows: an assignment or a wrapper hands it one, or an
+    /// earlier unit exported a variable, turned them all on (`set -a`) or
+    /// read a file that may set them.
+    pub(crate) fn environment_set(&self) -> bool {
+        self.environment > 0
+            || self.units.iter().any(|unit| {
+                unit.key().is_some_and(|key| {
+                    matches!(
+                        key.as_str(),
+                        "export" | "declare" | "typeset" | "set" | "source" | "."
+                    )
+                })
+            })
+    }
+
+    /// Note that code is given to an interpreter that the guard does not read
+    /// whole: the line is `unknown` unless it has a finding of its own.
+    pub(crate) fn unread_code(&mut self, code: &str) {
+        if self.unread.is_empty() {
+            self.unread.push(Finding {
+                rule: Rule::Unknown,
+                reason: "runs code the guard does not read fully".to_string(),
+                target: Some(crate::inline::shorten(code)),
+            });
+        }
     }
 
     pub(crate) fn problem(&mut self, rule: Rule, reason: &str, target: Option<&str>) {

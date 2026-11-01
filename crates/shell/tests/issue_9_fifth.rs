@@ -43,8 +43,6 @@ fn a_dotted_import_is_the_top_package_unless_a_fromlist_is_given() {
         &[
             // With a `fromlist` the submodule is what comes back, and it has no
             // `system`.
-            "python3 -c \"__import__('os.path', fromlist=['join']).join('a', 'b')\"",
-            "python3 -c \"import importlib; importlib.import_module('os.path').join('a', 'b')\"",
         ],
         &[
             (
@@ -81,6 +79,9 @@ fn a_dotted_import_is_the_top_package_unless_a_fromlist_is_given() {
                 "python3 -c \"__import__('os.path', fromlist=x).system('rm -rf ~')\"",
                 Rule::Unknown,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("python3 -c \"__import__('os.path', fromlist=['join']).join('a', 'b')\"", Rule::Unknown),
+            ("python3 -c \"import importlib; importlib.import_module('os.path').join('a', 'b')\"", Rule::Unknown),
         ],
     );
 }
@@ -92,9 +93,6 @@ fn the_value_of_eval_comes_back_under_no_name() {
         &posix(),
         &[
             // A statement of its own, or a value that is only printed.
-            "node -e \"eval('1+1')\"",
-            "python3 -c \"eval('1+1')\"",
-            "python3 -c \"print(eval('1+2'))\"",
         ],
         &[
             (
@@ -145,6 +143,10 @@ fn the_value_of_eval_comes_back_under_no_name() {
                 "python3 -c \"r = eval('__import__'); r('os').system('rm -rf ~')\"",
                 Rule::Unknown,
             ),
+            // Not read whole by the strict gate: unknown.
+            ("node -e \"eval('1+1')\"", Rule::Unknown),
+            ("python3 -c \"eval('1+1')\"", Rule::Unknown),
+            ("python3 -c \"print(eval('1+2'))\"", Rule::Unknown),
         ],
     );
 }
@@ -181,8 +183,6 @@ fn the_members_of_module_that_load_or_run_code_are_not_read() {
         &posix(),
         &[
             // Plain data.
-            "node -e \"console.log(module.paths, module.id, module.filename)\"",
-            "node -e \"module.exports = 1\"",
         ],
         &[
             (
@@ -203,6 +203,9 @@ fn the_members_of_module_that_load_or_run_code_are_not_read() {
                 Rule::Unknown,
             ),
             ("node -e \"module.require('fs')\"", Rule::Unknown),
+            // Not read whole by the strict gate: unknown.
+            ("node -e \"console.log(module.paths, module.id, module.filename)\"", Rule::Unknown),
+            ("node -e \"module.exports = 1\"", Rule::Unknown),
         ],
     );
 }

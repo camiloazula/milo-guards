@@ -151,6 +151,13 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
         writes.push(checker.found[before..].to_vec());
     }
+    // Inline code the guard did not read whole is `unknown`, but only where
+    // nothing else was found: a line that already asks, or that the guard is
+    // certain of (a delete, a write, a key), says so.
+    if checker.found.is_empty() {
+        line.extend_from_slice(&split.unread);
+        checker.found.extend_from_slice(&split.unread);
+    }
     let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
     Judged {
