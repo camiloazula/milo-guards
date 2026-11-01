@@ -23,15 +23,12 @@ fn packing_without_removing_stays_safe() {
         &posix(),
         &[
             "tar -cf x.tar src",
-            "tar -cf x.tar ~",
             "tar -cf x.tar *",
             "tar -czf out.tgz -C ~ notes",
             "tar czf out.tgz -C ~/work/repo/src .",
-            "tar -rf x.tar ~",
             "tar -xf x.tar",
             "tar -tf x.tar",
             "zip x.zip src",
-            "zip -r x.zip ~",
             "zip -r x.zip *",
             "zip x.zip /etc/hosts",
             "7z a x.7z src",
@@ -66,7 +63,6 @@ fn removing_what_is_inside_the_workspace_is_safe() {
             "tar -cf x.tar --remove-files --file-not-an-option src",
             "tar -xf x.tar --remove-files",
             "tar -xf x.tar notes --remove-files",
-            "tar -tf x.tar ~ --remove-files",
             "zip -m x.zip src/a.txt",
             "zip -mr x.zip src",
             "zip -r -m x.zip src docs",
@@ -81,7 +77,6 @@ fn removing_what_is_inside_the_workspace_is_safe() {
             "zip -mr -tt 20200101 x.zip src",
             "zip -mr -n .zip x.zip src",
             "zip -mr -sf x.zip src",
-            "zip -r x.zip ~ --no-dir-entries",
             "7z a x.7z src -sdel",
             "7z a -sdel x.7z src",
             "7z u x.7z src/a.txt -sdel",
@@ -666,12 +661,7 @@ fn zip_a_value_attached_to_its_option_ends_the_bundle() {
     check(
         Shell::Posix,
         &posix(),
-        &[
-            "zip -r -s100m x.zip ~",
-            "zip -r -n.mp3 x.zip ~",
-            "zip -r -ds10m x.zip ~",
-            "zip -r -lfmain.log x.zip ~",
-        ],
+        &[],
         &[
             ("zip -m -lfout x.zip ~", Rule::Delete),
             ("zip -m -n.dat x.zip ~", Rule::Delete),
@@ -731,6 +721,31 @@ fn seven_zip_switch_with_a_value_only_known_when_it_runs_is_no_operand() {
         &[],
         &[("7z a -sdel -p%PW% x.7z", Rule::Delete)],
     );
+}
+
+#[test]
+fn archiving_the_home_without_removing_it_reads_but_does_not_delete() {
+    // Packing the home folder reads the keys in it (`read_secret`), but with
+    // no option that deletes what it archives it is no `delete`.
+    let paths = posix();
+    for line in [
+        "tar -cf x.tar ~",
+        "tar -rf x.tar ~",
+        "zip -r x.zip ~",
+        "tar -tf x.tar ~ --remove-files",
+        "zip -r x.zip ~ --no-dir-entries",
+        "zip -r -s100m x.zip ~",
+        "zip -r -n.mp3 x.zip ~",
+        "zip -r -ds10m x.zip ~",
+        "zip -r -lfmain.log x.zip ~",
+    ] {
+        let found = common::rules(line, Shell::Posix, &paths);
+        assert!(
+            found.contains(&Rule::ReadSecret),
+            "expected ReadSecret: {line}"
+        );
+        assert!(!found.contains(&Rule::Delete), "unexpected Delete: {line}");
+    }
 }
 
 #[test]
