@@ -328,6 +328,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup: Vec::new(),
     }))
 }
 
@@ -901,6 +902,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup: Vec::new(),
     }
 }
 

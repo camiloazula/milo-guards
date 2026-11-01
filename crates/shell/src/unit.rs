@@ -85,6 +85,9 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// The files `BASH_ENV` names where the unit starts: a bash it starts
+    /// runs each before its own script (see [`crate::startup`]).
+    pub(crate) startup: Vec<Arg>,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -106,6 +109,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            startup: Vec::new(),
         }
     }
 
@@ -228,6 +232,9 @@ pub(crate) struct Split {
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
+    /// The files `BASH_ENV` has been set to so far, for each shell the line
+    /// starts after.
+    pub(crate) startup: Vec<Arg>,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,

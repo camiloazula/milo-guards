@@ -4,6 +4,7 @@ use tree_sitter::Node;
 
 use crate::dotglob;
 use crate::launch;
+use crate::startup;
 use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -374,6 +375,12 @@ impl Walker<'_> {
                     if child.kind() != "variable_assignment" && self.arg_hides(child) {
                         self.split.hide();
                     }
+                    if child.kind() != "variable_assignment" {
+                        if let Some((name, value)) = startup::word(&self.arg(child)) {
+                            let file = startup::read(self.split, &name, &value, self.depth);
+                            self.split.startup.extend(file);
+                        }
+                    }
                 }
                 self.children(node, stage, level);
             }
@@ -581,6 +588,26 @@ impl Walker<'_> {
         if sets {
             self.split.hide();
         }
+        if program
+            .known()
+            .is_some_and(|name| startup::read_into(name, &args))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a variable the shell runs later to a value only known when it runs",
+                Some(program.text()),
+            );
+        }
+        // `BASH_ENV=f bash -c '…'`: the shell it starts runs `f` first.
+        let mut cursor = node.walk();
+        let assignments: Vec<Node<'_>> = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .collect();
+        let mut startup = self.split.startup.clone();
+        for assignment in &assignments {
+            startup.extend(self.startup(*assignment));
+        }
         // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
         let mut cursor = node.walk();
         let prefixed = node
@@ -604,11 +631,9 @@ impl Walker<'_> {
             );
         }
         let outer = self.split.scope_hidden(prefixed);
-        launch::add(
-            self.split,
-            Unit::new(Shell::Posix, program, args, stage),
-            self.depth,
-        );
+        let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        unit.startup = startup;
+        launch::add(self.split, unit, self.depth);
         self.split.unscope_hidden(outer);
     }
 
@@ -636,6 +661,23 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        // `BASH_ENV=f` on a line of its own, or after `export`, is the
+        // file every shell started from here on runs.
+        if let Some(file) = self.startup(node) {
+            self.split.startup.push(file);
+        }
+    }
+
+    /// Read the assignment `node` for a variable the shell runs later (see
+    /// [`startup`]): the file it names when it is `BASH_ENV`.
+    fn startup(&mut self, node: Node<'_>) -> Option<Arg> {
+        let source = self.source;
+        let name = unit::text(&node.child_by_field_name("name")?, source);
+        if !startup::VARIABLES.contains(&name) {
+            return None;
+        }
+        let value = self.arg(node.child_by_field_name("value")?);
+        startup::read(self.split, name, &value, self.depth)
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a

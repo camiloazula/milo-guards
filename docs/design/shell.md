@@ -202,6 +202,37 @@ and its findings are the line's, since the shell runs it as the same user.
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
   `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
 - cmd has nothing like it.
+- **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
+  (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
+  line, and the value of `BASH_ENV` once when a non-interactive bash starts,
+  then runs the file it names; other shells differ, but every shell is
+  judged as bash. An assignment counts as a statement
+  (`PS4=…`, also `+=`), after `export`, `declare`, `typeset` and the like
+  (also quoted, `export "PS4=…"`), in front of a command (`PS4=… bash -x
+  s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
+  other wrappers). A value with code in it, `$(` or a backtick, is read as the
+  script it is, as an action that runs later (see below), so `PS4='$(rm -rf
+  ~)'; set -x; true` is the `delete` of `~`: the text around the code is
+  not run, only what is in it. A value only known when it runs
+  (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
+  reason `sets a variable the shell runs later to a value only known when it
+  runs`: the shell expands it again and runs whatever it finds. Text and the
+  variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
+  $LINENO: "` (also `BASH_SOURCE`, `FUNCNAME` with a number as subscript,
+  `SECONDS`, `RANDOM`, `$$`, `HOME`, `PWD`, `TMPDIR`) stay safe. A
+  `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
+  `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
+  `printf -v PS4 …` give them a value the line does not show: `unknown`.
+  `PROMPT_COMMAND`, `PS0`, `PS1` and `ENV` run only in an interactive shell,
+  which the guard reads as running its input already.
+- **`BASH_ENV=<file>` is running `<file>`.** Every shell the line starts with
+  it set (`BASH_ENV=e.sh bash -c true`, `env BASH_ENV=e.sh bash`, `sudo`, or
+  `export BASH_ENV=e.sh` before it) is checked as a shell that runs a script
+  file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
+  download, a copy) is `unknown`, with the reason `runs a script the same line
+  writes`. A file the line does not write is not read, as for `bash
+  e.sh`. Not read: `${PS4:=…}`, a `for PS4 in …` loop and a nameref to either
+  variable.
 
 The action runs in this shell, later: after the line's last command, or
 between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the

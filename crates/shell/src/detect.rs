@@ -132,6 +132,7 @@ impl Checker<'_> {
         self.elevated(unit, &key);
         self.reads(unit);
         self.write_then_run(unit, &key);
+        self.startup_then_run(unit, &key);
         self.files(unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
@@ -369,6 +370,22 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
+        self.runs_written(unit, script);
+    }
+
+    /// A shell that runs the file `BASH_ENV` names before its own script,
+    /// when the same line writes it.
+    fn startup_then_run(&mut self, unit: &Unit, key: &str) {
+        if unit.shell != Shell::Posix || !SHELLS.contains(&key) {
+            return;
+        }
+        for file in &unit.startup {
+            self.runs_written(unit, file);
+        }
+    }
+
+    /// `unit` runs `script`: say so when the line writes it, or may.
+    fn runs_written(&mut self, unit: &Unit, script: &Arg) {
         // A script path the guard cannot place (after a `cd` to somewhere
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.

@@ -6,6 +6,7 @@
 
 use crate::dotglob;
 use crate::powershell::Params;
+use crate::startup;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
@@ -133,7 +134,14 @@ fn add_launched(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                // `env BASH_ENV=f bash`: the shell it starts runs `f`.
+                let files = if key == "env" && unit.shell == Shell::Posix {
+                    startup::env(split, &unit.args[..start], depth)
+                } else {
+                    Vec::new()
+                };
                 unit = inner(unit, key, start, &Hands::Nothing);
+                unit.startup.extend(files);
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
@@ -275,6 +283,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        startup,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -304,6 +313,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup,
     }
 }
 

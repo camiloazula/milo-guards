@@ -38,6 +38,7 @@ mod launch;
 mod path;
 mod posix;
 mod powershell;
+mod startup;
 mod unit;
 
 pub use effect::Effect;
