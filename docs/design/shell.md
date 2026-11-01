@@ -215,7 +215,9 @@ folder a `cd` moved to.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
   `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
   them in this shell. They count when the unit is reached directly or through
-  `command`, `builtin`, `time`, `!` or `eval`. zsh's `noglob`, `nocorrect` and
+  `command`, `builtin`, `time`, `!` or `eval`, except that zsh's `command` does
+  not count for zsh's flag (it looks up programs only) and `time` counts only
+  in front (later it is the program of that name). zsh's `noglob`, `nocorrect` and
   `-` count for zsh's flag only: in bash and sh they are not found and the
   builtin after them never runs, so `shopt -s dotglob; noglob shopt -u dotglob;
   rm -rf *git` is still risky and `setopt globdots; noglob unsetopt globdots;

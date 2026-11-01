@@ -60,24 +60,26 @@ pub(crate) const GLOBIGNORE: &str = "GLOBIGNORE";
 /// The variable a bash reads its `shopt` options from when it starts.
 const BASHOPTS: &str = "BASHOPTS";
 
-/// The wrappers a unit may sit behind and still change this shell's options:
-/// each runs the builtin itself. Any other (`env`, `nohup`, `timeout`,
-/// `find -exec`) starts a process of its own.
-const IN_SHELL: [&str; 3] = ["command", "builtin", "time"];
-
 /// zsh's precommand modifiers, which run the builtin after them in zsh. In
 /// bash and sh they are not words the shell knows, so nothing runs behind
 /// them.
 const ZSH_MODIFIERS: [&str; 3] = ["noglob", "nocorrect", "-"];
 
 /// Whether a unit behind `wrappers` runs in the shell whose `flag` it
-/// changes.
+/// changes. `time` is the keyword, which runs the line in this shell, only as
+/// the first word; anywhere else it is the program of that name. zsh's
+/// `command` looks up programs only, so with it among the wrappers the builtin
+/// after it never runs in zsh.
 pub(crate) fn in_shell(wrappers: &[String], flag: Flag) -> bool {
-    wrappers.iter().all(|wrapper| {
-        let wrapper = wrapper.as_str();
-        IN_SHELL.contains(&wrapper)
-            || (matches!(flag, Flag::Zsh) && ZSH_MODIFIERS.contains(&wrapper))
-    })
+    wrappers
+        .iter()
+        .enumerate()
+        .all(|(at, wrapper)| match wrapper.as_str() {
+            "time" => at == 0,
+            "command" => !matches!(flag, Flag::Zsh),
+            "builtin" => true,
+            modifier => matches!(flag, Flag::Zsh) && ZSH_MODIFIERS.contains(&modifier),
+        })
 }
 
 /// Whether giving the variable `name` the value `value` switches the option
@@ -471,7 +473,13 @@ mod tests {
         };
         for flag in [Flag::Bash, Flag::Zsh] {
             assert!(in_shell(&[], flag));
-            assert!(in_shell(&wrappers(&["command", "builtin", "time"]), flag));
+            assert!(in_shell(&wrappers(&["time", "builtin"]), flag));
+            assert!(in_shell(&wrappers(&["builtin"]), flag));
+            assert!(in_shell(&wrappers(&["time"]), flag));
+            // Only the first word is the keyword; later, `time` is a program.
+            for later in [["builtin", "time"], ["command", "time"]] {
+                assert!(!in_shell(&wrappers(&later), flag), "{later:?}");
+            }
             for name in [
                 "env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo", "coproc",
             ] {
@@ -489,8 +497,24 @@ mod tests {
             assert!(in_shell(&wrappers, Flag::Zsh), "{name}");
             assert!(!in_shell(&wrappers, Flag::Bash), "{name}");
             let mixed = vec!["command".to_string(), name.to_string()];
-            assert!(in_shell(&mixed, Flag::Zsh), "command {name}");
+            assert!(!in_shell(&mixed, Flag::Zsh), "command {name}");
             assert!(!in_shell(&mixed, Flag::Bash), "command {name}");
+            let before = vec![name.to_string(), "command".to_string()];
+            assert!(!in_shell(&before, Flag::Zsh), "{name} command");
+            let timed = vec!["time".to_string(), name.to_string()];
+            assert!(in_shell(&timed, Flag::Zsh), "time {name}");
+            let built = vec!["builtin".to_string(), name.to_string()];
+            assert!(in_shell(&built, Flag::Zsh), "builtin {name}");
+            let after = vec![name.to_string(), "time".to_string()];
+            assert!(!in_shell(&after, Flag::Zsh), "{name} time");
         }
+    }
+
+    /// zsh's `command` looks up programs only; bash's runs the builtin.
+    #[test]
+    fn command_runs_the_builtin_in_bash_only() {
+        let wrappers = vec!["command".to_string()];
+        assert!(in_shell(&wrappers, Flag::Bash));
+        assert!(!in_shell(&wrappers, Flag::Zsh));
     }
 }

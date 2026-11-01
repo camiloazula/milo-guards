@@ -231,10 +231,39 @@ fn a_zsh_modifier_turns_zshs_flag_off_and_never_bashs() {
             "setopt globdots; noglob unsetopt globdots; rm -rf *git",
             "setopt globdots; nocorrect unsetopt globdots; rm -rf *git",
             "setopt globdots; - unsetopt globdots; rm -rf *git",
-            "setopt globdots; noglob command unsetopt globdots; rm -rf *git",
+            "setopt globdots; time noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; builtin noglob unsetopt globdots; rm -rf *git",
             "shopt -s dotglob; command shopt -u dotglob; rm -rf *git",
         ],
         &[
+            (
+                "setopt globdots; noglob command unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; command unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; nocorrect command unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; command noglob unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; noglob time unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; nocorrect time unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; - time unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
             (
                 "shopt -s dotglob; noglob shopt -u dotglob; rm -rf *git",
                 Rule::Delete,
