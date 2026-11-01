@@ -1,6 +1,8 @@
 //! Splitting a PowerShell line with tree-sitter-powershell, PowerShell's
 //! aliases, and how a cmdlet's parameters are read.
 
+use std::borrow::Cow;
+
 use tree_sitter::Node;
 
 mod blocks;
@@ -13,8 +15,26 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, text, &language) else {
+    let Some(first) = unit::parse(split, text, &language) else {
         return;
+    };
+    // A line the grammar cannot read stays unreadable, whatever else is found
+    // in it. When it holds a word that is a variable and a path
+    // (`$HOME\.ssh\id_rsa`), which the grammar fails on, it is also read again
+    // with those words quoted, so the rules see the paths.
+    let fixed;
+    let (text, tree) = if first.root_node().has_error() {
+        if let Cow::Owned(rewritten) = variable_paths(text) {
+            fixed = rewritten;
+            let Some(again) = unit::parse(split, &fixed, &language) else {
+                return;
+            };
+            (fixed.as_str(), again)
+        } else {
+            (text, first)
+        }
+    } else {
+        (text, first)
     };
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
@@ -34,6 +54,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     });
     for name in names {
         split.reassign(&name);
+        split.set(&name);
     }
     Walker {
         source: text,
@@ -104,6 +125,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
+        "ndr" | "mount" => "new-psdrive",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
         "ac" => "add-content",
@@ -148,7 +170,7 @@ impl Walker<'_> {
         }
         match node.kind() {
             "pipeline_chain" => {
-                let pipeline = self.split.pipeline();
+                let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 for (index, child) in node.named_children(&mut cursor).enumerate() {
                     // The first command in a `ForEach-Object` block reads
@@ -161,7 +183,9 @@ impl Walker<'_> {
                 }
             }
             "command" => {
+                let first = self.split.units.len();
                 let key = self.command(node, stage);
+                let own = first..self.split.units.len();
                 let outer = self.item;
                 if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
                     self.item = stage;
@@ -176,6 +200,9 @@ impl Walker<'_> {
                     self.split.end_later(began, false);
                 }
                 self.item = outer;
+                // What a sub-expression in its arguments runs is handed to it.
+                self.split
+                    .nest(own.clone(), own.end..self.split.units.len());
             }
             // `trap { … }`: its block runs on a terminating error, later.
             "trap_statement" => {
@@ -188,6 +215,9 @@ impl Walker<'_> {
                 self.children(node, None, level);
             }
             "invokation_expression" => {
+                // A method call is no unit, and the rules know only some of
+                // them: `effect` cannot say what it does.
+                self.split.opaque();
                 self.dotnet(node);
                 self.children(node, stage, level);
             }
@@ -456,6 +486,7 @@ impl Walker<'_> {
                 let start = literal.start_byte() + 1;
                 let end = literal.end_byte().saturating_sub(1).max(start);
                 let mut value = String::new();
+                let mut nulls = false;
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
@@ -466,6 +497,9 @@ impl Walker<'_> {
                         return Arg::Unknown(source.to_string());
                     }
                     match self.variable(unit::text(&child, self.source)) {
+                        // Inside a string `$null` is the empty string, so
+                        // `"$null\Windows"` is `\Windows`.
+                        Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
                             return Arg::Unknown(source.to_string())
@@ -474,6 +508,10 @@ impl Walker<'_> {
                     at = child.end_byte();
                 }
                 value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
+                // A string of nothing but `$null` is still the null value.
+                if nulls && value.is_empty() {
+                    return Arg::Null;
+                }
                 Arg::Known(value.replace("\"\"", "\""))
             }
             "verbatim_here_string_characters" => Arg::Known(
@@ -502,20 +540,14 @@ impl Walker<'_> {
             .and_then(|rest| rest.strip_suffix('}'))
             .or_else(|| lower.strip_prefix('$'))
             .unwrap_or_default();
+        if name == "null" {
+            return Arg::Null;
+        }
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
-        let value = match name {
-            "home" | "env:userprofile" | "env:home" => "~",
-            "pwd" => ".",
-            "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
-            "env:appdata" => "~\\AppData\\Roaming",
-            "env:localappdata" => "~\\AppData\\Local",
-            "env:systemroot" | "env:windir" => "C:\\Windows",
-            "env:programfiles" => "C:\\Program Files",
-            "env:programdata" => "C:\\ProgramData",
-            "null" => "$null",
-            _ => return Arg::Unknown(source.to_string()),
+        let Some(value) = place_variable(name) else {
+            return Arg::Unknown(source.to_string());
         };
         if value.starts_with("C:") {
             self.system.set(true);
@@ -666,9 +698,8 @@ fn unescape(text: &str) -> String {
 }
 
 /// Switch parameters (they take no value) that the rules meet.
-const SWITCHES: [&str; 18] = [
+const SWITCHES: [&str; 17] = [
     "recurse",
-    "file",
     "force",
     "whatif",
     "confirm",
@@ -688,11 +719,10 @@ const SWITCHES: [&str; 18] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 30] = [
+const VALUES: [&str; 45] = [
     "path",
     "literalpath",
     "destination",
-    "newname",
     "filepath",
     "argumentlist",
     "verb",
@@ -713,13 +743,36 @@ const VALUES: [&str; 30] = [
     "outfile",
     "workingdirectory",
     "itemtype",
-    "type",
-    "propertytype",
     "stream",
     "width",
-    "attributes",
-    "depth",
+    // The common parameters and their aliases: a value is never an operand.
+    "erroraction",
+    "ea",
+    "warningaction",
+    "wa",
+    "informationaction",
+    "infa",
+    "errorvariable",
+    "ev",
+    "warningvariable",
+    "wv",
+    "informationvariable",
+    "iv",
+    "outvariable",
+    "ov",
+    "outbuffer",
+    "ob",
+    "pipelinevariable",
+    "pv",
+    "progressaction",
+    "proga",
 ];
+
+/// The value parameters of a listing (`Get-ChildItem`, `Get-Item`) alone.
+const LISTING_VALUES: [&str; 2] = ["attributes", "depth"];
+
+/// The value parameters of the `-ItemProperty` cmdlets alone.
+const PROPERTY_VALUES: [&str; 2] = ["type", "propertytype"];
 
 /// A cmdlet's arguments read as PowerShell reads them.
 #[derive(Debug, Default)]
@@ -732,21 +785,44 @@ pub(crate) struct Params<'a> {
 
 impl<'a> Params<'a> {
     pub(crate) fn read(args: &'a [Arg]) -> Self {
-        Self::read_with(args, &[])
+        Self::read_with(args, &[], &[])
     }
 
     /// `Get-ChildItem`'s arguments: its switch aliases that a prefix of a
     /// value parameter would swallow the folder for (`-s`, the alias of
     /// `-Recurse`, reads as a prefix of `-Scope`; `-ar`, the alias of
     /// `-ReadOnly`, of `-ArgumentList`; `-Name` and its prefixes are
-    /// `Get-ChildItem`'s switch, not the item's `-Name`) are read as switches.
+    /// `Get-ChildItem`'s switch, not the item's `-Name`; `-File` is its
+    /// switch, while for `Tee-Object`, `Out-File` or `Start-Process` its
+    /// prefixes are the value parameters `-FilePath` and `-Filter`) are read
+    /// as switches,
+    /// and `-Attributes` and `-Depth` take a value.
     pub(crate) fn read_listing(args: &'a [Arg]) -> Self {
-        Self::read_with(args, &["s", "ar", "n", "na", "nam", "name"])
+        Self::read_with(
+            args,
+            &["s", "ar", "n", "na", "nam", "name", "file"],
+            &LISTING_VALUES,
+        )
+    }
+
+    /// The arguments of `Get-Item`, which lists with the value parameters of
+    /// a listing but has none of its switch aliases.
+    pub(crate) fn read_item_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &LISTING_VALUES)
+    }
+
+    /// The arguments of an `-ItemProperty` cmdlet, whose `-Type` (an alias of
+    /// `-PropertyType`) and `-PropertyType` take a value.
+    pub(crate) fn read_property(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &PROPERTY_VALUES)
     }
 
     /// Reads `args`, with the parameters named in `switches` (lower case,
-    /// exactly) read as switches though a prefix of a value parameter.
-    fn read_with(args: &'a [Arg], switches: &[&str]) -> Self {
+    /// exactly) read as switches though a prefix of a value parameter, and
+    /// those in `own` read as taking a value: a cmdlet's own value
+    /// parameters are not added to the shared list, where one would swallow
+    /// the path of every other cmdlet (`Remove-Item -Depth ~ -Recurse`).
+    fn read_with(args: &'a [Arg], switches: &[&str], own: &[&str]) -> Self {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
@@ -772,6 +848,7 @@ impl<'a> Params<'a> {
             let fulls = || {
                 VALUES
                     .iter()
+                    .chain(own.iter())
                     .chain(blocks::SHARED_VALUES.iter().filter(|full| **full != "args"))
             };
             let takes_value = colon
@@ -820,4 +897,287 @@ fn parameter(arg: &Arg) -> Option<&str> {
     let name = text.strip_prefix('-')?;
     name.starts_with(|c: char| c.is_ascii_alphabetic())
         .then_some(name)
+}
+
+/// `text` with each bare word that is a variable followed by a path
+/// (`$HOME\.ssh\id_rsa`, `$env:USERPROFILE/.aws`) put in double quotes, which
+/// is what PowerShell reads it as: an expandable string. The grammar reads
+/// such a word as a member access and loses the path, so without this a
+/// line that names a key through a variable cannot be read.
+///
+/// Only a word of plain path characters after a name is wrapped, and only
+/// where a word can begin (after white space, `(`, `,` or the `:` of
+/// `-Path:`). Text the scan cannot follow with certainty (a here-string, a
+/// subexpression in a string) leaves the whole line as written.
+fn variable_paths(text: &str) -> Cow<'_, str> {
+    if !text.contains(['\\', '/']) || !text.contains('$') {
+        return Cow::Borrowed(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut changed = false;
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        let previous = at.checked_sub(1).and_then(|before| chars.get(before));
+        match c {
+            // A here-string: its end is not one this scan reads.
+            '@' if matches!(chars.get(at + 1), Some('\'' | '"')) => {
+                return Cow::Borrowed(text);
+            }
+            '\'' => {
+                let Some(end) = single_quoted(&chars, at) else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '"' => {
+                let Some(end) = double_quoted(&chars, at) else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '`' => {
+                out.push(c);
+                out.extend(chars.get(at + 1));
+                at += 2;
+            }
+            '<' if chars.get(at + 1) == Some(&'#') => {
+                // A block comment runs to `#>`.
+                let Some(end) = (at + 2..chars.len().saturating_sub(1))
+                    .find(|&i| chars[i] == '#' && chars[i + 1] == '>')
+                else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end + 2]);
+                at = end + 2;
+            }
+            '#' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, ';' | '(' | '{')) => {
+                // A line comment runs to the end of the line.
+                let end = (at..chars.len())
+                    .find(|&i| chars[i] == '\n')
+                    .unwrap_or(chars.len());
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '$' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, '(' | ',' | ':')) => {
+                if let Some(end) = variable_word(&chars, at) {
+                    out.push('"');
+                    out.extend(&chars[at..end]);
+                    out.push('"');
+                    changed = true;
+                    at = end;
+                } else {
+                    out.push(c);
+                    at += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                at += 1;
+            }
+        }
+    }
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Where the single-quoted string that opens at `at` ends (after its closing
+/// quote); `''` inside is a quote.
+fn single_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        if c == '\'' {
+            if chars.get(i + 1) == Some(&'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Where the double-quoted string that opens at `at` ends. A backtick
+/// escapes, `""` is a quote; a `$(` inside is a subexpression with quotes of
+/// its own, which is not followed, so the scan gives up on it.
+fn double_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        match c {
+            '`' => i += 2,
+            '$' if chars.get(i + 1) == Some(&'(') => return None,
+            '"' => {
+                if chars.get(i + 1) == Some(&'"') {
+                    i += 2;
+                } else {
+                    return Some(i + 1);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where a word of the form `$name\path` that begins at `at` ends, when it is
+/// one: a variable name (`$HOME`, `$env:USERPROFILE`, `${HOME}`), a `\` or
+/// `/` right after it, and plain path characters up to a character that ends
+/// a word. `None` for anything else: a variable alone, a member access, a
+/// word with another expansion, a quote or a backtick in it.
+fn variable_word(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    if chars.get(i) == Some(&'{') {
+        let close = (i + 1..chars.len()).find(|&j| chars[j] == '}')?;
+        if chars[i + 1..close]
+            .iter()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':')))
+        {
+            return None;
+        }
+        i = close + 1;
+    } else {
+        let start = i;
+        while chars
+            .get(i)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':'))
+        {
+            i += 1;
+        }
+        if i == start || chars[start..i].ends_with(&[':']) {
+            return None;
+        }
+    }
+    if !matches!(chars.get(i), Some('\\' | '/')) {
+        return None;
+    }
+    while let Some(&c) = chars.get(i) {
+        if c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '}' | ',') {
+            break;
+        }
+        // A backtick escapes the next character, a space included.
+        if c == '`' {
+            if chars
+                .get(i + 1)
+                .is_some_and(|next| !matches!(next, '\n' | '\r'))
+            {
+                i += 2;
+                continue;
+            }
+            return None;
+        }
+        if matches!(c, '$' | '\'' | '"' | '(' | '{' | '<' | '>' | '@') {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
+/// The place a variable names, by its lower-case name without `$`: the home
+/// directory, the working directory, the folders `env:` names.
+fn place_variable(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "home" | "env:userprofile" | "env:home" => "~",
+        "pwd" => ".",
+        "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
+        "env:appdata" => "~\\AppData\\Roaming",
+        "env:localappdata" => "~\\AppData\\Local",
+        "env:systemroot" | "env:windir" => "C:\\Windows",
+        "env:programfiles" => "C:\\Program Files",
+        "env:programdata" => "C:\\ProgramData",
+        _ => return None,
+    })
+}
+
+/// The path a bare word that is a variable and a path names (`$HOME\.ssh\x`,
+/// which the grammar reads as something it cannot see into), when the variable
+/// is one the guard names and the line does not set: the place and the rest.
+pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
+    let chars: Vec<char> = source.chars().collect();
+    if variable_word(&chars, 0)? != chars.len() {
+        return None;
+    }
+    let end = source
+        .find(['\\', '/'])
+        .filter(|end| source[..*end].starts_with('$'))?;
+    let lower = source[..end].to_ascii_lowercase();
+    let name = lower
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .or_else(|| lower.strip_prefix('$'))?;
+    if split.reassigned(name) {
+        return None;
+    }
+    Some(format!("{}{}", place_variable(name)?, &source[end..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VALUES;
+
+    /// The parameters `classify` reads a value for, as they were when `Reach`
+    /// landed. A name added to the shared list swallows the argument after it,
+    /// which can be the target of a delete (`Remove-Item -Depth ~ -Recurse`), so
+    /// a cmdlet's own value parameters belong to its reader (`Get-ChildItem
+    /// -Depth` is in `effect`), and this list changes only with a row for each
+    /// name in `tests/windows.rs`.
+    const PINNED: [&str; 45] = [
+        "path",
+        "literalpath",
+        "destination",
+        "filepath",
+        "argumentlist",
+        "verb",
+        "value",
+        "filter",
+        "include",
+        "exclude",
+        "encoding",
+        "name",
+        "id",
+        "command",
+        "scriptblock",
+        "executionpolicy",
+        "scope",
+        "computername",
+        "credential",
+        "uri",
+        "outfile",
+        "workingdirectory",
+        "itemtype",
+        "stream",
+        "width",
+        // The common parameters and their aliases: a value is never an operand.
+        "erroraction",
+        "ea",
+        "warningaction",
+        "wa",
+        "informationaction",
+        "infa",
+        "errorvariable",
+        "ev",
+        "warningvariable",
+        "wv",
+        "informationvariable",
+        "iv",
+        "outvariable",
+        "ov",
+        "outbuffer",
+        "ob",
+        "pipelinevariable",
+        "pv",
+        "progressaction",
+        "proga",
+    ];
+
+    #[test]
+    fn the_shared_value_parameters_are_the_pinned_list() {
+        assert_eq!(VALUES, PINNED);
+    }
 }

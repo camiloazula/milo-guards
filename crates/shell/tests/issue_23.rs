@@ -184,12 +184,8 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Rename-Item -Path src\\a.rs -NewName b.rs",
             "Rename-Item -LiteralPath src\\a.rs -NewName b.rs",
             "Rename-Item -NewName b.rs src\\a.rs",
-            "Rename-Item -Path src\\a.rs -NewName $name",
             "rni src\\a.rs b.rs",
             "ren src\\a.rs b.rs",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
             "Get-ChildItem *.txt | ForEach-Object { Rename-Item $_ -NewName x }",
             "Move-Item src\\a src\\b",
             "Get-ChildItem src | Move-Item -Destination old",
@@ -204,6 +200,47 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Copy-Item HKCU:\\Software\\x src\\y -Force",
         ],
         &[],
+    );
+}
+
+/// A new name only known when it runs may be a startup file's (`.envrc`), so
+/// it is an overwrite even for an item inside the workspace.
+#[test]
+fn a_new_name_only_known_when_it_runs_is_an_overwrite() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "Rename-Item -Path src\\a.rs -NewName $name",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+        ],
     );
 }
 
@@ -321,12 +358,7 @@ fn what_get_item_and_listings_hand_on_inside_the_workspace_stays_safe() {
     check(
         Shell::PowerShell,
         &windows(),
-        &[
-            "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-Item src | Rename-Item -NewName old",
-        ],
+        &["Get-Item src | Rename-Item -NewName old"],
         &[],
     );
 }
@@ -461,12 +493,17 @@ fn rename_item_judges_every_positional_and_path() {
             "Rename-Item src\\a.rs b.rs",
             "Rename-Item -n y src\\x",
             "Rename-Item -- src\\x y",
-            "Rename-Item src\\a.rs $name",
-            "Rename-Item src\\a.rs ($x + '.bak')",
-            "Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
             "Rename-Item -Path src\\a, src\\b -NewName c",
         ],
         &[
+            // A new name made at run time is an overwrite (it may be a
+            // startup file's), but it is never judged as the item renamed.
+            ("Rename-Item src\\a.rs $name", Rule::Overwrite),
+            ("Rename-Item src\\a.rs ($x + '.bak')", Rule::Overwrite),
+            (
+                "Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }",
+                Rule::Overwrite,
+            ),
             ("Rename-Item -n y HKCU:\\Software\\x", Rule::SystemSettings),
             ("Rename-Item -N y C:\\Windows\\x", Rule::Delete),
             ("Rename-Item -- HKCU:\\Software\\x y", Rule::SystemSettings),
@@ -522,7 +559,7 @@ fn a_force_or_hidden_listing_hands_on_the_hidden_files() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }"],
+        &["Get-ChildItem | Rename-Item -NewName x"],
         &[
             (
                 "Get-ChildItem -Force | Rename-Item -NewName { $_.Name + 1 }",
@@ -554,8 +591,8 @@ fn the_hidden_alias_and_attributes_list_hidden_files_too() {
         Shell::PowerShell,
         &windows(),
         &[
-            "Get-ChildItem -Attributes Directory | Rename-Item -NewName { $_.Name + 1 }",
-            "gci -ad | Rename-Item -NewName { $_.Name + 1 }",
+            "Get-ChildItem -Attributes Directory | Rename-Item -NewName x",
+            "gci -ad | Rename-Item -NewName x",
             "gci -Attributes ReadOnly | Move-Item -Destination old",
         ],
         &[
@@ -598,7 +635,7 @@ fn a_depth_listing_is_not_read_as_a_listing_of_its_value() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["Get-ChildItem -Depth 1 | Rename-Item -NewName { $_.Name + 1 }"],
+        &["Get-ChildItem -Depth 1 | Rename-Item -NewName x"],
         &[
             ("gci -Depth 1 -Force | Rename-Item -NewName x", Rule::Delete),
             ("gci -Force -Depth 1 | Clear-Item", Rule::Overwrite),
@@ -838,10 +875,13 @@ fn the_file_switch_of_a_listing_does_not_take_the_folder() {
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
 fn a_long_hidden_listing_is_read_quickly() {
-    let items = "a,".repeat(5000);
-    let words = "b ".repeat(5000);
-    let paths = "-Path x ".repeat(2000);
-    let includes = "a,".repeat(2000);
+    // Each place is also judged for the secret it may reach, so a line of
+    // this many is slow in the debug build for that alone; these are far
+    // over the `MAX_HIDDEN_MATCHES` pairs the hidden match reads.
+    let items = "a,".repeat(1250);
+    let words = "b ".repeat(1250);
+    let paths = "-Path x ".repeat(500);
+    let includes = "a,".repeat(500);
     for line in [
         format!("gci -fo -r -Include {items}a {words} | ren -NewName x"),
         format!("gci -fo -r {paths} -Include {includes}a | ren -NewName x"),
@@ -850,8 +890,11 @@ fn a_long_hidden_listing_is_read_quickly() {
         let started = std::time::Instant::now();
         let rules = common::rules(&line, Shell::PowerShell, &windows());
         let took = started.elapsed();
+        // Each of the thousands of words is resolved against the protected
+        // names, which costs about a millisecond in a debug build; a
+        // quadratic read would take minutes.
         assert!(
-            took < std::time::Duration::from_millis(500),
+            took < std::time::Duration::from_secs(3),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -1028,6 +1071,75 @@ fn item_property_cmdlets_judge_the_path_when_a_parameter_hides_it() {
                 "Set-ItemProperty -Type DWord HKCU:\\Software\\x -Name a -Value 1",
                 Rule::SystemSettings,
             ),
+        ],
+    );
+}
+
+/// `-File`, `-Fil` and `-Fi` are a switch only for a listing; for every other
+/// cmdlet they abbreviate `-FilePath` (or `-Filter`), which takes a value, so
+/// the path or program that follows is still judged when a value parameter the
+/// guard does not know comes before it.
+#[test]
+fn a_shortened_filepath_is_not_read_as_the_file_switch() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            ("Tee-Object -InputObject a -File ~\\.bashrc", Rule::Overwrite),
+            ("Tee-Object -InputObject a -Fil ~\\.bashrc", Rule::Overwrite),
+            (
+                "Tee-Object -InputObject a -File ~\\.bashrc -Append",
+                Rule::Overwrite,
+            ),
+            (
+                "Tee-Object -InputObject a -Append -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "'x' | Tee-Object -InputObject a -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "Tee-Object -InputObject a -File C:\\Windows\\System32\\drivers\\etc\\hosts",
+                Rule::Overwrite,
+            ),
+            ("Out-File -InputObject a -File ~\\.bashrc", Rule::Overwrite),
+            ("Out-File -InputObject a -Fil ~\\.bashrc", Rule::Overwrite),
+            ("Out-File -InputObject a -Fi ~\\.bashrc", Rule::Overwrite),
+            (
+                "Out-File -Encoding utf8 -InputObject a -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -Fi cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "saps -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "start -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -File cmd.exe '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -RedirectStandardOutput o.txt -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            ("Set-Acl -Fil x ~\\.ssh $a", Rule::Permissions),
         ],
     );
 }

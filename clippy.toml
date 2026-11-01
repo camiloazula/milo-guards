@@ -73,6 +73,7 @@ disallowed-methods = [
     { path = "std::thread::yield_now", reason = "a guard keeps no clock and starts no threads" },
     { path = "std::thread::park", reason = "a guard starts no threads" },
     { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "a guard uses no network, name lookups included" },
+    { path = "url::Url::socket_addrs", reason = "a guard uses no network: it resolves the host by DNS" },
     # The clock.
     { path = "std::time::Instant::now", reason = "a guard keeps no clock: the same input gives the same answer" },
     { path = "std::time::Instant::elapsed", reason = "a guard keeps no clock" },

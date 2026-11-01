@@ -56,6 +56,9 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/shell",
+    "crates/file",
+    "crates/url",
+    "crates/secrets",
     "crates/guards",
 ]
 
@@ -70,6 +73,9 @@ rust-version = "1.99"
 [workspace.dependencies]
 milo-guards-core  = { path = "crates/core" }
 milo-guards-shell = { path = "crates/shell" }
+milo-guards-file  = { path = "crates/file" }
+milo-guards-url   = { path = "crates/url" }
+milo-guards-secrets = { path = "crates/secrets" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with
@@ -81,3 +87,16 @@ tree-sitter            = "0.26"
 tree-sitter-bash       = "0.25"
 tree-sitter-powershell = "0.26"
 tree-sitter-batch      = "0.11"
+
+# The URL guard reads a URL with the WHATWG parser, so every spelling of an
+# address (decimal, octal, hex, shortened, IPv6-mapped, IDN) is judged as the
+# one host a client reads.
+url              = "2.5"
+percent-encoding = "2.3"
+
+# The secrets guard reads a text with a table of credential shapes. `regex`
+# is the guard's own parser: it matches in time linear in the text, so no
+# input makes the table backtrack. Only what the table uses is switched on
+# (ASCII-and-Unicode case folding, and the speed features), which keeps the
+# compiled size small.
+regex = { version = "1.12", default-features = false, features = ["std", "perf", "unicode-case"] }

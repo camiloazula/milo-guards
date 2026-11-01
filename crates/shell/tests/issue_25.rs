@@ -731,6 +731,47 @@ fn del_s_reads_every_dot_before_a_wildcard_as_a_dos_dot() {
 }
 
 #[test]
+fn del_s_from_the_workspace_spelt_as_a_long_path_reaches_the_history() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\src\\HEAD"],
+        &[
+            (
+                "del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD",
+                Rule::Delete,
+            ),
+            (
+                "del /s /q \"\\\\?\\C:\\Users\\me\\dev\\repo\\HEAD\"",
+                Rule::Delete,
+            ),
+            ("del /s /q //?/C:/Users/me/dev/repo/HEAD", Rule::Delete),
+            (
+                "del /s /q \\\\?\\c:\\users\\me\\dev\\repo\\HEAD",
+                Rule::Delete,
+            ),
+            (
+                "del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\config",
+                Rule::Delete,
+            ),
+            (
+                "del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\??",
+                Rule::Delete,
+            ),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[(
+            "cmd /c del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD",
+            Rule::Delete,
+        )],
+    );
+}
+
+#[test]
 fn a_dot_before_a_literal_stays_a_plain_dot() {
     check(
         Shell::Cmd,
