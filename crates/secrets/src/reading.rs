@@ -16,6 +16,8 @@ use std::borrow::Cow;
 
 /// A text and the same text read; and where each part of the one came from.
 pub(crate) struct Reading<'a> {
+    /// The text as it was written.
+    written: &'a str,
     /// The text the table runs over: the original, or the read copy.
     text: Cow<'a, str>,
     /// What was changed, in order.
@@ -42,6 +44,7 @@ impl<'a> Reading<'a> {
     pub(crate) fn new(text: &'a str) -> Self {
         let escapes = text.contains(['%', '\\', '&']) || text.contains(INVISIBLE);
         let borrowed = |edits| Self {
+            written: text,
             text: Cow::Borrowed(text),
             edits,
         };
@@ -84,6 +87,7 @@ impl<'a> Reading<'a> {
             return borrowed(edits);
         }
         Self {
+            written: text,
             text: Cow::Owned(out),
             edits,
         }
@@ -92,6 +96,38 @@ impl<'a> Reading<'a> {
     /// The text the table runs over.
     pub(crate) fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The text as it was written.
+    pub(crate) fn written(&self) -> &'a str {
+        self.written
+    }
+
+    /// Whether reading changed anything: whether the read text is not the
+    /// written one.
+    pub(crate) fn changed(&self) -> bool {
+        !self.edits.is_empty()
+    }
+
+    /// Where the byte `at` of the written text is in the read one: the
+    /// inverse of [`Reading::written_point`].
+    pub(crate) fn read_point(&self, at: usize) -> usize {
+        let before = self
+            .edits
+            .partition_point(|edit| edit.original + edit.original_len <= at);
+        match self.edits.get(before) {
+            Some(edit) if edit.original < at => edit.decoded,
+            _ => {
+                at - before
+                    .checked_sub(1)
+                    .map_or(0, |last| self.edits[last].removed)
+            }
+        }
+    }
+
+    /// Where the byte `at` of the read text is in the written one.
+    pub(crate) fn written_point(&self, at: usize) -> usize {
+        self.original_start(at)
     }
 
     /// Where the byte `at` of the read text starts in the original.
@@ -262,6 +298,36 @@ mod tests {
                 .wrapping_add(1_442_695_040_888_963_407);
             (self.0 >> 33) as usize
         }
+    }
+
+    #[test]
+    fn a_point_goes_there_and_back() {
+        const PIECES: [&str; 10] = [
+            "a", "Z", "é", "😀", "%41", "\\u0042", "&#68;", "\u{200b}", "%", "\\",
+        ];
+        let mut random = Lcg(5);
+        for _ in 0..2_000 {
+            let text: String = (0..random.next() % 12)
+                .map(|_| PIECES[random.next() % PIECES.len()])
+                .collect();
+            let reading = Reading::new(&text);
+            let read = reading.text();
+            for at in (0..=read.len()).filter(|&at| read.is_char_boundary(at)) {
+                let written = reading.written_point(at);
+                assert!(text.is_char_boundary(written), "{text:?} {at}");
+                assert_eq!(
+                    reading.read_point(written),
+                    at,
+                    "{text:?} {at} -> {written}"
+                );
+            }
+        }
+        // The end of the text, written and read.
+        let reading = Reading::new("a%41");
+        assert_eq!(reading.read_point(4), 2);
+        assert_eq!(reading.written_point(2), 4);
+        assert_eq!(reading.written(), "a%41");
+        assert!(reading.changed());
     }
 
     #[test]

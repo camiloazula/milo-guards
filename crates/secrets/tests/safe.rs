@@ -324,3 +324,90 @@ fn what_is_found_is_not_found_twice() {
     check(&[], &[(text, Rule::UrlCredentials)], find);
     assert_eq!(find(text).findings().len(), 1);
 }
+
+#[test]
+fn a_stand_in_is_safe_by_its_shape() {
+    // Upper snake case, the name of a constant.
+    // Repeated characters, or too few different ones.
+    // A value that contains its own name. An elision. A stem from the closed
+    // list, and a literal.
+    let rows = [
+        // upper snake case
+        "password: DEFAULT_PASSWORD",
+        "token=DEFAULT_TOKEN",
+        "def auth(self, password=None, token=DEFAULT_TOKEN):",
+        "CLIENT_SECRET=REPLACE_ME",
+        "API_KEY=YOUR_API_KEY_HERE",
+        "secret: SECRET_FROM_VAULT",
+        "secret = \"MY_SECRET_2\"",
+        // repeated characters
+        "password=aaaaaaaaaa",
+        "token: \"0000000000000000\"",
+        "secret=abababababababababab",
+        "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "api_key=1111111111111111",
+        // its own name
+        "api_key=api_key",
+        "API_KEY=api-key",
+        "apiKey: apiKey",
+        "api_key = \"API_KEY\"",
+        "password=password",
+        "db_password=dummy_password",
+        "secret: test-secret-value",
+        "secret_key: my-secret-2",
+        "existingSecret: my-secret-2",
+        "token: my-token-1",
+        "pass=pass",
+        // an elision
+        "OPENAI_API_KEY=sk-...",
+        "OPENAI_API_KEY=\"sk-…\"",
+        "token=ghp_...",
+        // the closed list of stems, and literals
+        "password=changeme",
+        "PASSWORD: changeme123",
+        "password: \"change-me-please\"",
+        "password=change_me_1",
+        "token=replace-with-your-token-1",
+        "secret=dummy-value-1",
+        "password: placeholder1",
+        "token: example-token-1",
+        "secret=sample-secret-1",
+        "password=todo-fix-this-1",
+        "password: string;",
+        "\"password\": \"string\"",
+        "token: undefined,",
+        // in an address, by the shapes that need no name
+        "postgres://user:CHANGE_ME@db.fake.test/app",
+        "postgres://user:changeme@db.fake.test/app",
+        "https://user:xxxxxxxx@host.fake.test/",
+    ];
+    for row in rows {
+        assert!(
+            find(row).is_safe(),
+            "{row:?}\n  got {:?}",
+            find(row).findings()
+        );
+    }
+}
+
+#[test]
+fn a_stand_in_shape_does_not_hide_a_value_that_is_one() {
+    // The shapes are of a stand-in; a value that is none of them is a secret,
+    // whatever it looks like next to its name.
+    for row in [
+        "password=F4kePass9word1",
+        "api_key=F4keApiKey0123456789abcdef",
+        "OPENAI_API_KEY=F4keApiKey0123456789abcdef",
+        "token=F4keTokenValue0123456789",
+        "secret: \"F4keSecretValue0123456789\"",
+        "password=Xy9!Qz2#Lm4$",
+        "password=hunter22hunter",
+        "db_pass=F4kePass9word1",
+        "API_KEY=a1B2c3D4e5F6",
+        "token=ABCDEF0123456789",
+        "token=Replacement9Xy2",
+        "postgres://app:F4kePass9word1@db.fake.test/app",
+    ] {
+        assert!(!find(row).is_safe(), "{row:?}");
+    }
+}

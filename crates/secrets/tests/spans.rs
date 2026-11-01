@@ -27,7 +27,7 @@ fn replacing_a_span_leaves_the_text_around_it_as_it_was() {
             ("", ""),
             ("é日本 ", " 😀ü"),
             ("\u{0}\u{7f}\n", "\r\n\u{200f}"),
-            ("𝔘𝔫𝔦", "𝔠𝔬𝔡𝔢"),
+            ("𝔘𝔫𝔦 ", " 𝔠𝔬𝔡𝔢"),
         ] {
             let text = format!("{front}{}{back}", sample.text());
             let spans = find_spans(&text);

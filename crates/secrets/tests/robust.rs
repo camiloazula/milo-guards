@@ -240,11 +240,26 @@ fn hostile(name: &str, size: usize) -> String {
         "bearers" => repeat("Bearer "),
         "basics" => repeat("Basic AAAAAAAA "),
         "wide characters" => repeat("é日本😀"),
+        "rejected values" => repeat("token=["),
+        "rejected references" => repeat("password=${"),
+        "documented examples" => repeat("password=EXAMPLE"),
+        "stand-ins" => repeat("secret=CHANGE_ME_"),
+        "escaped separators" => repeat("password=%26"),
+        "unclosed quotes" => repeat("password=\"a "),
+        "armour lines" => repeat("-----BEGIN PRIVATE KEY-----A:"),
+        "armour headers" => repeat("-----BEGIN PGP PRIVATE KEY BLOCK-----\nA: b\n"),
+        "backslashes" => format!("-----BEGIN PRIVATE KEY-----{}", repeat("\\")),
+        "line ends" => format!("-----BEGIN PRIVATE KEY-----{}", repeat("\\n")),
+        "putty files" => repeat("Private-Lines: 99\n"),
+        "netrc words" => repeat("machine password "),
+        "signatures" => repeat("?sig="),
+        "telegram parts" => repeat("1234567890:AA"),
+        "key and secret" => repeat("AKIAFAKE2KEY3ID4TEST,"),
         other => unreachable!("{other}"),
     }
 }
 
-const HOSTILE: [&str; 35] = [
+const HOSTILE: [&str; 50] = [
     "one character",
     "digits",
     "spaces",
@@ -280,6 +295,21 @@ const HOSTILE: [&str; 35] = [
     "bearers",
     "basics",
     "wide characters",
+    "rejected values",
+    "rejected references",
+    "documented examples",
+    "stand-ins",
+    "escaped separators",
+    "unclosed quotes",
+    "armour lines",
+    "armour headers",
+    "backslashes",
+    "line ends",
+    "putty files",
+    "netrc words",
+    "signatures",
+    "telegram parts",
+    "key and secret",
 ];
 
 /// The best of `runs` reads of `text`: noise only ever adds.

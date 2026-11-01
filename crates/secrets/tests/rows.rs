@@ -71,7 +71,7 @@ fn no_target_or_reason_holds_the_secret() {
             // No window of eight characters of the secret is in the answer,
             // except the first line of a block of key, which is the same on
             // every key.
-            if sample.rule == Rule::PrivateKey {
+            if sample.rule == Rule::PrivateKey && sample.secret.starts_with("-----") {
                 assert!(target.starts_with("-----BEGIN "), "{target}");
                 assert!(target.ends_with("PRIVATE KEY-----"), "{target}");
                 assert!(!target.contains('\n'), "{target:?}");

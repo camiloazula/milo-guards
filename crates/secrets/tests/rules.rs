@@ -295,36 +295,36 @@ fn the_password_of_an_address_is_the_span_and_the_rest_stays() {
 fn a_secret_written_as_the_value_of_a_name() {
     let risky = [
         ("password=fakePass0word1", Rule::GenericSecret),
-        ("PASSWORD=fakePassword", Rule::GenericSecret),
-        ("export TOKEN=fakeTokenValue", Rule::GenericSecret),
-        ("secret = 'fakeSecret0'", Rule::GenericSecret),
-        ("secret: fakeSecret0", Rule::GenericSecret),
-        ("\"password\": \"fakePassword\"", Rule::GenericSecret),
+        ("PASSWORD=fakeHorse1Staple", Rule::GenericSecret),
+        ("export TOKEN=fakeValueXyz", Rule::GenericSecret),
+        ("secret = 'fakeValue0Xyz'", Rule::GenericSecret),
+        ("secret: fakeValue0Xyz", Rule::GenericSecret),
+        ("\"password\": \"fakeHorse1Staple\"", Rule::GenericSecret),
         (
-            "{\"client_secret\":\"fakeClientSecret\"}",
+            "{\"client_secret\":\"fakeClientValue\"}",
             Rule::GenericSecret,
         ),
-        ("api_key = \"fakeApiKeyValue\"", Rule::GenericSecret),
-        ("X-Api-Key: fakeApiKey0123", Rule::GenericSecret),
-        ("--password=fakePassword", Rule::GenericSecret),
+        ("api_key = \"fakeValueAbc12\"", Rule::GenericSecret),
+        ("X-Api-Key: fakeValue0123", Rule::GenericSecret),
+        ("--password=fakeHorse1Staple", Rule::GenericSecret),
         (
-            "https://x.io/a?token=fakeToken0123&b=1",
+            "https://x.io/a?token=fakeValue0123b&b=1",
             Rule::GenericSecret,
         ),
         (
             "Server=db;User Id=sa;Password=fakePass0word1;Encrypt=true",
             Rule::GenericSecret,
         ),
-        ("let password = \"fakePassword\";", Rule::GenericSecret),
+        ("let password = \"fakeHorse1Staple\";", Rule::GenericSecret),
         ("db.password: fakePass0word1", Rule::GenericSecret),
-        ("pass=fakePassword", Rule::GenericSecret),
+        ("pass=fakeHorse1Staple", Rule::GenericSecret),
         ("db_pass: fakePass0word1", Rule::GenericSecret),
-        ("AUTH_TOKEN = fakeToken01", Rule::GenericSecret),
-        ("secret_key: \"fakeSecretKey123\"", Rule::GenericSecret),
-        ("passphrase: \"fakePassphrase\"", Rule::GenericSecret),
+        ("AUTH_TOKEN = fakeValue01", Rule::GenericSecret),
+        ("secret_key: \"fakeValue123\"", Rule::GenericSecret),
+        ("passphrase: \"fakeHorseStaple\"", Rule::GenericSecret),
         ("data: password=fakePass0word1", Rule::GenericSecret),
-        ("token := \"fakeTokenValue\"", Rule::GenericSecret),
-        ("password => \"fakePassword\"", Rule::GenericSecret),
+        ("token := \"fakeValueXyz\"", Rule::GenericSecret),
+        ("password => \"fakeHorse1Staple\"", Rule::GenericSecret),
     ];
     check(&[], &risky, find);
 }
@@ -333,13 +333,13 @@ fn a_secret_written_as_the_value_of_a_name() {
 fn a_generic_secrets_span_is_its_value_without_its_name_or_quotes() {
     for (text, value) in [
         ("password=fakePass0word1 next", "fakePass0word1"),
-        ("api_key = \"fakeApiKeyValue\" # ok", "fakeApiKeyValue"),
+        ("api_key = \"fakeValueAbc12\" # ok", "fakeValueAbc12"),
         (
             "{\"password\": \"fakePass0word1\", \"user\": \"x\"}",
             "fakePass0word1",
         ),
         ("Password=fakePass0word1;Encrypt=true", "fakePass0word1"),
-        ("?token=fakeToken0123&b=1", "fakeToken0123"),
+        ("?token=fakeValue0123b&b=1", "fakeValue0123b"),
     ] {
         let spans = find_spans(text);
         assert_eq!(spans.len(), 1, "{text:?}");
@@ -433,4 +433,362 @@ fn an_email_in_a_query_is_found_and_one_in_a_login_is_the_urls() {
     );
     only("https://x.io/contact/alice.smith@acme.io", Rule::Email);
     assert!(find("https://alice.smith@acme.io/repo.git").is_safe());
+}
+
+/// The span of the only finding in `text`.
+fn only_span(text: &str) -> (Rule, String) {
+    let spans = find_spans(text);
+    assert_eq!(spans.len(), 1, "{text:?} {spans:?}");
+    (
+        spans[0].rule,
+        text[spans[0].start..spans[0].end].to_string(),
+    )
+}
+
+#[test]
+fn where_a_value_ends_is_decided_on_the_text_as_written() {
+    // An escape is never a separator: the whole value is the span.
+    for (text, value) in [
+        (
+            "https://api.fake.test/login?user=me&password=F4kePa%26ss9word&next=/",
+            "F4kePa%26ss9word",
+        ),
+        ("password=F4kePass9%20more9", "F4kePass9%20more9"),
+        ("password=F4ke%22Pass9word", "F4ke%22Pass9word"),
+        ("password=F4ke\"Pass9word", "F4ke\"Pass9word"),
+        ("password=F4ke'Pass9word", "F4ke'Pass9word"),
+        (
+            "{\"password\": \"F4kePass9\\\"tail0123\"}",
+            "F4kePass9\\\"tail0123",
+        ),
+        (
+            "{\"password\": \"F4kePass9\\u0022tail0123\"}",
+            "F4kePass9\\u0022tail0123",
+        ),
+        ("password = \"F4ke\\\\Pass9word\"", "F4ke\\\\Pass9word"),
+        ("password = 'F4ke\\'Pass9word'", "F4ke\\'Pass9word"),
+        ("password: 'F4ke''Pass9word'", "F4ke''Pass9word"),
+        (
+            "{\\\"password\\\": \\\"F4kePass9\\\\tail0123\\\"}",
+            "F4kePass9\\\\tail0123",
+        ),
+        // Not a separator of an unquoted value: only white space ends it.
+        ("SECRET=F4kePass9|tail0123", "F4kePass9|tail0123"),
+        ("SECRET=F4ke;Pass9word", "F4ke;Pass9word"),
+        ("SECRET=F4ke&Pass9word", "F4ke&Pass9word"),
+        ("SECRET=F4ke(Pass9)word", "F4ke(Pass9)word"),
+        ("SECRET=F4ke`Pass9word", "F4ke`Pass9word"),
+        ("SECRET=F4ke,Pass9word", "F4ke,Pass9word"),
+        // The format's own separator, where there is one.
+        ("?user=me&password=F4kePass9&next=/", "F4kePass9"),
+        ("password=F4kePass9&x=1", "F4kePass9"),
+        (
+            "Server=db;User Id=sa;Password=F4kePass9;Encrypt=true",
+            "F4kePass9",
+        ),
+        ("Password=F4kePass9;User Id=sa;Server=db", "F4kePass9"),
+        ("Password=F4ke%3BPass9;User Id=sa", "F4ke%3BPass9"),
+        // The quote or bracket the name sits in.
+        ("echo \"password=F4kePass9word\" >> .env", "F4kePass9word"),
+        ("login(password=F4kePass9word)", "F4kePass9word"),
+        ("{password: F4kePass9word}", "F4kePass9word"),
+        ("[password=F4kePass9word]", "F4kePass9word"),
+        ("\"password=F4kePass9word\"", "F4kePass9word"),
+    ] {
+        assert_eq!(
+            only_span(text),
+            (Rule::GenericSecret, value.to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_value_that_never_closes_is_read_as_the_word_after_the_quote() {
+    for (text, value) in [
+        ("password=\"F4kePass9word and more", "F4kePass9word"),
+        ("password='F4kePass9word", "F4kePass9word"),
+    ] {
+        assert_eq!(
+            only_span(text),
+            (Rule::GenericSecret, value.to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn spans_that_overlap_become_one_that_covers_both() {
+    let aws = ["AKIA", "FAKE2KEY3ID4TEST"].concat();
+    let github = format!("ghp_{}", fill("FakeGitHub0", 36));
+    for (text, whole, rule) in [
+        (
+            format!("password=Xy9!{aws}/tail9"),
+            format!("Xy9!{aws}/tail9"),
+            Rule::CloudKey,
+        ),
+        (
+            format!("secret=\"{github}-extra-9\""),
+            format!("{github}-extra-9"),
+            Rule::ApiKey,
+        ),
+        (
+            format!("token={github}-9"),
+            format!("{github}-9"),
+            Rule::ApiKey,
+        ),
+        (
+            "postgres://u:F4ke.me@fake.io@db.fake.test/x".to_string(),
+            "F4ke.me@fake.io".to_string(),
+            Rule::ConnectionString,
+        ),
+    ] {
+        assert_eq!(only_span(&text), (rule, whole), "{text:?}");
+    }
+}
+
+#[test]
+fn a_merged_finding_shows_no_front_that_is_not_the_keys() {
+    let aws = ["AKIA", "FAKE2KEY3ID4TEST"].concat();
+    let text = format!("password=Xy9!{aws}/tail9");
+    let assessment = find(&text);
+    assert_eq!(assessment.findings().len(), 1);
+    // The span begins with the password, not with the key: no prefix.
+    assert_eq!(
+        assessment.findings()[0].target.as_deref(),
+        Some("… (30 chars)")
+    );
+}
+
+#[test]
+fn a_password_in_an_address_with_escapes_in_it() {
+    for (text, secret) in [
+        (
+            "postgres://fakeuser:F4ke%2FPass9@db.fake.test/app",
+            "F4ke%2FPass9",
+        ),
+        (
+            "postgres://fakeuser:F4ke%40Pass9@db.fake.test/app",
+            "F4ke%40Pass9",
+        ),
+        (
+            "postgres://fakeuser:F4ke%23Pass9@db.fake.test/app",
+            "F4ke%23Pass9",
+        ),
+        (
+            "postgres://fakeuser:F4ke%3FPass9@db.fake.test/app",
+            "F4ke%3FPass9",
+        ),
+        (
+            "postgres://fakeuser%40fakeserver:F4kePass9@fakeserver.postgres.database.azure.com/app",
+            "F4kePass9",
+        ),
+        (
+            "https://fakeuser:F4ke%2FPass9@git.fake.test/repo.git",
+            "F4ke%2FPass9",
+        ),
+        (
+            "https://fake%40user:F4kePass9@git.fake.test/repo.git",
+            "F4kePass9",
+        ),
+        // Written in escapes as a whole, in a query.
+        (
+            "?next=postgres%3A%2F%2Ffakeuser%3AF4kePass9%40db.fake.test%2Fapp",
+            "F4kePass9",
+        ),
+    ] {
+        let spans = find_spans(text);
+        assert!(
+            spans
+                .iter()
+                .any(|span| text[span.start..span.end].contains(secret)
+                    && matches!(span.rule, Rule::ConnectionString | Rule::UrlCredentials)),
+            "{text:?} {spans:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pgp_block_with_armour_headers_and_other_dresses_of_a_key() {
+    let body = (0..4)
+        .map(|n| fill(&format!("FakeKeyBody{n}+/"), 64))
+        .collect::<Vec<_>>();
+    let joined = body.join("\n");
+    let pgp = format!(
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nComment: Fake User <fake@example.org>\nComment: a second line, with (marks) and \"quotes\"\n\n{joined}\n=Ab3d\n-----END PGP PRIVATE KEY BLOCK-----"
+    );
+    let ssh2 = format!(
+        "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"2048-bit rsa, fake@host\"\nSubject: fake\n\n{joined}\n---- END SSH2 ENCRYPTED PRIVATE KEY ----"
+    );
+    let escaped = format!(
+        "{{\"private_key\": \"-----BEGIN PRIVATE KEY-----\\n{}\\n-----END PRIVATE KEY-----\\n\"}}",
+        body.join("\\n")
+    );
+    let twice = format!(
+        "{{\"k\": \"{{\\\"private_key\\\": \\\"-----BEGIN PRIVATE KEY-----\\\\n{}\\\\n-----END PRIVATE KEY-----\\\"}}\"}}",
+        body.join("\\\\n")
+    );
+    let strings = format!(
+        "KEY = (\"-----BEGIN RSA PRIVATE KEY-----\\n\"\n       \"{}\\n\"\n       \"{}\\n\"\n       \"-----END RSA PRIVATE KEY-----\\n\")",
+        body[0], body[1]
+    );
+    let continued = format!(
+        "-----BEGIN RSA PRIVATE KEY-----\nComment: a long \\\n   line of armour\n\n{joined}\n-----END RSA PRIVATE KEY-----"
+    );
+    for (label, text) in [
+        ("pgp", &pgp),
+        ("ssh2", &ssh2),
+        ("escaped", &escaped),
+        ("escaped twice", &twice),
+        ("strings", &strings),
+        ("armour line that continues", &continued),
+    ] {
+        let spans = find_spans(text);
+        assert_eq!(spans.len(), 1, "{label}: {spans:?}");
+        assert_eq!(spans[0].rule, Rule::PrivateKey, "{label}");
+        let found = &text[spans[0].start..spans[0].end];
+        for line in &body[..2] {
+            assert!(
+                found.contains(line.as_str()),
+                "{label}: the body is not all in the span"
+            );
+        }
+    }
+    // The whole block is the span, the footer included.
+    let spans = find_spans(&pgp);
+    assert_eq!(&pgp[spans[0].start..spans[0].end], pgp);
+    let spans = find_spans(&ssh2);
+    assert_eq!(&ssh2[spans[0].start..spans[0].end], ssh2);
+}
+
+#[test]
+fn a_putty_key_file_private_lines() {
+    let line = fill("FakeKeyBody0+/", 64);
+    let two = fill("FakeKeyBody1+/", 64);
+    let text = format!(
+        "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nComment: fake\nPublic-Lines: 1\n{two}\nPrivate-Lines: 2\n{line}\n{two}\nPrivate-MAC: 0123456789abcdef"
+    );
+    let spans = find_spans(&text);
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(spans[0].rule, Rule::PrivateKey);
+    assert_eq!(
+        &text[spans[0].start..spans[0].end],
+        format!("{line}\n{two}")
+    );
+    // The public part is public, and a count with nothing after it is not a key.
+    assert!(find(&format!("Public-Lines: 1\n{two}\n")).is_safe());
+    assert!(find("Private-Lines: 1\nMAC\n").is_safe());
+}
+
+#[test]
+fn an_access_key_id_and_its_secret_with_no_name() {
+    let aws = ["AKIA", "FAKE2KEY3ID4TEST"].concat();
+    let secret = fill("fakeSecret/Key+0", 40);
+    for text in [
+        format!("{aws},{secret}"),
+        format!("\"{aws}\",\"{secret}\""),
+        format!("{aws} {secret}"),
+        format!("{aws}:{secret}"),
+        format!("user,{aws},{secret},2024"),
+    ] {
+        let spans = find_spans(&text);
+        assert_eq!(spans.len(), 2, "{text:?} {spans:?}");
+        assert_eq!(&text[spans[1].start..spans[1].end], secret, "{text:?}");
+        assert_eq!(spans[1].rule, Rule::CloudKey);
+    }
+}
+
+#[test]
+fn chat_and_cloud_credentials_of_a_few_more_providers() {
+    let discord = format!(
+        "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.{}",
+        fill("FakeDiscordTok_-9", 38)
+    );
+    let hook = format!(
+        "https://discord.com/api/webhooks/123456789012345678/{}",
+        fill("FakeDiscordHook_-09", 68)
+    );
+    let telegram = format!("123456789:AA{}", fill("FakeTgBotTok_-09", 33));
+    let sas = fill("FakeSasSig0123AbCd", 43);
+    let query =
+        format!("sv=2022-11-02&ss=b&srt=sco&sp=rwdlac&se=2030-01-01T00:00:00Z&sig={sas}%3D");
+    let docker = "ZmFrZXVzZXI6ZmFrZXBhc3M5";
+    for (text, secret, rule) in [
+        (format!("DISCORD: {discord}"), discord, Rule::ApiKey),
+        (format!("url: {hook}"), hook, Rule::ApiKey),
+        (
+            format!(
+                "https://canary.discordapp.com/api/v9/webhooks/123456789012345678/{}",
+                fill("FakeDiscordHook_-09", 68)
+            ),
+            String::new(),
+            Rule::ApiKey,
+        ),
+        (
+            format!("bot{telegram}/getMe"),
+            telegram.clone(),
+            Rule::ApiKey,
+        ),
+        (format!("TELEGRAM {telegram}"), telegram, Rule::ApiKey),
+        (
+            format!("https://fake.blob.core.windows.net/c?{query}"),
+            sas,
+            Rule::CloudKey,
+        ),
+        (
+            format!(
+                "{{\"auths\": {{\"https://index.docker.io/v1/\": {{\"auth\": \"{docker}\"}}}}}}"
+            ),
+            docker.to_string(),
+            Rule::BasicAuth,
+        ),
+        (
+            "machine api.fake.test login fakeuser password F4kePassw0rdZ".to_string(),
+            "F4kePassw0rdZ".to_string(),
+            Rule::GenericSecret,
+        ),
+        (
+            "machine api.fake.test\n  login fakeuser\n  password F4kePassw0rdZ\n".to_string(),
+            "F4kePassw0rdZ".to_string(),
+            Rule::GenericSecret,
+        ),
+        (
+            "default login fakeuser password F4kePassw0rdZ".to_string(),
+            "F4kePassw0rdZ".to_string(),
+            Rule::GenericSecret,
+        ),
+    ] {
+        let spans = find_spans(&text);
+        assert!(!spans.is_empty(), "{text:?}");
+        assert_eq!(spans[0].rule, rule, "{text:?}");
+        if !secret.is_empty() {
+            let found = &text[spans[0].start..spans[0].end];
+            assert!(found.contains(&secret), "{text:?} found {found:?}");
+        }
+    }
+}
+
+#[test]
+fn a_provider_shape_with_nothing_to_say_it_is_one_is_safe() {
+    let telegram = format!("123456789:AA{}", fill("FakeTgBotTok_-09", 33));
+    for text in [
+        // A third word that is too long is not a bot's token.
+        format!(
+            "see MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.{}",
+            fill("FakeDiscordTok_-9", 48)
+        ),
+        format!("x{telegram}"),
+        format!("{telegram}9"),
+        "https://fake.test/?sig=FakeSasSig0123AbCdFakeSasSig0123AbCdFakeSasSig0123AbCd".to_string(),
+        "password for the machine is in the vault".to_string(),
+        "Enter your password to log in to the machine".to_string(),
+        "{\"auth\": \"ZmFrZQ==\"}".to_string(),
+        "auth: bW9zdGx5IGhhcm1sZXNzIHRleHQ=".to_string(),
+    ] {
+        assert!(
+            find(&text).is_safe(),
+            "{text:?} {:?}",
+            find(&text).findings()
+        );
+    }
 }

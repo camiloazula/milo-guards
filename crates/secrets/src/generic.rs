@@ -3,21 +3,39 @@
 //!
 //! This is the one detector that reads a name, so it is the one where code
 //! is easy to mistake for a secret (`password: String`, `token = self.token`,
-//! `let secret = get_secret();`). It judges the value it reads:
+//! `let secret = get_secret();`). It judges the value it reads.
+//!
+//! **Where a value ends is decided on the text as it was written**, with the
+//! quoting and the separators that text uses; reading escapes is for
+//! recognising a secret, never for ending one. `%26`, `%20`, `"` and a
+//! JSON `\"` inside a value are part of it:
+//!
+//! - a value in quotes ends at its closing quote, read with the escaping of
+//!   the formats that write one: `\"` and `\'` (JSON, shell, code), `''`
+//!   (YAML, SQL);
+//! - a value in a string written `\"…\"` ends at the closing `\"`;
+//! - any other value ends at white space or the end of the line, and at the
+//!   closer of the bracket or quote the name sits in (`(a=b)`, `"a=b"`), and
+//!   at the format's own separator: `&` before another `name=` of a query,
+//!   `;` before another `Name=` of a connection string. `|`, `,`, `(` and
+//!   a backtick do not end it.
+//!
+//! The text is scanned once from front to back: after a value has been read,
+//! accepted or not, the scan goes on after it, so no byte is read again.
+//!
+//! The value is judged by what it is:
 //!
 //! - the name must end in a word that names a secret (`password`, `secret`,
 //!   `token`, `api_key`, …); `tokens`, `max_tokens` and `password_hash` do
 //!   not;
-//! - the value is the text after `=`, `:`, `:=`, `==` or `=>`: a string in
-//!   quotes, or a word up to a space, a quote or a separator (`,` `;` `&`
-//!   `|` `(` `)`);
 //! - a value that is no value is not a secret: empty, shorter than six
-//!   characters, a reference to a variable or a template field, a mask, a
-//!   label (`"password": "Password"`), a call, or a chain of names;
+//!   characters, a reference to a variable or a template field, a stand-in
+//!   ([`text::is_placeholder`]), a call, an index, or a chain of names;
 //! - a quoted value has no space in it; an unquoted one is a secret when the
 //!   name is tied to it (`password=value`, as an environment file, a query
-//!   or a connection string write it), or when it has a digit in it
-//!   (`password: hunter22`), which a word of code does not.
+//!   or a connection string write it), when it has a digit in it
+//!   (`password: hunter22`), which a word of code does not, or when it ends
+//!   in `=` (base64 padding).
 //!
 //! The span is the value, without its quotes, so a caller that scrubs it
 //! keeps the name.
@@ -27,6 +45,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::mask::Mask;
+use crate::reading::Reading;
 use crate::scan::Hit;
 use crate::{text, Rule};
 
@@ -48,73 +67,89 @@ const NEEDLES: [&str; 8] = [
 /// The shortest value read as a secret.
 const MIN_VALUE: usize = 6;
 
-/// Words a quoted value is when it is the label of a field and no secret.
-const LABELS: [&str; 17] = [
-    "string",
-    "str",
-    "null",
-    "none",
-    "nil",
-    "undefined",
-    "true",
-    "false",
-    "required",
-    "optional",
-    "password",
-    "secret",
-    "token",
-    "example",
-    "redacted",
-    "hidden",
-    "masked",
-];
+/// How far past a separator a name and its `=` are looked for.
+const LOOKAHEAD: usize = 40;
 
 fn key() -> Option<&'static Regex> {
     static REGEX: OnceLock<Option<Regex>> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(KEY).ok()).as_ref()
 }
 
-/// Adds a hit for each secret written as the value of a name in `text`.
-pub(crate) fn scan(text: &str, lower: &str, out: &mut Vec<Hit>) {
+/// Adds a hit for each secret written as the value of a name in the text.
+pub(crate) fn scan(reading: &Reading<'_>, lower: &str, out: &mut Vec<Hit>) {
     if !NEEDLES.iter().any(|needle| lower.contains(needle)) {
         return;
     }
     let Some(regex) = key() else {
         return;
     };
+    let read = reading.text();
+    let written = reading.written();
     let mut at = 0;
-    while let Some(captures) = regex.captures_at(text, at) {
+    while let Some(captures) = regex.captures_at(read, at) {
         let (Some(whole), Some(name)) = (captures.get(0), captures.get(1)) else {
             break;
         };
-        // Whatever is decided, the next search starts inside the value, so a
-        // name written within a value is still read.
+        // A name that is not a secret's has its value read as the text goes
+        // on: a name written inside it is still found.
         at = whole.end();
-        if !is_secret_name(name.as_str()) {
-            continue;
-        }
-        let gap = text.get(name.end()..whole.end()).unwrap_or_default();
-        let tied = !gap.contains([' ', '\t']) && gap.trim_matches(['"', '\'', '\\']) == "=";
-        let Some(value) = read_value(text, whole.end()) else {
+        let Some(word) = secret_word(name.as_str()) else {
             continue;
         };
-        let word = text.get(value.start..value.end).unwrap_or_default();
-        let call = !value.quoted && text::after(text, value.end) == Some('(');
-        if accept(name.as_str(), word, value.quoted, tied) && !call {
+        let gap = read.get(name.end()..whole.end()).unwrap_or_default();
+        let tied = !gap.contains([' ', '\t']) && gap.trim_matches(['"', '\'', '\\']) == "=";
+        let from = reading.written_point(whole.end());
+        let name_at = reading.written_point(name.start());
+        let name_end = reading.written_point(name.end());
+        let Some(value) = read_value(written, from, enclosure(written, name_at, name_end)) else {
+            continue;
+        };
+        // Whatever is decided, the scan goes on after the value.
+        at = at.max(reading.read_point(value.after));
+        let raw = written.get(value.start..value.end).unwrap_or_default();
+        if accept(word, raw, value.quoted, tied) {
             out.push(Hit {
                 rule: Rule::GenericSecret,
                 reason: "holds a password or secret",
-                start: value.start,
-                end: value.end,
+                start: reading.read_point(value.start),
+                end: reading.read_point(value.end),
                 mask: Mask::Length,
             });
-            at = value.after;
         }
     }
 }
 
+/// What closes the string or the bracket a name is written in.
+#[derive(Clone, Copy)]
+struct Enclosure {
+    /// The closing character.
+    closer: char,
+    /// Whether the opening one was written `\"`: the closer is `\"` too.
+    escaped: bool,
+}
+
+/// The quote or bracket a name sits in: the character just before it, unless
+/// that character is the name's own opening quote (`"password": …`).
+fn enclosure(written: &str, name_at: usize, name_end: usize) -> Option<Enclosure> {
+    let before = text::before(written, name_at)?;
+    let closer = match before {
+        '"' | '\'' | '`' => before,
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        _ => return None,
+    };
+    let escaped = text::before(written, name_at - before.len_utf8()) == Some('\\');
+    let after = written.get(name_end..)?;
+    let after = after.strip_prefix('\\').unwrap_or(after);
+    if closer == before && after.starts_with(before) {
+        return None;
+    }
+    Some(Enclosure { closer, escaped })
+}
+
 /// The value after an operator: where it is, whether it was quoted, and
-/// where reading resumes.
+/// where reading resumes. Offsets are in the written text.
 struct Value {
     start: usize,
     end: usize,
@@ -122,8 +157,8 @@ struct Value {
     quoted: bool,
 }
 
-fn read_value(text: &str, from: usize) -> Option<Value> {
-    let rest = text.get(from..)?;
+fn read_value(written: &str, from: usize, enclosure: Option<Enclosure>) -> Option<Value> {
+    let rest = written.get(from..)?;
     let mut chars = rest.chars();
     let first = chars.next()?;
     // A quote, or a quote written `\"` because the whole is inside a string.
@@ -133,40 +168,102 @@ fn read_value(text: &str, from: usize) -> Option<Value> {
         _ => (None, 0),
     };
     if let Some(quote) = quote {
-        let escaped = opening == 2;
-        let inner = rest.get(opening..)?;
-        let close = inner.find([quote, '\n', '\r'])?;
-        if !inner[close..].starts_with(quote) {
-            return None;
+        if let Some((length, after)) = read_quoted(rest.get(opening..)?, quote, opening == 2) {
+            return Some(Value {
+                start: from + opening,
+                end: from + opening + length,
+                after: from + opening + after,
+                quoted: true,
+            });
         }
-        // The closing `\"` of an escaped value takes its backslash with it.
-        let length = if escaped {
-            inner.get(..close)?.strip_suffix('\\')?.len()
-        } else {
-            close
-        };
-        return Some(Value {
-            start: from + opening,
-            end: from + opening + length,
-            after: from + opening + close + 1,
-            quoted: true,
-        });
+        // A quote that never closes is not one: the value is what follows.
+        return read_unquoted(written, from + opening, enclosure);
     }
-    let length = rest
-        .find([
-            ' ', '\t', '\r', '\n', '"', '\'', '`', ',', ';', '&', '|', '(', ')',
-        ])
-        .unwrap_or(rest.len());
+    read_unquoted(written, from, enclosure)
+}
+
+/// The length of a value in quotes, and the length of it with its closing
+/// quote: `inner` is what follows the opening one.
+fn read_quoted(inner: &str, quote: char, escaped: bool) -> Option<(usize, usize)> {
+    let mut chars = inner.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\n' | '\r' => return None,
+            // The closing `\"` of a string written `\"…\"` takes its
+            // backslash with it; any other backslash escapes what follows.
+            '\\' if escaped && chars.peek().is_some_and(|(_, next)| *next == quote) => {
+                return Some((at, at + 1 + quote.len_utf8()));
+            }
+            '\\' => {
+                chars.next();
+            }
+            c if c == quote => {
+                // `''` inside `'…'` is one quote of the value.
+                if quote == '\'' && chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                    chars.next();
+                    continue;
+                }
+                return Some((at, at + quote.len_utf8()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn read_unquoted(written: &str, from: usize, enclosure: Option<Enclosure>) -> Option<Value> {
+    let rest = written.get(from..)?;
+    let bytes = rest.as_bytes();
+    let closer = enclosure.map(|e| e.closer);
+    let mut length = 0;
+    while let Some(&byte) = bytes.get(length) {
+        let ends = match byte {
+            b' ' | b'\t' | b'\r' | b'\n' => true,
+            b'&' => names_a_pair(bytes, length + 1, true),
+            b';' => names_a_pair(bytes, length + 1, false),
+            _ => closer.is_some_and(|c| u32::from(byte) == u32::from(c)),
+        };
+        if ends {
+            break;
+        }
+        length += 1;
+    }
+    // The escaped closer of `\"…\"` takes its backslash with it.
+    let at_closer =
+        closer.is_some_and(|c| u32::from(bytes.get(length).copied().unwrap_or(0)) == u32::from(c));
+    let escaped = enclosure.is_some_and(|e| e.escaped) && at_closer;
+    let end = if escaped && length > 0 && bytes.get(length - 1) == Some(&b'\\') {
+        length - 1
+    } else {
+        length
+    };
     Some(Value {
         start: from,
-        end: from + length,
+        end: from + end,
         after: from + length,
         quoted: false,
     })
 }
 
-/// Whether `name` ends in a word that names a secret.
-fn is_secret_name(name: &str) -> bool {
+/// Whether what follows a `&` or a `;` is another pair of a query or of a
+/// connection string: a name, and `=` within a few characters. A name of a
+/// connection string may have spaces (`User Id=`); one of a query may not.
+fn names_a_pair(bytes: &[u8], from: usize, query: bool) -> bool {
+    for &byte in bytes.iter().skip(from).take(LOOKAHEAD) {
+        match byte {
+            b'=' => return true,
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' => {}
+            b'%' | b'[' | b']' if query => {}
+            b' ' if !query => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The word a name ends in if it names a secret: what its value may not
+/// repeat. `None` for any other name.
+fn secret_word(name: &str) -> Option<&'static str> {
     const ENDINGS: [&str; 13] = [
         "password",
         "passwd",
@@ -183,49 +280,59 @@ fn is_secret_name(name: &str) -> bool {
         "pwd",
     ];
     let lower = name.to_ascii_lowercase();
-    let squeezed: String = lower
-        .chars()
-        .filter(|c| !matches!(c, '_' | '-' | '.'))
-        .collect();
-    ENDINGS.iter().any(|ending| squeezed.ends_with(ending))
-        // `pass` alone is also the end of `bypass` and `compass`.
-        || lower == "pass"
+    let squeezed = text::squeezed(name);
+    if let Some(ending) = ENDINGS.iter().find(|ending| squeezed.ends_with(**ending)) {
+        return Some(ending);
+    }
+    // `pass` alone is also the end of `bypass` and `compass`.
+    let whole = lower == "pass"
         || ["_pass", "-pass", ".pass"]
             .iter()
-            .any(|ending| lower.ends_with(ending))
+            .any(|ending| lower.ends_with(ending));
+    whole.then_some("pass")
 }
 
-/// Whether the value read after `name` is a secret.
-fn accept(name: &str, value: &str, quoted: bool, tied: bool) -> bool {
-    if value.chars().count() < MIN_VALUE || text::is_reference(value) {
-        return false;
-    }
-    let lower = value.to_ascii_lowercase();
-    let squeezed: String = name
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|c| !matches!(c, '_' | '-' | '.'))
-        .collect();
-    // `password=password`, `"token": "Token"`: the name said twice.
-    if LABELS.contains(&lower.as_str()) || lower == squeezed {
-        return false;
-    }
-    // The values AWS's documentation shows end in EXAMPLE or EXAMPLEKEY.
-    if lower.starts_with("your_")
-        || lower.starts_with("your-")
-        || value.ends_with("EXAMPLE")
-        || value.ends_with("EXAMPLEKEY")
+/// Whether the value read after a name that ends in `word` is a secret.
+/// `raw` is the value as it was written.
+fn accept(word: &str, raw: &str, quoted: bool, tied: bool) -> bool {
+    let decoded = Reading::new(raw);
+    let whole = decoded.text();
+    // What closes a statement or a list is not part of the word before it.
+    let value = if quoted {
+        whole
+    } else {
+        whole.trim_end_matches([',', ';', ':', '.', ')', '"', '\'', '`'])
+    };
+    if value.chars().count() < MIN_VALUE
+        || text::is_reference(value)
+        || text::is_placeholder(value, Some(word))
     {
         return false;
     }
     if quoted {
-        return !value.contains([' ', '\t']);
+        return !raw.contains([' ', '\t']);
     }
-    if value.contains(['[', ']']) || is_chain_of_names(value) {
+    if value.contains(['[', ']']) || is_call(whole) || is_chain_of_names(value) {
         return false;
     }
     // Base64 ends in `=` when it is padded: a Kubernetes secret is written so.
     tied || value.ends_with('=') || value.bytes().any(|b| b.is_ascii_digit())
+}
+
+/// Whether `value` is a call (`get_token()`, `env::var("X")?;`): names, a
+/// `(`, and either nothing more than a `)` that closes it or no `)` at all.
+/// `F4ke(Pass9)word` has a `)` in the middle and is a word.
+fn is_call(value: &str) -> bool {
+    value.split_once('(').is_some_and(|(head, tail)| {
+        head.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && head
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':'))
+            && (!tail.contains(')')
+                || tail
+                    .trim_end_matches([';', ',', '?', '.', ':'])
+                    .ends_with(')'))
+    })
 }
 
 /// Whether `value` is names joined by dots or colons (`self.token`,

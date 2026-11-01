@@ -15,7 +15,9 @@
 //!   reason ever holds more of the matched text than that.
 //! - **The spans are offsets, not text.** [`find_spans`] gives the byte range
 //!   of each thing found, on character boundaries, so a caller can replace it
-//!   and leave the text around it as it was.
+//!   and leave the text around it as it was. Where two things overlap they
+//!   are one span that covers both, with the rule of the more specific, so
+//!   that scrubbing it leaves no part of either behind.
 //! - **The table is judged by shape and by value.** A key is found by the
 //!   prefix and the length its provider publishes; what is not shaped (a
 //!   password) only where a name says so; and a number only when it passes
@@ -90,19 +92,21 @@ pub type Finding = milo_guards_core::Finding<Rule>;
 pub enum Rule {
     /// A private key: a block `-----BEGIN … PRIVATE KEY-----`, its body and
     /// its end line (a body cut short counts, a header with no body does not),
-    /// or an age secret key.
+    /// a PuTTY key's private lines, or an age secret key.
     PrivateKey,
     /// A key of a cloud: AWS (access key ids, and the secret key where it is
     /// named), Google (API keys, OAuth secrets and access tokens), Azure
-    /// (storage account keys, client secrets) and DigitalOcean.
+    /// (storage account keys, client secrets, shared access signatures) and
+    /// DigitalOcean.
     CloudKey,
     /// A key or token of a service: Anthropic, OpenAI, GitHub, GitLab,
-    /// Slack, Stripe, SendGrid, Twilio, npm, PyPI, crates.io, Hugging Face
+    /// Slack, Discord, Telegram, Stripe, SendGrid, Twilio, npm, PyPI, crates.io, Hugging Face
     /// and Shopify.
     ApiKey,
     /// A JSON web token: `eyJ…` header, payload and signature.
     Jwt,
-    /// The base64 of `user:password` after the word `Basic`.
+    /// The base64 of `user:password` after the word `Basic`, or as the
+    /// `auth` of a Docker config.
     BasicAuth,
     /// A token after the word `Bearer`, that no other rule already found.
     BearerToken,
@@ -112,8 +116,8 @@ pub enum Rule {
     /// A password in any other URL: `https://user:password@host/`.
     UrlCredentials,
     /// A password, secret or token written as the value of a name
-    /// (`password=…`, `"api_key": "…"`), or, from [`find_high_entropy`], a
-    /// run of characters that looks random.
+    /// (`password=…`, `"api_key": "…"`) or after `password` in a `.netrc`,
+    /// or, from [`find_high_entropy`], a run of characters that looks random.
     GenericSecret,
     /// A payment card number: thirteen to nineteen digits of a card
     /// network that pass the Luhn check.

@@ -175,6 +175,63 @@ pub fn samples() -> Vec<Sample> {
         ),
         sample(
             ApiKey,
+            "holds a Discord bot token",
+            "DISCORD=",
+            [
+                "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.",
+                &fill("FakeDiscordTok_-9", 38),
+            ]
+            .concat(),
+            "\n",
+        ),
+        sample(
+            ApiKey,
+            "holds a Discord webhook URL",
+            "curl ",
+            [
+                "https://discord.com/api/webhooks/123456789012345678/",
+                &fill("FakeDiscordHook_-09", 68),
+            ]
+            .concat(),
+            " -d x",
+        ),
+        sample(
+            ApiKey,
+            "holds a Telegram bot token",
+            "https://api.telegram.org/bot",
+            ["123456789:AA", &fill("FakeTgBotTok_-09", 33)].concat(),
+            "/getMe",
+        ),
+        sample(
+            CloudKey,
+            "holds an Azure shared access signature",
+            "https://fake.blob.core.windows.net/c?sv=2022-11-02&se=2030-01-01T00:00:00Z&sig=",
+            fill("FakeSasSig0123AbCd", 43),
+            "&x=1",
+        ),
+        sample(
+            BasicAuth,
+            "holds a registry login (the base64 of a user and password)",
+            "{\"auth\": \"",
+            "ZmFrZXVzZXI6ZmFrZXBhc3M5".to_string(),
+            "\"}",
+        ),
+        sample(
+            GenericSecret,
+            "holds a password beside a machine and a login",
+            "machine api.fake.test login fakeuser password ",
+            "F4kePassw0rdZ".to_string(),
+            "\n",
+        ),
+        sample(
+            PrivateKey,
+            "holds a PuTTY private key",
+            "Private-Lines: 1\n",
+            fill("FakeKeyBody0+/", 64),
+            "\nPrivate-MAC: 00ff",
+        ),
+        sample(
+            ApiKey,
             "holds a GitHub token",
             "GITHUB_TOKEN=",
             key("ghp_", "FakeGitHub0", 36),
@@ -352,7 +409,7 @@ pub fn samples() -> Vec<Sample> {
             GenericSecret,
             "holds a password or secret",
             "{\"api_key\": \"",
-            "fakeApiKeyValue".to_string(),
+            "fakeValueAbc12".to_string(),
             "\"}",
         ),
         sample(
