@@ -711,8 +711,10 @@ a number with a leading zero or a spread is `unknown`, because it may be any.
 bits of `dst` and are a `chmod` of it, as `chmod --reference` is. `execa`'s
 `command`, `commandSync` and `$` (called, as a tagged template, and as `$.sync`)
 run a command line as `execaCommand` does, and `cross-spawn`'s `spawn` and
-`sync` start a program as `child_process.spawn` and `spawnSync` do; the module
-called bare is `unknown`, as any module handed on as a value is.
+`sync` start a program as `child_process.spawn` and `spawnSync` do, and so does
+the module itself, called through a name (`const spawn = require('cross-spawn');
+spawn(…)`, `import spawn from 'cross-spawn'`) or through its `default`, as
+`execa` is. A module handed on as a value is `unknown`.
 
 **Names shared with nested code.** Literal code given to `exec`, `eval` or a
 profiler (`cProfile.run`) runs in the namespace of the code around

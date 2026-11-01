@@ -194,6 +194,8 @@ fn whole(name: &str) -> Option<Kind> {
         | "child_process.spawnSync"
         | "child_process.execFile"
         | "child_process.execFileSync"
+        | "cross-spawn"
+        | "cross-spawn.default"
         | "cross-spawn.spawn"
         | "cross-spawn.sync"
         | "execa"
@@ -1260,8 +1262,21 @@ impl<'s> Reader<'s> {
                 if source.is_none_or(|node| self.literal(node).is_none()) {
                     self.reading.unread(self.text(call));
                 } else if self.escapes(call, field, above) {
-                    // The module, handed on as a value.
-                    self.reading.unread(self.text(call));
+                    // The module, handed on as a value, unless it is called
+                    // on the spot and is a function that starts a program:
+                    // `require('cross-spawn')('ls')` is read as that call.
+                    let called = field == Some("function")
+                        && above
+                            .last()
+                            .is_some_and(|parent| parent.node.kind() == "call_expression")
+                        && source
+                            .and_then(|node| self.literal(node))
+                            .is_some_and(|module| {
+                                matches!(module.as_str(), "cross-spawn" | "execa")
+                            });
+                    if !called {
+                        self.reading.unread(self.text(call));
+                    }
                 }
             }
             None => self.method(function, name.as_deref(), call),
@@ -1731,6 +1746,14 @@ impl<'s> Reader<'s> {
         // `$` of execa is called as it is, and `$.sync` is the call the
         // reader looks at: the object it is a member of is not the call.
         if name == "execa.$" && parent.node.kind() == "member_expression" && is("object") {
+            return;
+        }
+        // The same for `cross-spawn`, which is itself a call and has `spawn`
+        // and `sync` members: `spawn.sync(…)` is read as the call it is.
+        if matches!(name.as_str(), "cross-spawn" | "cross-spawn.default")
+            && parent.node.kind() == "member_expression"
+            && is("object")
+        {
             return;
         }
         if kind(&name).is_some_and(|kind| kind != Kind::Require)

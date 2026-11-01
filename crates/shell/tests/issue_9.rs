@@ -1904,6 +1904,9 @@ fn every_call_of_execa_that_runs_a_command_is_read() {
             "node -e \"require('cross-spawn').sync('ls', ['-l'])\"",
             "node -e \"require('cross-spawn').spawn('ls')\"",
             "node -e \"const spawn = require('cross-spawn'); spawn.sync('ls')\"",
+            "node -e \"require('cross-spawn')('ls')\"",
+            "node -e \"const spawn = require('cross-spawn'); spawn('ls', ['-l'])\"",
+            "node --input-type=module -e \"import spawn from 'cross-spawn'; spawn('ls')\"",
         ],
         &[
             (
@@ -1969,9 +1972,52 @@ fn every_call_of_execa_that_runs_a_command_is_read() {
                 "node --input-type=module -e \"import spawn from 'cross-spawn'; spawn.sync('rm', ['-rf', '/home/me'])\"",
                 Rule::Delete,
             ),
-            // The module called bare stays unknown.
+            // The module itself is the spawn: bare, through a name (any
+            // declaration, or a later assignment), as a default import, and
+            // as the namespace's `default`.
             (
-                "node -e \"require('cross-spawn')('ls')\"",
+                "node -e \"require('cross-spawn')('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"const spawn = require('cross-spawn'); spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"var spawn = require('cross-spawn'); spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"let spawn = require('cross-spawn'); spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"let spawn; spawn = require('cross-spawn'); spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e \"import spawn from 'cross-spawn'; spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e \"import {default as spawn} from 'cross-spawn'; spawn('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node --input-type=module -e \"import * as cs from 'cross-spawn'; cs.default('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('execa')('rm', ['-rf', '/home/me'])\"",
+                Rule::Delete,
+            ),
+            // The module handed on as a value stays unknown.
+            (
+                "node -e \"run(require('cross-spawn'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "node -e \"const spawn = require('cross-spawn'); run(spawn)\"",
                 Rule::Unknown,
             ),
         ],
@@ -2025,6 +2071,29 @@ fn an_interpreter_asked_to_print_its_version_or_help_reads_no_input() {
                 "python3 -W --version <<'PY'\nimport shutil\nshutil.rmtree('/home/me')\nPY",
                 Rule::Delete,
             ),
+            // A print flag that is the value of perl's, ruby's or php's
+            // option before it: the program comes from the input.
+            (
+                "perl -I --version <<'PL'\nsystem(\"rm -rf /home/me\");\nPL",
+                Rule::Unknown,
+            ),
+            (
+                "ruby -I --version <<'RB'\nsystem(\"rm -rf /home/me\")\nRB",
+                Rule::Unknown,
+            ),
+            (
+                "ruby -E --version <<'RB'\nsystem(\"rm -rf /home/me\")\nRB",
+                Rule::Unknown,
+            ),
+            (
+                "php -d --version <<'PH'\n<?php system(\"rm -rf /home/me\");\nPH",
+                Rule::Unknown,
+            ),
+            (
+                "php -c --version <<'PH'\n<?php system(\"rm -rf /home/me\");\nPH",
+                Rule::Unknown,
+            ),
+            ("php -z --help", Rule::Unknown),
         ],
     );
 }

@@ -540,13 +540,24 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
         "--cwd",
         "--check-hash-based-pycs",
     ];
+    // Options of perl, ruby, php and lua that take the next word as their
+    // value, even one that starts with a dash (`perl -I --version`). Any of
+    // them ahead of a print flag may have taken it, so the line reads its
+    // input; an option of another interpreter named here only errs that way.
+    const OTHER_VALUES: [&str; 14] = [
+        "-I", "-E", "-d", "-c", "-z", "-f", "-l", "-e", "-B", "-R", "-F", "-S", "-t", "-a",
+    ];
+    let mut others = false;
     let flags: &[&str] = if key.starts_with("python") {
         &["--version", "-V", "-VV", "--help", "-h"]
     } else {
         match key {
             "node" | "nodejs" | "bun" => &["--version", "-v", "--help", "-h"],
             "deno" => &["--version", "-V", "--help", "-h"],
-            _ => &["--version", "--help", "-h"],
+            _ => {
+                others = true;
+                &["--version", "--help", "-h"]
+            }
         }
     };
     let mut iter = args.iter();
@@ -554,7 +565,7 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
         match arg.known() {
             Some("--") | None => return false,
             Some(text) if flags.contains(&text) => return true,
-            Some(text) if VALUES.contains(&text) => {
+            Some(text) if VALUES.contains(&text) || (others && OTHER_VALUES.contains(&text)) => {
                 iter.next();
             }
             Some(_) => {}
