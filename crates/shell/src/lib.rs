@@ -11,6 +11,9 @@
 //!    started with a script (`bash -c`, `eval`, `cmd /c`,
 //!    `powershell -Command`, `Invoke-Expression`) has that script split in
 //!    its own grammar.
+//!    Python and JavaScript given inline (`python3 -c`, `node -e`, a
+//!    here-document fed to `python3 -`) are read with their own grammars, and
+//!    what they delete, write and run is judged like the same shell command.
 //! 2. **Detect** with rules that read a unit's program, flags, operands and
 //!    redirects, never the raw text, and judge each path by where it
 //!    resolves against [`Paths`].
@@ -27,6 +30,7 @@
 mod cmd;
 mod detect;
 mod dotglob;
+mod inline;
 mod launch;
 mod path;
 mod posix;

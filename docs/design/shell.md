@@ -32,7 +32,8 @@ A line is judged in three steps.
 The modules follow the steps. `posix`, `powershell` and `cmd` split a line with
 their grammar. `launch` takes wrappers off and reads scripts handed to shells.
 `unit` holds the unit and the helpers that read its arguments. `detect` holds
-the rules. `path` is the shell's side of the path model.
+the rules. `path` is the shell's side of the path model. `inline` reads the code
+an interpreter is given inline (see [Inline code](#inline-code)).
 
 ## Splitting
 
@@ -315,14 +316,89 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 `*.*` on Windows) takes the whole folder. One that picks names (`*.log`,
 `*/*.o`) touches files inside it. [Core](core.md) has the rule.
 
+## Inline code
+
+Python and JavaScript given inline are read with their own tree-sitter
+grammars (`inline`, apart from the shell splitters) and judged with the same
+rules and the same path model as the shell commands that do the same. A reader
+finds the calls that delete, write, move and run, and the paths they name;
+those come out as the units and paths the rules already read (a delete is
+`rm -rf PATH`, a move `mv`, a copy a write to its destination, a command line
+a script `sh -c` reads), so no rule knows a language.
+
+**Where the code comes from.** `python`, `python3` (and `python3.12`),
+`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
+`nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`). `bun`:
+the same flags. `deno eval CODE`. And a here-document or here-string handed to
+`python3`, `python3 -`, `node`, `node -`, when its text is plain: a quoted
+delimiter (`<<'PY'`), or an unquoted one with nothing in the body the shell
+would expand. `<<-` takes the leading tabs off. A script file
+(`python3 scripts/gen.py`, `node build.js`) is the workspace's own code and is
+not read. Neither is code from a pipe or another redirect (`cat x.py |
+python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
+download. Code on Windows (PowerShell, cmd) stays `unknown`: its paths and
+commands are not POSIX ones.
+
+**What is read.** Calls are found by their name once what `import`, `require`
+and destructuring bound is put back (`from os import remove as rm`,
+`const { rm } = require('fs/promises')`, `import * as fs from 'node:fs'`,
+`o = os`, `getattr(os, 'remove')`, `__import__('os')`), whatever the nesting,
+every branch counting whether or not it runs.
+
+| Does | Python | JavaScript (Node, Bun, Deno) |
+| --- | --- | --- |
+| Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()`, `rimraf` |
+| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
+| Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
+| Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
+| Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` `` |
+
+A literal command string is split in the shell grammar and judged like a
+nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
+'~'])`) is judged as the unit it is, `shell=True` or `{ shell: true }` making
+it a command line. A `chdir` moves the code's own paths, not the line's.
+
+**Paths.** A literal string; `os.path.expanduser('~…')`, `Path.home()`,
+`os.environ['HOME']`, `process.env.HOME`, `os.homedir()` and the like for the
+home directory; `os.getcwd()` and `process.cwd()`; `os.path.join`,
+`path.join`, `Path(…) / …`, `.joinpath`, `.parent`, `os.path.dirname`, string
+`+`, f-strings and template literals made only of those. A `~` at the start of
+a path is the home directory wherever it comes in the code, as the shell reads
+it (code in a double-quoted argument had `$HOME` put in as `~`, so a literal
+tilde cannot be told from it). Anything else, such as a variable or a
+computed value, is a path only known when it runs, as `rm -rf "$DIR"` is.
+
+**What stays `unknown`**, with the reason `runs code the guard does not read`
+and the code that is the reason as the target: code that does not parse;
+`eval`, `exec`, `compile`, `Function`, `vm.*` of anything but a literal string
+(a literal is read as code of its language); `__import__`, `getattr`,
+`import()` and `require` of a computed name, a computed member of `fs` or
+`os`; `globals`, `locals`, `vars`, `__dict__`, `__builtins__`, `.constructor`;
+a call to a name above used as a value (`r = os.remove`,
+`map(fs.unlinkSync, files)`, `(0, rm)(p)`), since the reader cannot follow
+the alias; starting a program by `os.exec*`, `os.spawn*`, `pty.spawn`,
+`ctypes`. A command line or code only known when it runs
+(`child_process.execSync(process.argv[1])`, an f-string with a
+substitution) is `unknown` too. Code with none of the calls above and
+nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
+
+Calls that are not listed are not read, so code whose only way to touch a file
+is one of them (a logging file handler, a library's own writer) is safe.
+`bun` and `deno` read from their input (`deno run -`) are not read. Nested code (`os.system('python3
+-c …')`, `exec("…")`) is read to the same depth limit and text budget as
+nested scripts.
+
 ## What cannot be read is risky
 
 A line is never safe because the guard gave up on it. These come back risky:
 
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
-  one.
+- Code handed to an interpreter that is not read: Ruby, Perl (beyond
+  `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
+  from a file it is redirected from. Python and JavaScript given inline are
+  read, and what they do is judged (see [Inline code](#inline-code)); what
+  cannot be followed in them is risky too.
 - A .NET call that deletes, writes or starts a program.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
@@ -367,6 +443,9 @@ The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
 PowerShell and cmd, built on core's test kit. Each table has a list of safe
 lines and a list of risky lines with the rule each must break. A new rule
 comes with rows of both kinds.
+
+`tests/inline.rs` is the same for inline Python and JavaScript, with a table for
+what is safe, what each rule finds and what stays `unknown`.
 
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of

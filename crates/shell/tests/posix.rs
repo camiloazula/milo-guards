@@ -385,13 +385,13 @@ fn what_runs_unseen_is_risky() {
             ("ruby -we 'system(\"rm -rf ~\")'", Rule::Unknown),
             (
                 "node -p 'require(\"fs\").rmSync(process.env.HOME,{recursive:true})'",
-                Rule::Unknown,
+                Rule::Delete,
             ),
-            ("node --print 'x'", Rule::Unknown),
+            ("node --print \"$X\"", Rule::Unknown),
             ("php -r 'system(\"rm -rf ~\");'", Rule::Unknown),
             (
                 "python3 -Sc 'import shutil; shutil.rmtree(\"/home/me\")'",
-                Rule::Unknown,
+                Rule::Delete,
             ),
             ("printf 'rm -rf ~' > s.sh && sh s.sh", Rule::Unknown),
             ("echo 'rm -rf ~' > s.sh; . s.sh", Rule::Unknown),
@@ -406,12 +406,12 @@ fn what_runs_unseen_is_risky() {
             ("echo 'rm -rf ~' | at now", Rule::RunInput),
             (
                 "python3 -c \"import shutil; shutil.rmtree('/home/me')\"",
-                Rule::Unknown,
+                Rule::Delete,
             ),
             ("echo 'import shutil' | python3", Rule::Unknown),
             (
                 "node -e \"require('fs').rmSync('/home/me',{recursive:true})\"",
-                Rule::Unknown,
+                Rule::Delete,
             ),
             ("perl -e 'system(\"rm -rf ~\")'", Rule::Unknown),
             ("[[ 'a[$(rm -rf ~)]' -eq 0 ]]", Rule::Unknown),

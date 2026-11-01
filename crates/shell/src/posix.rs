@@ -21,6 +21,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         source: text,
         depth,
         split,
+        redirected: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -185,6 +186,16 @@ struct Walker<'a> {
     source: &'a str,
     depth: usize,
     split: &'a mut Split,
+    /// The redirects of the statement being walked, for its body command.
+    redirected: Option<Redirected>,
+}
+
+/// The redirects of a statement whose body is a command: the node id of
+/// that command, what redirects its input, and where the redirects start.
+struct Redirected {
+    body: usize,
+    inputs: Vec<Option<Arg>>,
+    from: usize,
 }
 
 impl Walker<'_> {
@@ -322,6 +333,14 @@ impl Walker<'_> {
                 self.redirect(node);
                 self.children(node, None, level);
             }
+            // The redirects of a command are for its input too: a
+            // here-document it reads its code from.
+            "redirected_statement" => {
+                let outer = self.redirected.take();
+                self.redirected = self.redirects(node);
+                self.children(node, stage, level);
+                self.redirected = outer;
+            }
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
             "test_command" => {
@@ -394,6 +413,19 @@ impl Walker<'_> {
                 args.push(self.arg(arg));
             }
         }
+        // A here-document or here-string is the program's input. tree-sitter
+        // drops a lone `-` before the redirect (`python3 - <<'PY'`), which
+        // names that input, so it is put back.
+        let mut stdin = None;
+        if let Some((input, from)) = self.input(node) {
+            let gap = self.source.get(node.start_byte()..from).unwrap_or_default();
+            if gap.split_whitespace().any(|word| word == "-")
+                && !args.iter().any(|arg| arg.known() == Some("-"))
+            {
+                args.push(Arg::Known("-".to_string()));
+            }
+            stdin = Some(input);
+        }
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.
@@ -431,12 +463,136 @@ impl Walker<'_> {
             self.split.hide_functions();
         }
         let outer = self.split.scope_hidden(prefixed);
-        launch::add(
-            self.split,
-            Unit::new(Shell::Posix, program, args, stage),
-            self.depth,
-        );
+        let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        unit.stdin = stdin;
+        launch::add(self.split, unit, self.depth);
         self.split.unscope_hidden(outer);
+    }
+
+    /// What redirects the input of the command at `node`: a here-document or
+    /// here-string gives its text, and any other redirect of the input (a
+    /// file, a second one) an unknown, since which one the program reads is
+    /// not worth working out. The byte where the redirects start comes too.
+    /// `None` when the input is not redirected, or the command is part of a
+    /// pipeline, where the tree does not say which command a here-document
+    /// is for.
+    fn input(&self, node: Node<'_>) -> Option<(Arg, usize)> {
+        // A here-string is a redirect of the command itself; the others are
+        // the redirected statement's, whose body the command is.
+        let mut inputs = Vec::new();
+        let mut from = usize::MAX;
+        let mut cursor = node.walk();
+        for redirect in node.children_by_field_name("redirect", &mut cursor) {
+            from = from.min(redirect.start_byte());
+            self.inputs(redirect, &mut inputs);
+        }
+        if let Some(redirected) = self.redirected.as_ref().filter(|r| r.body == node.id()) {
+            inputs.extend(redirected.inputs.iter().cloned());
+            from = from.min(redirected.from);
+        }
+        let input = match inputs.len() {
+            0 => return None,
+            1 => inputs.pop().flatten(),
+            _ => None,
+        };
+        Some((
+            input.unwrap_or_else(|| Arg::Unknown("<input>".to_string())),
+            from,
+        ))
+    }
+
+    /// What the redirects of a redirected statement are for its body, when
+    /// the body is a command; asking the tree for a node's parent walks it
+    /// from the top, which a long line would pay for at each command.
+    fn redirects(&self, statement: Node<'_>) -> Option<Redirected> {
+        let body = statement
+            .child_by_field_name("body")
+            .filter(|body| body.kind() == "command")?;
+        let mut inputs = Vec::new();
+        let mut from = usize::MAX;
+        let mut cursor = statement.walk();
+        for redirect in statement.children_by_field_name("redirect", &mut cursor) {
+            from = from.min(redirect.start_byte());
+            self.inputs(redirect, &mut inputs);
+        }
+        Some(Redirected {
+            body: body.id(),
+            inputs,
+            from,
+        })
+    }
+
+    /// The redirects of the input at `redirect`, also the ones the tree
+    /// nests inside a here-document: each is its text when it is one, and
+    /// `None` when the program reads something else.
+    fn inputs(&self, redirect: Node<'_>, inputs: &mut Vec<Option<Arg>>) {
+        let on_input = redirect
+            .child_by_field_name("descriptor")
+            .is_none_or(|descriptor| unit::text(&descriptor, self.source) == "0");
+        let mut cursor = redirect.walk();
+        match redirect.kind() {
+            "heredoc_redirect" => {
+                if on_input {
+                    inputs.push(self.heredoc(redirect));
+                }
+                for child in redirect.named_children(&mut cursor) {
+                    if matches!(child.kind(), "file_redirect" | "herestring_redirect") {
+                        self.inputs(child, inputs);
+                    }
+                }
+            }
+            "herestring_redirect" if on_input => {
+                let text = redirect
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() != "file_descriptor");
+                inputs.push(text.and_then(|text| match self.arg(text) {
+                    Arg::Known(text) => Some(Arg::Known(format!("{text}\n"))),
+                    _ => None,
+                }));
+            }
+            "file_redirect" if on_input => {
+                let operator = redirect
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .map(|child| unit::text(&child, self.source));
+                if operator.is_some_and(|operator| operator.starts_with('<')) {
+                    inputs.push(None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The text of a here-document, when it is plain text: the delimiter is
+    /// quoted, or the body has nothing the shell would expand. `<<-` takes
+    /// the tabs off the front of each line.
+    fn heredoc(&self, redirect: Node<'_>) -> Option<Arg> {
+        let mut cursor = redirect.walk();
+        let children: Vec<Node<'_>> = redirect.named_children(&mut cursor).collect();
+        let start = children
+            .iter()
+            .find(|child| child.kind() == "heredoc_start")?;
+        let body = children
+            .iter()
+            .find(|child| child.kind() == "heredoc_body")?;
+        let delimiter = unit::text(start, self.source);
+        let body = unit::text(body, self.source);
+        let quoted = delimiter.contains(['\'', '"', '\\']);
+        if !quoted && body.contains(['$', '`', '\\']) {
+            return None;
+        }
+        let strips = redirect
+            .children(&mut cursor)
+            .any(|child| !child.is_named() && unit::text(&child, self.source) == "<<-");
+        let text = if strips {
+            body.lines()
+                .map(|line| line.trim_start_matches('\t'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            body.to_string()
+        };
+        Some(Arg::Known(text))
     }
 
     /// Whether `assignment` gives a variable a value that turns the option

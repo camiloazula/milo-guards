@@ -78,6 +78,11 @@ pub(crate) struct Unit {
     pub(crate) wrappers: Vec<String>,
     pub(crate) stage: Option<Stage>,
     pub(crate) reads: Reads,
+    /// What a here-document or here-string hands the program as its input:
+    /// the text, when it is plain text, and an unknown when the input is
+    /// read from a file or the text is only known when it runs. `None` for
+    /// a program whose input is not redirected.
+    pub(crate) stdin: Option<Arg>,
     /// Where an earlier `cd` in the line moved to, when one did: relative
     /// paths resolve from there.
     pub(crate) dir: Option<Arg>,
@@ -104,6 +109,7 @@ impl Unit {
             wrappers: Vec::new(),
             stage,
             reads: Reads::Nothing,
+            stdin: None,
             dir: None,
             hidden: false,
         }
@@ -687,6 +693,32 @@ pub(crate) fn split(command: &str, shell: Shell) -> Split {
     split
 }
 
+/// Whether `text`, a script or inline code `depth` levels deep, may be read:
+/// not nested too deeply, not too long, and not the one that takes the
+/// line past the budget of nested text. A finding says why when not.
+pub(crate) fn within_limits(split: &mut Split, text: &str, depth: usize) -> bool {
+    if depth > MAX_DEPTH {
+        split.problem(
+            Rule::Unreadable,
+            "starts shells inside shells too deeply to read",
+            None,
+        );
+        return false;
+    }
+    if text.len() > MAX_LEN {
+        split.problem(Rule::Unreadable, "is too long to read", None);
+        return false;
+    }
+    if depth > 0 {
+        split.nested_read += text.len() + 1;
+        if split.nested_read > MAX_NESTED_READ {
+            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
+            return false;
+        }
+    }
+    true
+}
+
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
     script_in(split, text, shell, depth, false);
@@ -695,24 +727,8 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
 /// As [`script`]; `here` says the script runs in this shell, as `eval`'s
 /// does, so what it does to the working directory stays.
 pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
-    if depth > MAX_DEPTH {
-        split.problem(
-            Rule::Unreadable,
-            "starts shells inside shells too deeply to read",
-            None,
-        );
+    if !within_limits(split, text, depth) {
         return;
-    }
-    if text.len() > MAX_LEN {
-        split.problem(Rule::Unreadable, "is too long to read", None);
-        return;
-    }
-    if depth > 0 {
-        split.nested_read += text.len() + 1;
-        if split.nested_read > MAX_NESTED_READ {
-            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
-            return;
-        }
     }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
     // does not move the line that started it. `eval`'s runs in this shell.

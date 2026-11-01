@@ -4,6 +4,7 @@
 //! `Invoke-Expression`) has that script split in its own grammar.
 
 use crate::dotglob;
+use crate::inline::{self, Language};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
@@ -42,6 +43,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs `code`, given inline, in `language`.
+    Inline(Language, Arg),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -157,6 +160,25 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 }
                 return;
             }
+            Launch::Inline(language, code) => {
+                // The paths in the code are read as POSIX ones, and a command it
+                // runs as a POSIX shell line: on Windows they are neither.
+                if unit.shell != Shell::Posix {
+                    unit.reads = Reads::Interpreter;
+                    split.push(unit);
+                    return;
+                }
+                split.push(unit);
+                match code {
+                    Arg::Known(text) => inline::apply(split, language, &text, depth + 1),
+                    other => split.problem(
+                        Rule::Unknown,
+                        "runs code only known when it runs",
+                        Some(other.text()),
+                    ),
+                }
+                return;
+            }
             Launch::Encoded => {
                 split.problem(
                     Rule::Unknown,
@@ -167,6 +189,19 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 return;
             }
             Launch::Reads(reads) => {
+                // An interpreter given a here-document or here-string of plain
+                // text reads that as its code.
+                let source = match (reads, inline::language(&key), &unit.stdin) {
+                    (Reads::Interpreter, Some(language), Some(Arg::Known(code))) => {
+                        Some((language, code.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((language, code)) = source {
+                    split.push(unit);
+                    inline::apply(split, language, &code, depth + 1);
+                    return;
+                }
                 unit.reads = reads;
                 split.push(unit);
                 return;
@@ -198,6 +233,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        stdin,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -225,6 +261,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         wrappers,
         stage,
         reads: Reads::Nothing,
+        stdin,
         dir: None,
         hidden: false,
     }
@@ -437,6 +474,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             Some(script) => Launch::Script(Shell::Posix, script.clone()),
         },
         key if SHELLS.contains(&key) && posix => shell(args),
+        "bun" | "deno" if posix => inline::runner(key, args),
         key if posix && (INTERPRETERS.contains(&key) || key.starts_with("python3.")) => {
             interpreter(key, args)
         }

@@ -283,6 +283,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,
+        stdin: None,
         dir: None,
         hidden: false,
     }))

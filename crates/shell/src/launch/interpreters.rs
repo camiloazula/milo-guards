@@ -2,6 +2,7 @@
 //! which is which, and the perl in-place edits read like `sed -i`.
 
 use super::{is_stdin, Launch};
+use crate::inline;
 use crate::unit::{Arg, Reads};
 use crate::Shell;
 
@@ -163,6 +164,10 @@ pub(super) fn interpreter(key: &str, args: &[Arg]) -> Launch {
         .iter()
         .any(|arg| !arg.known().is_some_and(|text| text.starts_with('-')));
     let stdin = args.iter().any(|arg| arg.known().is_some_and(is_stdin));
+    // Inline Python and JavaScript are read, not left to the caller.
+    if let (Some(language), Some(source)) = (inline::language(key), inline::code(key, args)) {
+        return Launch::Inline(language, source);
+    }
     // `perl -pi -e 's/a/b/' FILE` is an in-place edit like `sed -i`: its
     // files are judged as writes instead.
     if key == "perl" && perl_edits(args).is_some() {
