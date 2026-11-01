@@ -350,7 +350,9 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                self.split.repeats += usize::from(body);
                 self.children(node, stage, level);
+                self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }

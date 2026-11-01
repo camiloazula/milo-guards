@@ -749,15 +749,23 @@ element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
 which is expanded as text. A POSIX word also splits when an unquoted `$`
 follows a quoted head (`"$a"$b`) and when it holds an unquoted brace list or
 sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the
-parser has already unquoted counts as bare. A quoted variable that a loop sets
-is every item of the loop, not one: in a POSIX shell the variable of a `for`
-or of a `read` (`for c in $(docker ps -aq); do docker rm -f "$c"; done`,
-`docker ps -aq | while read c; do docker rm -f "$c"; done`), in PowerShell a
-`foreach` variable and the `$_` or `$PSItem` of a pipeline block (`docker ps
--aq | % { docker rm -f "$_" }`, `foreach ($c in docker ps -aq) { docker rm -f
-"$c" }`). So `for c in web db; do docker rm -f "$c"; done` is risky too, as
-several forced at once. A variable set any other way (`id=web`) is one value.
-So `docker rm -f "$name"` is safe and `docker rm -f $ids` in PowerShell is
+parser has already unquoted counts as bare. A command in a loop or a function
+body runs again with other values, so any operand there that holds an
+expansion is every item, whatever the variable is called and however it was
+set (`id="$c"`, `name=$(…)`, `$1` after a `shift`, `%%i`): `for c in $(docker
+ps -aq); do id="$c"; docker rm -f "$id"; done`, `docker ps -aq | while read -r
+l; do docker rm -f "${l%% *}"; done`, `f() { docker rm -f "$1"; }`. Loops are
+`for`, `select`, `while` and `until` and function bodies in a POSIX shell;
+`foreach`, `for`, `while`, `do` and `function` and the block of
+`ForEach-Object` (`%`) and `Where-Object` in PowerShell (`docker ps -aq | %
+{ $c = $_; docker rm -f "$c" }`); `for … do` in cmd (`for /f "delims="
+%%i in ('docker ps -aq') do docker rm -f "%%i"`, also behind `@` and in a
+`do (set id=%%i& …)` group). Outside a loop, a quoted variable that a `for`
+or a `read` sets is still every item. So `for c in web db; do docker rm -f
+"$c"; done` is risky too, as several forced at once, while `id=web; docker rm
+-f "$id"` is one value and `docker rm -f "$id"; for c in a b; do echo "$c";
+done` is safe. So `docker rm -f "$name"` is safe and `docker rm -f $ids` in
+PowerShell is
 not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a `image
 prune` without `-a` are safe, as are `network rm` and `builder prune`.
 The global options of each program that take a value (`-H`, `--context`,
@@ -766,8 +774,10 @@ The global options of each program that take a value (`-H`, `--context`,
 **Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
 a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
 --force`; `apply --prune`. `--dry-run=client` and `=server` only rehearse and
-are safe, the last one written counting. A replica count only known when it
-runs is `unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
+are safe, the last one written counting. A replica count is read as Go reads
+an integer (`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero);
+one that is not a plain decimal and not a zero, or only known when it runs, is
+`unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
 `minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
 `--dry-run` (not `--dry-run=false`, and not a value only known when it runs,
 `--dry-run=$DRY`); `kind delete cluster`, `minikube delete` and `k3d cluster
@@ -817,9 +827,13 @@ A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
 s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
 run-all $cmd`) is `unknown`: the line may be any of the above. For the cloud
 CLIs that read a verb at any depth, a word behind a verb that only reads,
-creates or changes one thing (`gcloud compute instances describe $vm`, `get-`,
-`add-`, `create-`, `update-` and `set-` verbs, `put`, `submit`, `access`, `use`,
-`link`) is that verb's operand, so it stays safe. So is the word after a
+creates, copies, runs or changes one thing (`gcloud compute instances describe
+$vm`, `get-`, `add-`, `create-`, `update-`, `set-` and `list-` verbs, `put`,
+`submit`, `access`, `use`, `link`, `cp`, `mv`, `rsync`, `upload`, `download`,
+`publish`, `connect`, `activate`, `build`, `pull`, `promote`, `redeploy`,
+`tail`, `dev`, `execute`, `authenticate`, `invoke`) is that verb's operand, so
+it stays safe. A word that is a group in a CLI that reads it (`gcloud run`,
+`gcloud projects`) is not one of them: the word after it is still a verb. So is the word after a
 `topic:command` of heroku (`heroku config:set $(cat .env)`), and a word that
 is an assignment (`FOO=$BAR`) is never read as a verb. The options of each CLI that take a value are
 listed, and a boolean flag is never in a list: a flag listed by mistake eats

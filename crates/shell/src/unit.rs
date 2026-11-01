@@ -88,6 +88,10 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// Whether it sits in a loop or a function body, which runs it again
+    /// with other values: a variable it reads can name a different thing
+    /// each time, so every one of them together.
+    pub(crate) repeated: bool,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -109,6 +113,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            repeated: false,
         }
     }
 
@@ -298,6 +303,9 @@ pub(crate) struct Split {
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
+    /// How deep the line is inside a loop or a function body, whose
+    /// commands run again with other values.
+    pub(crate) repeats: usize,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
@@ -374,6 +382,7 @@ impl Split {
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
         unit.hidden = self.hidden();
+        unit.repeated = self.repeats > 0;
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)

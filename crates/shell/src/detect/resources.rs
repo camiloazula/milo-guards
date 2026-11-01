@@ -35,7 +35,7 @@ impl Checker<'_> {
         }
         let said = match key {
             // Containers.
-            "docker" | "podman" | "nerdctl" => engine(args, unit.shell, self.split),
+            "docker" | "podman" | "nerdctl" => engine(args, unit, self.split),
             "docker-compose" | "podman-compose" => compose(args),
             // Clusters.
             "kubectl" | "oc" => kubectl(args),
@@ -239,6 +239,7 @@ fn values_of(key: &str) -> Vec<&'static str> {
         "terragrunt" => &[TERRAGRUNT_VALUES],
         "pulumi" => &[PULUMI_VALUES],
         "cdk" => &[CDK_VALUES],
+        "cdktf" => &[CDKTF_VALUES],
         "sst" => &[SST_VALUES],
         "serverless" | "sls" => &[SERVERLESS_VALUES],
         "aws" => &[AWS_VALUES],
@@ -333,6 +334,15 @@ const COMPOSE_VALUES: &[&str] = &[
     "--parallel",
     "--progress",
     "--podman-args",
+    "--podman-pull-args",
+    "--podman-push-args",
+    "--podman-build-args",
+    "--podman-inspect-args",
+    "--podman-run-args",
+    "--podman-start-args",
+    "--podman-stop-args",
+    "--podman-rm-args",
+    "--podman-volume-args",
     "--podman-path",
     "--in-pod",
     "--pod-args",
@@ -438,6 +448,10 @@ const MINIKUBE_VALUES: &[&str] = &[
     "--stderrthreshold",
     "-o",
     "--output",
+    "-b",
+    "--bootstrapper",
+    "--user",
+    "--log_backtrace_at",
 ];
 
 /// Options of k3d, kind and microk8s that take a value.
@@ -463,6 +477,7 @@ const PULUMI_VALUES: &[&str] = &[
     "--parallel",
     "--config-file",
     "--policy-pack",
+    "--tracing-header",
 ];
 
 /// Options of terragrunt that take a value.
@@ -508,6 +523,20 @@ const CDK_VALUES: &[&str] = &[
     "--toolkit-stack-name",
     "-t",
     "--build",
+];
+
+/// Options of cdktf that take a value, global and those of the commands that
+/// destroy or deploy.
+const CDKTF_VALUES: &[&str] = &[
+    "--log-level",
+    "-a",
+    "--app",
+    "-o",
+    "--output",
+    "--parallelism",
+    "--outputs-file",
+    "--var",
+    "--var-file",
 ];
 
 /// Options of sst that take a value.
@@ -793,12 +822,19 @@ fn is_one_of(arg: Option<&Arg>, names: &[&str]) -> bool {
 /// A quoted variable that a loop sets (a `for` or `read` in a POSIX shell, a
 /// `foreach` or the `$_` of a pipeline in PowerShell) holds one item of what
 /// the loop walks, so it names every one of them and counts as computed.
-fn computed(arg: &Arg, shell: Shell, split: &Split) -> bool {
+///
+/// The same goes for anything that holds an expansion in a command that
+/// `repeated` says runs in a loop or a function body, in any shell: the
+/// variable need not be the loop's own (`id="$c"`, `name=$(…)`, `shift`,
+/// `%%i`), since the body runs again with other values.
+fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
+    let shell = unit.shell;
     match arg {
         // The quotes are gone from a known word: a brace list in it was
         // written bare or quoted, and bare is the likelier.
         Arg::Known(text) => shell == Shell::Posix && brace_words(text),
         Arg::Input => true,
+        Arg::Unknown(_) | Arg::Template { .. } if unit.repeated => true,
         Arg::Unknown(text) | Arg::Template { source: text, .. } => {
             text.contains("$(")
                 || text.contains('`')
@@ -991,21 +1027,70 @@ fn cloud<'a>(
     }
 }
 
-/// Verbs of the cloud CLIs that read, create or change one thing and take
-/// operands after them: a word that is only known when it runs behind one is
-/// an operand, not the verb that might delete.
+/// Verbs of the cloud CLIs that read, create, copy or change one thing and
+/// take operands after them: a word that is only known when it runs behind
+/// one is an operand, not the verb that might delete. A word that is a group
+/// in a CLI that reads it (`gcloud run`, `gcloud projects`) is not one: the
+/// word after it is a verb.
 const LEAF_VERBS: &[&str] = &[
-    "list", "ls", "describe", "get", "show", "create", "add", "set", "update", "read", "logs",
-    "status", "info", "inspect", "start", "stop", "restart", "reboot", "resize", "ssh", "scp",
-    "deploy", "login", "whoami", "version", "put", "submit", "access", "use", "link",
+    "list",
+    "ls",
+    "describe",
+    "get",
+    "show",
+    "create",
+    "add",
+    "set",
+    "update",
+    "read",
+    "logs",
+    "status",
+    "info",
+    "inspect",
+    "start",
+    "stop",
+    "restart",
+    "reboot",
+    "resize",
+    "ssh",
+    "scp",
+    "deploy",
+    "login",
+    "whoami",
+    "version",
+    "put",
+    "submit",
+    "access",
+    "use",
+    "link",
+    "cp",
+    "mv",
+    "rsync",
+    "upload",
+    "download",
+    "upload-batch",
+    "download-batch",
+    "publish",
+    "connect",
+    "activate",
+    "build",
+    "pull",
+    "promote",
+    "redeploy",
+    "tail",
+    "dev",
+    "execute",
+    "authenticate",
+    "invoke",
 ];
 
 /// Whether a known word is a verb that reads, creates or changes one thing:
 /// one of [`LEAF_VERBS`], or a longer name for one (`get-credentials`,
-/// `add-metadata`, `create-kubeconfig`, `update-labels`, `set-iam-policy`).
+/// `add-metadata`, `create-kubeconfig`, `update-labels`, `set-iam-policy`,
+/// `list-tags`).
 fn leaf_verb(text: &str) -> bool {
     LEAF_VERBS.contains(&text)
-        || ["get-", "add-", "create-", "update-", "set-"]
+        || ["get-", "add-", "create-", "update-", "set-", "list-"]
             .iter()
             .any(|prefix| text.starts_with(prefix))
 }
@@ -1042,21 +1127,31 @@ enum Replicas {
     Unread,
 }
 
+/// The last `--replicas` the line gives, read from the arguments that are not
+/// another option's value (`--cache-dir --replicas=0` is a directory) and
+/// before `--`.
 fn replicas(args: &[Arg]) -> Replicas {
     let mut found = Replicas::Other;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
         let text = written(arg);
-        if text == "--" {
+        if arg.known() == Some("--") {
             break;
         }
         if text == "--replicas" {
-            found = count(iter.next());
+            found = count(args.get(at));
+            at += 1;
         } else if let Some(value) = text.strip_prefix("--replicas=") {
             found = match arg {
                 Arg::Known(_) => count(Some(&Arg::Known(value.to_string()))),
                 _ => Replicas::Unread,
             };
+        } else if arg
+            .known()
+            .is_some_and(|known| KUBECTL_VALUES.contains(&known))
+        {
+            at += 1;
         }
     }
     found
@@ -1073,15 +1168,66 @@ fn written(arg: &Arg) -> &str {
 fn count(value: Option<&Arg>) -> Replicas {
     match value {
         Some(arg) => match arg.known() {
-            Some(text) if text.trim().parse::<i64>() == Ok(0) => Replicas::Zero,
-            Some(_) => Replicas::Other,
+            Some(text) => number(text.trim()),
             None => Replicas::Unread,
         },
         None => Replicas::Other,
     }
 }
 
-fn engine<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
+/// What a replica count written out says. kubectl reads it as Go's
+/// `strconv.ParseInt` with base 0 does: a sign, then `0x`, `0o` or `0b`, or
+/// a leading `0` for octal, with `_` between digits (`0x0`, `0b0`, `0o0`,
+/// `0_0` and `00` are all zero). A plain decimal is read as it is; any other
+/// value is one the guard does not read, which is not a count it can call
+/// safe.
+fn number(text: &str) -> Replicas {
+    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return if digits.bytes().all(|byte| byte == b'0') {
+            Replicas::Zero
+        } else {
+            Replicas::Other
+        };
+    }
+    if zero_in_base_zero(digits) {
+        Replicas::Zero
+    } else {
+        Replicas::Unread
+    }
+}
+
+/// Whether `digits` (no sign) is a zero that `ParseInt(…, 0, …)` takes: a
+/// prefix, then only zeros and underscores, each underscore after a digit or
+/// the prefix and none last (Go's `underscoreOK`).
+fn zero_in_base_zero(digits: &str) -> bool {
+    let bytes = digits.as_bytes();
+    let (body, mut after_digit) = match bytes {
+        // Go reads a prefix only when a digit may follow it: `0x` is `0`
+        // then a stray `x`.
+        [b'0', prefix, rest @ ..]
+            if !rest.is_empty() && matches!(prefix.to_ascii_lowercase(), b'b' | b'o' | b'x') =>
+        {
+            (rest, true)
+        }
+        [b'0', ..] => (bytes, false),
+        _ => return false,
+    };
+    let mut underscore_last = false;
+    for &byte in body {
+        match byte {
+            b'0' => {
+                after_digit = true;
+                underscore_last = false;
+            }
+            b'_' if after_digit && !underscore_last => underscore_last = true,
+            _ => return false,
+        }
+    }
+    after_digit && !underscore_last
+}
+
+fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
     let Some((cmd, rest)) = command(args, ENGINE_VALUES) else {
         return Safe;
     };
@@ -1089,7 +1235,7 @@ fn engine<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
         return Unread(None);
     };
     match name {
-        "rm" => return remove_containers(rest, shell, split),
+        "rm" => return remove_containers(rest, unit, split),
         "compose" => return compose(rest),
         "system" | "volume" | "container" | "image" | "network" | "stack" | "service" | "pod"
         | "machine" | "kube" => {}
@@ -1110,14 +1256,14 @@ fn engine<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
         ("system", "reset") => Destroys("deletes every container, image and volume", target),
         ("volume", "rm" | "remove") => Destroys("deletes volumes", target),
         ("volume", "prune") => Destroys("deletes unused volumes", target),
-        ("container", "rm" | "remove") => remove_containers(after, shell, split),
+        ("container", "rm" | "remove") => remove_containers(after, unit, split),
         ("container", "prune") => Destroys("deletes every stopped container", target),
         ("image", "prune") if has_flag(after, Some('a'), Some("all")) => {
             Destroys("deletes every unused image", target)
         }
         ("network", "prune") => Destroys("deletes unused networks", target),
         ("stack" | "service", "rm" | "remove") => Destroys("removes swarm services", target),
-        ("pod", "rm") => remove_containers(after, shell, split),
+        ("pod", "rm") => remove_containers(after, unit, split),
         ("pod", "prune") => Destroys("deletes every stopped pod", target),
         ("machine", "rm") => Destroys("deletes a virtual machine and its containers", target),
         ("kube", "down") => Destroys("removes the pods a file created", target),
@@ -1128,7 +1274,7 @@ fn engine<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
 /// `docker rm`: one named container is safe, even forced. Several forced at
 /// once, a choice made when the line runs, every container, and a container's
 /// volumes are not.
-fn remove_containers<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a> {
+fn remove_containers<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
     let operands = words(args, RM_VALUES);
     let target = operands.first().copied();
     if has_flag(args, Some('a'), Some("all")) {
@@ -1137,7 +1283,7 @@ fn remove_containers<'a>(args: &'a [Arg], shell: Shell, split: &Split) -> Say<'a
     if has_flag(args, None, Some("filter")) {
         return Destroys("removes the containers a filter picks", target);
     }
-    if operands.iter().any(|arg| computed(arg, shell, split)) {
+    if operands.iter().any(|arg| computed(arg, unit, split)) {
         return Destroys("removes containers chosen when it runs", target);
     }
     if has_flag(args, Some('v'), Some("volumes")) {

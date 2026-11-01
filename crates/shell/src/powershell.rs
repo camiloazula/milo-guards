@@ -178,8 +178,12 @@ impl Walker<'_> {
                 let key = self.command(node, stage);
                 let own = first..self.split.units.len();
                 let outer = self.item;
-                if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
+                // The block of `ForEach-Object` and `Where-Object` runs once
+                // for each item of its input.
+                let each = matches!(key.as_deref(), Some("foreach-object" | "where-object"));
+                if each {
                     self.item = stage;
+                    self.split.repeats += 1;
                 }
                 // The block of an event runs later, in this session.
                 let later = key
@@ -191,6 +195,9 @@ impl Walker<'_> {
                     self.split.end_later(began, false);
                 }
                 self.item = outer;
+                if each {
+                    self.split.repeats -= 1;
+                }
                 // What a sub-expression in its arguments runs is handed to it.
                 self.split
                     .nest(own.clone(), own.end..self.split.units.len());
@@ -200,6 +207,14 @@ impl Walker<'_> {
                 let began = self.split.begin_later();
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
+            }
+            // A loop, or a function that is called more than once, runs
+            // what it holds again with other values.
+            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
+            | "function_statement" => {
+                self.split.repeats += 1;
+                self.children(node, stage, level);
+                self.split.repeats -= 1;
             }
             "redirection" => {
                 self.redirect(node);
