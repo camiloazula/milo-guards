@@ -450,7 +450,9 @@ path made absolute, with the working directory and `~` applied.
   protected path; a part matches a name as `glob::matches` says, `hidden`
   included, and a pattern that stops at a folder holding a secret picks no
   secret, since it reads that folder's name. Only a `Secret` place counts: a
-  startup file or the history is not one. It is `None` for a path with no
+  startup file or the history is not one. A POSIX part that can match `..`
+  (`.*`, `.?`, `.[.]`) is also read as `.` and `..`, here and in `place`, where
+  the most serious reading wins. It is `None` for a path with no
   wildcard (that is `place`'s) and for one known only when it runs. It does not
   change `place`, so the shell guard's verdicts for deleting and writing stay
   what they were.

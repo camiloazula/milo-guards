@@ -969,7 +969,31 @@ impl Resolver {
 
     /// `holding` says whether a harmless folder that holds a protected path
     /// is judged as that path.
+    ///
+    /// A POSIX pattern with a part that can match `..` (`.*`, `.?`, `.[.]`)
+    /// is judged as every way that part can be read, `.` and `..` as well as
+    /// a name, and the most serious place wins: an old shell (bash 3.2, dash)
+    /// expands `.*/.*/.ssh/id_rsa` to `../../.ssh/id_rsa`, and the guard cannot
+    /// know which shell runs the line.
     fn place_as(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool, holding: bool) -> Place {
+        let first = self.place_one(path, flavour, hidden, holding);
+        let mut best = first;
+        for variant in climbing(path.text(), flavour) {
+            let place = self.place_one(respell(path, &variant), flavour, hidden, holding);
+            if severity(place) > severity(best) {
+                best = place;
+            }
+        }
+        best
+    }
+
+    fn place_one(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+    ) -> Place {
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
                 return device;
@@ -1050,6 +1074,21 @@ impl Resolver {
     /// system's own.
     #[must_use]
     pub fn picks_secret(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        // A part that can match `..` is read as `.` and `..` too (see
+        // `place_hidden`).
+        self.picks_one(path, flavour, hidden).or_else(|| {
+            climbing(path.text(), flavour)
+                .iter()
+                .find_map(|variant| self.picks_one(respell(path, variant), flavour, hidden))
+        })
+    }
+
+    fn picks_one(
         &self,
         path: Spelling<'_>,
         flavour: Flavour,
@@ -1599,6 +1638,79 @@ impl Resolver {
 /// 8.3 short name.
 fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
     same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
+}
+
+/// The path `text` as `path` is spelled, from another text.
+fn respell<'b>(path: Spelling<'_>, text: &'b str) -> Spelling<'b> {
+    match path {
+        Spelling::Plain(_) => Spelling::Plain(text),
+        Spelling::Home(_) => Spelling::Home(text),
+    }
+}
+
+/// The most parts of one pattern that are read as `.` and `..`: each makes
+/// three readings, so more would be too many to read.
+const MOST_CLIMBING: usize = 4;
+
+/// The other readings of a POSIX pattern with parts that can match `..`: a
+/// part that starts with a literal dot and matches `..` (`.*`, `.?`, `.[.]`,
+/// `.[!a]`) stands for `.` and `..` as well as the names it picks, in an old
+/// shell that matches them (bash 3.2, dash; bash 5 and zsh do not, and the
+/// guard cannot know which runs the line). Each reading puts `.` or `..`
+/// for such a part; none when no part can. PowerShell and cmd wildcards are
+/// not read this way.
+fn climbing(text: &str, flavour: Flavour) -> Vec<String> {
+    if flavour != Flavour::Posix || !text.contains('.') || !glob::has_wildcard(text) {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = text.split('/').collect();
+    let can: Vec<usize> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| {
+            part.starts_with('.')
+                && glob::has_wildcard(part)
+                && glob::matches(part, "..", Flavour::Posix, false)
+        })
+        .map(|(at, _)| at)
+        .take(MOST_CLIMBING)
+        .collect();
+    if can.is_empty() {
+        return Vec::new();
+    }
+    // Each such part is its own name (0), `.` (1) or `..` (2); all names is
+    // the text itself.
+    let total = 3_usize.pow(u32::try_from(can.len()).unwrap_or(0));
+    (1..total)
+        .map(|mut choice| {
+            let mut read = parts.clone();
+            for &at in &can {
+                read[at] = match choice % 3 {
+                    1 => ".",
+                    2 => "..",
+                    _ => read[at],
+                };
+                choice /= 3;
+            }
+            read.join("/")
+        })
+        .collect()
+}
+
+/// How serious a place is to touch, for choosing among the readings of a
+/// pattern: the agent's own, beyond it, a system folder, the home directory
+/// or what holds the workspace, history or a startup file, a caller's own
+/// path, a key.
+fn severity(place: Place) -> u8 {
+    match place {
+        Place::Inside | Place::Temp { .. } | Place::Null => 0,
+        Place::Outside | Place::Unknown | Place::Registry => 1,
+        Place::Top(_) => 2,
+        Place::Workspace { .. } | Place::Home { .. } => 3,
+        Place::Protected(_) => 5,
+        Place::Sensitive(_, Sensitivity::Secret) | Place::Disk => 6,
+        _ => 4,
+    }
 }
 
 /// `c` as the widest reading of "the same without case" has it: the one

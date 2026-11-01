@@ -126,6 +126,7 @@ impl Checker<'_> {
     }
 
     fn unit(&mut self, at: usize, unit: &Unit) {
+        self.called(unit);
         let Some(key) = unit.key() else {
             return;
         };

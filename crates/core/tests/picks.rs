@@ -218,3 +218,50 @@ fn a_path_known_only_when_it_runs_picks_nothing() {
     assert_eq!(picks(&paths, WINDOWS, false, r"D:.s*\id_rsa"), None);
     assert_eq!(picks(&paths, WINDOWS, false, ""), None);
 }
+
+#[test]
+fn a_part_that_can_match_dot_dot_is_read_as_dot_and_dot_dot_too() {
+    // An old shell (bash 3.2, dash) matches `.*` and `.?` against `..`.
+    let paths = posix();
+    let resolver = Resolver::new(&paths);
+    let secret = |text: &str| {
+        matches!(
+            resolver.place(Spelling::Plain(text), POSIX),
+            milo_guards_core::Place::Sensitive(_, milo_guards_core::Sensitivity::Secret)
+        )
+    };
+    for climbs in [
+        "/home/me/work/repo/.*/.*/.ssh/id_rsa",
+        "/home/me/work/repo/.?/.?/.aws/credentials",
+        "/home/me/work/repo/.[.]/.[.]/.ssh",
+        "/home/me/work/repo/.[!a]/.[!a]/.ssh/id_rsa",
+        "/home/me/work/repo/.*/../.ssh/id_rsa",
+    ] {
+        assert!(secret(climbs), "{climbs}");
+    }
+    // One climb is not two, and a name that cannot be `..` does not climb.
+    for stays in [
+        "/home/me/work/repo/.*/.ssh/id_rsa",
+        "/home/me/work/repo/.*rc",
+        "/home/me/work/repo/*/.*/.ssh/id_rsa",
+        "/home/me/work/repo/.git*/.*/.ssh/id_rsa",
+    ] {
+        assert!(!secret(stays), "{stays}");
+    }
+    // A pattern still picks by name after a climb.
+    assert_eq!(
+        picks(&paths, POSIX, false, "/home/me/work/repo/.*/.*/.s*/id_rsa"),
+        Some("your SSH keys")
+    );
+    // PowerShell and cmd wildcards do not climb.
+    let windows = windows();
+    let resolver = Resolver::new(&windows);
+    let place = resolver.place(
+        Spelling::Plain(r"C:\Users\me\dev\repo\.*\.*\.ssh\id_rsa"),
+        WINDOWS,
+    );
+    assert!(!matches!(
+        place,
+        milo_guards_core::Place::Sensitive(_, milo_guards_core::Sensitivity::Secret)
+    ));
+}

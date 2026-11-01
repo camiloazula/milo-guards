@@ -1,6 +1,8 @@
 //! Splitting a PowerShell line with tree-sitter-powershell, PowerShell's
 //! aliases, and how a cmdlet's parameters are read.
 
+use std::borrow::Cow;
+
 use tree_sitter::Node;
 
 use crate::launch;
@@ -9,9 +11,26 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
-    let text = &*variable_paths(text);
-    let Some(tree) = unit::parse(split, text, &language) else {
+    let Some(first) = unit::parse(split, text, &language) else {
         return;
+    };
+    // A line the grammar cannot read stays unreadable, whatever else is found
+    // in it. When it holds a word that is a variable and a path
+    // (`$HOME\.ssh\id_rsa`), which the grammar fails on, it is also read again
+    // with those words quoted, so the rules see the paths.
+    let fixed;
+    let (text, tree) = if first.root_node().has_error() {
+        if let Cow::Owned(rewritten) = variable_paths(text) {
+            fixed = rewritten;
+            let Some(again) = unit::parse(split, &fixed, &language) else {
+                return;
+            };
+            (fixed.as_str(), again)
+        } else {
+            (text, first)
+        }
+    } else {
+        (text, first)
     };
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
@@ -449,17 +468,8 @@ impl Walker<'_> {
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
-        let value = match name {
-            "home" | "env:userprofile" | "env:home" => "~",
-            "pwd" => ".",
-            "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
-            "env:appdata" => "~\\AppData\\Roaming",
-            "env:localappdata" => "~\\AppData\\Local",
-            "env:systemroot" | "env:windir" => "C:\\Windows",
-            "env:programfiles" => "C:\\Program Files",
-            "env:programdata" => "C:\\ProgramData",
-            "null" => "$null",
-            _ => return Arg::Unknown(source.to_string()),
+        let Some(value) = place_variable(name) else {
+            return Arg::Unknown(source.to_string());
         };
         Arg::Known(value.to_string())
     }
@@ -710,9 +720,9 @@ fn parameter(arg: &Arg) -> Option<&str> {
 /// where a word can begin (after white space, `(`, `,` or the `:` of
 /// `-Path:`). Text the scan cannot follow with certainty (a here-string, a
 /// subexpression in a string) leaves the whole line as written.
-fn variable_paths(text: &str) -> std::borrow::Cow<'_, str> {
+fn variable_paths(text: &str) -> Cow<'_, str> {
     if !text.contains(['\\', '/']) || !text.contains('$') {
-        return std::borrow::Cow::Borrowed(text);
+        return Cow::Borrowed(text);
     }
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len() + 8);
@@ -723,18 +733,18 @@ fn variable_paths(text: &str) -> std::borrow::Cow<'_, str> {
         match c {
             // A here-string: its end is not one this scan reads.
             '@' if matches!(chars.get(at + 1), Some('\'' | '"')) => {
-                return std::borrow::Cow::Borrowed(text);
+                return Cow::Borrowed(text);
             }
             '\'' => {
                 let Some(end) = single_quoted(&chars, at) else {
-                    return std::borrow::Cow::Borrowed(text);
+                    return Cow::Borrowed(text);
                 };
                 out.extend(&chars[at..end]);
                 at = end;
             }
             '"' => {
                 let Some(end) = double_quoted(&chars, at) else {
-                    return std::borrow::Cow::Borrowed(text);
+                    return Cow::Borrowed(text);
                 };
                 out.extend(&chars[at..end]);
                 at = end;
@@ -749,7 +759,7 @@ fn variable_paths(text: &str) -> std::borrow::Cow<'_, str> {
                 let Some(end) = (at + 2..chars.len().saturating_sub(1))
                     .find(|&i| chars[i] == '#' && chars[i + 1] == '>')
                 else {
-                    return std::borrow::Cow::Borrowed(text);
+                    return Cow::Borrowed(text);
                 };
                 out.extend(&chars[at..end + 2]);
                 at = end + 2;
@@ -781,9 +791,9 @@ fn variable_paths(text: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     if changed {
-        std::borrow::Cow::Owned(out)
+        Cow::Owned(out)
     } else {
-        std::borrow::Cow::Borrowed(text)
+        Cow::Borrowed(text)
     }
 }
 
@@ -878,4 +888,43 @@ fn variable_word(chars: &[char], at: usize) -> Option<usize> {
         i += 1;
     }
     Some(i)
+}
+
+/// The place a variable names, by its lower-case name without `$`: the home
+/// directory, the working directory, the folders `env:` names.
+fn place_variable(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "home" | "env:userprofile" | "env:home" => "~",
+        "pwd" => ".",
+        "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
+        "env:appdata" => "~\\AppData\\Roaming",
+        "env:localappdata" => "~\\AppData\\Local",
+        "env:systemroot" | "env:windir" => "C:\\Windows",
+        "env:programfiles" => "C:\\Program Files",
+        "env:programdata" => "C:\\ProgramData",
+        "null" => "$null",
+        _ => return None,
+    })
+}
+
+/// The path a bare word that is a variable and a path names (`$HOME\.ssh\x`,
+/// which the grammar reads as something it cannot see into), when the variable
+/// is one the guard names and the line does not set: the place and the rest.
+pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
+    let chars: Vec<char> = source.chars().collect();
+    if variable_word(&chars, 0)? != chars.len() {
+        return None;
+    }
+    let end = source
+        .find(['\\', '/'])
+        .filter(|end| source[..*end].starts_with('$'))?;
+    let lower = source[..end].to_ascii_lowercase();
+    let name = lower
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .or_else(|| lower.strip_prefix('$'))?;
+    if split.reassigned(name) {
+        return None;
+    }
+    Some(format!("{}{}", place_variable(name)?, &source[end..]))
 }

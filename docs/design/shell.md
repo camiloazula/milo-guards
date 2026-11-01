@@ -287,11 +287,12 @@ a path.
   does not say, so it is unknown.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.
 - A PowerShell word that is a variable and a path (`$HOME\.agent\config.yaml`,
-  `$env:USERPROFILE/x`, `${HOME}\x`) is the expandable string it is. The
-  grammar reads such a word as a member access and loses the path, so the guard
-  puts it in double quotes before it reads the line: a word of plain path
-  characters after a name, where a word can begin. A line with a here-string,
-  or a subexpression in a string, is read as written.
+  `$env:USERPROFILE/x`, `${HOME}\x`) is an expandable string. The grammar
+  fails on it, so the line is `unreadable` as it ever was; and it is read
+  again with such words put in double quotes (a word of plain path characters
+  after a name, where a word can begin; a line with a here-string, or a
+  subexpression in a string, is read as written), so that the rules see the
+  paths. What the second reading finds is added; the line stays `unreadable`.
 - A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
@@ -463,6 +464,13 @@ home, all by [core](core.md). The shell's syntax adds:
 - A brace list is spelled out first: `cat ~/.ssh/{id_rsa,x}` and
   `cp ~/.ssh/id_{rsa,ed25519} /tmp` read `~/.ssh/id_rsa`; a list that makes
   more than 256 words is read as a file known only when the line runs.
+- A POSIX wildcard part that can match `..` (`.*`, `.?`, `.[.]`, `.[!a]`)
+  stands for `.` and `..` as well as the names it picks, since bash 3.2 (macOS's
+  `/bin/sh`) and dash match them and the guard cannot know which shell runs
+  the line: `cat .*/.*/.ssh/id_rsa` from `~/work/repo` reads `~/.ssh/id_rsa`.
+  Core does this for every rule that resolves a pattern, so `rm -rf
+  .*/.*/.agent` is judged against the parent as well. `cat .*rc` cannot match
+  `..` and is not read that way. PowerShell and cmd wildcards are not.
 - A wildcard picks what it can match, as for a protected path:
   `cat ~/.s*/id_rsa`, `cat /etc/sh*dow` and `cat /home/*/.ssh/id_rsa` read a
   key. `cat ~/*` does not, in a POSIX shell, since `*` does not match `.ssh`
@@ -484,6 +492,8 @@ home, all by [core](core.md). The shell's syntax adds:
   shell: `cat $'\x7e'/.ssh/id_rsa` names a folder called `~` and is not a
   finding. `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` in such a word, or in a brace
   list, are the places they name unless the line sets them.
+- PowerShell's `. FILE` and `& FILE`, and a file given as the program
+  (`. $HOME/.ssh/id_ed25519`), read what is in the file.
 - A `<` redirect has the same spellings. `exec 3< ~/.ssh/id_rsa` and
   `x=$(< ~/.ssh/id_rsa)` read the key. In cmd the target is read as cmd reads
   it, with its quotes off: `more < "%USERPROFILE%\.ssh\id_rsa"` is the key.

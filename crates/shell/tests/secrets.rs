@@ -7,7 +7,7 @@
 mod common;
 
 use common::{check, classify, macos, posix, rules, windows};
-use milo_guards_shell::{effect, Effect, Paths, Rule, Shell};
+use milo_guards_shell::{effect, Effect, Paths, Protected, Rule, Shell};
 
 const SECRET: Rule = Rule::ReadSecret;
 
@@ -40,9 +40,9 @@ fn the_tickets_lines() {
         &windows(),
         &[
             r"Get-Content .git\config",
-            r"Get-Content $HOME\.zshrc",
+            r#"Get-Content "$HOME\.zshrc""#,
             r"Get-Content .env",
-            r"Get-ChildItem $HOME\.ssh",
+            r#"Get-ChildItem "$HOME\.ssh""#,
         ],
         &risky(&[r"Get-Content $HOME\.ssh\id_ed25519"]),
     );
@@ -70,6 +70,12 @@ fn everyday_lines_are_safe() {
             "grep -rn TODO src",
             "grep -r TODO .",
             "rg TODO",
+            "cat .*rc",
+            "cat .*",
+            "cat .gitignore",
+            "ls .*",
+            "grep -r x .*rc",
+            "cat .git*",
             "cat notes.txt | rg TODO",
             "cd ~/work && rg TODO",
             "cd ~ && cat notes.txt | rg TODO",
@@ -494,6 +500,17 @@ fn every_spelling_of_a_key_is_the_key() {
             "cat ~/.s*/id_rsa",
             "cat ~/.[s]sh/id_rsa",
             "cat ~/.ssh/id_rs[a]",
+            // An old shell (bash 3.2, dash) matches `.*` and `.?` against `..`.
+            "cat .*/.*/.ssh/id_rsa",
+            "cat .?/.?/.ssh/id_rsa",
+            "cat .*/.*/.aws/credentials",
+            "grep -r x .*/.*/.ssh",
+            "cat .[.]/.[.]/.ssh/id_rsa",
+            "cat .[!a]/.[!a]/.ssh/id_rsa",
+            "cat .*/../.ssh/id_rsa",
+            "cat .*/.*/.s*/id_rsa",
+            "cp .*/.*/.ssh/id_rsa /tmp",
+            "cat < .*/.*/.ssh/id_rsa",
             "cat ~/.ssh/{id_rsa,x}",
             "cat ~/.ssh/id_{rsa,ed25519}",
             "cat ~/.{ssh,aws}/credentials",
@@ -926,25 +943,29 @@ fn a_powershell_line_names_a_key_by_every_spelling() {
         &windows(),
         &[
             r"Get-Content .\src\main.rs",
-            r"Get-Content $HOME\.zshrc",
-            r"Get-Content $HOME\.gitconfig",
-            r"Get-Content $HOME\Documents\notes.txt",
-            r"Get-ChildItem $HOME\.ssh",
-            r"Get-ChildItem $HOME\.ssh | Select-Object Name",
-            r"Get-Item $HOME\.ssh\id_rsa",
-            r"Test-Path $HOME\.ssh\id_rsa",
-            r"Get-Content $HOME\.sshx\id_rsa",
-            r"Get-Content $HOME\.ssh.bak\id_rsa",
+            r". .\src\x.ps1",
+            r"& .\build.ps1",
+            // PowerShell's wildcard is not an old shell's.
+            r"Get-Content .*\.*\.ssh\id_rsa",
+            r#"Get-Content "$HOME\.zshrc""#,
+            r#"Get-Content "$HOME\.gitconfig""#,
+            r#"Get-Content "$HOME\Documents\notes.txt""#,
+            r#"Get-ChildItem "$HOME\.ssh""#,
+            r#"Get-ChildItem "$HOME\.ssh" | Select-Object Name"#,
+            r#"Get-Item "$HOME\.ssh\id_rsa""#,
+            r#"Test-Path "$HOME\.ssh\id_rsa""#,
+            r#"Get-Content "$HOME\.sshx\id_rsa""#,
+            r#"Get-Content "$HOME\.ssh.bak\id_rsa""#,
             r"Get-Content .\.ssh\id_rsa",
             r"Get-Content $x",
             "Get-Content '$HOME\\.ssh\\id_rsa'",
             r"Get-Content -Path $x",
             r"Get-Content (Join-Path $HOME '.ssh\id_rsa')",
             r"Select-String -Path $x -Pattern key",
-            "Write-Output $HOME\\.ssh\\id_rsa",
-            r"$a = $HOME\.ssh",
-            r"Get-Content $HOME\work\repo\.env",
-            "Get-ChildItem -Recurse $HOME\\work | Get-Content",
+            "Write-Output \"$HOME\\.ssh\\id_rsa\"",
+            r#"$a = "$HOME\.ssh""#,
+            r#"Get-Content "$HOME\work\repo\.env""#,
+            "Get-ChildItem -Recurse \"$HOME\\work\" | Get-Content",
         ],
         &risky(&[
             r"Get-Content $HOME\.ssh\id_ed25519",
@@ -962,6 +983,10 @@ fn a_powershell_line_names_a_key_by_every_spelling() {
             r"Get-Content $HOME\.ssh\id_rsa -Encoding Byte",
             "Get-Content \"$HOME\\.ssh\\id_rsa\"",
             r"Get-Content ~\.ssh\id_rsa",
+            r". $HOME/.ssh/id_ed25519",
+            r". $HOME\.ssh\id_ed25519",
+            r". ~\.ssh\id_ed25519",
+            r"& 'C:\Users\me\.ssh\id_rsa'",
             r"Get-Content ~/.ssh/id_rsa",
             r"Get-Content C:\Users\me\.ssh\id_rsa",
             r"Get-Content C:/Users/me/.ssh/id_rsa",
@@ -1234,4 +1259,74 @@ fn a_quoted_redirect_source_is_read_with_its_quotes_off() {
         effect(r#"type < "src\main.rs""#, Shell::Cmd, &windows()),
         Effect::ReadsOnly
     );
+}
+
+#[test]
+fn a_part_that_can_match_dot_dot_climbs_to_the_parent() {
+    // From `~/work/repo` two parts climb to the home directory; from a folder
+    // below it they climb to a folder that holds no key.
+    let below = Paths::new("/home/me/work/repo/sub", "/home/me", ["/home/me/work/repo"]);
+    check(
+        Shell::Posix,
+        &below,
+        &["cat .*/.*/.ssh/id_rsa", "cat .*rc", "ls .*"],
+        &risky(&["cat .*/.*/.*/.ssh/id_rsa", "cat .?/.?/.?/.aws/credentials"]),
+    );
+    check(
+        Shell::Posix,
+        &macos(),
+        &["cat .*rc", "ls .*"],
+        &risky(&[
+            "cat .*/.*/.ssh/id_rsa",
+            "cat .?/.?/.ssh/id_rsa",
+            "grep -r x .*/.*/.ssh",
+        ]),
+    );
+    // A delete reads the same: the parent is beyond the workspace, and a
+    // protected path above it is the caller's.
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+    for line in [
+        "rm -rf .*/.*/x",
+        "rm -rf .*/.*/.agent",
+        "rm .?/.?/.agent/config.yaml",
+        "ls .* | xargs rm -rf",
+    ] {
+        assert!(
+            rules(line, Shell::Posix, &paths).contains(&Rule::Delete),
+            "{line}"
+        );
+    }
+    let found = classify("rm -rf .*/.*/.agent", Shell::Posix, &paths);
+    assert_eq!(found.findings()[0].reason, "deletes the agent's settings");
+}
+
+#[test]
+fn a_bare_variable_and_path_in_powershell_is_read_and_the_line_stays_unreadable() {
+    // The grammar cannot read `$HOME\x`: the line is `unreadable` as it ever
+    // was, whatever is found in it, and it is read again with the word
+    // quoted, so a key in it is found.
+    let paths = windows();
+    for line in [
+        r"Get-Content $HOME\x",
+        r"Get-ChildItem $HOME\.ssh",
+        r"Test-Path $HOME\.zshrc",
+        r"& $HOME\script.ps1",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(!found.contains(&SECRET), "{line}");
+        assert!(!found.is_empty(), "{line}: {found:?}");
+    }
+    for line in [
+        r"Get-Content $HOME\.ssh\id_ed25519",
+        r"gc $env:USERPROFILE\.ssh\id_rsa",
+        r". $HOME\.ssh\id_ed25519",
+        r". $HOME/.ssh/id_ed25519",
+        r"& $HOME\.ssh\id_rsa",
+        r"& $env:APPDATA\Microsoft\Credentials\x",
+    ] {
+        let found = rules(line, Shell::PowerShell, &paths);
+        assert!(found.contains(&SECRET), "{line}: {found:?}");
+    }
+    assert!(rules(r"Get-Content $HOME\x", Shell::PowerShell, &paths).contains(&Rule::Unreadable));
 }

@@ -65,6 +65,33 @@ impl Checker<'_> {
         }
     }
 
+    /// A file PowerShell is given as the program: `. FILE` dot-sources it and
+    /// `& FILE` runs it, so it reads what is in the file.
+    pub(super) fn called(&mut self, unit: &Unit) {
+        if unit.shell != Shell::PowerShell {
+            return;
+        }
+        let scope = Scope {
+            shell: unit.shell,
+            dir: unit.dir.as_ref(),
+            hidden: unit.hidden,
+        };
+        match &unit.program {
+            Arg::Known(program) if program.contains(['/', '\\']) => {
+                self.secret_in(&scope, &unit.program, &unit.program, Reach::default());
+            }
+            // A bare `$HOME\.ssh\id_rsa`, which the grammar cannot read into,
+            // spelled out.
+            Arg::Unknown(source) => {
+                if let Some(path) = crate::powershell::bare_path(source, self.split) {
+                    let spelled = Arg::Known(path);
+                    self.secret_in(&scope, &spelled, &unit.program, Reach::default());
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The files a unit's program opens to show or pass on, when one is a
     /// key or a credential. `at` is the unit's place in the split, to find
     /// the `for` loops around it.

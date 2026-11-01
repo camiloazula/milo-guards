@@ -206,7 +206,10 @@ impl Resolver {
         hidden: bool,
     ) -> Option<&'static str> {
         // Most words are a name in the workspace, which is no secret.
-        if dir.is_none() && self.clear && arg.known().is_some_and(plain_relative) {
+        if dir.is_none()
+            && self.clear
+            && arg.known().is_some_and(|text| plain_relative(text, shell))
+        {
             return None;
         }
         let owned;
@@ -280,7 +283,10 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
-        if dir.is_none() && self.clear && arg.known().is_some_and(plain_relative) {
+        if dir.is_none()
+            && self.clear
+            && arg.known().is_some_and(|text| plain_relative(text, shell))
+        {
             return None;
         }
         let arg = within(dir, arg, shell);
@@ -375,7 +381,7 @@ impl Resolver {
 /// Whether a path is a name or a few from the working directory and nothing
 /// else: plain characters, no `..`, no `~`, no drive, no variable, no root. In
 /// a workspace that holds no key it lands in the workspace.
-fn plain_relative(text: &str) -> bool {
+fn plain_relative(text: &str, shell: Shell) -> bool {
     !text.is_empty()
         && !text.starts_with(['/', '\\'])
         && text.bytes().all(|b| {
@@ -396,6 +402,14 @@ fn plain_relative(text: &str) -> bool {
                 )
         })
         && text.split(['/', '\\']).all(|part| part != "..")
+        // A POSIX pattern part that can match `..` (`.*`, `.?`) climbs in an
+        // old shell.
+        && (shell != Shell::Posix
+            || text.split('/').all(|part| {
+                !(part.starts_with('.')
+                    && glob::has_wildcard(part)
+                    && glob::matches(part, "..", Flavour::Posix, false))
+            }))
 }
 
 /// A Windows path with what makes its name unreadable taken off each part: a
