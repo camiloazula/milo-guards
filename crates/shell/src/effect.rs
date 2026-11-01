@@ -310,9 +310,26 @@ fn plain_loop(name: &str) -> bool {
 /// decides. `find` is the one a `-exec` makes. Any other wrapper (`flock`
 /// makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 /// start sessions) is a step the guard does not judge.
-const WRAPPERS: [&str; 15] = [
-    "sudo", "doas", "gsudo", "pkexec", "env", "nice", "ionice", "time", "timeout", "gtimeout",
-    "stdbuf", "xargs", "command", "builtin", "find",
+const WRAPPERS: [&str; 19] = [
+    "sudo",
+    "doas",
+    "gsudo",
+    "pkexec",
+    "env",
+    "nice",
+    "ionice",
+    "time",
+    "timeout",
+    "gtimeout",
+    "stdbuf",
+    "xargs",
+    "command",
+    "builtin",
+    "find",
+    "noglob",
+    "nocorrect",
+    "-",
+    "coproc",
 ];
 
 /// The folders a program may be named in and still be the one the shell
@@ -627,10 +644,10 @@ fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Kind {
 
 /// Programs that change the machine whatever their flags: the files, the
 /// processes, the system.
-const WRITERS: [&str; 24] = [
+const WRITERS: [&str; 29] = [
     "rm", "rmdir", "unlink", "shred", "mkdir", "touch", "mv", "cp", "ln", "install", "chmod",
     "chown", "chgrp", "tee", "dd", "truncate", "mkfifo", "mktemp", "patch", "kill", "pkill",
-    "killall", "shutdown", "reboot",
+    "killall", "shutdown", "reboot", "rimraf", "del", "del-cli", "premove", "rmrf",
 ];
 
 /// Package managers and build tools: they write whatever subcommand they
