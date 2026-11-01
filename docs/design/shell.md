@@ -348,13 +348,19 @@ A rename or a link is a write of its destination, as a `mv` or an `ln` is:
 `New-Item -Name` in the folder `-Path` names. A rename's new name is a name,
 so it lands in the source's folder (`Rename-Item .vscode\old.json tasks.json`
 is `.vscode\tasks.json`); what is renamed away is judged as `mv` judges it. The
-same holds for a protected name (`ren a .agent`). POSIX `rename` is read as
-util-linux's `rename FROM TO file...` and as perl's `rename 's/FROM/TO/'
-file...` (and `-e`): a plain `s/FROM/TO/` or `s/FROM/TO/g`, with `\.`, `^` and
-`$` in `FROM`, is worked out on each file's name; anything else (a class,
-`+`, a backreference in `TO`, a flag, `y///`, a name or a file only known when
-it runs) is a file only known when it runs, which is an accepted false alarm
-for `rename 's/(\d+)/x$1/' *.jpg`.
+same holds for a protected name (`ren a .agent`). POSIX `rename` is read only as
+util-linux's `rename [-v|-n|-o|-s|-i|-a] FROM TO file...`, whose new names are
+plain text (the first `FROM` in a name, every one with `-a`, becomes `TO`) and
+land where the file is. An expression is perl's `rename`, which is code: a
+line with fewer than three operands, a first operand that is not plain text
+(`s/a/b/`, `y/a-z/A-Z/`, `$_ .= ...`), `-e` and any option outside that short
+list (`-l`, `-d`, `--nopath`, `--expr=...`) is `unknown`, "runs code the guard
+does not read" or "renames with options the guard does not read", and is never
+worked out to a new name. The new name of each of its files is unknown, so each
+is an `overwrite` of "a file only known when it runs", and what is renamed away
+is a `delete` where it is not harmless (`rename 's/agent/b/' .agent` for a
+protected `.agent`). `rename 's/\.htm$/.html/' *.htm` is an accepted false
+alarm.
 
 What it does not read: unpacking an archive, `git checkout`, `git apply`,
 `git restore`, `git stash pop` and `patch` can write one without naming it;

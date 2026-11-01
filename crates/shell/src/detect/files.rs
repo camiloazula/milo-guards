@@ -446,73 +446,94 @@ impl Checker<'_> {
         }
     }
 
-    /// The `rename` of util-linux (`rename FROM TO file...`) and of perl
-    /// (`rename 's/FROM/TO/' file...`, `-e EXPR`): the new name of each file
-    /// is worked out where it is plain text, and a file whose new name is
-    /// not (a pattern with a class, a backreference, a flag) is renamed to a
-    /// name only known when it runs.
+    /// The `rename` of util-linux, `rename FROM TO file...`, whose new names
+    /// are plain text: the first `FROM` in each name (every one, with `-a`)
+    /// becomes `TO`. Only these options are read: `-v`, `-n`, `-o`, `-s`,
+    /// `-i`, `-a` and their long forms; any other changes what the new name
+    /// is, and so does an expression, which is perl's `rename` and code the
+    /// guard does not read. Both leave the new name of each file, in its own
+    /// folder, unknown. What is renamed away is judged as `mv` judges it.
     fn rename_files(&mut self, unit: &Unit) {
-        let mut edits: Vec<Option<String>> = Vec::new();
+        const KNOWN: [&str; 6] = [
+            "--verbose",
+            "--no-act",
+            "--no-overwrite",
+            "--symlink",
+            "--interactive",
+            "--all",
+        ];
         let mut all = false;
+        let mut unread = false;
         let mut operands: Vec<&Arg> = Vec::new();
         let mut options = true;
-        let mut iter = unit.args.iter();
-        while let Some(arg) = iter.next() {
+        for arg in &unit.args {
             let Some(text) = arg.known().filter(|_| options) else {
                 operands.push(arg);
                 continue;
             };
             if text == "--" {
                 options = false;
-            } else if matches!(text, "-e" | "-E" | "--expr") {
-                edits.push(iter.next().and_then(Arg::known).map(str::to_string));
-            } else if let Some(expr) = text.strip_prefix("--expr=") {
-                edits.push(Some(expr.to_string()));
-            } else if text == "--all"
-                || (!text.starts_with("--") && text.starts_with('-') && text.contains('a'))
-            {
-                all = true;
-            } else if !(text.starts_with('-') && text.len() > 1) {
+            } else if let Some(long) = text.strip_prefix("--") {
+                unread |= !KNOWN.contains(&text) || long.contains('=');
+                all |= text == "--all";
+            } else if let Some(bundle) = text.strip_prefix('-').filter(|b| !b.is_empty()) {
+                unread |= !bundle.chars().all(|c| "vnosia".contains(c));
+                all |= bundle.contains('a');
+            } else {
                 operands.push(arg);
             }
         }
-        let mut files = operands.as_slice();
-        let mut literal: Option<(String, String)> = None;
-        if edits.is_empty() {
-            let first = files.first().and_then(|arg| arg.known());
-            if first.is_some_and(is_substitution) {
-                edits.push(first.map(str::to_string));
-                files = &files[1..];
-            } else if let [from, to, rest @ ..] = files {
-                literal = from
-                    .known()
-                    .zip(to.known())
-                    .map(|(from, to)| (from.to_string(), to.to_string()));
-                if literal.is_none() {
-                    edits.push(None);
-                }
-                files = rest;
-            } else {
-                return;
-            }
+        // An expression is perl's: it takes the place of `FROM TO`, so there
+        // are fewer than three operands, or the first is not plain text.
+        let code = operands.len() < 3
+            || operands[0].known().is_none_or(|first| {
+                first.contains(|c: char| "$@;(){}=|\\[]*+?^'\"`".contains(c) || c.is_whitespace())
+            });
+        if code && !unread && !operands.is_empty() {
+            self.add(
+                Rule::Unknown,
+                "runs code the guard does not read",
+                operands.first().copied(),
+            );
+        } else if unread {
+            self.add(
+                Rule::Unknown,
+                "renames with options the guard does not read",
+                operands.first().copied(),
+            );
         }
-        for file in files {
-            let new = match (file.known(), &literal) {
-                (Some(text), Some((from, to))) if !from.is_empty() => {
-                    Some(replace(text, from, to, all))
-                }
-                (Some(text), Some(_)) => Some(text.to_string()),
-                (Some(text), None) => edits.iter().try_fold(text.to_string(), |name, edit| {
-                    apply_substitution(&name, edit.as_deref()?)
-                }),
-                (None, _) => None,
+        let pair = match operands.as_slice() {
+            [from, to, ..] if !code && !unread => from.known().zip(to.known()),
+            _ => None,
+        };
+        let Some((from, to)) = pair else {
+            // Every operand can be a file, and what it becomes is unknown: a
+            // `TO` only known when it runs is no better.
+            // The expression is the first operand, and no file.
+            let named = if code && !unread && !operands.is_empty() {
+                &operands[1..]
+            } else {
+                &operands[..]
             };
-            let to = match new {
-                Some(name) if file.known() == Some(name.as_str()) => continue,
-                Some(name) => Arg::Known(name),
+            self.move_away(unit, named);
+            for operand in named {
+                let to = Arg::Unknown(operand.text().to_string());
+                self.write(unit.shell, unit.scope(), &to, "writes to");
+            }
+            return;
+        };
+        let files = &operands[2..];
+        for file in files {
+            let new = match file.known() {
+                Some(text) if !from.is_empty() => Arg::Known(replace(text, from, to, all)),
+                Some(text) => Arg::Known(text.to_string()),
                 None => Arg::Unknown(file.text().to_string()),
             };
-            self.write(unit.shell, unit.scope(), &to, "writes to");
+            if file.known() == new.known() && new.known().is_some() {
+                continue;
+            }
+            self.move_away(unit, &[file]);
+            self.write(unit.shell, unit.scope(), &new, "writes to");
         }
     }
 }
@@ -524,99 +545,6 @@ fn replace(text: &str, from: &str, to: &str, all: bool) -> String {
     } else {
         text.replacen(from, to, 1)
     }
-}
-
-/// Whether `expr` is a perl rename expression: `s`, `y` or `tr` and a
-/// delimiter.
-fn is_substitution(expr: &str) -> bool {
-    let rest = expr
-        .strip_prefix("tr")
-        .or_else(|| expr.strip_prefix('s'))
-        .or_else(|| expr.strip_prefix('y'));
-    rest.and_then(|rest| rest.chars().next())
-        .is_some_and(|delimiter| !delimiter.is_alphanumeric() && !delimiter.is_whitespace())
-        && expr.matches(|c: char| !c.is_alphanumeric()).count() >= 3
-}
-
-/// The name `text` becomes under the perl expression `expr`, when it is a
-/// plain `s/FROM/TO/` or `s/FROM/TO/g` whose parts are text: `FROM` may hold
-/// an escaped character (`\.`) and be anchored with `^` and `$`, and `TO`
-/// has no `$` or `\`. `None` for anything else, which is unknown.
-fn apply_substitution(text: &str, expr: &str) -> Option<String> {
-    let rest = expr.trim().strip_prefix('s')?;
-    let delimiter = rest.chars().next()?;
-    if delimiter.is_alphanumeric()
-        || delimiter.is_whitespace()
-        || matches!(delimiter, '\\' | '{' | '(' | '[' | '<')
-    {
-        return None;
-    }
-    let mut parts: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut chars = rest[delimiter.len_utf8()..].chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            let next = chars.next()?;
-            if next != delimiter {
-                current.push('\\');
-            }
-            current.push(next);
-        } else if c == delimiter {
-            parts.push(std::mem::take(&mut current));
-        } else {
-            current.push(c);
-        }
-    }
-    let flags = current;
-    let [from, to] = parts.as_slice() else {
-        return None;
-    };
-    let all = match flags.as_str() {
-        "" => false,
-        "g" => true,
-        _ => return None,
-    };
-    if to.contains(['$', '\\']) {
-        return None;
-    }
-    let (start, from) = match from.strip_prefix('^') {
-        Some(rest) => (true, rest),
-        None => (false, from.as_str()),
-    };
-    let (end, from) = match from.strip_suffix('$').filter(|rest| !rest.ends_with('\\')) {
-        Some(rest) => (true, rest),
-        None => (false, from),
-    };
-    let mut literal = String::new();
-    let mut chars = from.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                let next = chars.next()?;
-                if next.is_alphanumeric() {
-                    return None;
-                }
-                literal.push(next);
-            }
-            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' => {
-                return None
-            }
-            c => literal.push(c),
-        }
-    }
-    Some(match (start, end) {
-        (true, true) if text == literal => to.clone(),
-        (true, true) => text.to_string(),
-        (true, false) => match text.strip_prefix(literal.as_str()) {
-            Some(rest) => format!("{to}{rest}"),
-            None => text.to_string(),
-        },
-        (false, true) => match text.strip_suffix(literal.as_str()) {
-            Some(rest) => format!("{rest}{to}"),
-            None => text.to_string(),
-        },
-        (false, false) => replace(text, &literal, to, all),
-    })
 }
 
 /// A folder as the text a name is joined to: with a separator at its end.
