@@ -427,7 +427,16 @@ pub(crate) struct Split {
     /// path on that drive's own working directory (`C:name`) is under it.
     /// `Arg::Unknown` when the `cd` named a place that is not whole. Only
     /// read while the line's drive is certain (see [`Split::on_drive`]).
+    /// A `cd` that may not have run (in a branch, a pipe stage, behind
+    /// `start`), a `cd` given a variable, and a `call` leave the drive's
+    /// folder `Arg::Unknown`: the folder is followed only when the `cd`
+    /// surely ran.
     drive_dirs: Vec<(char, Arg)>,
+    /// Whether a `cd` that may not have run was read (in a branch, a pipe
+    /// stage, behind `start`), or a `call` that may have run one: the
+    /// folder the line is in is then only a guess, so a path on the line's
+    /// own drive's working directory (`C:x`) is not put under it.
+    maybe_moved: bool,
     /// The drive the home directory is on (upper case), `None` when it is
     /// on no drive: where a path that starts at home (`~`, which cmd's
     /// `%TEMP%` and `%USERPROFILE%` become) is.
@@ -599,6 +608,7 @@ pub(crate) struct Place {
     dir_code: bool,
     drive: (Option<char>, bool),
     drive_dirs: Vec<(char, Arg)>,
+    maybe_moved: bool,
     moves: usize,
     later: usize,
 }
@@ -749,8 +759,17 @@ impl Split {
                 }
                 Shell::Posix => Effect::Moves(None, false),
             };
+            // Whether the `cd` surely ran in the line's own process: not in
+            // a branch (`||`, `&&`, `if`), a pipe stage (cmd runs each in a
+            // child) or behind `start` (a new process).
+            let surely = self.branches == 0 && unit.stage.is_none() && unit.wrappers.is_empty();
+            self.maybe_moved |= !surely;
+            // A folder that is not known may be on any drive.
+            if unit.shell == Shell::Cmd && !matches!(target, Arg::Known(_)) {
+                self.unset_drive_dirs();
+            }
             match effect {
-                Effect::Stays => self.set_drive_dir(&target, origin),
+                Effect::Stays => self.set_drive_dir(&target, origin, surely),
                 Effect::Unsure(drive) => {
                     self.moves += 1;
                     self.moved += 1;
@@ -784,8 +803,10 @@ impl Split {
     /// note the folder, so a path on the drive's own working directory
     /// (`C:name`) is read under it. A folder that is not a whole path (a
     /// path from the drive's own working directory, which was not set before)
-    /// is only known when it runs.
-    fn set_drive_dir(&mut self, target: &Arg, origin: Origin) {
+    /// is only known when it runs, and so is the folder of a `cd` that may not
+    /// have run (`surely` is `false`): the drive keeps the folder it had or
+    /// the one the `cd` names.
+    fn set_drive_dir(&mut self, target: &Arg, origin: Origin, surely: bool) {
         let Arg::Known(text) = target else { return };
         let Named::On(letter) = named_drive(text, Shell::Cmd, origin, self.home_drive) else {
             return;
@@ -794,13 +815,30 @@ impl Split {
             .get(2..)
             .is_some_and(|rest| rest.starts_with(['\\', '/']))
             || at_home(text);
-        let dir = if whole {
+        let dir = if whole && surely {
             target.clone()
         } else {
             Arg::Unknown(text.clone())
         };
         self.drive_dirs.retain(|(held, _)| *held != letter);
         self.drive_dirs.push((letter, dir));
+    }
+
+    /// Every folder a `cd` without `/d` set on another drive is no longer
+    /// known: a `cd` to a place only known when it runs may be on any of
+    /// them, and a called batch file or label, which runs in this process,
+    /// may `cd` on any drive.
+    pub(crate) fn unset_drive_dirs(&mut self) {
+        for (letter, dir) in &mut self.drive_dirs {
+            *dir = Arg::Unknown(format!("{letter}:"));
+        }
+    }
+
+    /// A `call` ran a batch file or a label in this very process: it may
+    /// have run any `cd`, on any drive.
+    pub(crate) fn called(&mut self) {
+        self.maybe_moved = true;
+        self.unset_drive_dirs();
     }
 
     /// `arg`, a cmd argument, with a path on a drive's own working directory
@@ -826,9 +864,11 @@ impl Split {
         if letter == on {
             // The line's own folder: what the resolver joins a relative path
             // to. Without a `cd`, that is the caller's working directory.
+            // After a `cd` that may not have run it is not known: the path
+            // is left as written.
             return match self.dir {
-                Some(_) => Arg::Known(format!("./{rest}")),
-                None => arg,
+                Some(_) if !self.maybe_moved => Arg::Known(format!("./{rest}")),
+                _ => arg,
             };
         }
         match self.drive_dirs.iter().find(|(held, _)| *held == letter) {
@@ -1169,6 +1209,7 @@ impl Split {
             dir_code: self.dir_code,
             drive: self.drive,
             drive_dirs: self.drive_dirs.clone(),
+            maybe_moved: self.maybe_moved,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -1248,6 +1289,7 @@ impl Split {
         self.dir_code = place.dir_code;
         self.drive = place.drive;
         self.drive_dirs = place.drive_dirs;
+        self.maybe_moved = place.maybe_moved;
         self.moves = place.moves;
     }
 

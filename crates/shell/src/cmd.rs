@@ -56,9 +56,46 @@ impl Walker<'_> {
             return;
         }
         match node.kind() {
-            "cmd" | "call_stmt" => {
+            "cmd" => {
                 self.command(node, stage);
                 self.children(node, None, level);
+            }
+            // `call x.bat`, `call :label`: runs in this very process, and
+            // may `cd` on any drive.
+            "call_stmt" => {
+                self.command(node, stage);
+                self.children(node, None, level);
+                self.split.called();
+            }
+            // `a || b` runs `b` only when `a` failed; `a && b` runs `b` only
+            // when `a` worked. A `cd` in either is not sure to have run, and
+            // in `||` neither is the one on the left sure to have run for
+            // what follows it.
+            "cond_exec" => {
+                let mut cursor = node.walk();
+                let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let and = parts
+                    .first()
+                    .zip(parts.get(1))
+                    .is_some_and(|(left, right)| {
+                        self.source
+                            .get(left.end_byte()..right.start_byte())
+                            .is_some_and(|between| {
+                                between.contains("&&") && !between.contains("||")
+                            })
+                    });
+                for (at, part) in parts.iter().enumerate() {
+                    let branch = at > 0 || !and;
+                    self.split.branches += usize::from(branch);
+                    self.walk(*part, stage, level + 1);
+                    self.split.branches -= usize::from(branch);
+                }
+            }
+            // `if x cd D:\y`: the condition may be false.
+            "if_stmt" => {
+                self.split.branches += 1;
+                self.children(node, stage, level);
+                self.split.branches -= 1;
             }
             "pipe_stmt" => {
                 let pipeline = self.split.pipeline(stage);
@@ -98,7 +135,9 @@ impl Walker<'_> {
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => {
                 self.split.repeats += 1;
+                self.split.branches += 1;
                 self.children(node, stage, level);
+                self.split.branches -= 1;
                 self.split.repeats -= 1;
             }
             _ => self.children(node, stage, level),
@@ -369,7 +408,13 @@ impl Walker<'_> {
         if let Some(at) = unquoted_operator(text) {
             let rest = text[at..].trim_start_matches(['&', '|', ' ', '\t']);
             if !rest.is_empty() {
+                // `set X=1 || cd D:\y`: `set` works, so what follows `||`
+                // (or a lone `|`, a pipe) does not run in this process.
+                let operator = &text[at..text.len() - rest.len()];
+                let branch = usize::from(operator.contains('|'));
+                self.split.branches += branch;
                 unit::script(self.split, rest, Shell::Cmd, self.depth + 1);
+                self.split.branches -= branch;
             }
         }
     }

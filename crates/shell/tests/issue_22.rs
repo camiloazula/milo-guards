@@ -806,3 +806,131 @@ fn a_path_on_a_drive_a_cd_set_is_read_under_the_folder_it_set() {
         ],
     );
 }
+
+#[test]
+fn a_cd_that_may_not_run_does_not_set_the_folder_of_another_drive() {
+    // The `cd` sits where it may not run (the right side of `||` or `&&`,
+    // an `if`, a pipe stage, behind `start`), or the `rd` runs only because
+    // it failed: `D:b` is then the folder `D:` already had, which is not
+    // known, and not `D:\ws\a\b`.
+    let after_or_and = deletes(&[
+        r"cd D:\ws\a || rd /s /q D:b",
+        r"cd D:\ws\a || echo no & rd /s /q D:b",
+        r"dir x || cd D:\ws\a & rd /s /q D:b",
+        r"dir x && cd D:\ws\a & rd /s /q D:b",
+        r"dir x 2>nul && cd D:\ws\a & rd /s /q D:b",
+        r"echo hi || cd D:\ws\a & rd /s /q D:b",
+        // If the first `cd` works, `D:` is `D:\Users`.
+        r"cd D:\Users || cd D:\ws\a & rd /s /q D:b",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &after_or_and);
+    let in_if = deletes(&[
+        r"(if exist x cd D:\ws\a) & rd /s /q D:b",
+        r"(if 1==2 cd D:\ws\a) & rd /s /q D:b",
+        r"(if a==b (cd D:\ws\a)) & rd /s /q D:b",
+        r"if exist x (cd D:\ws\a) else (echo no) & rd /s /q D:b",
+        r"if exist x (cd D:\ws\a) & rd /s /q D:b",
+        r"if exist x (cd D:\ws\a) & del /q D:b.txt",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &in_if);
+    // cmd runs each stage of a pipe in a child cmd.
+    let in_pipe = deletes(&[
+        r"cd D:\ws\a | echo & rd /s /q D:b",
+        r"echo | cd D:\ws\a & rd /s /q D:b",
+        r"(cd D:\ws\a | echo) & rd /s /q D:b",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &in_pipe);
+    // `start` runs it in a new process.
+    let behind_start = deletes(&[
+        r"start cd D:\ws\a & rd /s /q D:b",
+        r"start /b cd D:\ws\a & rd /s /q D:b",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &behind_start);
+    // A redirect target is read under the same folder.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[],
+        &[
+            (
+                r"(if exist x cd D:\ws\a) & echo x > D:b.txt",
+                Rule::Overwrite,
+            ),
+            (r"dir x || cd D:\ws\a & echo x > D:b.txt", Rule::Overwrite),
+        ],
+    );
+    // A `cd` that surely runs still sets the folder: on the left of `&&`,
+    // after `&`, in a group.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[
+            r"cd D:\ws\a && rd /s /q D:b",
+            r"cd D:\ws\a & rd /s /q D:b",
+            r"(cd D:\ws\a) & rd /s /q D:b",
+            r"(cd D:\ws\a & rd /s /q D:b)",
+            r"cd D:\ws\a && echo ok & rd /s /q D:b",
+            r"dir x & cd D:\ws\a & rd /s /q D:b",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_cd_given_a_variable_may_name_any_drive() {
+    // `%X%` may be `D:\elsewhere`, which replaces the folder `D:` has.
+    let risky = deletes(&[
+        r"cd D:\ws\a & cd %X% & rd /s /q D:b",
+        r#"cd D:\ws\a & cd "%X%" & rd /s /q D:b"#,
+        r"cd D:\ws\a & cd D:%X% & rd /s /q D:b",
+        r"cd D:\ws\a & cd D:\%X% & rd /s /q D:b",
+        r"cd D:\ws\a & chdir %X% & rd /s /q D:b",
+        r"cd D:\ws\a & cd !X! & rd /s /q D:b",
+        r"cd D:\ws\a & cd %X%\b & rd /s /q D:b",
+        r"cd D:\ws\a & cd %~dp0 & rd /s /q D:b",
+        r"cd D:\ws\a & set /p X= & cd %X% & rd /s /q D:b",
+        r"cd D:\ws\a & cd %X% & cd /d C:\x & rd /s /q D:b",
+        r"cd D:\ws\a & cd %X% & del D:b.txt",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &risky);
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[],
+        &[
+            (r"cd D:\ws\a & cd %X% & echo x > D:b.txt", Rule::Overwrite),
+            (r"cd D:\ws\a & cd %X% & copy x D:b.txt", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_call_may_cd_on_any_drive() {
+    // A batch file or a label runs in this very process.
+    let risky = deletes(&[
+        r"cd D:\ws\a & call x.bat & rd /s /q D:b",
+        r"cd D:\ws\a & call :lbl & rd /s /q D:b",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &risky);
+}
+
+#[test]
+fn a_path_on_the_own_drive_is_put_under_the_folder_only_when_every_cd_surely_ran() {
+    // If the `cd` did not run, `C:..` is `C:\Users\me\repo\..`, which is
+    // `C:\Users\me`, home.
+    let risky = deletes(&[
+        r"dir x || cd C:\Users\me\repo\a\b & rd /s /q C:..",
+        r"dir x || cd C:\Users\me\repo\a\b\c & rd /s /q C:..\..",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &risky);
+    // When it surely ran, the folder is followed.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[
+            r"cd C:\Users\me\repo\a & rd /s /q C:b",
+            r"cd C:\Users\me\repo\a && rd /s /q C:b",
+        ],
+        &[(r"cd C:\Users\me\repo\a & rd /s /q C:..\..", Rule::Delete)],
+    );
+}

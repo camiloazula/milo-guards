@@ -1145,7 +1145,16 @@ a path.
   which sets that drive's working directory and leaves the line on `D:`) it is
   under the folder that `cd` set, so `copy C:id_rsa x.txt` reads
   `C:\Users\me\.ssh\id_rsa` and is judged as that key, and `x.txt` is in the
-  line's own folder. A later `cd C:sub` goes on from that folder. When the
+  line's own folder. A later `cd C:sub` goes on from that folder. The folder
+  is followed only when the `cd` surely ran in the line's own process. After a
+  `cd` that may not run (the right side of `||` or `&&`, either side of `||`
+  for what follows it, an `if`, a `for`, a pipe stage, which cmd runs in a
+  child, or behind `start`, a new process) the drive's folder is unknown, and
+  `C:x` on the line's own drive is left as written, not put under the folder
+  the line is in, which may be one the `cd` never reached. The folder of every
+  other drive is unknown too after a `cd` given a variable (`cd %X%`, which
+  may name any drive) and after a `call` (a batch file or label that runs in
+  the same process and may `cd` anywhere). When the
   folder is not known (the drive is only a guess, or the `cd` named a path from
   the drive's own working directory that nothing set), `C:x` is unknown after a
   `cd`, except that after `cd C:` a relative path is `C:x`, a path on that
