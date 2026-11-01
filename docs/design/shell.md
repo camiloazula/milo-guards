@@ -449,8 +449,21 @@ when it runs, is `Unknown`.
   `rev-parse` and `ls-files`, `remote` alone and `remote -v`, and `branch` and
   `tag` when they only list: every flag a listing one, and no operand that
   would create (`git branch topic` makes a branch; `git branch --list 'x*'`
-  lists). `--output=FILE` writes, `--ext-diff` runs the configured program.
-  The writing subcommands (`add`, `commit`, `push`, `checkout`, ...) are
+  lists). `--output=FILE` writes. Each of the other reading subcommands has a
+  list of the options it knows as reading ones, in `effect/git.rs`, and any
+  other option is `Unknown` (`--ext-diff`, `--textconv`, `--help`, and any option
+  added later); git refuses abbreviated long options, so a name matches
+  exactly. `log`, `show` and `diff` share what they print about a change
+  (`--stat`, `--name-only`, `-p`, `-w`, `-M`, `--color`, ...) and `log` and
+  `show` what they walk (`--oneline`, `--graph`, `--decorate`, `--all`,
+  `--author`, `--since`, `-n`, `-L`, ...); `status` has `-s`, `-b`,
+  `--porcelain`, `-u`, `--ignored`; `blame` `-L`, `-w`, `-M`, `-C`, `-e`,
+  `--porcelain`; `rev-parse` `--show-toplevel`, `--abbrev-ref`, `--git-dir`,
+  `--verify`, `--short`; `ls-files` `-c`, `-d`, `-m`, `-o`, `-s`,
+  `--exclude-standard`. Of these, the options that take a file are places: `blame
+  --contents`, `--ignore-revs-file` and `-S`, `-O` and `--orderfile` on `diff`,
+  `log` and `show`, and `ls-files -X` and `--exclude-from`; a value known only
+  when it runs there is `Unknown`. The writing subcommands (`add`, `commit`, `push`, `checkout`, ...) are
   `Changes`, the rest `Unknown`. Only `-C`, `--no-pager`, `-P` and
   `--no-optional-locks` may come before the subcommand: `-c` and the others
   can make git run a command. What the repository's own config makes git run
@@ -551,7 +564,14 @@ when it runs, is `Unknown`.
   variable in the program's own name, and a `<` redirect in the body. More than
   64 combinations of words are not read either.
 - A read that contacts the network is `Unknown`, judged on the path's known
-  value after quotes are resolved, never on its spelling: a path naming bash's
+  value after quotes are resolved, never on its spelling. Every reader's
+  arguments get that check, and so does every value inside one: after the
+  `=` of a long option or the `:` of a switch, and attached to a short option
+  (`-O//evil/s/x`, `--exclude-from=\\evil\s\x`, `/a:\\evil\s`), so the option
+  nobody listed is caught too. Only the spelling of a share or a device is
+  checked in a value, not whether it is known: `--author="$NAME"` still reads
+  only. In PowerShell a variable inside a bare token (`--contents=$p`) is
+  expanded, so such a value is a path known only when it runs. The names are: a path naming bash's
   `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, as an operand or as the source
   of a `<` redirect (`cat < /dev/tcp/evil.example/80`; a spelling that hides
   it, such as `/dev/$'\x74'cp/...` or `/dev/${X}tcp/...`, is a path known only

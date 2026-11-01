@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::{git_subcommand, Effect};
+use super::{git, git_subcommand, Effect};
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
 use crate::unit::{Arg, Binding, Unit};
@@ -39,7 +39,12 @@ pub(super) fn place_effect(
         return Effect::Unknown;
     };
     let from = path::within(dir, arg, shell);
-    if (shell == Shell::Posix && names_network_device(text))
+    // PowerShell expands a variable inside a bare token (`--contents=$p`),
+    // which its parse reads as written (`2>$null` is the null device).
+    if (shell == Shell::PowerShell
+        && text.contains('$')
+        && !text.to_ascii_lowercase().ends_with("$null"))
+        || (shell == Shell::Posix && names_network_device(text))
         || resolver.network(dir, arg, shell)
         || matches!(resolver.place(&from, shell, false), Place::Unknown)
     {
@@ -62,9 +67,18 @@ pub(super) fn names_network_device(text: &str) -> bool {
 /// unit counts when the stages before it list known places.
 pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect {
     let mut effect = Effect::ReadsOnly;
-    for arg in &unit.args {
-        let network = (unit.shell == Shell::Posix && arg.known().is_some_and(names_network_device))
-            || context.resolver.network(unit.dir.as_ref(), arg, unit.shell);
+    // A value inside an argument (`--exclude-from=\\evil\s\x`, `-O//evil/s/x`,
+    // `/f:\\evil\x`) is checked for the spelling of a network device or a
+    // share, like a whole argument, whatever option it belongs to.
+    for text in unit.args.iter().filter_map(Arg::known) {
+        let network = values(text).any(|value| {
+            (unit.shell == Shell::Posix && names_network_device(value))
+                || context.resolver.network(
+                    unit.dir.as_ref(),
+                    &Arg::Known(value.to_string()),
+                    unit.shell,
+                )
+        });
         if network {
             effect = Effect::Unknown;
         }
@@ -90,6 +104,24 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect 
         }
     }
     effect
+}
+
+/// An argument, and the values inside it: what follows the first `=` or `:`,
+/// and what is attached to a short option (`-Ovalue`).
+fn values(text: &str) -> impl Iterator<Item = &str> {
+    let attached = text
+        .strip_prefix('-')
+        .filter(|rest| !rest.starts_with('-'))
+        .and_then(|rest| rest.get(1..))
+        .filter(|rest| !rest.is_empty());
+    [
+        Some(text),
+        text.split_once('=').map(|(_, value)| value),
+        text.split_once(':').map(|(_, value)| value),
+        attached,
+    ]
+    .into_iter()
+    .flatten()
 }
 
 /// The PowerShell cmdlets whose path parameters take pipeline input.
@@ -481,7 +513,7 @@ fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
         return Vec::new();
     }
     if key == "git" {
-        return borrowed(git_paths(args));
+        return git_paths(args);
     }
     let paths = match (unit.shell, key) {
         (Shell::Posix, "ls") => paths_of(args, &LS),
@@ -674,27 +706,30 @@ fn find_starts(args: &[Arg]) -> Vec<&Arg> {
         .collect()
 }
 
-/// The places a `git` command names: the folder of `-C`, what comes after
-/// `--`, and every operand of `--no-index`. The other operands are revisions
-/// and pathspecs inside the work tree, which git does not take outside it,
-/// and are not read as places.
-fn git_paths(args: &[Arg]) -> Vec<&Arg> {
+/// The places a `git` command names: the folder of `-C`, and what its
+/// reading subcommand names (see [`git::read`]). The other operands are
+/// revisions and pathspecs inside the work tree, which git does not take
+/// outside it, and are not read as places.
+fn git_paths(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
     let mut paths = Vec::new();
-    let no_index = args.iter().any(|arg| arg.known() == Some("--no-index"));
-    let mut subcommand = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
         match arg.known() {
-            Some("-C") if !subcommand => paths.extend(iter.next()),
-            Some("--") => {
-                paths.extend(iter);
-                break;
+            Some("-C") => {
+                paths.extend(args.get(at + 1).map(Cow::Borrowed));
+                at += 2;
             }
-            Some(text) if text.starts_with('-') => {}
-            _ if !subcommand => subcommand = true,
-            _ if no_index => paths.push(arg),
-            _ => {}
+            Some("--no-pager" | "-P" | "--no-optional-locks") => at += 1,
+            _ => break,
         }
+    }
+    if let Some(subcommand) = args.get(at).and_then(Arg::known) {
+        let rest = args.get(at + 1..).unwrap_or_default();
+        paths.extend(
+            git::read(subcommand, rest)
+                .into_iter()
+                .flat_map(|reading| reading.paths),
+        );
     }
     paths
 }

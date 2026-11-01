@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use crate::path::{self, Place, Resolver};
 
+mod git;
 mod operands;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -743,93 +744,6 @@ pub(super) fn git_subcommand(args: &[Arg]) -> Option<&str> {
     }
 }
 
-/// The options of `git log` and its kin that take a value, which is a
-/// revision, a pattern or a number and not a place.
-const GIT_VALUED: [&str; 21] = [
-    "author",
-    "committer",
-    "grep",
-    "since",
-    "until",
-    "after",
-    "before",
-    "max-count",
-    "skip",
-    "format",
-    "pretty",
-    "date",
-    "diff-filter",
-    "unified",
-    "relative",
-    "encoding",
-    "min-parents",
-    "max-parents",
-    "glob",
-    "branches",
-    "tags",
-];
-
-/// The options of `status`, `log`, `diff`, `show`, `blame`, `rev-parse` and
-/// `ls-files`: `--output` writes the diff to a file, `--ext-diff` runs the
-/// configured program, `--help` starts a viewer. The value of an option that
-/// takes one is read as such, quoted or known. An operand known only when it
-/// runs could be any option, so it is `Unknown`; what is known is a revision
-/// or a pathspec.
-fn git_options(args: &[Arg]) -> Effect {
-    let (mut changes, mut unknown) = (false, false);
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let Some((head, tail)) = (match arg {
-            Arg::Known(text) => Some((text.as_str(), false)),
-            Arg::Template { text, .. } => Some((
-                &text[..text.find(crate::posix::OPAQUE).unwrap_or(text.len())],
-                true,
-            )),
-            Arg::Unknown(_) | Arg::Input => None,
-        }) else {
-            unknown = true;
-            continue;
-        };
-        if head == "--" && !tail {
-            break;
-        }
-        if let Some(long) = head.strip_prefix("--") {
-            let (name, equals) = long
-                .split_once('=')
-                .map_or((long, false), |(name, _)| (name, true));
-            if tail && !equals {
-                unknown = true;
-            } else if name == "output" {
-                changes = true;
-            } else if matches!(name, "ext-diff" | "help" | "open-files-in-pager") {
-                unknown = true;
-            } else if equals {
-                unknown |= tail && !inert(arg);
-            } else if GIT_VALUED.contains(&name) {
-                unknown |= iter.next().is_some_and(|value| !inert(value));
-            }
-        } else if let Some(bundle) = head.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
-            // `-n 5`, `-S text`, `-G regex`, `-L range`: a value as the next
-            // argument, or attached.
-            let last = bundle.chars().last();
-            if matches!(last, Some('n' | 'S' | 'G' | 'L')) && !tail && bundle.len() == 1 {
-                unknown |= iter.next().is_some_and(|value| !inert(value));
-            } else {
-                unknown |= tail && !inert(arg);
-            }
-        } else {
-            unknown |= tail;
-        }
-    }
-    if changes {
-        Effect::Changes
-    } else if unknown {
-        Effect::Unknown
-    } else {
-        Effect::ReadsOnly
-    }
-}
-
 /// `git`: after the options that only choose where to look and how to page,
 /// the subcommand. `-c` and every other option before it can make git run a
 /// command, so they are not read.
@@ -848,10 +762,10 @@ fn git(args: &[Arg]) -> Effect {
     };
     let rest = args.get(at + 1..).unwrap_or_default();
     match subcommand {
-        // `--output` writes the diff to a file, `--ext-diff` runs the
-        // configured program, `--help` starts a viewer.
+        // Each knows the options that read; any other is `Unknown`, and
+        // `--output` writes a file (see [`git`]).
         "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "ls-files" => {
-            git_options(rest)
+            git::read(subcommand, rest).map_or(Effect::Unknown, |reading| reading.effect)
         }
         "branch" => listing(rest, &BRANCH),
         "tag" => listing(rest, &TAG),
