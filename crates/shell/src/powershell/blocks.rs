@@ -443,7 +443,7 @@ fn member_names(
             for argument in arguments {
                 let text = match argument.arg {
                     Arg::Known(text) | Arg::Template { text, .. } => text,
-                    Arg::Unknown(_) | Arg::Input => continue,
+                    Arg::Unknown(_) | Arg::Input | Arg::Null => continue,
                 };
                 unit::script(split, text, Shell::PowerShell, depth + 1);
             }

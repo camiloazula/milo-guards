@@ -163,7 +163,7 @@ impl Context<'_> {
     /// Record a read of `from`, a path already joined to where the line
     /// runs: the place it lands, and `Unknown` when that cannot be said.
     fn land_arg(&self, shell: Shell, from: &Arg, how: Manner) -> Kind {
-        let place = self.resolver.place(from, shell, how.hidden);
+        let place = self.resolver.place_joined(from, shell, how.hidden);
         self.land(shell, None, from, place, how);
         if matches!(place, Place::Unknown) {
             Kind::Unknown
