@@ -136,7 +136,10 @@ fn a_bare_device_name_after_a_cd_to_another_provider_is_an_item() {
                 "cd HKCU:\\Software\\Foo; New-Item NUL -Force",
                 Rule::SystemSettings,
             ),
-            ("cd HKCU:\\Software\\Foo; Move-Item NUL Bar", Rule::Delete),
+            (
+                "cd HKCU:\\Software\\Foo; Move-Item NUL Bar",
+                Rule::SystemSettings,
+            ),
             // A place only known when it runs may be a registry key.
             ("cd $key; Remove-Item NUL -Recurse", Rule::Delete),
             ("cd $key; Remove-Item NUL", Rule::Delete),

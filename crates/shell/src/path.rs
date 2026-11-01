@@ -48,17 +48,21 @@ enum Start<'a> {
 }
 
 /// The `name:` a path starts with, and what follows it: a disk's drive
-/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, `my_reg:`). A
-/// PowerShell drive's name may hold any character but `: / \ . ~`. Read
-/// before anything else, since a wildcard after it (`HKCU:*`) does not change
-/// what it names.
+/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, a drive made
+/// with `New-PSDrive`: `my_drive:`, `my-drive:`). A PowerShell drive's name
+/// may hold any character but `: / \ . ~` and a wildcard. Read before
+/// anything else, since a wildcard after it (`HKCU:*`) does not change what
+/// it names (`x.txt:stream` is a file's stream, not a drive).
 fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
     if shell == Shell::Posix {
         return None;
     }
     let (name, rest) = text.split_once(':')?;
     let named = if shell == Shell::PowerShell {
-        !name.is_empty() && !name.contains(['/', '\\', '.', '~'])
+        !name.is_empty()
+            && !name.contains(['/', '\\', '.', '~'])
+            && !name.contains(flavour(shell).separators())
+            && !glob::has_wildcard(name)
     } else {
         is_letter(name)
     };
@@ -798,7 +802,8 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
     let absolute = text.starts_with(['/', '~'])
         || (shell != Shell::Posix && text.starts_with('\\'))
         || (shell != Shell::Posix && drive)
-        || (shell == Shell::PowerShell && qualifier(text, shell).is_some());
+        || (shell == Shell::PowerShell
+            && (text.contains("::") || qualifier(text, shell).is_some()));
     if absolute {
         // A path on a drive's own working directory (`C:x`) is not where a
         // `cd` on another drive, or this one, left it.

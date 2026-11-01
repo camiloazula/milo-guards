@@ -329,7 +329,7 @@ provider path, or a place only known when it runs, `cd ~` fails and the line
 stays where it was, so a path starting with `~` is only known when it runs, and
 so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
 first stage of its pipeline gets its path from the pipeline, not from home. A
-drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+drive's name may hold any character but `/ \ . ~`, a separator and a wildcard (`my_reg:`), so any such
 name before a colon, other than one letter, is a drive that is not a disk. Once
 the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
 even after the `cd` (a function body, a loop), a single letter in a `cd`
@@ -842,6 +842,25 @@ a path.
 - A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
+  A drive's name is whatever comes before the first `:` when that holds no
+  `/`, `\`, `.` or `~`, no separator and no wildcard, so a drive made with `New-PSDrive`
+  (`my_drive:*`, `my-drive:\*`) is a drive, outside the workspace, and
+  `x.txt:stream` is a file's stream, not a drive.
+- The item cmdlets are judged by where their path lands, as `Remove-Item` is:
+  `Clear-Item`, `Rename-Item`, `Set-Item`, `New-Item`, `Move-Item`,
+  `Copy-Item` (its destination), the `-ItemProperty` cmdlets and their
+  aliases. A registry place is `system_settings`: `Clear-Item HKCU:\Software\x`,
+  `Rename-Item HKCU:\Software\x y`, `Set-Item HKLM:\SYSTEM\x -Value 1`. A
+  rename or move of what lies beyond the workspace is `delete`, and a
+  `Set-Item` or `Clear-Item` on another drive (`Env:`, `Variable:`) is
+  `overwrite`, as writing to it is. `Rename-Item src\a.rs b.rs` is safe, but a new name only known when it runs
+  (`Rename-Item src\a.rs $name`, `-NewName { $_.Name + 'x' }`) is `overwrite`,
+  as it may be a startup file's. With
+  no path, the four that act on an item work on what the stage before lists (or `$_`), except that a
+  listing of the whole workspace by `Get-ChildItem`, `ls` or `dir`, or a
+  `Get-Item` pattern such as `Get-Item *`, is its contents, not the workspace
+  itself; `Get-Item .` or `Get-Item D:\ws2` hands on that folder, as written.
+  `Clear-Item` and `Set-Item` take a list of paths, so each is judged (`Clear-Item src\a, HKCU:\Software\y`; with no `-Value`, the last of `Set-Item`'s positionals is the value); a common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
@@ -1174,6 +1193,30 @@ A line is never safe because the guard gave up on it. These come back risky:
 - Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
+- PowerShell code known only when it runs: a script block that is not written
+  out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
+  `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
+  `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
+  `ForEach-Object`, `New-Module`, `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
+  assignment or its `set_` method, `LocationChangedAction` among them), and code built
+  from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
+  `ExpandString`, whose `$( )` subexpressions run). A block
+  written out is read where it stands, and so is a string written out as the
+  text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
+  method. `ForEach-Object Name` takes a member name, not a block, and what
+  follows it is the member's arguments (`$list | % Add $item` is safe), but a
+  member name is judged as the call written out is: a method that is
+  risky as `.Invoke()` and `.Delete()` are (`% Invoke`, `-MemberName Delete`),
+  `InvokeScript`, `NewScriptBlock` and `ExpandString` (their text is read when
+  written out, positionally or after `-ArgumentList`), and a hook set by
+  `set_` or by its property given an argument. `Start-Job` takes
+  `-InitializationScript` by position after the block, so `Start-Job { … } $init` is risky, and a named
+  `-InitializationScript` on `Start-ThreadJob` or `Register-ScheduledJob` does not
+  make a block given by position safe. A splat (`@p`) on these cmdlets may hold a
+  block, so it is risky unless the cmdlet runs one block only and one is written
+  out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`),
+  and so does the argument after a parameter written with a colon
+  (`-Confirm:$false`), a common parameter (`-ErrorAction Stop`) and `-Args`.
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
