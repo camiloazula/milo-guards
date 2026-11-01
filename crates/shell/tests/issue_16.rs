@@ -4,7 +4,7 @@
 mod common;
 
 use common::{check, posix, windows};
-use milo_guards_shell::{Rule, Shell};
+use milo_guards_shell::{effect, Effect, Rule, Shell};
 
 /// Source with a stream operator on each line, written into a file by a
 /// here-document or a PowerShell here-string.
@@ -79,4 +79,25 @@ fn a_long_chain_in_cmd_is_not_read_and_one_that_reads_is() {
             (&longer_pipeline, Rule::Unreadable),
         ],
     );
+}
+
+#[test]
+fn nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk() {
+    // `a_line_too_long_or_too_nested_is_not_read` (robust.rs) nests with
+    // `(`, which the count before parsing now stops, so the walk's own depth
+    // limit, and its freedom from recursion, would go untested there. These
+    // lines hold no `(`: braces in a POSIX shell, script blocks in
+    // PowerShell. Each is deep enough to overflow a stack that recursed, and
+    // reaches the walk.
+    let braces = "{ ".repeat(13_000) + "echo" + &"; }".repeat(13_000);
+    let blocks = "{".repeat(30_000) + "echo" + &"}".repeat(30_000);
+    for (line, shell) in [(&braces, Shell::Posix), (&blocks, Shell::PowerShell)] {
+        let paths = if shell == Shell::Posix {
+            posix()
+        } else {
+            windows()
+        };
+        check(shell, &paths, &[], &[(line, Rule::Unreadable)]);
+        assert_eq!(effect(line, shell, &paths), Effect::Unknown, "{shell:?}");
+    }
 }

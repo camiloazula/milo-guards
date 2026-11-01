@@ -760,7 +760,7 @@ and assessment must be `classify`'s, and its tree must show every finding.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
-until it is named there. Four files feed the guard random and extreme lines and
+until it is named there. Three files feed the guard random and extreme lines and
 check what no line may do to it, for each of the three shells. `tests/robust.rs`
 holds six tests (seeded noise that never panics, a line too long or too nested
 being unreadable, a line whose nested scripts are read too often being

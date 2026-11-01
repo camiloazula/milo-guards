@@ -90,7 +90,9 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
-    // Deep enough to overflow the stack if the walk had no limit.
+    // Every `(` row is stopped before it is parsed, by the count of open
+    // `(`; the walk's own depth limit is tested on lines without one, in
+    // `issue_16.rs`.
     for (open, close, shell) in [
         ("(", ")", Shell::Posix),
         ("$(", ")", Shell::Posix),
