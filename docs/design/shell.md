@@ -387,7 +387,8 @@ a script `sh -c` reads), so no rule knows a language.
 `python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
 `nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`); a `--import`,
 `--loader` or `--experimental-loader` whose value is a `data:` URL (or only known
-when it runs) runs code that is not read, so the line is `unknown`. `bun`:
+when it runs) runs code that is not read, so the line is `unknown`, also when
+a here-document or here-string follows it (`node --import=data:… <<'JS'`). `bun`:
 the same flags, and `--cwd DIR` (`--cwd=DIR`), which the code's relative paths
 are read from, as after a `cd`. `node` and `bun` run the last of several `-e`
 (`node -e A -e B`), so every piece of code is read, not the first; `-p` takes
@@ -403,7 +404,14 @@ REPL. And a here-document or here-string handed to
 `python3`, `python3 -`, `node`, `node -`, `bun -`, `bun run -`, `deno run -`,
 when its text is plain: a quoted
 delimiter (`<<'PY'`), or an unquoted one with nothing in the body the shell
-would expand. `<<-` takes the leading tabs off. A script file
+would expand. `<<-` takes the leading tabs off. Python reads its input as bytes, so a coding
+declaration in the first two lines (`# coding: utf-7`) decodes the text to
+something else than the reader sees, which always reads UTF-8: such input is
+`unknown`, and so is a bytes literal given to `exec`, `eval` or `compile` that
+holds one. UTF-8 is the same text, and so is an ASCII-compatible encoding
+(`latin-1`) of a text that is all ASCII; a `-c` string or a string literal
+ignores the line. CPython reads CRLF and a lone CR as a newline, so the reader
+does too before it parses Python (a comment ends at a CR). A script file
 (`python3 scripts/gen.py`, `node build.js`) is the workspace's own code and is
 not read. Neither is code from a pipe or another redirect (`cat x.py |
 python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
@@ -519,6 +527,22 @@ Python 2's `exec "code"` (also `exec "code" in globals`) is read like
 `Path.rename` and `Path.replace` take their target as the one argument or as
 `target=`; given `*args` or `**kwargs` they are `unknown`, unless on a string
 literal, whose `replace` takes two.
+
+A key of a destructuring pattern or an import names the member it spells,
+however it is written: `{ "rmSync": r }`, `{ ["rmSync"]: r }`, ``{ [`rm${"Sync"}`]: r }``,
+`import { "rmSync" as r }`, `{ "promises": { rm } }`. A key only known when it
+runs (`{ [k]: r }`), or a string whose escapes the reader does not decode,
+taken from a module is `unknown`. A Python name bound more than once to
+different things (`import os`, then `if 0: import json as os`; a binding in a
+function never called; `o = os`, then `if 0: o = json`) is a name the reader
+cannot tell the meaning of, wherever and in whatever order the bindings are
+written, when either thing is a module or a call it reads: the line is
+`unknown`. The classes
+`fs.WriteStream` and `fs.ReadStream` are read as `createWriteStream` and
+`createReadStream` (with or without `new`, and destructured). A string, a
+template or a concatenation handed as the first argument of `setTimeout` or
+`setInterval`, or a spread in its place, is code Deno runs (node and bun throw):
+it is not read, and the line is `unknown`.
 
 A JavaScript call to `rmSync`, `unlinkSync`, `writeFileSync`, `execSync`,
 `spawnSync` and the like (the methods only the file system and `child_process`

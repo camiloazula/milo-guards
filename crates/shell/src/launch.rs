@@ -193,16 +193,20 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             }
             Launch::Reads(reads) => {
                 // An interpreter given a here-document or here-string of plain
-                // text reads that as its code.
+                // text reads that as its code, unless node is also told to load
+                // code from a `data:` URL first: that code runs and is not read,
+                // so the line stays unknown whatever its input holds.
+                let data =
+                    matches!(key.as_str(), "node" | "nodejs") && inline::loads_data_url(&unit.args);
                 let source = match (reads, inline::language(&key), &unit.stdin) {
-                    (Reads::Interpreter, Some(language), Some(Arg::Known(code))) => {
+                    (Reads::Interpreter, Some(language), Some(Arg::Known(code))) if !data => {
                         Some((language, code.clone()))
                     }
                     _ => None,
                 };
                 if let Some((language, code)) = source {
                     split.push(unit);
-                    inline::apply(split, language, &code, depth + 1);
+                    inline::apply_input(split, language, &code, depth + 1);
                     return;
                 }
                 unit.reads = reads;

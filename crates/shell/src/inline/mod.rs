@@ -486,6 +486,22 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
     split.restore_dir(outer);
 }
 
+/// Read code an interpreter takes from its input (a here-document or
+/// here-string), run `depth` levels deep, and add what it does to the split.
+/// Python reads its input as bytes, and honours a coding declaration in the
+/// first two lines that decodes them to other text than the reader sees: such
+/// code is not read.
+pub(crate) fn apply_input(split: &mut Split, language: Language, code: &str, depth: usize) {
+    if language == Language::Python && python::declares_other_encoding(code) {
+        split.problem(
+            Rule::Unknown,
+            "runs code the guard does not read",
+            Some(&shorten(code)),
+        );
+    }
+    apply(split, language, code, depth);
+}
+
 /// Read `code` in `language`, run `depth` levels deep, and add what it does
 /// to the split.
 pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: usize) {

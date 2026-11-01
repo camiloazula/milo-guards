@@ -9,6 +9,11 @@ use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
+    // CPython turns CRLF and a lone CR into a newline before it reads code
+    // (`translate_newlines`); tree-sitter-python does not, so a comment that
+    // ends at a CR would swallow the code after it.
+    let translated = translate_newlines(code);
+    let code = translated.as_str();
     let mut parser = tree_sitter::Parser::new();
     let tree = parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
@@ -54,6 +59,66 @@ pub(super) fn read(code: &str) -> Reading {
         !reader.reading.deep
     });
     reader.reading
+}
+
+/// `code` with CRLF and a lone CR read as a newline, as Python itself does.
+fn translate_newlines(code: &str) -> String {
+    code.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// The encodings whose bytes, when all ASCII, decode to the same text as
+/// UTF-8 does: the reader always reads UTF-8. UTF-7, UTF-16 and 32, EBCDIC
+/// and the stateful East Asian encodings are not among them (`+AGk-` is an
+/// `i` in UTF-7).
+const ASCII_ENCODINGS: [&str; 14] = [
+    "ascii",
+    "us-ascii",
+    "646",
+    "latin-1",
+    "latin1",
+    "latin",
+    "l1",
+    "iso-8859-1",
+    "iso8859-1",
+    "8859",
+    "iso-latin-1",
+    "cp819",
+    "windows-1252",
+    "cp1252",
+];
+
+/// The encoding a PEP 263 line (`# coding: NAME`, `# -*- coding=NAME -*-`)
+/// in the first two lines of `code` names, lower-cased with `_` as `-`.
+fn coding_declared(code: &str) -> Option<String> {
+    let translated = translate_newlines(code);
+    translated.lines().take(2).find_map(|line| {
+        let comment = line
+            .trim_start_matches([' ', '\t', '\x0c'])
+            .strip_prefix('#')?;
+        // The first `coding:` or `coding=` that is followed by a name.
+        comment.match_indices("coding").find_map(|(at, word)| {
+            let rest = comment[at + word.len()..].strip_prefix([':', '='])?;
+            let name: String = rest
+                .trim_start_matches([' ', '\t'])
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                .collect();
+            (!name.is_empty()).then(|| name.to_lowercase().replace('_', "-"))
+        })
+    })
+}
+
+/// Whether Python, when it reads `code` as bytes (from its input, or the
+/// bytes literal given to `exec`, `eval` or `compile`), honours a coding
+/// declaration that decodes it to other text than the reader sees: it
+/// always reads the text as UTF-8. UTF-8 itself, and the ASCII-compatible
+/// encodings for a text that is all ASCII, read the same.
+pub(super) fn declares_other_encoding(code: &str) -> bool {
+    let Some(name) = coding_declared(code) else {
+        return false;
+    };
+    let utf8 = name == "utf-8" || name == "utf8" || name.starts_with("utf-8-");
+    !(utf8 || (code.is_ascii() && ASCII_ENCODINGS.contains(&name.as_str())))
 }
 
 /// What a call to a qualified name does.
@@ -380,19 +445,30 @@ impl<'s> Reader<'s> {
     fn collect_imports(&mut self, root: Node<'_>) {
         let mut found = Vec::new();
         unit::for_each_node(root, |node| match node.kind() {
-            "import_statement" | "import_from_statement" | "assignment" => found.push(node),
+            "import_statement" | "import_from_statement" | "assignment" | "named_expression" => {
+                found.push(node);
+            }
             _ => {}
         });
         for node in found {
-            // `o = os`, `m = __import__('os')`: a name for a module or call.
-            if node.kind() == "assignment" {
-                if let (Some(left), Some(right)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                ) {
+            // `o = os`, `m = __import__('os')`: a name for a module or call;
+            // also `(o := os)`.
+            if matches!(node.kind(), "assignment" | "named_expression") {
+                let (left, right) = if node.kind() == "assignment" {
+                    (
+                        node.child_by_field_name("left"),
+                        node.child_by_field_name("right"),
+                    )
+                } else {
+                    (
+                        node.child_by_field_name("name"),
+                        node.child_by_field_name("value"),
+                    )
+                };
+                if let (Some(left), Some(right)) = (left, right) {
                     if left.kind() == "identifier" {
                         if let Some(name) = self.qualified(right, 0) {
-                            self.aliases.insert(self.text(left).to_string(), name);
+                            self.bind(self.text(left), name, node);
                         }
                     }
                 }
@@ -406,14 +482,14 @@ impl<'s> Reader<'s> {
                             name.child_by_field_name("name"),
                             name.child_by_field_name("alias"),
                         ) {
-                            self.aliases
-                                .insert(self.text(alias).to_string(), self.text(real).to_string());
+                            self.bind(self.text(alias), self.text(real).to_string(), node);
                             self.modules.insert(self.text(real).to_string());
                         }
                     } else {
                         // `import a.b.c` binds `a`.
                         let text = self.text(name);
                         let first = text.split('.').next().unwrap_or(text);
+                        self.bind(first, first.to_string(), node);
                         self.modules.insert(first.to_string());
                     }
                 }
@@ -440,13 +516,43 @@ impl<'s> Reader<'s> {
                     (Some(name), Some(name))
                 };
                 if let (Some(real), Some(alias)) = (real, alias) {
-                    self.aliases.insert(
-                        self.text(alias).to_string(),
+                    self.bind(
+                        self.text(alias),
                         format!("{module}.{}", self.text(real)),
+                        node,
                     );
                 }
             }
         }
+    }
+
+    /// Record that `name` stands for `value`. A name is one thing in the
+    /// reader's table wherever and however often it is written, so a name
+    /// bound again to something else (`import os`, then `if 0: import json as
+    /// os`; a binding in a function that is never called) is a name the
+    /// reader cannot follow, when either of the two is one it looks for:
+    /// the line is unread.
+    fn bind(&mut self, name: &str, value: String, at: Node<'_>) {
+        if let Some(before) = self.aliases.get(name) {
+            if *before != value && (self.followed(before) || self.followed(&value)) {
+                self.reading.unread(self.text(at));
+            }
+        }
+        self.aliases.insert(name.to_string(), value);
+    }
+
+    /// Whether `name`, a dotted name the reader found, is one it reads calls
+    /// by: a call it knows, or a module or one of its members.
+    fn followed(&self, name: &str) -> bool {
+        let rebased = rebase(name);
+        let first = rebased.split('.').next().unwrap_or(&rebased);
+        kind(&rebased).is_some()
+            || module_named(first).is_some()
+            || self.is_module(first)
+            || self.is_module(&rebased)
+            || HOLDERS.contains(&first)
+            || PATHS.contains(&first)
+            || rebased.starts_with("pathlib.")
     }
 
     /// `from os import *` makes every name in `os` a bare one.
@@ -934,11 +1040,33 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// The text of a string literal handed on as code. A bytes literal is
+    /// decoded by the coding line it holds (`exec(b"# coding: utf-7…")`), a
+    /// text the reader reads as UTF-8: one that names another encoding is
+    /// code only known when it runs.
+    fn code_literal(&mut self, node: Node<'_>) -> Option<String> {
+        let text = self.value(node, 0)?;
+        (!(self.is_bytes(node) && declares_other_encoding(&text))).then_some(text)
+    }
+
+    /// Whether a string literal, or one of the pieces of a concatenation, is
+    /// bytes (`b"…"`, `rb"…"`).
+    fn is_bytes(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let parts: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        match node.kind() {
+            "string" => parts.iter().any(|part| {
+                part.kind() == "string_start" && self.text(*part).to_ascii_lowercase().contains('b')
+            }),
+            _ => parts.iter().any(|part| self.is_bytes(*part)),
+        }
+    }
+
     /// `eval("…")` and `exec("…")` run code that is read as Python;
     /// anything else is code only known when it runs.
     fn eval(&mut self, args: &Args<'_>, call: Node<'_>) {
         match args.positional.first().and_then(|node| match node.kind() {
-            "string" | "concatenated_string" => self.value(*node, 0),
+            "string" | "concatenated_string" => self.code_literal(*node),
             _ => None,
         }) {
             Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
@@ -962,7 +1090,7 @@ impl<'s> Reader<'s> {
         for node in pieces {
             match node.kind() {
                 "lambda" => {}
-                "string" | "concatenated_string" => match self.value(node, 0) {
+                "string" | "concatenated_string" => match self.code_literal(node) {
                     Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
                     None => unread = true,
                 },

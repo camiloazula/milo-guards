@@ -75,8 +75,8 @@ enum Kind {
     Chdir,
     /// `fs.openSync(path, flags)`.
     Open,
-    /// `fs.readFileSync(path, options)` and `fs.createReadStream(path,
-    /// options)`: reads, unless a `flag` opens the file for writing (`w`
+    /// `fs.readFileSync(path, options)`, `fs.createReadStream(path, options)`
+    /// and the class `fs.ReadStream` it makes: reads, unless a `flag` opens the file for writing (`w`
     /// truncates it).
     ReadFile,
     /// `Deno.open(path, options)`.
@@ -135,7 +135,8 @@ fn kind(name: &str) -> Option<Kind> {
         (_, "rm" | "unlink" | "rmdir") => Kind::Remove,
         (
             _,
-            "writeFile" | "appendFile" | "createWriteStream" | "truncate" | "mkdir" | "mkdtemp",
+            "writeFile" | "appendFile" | "createWriteStream" | "WriteStream" | "truncate" | "mkdir"
+            | "mkdtemp",
         ) => Kind::Write,
         (_, "copyFile" | "cp") => Kind::Copy,
         (_, "rename") => Kind::Move,
@@ -143,7 +144,7 @@ fn kind(name: &str) -> Option<Kind> {
         (_, "chmod" | "lchmod") => Kind::Chmod,
         (_, "chown" | "lchown") => Kind::Chown,
         (_, "open") => Kind::Open,
-        (_, "readFile" | "createReadStream") => Kind::ReadFile,
+        (_, "readFile" | "createReadStream" | "ReadStream") => Kind::ReadFile,
         (true, "readJson" | "readJSON") => Kind::ReadFile,
         _ => return None,
     })
@@ -268,7 +269,7 @@ fn member(object: &str, property: &str) -> String {
 /// The methods only the file system, `child_process` and their kin have: a
 /// call to one that the reader could not tell is such a call is a delete, a
 /// write or a command it cannot follow.
-const DISTINCT: [&str; 28] = [
+const DISTINCT: [&str; 29] = [
     "rmSync",
     "rmdirSync",
     "unlinkSync",
@@ -288,6 +289,7 @@ const DISTINCT: [&str; 28] = [
     "lchownSync",
     "openSync",
     "createWriteStream",
+    "WriteStream",
     "execSync",
     "execFileSync",
     "spawnSync",
@@ -461,11 +463,19 @@ impl<'s> Reader<'s> {
                     }
                     "named_imports" => {
                         let mut names = part.walk();
-                        for specifier in part.named_children(&mut names) {
+                        let specifiers: Vec<Node<'_>> = part.named_children(&mut names).collect();
+                        for specifier in specifiers {
                             let real = specifier.child_by_field_name("name");
                             let alias = specifier.child_by_field_name("alias").or(real);
                             if let (Some(real), Some(alias)) = (real, alias) {
-                                let member = member(&module, self.text(real));
+                                // `{ "rmSync" as r }` names the member the
+                                // string spells; one the reader cannot
+                                // decode is a member it cannot follow.
+                                let Some(property) = self.key_name(real) else {
+                                    self.reading.unread(self.text(specifier));
+                                    continue;
+                                };
+                                let member = member(&module, &property);
                                 self.aliases.insert(self.text(alias).to_string(), member);
                             }
                         }
@@ -524,8 +534,19 @@ impl<'s> Reader<'s> {
                                 part.child_by_field_name("key"),
                                 part.child_by_field_name("value"),
                             ) {
-                                let inner = member(from, self.text(key));
-                                self.bind_pattern(value, &inner, level + 1);
+                                match self.key_name(key) {
+                                    Some(property) => {
+                                        let inner = member(from, &property);
+                                        self.bind_pattern(value, &inner, level + 1);
+                                    }
+                                    // A key only known when it runs, taken
+                                    // from a module, is a member under a
+                                    // name the reader cannot follow.
+                                    None if self.holds_calls(from) => {
+                                        self.reading.unread(self.text(part));
+                                    }
+                                    None => {}
+                                }
                             }
                         }
                         // `{ ...rest }` of a module holds all of its members
@@ -539,6 +560,36 @@ impl<'s> Reader<'s> {
             }
             _ => {}
         }
+    }
+
+    /// The member a key of a destructuring pattern or an import names:
+    /// `rmSync`, `"rmSync"`, `["rmSync"]`, ``[`rm${"Sync"}`]``, a number. A
+    /// key only known when it runs (`[k]`) or a string whose escapes the
+    /// reader does not decode names none.
+    fn key_name(&mut self, key: Node<'_>) -> Option<String> {
+        match key.kind() {
+            "string" | "template_string" => self.literal(key),
+            "computed_property_name" => {
+                let inner = key.named_child(0)?;
+                match inner.kind() {
+                    "number" => Some(self.text(inner).to_string()),
+                    _ => self.value(inner, 0),
+                }
+            }
+            // A name, a number, or a word that is one only here (`default`).
+            _ => Some(self.text(key).to_string()),
+        }
+    }
+
+    /// Whether `name` is a module, or a member of one that is a namespace of
+    /// its own (`fs.promises`): an object a key looked up on is a call the
+    /// reader looks for.
+    fn holds_calls(&self, name: &str) -> bool {
+        self.is_module(name)
+            || ROOTS.iter().any(|root| {
+                name.strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            })
     }
 
     /// The dotted name `node` stands for, once the names bound by `require`,
@@ -817,6 +868,33 @@ impl<'s> Reader<'s> {
         }
         let args = Args::read(call);
         let name = self.qualified(function, 0);
+        // The web's `setTimeout('code')` and `setInterval('code')` run a
+        // string as code, and Deno follows it (node and bun throw): code the
+        // reader would have to take from the string, so a first argument that
+        // is, or may be, a string is code it does not read. A function (a
+        // name, an arrow, a call) is walked where it is written. Handed on
+        // with `.call`, `.apply` or `.bind` the argument is not the first.
+        if let Some(name) = name.as_deref() {
+            let base = name
+                .strip_suffix(".call")
+                .or_else(|| name.strip_suffix(".apply"))
+                .or_else(|| name.strip_suffix(".bind"));
+            let timer = |name: &str| matches!(name, "setTimeout" | "setInterval");
+            let first = call.child_by_field_name("arguments").and_then(|list| {
+                let mut cursor = list.walk();
+                let mut parts = list.named_children(&mut cursor);
+                parts.find(|node| node.kind() != "comment")
+            });
+            let text = first.is_some_and(|node| {
+                matches!(
+                    node.kind(),
+                    "string" | "template_string" | "binary_expression" | "spread_element"
+                )
+            });
+            if base.is_some_and(timer) || (timer(name) && text) {
+                self.reading.unread(self.text(call));
+            }
+        }
         // What starts a program is run from where `cwd` says.
         let before = self.reading.acts.len();
         let mut cwd = None;
