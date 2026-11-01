@@ -151,6 +151,26 @@ fn piped_heredoc(node: Node<'_>) -> bool {
     }
 }
 
+/// How many words of `rest`, the text after a command, are a lone `-` that
+/// the grammar leaves out: those that stand between the command and a
+/// here-document (`<<`, not the here-string `<<<`).
+fn dashes_before_heredoc(rest: &str) -> usize {
+    let mut rest = rest.trim_start_matches([' ', '\t']);
+    let mut found = 0;
+    while let Some(after) = rest.strip_prefix('-') {
+        if !after.starts_with([' ', '\t', '<']) {
+            return 0;
+        }
+        found += 1;
+        rest = after.trim_start_matches([' ', '\t']);
+    }
+    if found > 0 && rest.starts_with("<<") && !rest.starts_with("<<<") {
+        found
+    } else {
+        0
+    }
+}
+
 /// The variables the line sets anywhere: assignments (also after `export`
 /// or `local`), `for` variables, `unset` and `read`.
 fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
@@ -430,6 +450,11 @@ impl Walker<'_> {
                 args.push(self.arg(arg));
             }
         }
+        // The grammar leaves a `-` that is the last word before a
+        // here-document out of the tree (`cat a - <<EOF` has the argument
+        // `a` only): it is an argument all the same.
+        let lost = dashes_before_heredoc(self.source.get(node.end_byte()..).unwrap_or_default());
+        args.extend(std::iter::repeat_n(Arg::Known("-".to_string()), lost));
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.

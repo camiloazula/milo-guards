@@ -608,11 +608,13 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool, backslash: Backslash) -> 
                 at = end;
             }
             c if is_word_char(c) => {
+                // A `$` is part of a word, but not one that starts a shell
+                // expansion: `DROP$x` is `DROP` and the expansion, which may
+                // be empty.
                 let mut end = at;
-                while chars
-                    .get(end)
-                    .is_some_and(|c| is_word_char(*c) || *c == '$')
-                {
+                while chars.get(end).is_some_and(|c| {
+                    is_word_char(*c) || (*c == '$' && !(holes && hole_end(&chars, end).is_some()))
+                }) {
                     end += 1;
                 }
                 let word: String = chars.get(at..end).unwrap_or_default().iter().collect();
@@ -1020,19 +1022,41 @@ fn meta_name(text: &str) -> (String, &str) {
     (format!("{prefix}{}", name.to_ascii_lowercase()), rest)
 }
 
+/// The dot commands of `sqlite3` and `duckdb` the reader has a rule for.
+/// Both shells take any start of a command's name for the command
+/// (`.sh echo hi` runs `.shell`, `.rea` is `.read`), so a name counts as every
+/// one of these it starts.
+const DOT_COMMANDS: [&str; 9] = [
+    ".shell", ".system", ".open", ".attach", ".read", ".output", ".once", ".import", ".restore",
+];
+
 /// What a client command (`\c db`, `\! ls`, `.shell ls`, `\gexec`) does.
 /// `holes` says the text came from a double-quoted shell word.
 fn meta(text: &str, holes: bool) -> Reading {
     let (name, rest) = meta_name(text);
     let (words, backtick) = meta_words(rest);
+    let mut reading = meta_command(&name, &words, backtick, holes);
+    // A dot command named by the start of its name is each command it starts.
+    if name.starts_with('.') {
+        for command in DOT_COMMANDS {
+            if command != name && command.starts_with(name.as_str()) {
+                reading.merge(meta_command(command, &words, backtick, holes));
+            }
+        }
+    }
+    reading
+}
+
+/// What the client command `name`, given `words`, does.
+fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Reading {
     let mut reading = Reading::default();
     // A command that writes to a file or, after a `|`, to a program.
     let pipes = words.iter().any(|word| word.starts_with('|'));
     let writes = matches!(
-        name.as_str(),
+        name,
         "\\o" | "\\g" | "\\gx" | "\\w" | ".read" | ".output" | ".once" | ".import"
     );
-    reading.program = match name.as_str() {
+    reading.program = match name {
         "\\!" | ".shell" | ".system" => true,
         "\\copy" => words
             .iter()
@@ -1042,14 +1066,14 @@ fn meta(text: &str, holes: bool) -> Reading {
     // A backtick in a `psql` command runs a program.
     reading.program |= backtick && name.starts_with('\\');
     // What the result of a query runs, or sets for later, is not on the line.
-    if matches!(name.as_str(), "\\gexec" | "\\gset") {
+    if matches!(name, "\\gexec" | "\\gset") {
         reading.unreadable = true;
     }
     // A target that only the shell knows may be `|program`.
     if writes && holes && words.iter().any(|word| word.starts_with(['$', '`', '%'])) {
         reading.unreadable = true;
     }
-    if matches!(name.as_str(), ".open" | ".attach") {
+    if matches!(name, ".open" | ".attach") {
         reading.moves = true;
     }
     // `.restore` replaces the whole database with a file.
@@ -1172,17 +1196,23 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
                 tokens.push(Js::Hole);
             }
             c if c.is_alphanumeric() || c == '_' || c == '$' => {
-                let mut end = at;
-                while chars
-                    .get(end)
-                    .is_some_and(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
-                {
-                    end += 1;
+                // A name with an expansion in it is read with the expansion
+                // empty: `dropDatabase$x()` may be `dropDatabase()`.
+                let mut name = String::new();
+                while let Some(&c) = chars.get(at) {
+                    if c == '$' && holes {
+                        if let Some(end) = hole_end(&chars, at) {
+                            at = end;
+                            continue;
+                        }
+                    }
+                    if !(c.is_alphanumeric() || c == '_' || c == '$') {
+                        break;
+                    }
+                    name.push(c);
+                    at += 1;
                 }
-                tokens.push(Js::Name(
-                    chars.get(at..end).unwrap_or_default().iter().collect(),
-                ));
-                at = end;
+                tokens.push(Js::Name(name));
             }
             c => {
                 tokens.push(Js::Symbol(c));

@@ -34,12 +34,29 @@ struct Client {
     long_flags: &'static [&'static str],
     /// Long options whose value is a statement.
     long_statement: &'static [&'static str],
+    /// The options whose value is never a word that starts with `-`: without
+    /// a value they stand alone, as `mongosh -p` does (it prompts for the
+    /// password), and the word is an option of its own.
+    loose: Loose,
     /// Whether short options bundle (`-Atc`), or each is a word (`-Q`).
     bundles: bool,
     /// Whether a short option may also start with `/` (Windows `sqlcmd`).
     slash: bool,
     /// What the statement is written in.
     language: Language,
+}
+
+/// Which options of a client take no value from a word that starts with `-`.
+#[derive(Clone, Copy)]
+enum Loose {
+    /// None: the next word is the value, whatever it starts with.
+    No,
+    /// Every option that takes a value: `mongosh` parses with yargs, which
+    /// never reads a word that starts with `-` as a value.
+    Every,
+    /// These long options: `clickhouse-client --password`, whose value is
+    /// optional.
+    Only(&'static [&'static str]),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,6 +112,7 @@ const PSQL: Client = Client {
         "record-separator-zero",
     ],
     long_statement: &["command"],
+    loose: Loose::No,
     bundles: true,
     slash: false,
     language: Language::Sql(Dialect::Postgres),
@@ -173,6 +191,7 @@ const MYSQL: Client = Client {
         "xml",
     ],
     long_statement: &["execute", "init-command"],
+    loose: Loose::No,
     bundles: true,
     slash: false,
     language: Language::Sql(Dialect::MySql),
@@ -213,6 +232,7 @@ const CLICKHOUSE: Client = Client {
         "highlight",
     ],
     long_statement: &["query"],
+    loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
     language: Language::Sql(Dialect::ClickHouse),
@@ -225,6 +245,7 @@ const SQLCMD: Client = Client {
     long_values: &["query", "initial-query", "server", "user-name", "password"],
     long_flags: &["help", "version", "trust-server-certificate"],
     long_statement: &["query", "initial-query"],
+    loose: Loose::No,
     bundles: false,
     slash: true,
     language: Language::Sql(Dialect::SqlServer),
@@ -260,6 +281,7 @@ const CQLSH: Client = Client {
         "secure-connect-bundle",
     ],
     long_statement: &["execute"],
+    loose: Loose::No,
     bundles: true,
     slash: false,
     language: Language::Sql(Dialect::Cql),
@@ -310,20 +332,29 @@ const MONGO: Client = Client {
         "redactInfo",
     ],
     long_statement: &["eval"],
+    loose: Loose::Every,
     bundles: true,
     slash: false,
     language: Language::Mongo,
 };
 
-/// An argument's text, and whether it came from a word with expansions.
 /// The text of a statement, and whether it has expansions in it: what is known
-/// of a value, not the source of one that is only known when it runs.
+/// of a value, not the source of one that is only known when it runs. A
+/// template with an escaped `$` or backtick in it is not known: the reader
+/// turns `\$(…)`, `\${…}` and a pair of escaped backticks into one expansion,
+/// which would hide the text between them from a client that gets it as it is.
 fn statement_text(arg: &Arg) -> Option<(&str, bool)> {
     match arg {
         Arg::Known(text) => Some((text, false)),
+        Arg::Template { source, .. } if source.contains("\\$") || source.contains("\\`") => None,
         Arg::Template { text, .. } => Some((text, true)),
         Arg::Unknown(_) | Arg::Input => None,
     }
+}
+
+/// Whether the argument is a word that starts with `-`.
+fn starts_with_dash(arg: &Arg) -> bool {
+    view(arg).is_some_and(|(text, _)| text.starts_with('-'))
 }
 
 /// An argument's text for reading its options.
@@ -365,6 +396,8 @@ enum Long {
     Statement,
     /// It takes a value.
     Value,
+    /// It takes a value, but not from a word that starts with `-`.
+    Loose,
     /// It takes none, or is not an option of the client.
     Flag,
 }
@@ -390,7 +423,11 @@ impl Client {
             if self.long_statement.contains(&option) {
                 Long::Statement
             } else if self.long_values.contains(&option) {
-                Long::Value
+                match self.loose {
+                    Loose::Every => Long::Loose,
+                    Loose::Only(names) if names.contains(&option) => Long::Loose,
+                    Loose::No | Loose::Only(_) => Long::Value,
+                }
             } else {
                 Long::Flag
             }
@@ -402,6 +439,26 @@ impl Client {
         match (starts.next(), starts.next()) {
             (Some(option), None) if !name.is_empty() => kind(option),
             _ => Long::Flag,
+        }
+    }
+
+    /// Takes the value of an option from the arguments after it. A loose
+    /// option takes none when the next word starts with `-`.
+    fn value<'a>(iter: &mut std::slice::Iter<'a, Arg>, loose: bool) -> Option<&'a Arg> {
+        if loose && iter.as_slice().first().is_some_and(starts_with_dash) {
+            return None;
+        }
+        iter.next()
+    }
+
+    /// Takes the statement an option is given. Where a word that starts with
+    /// `-` is no value, it is read as the statement too, and then as the
+    /// option it may be: neither reading hides it from the other.
+    fn statement_value(&self, iter: &mut std::slice::Iter<'_, Arg>, found: &mut Vec<Arg>) {
+        let loose = matches!(self.loose, Loose::Every);
+        match Self::value(iter, loose) {
+            Some(next) => found.push(next.clone()),
+            None => found.extend(iter.as_slice().first().cloned()),
         }
     }
 
@@ -428,11 +485,10 @@ impl Client {
                     if long == Long::Statement {
                         found.push(carry(value, holes, unknown));
                     }
+                } else if long == Long::Statement {
+                    self.statement_value(&mut iter, &mut found);
                 } else if long != Long::Flag {
-                    let next = iter.next();
-                    if long == Long::Statement {
-                        found.extend(next.cloned());
-                    }
+                    Self::value(&mut iter, long == Long::Loose);
                 }
                 continue;
             }
@@ -452,12 +508,12 @@ impl Client {
                 if self.short_values.contains(letter) || self.short_statement.contains(letter) {
                     if self.short_statement.contains(letter) {
                         if after.is_empty() {
-                            found.extend(iter.next().cloned());
+                            self.statement_value(&mut iter, &mut found);
                         } else {
                             found.push(carry(after, holes, unknown));
                         }
                     } else if after.is_empty() {
-                        iter.next();
+                        Self::value(&mut iter, matches!(self.loose, Loose::Every));
                     }
                     break;
                 }
@@ -987,10 +1043,26 @@ fn fit(out: String, left: usize) -> Printed {
     }
 }
 
-/// Whether the `cat` reads only its input: no arguments, or only `-`, which
-/// is its input too.
-fn reads_input_only(unit: &Unit) -> bool {
-    unit.args.iter().all(|arg| arg.known() == Some("-"))
+/// Whether the `cat` reads its input, and so passes on the text fed to it:
+/// it has no file operand, or `-` or `/dev/stdin` among its operands,
+/// whatever its options (none of them takes a value). An operand only known
+/// when it runs may be `-`.
+fn reads_input(unit: &Unit) -> bool {
+    let mut options = true;
+    let mut files = false;
+    for arg in &unit.args {
+        let Some(text) = arg.known() else {
+            return true;
+        };
+        if options && text == "--" {
+            options = false;
+        } else if matches!(text, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0") {
+            return true;
+        } else if !(options && text.starts_with('-')) {
+            files = true;
+        }
+    }
+    !files
 }
 
 /// The text of `args` joined, and whether it has expansions in it; `None`
@@ -1198,7 +1270,7 @@ impl Checker<'_> {
                 continue;
             };
             let key = unit.key();
-            if key.as_deref() == Some("cat") && reads_input_only(unit) {
+            if key.as_deref() == Some("cat") && reads_input(unit) {
                 found.extend(self.split.fed_to(producer).cloned());
                 continue;
             }

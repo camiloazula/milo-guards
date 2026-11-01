@@ -467,8 +467,13 @@ Reading, inserting, creating and a statement that picks its rows are safe.
 **Where the statement is.** Only text on the line itself is read: an option, an
 operand, a here-document or here-string fed to the client, or the text a
 piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
-says. A `cat` whose arguments are all `-` reads its input as a `cat` with none
-does (`cat - <<< 'DROP TABLE t' | psql`). On PowerShell a value that is piped
+says. A `cat` reads its input, and passes the text fed to it on, when it has
+no file operand, or has `-` or `/dev/stdin` among its operands, whatever its
+options (`cat - <<< 'DROP TABLE t' | psql`, `cat schema.sql - <<EOF | psql`,
+`cat -s <<EOF | psql`); a `cat` of files only ignores its input. An operand
+only known when it runs may be `-`. The grammar leaves a lone `-` that is the
+last word before a here-document out of its tree, so the guard puts it back.
+On PowerShell a value that is piped
 on says its text as `Write-Output` would: a string or a here-string
 (`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
 variable, `(Get-Content q.sql)`, `$x.y`, `"a" + "b"`) says what is only known
@@ -525,7 +530,13 @@ Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
 client's long options, as `getopt_long` reads it: `psql --co` is `--command`,
 while `--c` starts both `--command` and `--csv`, is ambiguous, and psql
 refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
-(`--init_command`).
+(`--init_command`). A password option that takes its value only when it is
+attached leaves the next word alone: in `mongosh` (which reads its options as
+yargs does) a word that starts with `-` is never the value of any option, and
+`clickhouse-client --password` takes none from one, so `mongosh -u admin -p
+--eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
+TABLE t'` read the statement option after the password. A statement option
+followed by such a word reads the word as the statement too.
 
 **What destroys.**
 
@@ -564,7 +575,11 @@ refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
   @t)`, `sp_executesql @sql`, `PREPARE s FROM @q`) is `unknown`. A string
   inside a string is read up to eight levels deep, and deeper is `unknown`.
   In SQLite and DuckDB, `.restore` replaces the whole database with a file,
-  so it destroys.
+  so it destroys. Both shells take any start of a dot command's name for the
+  command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
+  `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
+  command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
+  `.output`, `.once`, `.import` and `.restore`.
 - **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one, and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
@@ -631,7 +646,16 @@ q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
 a database statement only known when it runs`. In a double-quoted
 POSIX statement the expansions stand as words, so `psql -c "DELETE FROM users
 WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
-`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. On PowerShell and
+`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A `$` that starts
+an expansion ends the word before it, since the expansion may be empty:
+`psql -c "DROP$x TABLE t"`, `"TRUNCATE$x t"` and `"DELETE$opts FROM t"` are
+`drop_data`, and so is `mongosh --eval "db.dropDatabase$x()"`. A template
+with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
+) $x"`, `echo "SELECT 1 \`; DROP TABLE t; \` $x" | psql`) is `unknown`, as an
+unquoted here-document with both is: the shell passes the escaped text to the
+client as it is, and the reader would take `\$(`, `\${` and a pair of
+backticks for one expansion that hides the text between them; this covers
+`echo`, `printf` and `Write-Output` too. On PowerShell and
 cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
 `%id%`) is not read as a word, so any statement with one is `unknown`
 (`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
