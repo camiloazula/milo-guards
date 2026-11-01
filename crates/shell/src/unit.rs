@@ -790,8 +790,12 @@ const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 /// not read: the bash grammar holds each until the line ends and takes time
 /// that grows with the square of how many are waiting (a second, at the
 /// length limit), and no real script starts this many on a line. Here-
-/// documents on lines of their own, closed or not, cost no more than the
-/// text does, and here-strings (`<<<`) are not here-documents.
+/// documents on lines of their own that follow a command (`cat <<A` and a
+/// line break, repeated) cost no more than the text does, and here-strings
+/// (`<<<`) are not here-documents. Here-documents with no command before the
+/// `<<` are slow without being counted (`<<A` and a line break, repeated to
+/// the length limit, takes seconds in a release build) and are listed with
+/// the other slow noise in `docs/design/shell.md`.
 const MAX_HEREDOCS: usize = 256;
 
 /// The most `&`, and the most `|`, a cmd line may hold before it is not

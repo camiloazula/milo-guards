@@ -25,8 +25,8 @@ fn a_file_of_stream_operators_written_by_a_here_document_is_safe() {
     // And a body with a delimiter of another shape, or an indented one.
     let tabbed = format!("cat > main.cpp <<-EOF\n{}\tEOF\n", cpp_lines());
     let quoted = format!("cat > main.cpp <<\"END\"\n{}END\n", cpp_lines());
-    // Three hundred, each closed: here-documents on lines of their own are
-    // read in linear time, so any number of them are fine.
+    // Three hundred, each closed: here-documents after a command, on lines
+    // of their own, are read in linear time, so any number of them are fine.
     let closed = "cat <<EOF\nx\nEOF\n".repeat(300);
     let many = "cat <<EOF\nx\nEOF\n".repeat(4_000);
     // And here-strings, of any number.

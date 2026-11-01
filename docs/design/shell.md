@@ -81,18 +81,23 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
 | Opening brackets with none closed | 400 | counted before parsing, blind to quoting: cmd's grammar takes time that grows with the square of the depth |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
-| Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings, and here-documents on lines of their own, closed or not, cost no more than the text and are not counted |
+| Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more); with no command before the `<<` the grammar is slow, see the noise below |
 
 The grammars themselves take time that grows with the square of the line on
 some noise that none of the counts above covers. Measured in a release build
 at 65,000 bytes (the longest line), in POSIX: `)` repeated takes about 10 s, `)a`
-repeated (32,000 times, so not only a run of one character) about 9 s, `|` or
-`>` repeated 4 to 5 s, and `<` repeated 3 s; in cmd, `@` repeated about 10 s.
+repeated (32,000 times, so not only a run of one character) about 9 s, `a|`
+repeated 19.7 s, `|` or `>` repeated 4 to 5 s, and `<` repeated 3 s; here-documents
+with no command before the `<<`, which the count above does not reach because
+each is closed or on a line of its own: `<<A\nA\n` repeated 3.6 s, `<<A;\n`
+4.0 s, `<<A\n` 4.9 s, and `<<A;` sixteen to a line (under the count) 5.4 s (`cat <<A\n` repeated
+takes 1 ms, so the cost is in the missing command); in PowerShell, `echo ` then
+`${` repeated 17 s, and `"${` repeated 3.5 s; in cmd, `@` repeated about 10 s.
 Another machine took twice as long (20 s for `)` and for cmd's `@`, 9.5 s for
 `|` and `>`, 6.7 s for `<`, 19 s for `)a`). A debug build is about three times
-slower (29 s for `)`). PowerShell has none that was found, and cmd's `&` and
-`|` are counted above. A real line never has them, and they come back risky,
-so the guard is slow there, never wrong.
+slower (29 s for `)`). cmd's `&` and `|` are counted above. A real line
+never has them, and they come back risky, so the guard is slow there, never
+wrong.
 
 ### Actions that run later
 
@@ -771,7 +776,10 @@ checks what no line may do to the guard, for each of the three shells:
   claim: a program the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`).
-- **The time.** The worst of the random lines, and a line at the length limit
+- **The time.** (In `tests/timing.rs`, which runs its tests one at a time, and
+  in a binary of its own: cargo runs test binaries one after another, so no
+  heavy test shares the machine with a clock. The three bounded at 200 ms in
+  `tests/robust.rs` stay there.) The worst of the random lines, and a line at the length limit
   in each of fourteen shapes in each shell (a chain, a pipeline and a
   conjunction with each shell's own separator: `;` is no separator in cmd, `&`
   is), classify and give `effect` within a bound that holds in the debug build
@@ -779,7 +787,8 @@ checks what no line may do to the guard, for each of the three shells:
   under 100 ms, and most are far quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
   ones of several levels, are timed the same.
-- **The limits.** The table above, found by measuring and held on both sides:
+- **The limits.** (In `tests/limits.rs`, another binary of its own, for the
+  same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,
   the most shells in shells, wrappers in front of a program, finds in finds,
   here-documents started on a line, the `find -exec` work (in places, at a
