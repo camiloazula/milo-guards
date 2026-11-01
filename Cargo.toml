@@ -56,6 +56,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/shell",
+    "crates/url",
     "crates/guards",
 ]
 
@@ -70,6 +71,7 @@ rust-version = "1.99"
 [workspace.dependencies]
 milo-guards-core  = { path = "crates/core" }
 milo-guards-shell = { path = "crates/shell" }
+milo-guards-url   = { path = "crates/url" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with
@@ -81,3 +83,9 @@ tree-sitter            = "0.26"
 tree-sitter-bash       = "0.25"
 tree-sitter-powershell = "0.26"
 tree-sitter-batch      = "0.11"
+
+# The URL guard reads a URL with the WHATWG parser, so every spelling of an
+# address (decimal, octal, hex, shortened, IPv6-mapped, IDN) is judged as the
+# one host a client reads.
+url              = "2.5"
+percent-encoding = "2.3"

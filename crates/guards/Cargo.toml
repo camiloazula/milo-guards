@@ -13,10 +13,13 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["shell"]
+default = ["shell", "url"]
 # Judges a shell line: POSIX shell, PowerShell or cmd.
 shell = ["dep:milo-guards-shell"]
+# Judges a URL an agent is about to fetch.
+url = ["dep:milo-guards-url"]
 
 [dependencies]
 milo-guards-core.workspace = true
 milo-guards-shell = { workspace = true, optional = true }
+milo-guards-url = { workspace = true, optional = true }
