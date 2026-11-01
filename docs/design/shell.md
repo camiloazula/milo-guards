@@ -439,7 +439,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
@@ -639,6 +639,50 @@ read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
 The reasons say `unpacks into your home directory`, `unpacks into a folder
 outside the workspace`, `unpacks into a folder only known when it runs`. A
 folder that is the workspace, inside it or a temporary file is not risky.
+
+### Archiving that removes what it archives
+
+Three options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+members named on the line are judged as the operands of `rm` are (see
+Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
+your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
+and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
+Packing without the option is no `delete`: `tar -cf x.tar src` is safe. What
+it packs is still read, so `tar -cf x.tar ~` is `read_secret` (it reads your
+home directory, and the keys in it).
+
+| Program | Option | Members |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
+
+A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
+--remove-files`) is judged as if it packed. A `tar` option that takes a value
+in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
+a member. An operand only known when it runs is a member known only when it
+runs; with `zip`, so is a first operand that is, since it may be the archive
+and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
+the files the stage before it lists. With `7z`, an argument whose readable
+start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
+(`$OPTS`) may be a switch too, so the default `*` stays among the members when
+the operands that are certain are only the command and the archive. With
+`zip`, an argument only known when it runs inside a `-x` or `-i` list may
+start with `-` or be `@`, which end the list, so the names after it are
+operands again.
+
+`7z` matches a wildcard itself, quoted or not, and a name that starts with a
+dot is among the matches. `zip` does so on Windows; on Unix it matches
+wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
+names inside the archive, so there `zip -m x.zip 'a*'` and
+`zip -mr x.zip '*git'` delete nothing. The guard judges the members of `zip` and `7z` alike, with the wildcards matching names that start
+with a dot, whatever the shell. For `zip` on Unix this is a cautious choice,
+not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
+`.git`, and so is the unquoted `zip -mr x.zip *git`.
+
+`tar` is given the names the shell expands, so `tar -cf x.tar *git
+--remove-files` leaves `.git` as `rm -rf *git` does.
 
 ### Git tags and submodules
 
