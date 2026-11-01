@@ -142,6 +142,24 @@ fn coproc_reads_the_program_inside_a_group() {
     );
 }
 
+/// zsh reads a `{` stuck to a word as a group and runs it; the grammar reads
+/// `{rm` as a program of that name, so the group is not read.
+#[test]
+fn coproc_of_a_group_with_the_braces_stuck_to_a_word_is_unreadable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("coproc {rm -rf ~;}", Rule::Unreadable),
+            ("coproc {{rm -rf ~;};}", Rule::Unreadable),
+            ("coproc NAME {rm -rf ~;}", Rule::Unreadable),
+            ("coproc { {rm -rf ~;}; }", Rule::Delete),
+            ("coproc {ls;}", Rule::Unreadable),
+        ],
+    );
+}
+
 /// What stands before the command in a simple command or a group is read
 /// past, as it is without `coproc`.
 #[test]

@@ -528,14 +528,20 @@ fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
+    // A `{` stuck to a word (`{rm`) is a group zsh runs, but not one the
+    // grammar reads as such: the word is not read as a program.
+    let stuck =
+        |at: usize| word(at).is_some_and(|text| text.starts_with('{') && !opens_group(text));
     // A name stands before a group or a compound command; before a simple
     // command the first word is the program.
-    let mut at = usize::from(!opens(0) && (opens(1) || compound(1)));
+    let mut at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
     while opens(at) || word(at).is_some_and(|text| text == "!" || is_assignment(text)) {
         at += 1;
     }
     if compound(at) {
         Launch::Opaque("starts a compound command that cannot be read")
+    } else if stuck(at) {
+        Launch::Opaque("starts a group whose commands cannot be read")
     } else {
         runs(args, Some(at))
     }

@@ -73,7 +73,7 @@ one (`coproc NAME { … }`). The program is the first word past the name, the
 `{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
 both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
-the `rm`. The grammar has no `coproc`, so two forms are not read, and are
+the `rm`. The grammar has no `coproc`, so three forms are not read, and are
 risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
@@ -82,6 +82,8 @@ risky:
 - A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
   `coproc > out rm -rf ~`): the grammar takes the words after its target for
   more targets, so the command is not among the arguments: `Unreadable`.
+- A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
+  grammar reads `{rm` as a program of that name: `Unreadable`.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
