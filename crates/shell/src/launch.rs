@@ -15,8 +15,11 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
+pub(crate) use interpreters::{
+    after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+};
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
-pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
+pub(crate) use wrappers::uv_script;
 use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
 
 /// How many wrappers may stand in front of a program before the line is

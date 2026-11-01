@@ -2,6 +2,7 @@
 //! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`,
 //! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
+use super::interpreters::reads_input;
 use super::{after_options, is_stdin, join, option_value, Launch};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
@@ -353,14 +354,17 @@ pub(super) fn start(args: &[Arg]) -> Launch {
 /// manager's bin directory starts them.
 pub(crate) const DELETERS: [&str; 5] = ["rimraf", "del", "del-cli", "premove", "rmrf"];
 
-/// The options of `npx` and `npm exec` that take the next argument.
-const NPM_VALUES: [&str; 14] = [
+/// The options of `npx` and `npm exec` that take the next argument. npm reads
+/// any of its settings as an option, so these are the ones that take a value
+/// (`-C` is `--prefix`).
+const NPM_VALUES: [&str; 36] = [
     "-p",
     "--package",
     "-c",
     "--call",
     "-w",
     "--workspace",
+    "-C",
     "--registry",
     "--cache",
     "--prefix",
@@ -368,7 +372,28 @@ const NPM_VALUES: [&str; 14] = [
     "--globalconfig",
     "--loglevel",
     "--node-arg",
+    "--node-options",
     "--script-shell",
+    "--shell",
+    "--include",
+    "--omit",
+    "--tag",
+    "--before",
+    "--location",
+    "--scope",
+    "--otp",
+    "--proxy",
+    "--https-proxy",
+    "--noproxy",
+    "--cafile",
+    "--fetch-retries",
+    "--fetch-retry-factor",
+    "--fetch-retry-mintimeout",
+    "--fetch-retry-maxtimeout",
+    "--fetch-timeout",
+    "--install-strategy",
+    "--audit-level",
+    "--maxsockets",
 ];
 
 /// The options of `pnpm`, before and after `dlx` and `exec`, that take the
@@ -396,7 +421,7 @@ const BUN_X_VALUES: [&str; 2] = ["-p", "--package"];
 
 /// The options of `uv`, `uvx`, `uv run` and `uv tool run` that take the next
 /// argument. `--from` names the package, the program follows it.
-const UV_VALUES: [&str; 39] = [
+const UV_VALUES: [&str; 56] = [
     "--from",
     "--with",
     "-w",
@@ -436,6 +461,23 @@ const UV_VALUES: [&str; 39] = [
     "--color",
     "--python-platform",
     "--package",
+    "--extra",
+    "--no-extra",
+    "--group",
+    "--no-group",
+    "--only-group",
+    "--no-editable-package",
+    "--upgrade-group",
+    "--prerelease-package",
+    "--fork-strategy",
+    "--exclude-newer-package",
+    "--no-sources-package",
+    "--config-settings-package",
+    "--no-build-isolation-package",
+    "--no-build-package",
+    "--no-binary-package",
+    "-b",
+    "--torch-backend",
 ];
 
 /// The options of `pipx` and `pipx run` that take the next argument.
@@ -480,9 +522,10 @@ fn locate(
 /// `uv run`, `pipx run`. It runs the program it names, so that program is
 /// judged, with a version after the package taken off (`rimraf@5`). Where
 /// the runner names the package apart from the program (`npx -p pkg prog`,
-/// `uvx --from pkg prog`) the program is the one after the options. `npx -c`
-/// and `pnpm exec -c` run a shell command instead. `pnpm` and `yarn` also
-/// start a delete tool of the project by its name (`pnpm rimraf dist`).
+/// `uvx --from pkg prog`) the program is the one after the options. `npx -c`,
+/// `pnpm -c exec` and `yarn exec` run a shell command instead. `pnpm` and
+/// `yarn` also start a delete tool of the project by its name (`pnpm rimraf
+/// dist`).
 pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let found = match key {
@@ -500,7 +543,7 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             &[(&UV_VALUES, &["tool"]), (&[], &["run"])],
             &UV_VALUES,
         )
-        .or_else(|| locate(args, &[(&UV_VALUES, &["run"])], &UV_VALUES)),
+        .or_else(|| uv_run(args)),
         "pipx" => locate(args, &[(&[], &["run"])], &PIPX_VALUES),
         _ => None,
     };
@@ -510,10 +553,12 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let own = args
         .get(from..program.unwrap_or(args.len()))
         .unwrap_or_default();
-    let shell = if unit.shell == Shell::Cmd {
-        Shell::Cmd
-    } else {
+    // A script handed to npm or pnpm runs in the system shell: cmd on
+    // Windows, whichever shell the line is for.
+    let shell = if unit.shell == Shell::Posix {
         Shell::Posix
+    } else {
+        Shell::Cmd
     };
     match key {
         "npx" | "npm" => {
@@ -521,10 +566,30 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
                 return Launch::Script(shell, script);
             }
         }
-        "pnpm" if has_flag(own, Some('c'), Some("shell-mode")) => {
+        // pnpm reads its options wherever they stand: `pnpm -c exec 'cmd'`
+        // is shell mode as much as `pnpm exec -c 'cmd'`.
+        "pnpm"
+            if has_flag(
+                &args[..program.unwrap_or(from)],
+                Some('c'),
+                Some("shell-mode"),
+            ) =>
+        {
             if let Some(program) = program {
                 return Launch::Script(shell, join(&args[program..]));
             }
+        }
+        // `yarn exec` runs its arguments as a script, in yarn's own shell.
+        "yarn" if from > 0 && args[from - 1].known() == Some("exec") => {
+            if let Some(program) = program {
+                return Launch::Script(shell, join(&args[program..]));
+            }
+        }
+        // `uv run file.py` and `uv run --script file` run Python on the file,
+        // and `uv run -` on its input: read like `python file`.
+        "uv" if program.is_some() && uv_script(args).is_some() => return Launch::Itself,
+        "uv" if program.is_some_and(|at| reads_input(&args[at])) && uv_run(args).is_some() => {
+            return Launch::Reads(Reads::Interpreter);
         }
         _ => {}
     }
@@ -532,6 +597,41 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
         return Launch::Itself;
     };
     Launch::Replace(Box::new(running(unit, key, program)))
+}
+
+/// `uv run`: its options, then the command (also after `uv`'s own options).
+fn uv_run(args: &[Arg]) -> Option<(usize, Option<usize>)> {
+    locate(args, &[(&UV_VALUES, &["run"])], &UV_VALUES)
+}
+
+/// The file `uv run` hands to Python: the command when it is a `.py` or
+/// `.pyw` file, or whatever follows `--script`, `-s` or `--gui-script`.
+/// `None` for anything else, and for a module (`-m`).
+pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
+    let (from, at) = uv_run(args)?;
+    let at = at?;
+    let program = &args[at];
+    let own = &args[from..at];
+    let is_flag = |text: &str| {
+        text == "--script"
+            || text == "--gui-script"
+            || text
+                .strip_prefix('-')
+                .is_some_and(|bundle| !bundle.starts_with('-') && bundle.contains('s'))
+    };
+    if own
+        .iter()
+        .filter_map(Arg::known)
+        .any(|text| text == "-m" || text == "--module")
+    {
+        return None;
+    }
+    let file = program.known().is_some_and(|text| {
+        std::path::Path::new(text)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyw"))
+    });
+    (file || own.iter().filter_map(Arg::known).any(is_flag)).then_some(program)
 }
 
 /// `pnpm rimraf dist` and `yarn rimraf dist`: the project's own delete tool.

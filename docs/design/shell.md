@@ -69,19 +69,33 @@ precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `bun x`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The program the runner
 names is judged, with a version after the package taken off (`npx rimraf@5`).
 Where the runner names the package apart from the program (`npx -p pkg prog`,
-`uvx --from pkg prog`) the program is the one after the options. `npx -c` and
-`pnpm exec -c` run a shell command, read as a script. `pnpm` and `yarn` also
-start a delete tool by its name (`pnpm rimraf dist`). The delete tools that
-come as packages (`rimraf`, `del` and `del-cli`, `premove`, `rmrf`) delete
-their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx
-rimraf ~` are `Delete`, `npx rimraf dist` is safe, `del --dry-run` only lists.
+`uvx --from pkg prog`) the program is the one after the options. Every option
+that takes a value is skipped, as the runner's own `--help` lists them (`npm
+-C dir`, `npx --node-options x`, `uv run --group dev`, `bun -d x:1`); one that
+is missed would turn its value into the program. `npx -c`, `npm exec -c` and
+`pnpm -c exec` (the option may stand before `exec` too) run a shell command,
+and so does `yarn exec`, whose arguments are a script. Each is read as a
+script: in cmd where the line is for Windows (npm and pnpm start the system
+shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
+`pnpm`, `yarn` and `bun` (also `bun run`) start a delete tool by its name
+(`pnpm rimraf dist`, `bun run rimraf dist`). The delete tools that come as
+packages (`rimraf`, `del` and `del-cli`, `premove`, `rmrf`) delete their
+operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
+are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
+run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
+guard knows.
 
 `bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print`, `bun
 repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
-input (`bun run -`, `deno run -`) run code the guard does not read: `Unknown`,
-or `RunDownloaded` after a download. `bun run file`, `deno run file` and
-`bun file` are judged like `node file`, so a script the same line writes is
-not read. `deno run npm:pkg` runs the package's program like a runner.
+input (`bun run -`, `deno run -`, `uv run -`) run code the guard does not
+read: `Unknown`, or `RunDownloaded` after a download. The options before the
+subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
+inline code). `bun run file`, `deno run file` and `bun file` are judged like
+`node file`, so a script the same line writes is not read, also after options
+(`bun --hot run file`). So is `uv run file.py`, and `uv run --script file`:
+`uv` runs Python on the file, like `python file`. `deno run npm:pkg` runs the
+package's program like a runner. The options of `deno` that take their value
+only after `=` (`--reload`, `--env-file`) do not take the next word.
 
 `coproc` is read as the shells read it. A simple command takes no name, so the
 first word is the program (`coproc NAME cat` runs `NAME`); a group may take

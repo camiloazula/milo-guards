@@ -1,7 +1,7 @@
 //! Shells and interpreters given a script, inline code, or their input:
 //! which is which, and the perl in-place edits read like `sed -i`.
 
-use super::wrappers::{runner, running, without_version};
+use super::wrappers::{runner, running, without_version, DELETERS};
 use super::{after_options, is_stdin, Launch};
 use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
@@ -273,20 +273,61 @@ fn perl_substitution(statement: &str) -> bool {
     flags.is_some_and(|flags| flags.chars().all(|flag| "gimsxrdcaulnpo".contains(flag)))
 }
 
-/// The options of `bun` before its subcommand that take the next argument.
-const BUN_VALUES: [&str; 8] = [
+/// The options of `bun` before its subcommand that take the next argument:
+/// every one `bun --help` lists as `--option=<val>`, since bun also takes the
+/// value as the next word. `--inspect` is left out, its value only follows `=`.
+pub(crate) const BUN_VALUES: [&str; 46] = [
     "--cwd",
     "-c",
     "--config",
     "-r",
     "--preload",
+    "--require",
+    "--import",
     "--env-file",
     "--port",
+    "-F",
     "--filter",
+    "--elide-lines",
+    "--shell",
+    "--watch-kill-signal",
+    "--cpu-prof-name",
+    "--cpu-prof-dir",
+    "--cpu-prof-interval",
+    "--heap-prof-name",
+    "--heap-prof-dir",
+    "--heap-prof-interval",
+    "--install",
+    "--conditions",
+    "--fetch-preconnect",
+    "--max-http-header-size",
+    "--dns-result-order",
+    "--redirect-warnings",
+    "--disable-warning",
+    "--title",
+    "--unhandled-rejections",
+    "--console-depth",
+    "--user-agent",
+    "--cron-title",
+    "--cron-period",
+    "--main-fields",
+    "--extension-order",
+    "--tsconfig-override",
+    "-d",
+    "--define",
+    "--drop",
+    "--feature",
+    "-l",
+    "--loader",
+    "--jsx-factory",
+    "--jsx-fragment",
+    "--jsx-import-source",
+    "--jsx-runtime",
 ];
 
-/// The options of `deno` and `deno run` that take the next argument.
-const DENO_VALUES: [&str; 9] = [
+/// The options of `deno` and `deno run` that take the next argument. `--reload`
+/// and `--env-file` are not among them: their value only follows `=`.
+pub(crate) const DENO_VALUES: [&str; 10] = [
     "-c",
     "--config",
     "--import-map",
@@ -294,13 +335,24 @@ const DENO_VALUES: [&str; 9] = [
     "--cert",
     "--location",
     "--seed",
-    "--env-file",
-    "--reload",
+    "--ext",
+    "-L",
+    "--log-level",
 ];
 
 /// Whether `arg` is the program's own input, or a file standing for it.
-fn reads_input(arg: &Arg) -> bool {
+pub(super) fn reads_input(arg: &Arg) -> bool {
     arg.known().is_some_and(is_stdin)
+}
+
+/// What `bun run file` and `deno run file` hand on: the arguments after the
+/// `run` that follows the options (`bun --hot run file`); all of them when
+/// there is no `run`.
+pub(crate) fn after_run<'a>(args: &'a [Arg], values: &[&str]) -> &'a [Arg] {
+    match after_options(args, values) {
+        Some(at) if args[at].known() == Some("run") => &args[at + 1..],
+        _ => args,
+    }
 }
 
 /// `bun`: `-e`, `--eval`, `-p` and `--print` before the subcommand run code
@@ -328,11 +380,21 @@ pub(super) fn bun(unit: &Unit) -> Launch {
     match word {
         "x" => runner("bun", unit),
         "repl" => Launch::Reads(Reads::Interpreter),
+        // `bun rimraf dir` runs the project's own delete tool by its name.
+        name if DELETERS.contains(&name) => Launch::Replace(Box::new(running(unit, "bun", first))),
         "run" => match args
             .get(first + 1..)
-            .and_then(|rest| after_options(rest, &[]))
+            .and_then(|rest| after_options(rest, &BUN_VALUES))
+            .map(|at| first + 1 + at)
         {
-            Some(at) if reads_input(&args[first + 1 + at]) => Launch::Reads(Reads::Interpreter),
+            Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
+            Some(at)
+                if args[at]
+                    .known()
+                    .is_some_and(|name| DELETERS.contains(&name)) =>
+            {
+                Launch::Replace(Box::new(running(unit, "bun", at)))
+            }
             _ => Launch::Itself,
         },
         _ if is_stdin(word) => Launch::Reads(Reads::Interpreter),

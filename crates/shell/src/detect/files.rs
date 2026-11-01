@@ -25,7 +25,7 @@ impl Checker<'_> {
             "rimraf" | "del-cli" | "premove" | "rmrf" | "del"
                 if key != "del" || shell == Shell::Posix =>
             {
-                let dry = key != "rimraf" && has_flag(args, Some('n'), Some("dry-run"));
+                let dry = matches!(key, "del" | "del-cli") && has_flag(args, None, Some("dry-run"));
                 if !dry {
                     self.delete(unit, &operands(args, &[]), "deletes");
                 }
