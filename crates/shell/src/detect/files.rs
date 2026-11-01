@@ -244,12 +244,16 @@ impl Checker<'_> {
                     args,
                     &["-m", "--mode", "-r", "--reference", "-d", "--date", "-t"],
                 ) {
-                    self.write(shell, unit.scope(), target, "creates");
+                    if key == "mkdir" {
+                        self.make_folder(shell, unit.scope(), target);
+                    } else {
+                        self.write(shell, unit.scope(), target, "creates");
+                    }
                 }
             }
             "md" if shell == Shell::Cmd => {
                 for target in plain(args) {
-                    self.write(shell, unit.scope(), target, "creates");
+                    self.make_folder(shell, unit.scope(), target);
                 }
             }
             "sed" if has_flag(args, Some('i'), Some("in-place")) => {
@@ -279,8 +283,18 @@ impl Checker<'_> {
                 } else {
                     "writes to"
                 };
+                // `New-Item -ItemType Directory` makes a folder, not a file.
+                let folder = key == "new-item"
+                    && params.values(&["itemtype"]).iter().any(|kind| {
+                        kind.known()
+                            .is_some_and(|kind| kind.to_ascii_lowercase().starts_with('d'))
+                    });
                 for target in targets {
-                    self.write(shell, unit.scope(), target, verb);
+                    if folder {
+                        self.make_folder(shell, unit.scope(), target);
+                    } else {
+                        self.write(shell, unit.scope(), target, verb);
+                    }
                 }
             }
             "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {

@@ -26,7 +26,8 @@ verdict back in microseconds.
   line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
   drives, shares, long paths, short names, any case): a read of
   `~/.ssh/id_ed25519` is risky ("reads your SSH keys"), a read of `src/main.rs`
-  is safe, a write beyond the workspace or to a startup file or the
+  is safe, a write beyond the workspace, to a startup file, to a file a tool
+  runs on its own (`.envrc`, `.github/workflows/ci.yml`) or to the
   repository's history is risky, and a path that is not one literal path (a
   wildcard, a variable) is unreadable.
 - **url** judges a URL an agent is about to fetch, by the host a URL parser reads

@@ -242,7 +242,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -311,6 +311,41 @@ Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
 itself, its `.git`, keys and shell startup files, and the paths the caller
 protects.
+
+### Files a tool runs on its own
+
+A workspace holds files that something runs without anyone typing a command:
+`.vscode/tasks.json` (the editor), `.envrc` (direnv, on `cd`), `.husky/*` and
+`.pre-commit-config.yaml` (git hooks), `.github/workflows/*` and
+`.gitlab-ci.yml` (CI, with the repository's secrets), `.devcontainer/*` (the
+container build), `.mcp.json` (servers an editor starts) and the rest of
+core's list (see [Core](core.md#what-core-judges)), at any depth. A line that
+writes one is `overwrite` with the reason `writes to a file a tool runs on its
+own` (the verb of the line: `edits` for `sed -i`, `creates` for `touch`). The
+rule is the same as for every sensitive place: core's `place_into` answers it,
+so every writer the guard knows (a redirect, `tee`, `cp`, `mv`, `ln`,
+`install`, `rsync`, `sed -i`, `perl -i`, `dd`, `curl -o`, `Set-Content`,
+`Out-File`, `Copy-Item`, `copy`, `xcopy`, ...) finds it without a rule of its
+own.
+
+| Line | Verdict |
+| --- | --- |
+| `echo x > .envrc`, `tee .vscode/tasks.json`, `cp a .github/workflows/ci.yml`, `sed -i s/a/b/ .husky/pre-commit`, `Set-Content .envrc x`, `copy a .gitlab-ci.yml`, `echo x > VSCODE~1\TASKS~1.JSO` | `overwrite` |
+| `cd .github/workflows && cp a ci.yml`, `echo x > .ENVRC`, `echo x > $'.\x65nvrc'`, `echo x > src/deep/.envrc` | `overwrite`: a `cd`, case, quotes and depth are read |
+| `cp lefthook.yml sub/`, `cp -t .vscode a/tasks.json`, `mv a/.envrc sub/` | `overwrite`: the file lands at its own name in a folder that is one for certain (a trailing separator, `.`, `..`, `-t`, several sources) |
+| `cp -r a .github`, `cp -a a .vscode`, `rsync -a a/ .github/`, `xcopy /s a .github`, `Copy-Item -Recurse a .vscode` | `overwrite`: a recursive copy can replace anything below a folder that holds one |
+| `sed -i s/a/b/ .github/workflows/*.yml`, `sed -i s/a/b/ .vscode/*.json`, `sed -i s/a/b/ */Jenkinsfile`, `sed -i s/a/b/ *.yml` | `overwrite`: a pattern that can pick one |
+| `cat .envrc`, `grep x .github/workflows/*`, `cp .envrc /tmp/x`, `rm .envrc`, `rm -rf .husky`, `mv .envrc /tmp/x`, `chmod +x .husky/pre-commit` | safe: a read, a delete or a move away of one is not a write that plants code |
+| `echo x > Makefile`, `sed -i s/a/b/ package.json`, `echo x > justfile`, `echo x > .vscode/settings.json` | safe: they only run when someone asks |
+| `mkdir -p .github/workflows`, `mkdir .husky`, `md .devcontainer`, `New-Item -ItemType Directory .vscode` | safe: an empty folder is no code, and what is written into it is judged then |
+| `cp .envrc .envrc.bak`, `cp -r .vscode backup`, `cp *.yml deploy/`, `sed -i s/a/b/ src/*` | safe: a destination that may be a file is not read as a folder, a source pattern is not read as a name, and a pattern of nothing but wildcards names none |
+| `echo x > /home/me/other/.envrc`, `echo x > .git/.envrc`, `echo x > /tmp/x/.envrc` | each keeps its own place: beyond the workspace, the history, a temporary file |
+
+What it does not read: unpacking an archive, `git checkout`, `git apply`,
+`git restore`, `git stash pop` and `patch` can write one without naming it;
+a recursive copy into the workspace folder itself, or into a folder that is not
+named like the first names of a place on the list, can replace one below it;
+`mv dir .github` renames a folder onto a name that holds one.
 
 ### Protected paths
 
