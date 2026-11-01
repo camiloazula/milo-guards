@@ -37,9 +37,12 @@ impl Checker<'_> {
             "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args), true),
             _ => return,
         };
-        // `zip` and `7z` match a wildcard themselves, quoted or not, with
-        // names that start with a dot among the matches; a line cannot show
-        // which, so it is judged as the program would.
+        // `7z` matches a wildcard itself, quoted or not, and so does `zip` on
+        // Windows; `zip` on Unix does so only for `-x`, `-i` and names inside
+        // the archive, so `zip -m x.zip 'a*'` there deletes nothing. A line
+        // cannot show which shell's expansion a name went through, so every
+        // member is judged with names that start with a dot among the
+        // matches: a cautious choice, not how `zip` behaves on Unix.
         self.delete_matching(
             unit,
             &members.iter().collect::<Vec<_>>(),
@@ -431,9 +434,10 @@ const ZIP_LONG_VALUES: &[&str] = &[
 
 /// The files `zip` deletes after adding them, which `-m` (or `--move`) asks
 /// for: the operands after the archive's name, and the names it reads from
-/// its input (`-@`). The patterns that follow `-x` stay; those that follow
-/// `-i` only choose among the operands, and stand in for them when none is
-/// given.
+/// its input (`-@`). The patterns that follow a bare `-x` stay, up to a lone
+/// `@`; those that follow a bare `-i` only choose among the operands, and
+/// stand in for them when none is given. `-xpat` and `--exclude=pat` are one
+/// value and open no list.
 fn zip(args: &[Arg]) -> Vec<Arg> {
     let mut moves = false;
     let mut from_input = false;
@@ -447,6 +451,11 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             .known()
             .filter(|text| !options_done && text.starts_with('-') && text.len() > 1);
         let Some(text) = option else {
+            // A lone `@` ends a list and is no operand.
+            if list.is_some() && arg.known() == Some("@") {
+                list = None;
+                continue;
+            }
             match list {
                 Some(ZipList::Exclude) => {}
                 Some(ZipList::Include) => included.push(arg.clone()),
@@ -470,9 +479,11 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             } else if is("names-stdin") {
                 from_input = true;
             } else if is("exclude") {
-                list = Some(ZipList::Exclude);
+                // `--exclude=pat` is the one pattern; a list starts only
+                // when nothing is attached.
+                list = attached.is_none().then_some(ZipList::Exclude);
             } else if is("include") {
-                list = Some(ZipList::Include);
+                list = attached.is_none().then_some(ZipList::Include);
             } else if attached.is_none()
                 && name != "test"
                 && ZIP_LONG_VALUES.iter().any(|full| is(full))
@@ -482,8 +493,15 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             continue;
         }
         let letters = &text[1..];
+        let mut before = None;
         for (at, letter) in letters.char_indices() {
             let rest = &letters[at + letter.len_utf8()..];
+            // `-db`, `-sb` and `-ws` are flags, not letters with a value.
+            let flag = matches!((before, letter), (Some('d' | 's'), 'b') | (Some('w'), 's'));
+            before = Some(letter);
+            if flag {
+                continue;
+            }
             // A value stands in the next argument when nothing follows its
             // letter, and ends the bundle.
             let separate = match letter {
@@ -495,12 +513,15 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                     from_input = true;
                     false
                 }
-                'x' => {
-                    list = Some(ZipList::Exclude);
-                    false
-                }
-                'i' => {
-                    list = Some(ZipList::Include);
+                // Bare, they open a list; with something after the letter
+                // (`-xpat`, `-x=pat`) that is the one value, and it ends the
+                // bundle.
+                'x' | 'i' => {
+                    list = rest.is_empty().then_some(if letter == 'x' {
+                        ZipList::Exclude
+                    } else {
+                        ZipList::Include
+                    });
                     false
                 }
                 'b' | 'O' | 'P' | 'Z' => rest.is_empty(),
@@ -517,7 +538,8 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             if separate {
                 iter.next();
             }
-            if separate || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
+            let value_inside = matches!(letter, 'x' | 'i') && !rest.is_empty();
+            if separate || value_inside || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
                 break;
             }
         }
@@ -543,11 +565,12 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
 
 /// The files `7z a` and `7z u` delete after adding them, which `-sdel`
 /// asks for: the operands after the archive's name, the patterns of `-i`,
-/// and the lists named with `@`.
+/// and the lists named with `@`; with none of them, `*`.
 fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
     let list = || Arg::Unknown("<files from a list>".to_string());
     let mut deletes = false;
     let mut adds = false;
+    let mut included = false;
     let mut positional = 0;
     let mut members = Vec::new();
     let mut options_done = false;
@@ -581,6 +604,7 @@ fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("-i"))
         {
             // `-i!pattern`, `-ir!pattern`, `-ir0!pattern`, `-i@list`.
+            included = true;
             let rest = text[2..]
                 .trim_start_matches(|c: char| matches!(c, 'r' | 'R' | '-') || c.is_ascii_digit());
             if let Some(pattern) = rest.strip_prefix('!') {
@@ -589,6 +613,11 @@ fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
                 members.push(list());
             }
         }
+    }
+    // Given no names and no `-i`, `a` and `u` pack everything under the
+    // working directory (the default wildcard `*`).
+    if members.is_empty() && !included && positional >= 2 {
+        members.push(Arg::Known("*".to_string()));
     }
     if deletes && adds {
         members

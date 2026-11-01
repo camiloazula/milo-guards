@@ -443,3 +443,150 @@ fn seven_zip_sdel_on_windows() {
         ],
     );
 }
+
+#[test]
+fn zip_exclude_and_include_with_an_attached_value_open_no_list() {
+    // `-xpat`, `-x=pat`, `--exclude=pat` and `-ipat` are one value; the
+    // archive's name and the members after them stay operands.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "zip -m -x'*.o' x.zip src",
+            "zip -m -xb x.zip src",
+            "zip -m -x=b x.zip src",
+            "zip -m --exclude=b x.zip src",
+            "zip -m --exc=b x.zip src",
+            "zip -mr -x'*.o' x.zip src",
+        ],
+        &[
+            ("zip -m -x'*.o' x.zip ~", Rule::Delete),
+            ("zip -mr -x'*.o' x.zip ~", Rule::Delete),
+            ("zip -m -xb x.zip ~", Rule::Delete),
+            ("zip -m -x=b x.zip ~", Rule::Delete),
+            ("zip -m --exclude=b x.zip ~", Rule::Delete),
+            ("zip -m --exc=b x.zip ~", Rule::Delete),
+            ("zip -m -mx'*.o' x.zip ~", Rule::Delete),
+            ("zip -m -i'*.c' x.zip ~", Rule::Delete),
+            ("zip -m -i=b x.zip ~", Rule::Delete),
+            ("zip -m --include=b x.zip ~", Rule::Delete),
+            ("zip -m --include=b x.zip ~ -x b", Rule::Delete),
+            ("zip -m -xb x.zip src ~", Rule::Delete),
+            ("zip -m -xb -m x.zip ~", Rule::Delete),
+            ("zip -m --exclude=b -- x.zip ~", Rule::Delete),
+            // A bare one still opens a list that swallows what follows.
+            ("zip -m x.zip ~ -x b", Rule::Delete),
+            ("zip -m x.zip ~ --exclude b", Rule::Delete),
+        ],
+    );
+    // The bare form keeps the names after it out of the members.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["zip -m x.zip src -x ~", "zip -m x.zip src --exclude ~ ~"],
+        &[],
+    );
+}
+
+#[test]
+fn zip_at_sign_ends_an_exclude_or_include_list() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["zip -m x.zip src -x ~ @", "zip -m x.zip -x b @ src"],
+        &[
+            ("zip -m -x b @ x.zip ~", Rule::Delete),
+            ("zip -m x.zip -x b @ ~", Rule::Delete),
+            ("zip -m x.zip src -x b @ ~", Rule::Delete),
+            ("zip -m x.zip -x b c @ ~", Rule::Delete),
+            ("zip -m x.zip --exclude b @ ~", Rule::Delete),
+            ("zip -m x.zip -i b @ ~", Rule::Delete),
+            ("zip -m x.zip -i b @ ~ -x c", Rule::Delete),
+            ("zip -m -x b @ x.zip src ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn zip_two_letter_flags_ending_in_b_or_s_take_no_value() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &["zip -m -db x.zip src", "zip -dbm x.zip src"],
+        &[
+            ("zip -m -db x.zip ~", Rule::Delete),
+            ("zip -m -sb x.zip ~", Rule::Delete),
+            ("zip -m -ws x.zip ~", Rule::Delete),
+            ("zip -dbm x.zip ~", Rule::Delete),
+            ("zip -sbm x.zip ~", Rule::Delete),
+            ("zip -r -dbm x.zip ~", Rule::Delete),
+            ("zip -mdb x.zip ~", Rule::Delete),
+            ("zip -mwsr x.zip ~", Rule::Delete),
+            // The single letters still take their value.
+            ("zip -mr -b /tmp x.zip ~", Rule::Delete),
+            ("zip -mr -s 100m x.zip ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn seven_zip_without_names_packs_everything_in_the_folder() {
+    let rm = reason("rm -rf *", Shell::Posix, &posix(), Rule::Delete);
+    assert!(rm.is_some());
+    for line in [
+        "7z a -sdel x.7z",
+        "7z a x.7z -sdel -x!keep",
+        "7za a -sdel x.7z",
+        "7z u -sdel x.7z",
+        "7z a x.7z -sdel -r",
+    ] {
+        assert_eq!(
+            reason(line, Shell::Posix, &posix(), Rule::Delete),
+            rm,
+            "{line}"
+        );
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        // A name or an `-i` switch says what to pack; so do commands that
+        // do not add.
+        &[
+            "7z a -sdel x.7z src",
+            "7z a x.7z -sdel -i!src",
+            "7z a x.7z -sdel -ir!src",
+            "7z a x.7z",
+            "7z a x.7z -x!keep",
+            "7z a -sdel",
+            "7z l x.7z -sdel",
+            "7z x x.7z -sdel",
+            "7z d x.7z -sdel",
+        ],
+        &[
+            ("cd ~ && 7z a -sdel x.7z", Rule::Delete),
+            ("cd ~ && 7z u -sdel x.7z", Rule::Delete),
+            ("7z a x.7z -sdel -i!~", Rule::Delete),
+            ("7z a x.7z -sdel -i@list.txt", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["7z a -sdel x.7z src"],
+        &[
+            ("7z a -sdel x.7z", Rule::Delete),
+            ("7z u x.7z -sdel", Rule::Delete),
+            ("cd ~; 7z a -sdel x.7z", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["7z a -sdel x.7z src"],
+        &[
+            ("7z a -sdel x.7z", Rule::Delete),
+            ("7z u x.7z -sdel -x!keep", Rule::Delete),
+            ("cd %USERPROFILE% && 7z a -sdel x.7z", Rule::Delete),
+        ],
+    );
+}
