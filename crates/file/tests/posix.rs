@@ -3,7 +3,7 @@
 mod common;
 
 use common::{exactly, macos, posix, risky, safe};
-use milo_guards_file::{judge, Access, Paths, Rule};
+use milo_guards_file::{judge, Access, Paths, Protected, Rule};
 
 /// Where the agent works, with the home directory as the workspace.
 fn home() -> Paths {
@@ -1215,16 +1215,30 @@ fn a_macs_links_to_the_root_are_not_links_on_any_other_system() {
             &[(path, &[Rule::WriteOutside][..])],
         );
     }
-    // A read lands where it is spelled: outside, and no key.
+    // A read of a secret is a finding however it is spelled: the links are
+    // dropped on every system when looking one up, which is noise on Linux
+    // (accepted: matching too much fails closed).
+    risky(
+        Access::Read,
+        &posix(),
+        &[
+            (
+                "/Volumes/Macintosh HD/home/me/.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            ("/System/Volumes/Data/home/me/.ssh/id_rsa", Rule::ReadSecret),
+            ("/System/Volumes/Data/etc/shadow", Rule::ReadSecret),
+            ("/Volumes/Macintosh HD/etc/shadow", Rule::ReadSecret),
+            ("/System/Volumes/Data/proc/self/environ", Rule::ReadSecret),
+            ("/Volumes/Macintosh HD/dev/mem", Rule::ReadSecret),
+        ],
+    );
     safe(
         Access::Read,
         &posix(),
         &[
-            "/Volumes/Macintosh HD/home/me/.ssh/id_rsa",
-            "/System/Volumes/Data/home/me/.ssh/id_rsa",
-            "/System/Volumes/Data/etc/shadow",
-            "/System/Volumes/Data/proc/self/environ",
-            "/Volumes/Macintosh HD/dev/mem",
+            "/Volumes/Macintosh HD/home/me/work/repo/src/main.rs",
+            "/Volumes/Backup/x",
         ],
     );
     // On a Mac, whose home is under `/Users`, the same paths are the root.
@@ -1290,5 +1304,77 @@ fn a_containers_secrets_and_the_memory_a_system_keeps_on_disk_are_secrets() {
             ("/run/secrets/x", Rule::WriteSensitive),
             ("/private/var/vm/sleepimage", Rule::WriteSensitive),
         ],
+    );
+}
+
+#[test]
+fn a_mac_whose_home_is_roots_reads_every_link_spelling() {
+    for home in ["/var/root", "/private/var/root"] {
+        let paths = Paths::new("/tmp/w", home, ["/tmp/w"]);
+        let rows: Vec<(&str, Rule)> = [
+            "/System/Volumes/Data/Users/alice/.ssh/id_rsa",
+            "/Volumes/Macintosh HD/Users/alice/.ssh/id_rsa",
+            "/Volumes/Macintosh HD/var/root/.ssh/id_rsa",
+            "/Volumes/Macintosh HD/private/var/root/.ssh/id_rsa",
+            "/System/Volumes/Data/private/var/root/.ssh/id_rsa",
+            "/Volumes/Macintosh HD/etc/master.passwd",
+            "/System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist",
+            "/Sy\u{17f}tem/Volumes/Data/Users/alice/.ssh/id_rsa",
+            "/Volumes/Macintosh HD - Data/Users/alice/.ssh/id_rsa",
+        ]
+        .iter()
+        .map(|path| (*path, Rule::ReadSecret))
+        .collect();
+        risky(Access::Read, &paths, &rows);
+        // The workspace by a link, on such a Mac.
+        safe(
+            Access::Write,
+            &paths,
+            &[
+                "/System/Volumes/Data/tmp/w/x",
+                "/Volumes/Macintosh HD/tmp/w/x",
+                "/tmp/w/x",
+            ],
+        );
+        risky(
+            Access::Write,
+            &paths,
+            &[
+                (
+                    "/Volumes/Macintosh HD/Users/alice/.zshrc",
+                    Rule::WriteSensitive,
+                ),
+                (
+                    "/Volumes/Macintosh HD/etc/master.passwd",
+                    Rule::WriteSensitive,
+                ),
+            ],
+        );
+    }
+    // On Linux a link-spelled write into the workspace stays outside it.
+    exactly(
+        Access::Write,
+        &posix(),
+        &[
+            (
+                "/Volumes/Macintosh HD/home/me/work/repo/x",
+                &[Rule::WriteOutside][..],
+            ),
+            (
+                "/System/Volumes/Data/home/me/work/repo/x",
+                &[Rule::WriteOutside][..],
+            ),
+        ],
+    );
+    // A protected path by a link is protected on any system.
+    let protected =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+    exactly(
+        Access::Write,
+        &protected,
+        &[(
+            "/Volumes/Macintosh HD/home/me/.agent/x",
+            &[Rule::WriteProtected][..],
+        )],
     );
 }

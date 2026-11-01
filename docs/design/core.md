@@ -196,11 +196,15 @@ itself.
 - A name is also its Windows 8.3 short name, in the home directory and the
   sensitive places as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
   is `C:\Users\Camilo Azula\.ssh\id_rsa`. A POSIX name has no short form.
-- On a Mac (a home directory under `/Users`) macOS's links to the root are
-  read: `/System/Volumes/Data/...`, `/Volumes/Macintosh HD/...` and
-  `/Volumes/Macintosh HD - Data/...` are `/...`, as often as they come. On any
-  other system those paths do not exist, a write to one creates folders, and
-  they are what they are spelled as. Every path is made absolute first (`~`
+- macOS's links to the root are read: `/System/Volumes/Data/...`,
+  `/Volumes/Macintosh HD/...` and `/Volumes/Macintosh HD - Data/...` are
+  `/...`, as often as they come. Where matching too much fails closed (a
+  secret, the home directory, another user's home, a protected path) they are
+  dropped on every system, which costs noise: `/Volumes/Macintosh HD/etc/shadow`
+  is a secret on Linux too. For the workspace and the temporary folders they
+  are dropped only on a Mac (a home directory under `/Users`, or root's,
+  `/var/root` or `/private/var/root`): elsewhere those paths do not exist, a
+  write to one creates folders, and it is not the workspace's. Every path is made absolute first (`~`
   and `..` applied, the working directory prepended), and then the links are
   dropped, so `../../../../System/Volumes/Data/Users/me/.ssh` and `~/../..`
   spellings are read as `/Users/me/.ssh`. Their names compare as a Mac's file

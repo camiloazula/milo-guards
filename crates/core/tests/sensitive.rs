@@ -645,20 +645,28 @@ fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled(
 }
 
 #[test]
-fn a_macs_links_are_read_only_on_a_mac() {
-    // A Mac has its home under `/Users`. On any other system the paths do
-    // not exist: a write creates folders, so they must not be the root.
+fn a_macs_links_are_the_workspace_only_on_a_mac_and_a_secret_on_every_system() {
+    // On Linux the paths do not exist, and a write creates folders: they are
+    // not the workspace's. Where matching too much fails closed (a key, the
+    // home directory, a protected path) the links are dropped on every
+    // system, which costs noise: `/Volumes/Macintosh HD/etc/shadow` is a
+    // secret on Linux too.
     for paths in [posix(), Paths::new("/srv/x", "/srv/x", ["/srv/x"])] {
         rows(
             &paths,
             POSIX,
             &[
                 ("/Volumes/Macintosh HD/home/me/work/repo/x", Place::Outside),
+                ("/System/Volumes/Data/tmp/x", Place::Top("a system folder")),
                 (
                     "/System/Volumes/Data/home/me/.ssh/id_rsa",
-                    Place::Top("a system folder"),
+                    secret("your SSH keys"),
                 ),
-                ("/Volumes/Macintosh HD/etc/shadow", Place::Outside),
+                (
+                    "/Volumes/Macintosh HD/etc/shadow",
+                    secret("the system's password hashes"),
+                ),
+                ("/System/Volumes/Data", Place::Top("the root of the disk")),
             ],
         );
     }
@@ -667,7 +675,10 @@ fn a_macs_links_are_read_only_on_a_mac() {
         "/System/Volumes/Data/dev/mem",
         "/Volumes/Macintosh HD/dev/mem",
     ] {
-        assert_eq!(linux.kernel(Spelling::Plain(path), POSIX), None, "{path}");
+        assert!(
+            linux.kernel(Spelling::Plain(path), POSIX).is_some(),
+            "{path}"
+        );
         assert!(
             Resolver::new(&mac())
                 .kernel(Spelling::Plain(path), POSIX)
@@ -1040,4 +1051,77 @@ fn a_git_folder_at_any_depth_is_the_repositorys_own() {
     // Known only when it runs: no answer.
     assert_eq!(git(r"vendor\.git::$INDEX_ALLOCATION\hooks\x"), None);
     assert_eq!(git("D:vendor/.git/x"), None);
+}
+
+#[test]
+fn a_mac_whose_home_is_roots_reads_every_link_spelling() {
+    let sshkey = secret("your SSH keys");
+    let hashes = secret("the system's password hashes");
+    for home in [
+        "/var/root",
+        "/private/var/root",
+        "/System/Volumes/Data/var/root",
+        "/VAR/ROOT",
+    ] {
+        let paths = Paths::new("/tmp/w", home, ["/tmp/w"]);
+        rows(
+            &paths,
+            POSIX,
+            &[
+                ("/System/Volumes/Data/Users/alice/.ssh/id_rsa", sshkey),
+                ("/Volumes/Macintosh HD/Users/alice/.ssh/id_rsa", sshkey),
+                (
+                    "/Volume\u{17f}/Macintosh HD/Users/alice/.ssh/id_rsa",
+                    sshkey,
+                ),
+                ("/Volumes/Macintosh HD/var/root/.ssh/id_rsa", sshkey),
+                ("/Volumes/Macintosh HD/private/var/root/.ssh/id_rsa", sshkey),
+                ("/System/Volumes/Data/private/var/root/.ssh/id_rsa", sshkey),
+                ("/Volumes/Macintosh HD/etc/master.passwd", hashes),
+                (
+                    "/System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist",
+                    hashes,
+                ),
+                (
+                    "/Volumes/Macintosh HD/private/var/vm/sleepimage",
+                    secret("the memory the system keeps on disk"),
+                ),
+                // The workspace and the temporary folders by the links, on
+                // such a Mac.
+                ("/System/Volumes/Data/tmp/w/x", Place::Inside),
+                ("/Volumes/Macintosh HD/tmp/w/x", Place::Inside),
+                ("/System/Volumes/Data/tmp/x", Place::Temp { exact: false }),
+            ],
+        );
+    }
+    // The same on a Mac whose home is spelled by the links.
+    for home in [
+        "/System/Volumes/Data/Users/me",
+        "/users/me",
+        "/Volumes/Macintosh HD/Users/me",
+    ] {
+        let paths = Paths::new("/tmp/w", home, ["/tmp/w"]);
+        rows(
+            &paths,
+            POSIX,
+            &[
+                ("/System/Volumes/Data/Users/alice/.ssh/id_rsa", sshkey),
+                ("/Users/me/.ssh/id_rsa", sshkey),
+                ("/Volumes/Macintosh HD/Users/me/.ssh/id_rsa", sshkey),
+                ("/Volumes/Macintosh HD/tmp/w/x", Place::Inside),
+            ],
+        );
+    }
+    // A protected path is looked up with the links dropped on any system.
+    let protected = Paths::new("/home/me/repo", "/home/me", ["/home/me/repo"]).with_protected([
+        milo_guards_core::Protected::folder("/home/me/.agent", "the agent's settings"),
+    ]);
+    assert_eq!(
+        at(&protected, "/Volumes/Macintosh HD/home/me/.agent/x", POSIX),
+        Place::Protected("the agent's settings")
+    );
+    assert_eq!(
+        at(&protected, "/Volumes/Macintosh HD/home/me/repo/x", POSIX),
+        Place::Outside
+    );
 }

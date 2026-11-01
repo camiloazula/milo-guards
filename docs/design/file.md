@@ -214,6 +214,11 @@ Not covered, on purpose, and what to do:
   and `/proc/self/status` are `read_secret` (the whitelist is of what is safe),
   and a workspace directly under `/home` is another user's home directory to
   core, so its own `.npmrc` is `read_secret`.
+- **A Mac's links on any system.** A secret, the home directory and a
+  protected path are looked up with `/System/Volumes/Data` and
+  `/Volumes/Macintosh HD` dropped on every system, so on Linux
+  `/Volumes/Macintosh HD/etc/shadow` is a `read_secret`. The workspace is
+  matched by the links only on a Mac.
 - **A workspace of `/`** makes a write anywhere Safe, since the caller said the
   agent may write there; keys, startup files and `.git` stay findings. That is
   the caller's choice to make.

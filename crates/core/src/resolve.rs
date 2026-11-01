@@ -178,30 +178,45 @@ impl Loc {
     /// every path is made absolute first (`~` and `..` applied, the working
     /// directory prepended). Names compare as a Mac's file system does, by
     /// the widest fold (`/Syſtem/Volumes/Data` is `/System/Volumes/Data`
-    /// there). Only a Mac's paths are read this way.
+    /// there). Everything that fails closed when it matches too much (the
+    /// home directories, the secrets, protected paths) looks a path up with the
+    /// links dropped on every system; the workspace and the temporary folders
+    /// only on a Mac, where they are links, since elsewhere the paths do not
+    /// exist and matching them would make a path that creates folders look
+    /// inside the workspace.
     fn firm(mut self) -> Self {
+        while let Some(link) = self.link() {
+            self.parts.drain(..link);
+        }
+        self
+    }
+
+    /// How many leading parts are one of the links.
+    fn link(&self) -> Option<usize> {
         const LINKS: [&[&str]; 3] = [
             &["System", "Volumes", "Data"],
             &["Volumes", "Macintosh HD"],
             &["Volumes", "Macintosh HD - Data"],
         ];
-        while matches!(self.root, Root::Unix) {
-            let link = LINKS.iter().find(|link| {
+        if !matches!(self.root, Root::Unix) {
+            return None;
+        }
+        LINKS
+            .iter()
+            .find(|link| {
                 link.len() <= self.parts.len()
                     && self
                         .parts
                         .iter()
                         .zip(**link)
                         .all(|(part, name)| same_fold(part, name))
-            });
-            match link {
-                Some(link) => {
-                    self.parts.drain(..link.len());
-                }
-                None => break,
-            }
-        }
-        self
+            })
+            .map(|link| link.len())
+    }
+
+    /// This location with the links dropped, or `None` when it has none.
+    fn stripped(&self) -> Option<Self> {
+        self.link().map(|_| self.clone().firm())
     }
 }
 
@@ -771,20 +786,22 @@ impl Resolver {
     /// makes it a Windows machine (its temporary and system folders are
     /// Windows ones); any other makes it a POSIX one.
     pub fn new(paths: &Paths) -> Self {
-        // A Mac has a home under `/Users`, and only a Mac links its root and
-        // its data volume at other names (`/System/Volumes/Data`,
-        // `/Volumes/Macintosh HD`): on any other system those paths do not
-        // exist, and reading them as the root would make a path that
-        // creates folders outside the workspace look inside it.
-        let mac = {
-            let home = Loc::absolute(&paths.home.to_string_lossy());
-            matches!(home.root, Root::Unix)
-                && home
-                    .firm()
-                    .parts
-                    .first()
-                    .is_some_and(|first| first.eq_ignore_ascii_case("Users"))
-        };
+        // The home directory, protected paths and secrets are looked up with a
+        // Mac's links dropped on every system (see `Loc::firm`). The
+        // workspace, the working directory and the temporary folders are only
+        // on a Mac: its home is under `/Users` (or root's, `/var/root`).
+        let home = Loc::absolute(&paths.home.to_string_lossy()).firm();
+        let mac = matches!(home.root, Root::Unix)
+            && match home.parts.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                [users, ..] if users.eq_ignore_ascii_case("Users") => true,
+                [var, root] => var.eq_ignore_ascii_case("var") && root.eq_ignore_ascii_case("root"),
+                [private, var, root] => {
+                    private.eq_ignore_ascii_case("private")
+                        && var.eq_ignore_ascii_case("var")
+                        && root.eq_ignore_ascii_case("root")
+                }
+                _ => false,
+            };
         let absolute = |text: &std::path::Path| {
             let loc = Loc::absolute(&text.to_string_lossy());
             if mac {
@@ -794,7 +811,6 @@ impl Resolver {
             }
         };
         let cwd = absolute(&paths.cwd);
-        let home = absolute(&paths.home);
         let workspaces: Vec<Loc> = paths.workspaces.iter().map(|f| absolute(f)).collect();
         let (temps, system) = if home.windows() {
             let drive = Loc::at(home.root.clone());
@@ -895,7 +911,7 @@ impl Resolver {
             .iter()
             .map(|entry| {
                 (
-                    absolute(&entry.path),
+                    Loc::absolute(&entry.path.to_string_lossy()).firm(),
                     entry.words,
                     entry.kind == ProtectedKind::Folder,
                 )
@@ -957,7 +973,7 @@ impl Resolver {
         // it (`src/*/../../x`) still climbs; what a pattern matches lies in
         // the folder before its first wildcard part that no `..` cancels.
         let marked = mark_wildcards(text, flavour);
-        let mut loc = self.locate(path.with(marked.as_deref().unwrap_or(text)), flavour);
+        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
         // From the first wildcard part on, as the text of each part.
         let wildcards: Vec<&str> = text
             .split(flavour.separators())
@@ -995,7 +1011,9 @@ impl Resolver {
             return place;
         }
         let place = Self::pattern_place(place, text, tail.as_deref(), flavour, hidden);
-        match self.picks_protected(&loc, tail.as_deref(), flavour, hidden, place, holding) {
+        let stripped = loc.stripped();
+        let strip = stripped.as_ref().unwrap_or(&loc);
+        match self.picks_protected(strip, tail.as_deref(), flavour, hidden, place, holding) {
             Some(words) => Place::Protected(words),
             None => place,
         }
@@ -1090,12 +1108,7 @@ impl Resolver {
 
     /// The location a path names, made absolute however it was spelled.
     fn locate(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
-        let loc = self.locate_raw(path, flavour);
-        if self.mac {
-            loc.firm()
-        } else {
-            loc
-        }
+        self.locate_raw(path, flavour).firm()
     }
 
     fn locate_raw(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
@@ -1141,24 +1154,34 @@ impl Resolver {
         // The home directory, or a folder holding it. A name that is the
         // home directory's without case (a Mac's file system ignores it too)
         // or by its Windows short name is the same folder.
-        if above(loc, &self.home) {
+        let stripped = loc.stripped();
+        let strip = stripped.as_ref().unwrap_or(loc);
+        if strip.parts.is_empty() {
+            return Place::Top("the root of the disk");
+        }
+        if above(strip, &self.home) {
             return Place::Home {
-                exact: loc.parts.len() == self.home.parts.len(),
+                exact: strip.parts.len() == self.home.parts.len(),
             };
         }
-        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(loc, file)) {
+        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(strip, file)) {
             return Place::Protected(words);
         }
-        let place = self.judge_plain(loc, flavour);
+        let place = self.judge_plain(loc, strip, flavour);
         if holding && place.harmless() {
-            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(loc, file)) {
+            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(strip, file))
+            {
                 return Place::Protected(words);
             }
         }
         place
     }
 
-    fn judge_plain(&self, loc: &Loc, flavour: Flavour) -> Place {
+    /// `loc` is the location as spelled, `strip` the same with a Mac's links
+    /// dropped. The workspace and the temporary folders are matched by the
+    /// spelling on any system but a Mac, the secrets always by the stripped.
+    fn judge_plain(&self, spelled: &Loc, strip: &Loc, flavour: Flavour) -> Place {
+        let loc = if self.mac { strip } else { spelled };
         for workspace in &self.workspaces {
             let folder = &workspace.loc;
             if loc.holds(folder) {
@@ -1177,14 +1200,14 @@ impl Resolver {
                 // is the workspace) does not make the key the agent's; one
                 // inside such a folder keeps its own paths.
                 if workspace.holds_sensitive && !workspace.in_sensitive {
-                    if let Some((words, kind)) = self.sensitive_at(loc) {
+                    if let Some((words, kind)) = self.sensitive_at(strip) {
                         return Place::Sensitive(words, kind);
                     }
                 }
                 return Place::Inside;
             }
         }
-        if let Some((words, kind)) = self.sensitive_at(loc) {
+        if let Some((words, kind)) = self.sensitive_at(strip) {
             return Place::Sensitive(words, kind);
         }
         if let Some(temp) = self.temps.iter().find(|temp| temp.holds(loc)) {
