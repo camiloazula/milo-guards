@@ -27,7 +27,13 @@ pub(crate) use wrappers::{uv_script, RUNNERS};
 /// too wrapped to read.
 const MAX_WRAPPERS: usize = 16;
 
+/// How many times one line may fork into two readings (see
+/// [`Launch::Either`]): each fork is one more reading to judge, so this
+/// bounds the work whatever the line does. A plain line has none or a few.
+const MAX_FORKS: usize = 32;
+
 /// What a program does with the rest of its arguments.
+#[derive(PartialEq)]
 pub(super) enum Launch {
     /// It is the program the rules judge.
     Itself,
@@ -61,14 +67,22 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
-    add_launched(split, unit, depth, None);
+    add_launched(split, unit, depth, MAX_WRAPPERS, None);
 }
 
-/// [`add_unit`], where the first launch is `given` when there is one (one
-/// reading of a line that [`Launch::Either`] reads two ways).
-fn add_launched(split: &mut Split, mut unit: Unit, depth: usize, given: Option<Launch>) {
+/// [`add_unit`], where at most `wrappers` more may come off and the first
+/// launch is `given` when there is one (one reading of a line that
+/// [`Launch::Either`] reads two ways). Both readings share the wrappers
+/// left, so a line past them is too wrapped however it forks.
+fn add_launched(
+    split: &mut Split,
+    mut unit: Unit,
+    depth: usize,
+    wrappers: usize,
+    given: Option<Launch>,
+) {
     let mut given = given;
-    for _ in 0..MAX_WRAPPERS {
+    for used in 0..wrappers {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
             split.scope_hidden(true);
@@ -96,8 +110,18 @@ fn add_launched(split: &mut Split, mut unit: Unit, depth: usize, given: Option<L
         }
         match given.take().unwrap_or_else(|| launch(&key, &unit)) {
             Launch::Either(first, second) => {
-                add_launched(split, unit.clone(), depth, Some(*first));
-                add_launched(split, unit, depth, Some(*second));
+                if !split.fork(MAX_FORKS) {
+                    split.problem(
+                        Rule::Unreadable,
+                        "reads in too many ways to judge each",
+                        Some(unit.program.text()),
+                    );
+                    split.push(unit);
+                    return;
+                }
+                let left = wrappers - used;
+                add_launched(split, unit.clone(), depth, left, Some(*first));
+                add_launched(split, unit, depth, left, Some(*second));
                 return;
             }
             Launch::Itself => {

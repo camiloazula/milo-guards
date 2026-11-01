@@ -460,6 +460,10 @@ const PNPM_COMMANDS: &[&str] = &[
     "whoami",
 ];
 
+/// The words that stand for pnpm's `-r` (`pnpm recursive exec`,
+/// pnpm.io/cli/recursive): they run the command in every project.
+const PNPM_RECURSIVE: [&str; 3] = ["recursive", "multi", "m"];
+
 /// The delete tools that come as packages: a package runner or a package
 /// manager's bin directory starts them.
 pub(crate) const DELETERS: [&str; 5] = ["rimraf", "del", "del-cli", "premove", "rmrf"];
@@ -693,8 +697,18 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
         "npm" => locate(args, &[(Opts::Npm, &["exec", "exe", "x"])], Opts::Npm),
         // `pnpx` and `pnx` are `pnpm dlx`.
         "pnpx" | "pnx" => Some((0, Opts::Pnpm.after(args))),
-        "pnpm" => locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm)
-            .or_else(|| pnpm_direct(args)),
+        // `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+        // `pnpm recursive exec` is `pnpm -r exec`.
+        "pnpm" => locate(
+            args,
+            &[
+                (Opts::Pnpm, &PNPM_RECURSIVE),
+                (Opts::Pnpm, &["dlx", "exec"]),
+            ],
+            Opts::Pnpm,
+        )
+        .or_else(|| locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm))
+        .or_else(|| pnpm_direct(args)),
         "yarn" => locate(
             args,
             &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
@@ -853,7 +867,15 @@ pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
 /// own words: "pnpm will execute the command as a shell script"), so it is
 /// read as `pnpm exec NAME args`. A command of pnpm is its own business.
 fn pnpm_direct(args: &[Arg]) -> Option<(usize, Option<usize>)> {
-    let at = Opts::Pnpm.after(args)?;
+    let mut at = Opts::Pnpm.after(args)?;
+    // `pnpm recursive NAME` is `pnpm -r NAME`.
+    if args
+        .get(at)?
+        .known()
+        .is_some_and(|name| PNPM_RECURSIVE.contains(&name))
+    {
+        at += 1 + Opts::Pnpm.after(args.get(at + 1..)?)?;
+    }
     let name = args.get(at)?.known()?;
     (!PNPM_COMMANDS.contains(&name)).then_some((at, Some(at)))
 }

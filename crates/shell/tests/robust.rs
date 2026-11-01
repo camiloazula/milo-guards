@@ -243,3 +243,37 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     // A few reads of a short script are fine.
     assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
+)]
+fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
+    // `bun -F x --package run` reads two ways, and each leads to another
+    // `bun`: the readings share the wrappers a line may have and the forks
+    // it may make, so the work does not double at each group, never
+    // recurses without a bound, and a line past them is unreadable.
+    for group in ["bun -F x --package run ", "bun -F x run "] {
+        for count in [16, 20, 40, 600, 2_000] {
+            let line = format!("{}rm -rf ~", group.repeat(count));
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let started = std::time::Instant::now();
+            let assessment = classify(&line, Shell::Posix, &posix());
+            let took = started.elapsed();
+            assert!(
+                took < std::time::Duration::from_millis(200),
+                "{count} x {group:?} took {took:?}"
+            );
+            assert!(!assessment.is_safe(), "{count} x {group:?}");
+            assert_ne!(effect(&line, Shell::Posix, &posix()), Effect::ReadsOnly);
+        }
+    }
+    // Past the wrappers a line may have, it is too wrapped, as for any other
+    // runner.
+    let line = format!("{}rm -rf ~", "bun -F x run ".repeat(40));
+    assert!(classify(&line, Shell::Posix, &posix())
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable));
+}

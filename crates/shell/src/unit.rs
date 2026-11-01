@@ -68,7 +68,7 @@ pub(crate) enum Reads {
 }
 
 /// One program the line runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -251,6 +251,9 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How many times the line has forked into two readings, each judged
+    /// (see [`crate::launch::Launch::Either`]).
+    forks: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -344,6 +347,13 @@ impl Later {
 }
 
 impl Split {
+    /// Count one more fork of the line into two readings; `false` once
+    /// `most` forks have been made, when the line is not read any further.
+    pub(crate) fn fork(&mut self, most: usize) -> bool {
+        self.forks += 1;
+        self.forks <= most
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);

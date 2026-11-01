@@ -457,6 +457,8 @@ fn bun_launch(unit: &Unit) -> Launch {
     let by_bun = bun_subcommand(unit, plain);
     match (by_value, by_bun) {
         (Launch::Itself, other) | (other, Launch::Itself) => other,
+        // Two readings that come to the same are judged once.
+        (value, bun) if value == bun => value,
         (value, bun) => Launch::Either(Box::new(value), Box::new(bun)),
     }
 }

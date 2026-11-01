@@ -87,7 +87,7 @@ bun itself takes the first word that does not start with a dash as its
 subcommand, before any option reads a value (`bun -c rimraf a` runs `rimraf`,
 `bun -F x echo` runs `bunx echo`, `bun --title repl` opens the REPL), so that
 word is read too, and when it is `x`, `run`, `exec`, `repl` or a delete tool
-both readings are judged and the riskier one counts; deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
+both readings are judged and the riskier one counts (the two share the wrappers a line may have and at most 32 such forks are made in a line, past which it is unreadable, so a line that forks at every `bun` is too wrapped like any other, not slow); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
 options real uv still takes a value for (`--python-preference`,
 `--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
 (`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
@@ -106,7 +106,8 @@ name (`yarn run rimraf dist`). `pnpm NAME` runs the script NAME of the project
 and, with none by that name, the program (pnpm: "will execute the command as a
 shell script"), so it is read as `pnpm exec NAME` unless NAME is a command of
 pnpm, its alias, or an npm command it passes on (`pnpm rm lodash` removes a
-dependency): `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
+dependency): `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+`pnpm recursive exec rm -rf ~` is read as `pnpm -r exec rm -rf ~`; `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
 the program, `pnpm rimraf dist` is a delete tool, and an unknown script name
 (`pnpm lint`, `pnpm dev`, `pnpm build`) is safe. `bun run name`
 also starts any program on the path when it is no script (`bun run rm -rf

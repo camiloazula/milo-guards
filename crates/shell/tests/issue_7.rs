@@ -1468,3 +1468,41 @@ fn bun_with_an_option_value_is_read_in_cmd_by_both_readings() {
         ],
     );
 }
+
+#[test]
+fn pnpm_recursive_multi_and_m_are_pnpm_dash_r() {
+    // `recursive`, `multi` and `m` are pnpm's own spellings of `-r`
+    // (pnpm.io/cli/recursive): `pnpm recursive exec` is `pnpm -r exec`.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pnpm recursive exec tsc",
+            "pnpm m exec tsc --noEmit",
+            "pnpm multi exec -- tsc",
+            "pnpm recursive install",
+            "pnpm m run build",
+            "pnpm multi test",
+            "pnpm recursive",
+            "pnpm recursive lint",
+            "pnpm recursive exec",
+            "pnpm exec m x",
+        ],
+        &[
+            ("pnpm -r exec rm -rf ~", Rule::Delete),
+            ("pnpm recursive exec rm -rf ~", Rule::Delete),
+            ("pnpm m exec rm -rf ~", Rule::Delete),
+            ("pnpm multi exec rm -rf ~", Rule::Delete),
+            ("pnpm recursive exec -- rm -rf ~", Rule::Delete),
+            ("pnpm -C app recursive exec rm -rf ~", Rule::Delete),
+            ("pnpm recursive --filter app exec rm -rf ~", Rule::Delete),
+            ("pnpm recursive dlx rimraf ~", Rule::Delete),
+            ("pnpm multi exec rimraf ~", Rule::Delete),
+            ("pnpm recursive exec -c 'rm -rf ~'", Rule::Delete),
+            ("pnpm recursive -c exec 'rm -rf ~'", Rule::Delete),
+            ("pnpm recursive sh -c 'rm -rf ~'", Rule::Delete),
+            ("pnpm m rimraf ~", Rule::Delete),
+            ("pnpm recursive exec $TOOL", Rule::Unknown),
+        ],
+    );
+}
