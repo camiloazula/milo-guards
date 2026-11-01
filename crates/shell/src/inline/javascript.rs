@@ -1,11 +1,11 @@
 //! Inline JavaScript (Node, Bun, Deno): the calls that delete, write, move
 //! and run, with the paths they name, found with tree-sitter-javascript.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::{environment, join, mode, path, writes, Act, Language, Reading};
+use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language, Reading};
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
@@ -17,6 +17,9 @@ pub(super) fn read(code: &str) -> Reading {
     let mut reader = Reader {
         src: code,
         aliases: HashMap::new(),
+        modules: HashSet::new(),
+        names: HashMap::new(),
+        walking: false,
         reading: Reading::default(),
     };
     let Some(tree) = tree else {
@@ -28,11 +31,25 @@ pub(super) fn read(code: &str) -> Reading {
         reader.reading.unread(code);
     }
     reader.collect_aliases(root);
-    unit::for_each_node(root, |node| match node.kind() {
-        "call_expression" | "new_expression" => reader.call(node),
-        "member_expression" | "identifier" => reader.reference(node),
-        "subscript_expression" => reader.subscript(node),
-        _ => {}
+    reader.walking = true;
+    // The walk stops once the code is found to nest too deeply to read: the
+    // line is unreadable whatever else is in it.
+    walk(root, |node, field, above| {
+        match node.kind() {
+            "call_expression" | "new_expression" => reader.call(node, field, above),
+            "member_expression"
+            | "identifier"
+            | "shorthand_property_identifier"
+            | "subscript_expression" => reader.reference(node, field, above),
+            // `with (require('fs')) rmSync(…)`: every name in the block may be
+            // a member of the object.
+            "with_statement" => reader.reading.unread(reader.text(node)),
+            _ => {}
+        }
+        if node.kind() == "subscript_expression" {
+            reader.subscript(node);
+        }
+        !reader.reading.deep
     });
     reader.reading
 }
@@ -174,6 +191,11 @@ fn whole(name: &str) -> Option<Kind> {
         | "process.mainModule"
         | "process.execve"
         | "module.require"
+        | "module._load"
+        | "module.prototype.require"
+        | "Bun.$.cwd"
+        | "zx.$.cwd"
+        | "zx.cd"
         | "module.constructor"
         | "module.createRequire"
         | "require.main"
@@ -186,7 +208,8 @@ fn whole(name: &str) -> Option<Kind> {
 }
 
 /// The objects a computed name looked up on cannot be followed.
-const ROOTS: [&str; 10] = [
+const ROOTS: [&str; 11] = [
+    "module",
     "fs",
     "fs.promises",
     "child_process",
@@ -208,8 +231,21 @@ struct Reader<'s> {
     /// stands for: `rm` from `const { rm } = require('fs/promises')` is
     /// `fs.promises.rm`.
     aliases: HashMap<String, String>,
+    /// The modules `require` and `import` named: an object that holds the
+    /// calls the reader looks for, which handed on as a value may come back
+    /// under a name it does not follow.
+    modules: HashSet<String>,
+    /// The dotted name of each node, found once: a chain of members is asked
+    /// for from each node in it, and would be built again each time. Only
+    /// filled once the names `require` and `import` bound are all known.
+    names: HashMap<usize, Option<String>>,
+    walking: bool,
     reading: Reading,
 }
+
+/// The shells whose `-c` reads a command line: another program named by
+/// `shell` is run with `-c LINE` and reads the line its own way.
+const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "ash"];
 
 /// The arguments of a call.
 struct Args<'t> {
@@ -307,11 +343,13 @@ impl<'s> Reader<'s> {
                     "identifier" => {
                         self.aliases
                             .insert(self.text(part).to_string(), module.clone());
+                        self.modules.insert(module.clone());
                     }
                     "namespace_import" => {
                         if let Some(name) = part.named_child(0) {
                             self.aliases
                                 .insert(self.text(name).to_string(), module.clone());
+                            self.modules.insert(module.clone());
                         }
                     }
                     "named_imports" => {
@@ -352,6 +390,12 @@ impl<'s> Reader<'s> {
                 self.aliases
                     .insert(self.text(name).to_string(), from.to_string());
             }
+            // `{ rmSync: r = null }`: the name takes the member.
+            "assignment_pattern" => {
+                if let Some(left) = name.child_by_field_name("left") {
+                    self.bind_pattern(left, from, level + 1);
+                }
+            }
             "object_pattern" => {
                 let mut cursor = name.walk();
                 for part in name.named_children(&mut cursor) {
@@ -361,6 +405,15 @@ impl<'s> Reader<'s> {
                             self.aliases
                                 .insert(property.to_string(), format!("{from}.{property}"));
                         }
+                        // `{ rmSync = null }`: the member, with a default for
+                        // when it is not there.
+                        "object_assignment_pattern" => {
+                            if let Some(left) = part.child_by_field_name("left") {
+                                let property = self.text(left);
+                                self.aliases
+                                    .insert(property.to_string(), format!("{from}.{property}"));
+                            }
+                        }
                         "pair_pattern" => {
                             if let (Some(key), Some(value)) = (
                                 part.child_by_field_name("key"),
@@ -369,6 +422,11 @@ impl<'s> Reader<'s> {
                                 let inner = format!("{from}.{}", self.text(key));
                                 self.bind_pattern(value, &inner, level + 1);
                             }
+                        }
+                        // `{ ...rest }` of a module holds all of its members
+                        // under a name that is not theirs.
+                        "rest_pattern" if self.is_module(from) => {
+                            self.reading.unread(self.text(name));
                         }
                         _ => {}
                     }
@@ -386,8 +444,26 @@ impl<'s> Reader<'s> {
             self.reading.deep = true;
             return None;
         }
+        if self.walking {
+            if let Some(known) = self.names.get(&node.id()) {
+                return known.clone();
+            }
+        }
+        let name = self.name(node, level);
+        if self.walking && !self.reading.deep {
+            self.names.insert(node.id(), name.clone());
+        }
+        name
+    }
+
+    /// Whether `name` is an object that holds calls the reader looks for.
+    fn is_module(&self, name: &str) -> bool {
+        ROOTS.contains(&name) || name == "require" || self.modules.contains(name)
+    }
+
+    fn name(&mut self, node: Node<'_>, level: usize) -> Option<String> {
         match node.kind() {
-            "identifier" => {
+            "identifier" | "shorthand_property_identifier" => {
                 let name = self.text(node);
                 Some(
                     self.aliases
@@ -417,6 +493,11 @@ impl<'s> Reader<'s> {
                 let inner = node.named_child(0)?;
                 self.qualified(inner, level + 1)
             }
+            // `a = b = require('fs')`: `a` is the module too.
+            "assignment_expression" => {
+                let right = node.child_by_field_name("right")?;
+                self.qualified(right, level + 1)
+            }
             "call_expression" => {
                 let function = node.child_by_field_name("function")?;
                 // `require('fs')` and `import('fs')` are the module.
@@ -424,7 +505,9 @@ impl<'s> Reader<'s> {
                 if required || self.text(function) == "import" {
                     let args = Args::read(node);
                     let source = self.literal(args.get(0)?)?;
-                    return Some(module(&source));
+                    let module = module(&source);
+                    self.modules.insert(module.clone());
+                    return Some(module);
                 }
                 None
             }
@@ -579,7 +662,7 @@ impl<'s> Reader<'s> {
         (self.qualified(function, 0).as_deref() == Some(name)).then(|| Args::read(node))
     }
 
-    fn call(&mut self, call: Node<'_>) {
+    fn call<'t>(&mut self, call: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
         let function = if call.kind() == "new_expression" {
             call.child_by_field_name("constructor")
         } else {
@@ -598,6 +681,9 @@ impl<'s> Reader<'s> {
         }
         let args = Args::read(call);
         let name = self.qualified(function, 0);
+        // What starts a program is run from where `cwd` says.
+        let before = self.reading.acts.len();
+        let mut cwd = None;
         match name.as_deref().and_then(kind) {
             Some(Kind::Remove) => {
                 let target = self.target(&args, 0);
@@ -679,8 +765,14 @@ impl<'s> Reader<'s> {
             Some(Kind::Script) => {
                 let command = self.target(&args, 0);
                 self.act(command.map(Act::Script));
+                cwd = self.cwd(args.get(1));
+                self.foreign_shell(args.get(1), call);
+                // `` $`…`.cwd(dir) ``
+                if cwd.is_none() && matches!(name.as_deref(), Some("Bun.$" | "zx.$")) {
+                    cwd = self.chained_cwd(field, above);
+                }
             }
-            Some(Kind::Spawn) => self.spawn(&args),
+            Some(Kind::Spawn) => cwd = self.spawn(&args, call),
             Some(Kind::Shelljs) => {
                 let program = name.as_deref().and_then(|name| name.rsplit('.').next());
                 let mut words = vec![Arg::Known(program.unwrap_or_default().to_string())];
@@ -701,6 +793,7 @@ impl<'s> Reader<'s> {
                     words.extend(self.words(list));
                 }
                 self.act(Some(Act::Program(words)));
+                cwd = self.cwd(args.get(1));
             }
             Some(Kind::Argv) => {
                 let first = args.get(0);
@@ -708,6 +801,11 @@ impl<'s> Reader<'s> {
                     Some(node) if node.kind() == "array" => Some(node),
                     Some(node) if node.kind() == "object" => self.property(node, "cmd"),
                     _ => None,
+                };
+                // `Bun.spawn(argv, { cwd })` and `Deno.run({ cmd, cwd })`.
+                cwd = match first {
+                    Some(node) if node.kind() == "object" => self.cwd(Some(node)),
+                    _ => self.cwd(args.get(1)),
                 };
                 match list {
                     Some(list) => {
@@ -731,20 +829,185 @@ impl<'s> Reader<'s> {
             Some(Kind::Require) => {
                 if args.get(0).is_none_or(|node| self.literal(node).is_none()) {
                     self.reading.unread(self.text(call));
+                } else if self.escapes(call, field, above) {
+                    // The module, handed on as a value.
+                    self.reading.unread(self.text(call));
                 }
             }
             None => self.method(function),
         }
+        self.within(cwd, before);
         // `import(x)`: a module loaded where the reader cannot follow it,
         // unless it is awaited, which `qualified` follows.
         if self.text(function) == "import" {
-            let awaited = call
-                .parent()
-                .is_some_and(|parent| parent.kind() == "await_expression");
-            if !awaited {
+            let awaited = above
+                .last()
+                .is_some_and(|parent| parent.node.kind() == "await_expression");
+            if !awaited || self.escapes(call, field, above) {
                 self.reading.unread(self.text(call));
             }
         }
+    }
+
+    /// Run what the call at `before` added from the directory `cwd` names: as
+    /// if the line had gone there first. A directory only known when it runs
+    /// cannot be told, so the call is `unknown` besides.
+    fn within(&mut self, cwd: Option<Arg>, before: usize) {
+        let Some(dir) = cwd else {
+            return;
+        };
+        let acts = self.reading.acts.split_off(before);
+        match dir {
+            dir @ Arg::Known(_) => self.reading.acts.push(Act::In(dir, acts)),
+            other => {
+                self.reading.unread(other.text());
+                self.reading.acts.extend(acts);
+            }
+        }
+    }
+
+    /// The `cwd` of an options object: `None` when it has none (or is
+    /// `null`), a directory only known when it runs when it is not a plain
+    /// value, or the options are not an object literal.
+    fn cwd(&mut self, options: Option<Node<'_>>) -> Option<Arg> {
+        let options = options?;
+        match options.kind() {
+            "object" => {}
+            // A callback, not options.
+            "arrow_function" | "function_expression" | "function" => return None,
+            _ => return Some(Arg::Unknown(super::shorten(self.text(options)))),
+        }
+        let unknown = || Some(Arg::Unknown("cwd".to_string()));
+        let mut cursor = options.walk();
+        let members: Vec<Node<'_>> = options.named_children(&mut cursor).collect();
+        let mut found = None;
+        for member in members {
+            match member.kind() {
+                "comment" => {}
+                "pair" => {
+                    let Some(key) = member.child_by_field_name("key") else {
+                        return unknown();
+                    };
+                    let name = match key.kind() {
+                        "property_identifier" => self.text(key).to_string(),
+                        "string" => match self.literal(key) {
+                            Some(name) => name,
+                            None => return unknown(),
+                        },
+                        _ => return unknown(),
+                    };
+                    if name == "cwd" {
+                        found = match member.child_by_field_name("value") {
+                            Some(value) if matches!(self.text(value), "undefined" | "null") => None,
+                            Some(value) => Some(self.arg(value)),
+                            None => return unknown(),
+                        };
+                    }
+                }
+                "shorthand_property_identifier" if self.text(member) != "cwd" => {}
+                // `{ cwd }`, a method or accessor named `cwd`, a spread or a
+                // computed name.
+                "method_definition"
+                    if member
+                        .child_by_field_name("name")
+                        .is_some_and(|name| self.text(name) != "cwd") => {}
+                _ => return unknown(),
+            }
+        }
+        found
+    }
+
+    /// The directory a call on the result of `` $`…` `` is told to work in
+    /// by a `.cwd(dir)` after it, however many other methods come between.
+    fn chained_cwd(&mut self, field: Option<&str>, above: &[Ancestor<'_>]) -> Option<Arg> {
+        let mut field = field;
+        let mut at = above.len();
+        let mut found = None;
+        while at >= 2 {
+            let (member, outer) = (above[at - 1], above[at - 2]);
+            if member.node.kind() != "member_expression"
+                || field != Some("object")
+                || member.field != Some("function")
+                || outer.node.kind() != "call_expression"
+            {
+                break;
+            }
+            let method = member
+                .node
+                .child_by_field_name("property")
+                .map(|property| self.text(property));
+            if method == Some("cwd") {
+                let args = Args::read(outer.node);
+                found = Some(match args.get(0) {
+                    Some(node) => self.arg(node),
+                    None => Arg::Unknown("cwd".to_string()),
+                });
+            }
+            field = outer.field;
+            at -= 2;
+        }
+        found
+    }
+
+    /// `{ shell: '/usr/bin/python3' }` runs that program with `-c LINE`,
+    /// which reads the line its own way: unlike a POSIX shell it is not read.
+    fn foreign_shell(&mut self, options: Option<Node<'_>>, call: Node<'_>) {
+        let Some(options) = options.filter(|options| options.kind() == "object") else {
+            return;
+        };
+        let Some(shell) = self.property(options, "shell") else {
+            return;
+        };
+        let posix = match shell.kind() {
+            "true" | "false" => true,
+            "string" | "template_string" => self.literal(shell).is_some_and(|program| {
+                program
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| SHELLS.contains(&name))
+            }),
+            _ => false,
+        };
+        if !posix {
+            self.reading.unread(self.text(call));
+        }
+    }
+
+    /// Whether a module is put where the reader loses it: anywhere but as the
+    /// object of a member (`fs.rmSync`), the value of a name it records
+    /// (`const fs = require('fs')`, also in a chain or a destructuring), a
+    /// name being set, `typeof`, or a statement of its own. Handed to a call,
+    /// held in an array or an object, returned or looped over it may come
+    /// back under a name the reader does not follow (`(f =>
+    /// f.rmSync(…))(require('fs'))`).
+    fn escapes<'t>(&self, node: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) -> bool {
+        let mut field = field;
+        let mut at = above.len();
+        while let Some(parent) = at.checked_sub(1).and_then(|index| above.get(index)) {
+            let is = |name: &str| field == Some(name);
+            let names = |parent: &Ancestor<'t>, side: &str| {
+                parent
+                    .node
+                    .child_by_field_name(side)
+                    .is_some_and(|name| matches!(name.kind(), "identifier" | "object_pattern"))
+            };
+            match parent.node.kind() {
+                "parenthesized_expression" | "await_expression" => {
+                    field = parent.field;
+                    at -= 1;
+                }
+                "member_expression" | "subscript_expression" => return !is("object"),
+                "expression_statement" => return false,
+                "variable_declarator" => return !(is("value") && names(parent, "name")),
+                "assignment_expression" => {
+                    return !(is("left") || (is("right") && names(parent, "left")));
+                }
+                "unary_expression" => return !self.text(parent.node).starts_with("typeof"),
+                _ => return true,
+            }
+        }
+        let _ = node;
+        false
     }
 
     /// The value of the property `key` of an object literal.
@@ -805,19 +1068,26 @@ impl<'s> Reader<'s> {
 
     /// `spawn('rm', ['-rf', '~'])` runs the program; with `{ shell: … }`
     /// the command and its arguments are one command line a shell reads.
-    fn spawn(&mut self, args: &Args<'_>) {
-        let Some(command) = args.get(0) else {
-            return;
-        };
+    /// Gives the directory its options start it in.
+    fn spawn(&mut self, args: &Args<'_>, call: Node<'_>) -> Option<Arg> {
+        let command = args.get(0)?;
         let program = self.arg(command);
         let mut words = vec![program];
         let mut options = None;
+        // Options that are not an object literal may name any directory.
+        let mut loose = false;
         for node in args.positional.iter().skip(1) {
             match node.kind() {
                 "object" => options = Some(*node),
-                _ => words.extend(self.words(*node)),
+                "array" => words.extend(self.words(*node)),
+                "arrow_function" | "function_expression" | "function" => {}
+                _ => {
+                    loose = true;
+                    words.extend(self.words(*node));
+                }
             }
         }
+        self.foreign_shell(options, call);
         let shell = options.is_some_and(|options| self.property(options, "shell").is_some());
         if shell {
             let known = words.iter().all(|word| word.known().is_some());
@@ -830,6 +1100,11 @@ impl<'s> Reader<'s> {
             self.reading.acts.push(Act::Script(script));
         } else {
             self.reading.acts.push(Act::Program(words));
+        }
+        if loose {
+            Some(Arg::Unknown("options".to_string()))
+        } else {
+            self.cwd(options)
         }
     }
 
@@ -862,38 +1137,33 @@ impl<'s> Reader<'s> {
     }
 
     /// A name or property used without being called: an alias of a call the
-    /// reader cannot follow.
-    fn reference(&mut self, node: Node<'_>) {
-        let Some(parent) = node.parent() else {
+    /// reader cannot follow, or a module put where it is lost.
+    fn reference<'t>(&mut self, node: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
+        let Some(parent) = above.last() else {
             return;
         };
-        let field = |name: &str| {
-            parent
-                .child_by_field_name(name)
-                .is_some_and(|child| child.id() == node.id())
-        };
-        let skipped = match parent.kind() {
-            "call_expression" => field("function"),
-            "new_expression" => field("constructor"),
-            "member_expression" => field("property"),
-            "variable_declarator" => field("name"),
+        let is = |name: &str| field == Some(name);
+        let skipped = match parent.node.kind() {
+            "call_expression" => is("function"),
+            "new_expression" => is("constructor"),
+            "member_expression" => is("property"),
+            "variable_declarator" => is("name"),
+            // A name a pattern or a parameter list sets is not a use of it.
+            "pair_pattern" | "assignment_pattern" | "catch_clause" => {
+                is("value") || is("left") || is("parameter")
+            }
+            "array_pattern" | "rest_pattern" => true,
+            // What an `import` binds.
+            "import_clause" | "namespace_import" | "import_specifier" => true,
+            "assignment_expression" => is("left") && node.kind() != "member_expression",
             "function_declaration"
             | "function_expression"
             | "class_declaration"
             | "formal_parameters"
-            | "import_specifier"
-            | "import_clause"
-            | "namespace_import"
             | "pair"
-            | "pair_pattern"
             | "object_pattern"
-            | "arrow_function"
-            | "assignment_expression" => {
-                field("name")
-                    || field("alias")
-                    || field("key")
-                    || field("left")
-                    || field("parameter")
+            | "arrow_function" => {
+                is("name") || is("alias") || is("key") || is("left") || is("parameter")
             }
             _ => false,
         };
@@ -903,7 +1173,9 @@ impl<'s> Reader<'s> {
         let Some(name) = self.qualified(node, 0) else {
             return;
         };
-        if kind(&name).is_some_and(|kind| kind != Kind::Require) {
+        if kind(&name).is_some_and(|kind| kind != Kind::Require)
+            || (self.is_module(&name) && self.escapes(node, field, above))
+        {
             self.reading.unread(self.text(node));
         }
     }

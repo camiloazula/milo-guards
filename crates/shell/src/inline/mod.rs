@@ -11,6 +11,8 @@
 //! a unit. What the reader cannot follow is an [`Act::Unread`], which
 //! comes back as `unknown`.
 
+use tree_sitter::Node;
+
 use crate::launch::{self, Launch};
 use crate::unit::{self, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
@@ -53,6 +55,10 @@ pub(super) enum Act {
     /// The process moves to another directory: the paths after it are read
     /// from there.
     Chdir(Arg),
+    /// What a call that starts a program does, run from the directory its
+    /// `cwd` option names: judged as if the line had moved there first, and
+    /// back where it was after.
+    In(Arg, Vec<Act>),
     /// A command line a shell runs: `os.system`, `child_process.exec`.
     Script(Arg),
     /// A program and its arguments, run without a shell.
@@ -74,6 +80,47 @@ pub(super) struct Reading {
 impl Reading {
     fn unread(&mut self, code: &str) {
         self.acts.push(Act::Unread(shorten(code)));
+    }
+}
+
+/// A node above the one a [`walk`] is at, and the field it fills in its own
+/// parent.
+#[derive(Clone, Copy)]
+pub(super) struct Ancestor<'t> {
+    pub(super) node: Node<'t>,
+    pub(super) field: Option<&'static str>,
+}
+
+/// Visit every node under `root`, in the order the code reads, without
+/// recursion so a deep tree cannot overflow the stack. `visit` is given the
+/// node, the field it fills in its parent, and the nodes above it (the root
+/// first), so no reader asks the tree for a node's parent, which walks it from
+/// the top; it returns whether to go on.
+pub(super) fn walk<'t>(
+    root: Node<'t>,
+    mut visit: impl FnMut(Node<'t>, Option<&'static str>, &[Ancestor<'t>]) -> bool,
+) {
+    let mut cursor = root.walk();
+    let mut above: Vec<Ancestor<'t>> = Vec::new();
+    loop {
+        let node = cursor.node();
+        let field = cursor.field_name();
+        if !visit(node, field, &above) {
+            return;
+        }
+        if cursor.goto_first_child() {
+            above.push(Ancestor { node, field });
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+            above.pop();
+        }
     }
 }
 
@@ -146,11 +193,22 @@ fn writes(mode: Option<&str>) -> bool {
     mode.is_some_and(|mode| mode.contains(['w', 'a', 'x', '+']))
 }
 
+/// The inline code an interpreter is given, and where it runs.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Code {
+    /// Every piece of code the options name: `node -e A -e B` runs both, the
+    /// second after the first, so each is read.
+    pub(crate) pieces: Vec<Arg>,
+    /// The directory the interpreter is told to work from first
+    /// (`bun --cwd DIR`), which the code's relative paths are read from.
+    pub(crate) dir: Option<Arg>,
+}
+
 /// The inline code an interpreter's own arguments hold, when they say where
 /// it is: `python3 -c CODE`, `node -e CODE`, `bun -e CODE`, `deno eval CODE`.
 /// `None` when they do not, or when what comes before it cannot be told from
 /// the code's own arguments; the caller then reads the line as it did before.
-pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Arg> {
+pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
     match language(key)? {
         Language::Python => python_code(args),
         Language::JavaScript if key == "deno" => deno_code(args),
@@ -159,8 +217,9 @@ pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Arg> {
 }
 
 /// `python -c CODE`, also in a bundle (`-Sc`) and with the code attached
-/// (`-cCODE`); options that take a value are skipped.
-fn python_code(args: &[Arg]) -> Option<Arg> {
+/// (`-cCODE`); options that take a value are skipped. The first `-c` ends
+/// the options, so there is one piece of code.
+fn python_code(args: &[Arg]) -> Option<Code> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let text = arg.known()?;
@@ -170,8 +229,8 @@ fn python_code(args: &[Arg]) -> Option<Arg> {
         for (at, letter) in text.char_indices().skip(1) {
             let rest = &text[at + letter.len_utf8()..];
             match letter {
-                'c' if rest.is_empty() => return iter.next().cloned(),
-                'c' => return Some(Arg::Known(rest.to_string())),
+                'c' if rest.is_empty() => return iter.next().cloned().map(code_of),
+                'c' => return Some(code_of(Arg::Known(rest.to_string()))),
                 'm' => return None,
                 'W' | 'X' | 'Q' => {
                     if rest.is_empty() {
@@ -186,10 +245,21 @@ fn python_code(args: &[Arg]) -> Option<Arg> {
     None
 }
 
+fn code_of(piece: Arg) -> Code {
+    Code {
+        pieces: vec![piece],
+        dir: None,
+    }
+}
+
 /// `node -e CODE`, `-p`, `--eval`, `--print` (and `--eval=CODE`), `-pe`;
 /// the options that take a value are skipped. The same options carry code
-/// for bun.
-fn script_code(args: &[Arg]) -> Option<Arg> {
+/// for bun, which also takes `--cwd DIR`. Every `-e` and `-p` has code of
+/// its own and the last one runs, so all are collected: reading only the
+/// first would let a second one do anything. `-p` takes the next word as
+/// code unless that is an option, as `node -p -e CODE` has it (`-p` alone,
+/// then the code of `-e`).
+fn script_code(args: &[Arg]) -> Option<Code> {
     const VALUES: [&str; 7] = [
         "require",
         "import",
@@ -199,90 +269,144 @@ fn script_code(args: &[Arg]) -> Option<Arg> {
         "input-type",
         "env-file",
     ];
-    let mut iter = args.iter();
+    let mut found = Code::default();
+    let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         let text = arg.known()?;
         if text == "-" || !text.starts_with('-') {
-            return None;
+            break;
         }
+        // Whether the word after this option is its code.
+        let mut takes = None;
         if let Some(long) = text.strip_prefix("--") {
             if long.is_empty() {
-                return None;
+                break;
             }
             let (name, value) = match long.split_once('=') {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
             match (name, value) {
-                ("eval" | "print", Some(value)) => return Some(Arg::Known(value.to_string())),
-                ("eval" | "print", None) => return iter.next().cloned(),
+                ("eval" | "print", Some(value)) => {
+                    found.pieces.push(Arg::Known(value.to_string()));
+                }
+                ("eval", None) => takes = Some(true),
+                ("print", None) => takes = Some(false),
+                ("cwd", Some(value)) => found.dir = Some(Arg::Known(value.to_string())),
+                ("cwd", None) => found.dir = Some(iter.next()?.clone()),
                 (name, None) if VALUES.contains(&name) => {
                     iter.next();
                 }
                 _ => {}
             }
         } else if text[1..].chars().all(|letter| matches!(letter, 'e' | 'p')) {
-            return iter.next().cloned();
+            takes = Some(text.contains('e'));
         } else if matches!(text, "-r" | "-C") {
             iter.next();
         }
+        match takes {
+            // `-e CODE`, whatever the code starts with.
+            Some(true) => found.pieces.push(iter.next()?.clone()),
+            // `-p CODE`, but `-p -e CODE` is a flag and then the next option.
+            Some(false)
+                if iter.peek().is_some_and(|next| {
+                    !next.known().is_some_and(|text| text.starts_with('-'))
+                }) =>
+            {
+                found.pieces.extend(iter.next().cloned());
+            }
+            Some(false) | None => {}
+        }
     }
-    None
+    (!found.pieces.is_empty()).then_some(found)
 }
 
-/// `deno eval [OPTIONS] CODE`.
-fn deno_code(args: &[Arg]) -> Option<Arg> {
-    const VALUES: [&str; 10] = [
-        "--ext",
-        "--config",
-        "-c",
-        "--cert",
-        "--import-map",
-        "--location",
-        "--seed",
-        "--v8-flags",
-        "--env-file",
-        "--reload",
-    ];
-    let mut iter = args.iter();
+/// `deno eval [OPTIONS] CODE [ARGS]`: every word after `eval` that is not an
+/// option is read as code, and so is all that follows `--`. Only the first
+/// is the code and the rest are the arguments `Deno.args` holds, which read
+/// as code come out harmless or unreadable. Deno's options with a value that
+/// only comes after `=` (`--reload`, `--v8-flags`, `--env-file`, `-A=…`) and
+/// the ones that take the next word (`-L info`) are not told apart: telling
+/// them apart wrongly would skip the code, so a value is read as code too
+/// and a path that is not code makes the line unreadable.
+fn deno_code(args: &[Arg]) -> Option<Code> {
+    let mut found = Code::default();
     let mut evals = false;
-    while let Some(arg) = iter.next() {
-        let text = arg.known()?;
-        if text == "--" {
-            return evals.then(|| iter.next().cloned()).flatten();
-        }
-        if text.starts_with('-') {
-            if VALUES.contains(&text) {
-                iter.next();
+    let mut options = true;
+    for arg in args {
+        // A word only known when it runs is code once `eval` came, and
+        // before it could be anything.
+        let Some(text) = arg.known() else {
+            if evals {
+                found.pieces.push(arg.clone());
+                continue;
             }
+            return None;
+        };
+        if options && text == "--" {
+            options = false;
+        } else if options && text.starts_with('-') {
+            continue;
         } else if evals {
-            return Some(arg.clone());
+            found.pieces.push(arg.clone());
         } else if text == "eval" {
             evals = true;
         } else {
             return None;
         }
     }
-    None
+    (!found.pieces.is_empty()).then_some(found)
 }
 
 /// `bun` and `deno`: inline code is read; a file or a subcommand is the
-/// workspace's own business.
+/// workspace's own business. Code read from the input (`bun -`, `deno run -`,
+/// a REPL) is the caller's to see, or the here-document it is handed.
 pub(crate) fn runner(key: &str, args: &[Arg]) -> Launch {
     if let Some(source) = code(key, args) {
         return Launch::Inline(Language::JavaScript, source);
     }
-    let evals = args.iter().any(|arg| {
-        arg.known().is_some_and(|text| match key {
-            "deno" => text == "eval",
-            _ => matches!(text, "-e" | "-p" | "--eval" | "--print") || text.starts_with("--eval="),
-        })
+    let known = |test: &dyn Fn(&str) -> bool| args.iter().any(|arg| arg.known().is_some_and(test));
+    let evals = known(&|text| match key {
+        "deno" => text == "eval",
+        _ => matches!(text, "-e" | "-p" | "--eval" | "--print") || text.starts_with("--eval="),
     });
-    if evals {
+    let first = args
+        .iter()
+        .filter_map(Arg::known)
+        .find(|text| !text.starts_with('-'));
+    let repl = first == Some("repl") || (key == "deno" && first.is_none());
+    if evals || repl || known(&|text| text == "-") {
         Launch::Reads(Reads::Interpreter)
     } else {
         Launch::Itself
     }
+}
+
+/// Read `pieces` of code in `language`, run `depth` levels deep, from the
+/// directory the interpreter is told to work in, and add what they do to the
+/// split.
+pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, depth: usize) {
+    let outer = split.dir_snapshot();
+    match &code.dir {
+        Some(dir @ Arg::Known(_)) => run(split, "cd", vec![flag("--"), dir.clone()], depth),
+        Some(other) => split.problem(
+            Rule::Unknown,
+            "runs code from a directory only known when it runs",
+            Some(other.text()),
+        ),
+        None => {}
+    }
+    for piece in &code.pieces {
+        match piece {
+            Arg::Known(text) => apply(split, language, text, depth),
+            other => split.problem(
+                Rule::Unknown,
+                "runs code only known when it runs",
+                Some(other.text()),
+            ),
+        }
+    }
+    split.restore_dir(outer);
 }
 
 /// Read `code` in `language`, run `depth` levels deep, and add what it does
@@ -301,44 +425,58 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
     // A `chdir` in the code moves its own process, not the line.
     let outer = split.dir_snapshot();
     for act in reading.acts {
-        match act {
-            Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
-            Act::Write(path) => split.write(Shell::Posix, path),
-            Act::Move { from, to } => run(split, "mv", vec![flag("--"), from, to], depth),
-            Act::Link { target, link } => {
-                run(
-                    split,
-                    "ln",
-                    vec![flag("-s"), flag("--"), target, link],
-                    depth,
-                );
-            }
-            Act::Chmod { path, mode } => {
-                run(split, "chmod", vec![flag("--"), mode, path], depth);
-            }
-            Act::Chown(path) => run(
-                split,
-                "chown",
-                vec![flag("--"), Arg::Known("user".to_string()), path],
-                depth,
-            ),
-            Act::Chdir(path) => run(split, "cd", vec![flag("--"), path], depth),
-            Act::Script(script) => run(split, "sh", vec![flag("-c"), script], depth),
-            Act::Program(mut words) => {
-                if !words.is_empty() {
-                    let program = words.remove(0);
-                    launch::add(split, Unit::new(Shell::Posix, program, words, None), depth);
-                }
-            }
-            Act::Code(language, text) => apply(split, language, &text, depth + 1),
-            Act::Unread(code) => split.problem(
-                Rule::Unknown,
-                "runs code the guard does not read",
-                Some(&code),
-            ),
-        }
+        perform(split, act, depth);
     }
     split.restore_dir(outer);
+}
+
+/// Add what one act does to the split, as the shell command that does the
+/// same.
+fn perform(split: &mut Split, act: Act, depth: usize) {
+    match act {
+        Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
+        Act::Write(path) => split.write(Shell::Posix, path),
+        Act::Move { from, to } => run(split, "mv", vec![flag("--"), from, to], depth),
+        Act::Link { target, link } => {
+            run(
+                split,
+                "ln",
+                vec![flag("-s"), flag("--"), target, link],
+                depth,
+            );
+        }
+        Act::Chmod { path, mode } => {
+            run(split, "chmod", vec![flag("--"), mode, path], depth);
+        }
+        Act::Chown(path) => run(
+            split,
+            "chown",
+            vec![flag("--"), Arg::Known("user".to_string()), path],
+            depth,
+        ),
+        Act::Chdir(path) => run(split, "cd", vec![flag("--"), path], depth),
+        Act::In(dir, acts) => {
+            let outer = split.dir_snapshot();
+            run(split, "cd", vec![flag("--"), dir], depth);
+            for act in acts {
+                perform(split, act, depth);
+            }
+            split.restore_dir(outer);
+        }
+        Act::Script(script) => run(split, "sh", vec![flag("-c"), script], depth),
+        Act::Program(mut words) => {
+            if !words.is_empty() {
+                let program = words.remove(0);
+                launch::add(split, Unit::new(Shell::Posix, program, words, None), depth);
+            }
+        }
+        Act::Code(language, text) => apply(split, language, &text, depth + 1),
+        Act::Unread(code) => split.problem(
+            Rule::Unknown,
+            "runs code the guard does not read",
+            Some(&code),
+        ),
+    }
 }
 
 fn flag(text: &str) -> Arg {

@@ -386,8 +386,18 @@ a script `sh -c` reads), so no rule knows a language.
 **Where the code comes from.** `python`, `python3` (and `python3.12`),
 `python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
 `nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`). `bun`:
-the same flags. `deno eval CODE`. And a here-document or here-string handed to
-`python3`, `python3 -`, `node`, `node -`, when its text is plain: a quoted
+the same flags, and `--cwd DIR` (`--cwd=DIR`), which the code's relative paths
+are read from, as after a `cd`. `node` and `bun` run the last of several `-e`
+(`node -e A -e B`), so every piece of code is read, not the first; `-p` takes
+the next word as code unless it is an option (`node -p -e CODE` is `-p` and then
+the code of `-e`). `deno eval CODE`: every word after `eval` that is not an
+option, and all that follows `--`, is read as code, because which options
+take the next word (`-L info`) and which only a value after `=` (`--reload`,
+`--v8-flags`, `--env-file`) is not worth getting wrong; the words after the
+first are only `Deno.args`, read as code they come out harmless, or unreadable
+when a path is not code. And a here-document or here-string handed to
+`python3`, `python3 -`, `node`, `node -`, `bun -`, `bun run -`, `deno run -`,
+when its text is plain: a quoted
 delimiter (`<<'PY'`), or an unquoted one with nothing in the body the shell
 would expand. `<<-` takes the leading tabs off. A script file
 (`python3 scripts/gen.py`, `node build.js`) is the workspace's own code and is
@@ -395,6 +405,13 @@ not read. Neither is code from a pipe or another redirect (`cat x.py |
 python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
 download. Code on Windows (PowerShell, cmd) stays `unknown`: its paths and
 commands are not POSIX ones.
+
+`effect` never answers `ReadsOnly` for a line with inline code: the interpreter
+is not one of its readers (`Unknown`), and a delete, write or command the code
+makes is a unit of its own that changes things (`Changes`). `python3 -c
+'print(1)'` is safe for `classify` and `Unknown` for `effect`. Every row of
+`tests/inline.rs` goes through `effect` with the shared `check`, which holds
+this to `classify`.
 
 **What is read.** Calls are found by their name once what `import`, `require`
 and destructuring bound is put back (`from os import remove as rm`,
@@ -432,18 +449,56 @@ and the code that is the reason as the target: code that does not parse;
 `import()` and `require` of a computed name, a computed member of `fs` or
 `os`; `globals`, `locals`, `vars`, `__dict__`, `__builtins__`, `.constructor`;
 a call to a name above used as a value (`r = os.remove`,
-`map(fs.unlinkSync, files)`, `(0, rm)(p)`), since the reader cannot follow
-the alias; starting a program by `os.exec*`, `os.spawn*`, `pty.spawn`,
-`ctypes`. A command line or code only known when it runs
-(`child_process.execSync(process.argv[1])`, an f-string with a
+`map(fs.unlinkSync, files)`, `(0, rm)(p)`, a default value `def f(p,
+r=os.remove)`), since the reader cannot follow the alias; a module
+(`import`ed, `require`d, or `os`, `sys`, `process`, `globalThis`, `require` and
+the like) used anywhere but as the object of an attribute or member
+(`os.remove`, `fs.rmSync`), the value of a name it records (`o = os`, `const
+fs = require('fs')`, also in a chain or a destructuring), `typeof`, or a
+statement of its own: handed to a call (`f(os)`, `(f => f.rmSync(…))(require('fs'))`),
+held in a list, a dict or an object, looped over, returned or a default, since
+it comes back under a name the reader does not follow; `with (require('fs'))`;
+a `{ ...rest }` taken from a module (a default, `{ rmSync = null }`, still
+names the member); `sys.modules`; starting a program by `os.exec*`,
+`os.spawn*`, `pty.spawn`, `ctypes`. A command line or code only known when it
+runs (`child_process.execSync(process.argv[1])`, an f-string with a
 substitution) is `unknown` too. Code with none of the calls above and
 nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
 
+**What changes what a call that starts a program does.** `cwd` (`subprocess.run(…,
+cwd=DIR)`, `{ cwd: DIR }` for `child_process`, `Deno.Command`, `Bun.spawn`,
+`Deno.run`, and `` Bun.$`…`.cwd(DIR) ``) makes the command run after a `cd` to
+`DIR`, back where it was after the call, so its relative paths are read from
+there; a `cwd` only known when it runs, options that are not an object literal
+(`{ ...options }`, `{ [key]: … }`, a variable) or `**options` and `*args` make
+the call `unknown`, besides the command read as if there were none. `executable=`
+of `subprocess` is the program that runs, with the rest of the list its
+arguments (`['x', '-rf', '~'], executable='/bin/rm'` is `rm -rf ~`); with
+`shell=True`, or its value only known when it runs, the call is `unknown`.
+`child_process`'s `{ shell: 'python3' }` runs that program with `-c LINE`,
+which reads the line its own way, so a `shell` that is not `true` or a POSIX
+shell is `unknown`. `Bun.$.cwd(…)` and `zx.cd` change the directory of the
+calls after them and are `unknown`.
+
+Python 2's `exec "code"` (also `exec "code" in globals`) is read like
+`exec("code")`: a literal is read as Python, anything else is `unknown`.
+`Path.rename` and `Path.replace` take their target as the one argument or as
+`target=`; given `*args` or `**kwargs` they are `unknown`, unless on a string
+literal, whose `replace` takes two.
+
 Calls that are not listed are not read, so code whose only way to touch a file
 is one of them (a logging file handler, a library's own writer) is safe.
-`bun` and `deno` read from their input (`deno run -`) are not read. Nested code (`os.system('python3
+Nested code (`os.system('python3
 -c …')`, `exec("…")`) is read to the same depth limit and text budget as
-nested scripts.
+nested scripts. `bun` and `deno` given a `-` (`deno run -`, `bun -`, `bun run
+-`) or started as a REPL (`deno`, `deno repl`, `bun repl`) read code from their
+input: that is a here-document read as code like `python3 -` and `node -`, and
+`unknown` when it comes from a pipe or a file, as for the other interpreters. A script file
+and a subcommand (`bun run build.ts`, `deno test`) are the workspace's own.
+A line is read in a time that grows with its length: the reader is given each
+node's parent as it walks, and works out the dotted name of each member once,
+and a piece of code that nests too deeply to read ends the walk with
+`unreadable`.
 
 ## What cannot be read is risky
 

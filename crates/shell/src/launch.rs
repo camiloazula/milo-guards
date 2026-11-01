@@ -4,7 +4,7 @@
 //! `Invoke-Expression`) has that script split in its own grammar.
 
 use crate::dotglob;
-use crate::inline::{self, Language};
+use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
@@ -44,7 +44,7 @@ pub(super) enum Launch {
     /// It reads its commands from its input.
     Reads(Reads),
     /// It runs `code`, given inline, in `language`.
-    Inline(Language, Arg),
+    Inline(Language, Code),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -179,14 +179,7 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     return;
                 }
                 split.push(unit);
-                match code {
-                    Arg::Known(text) => inline::apply(split, language, &text, depth + 1),
-                    other => split.problem(
-                        Rule::Unknown,
-                        "runs code only known when it runs",
-                        Some(other.text()),
-                    ),
-                }
+                inline::apply_all(split, language, &code, depth + 1);
                 return;
             }
             Launch::Encoded => {

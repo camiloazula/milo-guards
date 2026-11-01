@@ -243,3 +243,41 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     // A few reads of a short script are fine.
     assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn long_inline_code_is_read_in_linear_time() {
+    // Reading inline code asked the tree for each name's parent, which walks
+    // it from the root, and built a dotted name again from each member of it:
+    // a chain of 30,000 members (60 KB, under the limit) took a minute.
+    let chain = ".b".repeat(30_000);
+    let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
+    // Chains just under the depth limit, many of them: every one is read.
+    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(80);
+    let mut rows = Vec::new();
+    for (interpreter, end) in [("python3", "PY"), ("node", "JS")] {
+        for body in [format!("x = a{chain}"), calls.clone(), chains.clone()] {
+            rows.push(format!("{interpreter} - <<'{end}'\n{body}\n{end}"));
+        }
+    }
+    for line in rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "{:?} took {took:?}",
+            &line[..20]
+        );
+        // What nests too deeply to read is not safe, and the rest is read.
+        let deep = assessment
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == Rule::Unreadable);
+        assert_eq!(deep, line.contains(&chain), "{:?}", &line[..20]);
+    }
+}

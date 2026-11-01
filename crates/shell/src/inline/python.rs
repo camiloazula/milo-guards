@@ -1,11 +1,11 @@
 //! Inline Python: the calls that delete, write, move and run, with the
 //! paths they name, found with tree-sitter-python.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::{environment, join, mode, path, writes, Act, Language, Reading};
+use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language, Reading};
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
@@ -17,6 +17,9 @@ pub(super) fn read(code: &str) -> Reading {
     let mut reader = Reader {
         src: code,
         aliases: HashMap::new(),
+        modules: HashSet::new(),
+        names: HashMap::new(),
+        walking: false,
         reading: Reading::default(),
     };
     let Some(tree) = tree else {
@@ -28,11 +31,18 @@ pub(super) fn read(code: &str) -> Reading {
         reader.reading.unread(code);
     }
     reader.collect_imports(root);
-    unit::for_each_node(root, |node| match node.kind() {
-        "call" => reader.call(node),
-        "attribute" | "identifier" => reader.reference(node),
-        "subscript" => reader.subscript(node),
-        _ => {}
+    reader.walking = true;
+    // The walk stops once the code is found to nest too deeply to read: the
+    // line is unreadable whatever else is in it.
+    walk(root, |node, field, above| {
+        match node.kind() {
+            "call" => reader.call(node, field, above),
+            "attribute" | "identifier" => reader.reference(node, field, above),
+            "subscript" => reader.subscript(node),
+            "exec_statement" => reader.exec_statement(node),
+            _ => {}
+        }
+        !reader.reading.deep
     });
     reader.reading
 }
@@ -72,7 +82,8 @@ enum Kind {
 /// The modules whose names a dotted name can be started again from: a
 /// module that imported another holds it as an attribute (`shutil.os`),
 /// `posix` and `nt` are what `os` is, and `builtins` holds the builtins.
-const MODULES: [&str; 20] = [
+const MODULES: [&str; 21] = [
+    "sys",
     "os",
     "shutil",
     "subprocess",
@@ -95,15 +106,26 @@ const MODULES: [&str; 20] = [
     "nt",
 ];
 
+/// The module a name stands for when a module holds it: `os`, and `_os` as
+/// `tempfile` and others import it.
+fn module_named(name: &str) -> Option<&'static str> {
+    let bare = name.strip_prefix('_').unwrap_or(name);
+    MODULES.iter().find(|module| **module == bare).copied()
+}
+
 /// `name` with the module that really holds the call first: `shutil.os.remove`
 /// is `os.remove`, `posix.remove` is `os.remove`, `builtins.exec` is `exec`.
 fn rebase(name: &str) -> String {
     let parts: Vec<&str> = name.split('.').collect();
     let start = parts
         .iter()
-        .rposition(|part| MODULES.contains(part))
+        .rposition(|part| module_named(part).is_some())
         .unwrap_or(0);
-    let rest = parts[start..].join(".");
+    let mut parts = parts[start..].to_vec();
+    if let Some(module) = parts.first().and_then(|part| module_named(part)) {
+        parts[0] = module;
+    }
+    let rest = parts.join(".");
     if let Some(call) = rest
         .strip_prefix("posix.")
         .or_else(|| rest.strip_prefix("nt."))
@@ -113,6 +135,20 @@ fn rebase(name: &str) -> String {
         call.to_string()
     } else {
         rest
+    }
+}
+
+/// `object.attribute` with the module that really holds the call first, for
+/// an `object` that is already so (`rebase` of it): the same as `rebase` of
+/// the two together, without splitting the whole name again.
+fn extend(object: &str, attribute: &str) -> String {
+    if let Some(module) = module_named(attribute) {
+        return module.to_string();
+    }
+    match object {
+        "posix" | "nt" => format!("os.{attribute}"),
+        "builtins" => attribute.to_string(),
+        _ => format!("{object}.{attribute}"),
     }
 }
 
@@ -168,6 +204,7 @@ fn kind(name: &str) -> Option<Kind> {
         | "subprocess.Popen" => Kind::Subprocess,
         "asyncio.create_subprocess_exec" => Kind::Exec,
         "pty.spawn"
+        | "sys.modules"
         | "compile"
         | "globals"
         | "locals"
@@ -226,8 +263,21 @@ struct Reader<'s> {
     /// What each name `import` binds stands for: `rm` from `from os import
     /// remove as rm` is `os.remove`.
     aliases: HashMap<String, String>,
+    /// The modules `import` and `__import__` bound, by their real names: a
+    /// module reaches the modules it imported, so one handed on as a value
+    /// can be used under a name the reader does not follow.
+    modules: HashSet<String>,
+    /// The dotted name of each node, found once: a chain of attributes is
+    /// asked for from each node in it, and would be built again each time.
+    /// Only filled once the names `import` bound are all known.
+    names: HashMap<usize, Option<String>>,
+    walking: bool,
     reading: Reading,
 }
+
+/// The modules that stand for others without having been imported by name:
+/// `os.path` imports `os`.
+const HOLDERS: [&str; 4] = ["os.path", "posixpath", "ntpath", "genericpath"];
 
 /// The arguments of a call.
 struct Args<'t> {
@@ -318,7 +368,13 @@ impl<'s> Reader<'s> {
                         ) {
                             self.aliases
                                 .insert(self.text(alias).to_string(), self.text(real).to_string());
+                            self.modules.insert(self.text(real).to_string());
                         }
+                    } else {
+                        // `import a.b.c` binds `a`.
+                        let text = self.text(name);
+                        let first = text.split('.').next().unwrap_or(text);
+                        self.modules.insert(first.to_string());
                     }
                 }
                 continue;
@@ -424,6 +480,19 @@ impl<'s> Reader<'s> {
             self.reading.deep = true;
             return None;
         }
+        if self.walking {
+            if let Some(known) = self.names.get(&node.id()) {
+                return known.clone();
+            }
+        }
+        let name = self.name(node, level);
+        if self.walking && !self.reading.deep {
+            self.names.insert(node.id(), name.clone());
+        }
+        name
+    }
+
+    fn name(&mut self, node: Node<'_>, level: usize) -> Option<String> {
         match node.kind() {
             "identifier" => {
                 let name = self.text(node);
@@ -441,11 +510,16 @@ impl<'s> Reader<'s> {
                 let object = node.child_by_field_name("object")?;
                 let attribute = node.child_by_field_name("attribute")?;
                 let object = self.qualified(object, level + 1)?;
-                Some(rebase(&format!("{object}.{}", self.text(attribute))))
+                Some(extend(&object, self.text(attribute)))
             }
             "parenthesized_expression" => {
                 let inner = node.named_child(0)?;
                 self.qualified(inner, level + 1)
+            }
+            // `a = b = os`: `a` is `os` too.
+            "assignment" => {
+                let right = node.child_by_field_name("right")?;
+                self.qualified(right, level + 1)
             }
             "call" => self.qualified_call(node, level),
             _ => None,
@@ -461,13 +535,18 @@ impl<'s> Reader<'s> {
         match kind(&name)? {
             Kind::Import => {
                 let module = args.get(0, &["name"])?;
-                self.value(module, level + 1)
+                let module = self.value(module, level + 1)?;
+                self.modules.insert(module.clone());
+                Some(module)
             }
             Kind::Getattr => {
                 let object = args.positional.first().copied()?;
                 let attribute = args.get(1, &["name"])?;
                 let object = self.qualified(object, level + 1)?;
-                Some(format!("{object}.{}", self.value(attribute, level + 1)?))
+                Some(rebase(&format!(
+                    "{object}.{}",
+                    self.value(attribute, level + 1)?
+                )))
             }
             _ => None,
         }
@@ -669,13 +748,16 @@ impl<'s> Reader<'s> {
         self.reading.acts.extend(act);
     }
 
-    fn call(&mut self, call: Node<'_>) {
+    fn call<'t>(&mut self, call: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
         let Some(function) = call.child_by_field_name("function") else {
             return;
         };
         let args = Args::read(call, self.src);
         let name = self.qualified(function, 0);
-        match name.as_deref().and_then(kind) {
+        let kind = name.as_deref().and_then(kind);
+        // What starts a program is run from where `cwd` says.
+        let before = self.reading.acts.len();
+        match kind {
             Some(Kind::Remove) => {
                 let target = self.target(&args, 0, &["path"]);
                 self.act(target.map(Act::Remove));
@@ -759,9 +841,40 @@ impl<'s> Reader<'s> {
                 // rest is a lookup the reader cannot follow.
                 if self.qualified(call, 0).is_none() {
                     self.reading.unread(self.text(call));
+                } else {
+                    // A module or call it names, handed on as a value.
+                    self.used(call, field, above);
                 }
             }
             None => self.method(function, &args),
+        }
+        if matches!(kind, Some(Kind::Script | Kind::Subprocess | Kind::Exec)) {
+            self.within(&args, before);
+        }
+    }
+
+    /// Run what the call at `before` added from the directory its `cwd` names:
+    /// as if the line had gone there first. A directory only known when it
+    /// runs cannot be told, so the call is `unknown` besides.
+    fn within(&mut self, args: &Args<'_>, before: usize) {
+        let Some(node) = args
+            .keywords
+            .iter()
+            .find(|(name, _)| name == "cwd")
+            .map(|(_, node)| *node)
+        else {
+            return;
+        };
+        if self.text(node) == "None" {
+            return;
+        }
+        let acts = self.reading.acts.split_off(before);
+        match self.arg(node) {
+            dir @ Arg::Known(_) => self.reading.acts.push(Act::In(dir, acts)),
+            other => {
+                self.reading.unread(other.text());
+                self.reading.acts.extend(acts);
+            }
         }
     }
 
@@ -794,10 +907,17 @@ impl<'s> Reader<'s> {
     /// `subprocess.run(["rm", "-rf", "~"])` runs the program; with a shell,
     /// or a string, the command line is read as a script.
     fn subprocess(&mut self, args: &Args<'_>) {
-        let Some(command) = args.get(0, &["args"]) else {
-            if args.splat {
-                self.reading.unread("subprocess call with *args");
+        // `*args` and `**options` may hold the program, `cwd`, `executable`;
+        // so may the positional arguments of `Popen` after the first
+        // (`bufsize`, `executable`, ...).
+        if args.splat || args.positional.len() > 1 {
+            self.reading
+                .unread("subprocess call with arguments passed on");
+            if args.get(0, &["args"]).is_none() {
+                return;
             }
+        }
+        let Some(command) = args.get(0, &["args"]) else {
             return;
         };
         let shell = args
@@ -806,6 +926,39 @@ impl<'s> Reader<'s> {
             .find(|(name, _)| name == "shell")
             .map(|(_, value)| *value);
         let shell = shell.is_some_and(|value| !matches!(self.text(value), "False" | "None" | "0"));
+        // `executable=` is the program that runs, whatever the first word of
+        // the command says (with a shell, the shell is that program).
+        let executable = args
+            .keywords
+            .iter()
+            .find(|(name, _)| name == "executable")
+            .map(|(_, value)| *value)
+            .filter(|value| self.text(*value) != "None");
+        if let Some(executable) = executable {
+            let program = self.arg(executable);
+            if shell || program.known().is_none() {
+                self.reading.unread(self.text(executable));
+            } else if matches!(command.kind(), "list" | "tuple") {
+                let mut cursor = command.walk();
+                let elements: Vec<Node<'_>> = command
+                    .named_children(&mut cursor)
+                    .filter(|element| element.kind() != "comment")
+                    .collect();
+                if elements
+                    .iter()
+                    .any(|element| element.kind() == "list_splat")
+                {
+                    self.reading.unread(self.text(command));
+                    return;
+                }
+                let mut words = vec![program];
+                words.extend(elements.into_iter().skip(1).map(|node| self.arg(node)));
+                self.reading.acts.push(Act::Program(words));
+            } else {
+                self.reading.acts.push(Act::Program(vec![program]));
+            }
+            return;
+        }
         if matches!(command.kind(), "list" | "tuple") {
             let mut cursor = command.walk();
             let elements: Vec<Node<'_>> = command
@@ -855,10 +1008,22 @@ impl<'s> Reader<'s> {
                 let target = self.arg(receiver);
                 self.reading.acts.push(Act::Write(target));
             }
-            "rename" | "replace" if args.positional.len() == 1 && args.keywords.is_empty() => {
+            // `Path.rename(target)` and `Path.replace(target=…)`; a string's
+            // `replace(old, new)` has two.
+            "rename" | "replace"
+                if args.positional.len() + args.keywords.len() == 1
+                    && args.keywords.iter().all(|(name, _)| name == "target") =>
+            {
                 let from = self.arg(receiver);
-                let to = args.positional.first().map(|node| self.arg(*node));
+                let to = args.get(0, &["target"]).map(|node| self.arg(node));
                 self.act(to.map(|to| Act::Move { from, to }));
+            }
+            // `Path(…).rename(*args)` may be this, and a string literal's
+            // `replace` is not.
+            "rename" | "replace"
+                if args.splat && !matches!(receiver.kind(), "string" | "concatenated_string") =>
+            {
+                self.reading.unread(self.text(receiver));
             }
             "open" => {
                 let mode = args
@@ -890,7 +1055,7 @@ impl<'s> Reader<'s> {
 
     /// A name or attribute used without being called: an alias of a call the
     /// reader cannot follow.
-    fn reference(&mut self, node: Node<'_>) {
+    fn reference<'t>(&mut self, node: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
         // A name that reaches what the reader cannot follow, called or not.
         if node.kind() == "attribute"
             && node
@@ -900,28 +1065,33 @@ impl<'s> Reader<'s> {
             self.reading.unread(self.text(node));
             return;
         }
-        let Some(parent) = node.parent() else {
+        self.used(node, field, above);
+    }
+
+    /// A name, attribute or call that is a name (`__import__('os')`) in the
+    /// place `field` of the last of `above`: unread when it is a call the
+    /// reader cannot follow handed on, or a module put where its attributes
+    /// are not looked up by name.
+    fn used<'t>(&mut self, node: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) {
+        let Some(parent) = above.last() else {
             return;
         };
-        let field = |name: &str| {
-            parent
-                .child_by_field_name(name)
-                .is_some_and(|child| child.id() == node.id())
-        };
-        let skipped = match parent.kind() {
-            "call" => field("function"),
-            "attribute" => field("attribute"),
-            "keyword_argument" => field("name"),
-            "function_definition" | "class_definition" => field("name"),
+        let is = |name: &str| field == Some(name);
+        let skipped = match parent.node.kind() {
+            "call" => is("function"),
+            "attribute" => is("attribute"),
+            "keyword_argument" => is("name"),
+            "function_definition" | "class_definition" => is("name"),
+            // A name in a parameter list is the parameter's, and what it is
+            // given when none is passed (`r=os.remove`) is read.
+            "default_parameter" | "typed_default_parameter" => is("name"),
             "dotted_name"
             | "aliased_import"
             | "import_statement"
             | "import_from_statement"
             | "parameters"
             | "lambda_parameters"
-            | "default_parameter"
             | "typed_parameter"
-            | "typed_default_parameter"
             | "global_statement"
             | "nonlocal_statement"
             | "relative_import" => true,
@@ -943,8 +1113,72 @@ impl<'s> Reader<'s> {
                     let attribute = self.text(attribute);
                     METHODS.contains(&attribute)
                 });
-        if unfollowable || method {
+        if unfollowable || method || (self.is_module(&name) && self.escapes(node, field, above)) {
             self.reading.unread(self.text(node));
+        }
+    }
+
+    /// Whether `name` is a module, whose attributes reach other modules and
+    /// so the calls the reader looks for.
+    fn is_module(&self, name: &str) -> bool {
+        MODULES.contains(&name) || HOLDERS.contains(&name) || self.modules.contains(name)
+    }
+
+    /// Whether a module is put where the reader loses it: anywhere but as the
+    /// object of an attribute (`os.remove`), the value of a name it records
+    /// (`o = os`, also in a chain), a name being set, or a statement of its
+    /// own. Handed to a call, held in a list, a dict or a loop, returned or
+    /// given as a default it may come back under a name the reader does not
+    /// follow (`f(os)` with `def f(o): o.remove(...)`).
+    fn escapes<'t>(&mut self, node: Node<'t>, field: Option<&str>, above: &[Ancestor<'t>]) -> bool {
+        let mut field = field;
+        let mut at = above.len();
+        while let Some(parent) = at.checked_sub(1).and_then(|index| above.get(index)) {
+            let is = |name: &str| field == Some(name);
+            match parent.node.kind() {
+                "parenthesized_expression" => {
+                    field = parent.field;
+                    at -= 1;
+                }
+                "attribute" => return !is("object"),
+                "expression_statement" => return false,
+                "assignment" => {
+                    let named = parent
+                        .node
+                        .child_by_field_name("left")
+                        .is_some_and(|left| left.kind() == "identifier");
+                    return !(is("left") || (is("right") && named));
+                }
+                "argument_list" => {
+                    // `getattr(os, 'remove')` with a literal name is followed.
+                    let first =
+                        parent.node.named_child(0).map(|first| first.id()) == Some(node.id());
+                    let call = at.checked_sub(2).and_then(|index| above.get(index));
+                    let getattr = call
+                        .filter(|call| call.node.kind() == "call")
+                        .and_then(|call| call.node.child_by_field_name("function"))
+                        .and_then(|function| self.qualified(function, 0))
+                        .as_deref()
+                        .and_then(kind)
+                        == Some(Kind::Getattr);
+                    return !(first && getattr);
+                }
+                _ => return true,
+            }
+        }
+        false
+    }
+
+    /// Python 2's `exec "code"`, with or without `in globals`: a literal is
+    /// code like `exec("…")`'s, anything else is only known when it runs.
+    fn exec_statement(&mut self, node: Node<'_>) {
+        let code = node.child_by_field_name("code");
+        let text = code
+            .filter(|code| code.kind() == "string")
+            .and_then(|code| self.value(code, 0));
+        match text {
+            Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
+            None => self.reading.unread(self.text(node)),
         }
     }
 
