@@ -129,6 +129,10 @@ fn a_line_too_long_or_too_nested_is_not_read() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_run_of_open_brackets_is_read_quickly() {
     // A `[` with no `]` after it is a plain character; reading each one must
     // not scan to the end of the line again.
@@ -161,6 +165,10 @@ fn a_long_run_of_open_brackets_is_read_quickly() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
     // Each loop body is judged with hidden names matching when the line ever
@@ -196,6 +204,10 @@ fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
     // A `trap "$(…)"` has its substitution read where it stands; reading it
     // again inside the trap's script would double the work at each level.
@@ -224,6 +236,10 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
     // A word of many brace lists would make the product of their sizes in
@@ -270,6 +286,10 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
     // `bun -F x --package run` reads two ways, and each leads to another
     // `bun`: the readings share the wrappers a line may have and the forks
@@ -307,6 +327,10 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a cubic read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
     // Each variable is set from the one set after it on the line, the worst
     // order for finding which of them hold the secret.
@@ -339,6 +363,10 @@ fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a product of redirects and units"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn input_redirects_over_many_units_are_read_in_linear_time() {
     // Each redirect is read once for the whole group it covers, not once for
