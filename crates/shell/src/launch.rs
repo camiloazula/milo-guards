@@ -1,7 +1,8 @@
 //! Adding a unit to a split: the wrappers in front of a program come off
 //! (`sudo rm` is `rm`, run as root), and a program started with a script
 //! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`, `trap`,
-//! `Invoke-Expression`) has that script split in its own grammar.
+//! `Invoke-Expression`) has that script split in its own grammar. A package
+//! runner (`npx`, `uvx`, `bunx`) is a wrapper for the program it names.
 
 use crate::dotglob;
 use crate::powershell::Params;
@@ -14,9 +15,9 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
-use interpreters::{interpreter, shell, trap, trap_inherited};
+use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
-use wrappers::{cmd, env, env_sets, powershell, rsh, start, start_process, tmux, xargs};
+use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -480,6 +481,10 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             Some(Arg::Known(_)) | None => Launch::Itself,
             Some(script) => Launch::Script(Shell::Posix, script.clone()),
         },
+        // Package runners start the program they name.
+        "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => runner(key, unit),
+        "bun" if posix => bun(unit),
+        "deno" if posix => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
         key if posix && (INTERPRETERS.contains(&key) || key.starts_with("python3.")) => {
             interpreter(key, args)

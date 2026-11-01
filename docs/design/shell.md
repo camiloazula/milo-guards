@@ -64,6 +64,25 @@ run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
 
+**Package runners** come off too, with each runner's own options skipped:
+`npx`, `npm exec`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, `bunx`,
+`bun x`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The program the runner
+names is judged, with a version after the package taken off (`npx rimraf@5`).
+Where the runner names the package apart from the program (`npx -p pkg prog`,
+`uvx --from pkg prog`) the program is the one after the options. `npx -c` and
+`pnpm exec -c` run a shell command, read as a script. `pnpm` and `yarn` also
+start a delete tool by its name (`pnpm rimraf dist`). The delete tools that
+come as packages (`rimraf`, `del` and `del-cli`, `premove`, `rmrf`) delete
+their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx
+rimraf ~` are `Delete`, `npx rimraf dist` is safe, `del --dry-run` only lists.
+
+`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print`, `bun
+repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
+input (`bun run -`, `deno run -`) run code the guard does not read: `Unknown`,
+or `RunDownloaded` after a download. `bun run file`, `deno run file` and
+`bun file` are judged like `node file`, so a script the same line writes is
+not read. `deno run npm:pkg` runs the package's program like a runner.
+
 `coproc` is read as the shells read it. A simple command takes no name, so the
 first word is the program (`coproc NAME cat` runs `NAME`); a group may take
 one (`coproc NAME { … }`). The program is the first word past the name, the
@@ -402,7 +421,7 @@ A line is never safe because the guard gave up on it. These come back risky:
 
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
+- Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
 - A path built at run time or by a brace list.

@@ -1,10 +1,10 @@
 //! The wrappers that run another program or script: `env`, `xargs`,
-//! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`
-//! and cmd's `start`.
+//! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`,
+//! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
-use super::{is_stdin, join, Launch};
+use super::{after_options, is_stdin, join, option_value, Launch};
 use crate::powershell::Params;
-use crate::unit::{self, Arg, Reads, Unit};
+use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
 
 /// The command `rsync -e` (`--rsh`) runs: also at the end of a bundle
@@ -347,4 +347,233 @@ pub(super) fn start(args: &[Arg]) -> Launch {
         }
     }
     Launch::Itself
+}
+
+/// The delete tools that come as packages: a package runner or a package
+/// manager's bin directory starts them.
+pub(crate) const DELETERS: [&str; 5] = ["rimraf", "del", "del-cli", "premove", "rmrf"];
+
+/// The options of `npx` and `npm exec` that take the next argument.
+const NPM_VALUES: [&str; 14] = [
+    "-p",
+    "--package",
+    "-c",
+    "--call",
+    "-w",
+    "--workspace",
+    "--registry",
+    "--cache",
+    "--prefix",
+    "--userconfig",
+    "--globalconfig",
+    "--loglevel",
+    "--node-arg",
+    "--script-shell",
+];
+
+/// The options of `pnpm`, before and after `dlx` and `exec`, that take the
+/// next argument.
+const PNPM_VALUES: [&str; 11] = [
+    "-C",
+    "--dir",
+    "-F",
+    "--filter",
+    "--filter-prod",
+    "--reporter",
+    "--loglevel",
+    "-p",
+    "--package",
+    "--registry",
+    "--config",
+];
+
+/// The options of `yarn`, before and after `dlx` and `exec`, that take the
+/// next argument.
+const YARN_VALUES: [&str; 3] = ["--cwd", "-p", "--package"];
+
+/// The options of `bunx` and `bun x` that take the next argument.
+const BUN_X_VALUES: [&str; 2] = ["-p", "--package"];
+
+/// The options of `uv`, `uvx`, `uv run` and `uv tool run` that take the next
+/// argument. `--from` names the package, the program follows it.
+const UV_VALUES: [&str; 39] = [
+    "--from",
+    "--with",
+    "-w",
+    "--with-requirements",
+    "--with-editable",
+    "-p",
+    "--python",
+    "--index",
+    "--default-index",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "-c",
+    "--constraints",
+    "--overrides",
+    "--env-file",
+    "--config-file",
+    "--directory",
+    "--project",
+    "--cache-dir",
+    "--refresh-package",
+    "--reinstall-package",
+    "-P",
+    "--upgrade-package",
+    "--index-strategy",
+    "--keyring-provider",
+    "--resolution",
+    "--prerelease",
+    "--exclude-newer",
+    "--link-mode",
+    "--config-setting",
+    "-C",
+    "--allow-insecure-host",
+    "--build-constraints",
+    "--color",
+    "--python-platform",
+    "--package",
+];
+
+/// The options of `pipx` and `pipx run` that take the next argument.
+const PIPX_VALUES: [&str; 5] = [
+    "--spec",
+    "--python",
+    "--index-url",
+    "--pip-args",
+    "--fetch-missing-python",
+];
+
+/// Where the program of a package runner starts: the words that lead to it
+/// (each with the options that may stand before it), then the options of
+/// the runner. The first index is where the runner's own options start,
+/// the second the program, when there is one.
+fn locate(
+    args: &[Arg],
+    steps: &[(&[&str], &[&str])],
+    own: &[&str],
+) -> Option<(usize, Option<usize>)> {
+    let mut from = 0;
+    for (values, words) in steps {
+        let at = from + after_options(args.get(from..)?, values)?;
+        if !args
+            .get(at)?
+            .known()
+            .is_some_and(|text| words.contains(&text))
+        {
+            return None;
+        }
+        from = at + 1;
+    }
+    let program = args
+        .get(from..)
+        .and_then(|rest| after_options(rest, own))
+        .map(|at| from + at);
+    Some((from, program))
+}
+
+/// A package runner: `npx`, `npm exec`, `pnpm dlx`, `pnpm exec`,
+/// `yarn dlx`, `yarn exec`, `bunx`, `bun x`, `uvx`, `uv tool run`,
+/// `uv run`, `pipx run`. It runs the program it names, so that program is
+/// judged, with a version after the package taken off (`rimraf@5`). Where
+/// the runner names the package apart from the program (`npx -p pkg prog`,
+/// `uvx --from pkg prog`) the program is the one after the options. `npx -c`
+/// and `pnpm exec -c` run a shell command instead. `pnpm` and `yarn` also
+/// start a delete tool of the project by its name (`pnpm rimraf dist`).
+pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
+    let args = unit.args.as_slice();
+    let found = match key {
+        "npx" => Some((0, after_options(args, &NPM_VALUES))),
+        "bunx" => Some((0, after_options(args, &BUN_X_VALUES))),
+        "uvx" => Some((0, after_options(args, &UV_VALUES))),
+        "npm" => locate(args, &[(&NPM_VALUES, &["exec", "x"])], &NPM_VALUES),
+        "pnpm" => locate(args, &[(&PNPM_VALUES, &["dlx", "exec"])], &PNPM_VALUES)
+            .or_else(|| direct(args, &PNPM_VALUES)),
+        "yarn" => locate(args, &[(&YARN_VALUES, &["dlx", "exec"])], &YARN_VALUES)
+            .or_else(|| direct(args, &YARN_VALUES)),
+        "bun" => locate(args, &[(&[], &["x"])], &BUN_X_VALUES),
+        "uv" => locate(
+            args,
+            &[(&UV_VALUES, &["tool"]), (&[], &["run"])],
+            &UV_VALUES,
+        )
+        .or_else(|| locate(args, &[(&UV_VALUES, &["run"])], &UV_VALUES)),
+        "pipx" => locate(args, &[(&[], &["run"])], &PIPX_VALUES),
+        _ => None,
+    };
+    let Some((from, program)) = found else {
+        return Launch::Itself;
+    };
+    let own = args
+        .get(from..program.unwrap_or(args.len()))
+        .unwrap_or_default();
+    let shell = if unit.shell == Shell::Cmd {
+        Shell::Cmd
+    } else {
+        Shell::Posix
+    };
+    match key {
+        "npx" | "npm" => {
+            if let Some(script) = option_value(own, "-c", "--call") {
+                return Launch::Script(shell, script);
+            }
+        }
+        "pnpm" if has_flag(own, Some('c'), Some("shell-mode")) => {
+            if let Some(program) = program {
+                return Launch::Script(shell, join(&args[program..]));
+            }
+        }
+        _ => {}
+    }
+    let Some(program) = program else {
+        return Launch::Itself;
+    };
+    Launch::Replace(Box::new(running(unit, key, program)))
+}
+
+/// `pnpm rimraf dist` and `yarn rimraf dist`: the project's own delete tool.
+fn direct(args: &[Arg], values: &[&str]) -> Option<(usize, Option<usize>)> {
+    let at = after_options(args, values)?;
+    let name = args.get(at)?.known()?;
+    DELETERS.contains(&name).then_some((at, Some(at)))
+}
+
+/// The unit a runner runs: the program at `program`, as a package without
+/// its version, with the arguments after it.
+pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
+    let mut wrappers = unit.wrappers.clone();
+    wrappers.push(key.to_string());
+    Unit {
+        shell: unit.shell,
+        program: without_version(&unit.args[program]),
+        args: unit.args[program + 1..].to_vec(),
+        wrappers,
+        stage: unit.stage,
+        reads: Reads::Nothing,
+        dir: None,
+        hidden: false,
+    }
+}
+
+/// `rimraf@5` and `@scope/tool@1.2` name a package and its version: the
+/// program is the package. A path or a URL is left as it is.
+pub(super) fn without_version(program: &Arg) -> Arg {
+    let Arg::Known(text) = program else {
+        return program.clone();
+    };
+    if !text.starts_with('@') && text.contains(['/', '\\', ':']) {
+        return program.clone();
+    }
+    let from = if text.starts_with('@') {
+        text.find('/').map_or(text.len(), |at| at + 1)
+    } else {
+        0
+    };
+    match text[from..].find('@') {
+        Some(at) if from + at > 0 => Arg::Known(text[..from + at].to_string()),
+        _ => program.clone(),
+    }
 }

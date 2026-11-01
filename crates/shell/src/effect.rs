@@ -522,10 +522,10 @@ fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Effect
 
 /// Programs that change the machine whatever their flags: the files, the
 /// processes, the system.
-const WRITERS: [&str; 24] = [
+const WRITERS: [&str; 29] = [
     "rm", "rmdir", "unlink", "shred", "mkdir", "touch", "mv", "cp", "ln", "install", "chmod",
     "chown", "chgrp", "tee", "dd", "truncate", "mkfifo", "mktemp", "patch", "kill", "pkill",
-    "killall", "shutdown", "reboot",
+    "killall", "shutdown", "reboot", "rimraf", "del", "del-cli", "premove", "rmrf",
 ];
 
 /// Package managers and build tools: they write whatever subcommand they

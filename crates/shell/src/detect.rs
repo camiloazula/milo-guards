@@ -645,6 +645,11 @@ fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
     if matches!(key, "source" | ".") {
         return args.first();
     }
+    // `bun run file` and `deno run file` run the file after the subcommand.
+    let args = match (key, args.first().and_then(Arg::known)) {
+        ("bun" | "deno", Some("run")) => &args[1..],
+        _ => args,
+    };
     let values: &[&str] = if SHELLS.contains(&key) {
         &["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]
     } else {
