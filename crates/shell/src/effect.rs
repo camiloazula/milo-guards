@@ -205,9 +205,26 @@ fn plain_loop(name: &str) -> bool {
 /// decides. `find` is the one a `-exec` makes. Any other wrapper (`flock`
 /// makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 /// start sessions) is a step the guard does not judge.
-const WRAPPERS: [&str; 15] = [
-    "sudo", "doas", "gsudo", "pkexec", "env", "nice", "ionice", "time", "timeout", "gtimeout",
-    "stdbuf", "xargs", "command", "builtin", "find",
+const WRAPPERS: [&str; 19] = [
+    "sudo",
+    "doas",
+    "gsudo",
+    "pkexec",
+    "env",
+    "nice",
+    "ionice",
+    "time",
+    "timeout",
+    "gtimeout",
+    "stdbuf",
+    "xargs",
+    "command",
+    "builtin",
+    "find",
+    "noglob",
+    "nocorrect",
+    "-",
+    "coproc",
 ];
 
 /// The folders a program may be named in and still be the one the shell

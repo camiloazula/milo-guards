@@ -63,7 +63,7 @@ const BASHOPTS: &str = "BASHOPTS";
 /// The wrappers a unit may sit behind and still change this shell's options:
 /// each runs the builtin itself. Any other (`env`, `nohup`, `timeout`,
 /// `find -exec`) starts a process of its own.
-const IN_SHELL: [&str; 3] = ["command", "builtin", "time"];
+const IN_SHELL: [&str; 6] = ["command", "builtin", "time", "noglob", "nocorrect", "-"];
 
 /// Whether a unit behind `wrappers` runs in this shell.
 pub(crate) fn in_shell(wrappers: &[String]) -> bool {
@@ -462,8 +462,17 @@ mod tests {
             names.iter().map(|name| (*name).to_string()).collect()
         };
         assert!(in_shell(&[]));
-        assert!(in_shell(&wrappers(&["command", "builtin", "time"])));
-        for name in ["env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo"] {
+        assert!(in_shell(&wrappers(&[
+            "command",
+            "builtin",
+            "time",
+            "noglob",
+            "nocorrect",
+            "-"
+        ])));
+        for name in [
+            "env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo", "coproc",
+        ] {
             assert!(!in_shell(&wrappers(&[name])), "{name}");
         }
     }

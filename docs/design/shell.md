@@ -59,7 +59,15 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root.
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
+`noglob -- rm` runs a program named `--`), and `coproc`. `coproc rm -rf ~` and
+`coproc { rm -rf ~; }` (also `coproc NAME { … }`) judge the `rm`: a simple
+command takes no name, so the word after `coproc` is the program, and a group
+is read through its `{`. The grammar has no `coproc`, so a loop, conditional or
+function after it (`coproc while …; do …; done`) is cut into pieces whose
+body hides behind the program `do`: it is unreadable, hence risky.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -196,7 +204,7 @@ folder a `cd` moved to.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
   `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
   them in this shell. They count when the unit is reached directly or through
-  `command`, `builtin`, `time`, `!` or `eval`. Behind `env`, `nohup`,
+  `command`, `builtin`, `noglob`, `nocorrect`, `-`, `time`, `!` or `eval`. Behind `env`, `nohup`,
   `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
   their own and change nothing. In a pipeline, after `&`, on the right of `&&`
   or `||`, in an `if`, `case`, loop or function body, they change nothing
@@ -455,8 +463,8 @@ never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly` and `Elevated`.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
-`-exec` makes), and only with options the guard knows: any other option
+`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
+`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with options the guard knows: any other option
 makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
 `sudo -s` and `-i` start a shell, `env -P` changes where programs are found).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.

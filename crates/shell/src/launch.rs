@@ -42,6 +42,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs commands the grammar cannot read, said in the reason.
+    Opaque(&'static str),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -178,6 +180,11 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             }
             Launch::Reads(reads) => {
                 unit.reads = reads;
+                split.push(unit);
+                return;
+            }
+            Launch::Opaque(reason) => {
+                split.problem(Rule::Unreadable, reason, Some(unit.program.text()));
                 split.push(unit);
                 return;
             }
@@ -383,6 +390,17 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // command its arguments. A POSIX program with one of these names is
         // rare enough to read the same way.
         "and" | "or" | "not" if unit.shell == Shell::Posix => runs(args, Some(0)),
+        // zsh's precommand modifiers `noglob`, `nocorrect` and `-` take no
+        // options: the next word is the program (`noglob -- rm` runs a
+        // program named `--`). A POSIX program of one of these names is rare
+        // enough to read the same way.
+        "noglob" | "nocorrect" | "-" if unit.shell == Shell::Posix => runs(args, Some(0)),
+        // `coproc` starts a command in the background. A simple command
+        // takes no name (`coproc NAME cmd` runs a program called `NAME`),
+        // a group may: `coproc { cmd; }`, `coproc NAME { cmd; }`. The
+        // grammar has no `coproc`, so a group reads as the word `{` and the
+        // commands after it, and what comes after is judged as it is.
+        "coproc" if unit.shell == Shell::Posix => coproc(args),
         "flock" if posix => option_value(args, "-c", "--command").map_or_else(
             || {
                 runs(
@@ -482,6 +500,30 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         _ => Launch::Itself,
     }
 }
+
+/// What `coproc` runs: the program after a `{` that opens a group (which
+/// may follow a name), else the first word. A loop, a conditional or a
+/// function after it (`coproc while …; do …; done`) is cut into pieces by
+/// the grammar, its body behind the program `do`, so it is not read.
+fn coproc(args: &[Arg]) -> Launch {
+    let word = |at: usize| args.get(at).and_then(Arg::known);
+    if [word(0), word(1)]
+        .iter()
+        .flatten()
+        .any(|text| COMPOUND.contains(text))
+    {
+        Launch::Opaque("starts a compound command that cannot be read")
+    } else if word(0) == Some("{") {
+        runs(args, Some(1))
+    } else if word(1) == Some("{") {
+        runs(args, Some(2))
+    } else {
+        runs(args, Some(0))
+    }
+}
+
+/// The words that open a compound command with a body of its own.
+const COMPOUND: [&str; 7] = ["while", "until", "if", "for", "select", "case", "function"];
 
 /// A script path that is the program's own input: what is piped into it.
 pub(super) fn is_stdin(path: &str) -> bool {
