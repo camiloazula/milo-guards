@@ -2,8 +2,9 @@
 //! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`,
 //! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
-use super::interpreters::reads_input;
-use super::{after_options, is_stdin, join, option_value, Launch};
+use super::interpreters::{reads_input, DENO_VALUES};
+use super::npm::{npm_word, npx_start, NPM_VALUES};
+use super::{after_options, after_options_by, is_stdin, join, option_value, Launch, Word};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
@@ -350,55 +351,21 @@ pub(super) fn start(args: &[Arg]) -> Launch {
     Launch::Itself
 }
 
+/// The package runners, by the name they stand under in a unit's wrappers.
+/// What a runner starts is a program, never a builtin of the shell.
+pub(crate) const RUNNERS: [&str; 11] = [
+    "npx", "npm", "pnpm", "yarn", "bunx", "bun", "uvx", "uv", "pipx", "deno", "dx",
+];
+
 /// The delete tools that come as packages: a package runner or a package
 /// manager's bin directory starts them.
 pub(crate) const DELETERS: [&str; 5] = ["rimraf", "del", "del-cli", "premove", "rmrf"];
 
-/// The options of `npx` and `npm exec` that take the next argument. npm reads
-/// any of its settings as an option, so these are the ones that take a value
-/// (`-C` is `--prefix`).
-const NPM_VALUES: [&str; 36] = [
-    "-p",
-    "--package",
-    "-c",
-    "--call",
-    "-w",
-    "--workspace",
-    "-C",
-    "--registry",
-    "--cache",
-    "--prefix",
-    "--userconfig",
-    "--globalconfig",
-    "--loglevel",
-    "--node-arg",
-    "--node-options",
-    "--script-shell",
-    "--shell",
-    "--include",
-    "--omit",
-    "--tag",
-    "--before",
-    "--location",
-    "--scope",
-    "--otp",
-    "--proxy",
-    "--https-proxy",
-    "--noproxy",
-    "--cafile",
-    "--fetch-retries",
-    "--fetch-retry-factor",
-    "--fetch-retry-mintimeout",
-    "--fetch-retry-maxtimeout",
-    "--fetch-timeout",
-    "--install-strategy",
-    "--audit-level",
-    "--maxsockets",
-];
-
 /// The options of `pnpm`, before and after `dlx` and `exec`, that take the
-/// next argument.
-const PNPM_VALUES: [&str; 11] = [
+/// next argument: its own string and number settings, `exec`'s
+/// `--resume-from` and `dlx`'s `--allow-build`. It also reads npm's settings
+/// as options (see [`Opts::Pnpm`]).
+const PNPM_VALUES: &[&str] = &[
     "-C",
     "--dir",
     "-F",
@@ -410,18 +377,60 @@ const PNPM_VALUES: [&str; 11] = [
     "--package",
     "--registry",
     "--config",
+    "--store-dir",
+    "--virtual-store-dir",
+    "--modules-dir",
+    "--lockfile-dir",
+    "--cache-dir",
+    "--global-dir",
+    "--state-dir",
+    "--workspace-concurrency",
+    "--network-concurrency",
+    "--child-concurrency",
+    "--test-pattern",
+    "--changed-files-ignore-pattern",
+    "--node-linker",
+    "--package-import-method",
+    "--resolution-mode",
+    "--resume-from",
+    "--allow-build",
 ];
 
-/// The options of `yarn`, before and after `dlx` and `exec`, that take the
-/// next argument.
-const YARN_VALUES: [&str; 3] = ["--cwd", "-p", "--package"];
+/// The options of `yarn` (version 1), before and after `dlx` and `exec`, that
+/// take the next argument: `--cwd`, `-p`, `--package` and the global options
+/// of `yarn --help` that name a folder, a host, a number or a type.
+const YARN_VALUES: &[&str] = &[
+    "--cwd",
+    "-p",
+    "--package",
+    "--cache-folder",
+    "--modules-folder",
+    "--global-folder",
+    "--link-folder",
+    "--preferred-cache-folder",
+    "--mutex",
+    "--network-timeout",
+    "--network-concurrency",
+    "--registry",
+    "--proxy",
+    "--https-proxy",
+    "--otp",
+    "--use-yarnrc",
+];
 
 /// The options of `bunx` and `bun x` that take the next argument.
 const BUN_X_VALUES: [&str; 2] = ["-p", "--package"];
 
+/// The options of `deno x` and `dx` that take the next argument.
+const DENO_X_VALUES: [&str; 2] = ["-p", "--package"];
+
 /// The options of `uv`, `uvx`, `uv run` and `uv tool run` that take the next
 /// argument. `--from` names the package, the program follows it.
-const UV_VALUES: [&str; 56] = [
+///
+/// Besides the options `uv run --help` lists, the hidden ones that real uv
+/// still takes a value for: `--python-preference`, `--python-fetch`,
+/// `--max-recursion-depth`, `--preview-feature(s)` and `--trusted-host`.
+const UV_VALUES: &[&str] = &[
     "--from",
     "--with",
     "-w",
@@ -478,29 +487,73 @@ const UV_VALUES: [&str; 56] = [
     "--no-binary-package",
     "-b",
     "--torch-backend",
+    "--python-preference",
+    "--python-fetch",
+    "--max-recursion-depth",
+    "--preview-feature",
+    "--preview-features",
+    "--trusted-host",
 ];
 
 /// The options of `pipx` and `pipx run` that take the next argument.
-const PIPX_VALUES: [&str; 5] = [
+/// `--fetch-missing-python` is a flag, not among them.
+const PIPX_VALUES: &[&str] = &[
     "--spec",
     "--python",
+    "-i",
     "--index-url",
     "--pip-args",
-    "--fetch-missing-python",
+    "--fetch-python",
+    "--backend",
+    "--cooldown",
+    "--python-args",
+    "--with",
+    "--preinstall",
 ];
+
+/// How a runner reads the options in front of its program.
+#[derive(Clone, Copy)]
+enum Opts {
+    /// The options listed take the next argument; any other option does not.
+    List(&'static [&'static str]),
+    /// `npx`: its own pass over the words, then npm's, see [`npx_start`].
+    Npx,
+    /// npm's option parser, see [`npm_word`].
+    Npm,
+    /// `pnpm`: the options it lists, and npm's settings, which it reads too.
+    Pnpm,
+}
+
+impl Opts {
+    /// The index of the first argument that is not an option.
+    fn after(self, args: &[Arg]) -> Option<usize> {
+        match self {
+            Opts::List(values) => after_options(args, values),
+            Opts::Npx => npx_start(args),
+            Opts::Npm => after_options_by(args, npm_word),
+            Opts::Pnpm => after_options_by(args, |text, _| {
+                // `-w` is `--workspace-root` for pnpm, not npm's `--workspace`.
+                let npm = text
+                    .strip_prefix("--")
+                    .is_some_and(|key| key != "workspace" && NPM_VALUES.contains(&key));
+                if npm || PNPM_VALUES.contains(&text) {
+                    Word::Value
+                } else {
+                    Word::Flag
+                }
+            }),
+        }
+    }
+}
 
 /// Where the program of a package runner starts: the words that lead to it
 /// (each with the options that may stand before it), then the options of
 /// the runner. The first index is where the runner's own options start,
 /// the second the program, when there is one.
-fn locate(
-    args: &[Arg],
-    steps: &[(&[&str], &[&str])],
-    own: &[&str],
-) -> Option<(usize, Option<usize>)> {
+fn locate(args: &[Arg], steps: &[(Opts, &[&str])], own: Opts) -> Option<(usize, Option<usize>)> {
     let mut from = 0;
-    for (values, words) in steps {
-        let at = from + after_options(args.get(from..)?, values)?;
+    for (opts, words) in steps {
+        let at = from + opts.after(args.get(from..)?)?;
         if !args
             .get(at)?
             .known()
@@ -512,39 +565,61 @@ fn locate(
     }
     let program = args
         .get(from..)
-        .and_then(|rest| after_options(rest, own))
+        .and_then(|rest| own.after(rest))
         .map(|at| from + at);
     Some((from, program))
 }
 
 /// A package runner: `npx`, `npm exec`, `pnpm dlx`, `pnpm exec`,
-/// `yarn dlx`, `yarn exec`, `bunx`, `bun x`, `uvx`, `uv tool run`,
-/// `uv run`, `pipx run`. It runs the program it names, so that program is
-/// judged, with a version after the package taken off (`rimraf@5`). Where
-/// the runner names the package apart from the program (`npx -p pkg prog`,
-/// `uvx --from pkg prog`) the program is the one after the options. `npx -c`,
-/// `pnpm -c exec` and `yarn exec` run a shell command instead. `pnpm` and
-/// `yarn` also start a delete tool of the project by its name (`pnpm rimraf
-/// dist`).
+/// `yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`,
+/// `uv tool run`, `uv run`, `pipx run`. It runs the program it names, so
+/// that program is judged, with a version after the package taken off
+/// (`rimraf@5`). Where the runner names the package apart from the program
+/// (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one after
+/// the options. `npx -c`, `pnpm -c exec` and `yarn exec` run a shell command
+/// instead. `pnpm` and `yarn` also start a delete tool of the project by its
+/// name (`pnpm rimraf dist`).
 pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let found = match key {
-        "npx" => Some((0, after_options(args, &NPM_VALUES))),
-        "bunx" => Some((0, after_options(args, &BUN_X_VALUES))),
-        "uvx" => Some((0, after_options(args, &UV_VALUES))),
-        "npm" => locate(args, &[(&NPM_VALUES, &["exec", "x"])], &NPM_VALUES),
-        "pnpm" => locate(args, &[(&PNPM_VALUES, &["dlx", "exec"])], &PNPM_VALUES)
-            .or_else(|| direct(args, &PNPM_VALUES)),
-        "yarn" => locate(args, &[(&YARN_VALUES, &["dlx", "exec"])], &YARN_VALUES)
-            .or_else(|| direct(args, &YARN_VALUES)),
-        "bun" => locate(args, &[(&[], &["x"])], &BUN_X_VALUES),
+        "npx" => Some((0, Opts::Npx.after(args))),
+        "bunx" => Some((0, Opts::List(&BUN_X_VALUES).after(args))),
+        "uvx" => Some((0, Opts::List(UV_VALUES).after(args))),
+        "dx" => Some((0, Opts::List(&DENO_X_VALUES).after(args))),
+        // npm reads an abbreviation of a command (`npm exe`) too.
+        "npm" => locate(args, &[(Opts::Npm, &["exec", "exe", "x"])], Opts::Npm),
+        "pnpm" => locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm)
+            .or_else(|| direct(args, Opts::Pnpm)),
+        "yarn" => locate(
+            args,
+            &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
+            Opts::List(YARN_VALUES),
+        )
+        .or_else(|| direct(args, Opts::List(YARN_VALUES))),
+        "bun" => locate(
+            args,
+            &[(Opts::List(&[]), &["x"])],
+            Opts::List(&BUN_X_VALUES),
+        ),
+        "deno" => locate(
+            args,
+            &[(Opts::List(&DENO_VALUES), &["x"])],
+            Opts::List(&DENO_X_VALUES),
+        ),
         "uv" => locate(
             args,
-            &[(&UV_VALUES, &["tool"]), (&[], &["run"])],
-            &UV_VALUES,
+            &[
+                (Opts::List(UV_VALUES), &["tool"]),
+                (Opts::List(&[]), &["run"]),
+            ],
+            Opts::List(UV_VALUES),
         )
         .or_else(|| uv_run(args)),
-        "pipx" => locate(args, &[(&[], &["run"])], &PIPX_VALUES),
+        "pipx" => locate(
+            args,
+            &[(Opts::List(&[]), &["run"])],
+            Opts::List(PIPX_VALUES),
+        ),
         _ => None,
     };
     let Some((from, program)) = found else {
@@ -596,12 +671,25 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let Some(program) = program else {
         return Launch::Itself;
     };
-    Launch::Replace(Box::new(running(unit, key, program)))
+    let mut run = running_package(unit, key, program);
+    // `npm exec` takes the first `--` for itself, before the program or
+    // after it (`npm exec sh -- -c 'cmd'` runs `sh -c 'cmd'`); `npx` hands
+    // it on.
+    if key == "npm" && args[program - 1].known() != Some("--") {
+        if let Some(at) = run.args.iter().position(|arg| arg.known() == Some("--")) {
+            run.args.remove(at);
+        }
+    }
+    Launch::Replace(Box::new(run))
 }
 
 /// `uv run`: its options, then the command (also after `uv`'s own options).
 fn uv_run(args: &[Arg]) -> Option<(usize, Option<usize>)> {
-    locate(args, &[(&UV_VALUES, &["run"])], &UV_VALUES)
+    locate(
+        args,
+        &[(Opts::List(UV_VALUES), &["run"])],
+        Opts::List(UV_VALUES),
+    )
 }
 
 /// The file `uv run` hands to Python: the command when it is a `.py` or
@@ -635,8 +723,8 @@ pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
 }
 
 /// `pnpm rimraf dist` and `yarn rimraf dist`: the project's own delete tool.
-fn direct(args: &[Arg], values: &[&str]) -> Option<(usize, Option<usize>)> {
-    let at = after_options(args, values)?;
+fn direct(args: &[Arg], opts: Opts) -> Option<(usize, Option<usize>)> {
+    let at = opts.after(args)?;
     let name = args.get(at)?.known()?;
     DELETERS.contains(&name).then_some((at, Some(at)))
 }
@@ -656,6 +744,19 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         dir: None,
         hidden: false,
     }
+}
+
+/// [`running`], where deno names the package as `npm:rimraf@5`: the
+/// program is the package.
+pub(super) fn running_package(unit: &Unit, key: &str, program: usize) -> Unit {
+    let mut run = running(unit, key, program);
+    if matches!(key, "deno" | "dx") {
+        if let Arg::Known(text) = &run.program {
+            let name = text.trim_start_matches("npm:");
+            run.program = without_version(&Arg::Known(name.to_string()));
+        }
+    }
+    run
 }
 
 /// `rimraf@5` and `@scope/tool@1.2` name a package and its version: the

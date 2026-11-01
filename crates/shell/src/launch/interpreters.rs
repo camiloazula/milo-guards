@@ -1,8 +1,8 @@
 //! Shells and interpreters given a script, inline code, or their input:
 //! which is which, and the perl in-place edits read like `sed -i`.
 
-use super::wrappers::{runner, running, without_version, DELETERS};
-use super::{after_options, is_stdin, Launch};
+use super::wrappers::{runner, running, running_package, DELETERS};
+use super::{after_options, is_stdin, join, Launch};
 use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
 
@@ -325,9 +325,11 @@ pub(crate) const BUN_VALUES: [&str; 46] = [
     "--jsx-runtime",
 ];
 
-/// The options of `deno` and `deno run` that take the next argument. `--reload`
-/// and `--env-file` are not among them: their value only follows `=`.
-pub(crate) const DENO_VALUES: [&str; 10] = [
+/// The options of `deno` and `deno run` that take the next argument, from
+/// deno's own option definitions (`libs/cli_parser/src/defs.rs`); every one
+/// takes exactly one value. `--reload` and `--env-file` are not among them:
+/// their value only follows `=`.
+pub(crate) const DENO_VALUES: [&str; 20] = [
     "-c",
     "--config",
     "--import-map",
@@ -338,6 +340,16 @@ pub(crate) const DENO_VALUES: [&str; 10] = [
     "--ext",
     "-L",
     "--log-level",
+    "--preload",
+    "--import",
+    "--require",
+    "--conditions",
+    "--min-dep-age",
+    "--minimum-dependency-age",
+    "--cpu-prof-dir",
+    "--cpu-prof-name",
+    "--cpu-prof-interval",
+    "--inspect-publish-uid",
 ];
 
 /// Whether `arg` is the program's own input, or a file standing for it.
@@ -346,27 +358,55 @@ pub(super) fn reads_input(arg: &Arg) -> bool {
 }
 
 /// What `bun run file` and `deno run file` hand on: the arguments after the
-/// `run` that follows the options (`bun --hot run file`); all of them when
-/// there is no `run`.
-pub(crate) fn after_run<'a>(args: &'a [Arg], values: &[&str]) -> &'a [Arg] {
+/// `run` that follows the options (`bun --hot run file`), or after deno's
+/// `watch`, which is `run --hmr`; all of them when there is no `run`.
+pub(crate) fn after_run<'a>(key: &str, args: &'a [Arg]) -> &'a [Arg] {
+    let (values, words): (&[&str], &[&str]) = if key == "bun" {
+        (&BUN_VALUES, &["run"])
+    } else {
+        (&DENO_VALUES, &["run", "watch"])
+    };
     match after_options(args, values) {
-        Some(at) if args[at].known() == Some("run") => &args[at + 1..],
+        Some(at) if args[at].known().is_some_and(|word| words.contains(&word)) => &args[at + 1..],
         _ => args,
     }
 }
 
+/// Whether a short word before bun's subcommand carries inline code: `-e`
+/// or `-p` with the code next or attached (`-e'code'`), also in a bundle of
+/// short options (`-pe`, `-bp`). A short option that takes a value ends the
+/// bundle: the rest of the word is its value (`-dNODE_ENV=x`).
+fn bun_inline(text: &str) -> bool {
+    let Some(bundle) = text
+        .strip_prefix('-')
+        .filter(|bundle| !bundle.starts_with('-'))
+    else {
+        return false;
+    };
+    for letter in bundle.chars() {
+        match letter {
+            'e' | 'p' => return true,
+            'c' | 'r' | 'F' | 'd' | 'l' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// `bun`: `-e`, `--eval`, `-p` and `--print` before the subcommand run code
-/// given inline, as does `bun repl` and a script read from its input
-/// (`bun run -`); `bun x` is a package runner; a file or a subcommand is its
-/// own business.
+/// given inline (also in a bundle, `-pe`, or with the code attached,
+/// `-e'code'`), as does `bun repl` and a script read from its input
+/// (`bun run -`); `bun x` is a package runner; `bun exec` runs its
+/// arguments as a shell script; a file or a subcommand is its own business.
 pub(super) fn bun(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let first = after_options(args, &BUN_VALUES);
     let before = args.get(..first.unwrap_or(args.len())).unwrap_or_default();
     let eval = before.iter().filter_map(Arg::known).any(|text| {
-        matches!(text, "-e" | "--eval" | "-p" | "--print")
+        matches!(text, "--eval" | "--print")
             || text.starts_with("--eval=")
             || text.starts_with("--print=")
+            || bun_inline(text)
     });
     if eval {
         return Launch::Reads(Reads::Interpreter);
@@ -380,6 +420,14 @@ pub(super) fn bun(unit: &Unit) -> Launch {
     match word {
         "x" => runner("bun", unit),
         "repl" => Launch::Reads(Reads::Interpreter),
+        // `bun exec 'script'` runs a shell script (bun's own shell, which
+        // reads POSIX), its options standing before the script too.
+        "exec" => {
+            let rest = &args[first + 1..];
+            after_options(rest, &BUN_VALUES).map_or(Launch::Itself, |at| {
+                Launch::Script(Shell::Posix, join(&rest[at..]))
+            })
+        }
         // `bun rimraf dir` runs the project's own delete tool by its name.
         name if DELETERS.contains(&name) => Launch::Replace(Box::new(running(unit, "bun", first))),
         "run" => match args
@@ -404,15 +452,17 @@ pub(super) fn bun(unit: &Unit) -> Launch {
 
 /// `deno`: `deno eval` and `deno repl` run code given inline or read from
 /// the input, as does `deno` alone and a script read from its input
-/// (`deno run -`); `deno run npm:pkg` runs the package's program; a file or
+/// (`deno run -`); `deno run npm:pkg` runs the package's program, and so do
+/// `deno watch` (which is `run --hmr`) and `deno` with no subcommand (its
+/// default is `run`: `deno npm:pkg`); `deno x` is a package runner; a file or
 /// another subcommand is its own business.
 pub(super) fn deno(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let Some(first) = after_options(args, &DENO_VALUES) else {
-        let prints = args
-            .iter()
-            .filter_map(Arg::known)
-            .any(|text| matches!(text, "--version" | "-V" | "--help" | "-h"));
+        let prints = args.iter().filter_map(Arg::known).any(|text| {
+            matches!(text, "--version" | "-V" | "-v" | "--help" | "-h")
+                || text.starts_with("--help=")
+        });
         return if prints {
             Launch::Itself
         } else {
@@ -424,28 +474,25 @@ pub(super) fn deno(unit: &Unit) -> Launch {
     };
     match word {
         "eval" | "repl" => Launch::Reads(Reads::Interpreter),
-        "run" => {
-            let Some(at) = args
-                .get(first + 1..)
-                .and_then(|rest| after_options(rest, &DENO_VALUES))
-                .map(|at| first + 1 + at)
-            else {
-                return Launch::Itself;
-            };
-            match args[at].known() {
-                _ if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
-                Some(spec) if spec.starts_with("npm:") => {
-                    let mut package = running(unit, "deno", at);
-                    if let Arg::Known(text) = &package.program {
-                        let name = text.trim_start_matches("npm:");
-                        package.program = without_version(&Arg::Known(name.to_string()));
-                    }
-                    Launch::Replace(Box::new(package))
-                }
-                _ => Launch::Itself,
-            }
+        "x" => runner("deno", unit),
+        "run" | "watch" => args
+            .get(first + 1..)
+            .and_then(|rest| after_options(rest, &DENO_VALUES))
+            .map_or(Launch::Itself, |at| deno_target(unit, first + 1 + at)),
+        _ => deno_target(unit, first),
+    }
+}
+
+/// What `deno run` does with the script at `at`: its input is read as code,
+/// an npm specifier is a package whose program runs, a file is its own
+/// business.
+fn deno_target(unit: &Unit, at: usize) -> Launch {
+    let arg = &unit.args[at];
+    match arg.known() {
+        _ if reads_input(arg) => Launch::Reads(Reads::Interpreter),
+        Some(spec) if spec.starts_with("npm:") => {
+            Launch::Replace(Box::new(running_package(unit, "deno", at)))
         }
-        _ if is_stdin(word) => Launch::Reads(Reads::Interpreter),
         _ => Launch::Itself,
     }
 }

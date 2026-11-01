@@ -11,6 +11,7 @@ use crate::{Rule, Shell};
 
 mod find;
 mod interpreters;
+mod npm;
 mod wrappers;
 
 use find::find_exec;
@@ -19,8 +20,8 @@ pub(crate) use interpreters::{
     after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
-pub(crate) use wrappers::uv_script;
 use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
+pub(crate) use wrappers::{uv_script, RUNNERS};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -486,6 +487,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         // Package runners start the program they name.
         "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => runner(key, unit),
+        "dx" if posix => runner(key, unit),
         "bun" if posix => bun(unit),
         "deno" if posix => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
@@ -591,12 +593,43 @@ pub(super) fn runs(args: &[Arg], start: Option<usize>) -> Launch {
 /// The index of the first argument after a wrapper's options; `values`
 /// names the options that take the next argument as their value.
 pub(super) fn after_options(args: &[Arg], values: &[&str]) -> Option<usize> {
+    after_options_by(args, |text, _| {
+        if values.contains(&text) {
+            Word::Value
+        } else {
+            Word::Flag
+        }
+    })
+}
+
+/// What a word that starts with a dash is, among a wrapper's options.
+pub(super) enum Word {
+    /// An option that takes nothing more.
+    Flag,
+    /// An option that takes the next argument as its value.
+    Value,
+    /// Not an option at all: the wrapper reads it as the program (or an
+    /// operand), whatever it looks like.
+    Operand,
+}
+
+/// [`after_options`] for a wrapper that reads its options by a rule of its
+/// own: `read` is given each word that starts with a dash and the word after
+/// it.
+pub(super) fn after_options_by(
+    args: &[Arg],
+    read: impl Fn(&str, Option<&Arg>) -> Word,
+) -> Option<usize> {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.known() {
             Some("--") => return (at + 1 < args.len()).then_some(at + 1),
             Some(text) if text.len() > 1 && text.starts_with('-') => {
-                at += if values.contains(&text) { 2 } else { 1 };
+                at += match read(text, args.get(at + 1)) {
+                    Word::Flag => 1,
+                    Word::Value => 2,
+                    Word::Operand => return Some(at),
+                };
             }
             _ => return Some(at),
         }

@@ -684,6 +684,15 @@ impl Split {
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
+    // What a package runner starts is a program (`npx cd src`), not the
+    // shell's builtin: it cannot move the shell.
+    if unit
+        .wrappers
+        .iter()
+        .any(|wrapper| crate::launch::RUNNERS.contains(&wrapper.as_str()))
+    {
+        return None;
+    }
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not

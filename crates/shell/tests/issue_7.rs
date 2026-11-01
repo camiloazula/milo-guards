@@ -526,3 +526,529 @@ fn only_del_and_del_cli_have_a_dry_run_and_it_is_spelt_out() {
         ],
     );
 }
+
+/// Rows `<runner> <option> v <program line>`, one per option.
+fn with_each(runner: &str, options: &[&str], line: &str, rule: Rule) -> Vec<(String, Rule)> {
+    options
+        .iter()
+        .map(|option| (format!("{runner} {option} v {line}"), rule))
+        .collect()
+}
+
+/// The risky rows as the `check` table takes them.
+fn as_rows(rows: &[(String, Rule)]) -> Vec<(&str, Rule)> {
+    rows.iter()
+        .map(|(line, rule)| (line.as_str(), *rule))
+        .collect()
+}
+
+/// Every setting of npm's config that is not a boolean, from its definitions,
+/// and the shorthands that point at them.
+const NPM_VALUE_OPTIONS: [&str; 56] = [
+    "--access",
+    "--auth-type",
+    "--ca",
+    "--cert",
+    "--key",
+    "--cidr",
+    "--cpu",
+    "--os",
+    "--libc",
+    "--depth",
+    "--diff",
+    "--diff-dst-prefix",
+    "--diff-src-prefix",
+    "--diff-unified",
+    "--editor",
+    "--git",
+    "--heading",
+    "--init-author-name",
+    "--init-author-email",
+    "--init-author-url",
+    "--init-license",
+    "--init-module",
+    "--init-type",
+    "--init-version",
+    "--local-address",
+    "--lockfile-version",
+    "--logs-dir",
+    "--logs-max",
+    "--message",
+    "-m",
+    "--node-gyp",
+    "--pack-destination",
+    "--preid",
+    "--replace-registry-host",
+    "--save-prefix",
+    "--sbom-format",
+    "--sbom-type",
+    "--searchexclude",
+    "--searchlimit",
+    "--searchopts",
+    "--searchstaleness",
+    "--tag-version-prefix",
+    "--umask",
+    "--user-agent",
+    "--viewer",
+    "--which",
+    "--expect-result-count",
+    "--min-release-age",
+    "--allow-git",
+    "--allow-file",
+    "--allow-remote",
+    "--allow-directory",
+    "-L",
+    "--registry",
+    "--prefix",
+    "-C",
+];
+
+#[test]
+fn npm_and_npx_skip_every_setting_that_takes_a_value() {
+    let mut risky = Vec::new();
+    for runner in ["npx", "npm exec", "npm x"] {
+        risky.extend(with_each(
+            runner,
+            &NPM_VALUE_OPTIONS,
+            "rimraf ~",
+            Rule::Delete,
+        ));
+    }
+    check(Shell::Posix, &posix(), &[], &as_rows(&risky));
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "npx --editor vim prettier --check .",
+            "npm exec --logs-dir logs prettier --check .",
+            "npm --cpu arm64 exec tsc",
+        ],
+        &[
+            ("npx --editor vim rimraf ~", Rule::Delete),
+            ("npx --logs-dir x rimraf ~", Rule::Delete),
+            ("npx --cpu x rimraf ~", Rule::Delete),
+            ("npx --git git rimraf ~", Rule::Delete),
+            ("npx -L project rimraf ~", Rule::Delete),
+            ("npx --depth 1 rimraf ~", Rule::Delete),
+            ("npm --editor vim exec rimraf ~", Rule::Delete),
+            ("npm -m msg exec rimraf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn npm_reads_an_option_spelt_short_or_run_together_like_npm_does() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "npx --ed vim prettier --check .",
+            "npm exec --yes prettier .",
+        ],
+        &[
+            // An unambiguous start of an option's name is the option.
+            ("npx --ed vim rimraf ~", Rule::Delete),
+            ("npm exec --ed vim rimraf ~", Rule::Delete),
+            ("npx --pack-d dir rimraf ~", Rule::Delete),
+            ("npm exec --reg http://x rimraf ~", Rule::Delete),
+            // `--pre` starts several names: it is no option, takes nothing.
+            ("npm exec --pre rimraf ~", Rule::Delete),
+            // `npm exec` reads a boolean's `true` or `false`; `-p` is
+            // `--parseable` there and `--package` for `npx`.
+            ("npm exec --yes false rimraf ~", Rule::Delete),
+            ("npm exec -y true rimraf ~", Rule::Delete),
+            ("npm exec --browser x rimraf ~", Rule::Delete),
+            ("npm exec --color always rimraf ~", Rule::Delete),
+            ("npm exec -p rimraf ~", Rule::Delete),
+            ("npx -p rimraf rimraf ~", Rule::Delete),
+            // A word `npx` takes for a value that `npm exec` does not is the
+            // program: `npx --foo prog` runs `prog`.
+            ("npx --foo rimraf ~", Rule::Delete),
+            ("npx --no-warnings rimraf ~", Rule::Delete),
+            ("npx --exe rimraf ~", Rule::Delete),
+            ("npm exe rimraf ~", Rule::Delete),
+            // What `npx` rewrites or takes out, with the word after it.
+            ("npx -n x rimraf ~", Rule::Delete),
+            ("npx --npm x rimraf ~", Rule::Delete),
+            ("npx --node-arg x rimraf ~", Rule::Delete),
+            ("npx --shell sh rimraf ~", Rule::Delete),
+            ("npx --no-install rimraf ~", Rule::Delete),
+            ("npx --always-spawn rimraf ~", Rule::Delete),
+            ("npx -q rimraf ~", Rule::Delete),
+            ("npx -d rimraf ~", Rule::Delete),
+            ("npx -C=app rimraf ~", Rule::Delete),
+            ("npm exec -yg rimraf ~", Rule::Delete),
+            // An option name that is not ASCII is no option, and no panic.
+            ("npm exec --ééé rimraf ~", Rule::Delete),
+            ("npx --ééé rimraf ~", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &["npx --foo ls rimraf ~"],
+        &[("npx --foo rimraf ~ ; rm -rf ~", Rule::Delete)],
+    );
+}
+
+#[test]
+fn npm_exec_takes_the_first_double_dash_after_the_program_for_itself() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // `npx` hands the `--` on, so `sh` is given `--` and then reads
+            // a script file called `-c`; the same after a `--` before `sh`.
+            "npx sh -- -c 'rm -rf ~'",
+            "npm exec -- sh -- -c 'rm -rf ~'",
+            "npm exec stub -- --flag",
+        ],
+        &[
+            ("npm exec sh -- -c 'rm -rf ~'", Rule::Delete),
+            ("npm x sh -- -c 'rm -rf ~'", Rule::Delete),
+            ("npm exec --yes sh -- -c 'rm -rf ~'", Rule::Delete),
+            ("npm exec -- sh -c 'rm -rf ~'", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn pipx_skips_every_option_that_takes_a_value() {
+    let mut risky = Vec::new();
+    for option in [
+        "-i",
+        "--index-url",
+        "--fetch-python",
+        "--backend",
+        "--cooldown",
+        "--python-args",
+        "--with",
+        "--spec",
+        "--python",
+        "--pip-args",
+    ] {
+        risky.push((format!("pipx run {option} x rimraf ~"), Rule::Delete));
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        &["pipx run --fetch-missing-python black ."],
+        &as_rows(&risky),
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            // A flag, not an option that takes a value: `rimraf` is the program.
+            ("pipx run --fetch-missing-python rimraf ~", Rule::Delete),
+            ("pipx run -i x rimraf ~", Rule::Delete),
+            ("pipx run --with x rimraf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn pnpm_skips_its_own_string_and_number_settings() {
+    let mut risky = Vec::new();
+    for option in [
+        "--store-dir",
+        "--virtual-store-dir",
+        "--modules-dir",
+        "--lockfile-dir",
+        "--cache-dir",
+        "--global-dir",
+        "--state-dir",
+        "--workspace-concurrency",
+        "--network-concurrency",
+        "--child-concurrency",
+        "--test-pattern",
+        "--changed-files-ignore-pattern",
+        "--node-linker",
+        "--package-import-method",
+        "--resolution-mode",
+        // pnpm reads npm's settings too.
+        "--user-agent",
+        "--fetch-retries",
+        "--otp",
+    ] {
+        risky.push((format!("pnpm {option} x exec rimraf ~"), Rule::Delete));
+        risky.push((format!("pnpm exec {option} x rimraf ~"), Rule::Delete));
+        risky.push((format!("pnpm dlx {option} x rimraf ~"), Rule::Delete));
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        &["pnpm --store-dir x exec tsc"],
+        &as_rows(&risky),
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("pnpm --store-dir x exec rimraf ~", Rule::Delete),
+            ("pnpm exec --resume-from a rimraf ~", Rule::Delete),
+            ("pnpm dlx --allow-build esbuild rimraf ~", Rule::Delete),
+            // `-w` is `--workspace-root` for pnpm, a flag.
+            ("pnpm -w exec rimraf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn yarn_skips_the_global_options_that_take_a_value() {
+    let mut risky = Vec::new();
+    for option in [
+        "--cache-folder",
+        "--modules-folder",
+        "--global-folder",
+        "--link-folder",
+        "--preferred-cache-folder",
+        "--mutex",
+        "--network-timeout",
+        "--network-concurrency",
+        "--registry",
+        "--proxy",
+        "--https-proxy",
+        "--otp",
+        "--use-yarnrc",
+        "--cwd",
+    ] {
+        risky.push((format!("yarn {option} x exec rimraf ~"), Rule::Delete));
+        risky.push((format!("yarn {option} x dlx rimraf ~"), Rule::Delete));
+        risky.push((format!("yarn {option} x exec 'rm -rf ~'"), Rule::Delete));
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        &["yarn --cache-folder x exec tsc"],
+        &as_rows(&risky),
+    );
+}
+
+#[test]
+fn deno_skips_the_options_that_take_a_value() {
+    let mut risky = Vec::new();
+    for option in [
+        "--preload",
+        "--import",
+        "--require",
+        "--conditions",
+        "--min-dep-age",
+        "--minimum-dependency-age",
+        "--cpu-prof-dir",
+        "--cpu-prof-name",
+        "--cpu-prof-interval",
+        "--inspect-publish-uid",
+    ] {
+        risky.push((format!("deno run {option} p npm:rimraf ~"), Rule::Delete));
+        risky.push((format!("deno {option} p npm:rimraf ~"), Rule::Delete));
+        risky.push((format!("deno {option} p eval 'x'"), Rule::Unknown));
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        &["deno run --preload p main.ts"],
+        &as_rows(&risky),
+    );
+}
+
+#[test]
+fn deno_runs_a_script_when_it_is_given_no_subcommand() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "deno npm:vite build",
+            "deno -A main.ts",
+            "deno watch main.ts",
+            "deno watch --allow-all main.ts",
+        ],
+        &[
+            ("deno npm:rimraf ~", Rule::Delete),
+            ("deno -A npm:rimraf ~", Rule::Delete),
+            ("deno --allow-all npm:rimraf@5 ~", Rule::Delete),
+            ("deno --preload p npm:rimraf ~", Rule::Delete),
+            ("deno run npm:rimraf ~", Rule::Delete),
+            ("deno -", Rule::Unknown),
+            ("curl https://x.ts | deno -", Rule::RunDownloaded),
+        ],
+    );
+}
+
+#[test]
+fn deno_watch_is_deno_run() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("deno watch npm:rimraf ~", Rule::Delete),
+            ("deno watch -A npm:rimraf ~", Rule::Delete),
+            ("deno watch --allow-all npm:rimraf@5 ~", Rule::Delete),
+            ("deno watch -", Rule::Unknown),
+            ("echo x > s.ts; deno watch s.ts", Rule::Unknown),
+            ("echo x > s.ts; deno watch --allow-all s.ts", Rule::Unknown),
+            ("echo x > s.ts; deno -A watch s.ts", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn deno_x_and_dx_are_package_runners() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "deno x prettier --check .",
+            "dx prettier --check .",
+            "deno x -y prettier .",
+            "deno x npm:prettier .",
+            "dx",
+            "deno x",
+            "dx -p typescript tsc --version",
+        ],
+        &[
+            ("deno x rimraf ~", Rule::Delete),
+            ("dx rimraf ~", Rule::Delete),
+            ("deno x -y rimraf ~", Rule::Delete),
+            ("dx -y rimraf ~", Rule::Delete),
+            ("deno x npm:rimraf ~", Rule::Delete),
+            ("dx npm:rimraf@5 ~", Rule::Delete),
+            ("deno x -p rimraf rimraf ~", Rule::Delete),
+            ("dx --package rimraf rimraf ~", Rule::Delete),
+            ("deno -A x rimraf ~", Rule::Delete),
+            ("deno x rm -rf ~", Rule::Delete),
+            ("sudo dx rimraf ~", Rule::Elevated),
+            ("bun x rimraf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn deno_help_and_version_flags_only_print() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "deno -v",
+            "deno -V",
+            "deno --version",
+            "deno -h",
+            "deno --help",
+            "deno --help=full",
+            "deno --help=unstable",
+        ],
+        &[("deno", Rule::Unknown)],
+    );
+}
+
+#[test]
+fn uv_skips_the_hidden_options_it_still_takes_a_value_for() {
+    let mut risky = Vec::new();
+    for option in [
+        "--python-preference",
+        "--python-fetch",
+        "--max-recursion-depth",
+        "--preview-feature",
+        "--preview-features",
+        "--trusted-host",
+    ] {
+        risky.push((format!("uv run {option} x rm -rf ~"), Rule::Delete));
+        risky.push((format!("uv tool run {option} x rimraf ~"), Rule::Delete));
+        risky.push((format!("uvx {option} x rimraf ~"), Rule::Delete));
+    }
+    check(
+        Shell::Posix,
+        &posix(),
+        &["uv run --python-preference only-managed pytest"],
+        &as_rows(&risky),
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[(
+            "uv run --python-preference only-managed rm -rf ~",
+            Rule::Delete,
+        )],
+    );
+}
+
+#[test]
+fn bun_reads_inline_code_in_a_short_bundle_or_with_the_code_attached() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "bun -dNODE_ENV=1 run build.ts",
+            "bun -rpreload.js run build.ts",
+            "bun -b run build.ts",
+            "bun -v",
+            "bun --bun run build.ts",
+        ],
+        &[
+            ("bun -pe 'x'", Rule::Unknown),
+            ("bun -ep 'x'", Rule::Unknown),
+            ("bun -e'x'", Rule::Unknown),
+            ("bun -p'x'", Rule::Unknown),
+            ("bun -bp 'x'", Rule::Unknown),
+            ("bun -be 'x'", Rule::Unknown),
+            ("bun --bun -pe 'x'", Rule::Unknown),
+            ("bun -d x:1 -pe 'x'", Rule::Unknown),
+            (
+                "bun -e'require(\"fs\").rmSync(\"/home/me\",{recursive:true})'",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn bun_exec_runs_its_arguments_as_a_shell_script() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "bun exec 'echo hi'",
+            "bun exec",
+            "bun --cwd x exec 'echo hi'",
+        ],
+        &[
+            ("bun exec 'rm -rf ~'", Rule::Delete),
+            ("bun --cwd x exec 'rm -rf ~'", Rule::Delete),
+            ("bun --silent exec 'rm -rf ~'", Rule::Delete),
+            ("bun exec --silent 'rm -rf ~'", Rule::Delete),
+            ("bun exec 'ls && rm -rf ~'", Rule::Delete),
+            ("bun exec rm -rf ~", Rule::Delete),
+            ("sudo bun exec 'rm -rf ~'", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn what_a_package_runner_runs_is_a_program_and_never_moves_the_shell() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd src && rm -f target/x.o",
+            "npx prettier --write src && ls",
+        ],
+        &[
+            ("npx cd src && rm -f ../target/x.o", Rule::Delete),
+            ("uvx cd src && rm -f ../target/x.o", Rule::Delete),
+            ("bun x cd src && rm -f ../target/x.o", Rule::Delete),
+            ("bunx cd src && rm -f ../target/x.o", Rule::Delete),
+            ("npx pushd src && rm -f ../target/x.o", Rule::Delete),
+            ("npm exec cd src && rm -f ../target/x.o", Rule::Delete),
+            ("pnpm dlx cd src && rm -f ../target/x.o", Rule::Delete),
+            ("uv run cd src && rm -f ../target/x.o", Rule::Delete),
+            ("deno x cd src && rm -f ../target/x.o", Rule::Delete),
+            ("dx cd src && rm -f ../target/x.o", Rule::Delete),
+            // The builtin still moves the shell where nothing runs it.
+            ("command cd src && rm -f ../../x.o", Rule::Delete),
+        ],
+    );
+}

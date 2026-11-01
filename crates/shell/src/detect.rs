@@ -661,7 +661,7 @@ fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
         _ => &["-W", "-X", "-r", "--require", "--import", "--loader"],
     };
     let args = match key {
-        "bun" | "deno" => after_run(args, values),
+        "bun" | "deno" => after_run(key, args),
         _ => args,
     };
     let mut iter = args.iter();

@@ -66,13 +66,28 @@ precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 
 **Package runners** come off too, with each runner's own options skipped:
 `npx`, `npm exec`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, `bunx`,
-`bun x`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The program the runner
-names is judged, with a version after the package taken off (`npx rimraf@5`).
-Where the runner names the package apart from the program (`npx -p pkg prog`,
-`uvx --from pkg prog`) the program is the one after the options. Every option
-that takes a value is skipped, as the runner's own `--help` lists them (`npm
--C dir`, `npx --node-options x`, `uv run --group dev`, `bun -d x:1`); one that
-is missed would turn its value into the program. `npx -c`, `npm exec -c` and
+`bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
+program the runner names is judged, with a version after the package taken
+off (`npx rimraf@5`). Where the runner names the package apart from the
+program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
+after the options. An option that takes a value is skipped with it, because
+one that is missed would turn its value into the program, so each table is
+the runner's own list and not a guess: npm's is every setting of its config
+definitions that is not a boolean with its shorthands (`npm -C dir`, `npx
+--editor vim`, `npm exec --logs-dir x`), read as npm reads them (an
+unambiguous start of a name is the option, `--ed vim`; `npm exec` takes a
+`true` or `false` after a boolean; `npx` first puts its own `--` before the
+program, so a word it took for a value that npm did not is the program);
+pnpm's is its own string and number settings, `exec`'s `--resume-from`,
+`dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
+the options of `yarn --help` that name a folder, a host, a number or a type;
+bun's is every `--option=<val>` of `bun --help`; deno's is its option
+definitions that take one value; uv's is `uv run --help` and the hidden
+options real uv still takes a value for (`--python-preference`,
+`--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
+(`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
+`--` for themselves, before the program or after it (`npm exec sh -- -c
+'cmd'` runs `sh -c 'cmd'`); `npx` hands it on. `npx -c`, `npm exec -c` and
 `pnpm -c exec` (the option may stand before `exec` too) run a shell command,
 and so does `yarn exec`, whose arguments are a script. Each is read as a
 script: in cmd where the line is for Windows (npm and pnpm start the system
@@ -83,18 +98,24 @@ packages (`rimraf`, `del` and `del-cli`, `premove`, `rmrf`) delete their
 operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
 are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
 run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
-guard knows.
+guard knows. What a runner starts is a program, never a builtin of the shell,
+so `npx cd src` does not move the rest of the line to `src`.
 
-`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print`, `bun
-repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
+`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print` (also
+in a bundle, `bun -pe 'code'`, or with the code attached, `bun -e'code'`),
+`bun repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
 input (`bun run -`, `deno run -`, `uv run -`) run code the guard does not
 read: `Unknown`, or `RunDownloaded` after a download. The options before the
 subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
-inline code). `bun run file`, `deno run file` and `bun file` are judged like
-`node file`, so a script the same line writes is not read, also after options
-(`bun --hot run file`). So is `uv run file.py`, and `uv run --script file`:
-`uv` runs Python on the file, like `python file`. `deno run npm:pkg` runs the
-package's program like a runner. The options of `deno` that take their value
+inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
+-c`. `bun run file`, `deno run file` and `bun file` are judged like `node
+file`, so a script the same line writes is not read, also after options (`bun
+--hot run file`) and after deno's `watch`, which is `run --hmr`. So is `uv run
+file.py`, and `uv run --script file`: `uv` runs Python on the file, like
+`python file`. `deno run npm:pkg` runs the package's program like a runner,
+and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
+is `run`. `deno x` and `dx` are package runners, like `bun x`. `deno -v` and
+`deno --help=full` only print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
 `coproc` is read as the shells read it. A simple command takes no name, so the
