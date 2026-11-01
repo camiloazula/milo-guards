@@ -161,7 +161,16 @@ impl Loc {
     }
 
     /// Apply `rest`, split at the separators of `flavour`, to this location.
-    fn walk(mut self, rest: &str, flavour: Flavour) -> Self {
+    fn walk(self, rest: &str, flavour: Flavour) -> Self {
+        self.walk_dots(rest, flavour, false)
+    }
+
+    /// Apply `rest` like [`walk`](Self::walk), but with `keep` a `..` is not
+    /// applied: it stays in the parts where it was written, because what it
+    /// names depends on the link before it, which only the disk can say.
+    /// Above the root there is nothing to climb to, so a `..` there is
+    /// dropped either way.
+    fn walk_dots(mut self, rest: &str, flavour: Flavour, keep: bool) -> Self {
         let names: Vec<&str> = rest.split(flavour.separators()).collect();
         for (at, part) in names.iter().enumerate() {
             let part = if flavour == Flavour::Windows {
@@ -171,6 +180,7 @@ impl Loc {
             };
             match part {
                 "" | "." => {}
+                ".." if keep && !self.parts.is_empty() => self.parts.push("..".to_string()),
                 ".." => {
                     self.parts.pop();
                 }
@@ -1595,13 +1605,34 @@ impl Resolver {
     /// part of the name, so the caller says the folder it expands in.
     #[must_use]
     pub fn absolute(&self, path: Spelling<'_>, flavour: Flavour) -> Option<PathBuf> {
+        self.render_absolute(path, flavour, false)
+    }
+
+    /// The absolute path the system opens when it is handed `path`: like
+    /// [`absolute`](Self::absolute), with `~` expanded, `.` dropped and the
+    /// working directory put in front of a relative one, but a `..` is kept
+    /// where it was written. The system applies a `..` after it has followed
+    /// the link before it, so `link/../x` is the parent of what `link` points
+    /// to, not the folder `link` is in: only a caller that can look at the
+    /// disk can say where it lands, by walking the parts in order and
+    /// following each link before the next `..` (what `canonicalize` does). A
+    /// `..` with nothing above it (`/..`) is dropped, as the system does. `None`
+    /// in the same cases as `absolute`.
+    #[must_use]
+    pub fn opened(&self, path: Spelling<'_>, flavour: Flavour) -> Option<PathBuf> {
+        self.render_absolute(path, flavour, true)
+    }
+
+    fn render_absolute(&self, path: Spelling<'_>, flavour: Flavour, keep: bool) -> Option<PathBuf> {
         let device = matches!(path, Spelling::Plain(text) if device(text, flavour).is_some());
         let long = self.plain(path, flavour);
         let path = long.as_deref().map_or(path, Spelling::Plain);
         if device || self.elsewhere(path, flavour) {
             return None;
         }
-        Some(PathBuf::from(self.locate_raw(path, flavour).render()))
+        Some(PathBuf::from(
+            self.locate_dots(path, flavour, keep).render(),
+        ))
     }
 
     /// The plain path a Windows long path names (`\\?\C:\x` is `C:\x`,
@@ -1641,9 +1672,15 @@ impl Resolver {
     }
 
     fn locate_raw(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
+        self.locate_dots(path, flavour, false)
+    }
+
+    /// The location a path names, with its `..` applied, or with `keep` left
+    /// where they were written (see [`Loc::walk_dots`]).
+    fn locate_dots(&self, path: Spelling<'_>, flavour: Flavour, keep: bool) -> Loc {
         let separators = flavour.separators();
         let text = match path {
-            Spelling::Home(rest) => return self.home.clone().walk(rest, flavour),
+            Spelling::Home(rest) => return self.home.clone().walk_dots(rest, flavour, keep),
             Spelling::Plain(text) => text,
         };
         if flavour == Flavour::Windows {
@@ -1652,12 +1689,12 @@ impl Resolver {
                 // the working directory when it is on that drive (`elsewhere`
                 // says it is not).
                 if !rest.starts_with(separators) {
-                    return self.cwd.clone().walk(rest, flavour);
+                    return self.cwd.clone().walk_dots(rest, flavour, keep);
                 }
-                return Loc::at(Root::Drive(letter)).walk(rest, flavour);
+                return Loc::at(Root::Drive(letter)).walk_dots(rest, flavour, keep);
             }
             if let Some((share, rest)) = unc(text) {
-                return Loc::at(Root::Unc(share)).walk(rest, flavour);
+                return Loc::at(Root::Unc(share)).walk_dots(rest, flavour, keep);
             }
         }
         if text.starts_with(separators) {
@@ -1666,9 +1703,9 @@ impl Resolver {
             } else {
                 Root::Unix
             };
-            return Loc::at(root).walk(text, flavour);
+            return Loc::at(root).walk_dots(text, flavour, keep);
         }
-        self.cwd.clone().walk(text, flavour)
+        self.cwd.clone().walk_dots(text, flavour, keep)
     }
 
     /// Where a path lands. A protected path, or one under it, is `Protected`

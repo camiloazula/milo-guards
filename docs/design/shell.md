@@ -2238,13 +2238,14 @@ handle would be a way past its check.
 It is `Some` exactly when `effect` is `ReadsOnly(_)`, the reach either way, and
 `None` for `Changes` and `Unknown`. A test holds every row of every table to
 that, and holds the paths of every `ReadsOnly(Workspace)` row to be inside a
-workspace folder or a temporary folder by spelling.
+workspace folder or a temporary folder by spelling (the `..` of the list applied
+for that comparison, as `effect` applies them).
 
 **How each is read, and what a caller does with it:**
 
 | `how` | Which reads | What the caller checks on disk |
 | --- | --- | --- |
-| `Exact` | A file operand, a `<` source, a folder a lister lists, a `cd` target, a path `git` takes. | Canonicalize the path: when it does not exist, canonicalize its nearest existing ancestor and put the rest of the names back. |
+| `Exact` | A file operand, a `<` source, a folder a lister lists, a `cd` target, a path `git` takes. | Canonicalize the path, which follows each link before the `..` after it: when it does not exist, canonicalize its nearest existing ancestor and put the rest of the names back. |
 | `Glob(rest)` | A pattern the shell expands: `path` is the fixed folder it expands in and `rest` what follows it, as written (`src/*/x.rs` is `src` and `*/x.rs`; `*.rs` is the working directory and `*.rs`; `.a*/x` is the working directory and `.a*/x`, the leading dot kept; `C:\*` is `C:\` and `*`). A `for` over a pattern is the same, and so is a pathspec `git` expands. | Expand `path` + separator + `rest` on disk the way the shell does (a wildcard may match a leading dot: match it, to be safe), and canonicalize the folder and every match. The expansion crosses links, so a link shows in a match. |
 | `Tree { follows_links: false }` | A folder walked by one of the readers known to stay out of links, given only flags its own list says do not change that: `grep -r` (not `-R`, `-S`), `rg` and `fd` (not `-L`, `--follow`), `find` (not `-L`, `-follow`, `-xtype`, `-exec`, `-ok`), `ls -R` and `du` (not `-L`, `-H`, `--dereference`), and the repository `git` reads (not `--no-index`). `find -H` and `grep -O` follow only the folder named on the command line, which is the root: they stay here. | Canonicalize the root. That is the whole check: such a reader does not cross a link it meets below it. |
 | `Tree { follows_links: true }` | A folder walked by a reader that opens what it finds through links: `grep -R` and `grep -rS`, `rg -L` and `--follow`, `fd -L`, `find -L`, `-follow` and `-exec`, `ls -RL`, `du -L`, `diff -r`, and any reader the guard does not know to stay out of links (every PowerShell and cmd walk included). It fails closed: a walker on the list that is given any flag its list does not name, an abbreviation of a flag included (`ls -R --recurs`), follows. Also the folder of a lister whose names a later stage opens: `ls src \| xargs cat`, `git ls-files \| xargs cat`, `find src -print0 \| xargs -0 grep x`, `Get-ChildItem \| Get-Content`. | A link anywhere below the root can lead out, which only walking the folder shows. A caller may simply treat the line as reading beyond the workspace, or walk the folder and canonicalize every entry. |
@@ -2271,12 +2272,68 @@ the workspace, and `effect_paths` lists it like any other.
   chains, and a `git` revision or pathspec as `effect` places it (`git show
   HEAD:a.rs` also lists `a.rs`, from the working directory and from every
   workspace folder).
-- **Absolute, by spelling.** Each path is resolved as the guard resolves it:
-  the working directory after the `cd`s it follows, `~`, `.` and `..`, a Windows
-  long path as the plain path it names. The case, the macOS names of the root
-  volume (`/System/Volumes/Data`) and the links are left alone: the path is as
-  written, made absolute. It comes from core's `Resolver::absolute`. A `\\?\`
-  and a `FileSystem::` in front of a path are not part of a pattern.
+- **Absolute, with every `..` kept.** Each path is the one the system opens:
+  the working directory after the `cd`s it follows, `~` expanded, `.` dropped, a
+  Windows long path as the plain path it names, and every `..` left where the
+  line wrote it. The case, the macOS names of the root volume
+  (`/System/Volumes/Data`) and the links are left alone. It comes from core's
+  `Resolver::opened`. A `\\?\` and a `FileSystem::` in front of a path are not
+  part of a pattern.
+- **Apply the `..` on the disk, after the link before it.** The kernel follows
+  a link and then applies the `..` after it, so with `link -> /etc` in the
+  workspace, `cat link/../etc/hosts` reads `/etc/hosts`. Folded by spelling it
+  would be `<cwd>/etc/hosts`, inside, and a caller that checked that place
+  would check the wrong one; so the list does not fold. A caller resolves each
+  path component by component: follow a link when a name is one, step to the
+  parent when it meets a `..` (`canonicalize` does exactly this, and a name
+  that does not exist is put back below the nearest ancestor that does, a `..`
+  after it removing the name before it). It must not apply the `..` by
+  spelling first, and a prefix test on the path as listed is not a check:
+  `<cwd>/../x` starts with the workspace and is not in it. `cat
+  src/../README.md` still lets a caller confirm it stays inside: resolve it, and
+  it is `<cwd>/README.md`. A `..` with nothing above it (`/..`) is dropped, as
+  the kernel does. The `..` that a `cd` applies itself are the exception, and
+  the shell does not always apply them: it applies a `..` by spelling and
+  `chdir`s to the folded folder, but bash and zsh fall back to the path as
+  written, the physical one, when the folded folder does not exist (dash and
+  `/bin/sh` fail instead). So with `link -> /etc` and no `etc` beside `link`,
+  `cd link/../etc` goes to `/etc`, and `cat hosts` after it reads
+  `/etc/hosts`, while `<cwd>/etc` is where it goes when that exists. The
+  shell checks the folder before every `..` that follows a part (`cd
+  a/../nonexist/..` fails in bash, zsh and dash although the folded folder
+  exists), so the check can fail only for a part that came after a `..` that
+  climbed out of a part, anywhere in the text, whether or not the part is still
+  there at the end (`link/../etc`, `link/../etc/..`, `a/../b/..`,
+  `src/deep/../../x`). A folder with no part after such a `..` (`link/..`,
+  `src/../..`) is a leading part of the text, which exists when the text does,
+  and a `..` with nothing before it (`../x`) climbs from the folder the line is
+  in, which is known. A later `cd ..` after a `cd` of the first kind counts as
+  well (`cd link/../etc && cd ..` is the text `link/../etc/..`). So a `cd`
+  target of the first kind is listed both ways: folded, as the folder the line
+  moved to, and kept,
+  as the target the system opens, and each read from that folder is listed from
+  each, so a caller checks both (`cd link/../etc && cat hosts` lists
+  `<cwd>/etc`, `<cwd>/etc/hosts`, `<cwd>/link/../etc` and
+  `<cwd>/link/../etc/hosts`). A pattern in that folder is a read from it like
+  any other, so `cd link/.. && cat *` lists `<cwd>` and `<cwd>` with
+  `Glob("*")`: the shell expands the pattern in the folded folder, and a
+  caller that resolved `<cwd>/link/..` on the disk would expand another one.
+  Only a relative operand is joined to the folder: a
+  path the line writes out whole (absolute, or `~`) is opened from its first
+  part, even when it spells the folder, so `cd /w/link/.. && cat
+  /w/link/../etc/hosts` lists only `/w/link/../etc/hosts` for the read. A `..`
+  the program opens (`cd src && cat ../x`) is kept. A chain of such `cd`s lists
+  all of them folded and all of them kept, not each mix. A line that keeps the
+  physical path (`cd -P`) follows the link first for that `cd`, so its `..` are
+  all kept; but the flag is the line's, and each `cd` has its own (the last of
+  `-L` and `-P` wins, and a `cd` before the `-P` is logical), so such a line is
+  listed both ways, the kept one beside the folded one, for every `cd`. On Windows the system folds a `..` before it looks at the disk, which
+  resolving the path as the system does gives too. `effect`
+  does not change: it judges the place by spelling, as before, so a `..`
+  after a link is still a place inside the workspace there. A walk or a
+  pattern keeps them too: the folder a pattern expands in is a path the shell
+  opens (`link/../*.rs` is the folder `link/..` and `*.rs`), and a `..` in the
+  rest of the pattern is the pattern's own, as written.
 - **Sorted, each entry once**, so the answer is the same every time.
 - **No path, not listed.** A read that is not a place on a disk has no path:
   the null device and other devices, a registry hive or another PowerShell
@@ -2560,10 +2617,13 @@ rest of `Reach`'s rows are in `tests/effect.rs`, and core's `reaches_secret`
 has its own in `crates/core/tests/reaches_secret.rs`.
 `tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
 one that checks every way of reading against a table of links playing the disk,
-the way the docs tell a caller to; and
+the way the docs tell a caller to;
+`tests/issue_66.rs` has the rows of the `..` the list keeps (a link before a
+`..`, every way of reading, a `cd` listed folded and kept, an absolute operand
+after a `cd`, PowerShell and cmd); and
 every row of every table is also held to agree with `effect` on whether it has
 a list (`common::path_disagreement`). Core's `absolute` has its own in
-`crates/core/tests/absolute.rs`.
+`crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/issue_66.rs`.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
