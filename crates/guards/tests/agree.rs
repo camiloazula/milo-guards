@@ -187,6 +187,84 @@ fn shell_says(line: &str, shell: Shell, paths: &Paths) -> bool {
         .any(|finding| finding.rule == shell::Rule::ReadSecret)
 }
 
+/// The lines that read `path` in `shell`, in every form that names it whole:
+/// quoted as the shell reads it as written, as a `<` redirect's source (cmd
+/// and POSIX), and, where the path starts at the home directory, spelled with
+/// the variable that names it (`$HOME`, `%USERPROFILE%`). A path a form cannot
+/// carry is left out of that form, never out of the others:
+///
+/// - cmd cannot carry `"`: no Windows name has one, so there is nothing to
+///   judge;
+/// - cmd cannot carry `%`: it expands `%name%` even in quotes, so the word is a
+///   variable and not this file;
+/// - cmd cannot carry `^`: the guard reads a caret as cmd's escape, which cmd
+///   does not do inside quotes (a known gap, kept visible by the skip);
+/// - a word spelled with `$HOME` cannot carry `$`, a backtick, `"` or `\`
+///   (POSIX), which are not plain text in it, nor, bare in PowerShell, a space
+///   or one of `;|&(){},'"<>@#`, which end the word.
+fn lines(path: &str, shell: Shell, home: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    // The path with the home directory spelled as a variable, when it starts
+    // there (whole parts, without case on Windows).
+    let under = |variable: &str| {
+        let rest = path.get(home.len()..)?;
+        let same = path.get(..home.len()).is_some_and(|head| {
+            if home.starts_with('/') {
+                head == home
+            } else {
+                head.eq_ignore_ascii_case(home)
+            }
+        });
+        (same && (rest.is_empty() || rest.starts_with(['/', '\\'])))
+            .then(|| format!("{variable}{rest}"))
+    };
+    match shell {
+        Shell::Posix => {
+            let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+            lines.push(format!("cat {quoted}"));
+            lines.push(format!("cat < {quoted}"));
+            lines.push(format!("base64 <{quoted}"));
+            if let Some(spelled) =
+                under("$HOME").filter(|text| !text.contains(['"', '$', '`', '\\', '!', '\n']))
+            {
+                lines.push(format!("cat \"{spelled}\""));
+                lines.push(format!("cat < \"{spelled}\""));
+            }
+        }
+        Shell::PowerShell => {
+            let quoted = format!("'{}'", path.replace('\'', "''"));
+            lines.push(format!("Get-Content -LiteralPath {quoted}"));
+            lines.push(format!("Get-Content {quoted}"));
+            lines.push(format!("Get-Content -Path {quoted} -Raw"));
+            if let Some(spelled) = under("$HOME") {
+                if !spelled.contains([
+                    ' ', ';', '|', '&', '(', ')', '{', '}', ',', '\'', '"', '<', '>', '@', '#',
+                    '$', '`',
+                ]) {
+                    lines.push(format!("Get-Content {spelled}"));
+                    lines.push(format!("Get-Content -Path {spelled}"));
+                }
+            }
+        }
+        Shell::Cmd if !path.contains(['"', '%', '^']) => {
+            lines.push(format!("type \"{path}\""));
+            lines.push(format!("more < \"{path}\""));
+            lines.push(format!("more <\"{path}\""));
+            lines.push(format!("sort < \"{path}\""));
+            lines.push(format!("findstr x 0< \"{path}\""));
+            if !path.contains([' ', '&', '|', '<', '>', '(', ')', ',', ';', '=']) {
+                lines.push(format!("more < {path}"));
+            }
+            if let Some(spelled) = under("%USERPROFILE%") {
+                lines.push(format!("type \"{spelled}\""));
+                lines.push(format!("more < \"{spelled}\""));
+            }
+        }
+        _ => {}
+    }
+    lines
+}
+
 #[test]
 fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() {
     let tables = paths_of_the_tables().expect("the file guard's tables are readable");
@@ -207,37 +285,29 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() 
             let Some(expected) = file_says(path, paths) else {
                 continue;
             };
+            let home = paths.home.to_string_lossy();
             for &shell in shells {
-                // A line that names the path whole, quoted so that the shell
-                // reads it as written.
-                let line = match shell {
-                    Shell::Posix if !path.contains('\'') => format!("cat '{path}'"),
-                    Shell::PowerShell if !path.contains('\'') => {
-                        format!("Get-Content -LiteralPath '{path}'")
+                for line in lines(path, shell, &home) {
+                    judged += 1;
+                    secrets += usize::from(expected);
+                    let got = shell_says(&line, shell, paths);
+                    if got != expected {
+                        wrong.push(format!(
+                            "{shell:?} on {home}: the file guard says read_secret = {expected}, \
+                             the shell says {got}: {line}"
+                        ));
                     }
-                    Shell::Cmd if !path.contains(['"', '%', '^']) => format!("type \"{path}\""),
-                    _ => continue,
-                };
-                judged += 1;
-                secrets += usize::from(expected);
-                let got = shell_says(&line, shell, paths);
-                if got != expected {
-                    wrong.push(format!(
-                        "{shell:?} on {}: the file guard says read_secret = {expected}, \
-                         the shell says {got}: {line}",
-                        paths.home.display()
-                    ));
                 }
             }
         }
     }
     // The tables are read, and name keys: not an empty scan that agrees on
     // nothing.
-    assert!(judged > 1_000, "only {judged} lines were judged");
-    assert!(secrets > 300, "only {secrets} of them were secrets");
+    assert!(judged > 10_000, "only {judged} lines were judged");
+    assert!(secrets > 2_000, "only {secrets} of them were secrets");
     assert!(
         wrong.is_empty(),
-        "{} of {judged} paths are judged differently:\n{}",
+        "{} of {judged} lines are judged differently:\n{}",
         wrong.len(),
         wrong.join("\n")
     );

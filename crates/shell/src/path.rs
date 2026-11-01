@@ -101,6 +101,9 @@ fn drive_of(dir: &str) -> Option<char> {
 /// Judges path arguments against the caller's directories.
 pub(crate) struct Resolver {
     core: milo_guards_core::Resolver,
+    /// Whether a plain relative path (see [`plain_relative`]) is the agent's
+    /// own, since the working directory is in a workspace that holds no key.
+    clear: bool,
     /// The drive the working directory is on, upper case; `None` when it is
     /// on no drive.
     cwd_drive: Option<char>,
@@ -108,8 +111,10 @@ pub(crate) struct Resolver {
 
 impl Resolver {
     pub(crate) fn new(paths: &Paths) -> Self {
+        let core = milo_guards_core::Resolver::new(paths);
         Self {
-            core: milo_guards_core::Resolver::new(paths),
+            clear: core.cwd_is_clear(),
+            core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
         }
     }
@@ -200,6 +205,10 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        // Most words are a name in the workspace, which is no secret.
+        if dir.is_none() && self.clear && arg.known().is_some_and(plain_relative) {
+            return None;
+        }
         let owned;
         let arg = if dir.is_some() {
             owned = within(dir, arg, shell);
@@ -271,6 +280,9 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        if dir.is_none() && self.clear && arg.known().is_some_and(plain_relative) {
+            return None;
+        }
         let arg = within(dir, arg, shell);
         match self.place_of(arg.known()?, shell, hidden, true) {
             place @ (Place::Home { .. } | Place::Top("the root of the disk")) => {
@@ -358,6 +370,32 @@ impl Resolver {
             Start::Unknown => Place::Unknown,
         }
     }
+}
+
+/// Whether a path is a name or a few from the working directory and nothing
+/// else: plain characters, no `..`, no `~`, no drive, no variable, no root. In
+/// a workspace that holds no key it lands in the workspace.
+fn plain_relative(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with(['/', '\\'])
+        && text.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'-'
+                        | b'.'
+                        | b'/'
+                        | b'\\'
+                        | b' '
+                        | b'+'
+                        | b','
+                        | b'*'
+                        | b'?'
+                        | b'['
+                        | b']'
+                )
+        })
+        && text.split(['/', '\\']).all(|part| part != "..")
 }
 
 /// A Windows path with what makes its name unreadable taken off each part: a

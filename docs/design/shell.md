@@ -423,7 +423,8 @@ contents, or a `<` redirect does (with any program, and in cmd too):
   `bat`, `awk` and `sed` (after the program), `tar` (every operand but the
   values of `-C` and the like), `gzip` and the other compressors, `zip`, `7z`,
   `gpg`, `openssl` (`-in`, `-inkey`, `-key`), `curl` given a `file://` URL,
-  `source`, `dd if=`, PowerShell's `Import-Clixml`, `Import-Csv` and
+  `source`, `dd if=` (`curl file://$HOME/.ssh/id_rsa` too, `$HOME` in it being
+  the home directory as in a plain word), PowerShell's `Import-Clixml`, `Import-Csv` and
   `Compress-Archive`, cmd's `more`, `sort`, `find`, `fc` and `certutil`.
 - **A copy reads its sources**, whatever it does with them and wherever they
   land: `cp`, `install`, `rsync`, `Copy-Item`, `copy`, `xcopy`, `robocopy`.
@@ -433,7 +434,9 @@ contents, or a `<` redirect does (with any program, and in cmd too):
   names, so a stage that lists a folder of keys is a read of them, through any
   stage that only selects or orders: `ls ~/.ssh | xargs cat`, `find ~/.ssh |
   xargs grep key`, `Get-ChildItem ~\.ssh | Get-Content`, and `find ~/.ssh
-  -exec cat {} +`.
+  -exec cat {} +`. The words of an `echo` or a `printf` are a list too
+  (`echo ~/.ssh/id_rsa | xargs cat`, `printf '%s\n' ~/.ssh/id_rsa | xargs cat`,
+  PowerShell's `Write-Output`); a word the guard cannot place is no finding.
 - **A `for` over words written out** is read with each word in place, as
   `effect` reads it: `for f in ~/.ssh/*; do cat "$f"; done`, also for a `<`
   redirect in the body.
@@ -475,8 +478,15 @@ home, all by [core](core.md). The shell's syntax adds:
   `$env:USERPROFILE/.aws`) is read as the expandable string it is. The grammar
   reads it as a member access and loses the path, so the guard puts it in
   double quotes before it reads the line.
+- An ANSI-C string is a value known when the line is read, so it is read:
+  `cat $'\x2f'home/me/.ssh/id_rsa` and `cat ~/.ssh/$'id_rsa'` read the key. A
+  `~` it makes is a plain character, as it is in a quoted word of the
+  shell: `cat $'\x7e'/.ssh/id_rsa` names a folder called `~` and is not a
+  finding. `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` in such a word, or in a brace
+  list, are the places they name unless the line sets them.
 - A `<` redirect has the same spellings. `exec 3< ~/.ssh/id_rsa` and
-  `x=$(< ~/.ssh/id_rsa)` read the key.
+  `x=$(< ~/.ssh/id_rsa)` read the key. In cmd the target is read as cmd reads
+  it, with its quotes off: `more < "%USERPROFILE%\.ssh\id_rsa"` is the key.
 
 ### A folder read all the way down
 
@@ -495,7 +505,7 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
 ### What is not a finding
 
 - **A file known only when the line runs.** `cat $f`, `cat "$(pwd)/x"`, `cat
-  "$X/.ssh/id_rsa"`, `cat ~/.ssh/$'id_rsa'`, `cat ~/${NAME}`, `Get-Content
+  "$X/.ssh/id_rsa"`, `cat ~/${NAME}`, `Get-Content
   (Join-Path …)`, a PowerShell string with a variable the guard cannot name, a
   path in a variable the line sets (`k=~/.ssh/id_rsa; cat $k`), and a
   .NET call (`[IO.File]::ReadAllText(…)`). The guard does not guess a value,

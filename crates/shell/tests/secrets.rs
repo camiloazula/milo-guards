@@ -138,7 +138,20 @@ fn everyday_lines_are_safe() {
             "grep key \"$FILE\"",
             "cat < \"$F\"",
             "head -n \"$N\" notes.txt",
-            "cat ~/.ssh/$'id_rsa'",
+            // An ANSI-C `~` is a plain character, not the home directory.
+            "cat $'\\x7e'/.ssh/id_rsa",
+            "cat $'~'/.ssh/id_rsa",
+            "cat $'\\x2f'home/me/work/repo/src/main.rs",
+            // A word written out as a list of paths for a reader.
+            "echo src/main.rs | xargs cat",
+            "echo $f | xargs cat",
+            "printf '%s\\n' a b | xargs cat",
+            "echo ~/.ssh/id_rsa",
+            "echo ~/.ssh/id_rsa | xargs echo",
+            "printf '%s\\n' ~/.ssh/id_rsa | wc -l",
+            "curl https://example.com/x?a=b",
+            "curl file:///home/me/work/repo/x",
+            "curl -s file://$HOME/work/repo/x",
             "cat ~/{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}",
             "cat \"$(echo ~)/.ssh/id_rsa\"",
             "cat \"$X/.ssh/id_rsa\"",
@@ -497,6 +510,26 @@ fn every_spelling_of_a_key_is_the_key() {
             "cp ~/.ssh/id_rsa{.bak,} /tmp",
             "install ~/.ssh/id_rsa{,.bak} /tmp",
             "cat ~/.ssh/\\id_rsa",
+            // An ANSI-C string is known when the line is read.
+            "cat $'\\x2f'home/me/.ssh/id_rsa",
+            "cat $'/home/me/.ssh/id_rsa'",
+            "cat $'\\057home\\057me/.ssh/id_rsa'",
+            "cat $'\\u002fetc/shadow'",
+            "cat $'\\x2fetc'/shadow",
+            "cat ~/.ssh/$'id_rsa'",
+            "cat ~/.ssh/$'\\x69d_rsa'",
+            "cat \"$HOME\"/.ssh/$'id_rsa'",
+            "cat \"${HOME}\"/.ssh/{id_rsa,x}",
+            "cat $HOME/{.ssh,.aws}/credentials",
+            "cat $'\\x2f'{etc,x}/shadow",
+            // A `file:` URL names a file, and `$HOME` in it is known.
+            "curl file://$HOME/.ssh/id_rsa",
+            "curl file://\"$HOME\"/.ssh/id_rsa",
+            "curl \"file://$HOME/.ssh/id_rsa\"",
+            "curl file://${HOME}/.ssh/id_rsa",
+            "curl -s --url file://$HOME/.aws/credentials",
+            "curl file:/etc/shadow",
+            "curl file:///home/me/.ssh/id_rsa",
             "cat ~/\\.ssh/id_rsa",
             "cat '~'/.ssh/id_rsa",
             "cat ~/'.ssh'/\"id_rsa\"",
@@ -634,6 +667,14 @@ fn a_listing_piped_into_a_reader_reads_what_it_lists() {
         ],
         &risky(&[
             "ls ~/.ssh | xargs cat",
+            "echo ~/.ssh/id_rsa | xargs cat",
+            "echo -n ~/.ssh/id_rsa | xargs cat",
+            "echo ~/.ssh/id_rsa ~/x | xargs cat",
+            "echo ~/.ssh/id_rsa | sort | xargs cat",
+            "printf '%s\\n' ~/.ssh/id_rsa | xargs cat",
+            "printf '%s\\0' ~/.ssh/id_rsa | xargs -0 cat",
+            "echo ~/.ssh/id_rsa | xargs -I{} cat {}",
+            "echo ~/.ssh/id_rsa | xargs sudo cat",
             "ls -a ~/.ssh | xargs cat",
             "ls -d ~/.ssh/* | xargs cat",
             "ls ~/.ssh/* | xargs head -n 1",
@@ -1034,6 +1075,9 @@ fn a_powershell_line_names_a_key_by_every_spelling() {
             r"Get-ChildItem $HOME\.ssh | Where-Object Length | Get-Content",
             r"Get-ChildItem $HOME\.ssh | Sort-Object Name | Get-Content",
             r"gci $HOME\.ssh | cat",
+            r"Write-Output $HOME\.ssh\id_rsa | Get-Content",
+            r"echo $HOME\.ssh\id_rsa | Get-Content",
+            r"Write-Output ~\.ssh\id_rsa | Get-Content",
             r"ls $HOME\.ssh | gc",
             r"dir $HOME\.ssh | type",
             r"Get-ChildItem $HOME\.ssh -Filter id_* | Get-Content",
@@ -1062,6 +1106,9 @@ fn a_cmd_line_names_a_key_by_every_spelling() {
             r"dir %USERPROFILE%\.ssh",
             r"dir /b %USERPROFILE%\.ssh",
             r"type %X%",
+            r#"more < "src\main.rs""#,
+            r#"more < "%USERPROFILE%\Documents\notes.txt""#,
+            r#"type < "C:\Users\me\.sshx\id_rsa""#,
             r"type %HOMEDRIVE%%HOMEPATH%\.ssh\id_rsa",
             r"type %USERPROFILE%\.sshx\id_rsa",
             r"type .ssh\id_rsa",
@@ -1117,6 +1164,18 @@ fn a_cmd_line_names_a_key_by_every_spelling() {
             r"type %USERPROFILE%\.ssh\id_rsa | findstr BEGIN",
             r"type %USERPROFILE%\.ssh\id_rsa > x.txt",
             r"more < %USERPROFILE%\.ssh\id_rsa",
+            // A quoted source is read as cmd reads it, with the quotes off.
+            r#"more < "C:\Users\me\.ssh\id_rsa""#,
+            r#"more <"C:\Users\me\.ssh\id_rsa""#,
+            r#"type < "C:\Users\me\.ssh\id_rsa""#,
+            r#"sort < "C:\Users\me\.ssh\id_rsa""#,
+            r#"findstr x 0< "C:\Users\me\.ssh\id_rsa""#,
+            r#"more < "%USERPROFILE%\.ssh\id_rsa""#,
+            r#"more < "%USERPROFILE%\.aws\credentials""#,
+            r#"findstr key < "%USERPROFILE%\.aws\credentials""#,
+            r#"more < "C:\Windows\System32\config\SAM""#,
+            r#"more < "C:\Users\me\AppData\Roaming\GitHub CLI\hosts.yml""#,
+            r#"more < "C:\Users\Camilo Azula\.ssh\id_rsa""#,
             r"more %USERPROFILE%\.ssh\id_rsa",
             r"sort < %USERPROFILE%\.ssh\id_rsa",
             r"sort %USERPROFILE%\.ssh\id_rsa",
@@ -1155,5 +1214,24 @@ fn a_cmd_line_names_a_key_by_every_spelling() {
             r"robocopy %USERPROFILE% x /e",
             r"tar -cf x.tar %USERPROFILE%",
         ]),
+    );
+}
+
+#[test]
+fn a_quoted_redirect_source_is_read_with_its_quotes_off() {
+    // The network check reads the same word: a quoted share is a share.
+    for line in [
+        r#"more < "\\server\share\x""#,
+        r#"type < "\\?\UNC\server\share\x""#,
+    ] {
+        assert_eq!(
+            effect(line, Shell::Cmd, &windows()),
+            Effect::Unknown,
+            "{line}"
+        );
+    }
+    assert_eq!(
+        effect(r#"type < "src\main.rs""#, Shell::Cmd, &windows()),
+        Effect::ReadsOnly
     );
 }

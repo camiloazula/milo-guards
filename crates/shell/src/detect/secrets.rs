@@ -15,7 +15,7 @@ use super::files::{remote, rsync_operands};
 use super::{listed, sources_and_destination, Checker, COPY_VALUED};
 use crate::effect::{operands as table, received};
 use crate::powershell::Params;
-use crate::unit::{has_flag, plain, Arg, Unit};
+use crate::unit::{has_flag, plain, Arg, Split, Unit};
 use crate::{Rule, Shell};
 
 /// The most files one brace list is expanded into: a bigger list is read as
@@ -98,7 +98,7 @@ impl Checker<'_> {
         // a POSIX shell spells a brace list out into more words).
         let unit = received(unit);
         let spelled;
-        let unit: &Unit = match spelled_args(&unit) {
+        let unit: &Unit = match spelled_args(&unit, self.split) {
             Some(args) => {
                 spelled = Unit {
                     args,
@@ -146,7 +146,7 @@ impl Checker<'_> {
         let each: &[Arg] = if one_path(arg, scope.shell) {
             std::slice::from_ref(arg)
         } else {
-            spelled = candidates(arg, scope.shell);
+            spelled = candidates(arg, scope.shell, self.split);
             &spelled
         };
         for candidate in each {
@@ -521,18 +521,21 @@ fn cmd<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
     }
 }
 
-/// The path a `file://` URL names, for a program that opens it: `file:///etc/shadow`
-/// and `file://localhost/etc/shadow` are `/etc/shadow`. A word may be the URL or
-/// hold it after an `=` (`--url=file://...`).
+/// The path a `file:` URL names, for a program that opens it:
+/// `file:///etc/shadow`, `file://localhost/etc/shadow` and `file:/etc/shadow`
+/// are `/etc/shadow`. A word may be the URL or hold it after an `=`
+/// (`--url=file://...`). `$HOME` in it is already `~` (`file://$HOME/.ssh/x`),
+/// which is the home directory as in a plain path.
 fn file_url(text: &str) -> Option<String> {
     let value = text.split_once('=').map(|(_, value)| value);
     [Some(text), value].into_iter().flatten().find_map(|url| {
         let rest = url
-            .get(..7)
-            .filter(|scheme| scheme.eq_ignore_ascii_case("file://"))
-            .map(|_| &url[7..])?;
+            .get(..5)
+            .filter(|scheme| scheme.eq_ignore_ascii_case("file:"))
+            .map(|_| &url[5..])?;
+        let rest = rest.strip_prefix("//").unwrap_or(rest);
         let path = rest.strip_prefix("localhost").unwrap_or(rest);
-        path.starts_with('/').then(|| path.to_string())
+        path.starts_with(['/', '~']).then(|| path.to_string())
     })
 }
 
@@ -563,6 +566,26 @@ fn lister(unit: &Unit) -> Option<Vec<Arg>> {
     }
     let key = unit.key()?;
     let places = match key.as_str() {
+        // What a line writes out as words is a list of paths when a reader
+        // is handed it (`echo ~/.ssh/id_rsa | xargs cat`); a word the guard
+        // cannot place is no finding.
+        "echo" if unit.shell == Shell::Posix => {
+            let words = unit.args.iter().skip_while(|arg| {
+                arg.known().is_some_and(|text| {
+                    text.len() > 1
+                        && text.starts_with('-')
+                        && text[1..].chars().all(|c| matches!(c, 'n' | 'e' | 'E'))
+                })
+            });
+            return Some(words.cloned().collect());
+        }
+        "printf" if unit.shell == Shell::Posix => {
+            return Some(unit.args.iter().skip(1).cloned().collect());
+        }
+        "write-output" | "echo" if unit.shell == Shell::PowerShell => {
+            let params = Params::read(&unit.args);
+            return Some(params.positional.into_iter().cloned().collect());
+        }
         "fd" if unit.shell == Shell::Posix => table::path_args(unit, "fd"),
         "git" if table::lists(unit) => table::git_reads(&unit.args),
         _ => return None,
@@ -588,12 +611,14 @@ fn one_path(arg: &Arg, shell: Shell) -> bool {
 /// home directory (`~alice/.ssh/id_rsa`) wherever a system keeps one; or the
 /// folder a word is under when it only ends in something known when the line
 /// runs (`~/.ssh/$f`), which lands in that folder whatever `$f` is.
-fn candidates(arg: &Arg, shell: Shell) -> Vec<Arg> {
+fn candidates(arg: &Arg, shell: Shell, split: &Split) -> Vec<Arg> {
     if shell != Shell::Posix {
         return vec![arg.clone()];
     }
     let listed: Vec<Arg> = match arg {
-        Arg::Unknown(source) if source.contains('{') => braces(source).unwrap_or_default(),
+        Arg::Unknown(source) if source.contains(['{', '\'']) => {
+            braces(source, split).unwrap_or_default()
+        }
         Arg::Known(text) if text.contains('{') => words(text).unwrap_or_else(|| vec![arg.clone()]),
         Arg::Template { text, .. } => {
             let known = text
@@ -614,9 +639,10 @@ fn candidates(arg: &Arg, shell: Shell) -> Vec<Arg> {
 /// into the words it makes, which is what the program is given (`cp
 /// ~/.ssh/id_rsa{,.bak} /tmp` has three operands, not two); `None` when none
 /// has one.
-fn spelled_args(unit: &Unit) -> Option<Vec<Arg>> {
+fn spelled_args(unit: &Unit, split: &Split) -> Option<Vec<Arg>> {
     let braced = |arg: &Arg| match arg {
-        Arg::Known(text) | Arg::Unknown(text) => text.contains('{'),
+        Arg::Known(text) => text.contains('{'),
+        Arg::Unknown(source) => source.contains(['{', '\'']),
         Arg::Template { .. } | Arg::Input => false,
     };
     if unit.shell != Shell::Posix || !unit.args.iter().any(braced) {
@@ -626,7 +652,7 @@ fn spelled_args(unit: &Unit) -> Option<Vec<Arg>> {
     let mut args = Vec::with_capacity(unit.args.len());
     for arg in &unit.args {
         let list = match arg {
-            Arg::Unknown(source) => braces(source),
+            Arg::Unknown(source) => braces(source, split),
             Arg::Known(text) => words(text),
             Arg::Template { .. } | Arg::Input => None,
         };
@@ -677,19 +703,47 @@ fn homes(arg: Arg) -> Vec<Arg> {
         .collect()
 }
 
-/// The words a brace list in `source` (a POSIX word as written) stands for:
-/// `~/.ssh/{id_rsa,x}` is `~/.ssh/id_rsa` and `~/.ssh/x`. Quotes and
-/// backslashes are taken off as the shell takes them; a brace that is quoted,
-/// escaped, or has no comma in it (`{a}`, `{1..3}`) is text. `None` when the
-/// word has no list or holds an expansion (`$x`, `` `cmd` ``); see
-/// [`spelled_out`] for a list that is too big.
-fn braces(source: &str) -> Option<Vec<Arg>> {
+/// The words a POSIX word as written stands for, when it has a brace list or
+/// an ANSI-C string (`$'\x2f'etc`) in it: `~/.ssh/{id_rsa,x}` is `~/.ssh/id_rsa`
+/// and `~/.ssh/x`. Quotes and backslashes are taken off as the shell takes
+/// them; a brace that is quoted, escaped, or has no comma in it (`{a}`,
+/// `{1..3}`) is text. `None` when the word has neither or holds an expansion
+/// (`$x`, `` `cmd` ``); see [`spelled_out`] for a list that is too big.
+///
+/// An ANSI-C string is a value known when the line is read, so it is read; a
+/// `~` it makes is a plain character, not the home directory.
+fn braces(source: &str, split: &Split) -> Option<Vec<Arg>> {
     // Each character, and whether it is bare: not quoted and not escaped.
     let mut chars: Vec<(char, bool)> = Vec::with_capacity(source.len());
     let mut quote: Option<char> = None;
-    let mut iter = source.chars();
+    let mut ansi = false;
+    let mut iter = source.chars().peekable();
     while let Some(c) = iter.next() {
         match (quote, c) {
+            (None, '$') if iter.peek() == Some(&'\'') => {
+                iter.next();
+                ansi = true;
+                let decoded = ansi_c(&mut iter)?;
+                if chars.is_empty() && decoded.first() == Some(&'~') {
+                    chars.extend([('.', false), ('/', false)]);
+                }
+                chars.extend(decoded.into_iter().map(|c| (c, false)));
+            }
+            // `$HOME`, `$PWD` and `$TMPDIR` are the places the guard names,
+            // as in a plain word, unless the line sets them.
+            (None | Some('"'), '$') => {
+                let name = variable_name(&mut iter)?;
+                let value = match name.as_str() {
+                    "HOME" => "~",
+                    "PWD" => ".",
+                    "TMPDIR" => "/tmp",
+                    _ => return None,
+                };
+                if split.reassigned(&name) {
+                    return None;
+                }
+                chars.extend(value.chars().map(|c| (c, false)));
+            }
             (None, '\'' | '"') => quote = Some(c),
             (Some(open), c) if c == open => quote = None,
             (Some('\''), c) => chars.push((c, false)),
@@ -706,7 +760,115 @@ fn braces(source: &str) -> Option<Vec<Arg>> {
             (None, c) => chars.push((c, true)),
         }
     }
-    spelled_out(&chars).map(|found| found.into_iter().map(Arg::Known).collect())
+    let spelled = spelled_out(&chars)
+        .or_else(|| ansi.then(|| vec![chars.iter().map(|(c, _)| c).collect::<String>()]));
+    spelled.map(|found| found.into_iter().map(Arg::Known).collect())
+}
+
+/// The name of the variable after a `$` that has been read: `NAME` or
+/// `{NAME}`; `None` for any other expansion (`$(…)`, `${X:-y}`, `$1`).
+fn variable_name(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    let braced = iter.peek() == Some(&'{');
+    if braced {
+        iter.next();
+    }
+    let mut name = String::new();
+    while let Some(&c) = iter.peek() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            name.push(c);
+            iter.next();
+        } else {
+            break;
+        }
+    }
+    if braced && iter.next() != Some('}') {
+        return None;
+    }
+    (!name.is_empty()).then_some(name)
+}
+
+/// The characters of an ANSI-C string (`$'…'`) whose opening quote has been
+/// read, up to the closing one: `\n`, `\t`, `\xHH`, `\nnn`, `\uHHHH`, `\e` and
+/// the rest as bash reads them. `None` when it does not close.
+fn ansi_c(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<Vec<char>> {
+    let mut out = Vec::new();
+    let mut ended = false;
+    loop {
+        let c = iter.next()?;
+        if c == '\'' {
+            return Some(out);
+        }
+        if ended {
+            continue;
+        }
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let e = iter.next()?;
+        let number = |iter: &mut std::iter::Peekable<std::str::Chars<'_>>,
+                      radix: u32,
+                      most: usize,
+                      first: Option<char>| {
+            let mut value = first.and_then(|d| d.to_digit(radix)).unwrap_or(0);
+            let mut count = usize::from(first.is_some());
+            while count < most {
+                match iter.peek().and_then(|d| d.to_digit(radix)) {
+                    Some(digit) => {
+                        value = value.saturating_mul(radix).saturating_add(digit);
+                        iter.next();
+                        count += 1;
+                    }
+                    None => break,
+                }
+            }
+            (value, count)
+        };
+        let decoded = match e {
+            'a' => Some('\x07'),
+            'b' => Some('\x08'),
+            'e' | 'E' => Some('\x1b'),
+            'f' => Some('\x0c'),
+            'n' => Some('\n'),
+            'r' => Some('\r'),
+            't' => Some('\t'),
+            'v' => Some('\x0b'),
+            '\\' | '\'' | '"' | '?' => Some(e),
+            '0'..='7' => {
+                let (value, _) = number(iter, 8, 3, Some(e));
+                char::from_u32(value & 0xff)
+            }
+            'x' => {
+                let (value, count) = number(iter, 16, 2, None);
+                if count == 0 {
+                    out.extend(['\\', 'x']);
+                    continue;
+                }
+                char::from_u32(value)
+            }
+            'u' | 'U' => {
+                let (value, count) = number(iter, 16, if e == 'u' { 4 } else { 8 }, None);
+                if count == 0 {
+                    out.extend(['\\', e]);
+                    continue;
+                }
+                char::from_u32(value)
+            }
+            'c' => iter
+                .next()
+                .and_then(|x| char::from_u32(u32::from(x) & 0x1f)),
+            other => {
+                out.extend(['\\', other]);
+                continue;
+            }
+        };
+        match decoded {
+            // A NUL ends the string, as bash reads it.
+            Some('\0') => ended = true,
+            Some(c) => out.push(c),
+            None => return None,
+        }
+    }
 }
 
 /// The words the brace lists in `chars` stand for; `None` when there is no

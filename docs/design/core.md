@@ -428,7 +428,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Three questions are `Resolver` methods, since a guard needs them resolved: the
+Four questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -454,6 +454,12 @@ path made absolute, with the working directory and `~` applied.
   wildcard (that is `place`'s) and for one known only when it runs. It does not
   change `place`, so the shell guard's verdicts for deleting and writing stay
   what they were.
+- `cwd_is_clear()` says whether a path written from the working directory, with
+  no `..`, `~`, drive or variable in it, can only land in the agent's own
+  workspace: the working directory is in a workspace folder that holds no key,
+  startup file or other sensitive place, and is not under `/dev` or `/proc`.
+  Such a path is not a secret, so a guard that asks about every operand of every
+  program (the shell guard's rule about reading a key) skips resolving it.
 - `git(path, flavour)` is `Some(words)` for a path in a git repository's own
   folder at any depth, `vendor/x/.git/hooks/pre-commit` and not only the
   workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the

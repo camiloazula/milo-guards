@@ -779,6 +779,9 @@ pub struct Resolver {
     /// Each protected path, its words, and whether it is a folder.
     protected: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
+    /// Whether the working directory is in a workspace folder that holds no
+    /// sensitive place, and is not the kernel's: see [`Resolver::cwd_is_clear`].
+    cwd_clear: bool,
 }
 
 impl Resolver {
@@ -897,8 +900,9 @@ impl Resolver {
             root_homes,
             protected: Vec::new(),
             system: Vec::new(),
+            cwd_clear: false,
         };
-        let workspaces = workspaces
+        let workspaces: Vec<Workspace> = workspaces
             .into_iter()
             .map(|loc| Workspace {
                 in_sensitive: resolver.sensitive_at(&loc).is_some(),
@@ -917,6 +921,15 @@ impl Resolver {
                 )
             })
             .collect();
+        resolver.cwd_clear = workspaces
+            .iter()
+            .any(|workspace| !workspace.holds_sensitive && workspace.loc.holds(&resolver.cwd))
+            && !(matches!(resolver.cwd.root, Root::Unix)
+                && resolver
+                    .cwd
+                    .parts
+                    .first()
+                    .is_some_and(|top| same_fold(top, "dev") || same_fold(top, "proc")));
         resolver.workspaces = workspaces;
         resolver.temps = temps;
         resolver.protected = protected;
@@ -1060,25 +1073,23 @@ impl Resolver {
         let windows = folder.windows();
         // A user's name in another home directory: any part picks it.
         const USER: &str = "\u{0}user";
-        let reaches = |names: &[String]| {
-            picks(&tail, names, true, true, &|part, name| {
-                name == USER || pattern_matches(part, name, flavour, hidden, windows)
-            })
+        let matches = |part: &str, name: &str| {
+            name == USER || pattern_matches(part, name, flavour, hidden, windows)
         };
-        let names_of = |entry: &Loc| -> Option<Vec<String>> {
-            let holds = folder.parts.len() <= entry.parts.len()
-                && folder.root.same(&entry.root)
-                && folder
-                    .parts
-                    .iter()
-                    .zip(&entry.parts)
-                    .all(|(spelled, name)| name == USER || same_name(spelled, name, windows));
-            holds.then(|| entry.parts[folder.parts.len()..].to_vec())
-        };
+        // The first part of the pattern must pick the first name below the
+        // folder, or nothing below it is picked: the cheap test that keeps
+        // the whole table from being walked for each pattern.
+        let first = *tail.first()?;
+        let starts = |name: &str| is_globstar(first) || matches(first, name);
+        let reaches = |names: &[String]| picks(&tail, names, true, true, &matches);
         // This home directory's and the system's own, by their full place.
         for (entry, words, kind) in &self.sensitive {
-            if *kind == Sensitivity::Secret && names_of(entry).is_some_and(|names| reaches(&names))
-            {
+            if *kind != Sensitivity::Secret || !above(folder, entry) {
+                continue;
+            }
+            let names = &entry.parts[folder.parts.len()..];
+            // A pattern in the secret folder itself goes below it.
+            if names.is_empty() || (starts(&names[0]) && reaches(names)) {
                 return Some(words);
             }
         }
@@ -1090,17 +1101,59 @@ impl Resolver {
             .map(|folder| (folder, true))
             .chain(self.root_homes.iter().map(|home| (home, false)));
         for (home, with_user) in homes {
-            let mut base = home.clone();
-            if with_user {
-                base.parts.push(USER.to_string());
+            // The folder must lead into the home (and the user's name).
+            let depth = home.parts.len() + usize::from(with_user);
+            let lead_ok = folder.root.same(&home.root)
+                && folder
+                    .parts
+                    .iter()
+                    .take(depth)
+                    .enumerate()
+                    .all(|(at, spelled)| {
+                        home.parts
+                            .get(at)
+                            .is_none_or(|name| same_name(spelled, name, windows))
+                    });
+            if !lead_ok {
+                continue;
             }
             for (entry, words, kind) in &SENSITIVE {
                 if *kind != Sensitivity::Secret {
                     continue;
                 }
-                let mut whole = base.clone();
-                whole.parts.extend(entry.iter().map(ToString::to_string));
-                if names_of(&whole).is_some_and(|names| reaches(&names)) {
+                // The names of home, user and place, from the folder down.
+                let total = depth + entry.len();
+                if folder.parts.len() > total {
+                    continue;
+                }
+                let name_at = |at: usize| -> &str {
+                    match at.checked_sub(home.parts.len()) {
+                        None => &home.parts[at],
+                        Some(0) if with_user => USER,
+                        Some(rest) => entry[rest - usize::from(with_user)],
+                    }
+                };
+                // What the folder spells beyond the home must be the place's.
+                let spelled_ok = folder
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .skip(depth)
+                    .all(|(at, spelled)| same_name(spelled, name_at(at), windows));
+                if !spelled_ok {
+                    continue;
+                }
+                // A pattern in the secret folder itself goes below it.
+                if folder.parts.len() == total {
+                    return Some(words);
+                }
+                if !starts(name_at(folder.parts.len())) {
+                    continue;
+                }
+                let names: Vec<String> = (folder.parts.len()..total)
+                    .map(|at| name_at(at).to_string())
+                    .collect();
+                if reaches(&names) {
                     return Some(words);
                 }
             }
@@ -1409,6 +1462,17 @@ impl Resolver {
         } else {
             "the repository's history"
         })
+    }
+
+    /// Whether a path written from the working directory, with nothing in it
+    /// that climbs (no `..`), no `~`, no drive and no variable, can only land
+    /// in the agent's own workspace: the working directory is in a workspace
+    /// folder that holds no key, a startup file or another sensitive place,
+    /// and is not under `/dev` or `/proc`. Such a path is not a secret, and a
+    /// guard that asks of many paths may skip resolving it.
+    #[must_use]
+    pub fn cwd_is_clear(&self) -> bool {
+        self.cwd_clear
     }
 
     /// How `path`s are spelled on the machine these directories describe:
