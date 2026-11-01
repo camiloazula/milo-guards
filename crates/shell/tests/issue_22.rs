@@ -1002,3 +1002,61 @@ fn a_path_on_the_own_drive_is_put_under_the_folder_only_when_every_cd_surely_ran
         &[(r"cd C:\Users\me\repo\a & rd /s /q C:..\..", Rule::Delete)],
     );
 }
+
+#[test]
+fn what_follows_a_set_value_runs_in_the_line_so_its_cd_moves_the_line() {
+    // cmd ends a `set` value at an unquoted `&` or `&&` and runs the rest in
+    // the line's own process: a `cd`, a drive switch, a `call` or a batch
+    // file there stays in force for the rest of the line.
+    let risky = deletes(&[
+        r"cd D:\ws\a & (set X=1 & cd D:\Users) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 && cd D:\Users) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 & cd D:\Users & echo) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 & cd D:\) & rd /s /q D:Users",
+        r"cd D:\ws\a & (set X=1 & set Y=2 & cd D:\Users) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 & (cd D:\Users)) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 & D: & cd \Users & C:) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 & x.bat) & rd /s /q D:b",
+        r"cd D:\ws\a & (set X=1 & call x.bat) & rd /s /q D:b",
+        r"cd D:\ws\a & (set X=1 & cd C:\Users) & rd /s /q C:me",
+        r"cd sub & (set X=1 & cd ..\..) & rd /s /q C:x",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &risky);
+    check(
+        Shell::PowerShell,
+        &two_drives(),
+        &[],
+        &[(
+            r#"cmd /c "cd D:\ws\a & (set X=1 & cd D:\Users) & rd /s /q D:me""#,
+            Rule::Delete,
+        )],
+    );
+    // The same with the line started on the workspace's own drive.
+    check(
+        Shell::Cmd,
+        &Paths::new(r"D:\ws", r"C:\Users\me", [r"C:\Users\me\repo", r"D:\ws"]),
+        &[],
+        &[(
+            r"cd C:\Users\me\repo & (set X=1 & cd C:\Users) & rd /s /q C:me",
+            Rule::Delete,
+        )],
+    );
+}
+
+#[test]
+fn what_follows_a_set_value_but_does_not_run_there_leaves_the_folder_alone() {
+    // `||` and a pipe do not run the rest in this process, `^&` and a quoted
+    // `&` end nothing, and a `cd` below the folder stays under it.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[
+            r"cd D:\ws\a & (set X=1 || cd D:\Users) & rd /s /q D:me",
+            r"cd D:\ws\a & (set X=1 | cd D:\Users) & rd /s /q D:me",
+            r"cd D:\ws\a & (set X=1^& cd D:\Users) & rd /s /q D:me",
+            r#"cd D:\ws\a & (set X="1 & cd D:\Users") & rd /s /q D:me"#,
+            r"(set X=1 & cd sub) & del *.obj",
+        ],
+        &[],
+    );
+}

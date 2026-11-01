@@ -497,7 +497,12 @@ impl<'a> Walker<'a> {
                 let operator = &text[at..text.len() - rest.len()];
                 let branch = usize::from(operator.contains('|'));
                 self.split.branches += branch;
-                unit::script(self.split, rest, Shell::Cmd, self.depth + 1);
+                // After `&` or `&&` cmd runs the rest in this very process,
+                // so its `cd`, drive switch, `call` and batch file move the
+                // line: read it here, not as a script of its own. What
+                // follows `||` or a pipe does not run here, so it keeps to
+                // its own.
+                unit::script_in(self.split, rest, Shell::Cmd, self.depth + 1, branch == 0);
                 self.split.branches -= branch;
             }
         }
