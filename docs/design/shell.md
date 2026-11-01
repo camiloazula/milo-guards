@@ -79,7 +79,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Wrappers in front of a program | 15 | `sudo env nice … rm` |
 | `find` inside `find -exec` | 16 | the walk, so the stack |
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
-| Opening brackets with none closed | 400 | counted before parsing, blind to quoting: cmd's grammar takes time that grows with the square of the depth |
+| Opening `(` with none closed | 400 | counted before parsing, blind to quoting; only `(` is counted, not `{` or `[`: cmd's grammar takes time that grows with the square of the depth |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
 | Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more); with no command before the `<<` the grammar is slow, see the noise below |
 
@@ -98,6 +98,13 @@ Another machine took twice as long (20 s for `)` and for cmd's `@`, 9.5 s for
 slower (29 s for `)`). cmd's `&` and `|` are counted above. A real line
 never has them, and they come back risky, so the guard is slow there, never
 wrong.
+
+The open-`(` count does not catch brackets that close. Balanced ones take
+time too, measured in a release build at 64 KiB on the same branch: in POSIX,
+`()` repeated 9.0 s and `f() ` repeated 1.1 s; in cmd, `(echo) ` repeated
+5.2 s, and `echo ` then `$((1<<2)); echo ` repeated 3.2 s. These are examples
+of what was measured, not every slow shape: a new measurement can find
+another, and the list is not a promise that anything else is fast.
 
 ### Actions that run later
 

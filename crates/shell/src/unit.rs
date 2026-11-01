@@ -809,8 +809,8 @@ const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:
 ///
-/// - more brackets opened, with none closed in between, than a parse tree is
-///   walked deep (the line is unreadable whatever the grammar makes of it,
+/// - more `(` opened (`{` and `[` are not counted), with none closed in
+///   between, than a parse tree is walked deep (the line is unreadable whatever the grammar makes of it,
 ///   and cmd's takes seconds to find that out at the length limit);
 /// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
 ///   `||` count once);
