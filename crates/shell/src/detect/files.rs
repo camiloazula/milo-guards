@@ -185,6 +185,20 @@ impl Checker<'_> {
                         readings.push((sources, operands[at]));
                     }
                 }
+                // A splat (`@p`) with no `-Destination` named may bind it:
+                // it is judged as a place too, beside a destination that is
+                // known (`Copy-Item @p src\a`, where `@p` may be the
+                // `-Destination` and `src\a` the `-Path`).
+                if params.values(&["destination"]).is_empty() && splatted(args) {
+                    for splat in params
+                        .positional
+                        .iter()
+                        .copied()
+                        .filter(|arg| is_splat(arg))
+                    {
+                        self.write_as(shell, unit.scope(), splat, "writes to", Access::Item);
+                    }
+                }
                 if key == "move-item" {
                     let mut moved: Vec<&Arg> = Vec::new();
                     for source in readings.iter().flat_map(|(sources, _)| sources) {
@@ -236,12 +250,34 @@ impl Checker<'_> {
                     })
                     .collect();
                 let params = Params::read(&renamed_args);
+                // Every path and positional is the item or the new name; a
+                // new name made at run time (`$name`, `($a + 'x')`) after
+                // the first positional is not a place of the item, unless the
+                // guard cannot tell which is which: a bare `-n` (read as a
+                // switch, it leaves its value among the positionals), a
+                // `--`, or a splat (`@p` may bind `-Path` or `-NewName`).
+                let doubtful =
+                    params.named.iter().any(|(name, value)| {
+                        value.is_none() && "newname".starts_with(name.as_str())
+                    }) || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"))
+                        || splatted(args);
                 // What is renamed away is judged as the items the cmdlet
                 // works on: a path, else what the stage before lists.
-                let items = self.items(unit, &params);
+                let mut paths = params.values(&["path", "literalpath"]);
+                paths.extend(
+                    without_dashes(&params)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| arg),
+                );
+                let items = self.listed_paths(unit, paths);
                 self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
                 let mut sources = params.values(&["path", "literalpath"]);
-                let mut positional = params.positional.iter().copied();
+                let mut positional = without_dashes(&params).into_iter();
                 if sources.is_empty() {
                     sources.extend(positional.next());
                 }
@@ -260,7 +296,7 @@ impl Checker<'_> {
                     name.known()
                         .is_some_and(|name| name.contains(['\\', '/', ':']))
                 }) {
-                    self.write(shell, unit.scope(), name, "renames to");
+                    self.write_as(shell, unit.scope(), name, "renames to", Access::Item);
                 }
             }
             "ren" | "rename" if shell == Shell::Cmd => {
@@ -289,7 +325,7 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
+                for target in self.list_items(unit, &Params::read(args)) {
                     self.write_as(shell, unit.scope(), &target, verb, Access::Item);
                 }
             }
@@ -368,7 +404,14 @@ impl Checker<'_> {
                     .into_iter()
                     .cloned()
                     .collect();
-                if targets.is_empty() {
+                if targets.is_empty() && key == "new-item" {
+                    // Only `-Path` is positional, so with no `-Path` named
+                    // every positional is judged (an extra one only makes
+                    // the command fail), and a bare `-n` (`-Name`), a `--`
+                    // or a `-Type` cannot hide the path behind another
+                    // argument.
+                    targets.extend(without_dashes(&params).into_iter().cloned());
+                } else if targets.is_empty() {
                     targets.extend(params.positional.first().copied().cloned());
                 }
                 let verb = if key == "clear-content" {
@@ -431,11 +474,26 @@ impl Checker<'_> {
             | "remove-itemproperty"
             | "clear-itemproperty"
             | "rename-itemproperty" => {
-                let params = Params::read(args);
+                let params = Params::read_property(args);
                 let mut targets = params.values(&["path", "literalpath"]);
-                if targets.is_empty() {
-                    targets.extend(params.positional.first().copied());
-                }
+                // The first positional and every known one are judged; every
+                // positional when the guard cannot tell which is the path: a
+                // bare named parameter that may take a value (`-n`, read as
+                // a switch, leaves its value among the positionals), a `--`
+                // or a splat (`@p` may bind `-Path`).
+                let doubtful = params.unclear()
+                    || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"))
+                    || splatted(args);
+                targets.extend(
+                    without_dashes(&params)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| arg),
+                );
                 for target in targets {
                     self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
@@ -476,6 +534,31 @@ impl Checker<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether an argument is a splat (`@p`, `@args`): a hashtable of parameters
+/// only known when it runs, which may bind any parameter, a path among them.
+/// `@(...)`, `@{...}`, `@'...'` and `@"..."` are arrays, hashtables and
+/// strings, not splats.
+fn is_splat(arg: &Arg) -> bool {
+    matches!(arg, Arg::Unknown(text)
+        if text.strip_prefix('@')
+            .is_some_and(|name| name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')))
+}
+
+/// Whether any argument is a splat.
+fn splatted(args: &[Arg]) -> bool {
+    args.iter().any(is_splat)
+}
+
+/// The positionals, without a `--` (the end of the parameters, not a path).
+fn without_dashes<'a>(params: &Params<'a>) -> Vec<&'a Arg> {
+    params
+        .positional
+        .iter()
+        .copied()
+        .filter(|arg| arg.known() != Some("--"))
+        .collect()
 }
 
 /// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
@@ -528,11 +611,15 @@ impl Checker<'_> {
         } else {
             sources.to_vec()
         };
+        // Many items of one folder land on the same name: each is judged once.
+        let mut seen = std::collections::HashSet::new();
         for source in sources {
             let (found, _) = self.expand(unit, source);
             for from in found {
                 let to = renamed(&from, name);
-                self.write_as(unit.shell, unit.scope(), &to, "writes to", Access::Item);
+                if seen.insert((to.known().is_some(), to.text().to_string())) {
+                    self.write_as(unit.shell, unit.scope(), &to, "writes to", Access::Item);
+                }
             }
         }
     }

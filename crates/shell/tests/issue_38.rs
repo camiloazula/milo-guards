@@ -530,6 +530,57 @@ fn what_follows_a_member_name_is_its_arguments() {
     );
 }
 
+#[test]
+fn where_object_runs_its_filter_script() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "1 | Where-Object { $_ -gt 1 }",
+            "1 | ? { $_ -gt 1 }",
+            "1 | where { $_ -gt 1 }",
+            "Get-ChildItem | Where-Object -FilterScript { $_.Length -gt 1 }",
+            "Get-ChildItem | ? -FilterScript:{ $_.Length -gt 1 }",
+            "Get-ChildItem | ? -Filter { $_.Length -gt 1 }",
+            // A word first is the property of the comparison form.
+            "Get-ChildItem | ? Name -like '*.rs'",
+            "Get-ChildItem | Where-Object Name -eq 'a.rs'",
+            "Get-ChildItem | where Length -gt 100",
+            "Get-ChildItem | ? 'Name' -like '*.rs'",
+            "Get-ChildItem | ? -Property Name -Value x -EQ",
+            "Get-ChildItem | ? -Property Name -Value $v -Like",
+            "Get-ChildItem | ? -Property $p -Value $v -EQ",
+            "Get-ChildItem | ? Name -in $names",
+            "Get-ChildItem | ? -InputObject $x { 1 }",
+            "Get-ChildItem | ? Name -ne $x -ErrorAction Stop",
+            "Get-ChildItem | ? -FilterScript { 1 } @p",
+        ],
+        &[
+            ("1 | Where-Object $b", Rule::Unknown),
+            ("1 | ? $b", Rule::Unknown),
+            ("1 | where $b", Rule::Unknown),
+            (
+                "Get-ChildItem | Where-Object -FilterScript $b",
+                Rule::Unknown,
+            ),
+            ("Get-ChildItem | ? -Filter $b", Rule::Unknown),
+            ("Get-ChildItem | ? -FilterScript:$b", Rule::Unknown),
+            ("Get-ChildItem | ? -FilterScript (Get-Block)", Rule::Unknown),
+            ("Get-ChildItem | ? (Get-Block)", Rule::Unknown),
+            ("Get-ChildItem | ? $prop -eq 1", Rule::Unknown),
+            ("Get-ChildItem | ? @p", Rule::Unknown),
+            (
+                "$t=[scriptblock]; $b=$t::Create('Remove-Item -Recurse -Force ~'); 1 | ? $b",
+                Rule::Unknown,
+            ),
+            (
+                "$b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); 1 | Where-Object $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
 /// Inside a provider a bare `NUL` or `CON` is an item there, not the device,
 /// so the item cmdlets judge it as the provider's item.
 #[test]
@@ -602,6 +653,99 @@ fn an_item_named_like_a_device_in_a_provider_is_an_item() {
                 "cd $key; Move-ItemProperty NUL CON -Name x",
                 Rule::Overwrite,
             ),
+        ],
+    );
+}
+
+#[test]
+fn trace_command_runs_its_expression() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date }",
+            "Trace-Command -Name ParameterBinding -Expression:{ Get-Date }",
+            "Trace-Command ParameterBinding { Get-Date }",
+            "Trace-Command -Name ParameterBinding { Get-Date }",
+            "Trace-Command $name { Get-Date }",
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date } -PSHost",
+            "Trace-Command -Name ParameterBinding -Expression { Get-Date } -FilePath trace.log",
+            "Trace-Command -Name $n -Expression { Get-Date } -Option All",
+        ],
+        &[
+            (
+                "Trace-Command -Name ParameterBinding -Expression $b",
+                Rule::Unknown,
+            ),
+            ("Trace-Command -Name ParameterBinding -Exp $b", Rule::Unknown),
+            ("Trace-Command ParameterBinding $b", Rule::Unknown),
+            ("Trace-Command -Name ParameterBinding $b", Rule::Unknown),
+            ("Trace-Command ParameterBinding Get-Date", Rule::Unknown),
+            (
+                "Trace-Command -Name ParameterBinding -Command Get-Date",
+                Rule::Unknown,
+            ),
+            (
+                "Trace-Command -Name ParameterBinding -Expression { 1 } @p",
+                Rule::Unknown,
+            ),
+            (
+                "$b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Trace-Command ParameterBinding $b",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_method_called_by_a_name_known_only_when_it_runs_is_unknown() {
+    let paths = windows();
+    let risky = [
+        "$m='InvokeScript'; $ExecutionContext.InvokeCommand.$m('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.($m)('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"$m\"('x')",
+        "$ExecutionContext.InvokeCommand.\"Invoke$('Script')\"('Remove-Item -Recurse -Force ~')",
+        "$ExecutionContext.InvokeCommand.\"Invoke$($m)\"('x')",
+        "$m=\"Delete\"; (Get-Item ~).$m()",
+        "$m='Delete'; (Get-Item ~).$m()",
+        "$m='Delete'; [IO.Directory]::$m('C:\\x', $true)",
+        "$t::$m('x')",
+        "$list.$m(1)",
+        "$list.(Get-Name)(1)",
+        "$list.{ Add }(1)",
+        "$list.[string]$m(1)",
+    ]
+    .map(|line| (line, Rule::Unknown));
+    check(Shell::PowerShell, &paths, &[], &risky);
+    // A name written out stays the method it names: constant strings, with
+    // or without quotes, and the escape in a double-quoted one.
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[
+            "$list.Add(1)",
+            "$list.'Add'(1)",
+            "$list.\"Add\"(1)",
+            "$s.Substring(1)",
+            "$s.\"Substring\"(1)",
+            "[Math]::Max(1, 2)",
+            "[Math]::\"Max\"(1, 2)",
+            // A property read has no argument list: a name only known when
+            // it runs is a column, not a call.
+            "$row.$col",
+            "$row.$col.Name",
+            "$row.\"$col\"",
+            "$row.($col)",
+            "$row.$col = 1",
+            "Write-Output $row.$col",
+        ],
+        &[
+            ("$e.InvokeCommand.InvokeScript('x')", Rule::Unknown),
+            ("$e.InvokeCommand.'InvokeScript'('x')", Rule::Unknown),
+            ("$e.InvokeCommand.\"InvokeScript\"('x')", Rule::Unknown),
+            ("$e.InvokeCommand.\"Invoke`Script\"('x')", Rule::Unknown),
+            ("(Get-Item ~).\"Delete\"()", Rule::Delete),
+            ("(Get-Item ~).\"Del`ete\"()", Rule::Delete),
         ],
     );
 }

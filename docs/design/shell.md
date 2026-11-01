@@ -861,7 +861,49 @@ a path.
   listing of the whole workspace by `Get-ChildItem`, `ls` or `dir`, or a
   `Get-Item` pattern such as `Get-Item *`, is its contents, not the workspace
   itself; `Get-Item .` or `Get-Item D:\ws2` hands on that folder, as written.
-  `Clear-Item` and `Set-Item` take a list of paths, so each is judged (`Clear-Item src\a, HKCU:\Software\y`; with no `-Value`, the last of `Set-Item`'s positionals is the value); a common parameter's value (`-ErrorAction 0`) is never read as the path.
+  `Clear-Item` and `Set-Item` take a list of paths, so each
+  `-Path`/`-LiteralPath` value and each positional is judged
+  (`Clear-Item src\a, HKCU:\Software\y`, `Set-Item src\a, HKLM:\x`).
+  `Rename-Item`'s `-Path` and `-LiteralPath` take one string, so a list there
+  makes the command fail; every positional is judged all the same, because
+  the guard cannot tell which is the item when a bare `-n`, a `--` or a
+  splat (`Rename-Item y @p`, where `@p` may hold `-Path`) hides it. The
+  value of `Set-Item` and the new name of `Rename-Item` are judged as places
+  too, since one that is a place of its own makes the command fail. The one
+  exception is a new name made at run time (`Rename-Item src\a.rs $name`)
+  after the first positional, which is not judged as an item (it is still an
+  `overwrite`, as above), unless one of those leaves it unclear
+  (`Rename-Item -n y HKCU:\Software\x`). `-PSPath` and `-LP` are
+  `-LiteralPath`, so `Rename-Item y -PSPath $p` renames `$p`, and
+  `Clear-ItemProperty y -PSPath HKCU:\Software\x` is the registry. `Move-Item` judges every
+  source: each `-Path`/`-LiteralPath` value and every positional but the
+  destination, which is `-Destination` or else the last positional
+  (`Move-Item -Path src\a,C:\Windows\x -Destination src\d`). `New-Item` judges
+  every positional when no `-Path` is named (only `-Path` is positional, so an
+  extra one only makes the command fail), and `-Type` and `-PropertyType` take
+  a value. The `-ItemProperty` cmdlets judge their first positional and every
+  known one, and every positional when a bare parameter that may take a value
+  (`-n`), a `--` or a splat leaves the path unclear
+  (`Clear-ItemProperty -n a HKCU:\Software\x`). A `--` is never a path. A
+  splat is `@` and a variable name (`@p`, `@args`); `@(...)` and `@{...}` are
+  not one. `Copy-Item` and
+  `Move-Item` judge a splat as a possible destination when no `-Destination` is
+  named (`Copy-Item @p`, `Copy-Item @p src\a`). A `Get-ChildItem` listing reads
+  `-s` (`-Recurse`), `-ar` (`-ReadOnly`) and `-Name` as switches, so they do
+  not take the folder listed (`gci -s HKCU:\Software | Clear-Item`). A
+  `Get-ChildItem` or `Get-Item` listing that is `-Force`, `-Hidden` (`-ah`)
+  or has an `-Attributes` value that may name hidden files (`Hidden`, `h`,
+  `!Directory+Hidden`, or one it cannot read) hands on
+  the hidden files of the workspace (`.git`) too, so
+  `Get-ChildItem -Force | Rename-Item -NewName x` is a `delete`, as
+  `Rename-Item .git x` is. A filter on such a listing is judged against the
+  folder: a `-Filter` or `-Include` pattern that can match `.git`
+  (`*`, `.g*`, `.git`) hands on `.git`, and a recursive one (`-Recurse`,
+  `-Depth`) hands on every hidden folder, since `-Filter config` finds
+  `.git\config`; `-Force -Filter *.tmp | Move-Item -Destination trash` stays
+  safe, and `-Exclude` leaves the listing whole. `-Depth` and `-Attributes`
+  take a value, which is never read as the path. A common parameter's value
+  (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
@@ -1198,13 +1240,21 @@ A line is never safe because the guard gave up on it. These come back risky:
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
   `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
-  `ForEach-Object`, `New-Module`, `Measure-Command`), a hook set on `$ExecutionContext.InvokeCommand` (by
+  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module`,
+  `Measure-Command`, `Trace-Command -Expression`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
   `ExpandString`, whose `$( )` subexpressions run). A block
   written out is read where it stands, and so is a string written out as the
   text of the code; a method name quoted (`.'InvokeScript'(…)`) is the same
-  method. `ForEach-Object Name` takes a member name, not a block, and what
+  method. A method called by a name only known when it runs
+  (`.$m('…')`, `.($m)('…')`, `."Invoke$x"('…')`) may be any method, `InvokeScript`
+  and `Delete` among them, so it is risky; a property read (`$row.$col`) has no
+  call and is not. `Where-Object Name -eq x` takes a word first as the property
+  of the comparison, so only another first argument that is not a block
+  written out (`? $b`, `Where-Object $prop -eq 1`) is risky, as is
+  `Trace-Command`'s second argument (`Trace-Command Name $b`) or its `-Command`.
+  `ForEach-Object Name` takes a member name, not a block, and what
   follows it is the member's arguments (`$list | % Add $item` is safe), but a
   member name is judged as the call written out is: a method that is
   risky as `.Invoke()` and `.Delete()` are (`% Invoke`, `-MemberName Delete`),

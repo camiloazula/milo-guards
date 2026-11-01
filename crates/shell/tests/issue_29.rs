@@ -136,6 +136,7 @@ fn a_bare_device_name_after_a_cd_to_another_provider_is_an_item() {
                 "cd HKCU:\\Software\\Foo; New-Item NUL -Force",
                 Rule::SystemSettings,
             ),
+            // A registry key moved is a registry change, as `Remove-Item`.
             (
                 "cd HKCU:\\Software\\Foo; Move-Item NUL Bar",
                 Rule::SystemSettings,

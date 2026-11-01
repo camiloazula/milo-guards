@@ -1120,7 +1120,17 @@ impl Walker<'_> {
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
             return;
         };
-        let method = blocks::bare(unit::text(member, self.source));
+        // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
+        // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
+        // them: the call is risky wherever it points.
+        let Some(method) = blocks::called(*member, self.source) else {
+            self.split.problem(
+                Rule::Unknown,
+                "calls a method only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+            return;
+        };
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
@@ -1401,6 +1411,12 @@ const VALUES: [&str; 46] = [
     "proga",
 ];
 
+/// The value parameters of a listing (`Get-ChildItem`, `Get-Item`) alone.
+const LISTING_VALUES: [&str; 2] = ["attributes", "depth"];
+
+/// The value parameters of the `-ItemProperty` cmdlets alone.
+const PROPERTY_VALUES: [&str; 2] = ["type", "propertytype"];
+
 /// A cmdlet's arguments read as PowerShell reads them.
 #[derive(Debug, Default)]
 pub(crate) struct Params<'a> {
@@ -1412,6 +1428,44 @@ pub(crate) struct Params<'a> {
 
 impl<'a> Params<'a> {
     pub(crate) fn read(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &[])
+    }
+
+    /// `Get-ChildItem`'s arguments: its switch aliases that a prefix of a
+    /// value parameter would swallow the folder for (`-s`, the alias of
+    /// `-Recurse`, reads as a prefix of `-Scope`; `-ar`, the alias of
+    /// `-ReadOnly`, of `-ArgumentList`; `-Name` and its prefixes are
+    /// `Get-ChildItem`'s switch, not the item's `-Name`; `-File` is its
+    /// switch, while for `Tee-Object`, `Out-File` or `Start-Process` its
+    /// prefixes are the value parameters `-FilePath` and `-Filter`) are read
+    /// as switches,
+    /// and `-Attributes` and `-Depth` take a value.
+    pub(crate) fn read_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(
+            args,
+            &["s", "ar", "n", "na", "nam", "name", "file"],
+            &LISTING_VALUES,
+        )
+    }
+
+    /// The arguments of `Get-Item`, which lists with the value parameters of
+    /// a listing but has none of its switch aliases.
+    pub(crate) fn read_item_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &LISTING_VALUES)
+    }
+
+    /// The arguments of an `-ItemProperty` cmdlet, whose `-Type` (an alias of
+    /// `-PropertyType`) and `-PropertyType` take a value.
+    pub(crate) fn read_property(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &PROPERTY_VALUES)
+    }
+
+    /// Reads `args`, with the parameters named in `switches` (lower case,
+    /// exactly) read as switches though a prefix of a value parameter, and
+    /// those in `own` read as taking a value: a cmdlet's own value
+    /// parameters are not added to the shared list, where one would swallow
+    /// the path of every other cmdlet (`Remove-Item -Depth ~ -Recurse`).
+    fn read_with(args: &'a [Arg], switches: &[&str], own: &[&str]) -> Self {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
@@ -1421,6 +1475,13 @@ impl<'a> Params<'a> {
             };
             let colon = name.ends_with(':');
             let name = name.trim_end_matches(':').to_ascii_lowercase();
+            // `-LP` and `-PSPath` (and what abbreviates the second) are
+            // aliases of `-LiteralPath`: the item cmdlets read them so.
+            let name = if name == "lp" || (name.len() > 1 && "pspath".starts_with(&name)) {
+                "literalpath".to_string()
+            } else {
+                name
+            };
             // A value is taken only by a parameter that names a value one
             // and no switch: an unknown or ambiguous one (`-rf` to a native
             // `rm`, `-f`) leaves the next argument where a rule sees it.
@@ -1430,12 +1491,14 @@ impl<'a> Params<'a> {
             let fulls = || {
                 VALUES
                     .iter()
+                    .chain(own.iter())
                     .chain(blocks::SHARED_VALUES.iter().filter(|full| **full != "args"))
             };
             let takes_value = colon
-                || fulls().any(|full| *full == name)
-                || (fulls().any(|full| full.starts_with(&name))
-                    && !SWITCHES.iter().any(|full| full.starts_with(&name)));
+                || (!switches.contains(&name.as_str())
+                    && (fulls().any(|full| *full == name)
+                        || (fulls().any(|full| full.starts_with(&name))
+                            && !SWITCHES.iter().any(|full| full.starts_with(&name)))));
             let value = if takes_value
                 && iter
                     .peek()
@@ -1448,6 +1511,17 @@ impl<'a> Params<'a> {
             params.named.push((name, value));
         }
         params
+    }
+
+    /// Whether a parameter was given with no value that may be a value
+    /// parameter: a bare `-n` (`-Name`, read as a switch as it also starts
+    /// `-NoNewline`) leaves its value among the positionals.
+    pub(crate) fn unclear(&self) -> bool {
+        let names = |fulls: &[&str], name: &str| fulls.iter().any(|full| full.starts_with(name));
+        self.named.iter().any(|(name, value)| {
+            let switch = names(&SWITCHES, name) && !names(&VALUES, name);
+            value.is_none() && !name.is_empty() && !switch
+        })
     }
 
     /// One cmdlet's arguments, read by its own parameters: each name given
