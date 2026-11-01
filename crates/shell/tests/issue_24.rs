@@ -1,0 +1,107 @@
+//! A part after `fd/<digits>` makes the descriptor a folder, so a `..`
+//! after it is no longer the descriptor's own place.
+
+mod common;
+
+use common::{check, macos};
+use milo_guards_shell::{Rule, Shell};
+
+#[test]
+fn a_dot_dot_after_a_descriptor_is_not_a_device() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "echo x > /dev/fd/1",
+            "cat /dev/fd/0",
+            "echo x > /dev/fd/../fd/1",
+            "echo x > /dev/fd/../null",
+        ],
+        &[
+            ("rm -rf /dev/fd/3/../1", Rule::Delete),
+            ("echo x > /dev/fd/0/./../1", Rule::Overwrite),
+            ("rm -rf /dev/fd/3/../null", Rule::Delete),
+            ("echo x > /dev/fd/3/../stdout", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn an_empty_or_dot_part_does_not_hide_the_descriptor_folder() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &["echo x > /dev/fd//1", "echo x > /dev/fd/./1"],
+        &[
+            ("rm -rf /dev/fd//3/../1", Rule::Delete),
+            ("echo x > /dev/fd/./3/../1", Rule::Overwrite),
+            ("rm -rf /dev//fd//3//..//1", Rule::Delete),
+            ("tee /dev/fd/./3/../1", Rule::Overwrite),
+            ("truncate -s0 /dev/fd//3/../1", Rule::Overwrite),
+            ("dd if=/dev/zero of=/dev/fd//3/../1", Rule::Overwrite),
+            ("rm -rf '/dev/fd//3/../1'", Rule::Delete),
+            ("cd /dev/fd && rm -rf ./3/../1", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_wildcard_after_fd_can_expand_to_a_folder() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &["echo x > /dev/fd/1", "echo x > /dev/fd/../null"],
+        &[
+            ("rm -rf /dev/fd/3*/../1", Rule::Delete),
+            ("rm -rf /dev/fd/3?/../1", Rule::Delete),
+            ("echo x > /dev/fd/[0-9]/../1", Rule::Overwrite),
+            ("cd /dev/fd && rm -rf ./3*/../1", Rule::Delete),
+            ("cd /dev && echo x > fd/[3]/../1", Rule::Overwrite),
+            ("rm -rf /dev/fd/x/../1", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_dot_dot_after_a_descriptor_alias_is_not_a_device() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "printf x > /dev/stdout",
+            "echo x | tee /dev/stderr",
+            "echo x > /dev/fd/1",
+        ],
+        &[
+            ("rm -rf /dev/stdout/../null", Rule::Delete),
+            ("echo x > /dev/stderr/../null", Rule::Overwrite),
+            ("rm -rf /dev/stdin/../null < ..", Rule::Delete),
+            ("cp a /dev/stdout/x/../../null", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn a_wildcard_part_before_a_dot_dot_can_match_an_alias_folder() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "echo x > /dev/stdout",
+            "echo x > /dev/fd/../null",
+            "cat /dev/stdin",
+        ],
+        &[
+            ("rm -rf /dev/std*/../null", Rule::Delete),
+            ("echo x > /dev/stdou?/../null", Rule::Overwrite),
+            ("echo x > /dev/[s]tdout/../null", Rule::Overwrite),
+            ("rm -rf /dev/*/../null", Rule::Delete),
+            ("rm -rf /dev/*/../stdout", Rule::Delete),
+            ("echo x > /dev/fd/../std*/../null", Rule::Overwrite),
+            ("cd /dev && rm -rf std*/../null", Rule::Delete),
+            ("cd /dev/std* && rm -rf ../null", Rule::Delete),
+            ("cd /dev && echo x > */../null", Rule::Overwrite),
+            ("rm -rf '/dev/std*/../null'", Rule::Delete),
+        ],
+    );
+}

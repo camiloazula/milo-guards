@@ -1,14 +1,39 @@
 //! `find`: the places it searches, what its filters can match, and the
 //! programs its `-exec` runs for each file found.
 
-use super::add;
+use super::{add, MAX_WRAPPERS};
 use crate::unit::{Arg, Split, Unit};
-use crate::Shell;
+use crate::{Rule, Shell};
+
+/// The most work `find -exec` may be read to do for one line, in all the
+/// `find`s inside `find`s, counted in bytes of the program and arguments
+/// built to hand on, `{}` replaced: each level runs the program once for
+/// each place it searches, so the work could grow as fast as the line is
+/// long, or faster. Arguments would not do: one holding a thousand `{}` is
+/// a thousand times the bytes of one that holds none.
+const MAX_EXEC_WORK: usize = 1024 * 1024;
 
 /// `find`'s `-exec`, `-execdir`, `-ok` and `-okdir` run a program for each
 /// file found: each becomes a unit, with `{}` a file under each place it
 /// searches.
 pub(super) fn find_exec(split: &mut Split, unit: &Unit, depth: usize) {
+    // A `find` that runs a `find` that runs a `find` ... would be walked as
+    // deep as the line is long.
+    if split.find_depth >= MAX_WRAPPERS {
+        split.problem(
+            Rule::Unreadable,
+            "wraps a program in too many others to read",
+            None,
+        );
+        return;
+    }
+    split.find_depth += 1;
+    run_each(split, unit, depth);
+    split.find_depth -= 1;
+}
+
+/// [`find_exec`], once it is known how deep it is.
+fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
     let targets = find_targets(&unit.args);
     let mut iter = unit.args.iter();
     while let Some(arg) = iter.next() {
@@ -25,7 +50,25 @@ pub(super) fn find_exec(split: &mut Split, unit: &Unit, depth: usize) {
         let placeholder = rest
             .iter()
             .any(|arg| arg.known().is_some_and(|text| text.contains("{}")));
+        // What each argument weighs before the path is put in for its `{}`.
+        let shape: Vec<(usize, usize)> = rest
+            .iter()
+            .map(|arg| {
+                let holes = arg.known().map_or(0, |text| text.matches("{}").count());
+                (arg.text().len() + 1, holes)
+            })
+            .collect();
+        let fixed = program.text().len() + 1 + shape.iter().map(|(bytes, _)| bytes).sum::<usize>();
+        let holes: usize = shape.iter().map(|(_, holes)| holes).sum();
         for target in &targets {
+            // The path goes in for each `{}`, or on the end when there is none.
+            let path = target.text().len();
+            let built = fixed + holes * path + if placeholder { 0 } else { path + 1 };
+            split.find_work = split.find_work.saturating_add(built + 1);
+            if split.find_work > MAX_EXEC_WORK {
+                split.problem(Rule::Unreadable, "runs too many programs to read", None);
+                return;
+            }
             let mut args: Vec<Arg> = rest
                 .iter()
                 .map(|arg| match (arg.known(), target) {

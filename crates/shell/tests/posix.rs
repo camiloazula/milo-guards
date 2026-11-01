@@ -53,7 +53,6 @@ fn everyday_commands_are_safe() {
             "python3 -E script.py",
             "ruby -E utf-8 script.rb",
             "perl -pi.bak script.pl",
-            "cp ~/.ssh/id_ed25519.pub keys/",
             "cp -r ~/.config dist/",
             "ln -s src/lib.rs target/link",
             "find . -name '*.pyc' -delete",

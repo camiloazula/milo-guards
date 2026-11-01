@@ -339,6 +339,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         stdin: None,
         dir: None,
         hidden: false,
+        depth: unit.depth,
     }))
 }
 
