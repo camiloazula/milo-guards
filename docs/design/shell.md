@@ -446,7 +446,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy; on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
@@ -703,6 +703,107 @@ a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
 bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
 `unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
 `unknown`.
+
+### Machine settings on macOS and Linux
+
+`system_settings` also covers the changes to the machine that `sudo` does not
+show. The guard keeps to what is system-wide or turns protection off; reading
+a setting and a user's own settings stay safe. Callers treat the rule as one
+of their strictest, so each family below was added on that test.
+
+- **Security switches.** `spctl --master-disable`, `--global-disable` and
+  `--disable` (Gatekeeper); `csrutil disable`, `authenticated-root disable`
+  and `enable --without …` (System Integrity Protection); `setenforce` to
+  anything but `1` or `Enforcing`; any write to `/etc/selinux/config` or
+  `/etc/sysconfig/selinux`, whatever the program (a redirect, `tee`, `sed -i`,
+  `cp`); `nvram` that sets, deletes or clears a variable (`boot-args`). A
+  value only known when it runs is risky. `spctl --master-enable`, `csrutil
+  status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
+  safe.
+- **The firewall.** `iptables` and `ip6tables` (and their `-legacy` and
+  `-nft` builds) with `-F`/`--flush`, `-X`/`--delete-chain` or a default
+  policy of ACCEPT (`-P chain ACCEPT`, `--policy`) for `INPUT`, `FORWARD` or
+  a chain only known when it runs; the chain may be attached (`-PINPUT`,
+  `-nPINPUT`, `--policy=INPUT`), and then the policy is the next argument.
+  `OUTPUT` accepting is the default, so it is not read. `nft` joins its
+  arguments with spaces and reads them as one line, so each command in
+  them (split at whitespace, `;` and newlines, whichever argument it is in,
+  `nft 'flush ruleset'` as well) is read: `flush ruleset|table|chain` and
+  `delete|destroy table|chain` are risky, and so is a `flush`, `delete` or
+  `destroy` of an object not known to be a set, map, rule or the like
+  (`nft flush $what`), or a command word only known when it runs; `-d` and
+  `--debug` take a level, as `-f` and `-I` take a value. Under `-j` or
+  `--json` (or a prefix of it, or inside a bundle such as `-aj`) the operands
+  are JSON, which is not read, so any `{` or `[` in them is risky
+  (`nft -j list ruleset` is safe). `ufw disable`,
+  `reset` and `default allow` for `incoming`, `routed`, no direction (which
+  means incoming) or an unknown one; `ufw default allow outgoing` is ufw's
+  stock default and is safe. `firewall-cmd --panic-on` and
+  `--set-default-zone`; `pfctl -d` and `-F` with `all`, `rules` or `nat`,
+  which may be abbreviated (`-F a`) and attached (`-Fa`, `-qFrules`), or
+  with a modifier only known when it runs; `socketfilterfw --setglobalstate
+  off`. Adding or deleting one rule, `-P chain DROP`, listing, `ufw allow`,
+  `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
+  from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
+  file's content is not in the line. Long options may be abbreviated as
+  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
+  takes any unique prefix too (`--set-default=trusted`).
+- **Services the system runs.** `systemctl disable` and `mask`, unless
+  `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
+  `unload`, `remove` and `disable`. The one thing read as the workspace's own
+  is a plist inside the workspace: `launchctl unload ./x.plist` and
+  `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`
+  (a label), `bootout system/…`, and any plist in `/Library/LaunchDaemons` or
+  `~/Library/LaunchAgents` are not. `launchctl unload -D domain` unloads
+  every plist in that search path (`-D system`, `-D all`), so it is risky
+  whatever the domain. A command word only known when it runs
+  (`systemctl $verb x`) is risky. `systemctl` options that take a value
+  (`-t`, `--message`, `--capsule`, `--what`, `--timestamp`, `--image`,
+  `--legend` and the like, also abbreviated) do not count as the verb, and
+  are not read as `--user` or `--system` either: one walk of the arguments
+  skips the values and finds those two (`systemctl -p --user disable x` is
+  a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
+  `-p`/`--property` value the same way.
+- **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
+  stop` are safe, because `stop docker` is a common development step, and
+  `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
+  `restart`, `enable` and `reload` are safe too. The exception is a unit
+  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
+  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  as turning that protection off, so it is risky. `systemctl kill` sends
+  SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
+  refuses `stop`, so `kill` is how it is stopped), so it is read through the
+  same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
+  'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
+  unit name holding `*`, `?` or `[` against the loaded units, so a pattern
+  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  action only known when it runs may be `stop`, so it is risky when the name
+  protects the machine or is only known when it runs (`service ufw
+  $action`); `service nginx $action` is safe, as `service nginx stop` is.
+- **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
+  `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
+  `listbackups`, `status`, `startbackup` and `enable` are safe.
+- **Machine-wide preferences.** `defaults delete <domain>` with no key,
+  `defaults import` (the reason says "deletes" for a delete with no key and
+  "replaces" for an import), and any `defaults write`, `delete`, `import` or
+  `rename` whose domain is a path in a system folder
+  (`/Library/Preferences/…`); `pmset` with `-a`, `-b`, `-c` or `-u`, or with
+  any first operand but the actions that only act or read (`sleepnow`,
+  `displaysleepnow`, `touch`, `noidle`, `boot`), because the flag is
+  optional in `pmset sleep 0` and the operand is then a setting; `-g` reads;
+  `networksetup` and `systemsetup` options that start `-set`, `-add`,
+  `-remove`, `-create`, `-delete`, `-rename`, `-duplicate`, `-order`,
+  `-import`; `scutil --set`; `hostnamectl set-…` and `timedatectl set-…`,
+  and the verbs `hostnamectl` has since systemd 249 (`hostname`,
+  `icon-name`, `chassis`, `deployment`, `location`) when given a value
+  (`hostnamectl hostname newname`; with none they print); `hostname name`
+  and `hostname -F`. An application's own keys
+  (`defaults write com.example.app key value`, `defaults delete com.apple.dock
+  persistent-apps`), a path in the workspace or the user's own folder,
+  `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
+
+`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
+they are Windows programs and are left alone.
 
 ### The rule enum is exhaustive on purpose
 

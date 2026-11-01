@@ -21,6 +21,7 @@ mod processes;
 mod regex;
 mod secrets;
 mod send;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -208,6 +209,7 @@ impl Checker<'_> {
         self.send(at, unit, &key);
         self.data(at, unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -380,7 +382,8 @@ impl Checker<'_> {
         self.write_to(shell, scope, target, verb, "a file", access);
     }
 
-    /// A write to `target`, which is a `what` in the words of a reason.
+    /// A write to `target`, which is a `what` in the words of a reason, by
+    /// how it reaches it (see [`Access`]).
     fn write_to(
         &mut self,
         shell: Shell,
@@ -390,6 +393,7 @@ impl Checker<'_> {
         what: &str,
         access: Access,
     ) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
