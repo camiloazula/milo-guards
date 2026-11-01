@@ -325,7 +325,7 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.list_items(unit, &Params::read(args), key == "set-item") {
+                for target in self.list_items(unit, &Params::read(args)) {
                     self.write_as(shell, unit.scope(), &target, verb, Access::Item);
                 }
             }
