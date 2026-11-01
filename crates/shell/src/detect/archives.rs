@@ -386,7 +386,7 @@ fn seven_zip(args: &[Arg]) -> Option<Vec<Arg>> {
         let (text, known) = match arg {
             Arg::Known(text) => (text, true),
             Arg::Unknown(text) | Arg::Template { source: text, .. } => (text, false),
-            Arg::Input => continue,
+            Arg::Input | Arg::Null => continue,
         };
         // Switches are not case-sensitive; `-ao` is another switch.
         let Some(folder) = text

@@ -28,13 +28,18 @@ pub(crate) enum Arg {
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
+    /// PowerShell's `$null`, the null value: handed to a file parameter it is
+    /// the null device, or no value at all. Its own form, since no quoted
+    /// literal (`'$null'`, a file named that) is it; in cmd it is a file name,
+    /// and in a POSIX shell the variable `null`.
+    Null,
 }
 
 impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
-            Self::Unknown(_) | Self::Template { .. } | Self::Input => None,
+            Self::Unknown(_) | Self::Template { .. } | Self::Input | Self::Null => None,
         }
     }
 
@@ -49,6 +54,7 @@ impl Arg {
         match self {
             Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
             Self::Input => "<input>",
+            Self::Null => "$null",
         }
     }
 }
@@ -72,7 +78,7 @@ pub(crate) enum Reads {
 }
 
 /// One program the line runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -110,14 +116,14 @@ pub(crate) struct Unit {
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
 /// follows it before the value is used.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Listing {
     pub(crate) args: Vec<Arg>,
     pub(crate) between: Vec<Between>,
 }
 
 /// A stage between a `Get-Process` listing and the `Stop-Process` it feeds.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Between {
     /// `Where-Object`, with its arguments (a block that is a simple
     /// comparison is read into `Name -eq value`).
@@ -346,6 +352,10 @@ pub(crate) struct Split {
     pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
+    /// `mount`) anywhere, before or after a `cd` in its text: a single letter
+    /// in a `cd` may be one of another provider, not a disk.
+    psdrive: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -389,6 +399,9 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How many times the line has forked into two readings, each judged
+    /// (see [`crate::launch::Launch::Either`]).
+    forks: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -491,6 +504,13 @@ impl Later {
 }
 
 impl Split {
+    /// Count one more fork of the line into two readings; `false` once
+    /// `most` forks have been made, when the line is not read any further.
+    pub(crate) fn fork(&mut self, most: usize) -> bool {
+        self.forks += 1;
+        self.forks <= most
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
@@ -500,10 +520,10 @@ impl Split {
             .filter(|_| unit.shell == Shell::Posix)
             .and_then(|key| dotglob::change(&key, &unit.args))
         {
-            // Behind `env` or `nohup` a builtin runs in a process of its own.
-            let own = dotglob::in_shell(&unit.wrappers);
-            let certain = own && unit.stage.is_none();
             for (flag, on) in [(Flag::Bash, change.bash), (Flag::Zsh, change.zsh)] {
+                // Behind `env` or `nohup` a builtin runs in a process of its
+                // own, and behind zsh's `noglob` bash runs nothing.
+                let certain = dotglob::in_shell(&unit.wrappers, flag) && unit.stage.is_none();
                 match on {
                     Some(true) => self.set_flag(flag, true),
                     Some(false) => self.show(flag, certain),
@@ -514,10 +534,21 @@ impl Split {
         if self.bodies > 0 {
             self.in_body.push(self.units.len());
         }
+        if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
+            self.psdrive = true;
+        }
         if let Some(target) = moves_to(&unit) {
             self.moves += 1;
             self.moved += 1;
-            self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
+            let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
+            // Once the line makes a drive, a drive letter may name it: the
+            // place is only known when it runs.
+            self.dir = Some(match dir {
+                Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
+                    Arg::Unknown(text)
+                }
+                dir => dir,
+            });
         }
         self.units.push(unit);
     }
@@ -896,6 +927,15 @@ impl Split {
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
+    // What a package runner starts is a program (`npx cd src`), not the
+    // shell's builtin: it cannot move the shell.
+    if unit
+        .wrappers
+        .iter()
+        .any(|wrapper| crate::launch::RUNNERS.contains(&wrapper.as_str()))
+    {
+        return None;
+    }
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -956,12 +996,37 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         }
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
+            // `--` ends the parameters, so it is not the path: `cd -- -` is
+            // the history step and `cd -- X` goes to X.
+            let mut positional = params.positional.iter().copied();
+            let end = params
+                .positional
+                .iter()
+                .position(|arg| arg.known() == Some("--"));
+            let first = match end {
+                Some(0) => positional.nth(1),
+                _ => positional.next(),
+            };
             let target = params
                 .values(&["path", "literalpath"])
                 .first()
-                .or(params.positional.first())
-                .map(|target| (*target).clone());
-            Some(target.unwrap_or_else(|| Arg::Known("~".to_string())))
+                .copied()
+                .or(first)
+                .map(|target| match target {
+                    // PowerShell 6.2+ reads `-` and `+` as a step back or
+                    // forward in location history, not a folder.
+                    Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
+                    other => (*other).clone(),
+                });
+            Some(target.unwrap_or_else(|| {
+                // With no path, a stage after the first takes it from the
+                // pipeline; the first goes home.
+                if unit.stage.is_some_and(|stage| stage.index > 0) {
+                    Arg::Unknown(key)
+                } else {
+                    Arg::Known("~".to_string())
+                }
+            }))
         }
         _ => None,
     }
@@ -1074,6 +1139,15 @@ pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
+    if split.psdrive {
+        // A drive the line makes may be entered before the text that makes
+        // it (a function body, a loop), so read the line again knowing it.
+        split = Split {
+            psdrive: true,
+            ..Split::default()
+        };
+        script(&mut split, command, shell, 0);
+    }
     split.hide_bodies();
     split.settle_later();
     split

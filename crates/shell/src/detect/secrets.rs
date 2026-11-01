@@ -670,7 +670,7 @@ fn spelled_args(unit: &Unit, split: &Split) -> Option<Vec<Arg>> {
     let braced = |arg: &Arg| match arg {
         Arg::Known(text) => text.contains('{'),
         Arg::Unknown(source) => source.contains(['{', '\'']),
-        Arg::Template { .. } | Arg::Input => false,
+        Arg::Template { .. } | Arg::Input | Arg::Null => false,
     };
     if unit.shell != Shell::Posix || !unit.args.iter().any(braced) {
         return None;
@@ -681,7 +681,7 @@ fn spelled_args(unit: &Unit, split: &Split) -> Option<Vec<Arg>> {
         let list = match arg {
             Arg::Unknown(source) => braces(source, split),
             Arg::Known(text) => words(text),
-            Arg::Template { .. } | Arg::Input => None,
+            Arg::Template { .. } | Arg::Input | Arg::Null => None,
         };
         // A list that makes no word is read as the word it is written as.
         match list.filter(|list| !list.is_empty()) {
