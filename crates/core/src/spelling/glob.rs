@@ -99,26 +99,45 @@ const GIT_SHORT_NAMES: [&str; 12] = [
 /// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
 #[must_use]
 pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
-    let windows = flavour == Flavour::Windows;
-    let trimmed = if windows {
-        pattern.trim_end_matches(['.', ' '])
-    } else {
-        pattern
-    };
     let names = GIT_ENTRIES.iter().chain(&GIT_FILES);
+    if flavour != Flavour::Windows {
+        return !pattern.is_empty()
+            && names
+                .clone()
+                .any(|name| matches(pattern, name, flavour, true));
+    }
+    can_match_cmd(pattern, names.chain(&GIT_SHORT_NAMES))
+}
+
+/// The 8.3 short name of the `.git` folder itself on a drive that creates
+/// them.
+const GIT_FOLDER_SHORT_NAME: &str = "GIT~1";
+
+/// Whether the name pattern `pattern` can match `GIT~1`, the 8.3 short name
+/// of the `.git` folder, read as cmd reads a wildcard (see
+/// [`can_match_git_entry`]).
+///
+/// It is for a search that hands its pattern to the file system's own
+/// matching, as Windows PowerShell's `-Filter` does through `FindFirstFile`,
+/// which compares a pattern with the short name as well as the long one: `g*`,
+/// `*~1`, `GIT~?` and `?????` find `.git` there, though none matches the name
+/// `.git`.
+#[must_use]
+pub fn can_match_git_short_name(pattern: &str) -> bool {
+    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter())
+}
+
+/// Whether the cmd pattern `pattern` (or, without its trailing dots and
+/// spaces, which are not part of a name) can match one of `names`.
+fn can_match_cmd<'a>(pattern: &str, names: impl Iterator<Item = &'a &'a str> + Clone) -> bool {
+    let trimmed = pattern.trim_end_matches(['.', ' ']);
     [pattern, trimmed].iter().any(|pattern| {
         if pattern.is_empty() {
             return false;
         }
-        if !windows {
-            return names
-                .clone()
-                .any(|name| matches(pattern, name, flavour, true));
-        }
         let (tokens, optional) = cmd_tokens(pattern);
         names
             .clone()
-            .chain(&GIT_SHORT_NAMES)
             .any(|name| matches_cmd(&tokens, &optional, name))
     })
 }

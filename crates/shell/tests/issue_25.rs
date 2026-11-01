@@ -93,7 +93,6 @@ fn a_filter_that_cannot_match_a_hidden_folder_stays_everyday() {
             "Get-ChildItem -Attributes Hidden -Filter *.tmp | Remove-Item",
             "Get-ChildItem -Force -Exclude *.rs -Filter *.tmp | Remove-Item -Force",
             "Get-ChildItem -Force src -Filter .git | Remove-Item -Recurse -Force",
-            "Get-ChildItem -Force -Filter *. | Remove-Item -Recurse -Force",
             "Get-ChildItem -Recurse -Depth 2 -Filter *.obj | Remove-Item",
             "Get-ChildItem -Filter .git | Remove-Item",
             "Get-ChildItem -Include .git -Recurse | Remove-Item",
@@ -176,10 +175,6 @@ fn the_spellings_of_the_parameters_and_values_are_read() {
             ),
             (
                 "Get-ChildItem -Force -Exclude *.rs | Remove-Item -Recurse -Force",
-                Rule::Delete,
-            ),
-            (
-                "Get-ChildItem -Force -Depth 1 -Filter *.tmp | Remove-Item -Force",
                 Rule::Delete,
             ),
             (
@@ -329,5 +324,109 @@ fn del_s_with_cmds_rules_keeps_the_everyday_cleans_safe() {
             "del /s /q build.?",
         ],
         &[],
+    );
+}
+
+#[test]
+fn a_filter_is_matched_against_the_short_name_of_git_too() {
+    let rows: Vec<(String, Rule)> = [
+        "GIT~1", "g*", "G*", "GI*", "*~1", "*1", "GIT~?", "?????", "??????", "*.", "git~1", "*~?",
+        "G?T~1",
+    ]
+    .iter()
+    .flat_map(|filter| {
+        [
+            format!("Get-ChildItem -Force -Filter {filter} | Remove-Item -Recurse -Force"),
+            format!("gci -Hidden -Filter {filter} | rm -Recurse -Force"),
+            format!("Get-ChildItem -Force -Recurse -Filter {filter} | Remove-Item -Force"),
+        ]
+    })
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    let rows: Vec<(&str, Rule)> = rows
+        .iter()
+        .map(|(line, rule)| (line.as_str(), *rule))
+        .collect();
+    check(Shell::PowerShell, &windows(), &[], &rows);
+}
+
+#[test]
+fn an_include_is_matched_against_the_long_name_only() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Force -Include g* | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Include *~1 | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Include ????? | Remove-Item -Recurse -Force",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_filter_that_cannot_match_the_short_name_stays_everyday() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Force -Filter *.log | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Filter *.tmp | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Filter go.* | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Filter .gitignore | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Filter ?? | Remove-Item -Recurse -Force",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_recursive_hidden_listing_hands_on_git_only_when_a_pattern_can_reach_it() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Include bin,obj -Recurse -Force | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Recurse -Force -Directory -Filter node_modules | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Recurse -Include *.tmp | Remove-Item",
+            "Get-ChildItem -Recurse -Force -Filter *.orig | Remove-Item",
+            "Get-ChildItem -Recurse -Hidden -Filter *.bak | Remove-Item -Force",
+            "Get-ChildItem -Force -Depth 3 -Include bin,obj | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Depth 1 -Filter *.tmp | Remove-Item -Force",
+        ],
+        &[
+            (
+                "Get-ChildItem -Force -Recurse -Filter HEAD | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include config,index | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter .git | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include bin,HEAD | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter $f | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include $a,obj | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter *.pack | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem C:\\Users\\me -Force -Recurse -Filter id_rsa | Remove-Item -Force",
+                Rule::Delete,
+            ),
+        ],
     );
 }

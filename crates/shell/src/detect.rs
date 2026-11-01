@@ -473,13 +473,24 @@ fn hidden_files_of(arg: Arg) -> Arg {
     }
 }
 
+/// A pattern a hidden listing is filtered by, and whether it is a `-Filter`
+/// value, which Windows PowerShell hands to the file system's own matching.
+struct Pattern {
+    arg: Arg,
+    filter: bool,
+}
+
 /// The hidden files a `-Force` or `-Hidden` listing with a filter hands on:
-/// each pattern as written, `.git` itself when the pattern can match it
-/// (`*`, `.g*`, `.git`), and, when the listing recurses, every hidden folder
-/// of the folder, which is searched too (`config` finds `.git\config`).
-/// What the pattern keeps that is not hidden is judged as written, so
-/// `*.tmp` stays the files of the folder.
-fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg> {
+/// each pattern as written, and `.git` itself when the pattern can match it
+/// (`*`, `.g*`, `.git`). A `-Filter` is matched by the file system against
+/// the 8.3 short name too, so one that can match `GIT~1` (`g*`, `*~1`,
+/// `?????`) hands on `.git` as well; `-Include` is matched against the long
+/// name only. When the listing recurses, the folders below are searched too,
+/// so `.git` is handed on when a pattern can match one of the names it holds
+/// (`config` finds `.git\config`); a pattern that is not known hands on every
+/// hidden folder. What the pattern keeps that is not hidden is judged as
+/// written, so `*.tmp` stays the files of the folder.
+fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<Arg> {
     let mut found = Vec::new();
     if patterns.is_empty() {
         return found;
@@ -494,18 +505,23 @@ fn hidden_matches(places: &[Arg], patterns: &[&Arg], recurses: bool) -> Vec<Arg>
             continue;
         };
         for pattern in patterns {
-            match pattern {
+            match &pattern.arg {
                 Arg::Known(text) => {
                     found.push(Arg::Known(inside(folder, text)));
-                    if glob::matches(text, ".git", Flavour::Windows, true) {
+                    let names_git = glob::matches(text, ".git", Flavour::Windows, true)
+                        || (pattern.filter && glob::can_match_git_short_name(text));
+                    if names_git || (recurses && glob::can_match_git_entry(text, Flavour::Windows))
+                    {
                         found.push(Arg::Known(inside(folder, ".git")));
                     }
                 }
-                other => found.push((*other).clone()),
+                other => {
+                    found.push(other.clone());
+                    if recurses {
+                        found.push(Arg::Known(inside(folder, ".*")));
+                    }
+                }
             }
-        }
-        if recurses {
-            found.push(Arg::Known(inside(folder, ".*")));
         }
     }
     found
@@ -521,7 +537,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
         return Some(find_targets(&unit.args));
     }
     // What a hidden listing's filter may name, and whether it recurses.
-    let mut patterns: Vec<Arg> = Vec::new();
+    let mut patterns: Vec<Pattern> = Vec::new();
     let mut recurses = false;
     let (mut places, filtered): (Vec<Arg>, bool) = match unit.key()?.as_str() {
         "ls" if unit.shell != Shell::PowerShell => (
@@ -541,8 +557,14 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
             let has_path = !places.is_empty();
             places.extend(params.positional.iter().map(|arg| (*arg).clone()));
             let include = params.values(&["include"]);
-            patterns.extend(params.values(&["filter"]).into_iter().cloned());
-            patterns.extend(include.iter().map(|arg| (*arg).clone()));
+            let pattern = |filter: bool| {
+                move |arg: &Arg| Pattern {
+                    arg: arg.clone(),
+                    filter,
+                }
+            };
+            patterns.extend(params.values(&["filter"]).into_iter().map(pattern(true)));
+            patterns.extend(include.iter().copied().map(pattern(false)));
             let mut filtered = !patterns.is_empty();
             if lists_hidden(unit) {
                 // `-Include a,b` and `-Attributes Directory,Hidden` leave
@@ -558,7 +580,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
                     places.push(Arg::Known(".".to_string()));
                 }
                 if !include.is_empty() {
-                    patterns.extend(params.positional.iter().map(|arg| (*arg).clone()));
+                    patterns.extend(params.positional.iter().copied().map(pattern(false)));
                 }
             } else {
                 // A listing that hands on no hidden file keeps its reading:
@@ -579,7 +601,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     if places.is_empty() {
         places.push(Arg::Known(".".to_string()));
     }
-    let extra = hidden_matches(&places, &patterns.iter().collect::<Vec<_>>(), recurses);
+    let extra = hidden_matches(&places, &patterns, recurses);
     let mut found = found_by(places, filtered);
     found.extend(extra);
     Some(found)

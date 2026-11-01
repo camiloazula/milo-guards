@@ -336,14 +336,22 @@ a path.
   `Get-ChildItem -Force | Rename-Item -NewName x` is a `delete`, as
   `Rename-Item .git x` is. A filter on such a listing is judged against the
   folder: a `-Filter` or `-Include` pattern that can match `.git`
-  (`*`, `.g*`, `.git`) hands on `.git`, and a recursive one (`-Recurse`,
-  `-Depth`) hands on every hidden folder, since `-Filter config` finds
-  `.git\config`; `-Force -Filter *.tmp | Move-Item -Destination trash` stays
-  safe, and `-Exclude` leaves the listing whole. `-Force -Recurse -Include
-  *.tmp` is a `delete` for the same reason, while `-Filter *.log | Remove-Item`
-  and `-Recurse -Include *.tmp | Remove-Item` without `-Force` stay safe.
-  `-Depth` and `-Attributes` take a value, which is never read as the path. A common parameter's value
-  (`-ErrorAction 0`) is never read as the path.
+  (`*`, `.g*`, `.git`) hands on `.git`. A `-Filter` is also matched by the file
+  system against the 8.3 short name, `GIT~1` on the system drive, so `-Filter
+  g*`, `*~1`, `GIT~?` and `?????` hand on `.git` too, read as cmd reads a
+  wildcard (`-Include` is matched against the long name only). A recursive
+  listing (`-Recurse`, `-Depth`) searches the folders below, so
+  `-Filter config` finds `.git\config`: it hands on `.git` when a pattern can
+  match one of the names `.git` holds (`HEAD`, `config`, `index`, a pack, a
+  branch named `main`), and every hidden folder when a pattern is not known.
+  `-Force -Filter *.tmp | Move-Item -Destination trash` stays safe, and
+  `-Exclude` leaves the listing whole. So the everyday clean-ups
+  `-Include bin,obj -Recurse -Force | Remove-Item -Recurse -Force`,
+  `-Recurse -Force -Directory -Filter node_modules` and
+  `-Force -Recurse -Include *.tmp` stay safe, as do `-Filter *.log | Remove-Item`
+  and `-Recurse -Include *.tmp | Remove-Item` without `-Force`.
+  `-Depth` and `-Attributes` take a value, which is never read as the path.
+  A common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
