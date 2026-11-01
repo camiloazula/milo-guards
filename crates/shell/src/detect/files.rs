@@ -154,6 +154,7 @@ impl Checker<'_> {
                 let mut sources = params.values(&["path", "literalpath"]);
                 // `-Destination`, else the last positional after the path:
                 // one that is the only positional and no `-Path` is the path.
+                let destination_unnamed = params.values(&["destination"]).is_empty();
                 let destination = if let Some(named) = params.values(&["destination"]).first() {
                     Some(*named)
                 } else if sources.is_empty() && positional.len() < 2 {
@@ -161,6 +162,19 @@ impl Checker<'_> {
                 } else {
                     positional.pop()
                 };
+                // A splat (`@p`) with no `-Destination` named may bind it:
+                // it is judged as a place too, beside a destination that is
+                // known (`Copy-Item @p src\a`, where `@p` may be the
+                // `-Destination` and `src\a` the `-Path`).
+                if destination_unnamed && splatted(args) {
+                    for splat in
+                        positional.iter().copied().chain(destination).filter(
+                            |arg| matches!(arg, Arg::Unknown(text) if text.starts_with('@')),
+                        )
+                    {
+                        self.write(shell, unit.scope(), splat, "writes to");
+                    }
+                }
                 // Every other positional is a source too (`Move-Item a, b
                 // -Destination d`; a comma list is read as separate ones).
                 sources.extend(positional);

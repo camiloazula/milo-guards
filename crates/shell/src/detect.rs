@@ -406,6 +406,19 @@ impl Checker<'_> {
     }
 }
 
+/// The parameters of a listing stage: `Get-ChildItem` has switch aliases that
+/// a prefix of a value parameter would take the folder for.
+fn read_listing(unit: &Unit) -> Params<'_> {
+    if unit
+        .key()
+        .is_some_and(|key| key.as_str() == "get-childitem")
+    {
+        Params::read_listing(&unit.args)
+    } else {
+        Params::read(&unit.args)
+    }
+}
+
 /// Whether a PowerShell listing is `-Force` or `-Hidden` (`-ah`), or has an
 /// `-Attributes` value that may name hidden files (any it cannot read does),
 /// which hands on the hidden files and folders (`.git`) as well.
@@ -415,7 +428,7 @@ fn lists_hidden(unit: &Unit) -> bool {
     {
         return false;
     }
-    let params = Params::read(&unit.args);
+    let params = read_listing(unit);
     // The rest of a list (`-Attributes Directory,Hidden`) is a positional.
     let list_holds = |arg: &Arg| arg.known().is_none_or(holds_hidden);
     params.named.iter().any(|(name, value)| {
@@ -519,7 +532,7 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
             (plain(&unit.args).into_iter().cloned().collect(), false)
         }
         "get-childitem" | "get-item" => {
-            let params = Params::read(&unit.args);
+            let params = read_listing(unit);
             let mut places: Vec<Arg> = params
                 .values(&["path", "literalpath"])
                 .into_iter()

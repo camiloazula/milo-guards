@@ -707,6 +707,21 @@ pub(crate) struct Params<'a> {
 
 impl<'a> Params<'a> {
     pub(crate) fn read(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[])
+    }
+
+    /// `Get-ChildItem`'s arguments: its switch aliases that a prefix of a
+    /// value parameter would swallow the folder for (`-s`, the alias of
+    /// `-Recurse`, reads as a prefix of `-Scope`; `-ar`, the alias of
+    /// `-ReadOnly`, of `-ArgumentList`; `-Name` and its prefixes are
+    /// `Get-ChildItem`'s switch, not the item's `-Name`) are read as switches.
+    pub(crate) fn read_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &["s", "ar", "n", "na", "nam", "name"])
+    }
+
+    /// Reads `args`, with the parameters named in `switches` (lower case,
+    /// exactly) read as switches though a prefix of a value parameter.
+    fn read_with(args: &'a [Arg], switches: &[&str]) -> Self {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
@@ -735,9 +750,10 @@ impl<'a> Params<'a> {
                     .chain(blocks::SHARED_VALUES.iter().filter(|full| **full != "args"))
             };
             let takes_value = colon
-                || fulls().any(|full| *full == name)
-                || (fulls().any(|full| full.starts_with(&name))
-                    && !SWITCHES.iter().any(|full| full.starts_with(&name)));
+                || (!switches.contains(&name.as_str())
+                    && (fulls().any(|full| *full == name)
+                        || (fulls().any(|full| full.starts_with(&name))
+                            && !SWITCHES.iter().any(|full| full.starts_with(&name)))));
             let value = if takes_value
                 && iter
                     .peek()

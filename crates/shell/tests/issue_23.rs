@@ -858,3 +858,85 @@ fn a_long_hidden_listing_is_read_quickly() {
         assert!(!rules.is_empty(), "a long hidden listing is read as safe");
     }
 }
+
+#[test]
+fn a_splat_may_bind_the_destination_of_copy_item() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Copy-Item src\\a src\\b",
+            "Copy-Item -Path src\\a -Destination src\\b @p",
+        ],
+        &[
+            ("Copy-Item @p", Rule::Overwrite),
+            ("Copy-Item @p -Force", Rule::Overwrite),
+            ("cp @p", Rule::Overwrite),
+            ("Copy-Item @args", Rule::Overwrite),
+            ("Copy-Item @p src\\hosts", Rule::Overwrite),
+            ("Copy-Item @p src\\a", Rule::Overwrite),
+            ("Copy-Item src\\a @p", Rule::Overwrite),
+            (
+                "$p = @{ Path = 'src\\hosts'; Destination = 'C:\\Windows\\System32\\drivers\\etc\\hosts'; Force = $true }; Copy-Item @p",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_switch_aliases_of_a_listing_do_not_take_the_folder() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -s -Filter *.rs | Select-String x",
+            "gci -s src | Clear-Item",
+            "Get-ChildItem -ar src | Rename-Item -NewName x",
+            "Get-ChildItem -Name src | Select-String x",
+            "Start-Process cmd -ar x",
+            "Remove-Item -s x",
+        ],
+        &[
+            ("gci -s HKCU:\\Software | Clear-Item", Rule::SystemSettings),
+            (
+                "gci -s HKCU:\\Software | Rename-Item -NewName x",
+                Rule::SystemSettings,
+            ),
+            (
+                "gci -s HKCU:\\Software -Filter x | Clear-Item",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem -ar HKCU:\\Software | Set-Item -Value 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "Get-ChildItem -s C:\\Windows | Move-Item -Destination old",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -ar C:\\Windows | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -s C:\\Windows -Filter *.log | Remove-Item",
+                Rule::Delete,
+            ),
+            (
+                "dir -s C:\\Windows -Filter *.log | Remove-Item",
+                Rule::Delete,
+            ),
+            (
+                "gci -ar C:\\Windows -Filter *.log | Remove-Item",
+                Rule::Delete,
+            ),
+            ("gci -s .. -Filter *.rs | Remove-Item", Rule::Delete),
+            ("gci -Name C:\\Windows | Remove-Item", Rule::Delete),
+            (
+                "gci -n C:\\Windows -Filter *.log | Remove-Item",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
