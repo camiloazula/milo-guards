@@ -299,8 +299,9 @@ fn on_file_system(dir: &str) -> bool {
 }
 
 /// Whether `arg` is a device wherever it is written from: PowerShell's
-/// `$null` value, or a spelling [`device`] reads. `$null` is a file name in
-/// cmd and a POSIX shell, and so is a quoted `'$null'` in PowerShell.
+/// `$null` value, or a spelling [`device`] reads. In a POSIX shell `$null` is
+/// the variable `null`, only known when it runs; in cmd, and quoted in
+/// PowerShell (`'$null'`), it is a file name.
 fn is_device(arg: &Arg, shell: Shell) -> bool {
     matches!(arg, Arg::Null)
         || arg

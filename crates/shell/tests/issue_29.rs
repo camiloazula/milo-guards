@@ -598,3 +598,41 @@ fn a_powershell_cd_dash_is_a_step_in_location_history() {
         ],
     );
 }
+
+#[test]
+fn a_device_path_of_new_item_is_not_the_item_when_a_name_is_given() {
+    // The item is `Path\Name`, with the `..` in the name applied, so the
+    // device is never the item.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "New-Item -Name out -ItemType Directory",
+            "cd src; New-Item -Name out.txt -Value hi",
+            "New-Item -Path $null -Name x",
+            "New-Item -Path . -Name x -Value y",
+            "New-Item -Path src -Name x.txt -Value y",
+        ],
+        &[
+            (
+                "cd ~\\.ssh; New-Item -Path CON -Name ..\\authorized_keys -Value k -Force",
+                Rule::Overwrite,
+            ),
+            (
+                "cd ~; New-Item -Path NUL -Name ..\\.ssh\\authorized_keys -Value k -Force",
+                Rule::Overwrite,
+            ),
+            (
+                "cd C:\\other; New-Item -Path NUL -Name ..\\..\\Windows\\e.txt -Value x",
+                Rule::Overwrite,
+            ),
+            (
+                "cd C:\\Windows; New-Item -Path NUL -Name x -Value y",
+                Rule::Overwrite,
+            ),
+            // A name only known when it runs is only known when it runs.
+            ("New-Item -Path src -Name $n -Value y", Rule::Overwrite),
+            ("New-Item -Path NUL -Name $n -Value y", Rule::Overwrite),
+        ],
+    );
+}

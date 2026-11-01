@@ -237,6 +237,15 @@ impl Checker<'_> {
                     if targets.is_empty() {
                         targets.push(Arg::Known(".".to_string()));
                     }
+                    // The item is `Path\Name`, with any `..` in the name
+                    // applied, so a device path is never the item itself.
+                    let names = params.values(&["name"]);
+                    if !names.is_empty() {
+                        targets = targets
+                            .iter()
+                            .flat_map(|path| names.iter().map(|name| item_path(path, name)))
+                            .collect();
+                    }
                 }
                 for target in &targets {
                     self.write_as(shell, unit.scope(), target, verb, access);
@@ -277,6 +286,18 @@ impl Checker<'_> {
 
             _ => {}
         }
+    }
+}
+
+/// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
+/// only known when either is.
+fn item_path(path: &Arg, name: &Arg) -> Arg {
+    match (path, name) {
+        (Arg::Known(path), Arg::Known(name)) => {
+            Arg::Known(format!("{}/{name}", path.trim_end_matches(['/', '\\'])))
+        }
+        (Arg::Known(path), Arg::Null) => Arg::Known(path.clone()),
+        (path, name) => Arg::Unknown(format!("{}/{}", path.text(), name.text())),
     }
 }
 

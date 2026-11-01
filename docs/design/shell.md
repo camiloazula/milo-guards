@@ -71,9 +71,9 @@ A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
 overwrite of a file only known when it runs. `$null` is the device only in
-PowerShell, and only as the null value itself: in cmd and a POSIX shell, and
-quoted in PowerShell (`'$null'`), it is a file name like any other, joined to
-where the `cd` went.
+PowerShell, and only as the null value itself. In a POSIX shell it is the variable
+`null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
+is a file name like any other, joined to where the `cd` went.
 
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
@@ -93,7 +93,9 @@ and they are judged as an item of the folder like a delete. So is the
 destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
 A `$null` destination of those is no destination, so the item goes to the
 folder the line is in. So does a `$null` or missing path of `New-Item` (with
-`-Name` the path is optional). `$null` is the null value in any provider.
+`-Name` the path is optional). With `-Name` the item is `Path\Name`, judged as
+that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
+is never the item itself. `$null` is the null value in any provider.
 
 In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
 drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
@@ -269,7 +271,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In cmd and a POSIX shell `$null` is a file name.
+- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).

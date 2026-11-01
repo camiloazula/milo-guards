@@ -16,8 +16,8 @@ pub(crate) enum Arg {
     Input,
     /// PowerShell's `$null`, the null value: handed to a file parameter it is
     /// the null device, or no value at all. Its own form, since no quoted
-    /// literal (`'$null'`, a file named that) is it, and in cmd and a POSIX
-    /// shell it is nothing special.
+    /// literal (`'$null'`, a file named that) is it; in cmd it is a file name,
+    /// and in a POSIX shell the variable `null`.
     Null,
 }
 
