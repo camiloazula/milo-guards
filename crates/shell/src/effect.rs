@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 
 mod git;
 pub(crate) mod operands;
@@ -140,8 +140,13 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
     seen.unknown |= split.kept.sets.iter().any(|name| !harmless(name));
     seen.unknown |= split.kept.loops.iter().any(|name| !plain_loop(name));
     for write in &split.writes {
-        let target = path::within(write.dir.as_ref(), &write.target, write.shell);
-        let place = resolver.place(&target, write.shell, write.hidden);
+        let place = resolver.place(
+            write.dir.as_ref(),
+            &write.target,
+            write.shell,
+            write.hidden,
+            Access::Content,
+        );
         seen.changes |= !matches!(place, Place::Null);
     }
     // The first unit at each pipeline stage, for what a stage is handed.
@@ -304,9 +309,26 @@ fn plain_loop(name: &str) -> bool {
 /// decides. `find` is the one a `-exec` makes. Any other wrapper (`flock`
 /// makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 /// start sessions) is a step the guard does not judge.
-const WRAPPERS: [&str; 15] = [
-    "sudo", "doas", "gsudo", "pkexec", "env", "nice", "ionice", "time", "timeout", "gtimeout",
-    "stdbuf", "xargs", "command", "builtin", "find",
+const WRAPPERS: [&str; 19] = [
+    "sudo",
+    "doas",
+    "gsudo",
+    "pkexec",
+    "env",
+    "nice",
+    "ionice",
+    "time",
+    "timeout",
+    "gtimeout",
+    "stdbuf",
+    "xargs",
+    "command",
+    "builtin",
+    "find",
+    "noglob",
+    "nocorrect",
+    "-",
+    "coproc",
 ];
 
 /// The folders a program may be named in and still be the one the shell
@@ -351,7 +373,13 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
         // Going into a folder is a read of it: `cd ~` leaves the workspace
         // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
-        let place = resolver.place(&at, unit.shell, unit.hidden);
+        let place = resolver.place(
+            unit.dir.as_ref(),
+            &target,
+            unit.shell,
+            unit.hidden,
+            Access::Item,
+        );
         context.land(unit.shell, None, &at, place, Manner::default());
         if matches!(place, Place::Unknown) {
             Kind::Unknown
@@ -615,10 +643,10 @@ fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Kind {
 
 /// Programs that change the machine whatever their flags: the files, the
 /// processes, the system.
-const WRITERS: [&str; 24] = [
+const WRITERS: [&str; 29] = [
     "rm", "rmdir", "unlink", "shred", "mkdir", "touch", "mv", "cp", "ln", "install", "chmod",
     "chown", "chgrp", "tee", "dd", "truncate", "mkfifo", "mktemp", "patch", "kill", "pkill",
-    "killall", "shutdown", "reboot",
+    "killall", "shutdown", "reboot", "rimraf", "del", "del-cli", "premove", "rmrf",
 ];
 
 /// Package managers and build tools: they write whatever subcommand they

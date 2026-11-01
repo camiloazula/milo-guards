@@ -1,8 +1,8 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, sources_and_destination, Checker, COPY_VALUED};
+use super::{downloads_to, or_here, sources_and_destination, Checker, COPY_VALUED};
 use crate::launch::{find_targets, perl_edits};
-use crate::path::Place;
+use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
 use crate::{Rule, Shell};
@@ -20,6 +20,16 @@ impl Checker<'_> {
                 &operands(args, &["-n", "-s", "--iterations", "--size"]),
                 "shreds",
             ),
+            // Delete tools that come as packages (`npx rimraf dist`): the
+            // paths are the operands, as for `rm`. `del --dry-run` only lists.
+            "rimraf" | "del-cli" | "premove" | "rmrf" | "del"
+                if key != "del" || shell == Shell::Posix =>
+            {
+                let dry = matches!(key, "del" | "del-cli") && has_flag(args, None, Some("dry-run"));
+                if !dry {
+                    self.delete(unit, &operands(args, &[]), "deletes");
+                }
+            }
             "find" if shell == Shell::Posix => {
                 if args.iter().any(|arg| arg.known() == Some("-delete")) {
                     let found = find_targets(args);
@@ -187,7 +197,10 @@ impl Checker<'_> {
                 }
                 for (sources, destination) in readings {
                     let leaves = leaves(unit, &sources);
-                    self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
+                    // A `$null` destination is no destination: the item goes
+                    // to the folder the line is in.
+                    let destination = or_here(destination);
+                    self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
             }
 
@@ -264,7 +277,7 @@ impl Checker<'_> {
                     &["-m", "--mode", "-r", "--reference", "-d", "--date", "-t"],
                 ) {
                     if key == "mkdir" {
-                        self.make_folder(shell, unit.scope(), target);
+                        self.make_folder(shell, unit.scope(), target, Access::Content);
                     } else {
                         self.write(shell, unit.scope(), target, "creates");
                     }
@@ -272,7 +285,7 @@ impl Checker<'_> {
             }
             "md" if shell == Shell::Cmd => {
                 for target in plain(args) {
-                    self.make_folder(shell, unit.scope(), target);
+                    self.make_folder(shell, unit.scope(), target, Access::Content);
                 }
             }
             "sed" if has_flag(args, Some('i'), Some("in-place")) => {
@@ -317,24 +330,38 @@ impl Checker<'_> {
                 if targets.is_empty() {
                     targets.extend(params.positional.first().copied().cloned());
                 }
-                // With `-Name`, `-Path` is the folder it is made in.
-                if key == "new-item" {
-                    if let Some(name) = params.values(&["name"]).first() {
-                        targets = if targets.is_empty() {
-                            vec![renamed(&Arg::Known(String::new()), name)]
-                        } else {
-                            targets
-                                .iter()
-                                .map(|folder| renamed(&joined(folder), name))
-                                .collect()
-                        };
-                    }
-                }
                 let verb = if key == "clear-content" {
                     "empties"
                 } else {
                     "writes to"
                 };
+                // `Out-File` and `Tee-Object` need a file system path. `New-Item`
+                // makes a key in the registry, and `Set-Content`, `Add-Content`
+                // and `Clear-Content` take an item of the `Env:`, `Variable:`,
+                // `Function:` and `Alias:` providers (`Set-Content NUL ...`
+                // in `Function:` defines a function named NUL).
+                let access = if matches!(key, "out-file" | "tee-object") {
+                    Access::Content
+                } else {
+                    Access::Item
+                };
+                if key == "new-item" {
+                    // With `-Name` the path is optional: no path, or a `$null`
+                    // one, makes the item in the folder the line is in.
+                    targets = targets.iter().map(or_here).collect();
+                    if targets.is_empty() {
+                        targets.push(Arg::Known(".".to_string()));
+                    }
+                    // The item is `Path\Name`, with any `..` in the name
+                    // applied, so a device path is never the item itself.
+                    let names = params.values(&["name"]);
+                    if !names.is_empty() {
+                        targets = targets
+                            .iter()
+                            .flat_map(|path| names.iter().map(|name| item_path(path, name)))
+                            .collect();
+                    }
+                }
                 let kind = params.values(&["itemtype"]);
                 let kind = kind.first().and_then(|kind| kind.known());
                 // `New-Item -ItemType Directory` makes a folder, not a file.
@@ -342,9 +369,9 @@ impl Checker<'_> {
                     && kind.is_some_and(|kind| kind.to_ascii_lowercase().starts_with('d'));
                 for target in &targets {
                     if folder {
-                        self.make_folder(shell, unit.scope(), target);
+                        self.make_folder(shell, unit.scope(), target, access);
                     } else {
-                        self.write(shell, unit.scope(), target, verb);
+                        self.write_as(shell, unit.scope(), target, verb, access);
                     }
                 }
                 // A link reaches what it names, as `ln` does.
@@ -365,7 +392,7 @@ impl Checker<'_> {
                     targets.extend(params.positional.first().copied());
                 }
                 for target in targets {
-                    self.write(shell, unit.scope(), target, "changes");
+                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
             }
             "dd" => {
@@ -396,12 +423,24 @@ impl Checker<'_> {
     }
 }
 
+/// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
+/// only known when either is.
+fn item_path(path: &Arg, name: &Arg) -> Arg {
+    match (path, name) {
+        (Arg::Known(path), Arg::Known(name)) => {
+            Arg::Known(format!("{}/{name}", path.trim_end_matches(['/', '\\'])))
+        }
+        (Arg::Known(path), Arg::Null) => Arg::Known(path.clone()),
+        (path, name) => Arg::Unknown(format!("{}/{}", path.text(), name.text())),
+    }
+}
+
 impl Checker<'_> {
     /// A link whose target is `source`: a later write through the link lands
     /// on whatever it points at, so a target beyond the workspace is a
     /// finding.
     fn links_to(&mut self, shell: Shell, scope: Scope<'_>, source: &Arg) {
-        let place = self.place(shell, scope, source);
+        let place = self.place(shell, scope, source, Access::Item);
         if !place.harmless() && !matches!(place, Place::Workspace { exact: true }) {
             self.add(
                 Rule::Overwrite,
@@ -433,7 +472,7 @@ impl Checker<'_> {
             let (found, _) = self.expand(unit, source);
             for from in found {
                 let to = renamed(&from, name);
-                self.write(unit.shell, unit.scope(), &to, "writes to");
+                self.write_as(unit.shell, unit.scope(), &to, "writes to", Access::Item);
             }
         }
     }
@@ -537,16 +576,6 @@ fn replace(text: &str, from: &str, to: &str, all: bool) -> String {
         text.replace(from, to)
     } else {
         text.replacen(from, to, 1)
-    }
-}
-
-/// A folder as the text a name is joined to: with a separator at its end.
-fn joined(folder: &Arg) -> Arg {
-    match folder {
-        Arg::Known(text) if !text.is_empty() && !text.ends_with(['/', '\\']) => {
-            Arg::Known(format!("{text}\\"))
-        }
-        other => other.clone(),
     }
 }
 

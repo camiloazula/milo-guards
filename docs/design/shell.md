@@ -62,7 +62,107 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root.
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
+`noglob -- rm` runs a program named `--`), and `coproc`.
+
+**Package runners** come off too, with each runner's own options skipped:
+`npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
+`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
+program the runner names is judged, with a version after the package taken
+off (`npx rimraf@5`). Where the runner names the package apart from the
+program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
+after the options. An option that takes a value is skipped with it, because
+one that is missed would turn its value into the program, so each table is
+the runner's own list and not a guess: npm's is every setting of its config
+definitions that is not a boolean with its shorthands (`npm -C dir`, `npx
+--editor vim`, `npm exec --logs-dir x`), read as npm reads them (an
+unambiguous start of a name is the option, `--ed vim`; `npm exec` takes a
+`true` or `false` after a boolean; `npx` first puts its own `--` before the
+program, so a word it took for a value that npm did not is the program);
+pnpm's is its own string and number settings, `exec`'s `--resume-from`,
+`dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
+the options of `yarn --help` that name a folder, a host, a number or a type;
+bun's is the `--option=<val>` options of `bun --help` that also take the next
+word (not `-c`, `--config` and `--inspect`, whose value only follows `=`);
+bun itself takes the first word that does not start with a dash as its
+subcommand, before any option reads a value (`bun -c rimraf a` runs `rimraf`,
+`bun -F x echo` runs `bunx echo`, `bun --title repl` opens the REPL), so that
+word is read too, and when it is `x`, `run`, `exec`, `repl` or a delete tool
+both readings are judged and the riskier one counts (the two share the wrappers a line may have and at most 32 such forks are made in a line, past which it is unreadable, so a line that forks at every `bun` is too wrapped like any other, not slow); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
+options real uv still takes a value for (`--python-preference`,
+`--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
+(`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
+`--` for themselves, before the program or after it (`npm exec sh -- -c
+'cmd'` runs `sh -c 'cmd'`); `npx` hands it on. `npx -c`, `npm exec -c` and
+`pnpm -c exec` (the option may stand before `exec` too) run a shell command,
+and so does `yarn exec`, whose arguments are a script. npm's `-c` is found as
+npm reads it, among every option before the program, also before `exec`: at
+the end of a bundle (`npx -yc 'cmd'`), spelt `--c`, given its value after `=`
+(`npx -c='cmd'`), or put before the subcommand (`npm -c 'cmd' exec`). A bundle
+of any length is read to its end, never given up on as the program. Each is
+read as a script: in cmd where the line is for Windows (npm and pnpm start the system
+shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
+`yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete tool by its
+name (`yarn run rimraf dist`). `pnpm NAME` runs the script NAME of the project
+and, with none by that name, the program (pnpm: "will execute the command as a
+shell script"), so it is read as `pnpm exec NAME` unless NAME is a command of
+pnpm, its alias, or an npm command it passes on (`pnpm rm lodash` removes a
+dependency): `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+`pnpm recursive exec rm -rf ~` is read as `pnpm -r exec rm -rf ~`; `pnpm sh -c 'rm -rf ~'` and `pnpm find ~ -delete` are read like
+the program, `pnpm rimraf dist` is a delete tool, and an unknown script name
+(`pnpm lint`, `pnpm dev`, `pnpm build`) is safe. `bun run name`
+also starts any program on the path when it is no script (`bun run rm -rf
+x` deletes): a word after `bun run` and its options that is no file (no
+folder in it, no extension) is judged as the program, so `bun run build` is
+safe as an unknown name and `bun run sh -c 'rm -rf ~'` is read like `sh -c`.
+Bare `bun name` runs only scripts and bins of the project, so only a delete
+tool is read there. The delete tools that come as packages (`rimraf`, `del`
+and `del-cli`, `premove`, `rmrf`) delete their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
+are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
+run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
+guard knows. What a runner starts is a program, never a builtin of the shell,
+so `npx cd src` does not move the rest of the line to `src`.
+
+`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print` (also
+in a bundle, `bun -pe 'code'`, or with the code attached, `bun -e'code'`),
+`bun repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
+input (`bun run -`, `deno run -`, `uv run -`) run code the guard does not
+read: `Unknown`, or `RunDownloaded` after a download. The options before the
+subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
+inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
+-c`. `bun run file`, `deno run file` and `bun file` are judged like `node
+file`, so a script the same line writes is not read, also after options (`bun
+--hot run file`) and after deno's `watch`, which is `run --hmr`. So is `uv run
+file.py`, and `uv run --script file`: `uv` runs Python on the file, like
+`python file`. `deno run npm:pkg` runs the package's program like a runner,
+and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
+is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+these runner parts of `bun`, `deno` and `dx` are read as in the other shells
+(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
+`dx rimraf C:\`); what they read of an interpreter (inline code, a script
+from the input, `bun exec`) is not. `deno -v` and `deno --help=full` only
+print. The options of `deno` that take their value
+only after `=` (`--reload`, `--env-file`) do not take the next word.
+
+`coproc` is read as the shells read it. A simple command takes no name, so the
+first word is the program (`coproc NAME cat` runs `NAME`); a group may take
+one (`coproc NAME { … }`). The program is the first word past the name, the
+`{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
+both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
+-rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
+the `rm`. The grammar has no `coproc`, so three forms are not read, and are
+risky:
+
+- A loop, conditional, `case` or function after it, or inside its group
+  (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
+  into pieces whose body hides behind the program `do`: `Unreadable`.
+- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
+  `coproc > out rm -rf ~`): the grammar takes the words after its target for
+  more targets, so the command is not among the arguments: `Unreadable`.
+- A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
+  grammar reads `{rm` as a program of that name: `Unreadable`.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -188,6 +288,55 @@ nested script in a process of its own does not reach the rest of the line;
 `eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
+so it is read as written, before the path is joined to where a `cd` moved:
+`cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
+overwrite of a file only known when it runs. `$null` is the device only in
+PowerShell, and only as the null value itself. In a POSIX shell it is the variable
+`null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
+is a file name like any other, joined to where the `cd` went.
+
+In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
+place is only known when it runs.
+
+In PowerShell a bare `NUL` or `CON` is the device only on the file system.
+After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
+a place only known when it runs (it may be a registry key), it is an ordinary
+item name there, so deleting, moving or changing it (`Remove-Item NUL`,
+`Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
+that name, and a bare name is joined to where the `cd` went like any other.
+Writes by a file system path (`> NUL`, `Out-File NUL`, `Tee-Object NUL`,
+`Invoke-WebRequest -OutFile NUL`) fail in such a provider and stay harmless.
+`Set-Content`, `Add-Content` and `Clear-Content` do not: the `Env:`,
+`Variable:`, `Function:` and `Alias:` providers take content, so
+`cd Function:; Set-Content NUL ...; NUL` defines and runs a function named `NUL`,
+and they are judged as an item of the folder like a delete. So is the
+destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
+A `$null` destination of those is no destination, so the item goes to the
+folder the line is in. So does a `$null` or missing path of `New-Item` (with
+`-Name` the path is optional). With `-Name` the item is `Path\Name`, judged as
+that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
+is never the item itself. `$null` is the null value in any provider.
+
+In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
+drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
+system only when the folder before it is (a disk, or no earlier `cd` at all).
+When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
+so is the rooted path. `~` is the home of the provider the folder is in, and
+only the file system has one: after a `cd` to the registry, `Function:`, a
+provider path, or a place only known when it runs, `cd ~` fails and the line
+stays where it was, so a path starting with `~` is only known when it runs, and
+so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
+first stage of its pipeline gets its path from the pipeline, not from home. A
+drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+name before a colon, other than one letter, is a drive that is not a disk. Once
+the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
+even after the `cd` (a function body, a loop), a single letter in a `cd`
+(`cd X:`) may be that drive and not a disk, so the place is only known when it
+runs. Without one, a letter is a disk.
+After a `cd` to a known place on the file system, the device is read as
+written for every command. cmd and POSIX have no other provider.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
@@ -237,12 +386,21 @@ folder a `cd` moved to.
 - **Off.** `shopt -u dotglob`, `unsetopt globdots`, `set +o globdots` and
   `unset GLOBIGNORE` turn their flag off, but only where the line is sure to run
   them in this shell. They count when the unit is reached directly or through
-  `command`, `builtin`, `time`, `!` or `eval`. Behind `env`, `nohup`,
-  `timeout`, `nice`, `stdbuf`, `sudo` or `find -exec` they run in a process of
-  their own and change nothing. In a pipeline, after `&`, on the right of `&&`
-  or `||`, in an `if`, `case`, loop or function body, they change nothing
-  either: the line may not run them, or runs them in a subshell, so the rest
-  stays judged with the option on.
+  `command`, `builtin`, `time`, `!` or `eval`, except that zsh's `command` does
+  not count for zsh's flag (it looks up programs only) and `time` counts only
+  in front (later it is the program of that name). zsh's `noglob`, `nocorrect` and
+  `-` count for zsh's flag only: in bash and sh they are not found and the
+  builtin after them never runs, so `shopt -s dotglob; noglob shopt -u dotglob;
+  rm -rf *git` is still risky and `setopt globdots; noglob unsetopt globdots;
+  rm -rf *git` is not. `nocorrect` is a reserved word in zsh, so like `time` it
+  counts only in front, alone or after a leading `time` or `nocorrect`; after
+  `noglob`, `-` or `builtin` zsh looks it up as a command and fails, so
+  `setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git` is still
+  risky. Behind `env`, `nohup`, `timeout`, `nice`, `stdbuf`,
+  `sudo` or `find -exec` they run in a process of their own and change nothing.
+  In a pipeline, after `&`, on the right of `&&` or `||`, in an `if`, `case`,
+  loop or function body, they change nothing either: the line may not run them,
+  or runs them in a subshell, so the rest stays judged with the option on.
 - **Where it reaches.** It stays on for the rest of the line. A subshell,
   `$(…)`, and a script in a process of its own (`bash -c '…'`) give it back as
   it was: an option set inside `bash -c 'shopt -s dotglob'` does not reach the
@@ -353,9 +511,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device. In a longer PowerShell word `$null` is
-  the empty string: `$null\Windows` is `\Windows`, a folder at the top of the
-  disk.
+- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).
@@ -670,7 +826,7 @@ A line is never safe because the guard gave up on it. These come back risky:
 
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter: `python3 -c`, `node -e`, a script piped into
+- Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
   one.
 - A .NET call that deletes, writes or starts a program.
 - A database statement known only when it runs: `psql -c "$Q"`.
@@ -1122,10 +1278,11 @@ inside the workspace.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
-`-exec` makes), and only with options the guard knows: any other option
-makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
-`sudo -s` and `-i` start a shell, `env -P` changes where programs are found, `env -C` the folder they run in).
+`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
+`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with
+options the guard knows: any other option makes the line `Unknown`, since it
+could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
+`env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. A shell started with a

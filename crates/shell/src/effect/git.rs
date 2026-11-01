@@ -413,7 +413,7 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
                 &text[..text.find(crate::posix::OPAQUE).unwrap_or(text.len())],
                 true,
             ),
-            Arg::Unknown(_) | Arg::Input => {
+            Arg::Unknown(_) | Arg::Input | Arg::Null => {
                 unknown = true;
                 continue;
             }

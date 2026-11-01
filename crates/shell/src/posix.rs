@@ -298,6 +298,35 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
 
+/// Whether `command`, a `coproc`, has a redirect in front of the command it
+/// starts (`coproc { 2>/dev/null rm -rf ~; }`, `coproc > out rm -rf ~`). The
+/// grammar takes the words after the redirect's target for more targets, so
+/// the command is not among the arguments and cannot be read.
+fn words_lost_after_redirect(command: Node<'_>) -> bool {
+    let Some(parent) = command
+        .parent()
+        .filter(|parent| parent.kind() == "redirected_statement")
+        .filter(|parent| {
+            parent
+                .child_by_field_name("body")
+                .is_some_and(|body| body.id() == command.id())
+        })
+    else {
+        return false;
+    };
+    let mut cursor = parent.walk();
+    let lost = parent
+        .children_by_field_name("redirect", &mut cursor)
+        .any(|redirect| {
+            let mut cursor = redirect.walk();
+            redirect
+                .children_by_field_name("destination", &mut cursor)
+                .count()
+                > 1
+        });
+    lost
+}
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
@@ -628,6 +657,13 @@ impl Walker<'_> {
                 .is_some_and(|name| self.split.defines_function(name))
         {
             self.split.hide_functions();
+        }
+        if program.known() == Some("coproc") && words_lost_after_redirect(node) {
+            self.split.problem(
+                Rule::Unreadable,
+                "starts a command after a redirect that cannot be read",
+                Some(unit::text(&node, self.source)),
+            );
         }
         let outer = self.split.scope_hidden(prefixed);
         launch::add(
@@ -981,7 +1017,7 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(&text);
                         }
-                        Arg::Unknown(_) | Arg::Input
+                        Arg::Unknown(_) | Arg::Input | Arg::Null
                             if matches!(
                                 part.kind(),
                                 "simple_expansion" | "expansion" | "command_substitution"
@@ -990,7 +1026,9 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(OPAQUE);
                         }
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 if partial {
@@ -1042,7 +1080,7 @@ impl Walker<'_> {
                         value.push_str(&text);
                         template.push_str(&text);
                     }
-                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
                         template.push_str(OPAQUE);
                     }

@@ -7,7 +7,7 @@
 //! the one unit that changes the option, or a shell started with it on;
 //! [`crate::unit::Split`] carries it to the units after.
 
-use crate::unit::Arg;
+use crate::unit::{Arg, Flag};
 
 /// What a unit does to the option. A shell has two of them, bash's and zsh's,
 /// and an off switch of one shell is an error in the other, so each is kept
@@ -60,16 +60,34 @@ pub(crate) const GLOBIGNORE: &str = "GLOBIGNORE";
 /// The variable a bash reads its `shopt` options from when it starts.
 const BASHOPTS: &str = "BASHOPTS";
 
-/// The wrappers a unit may sit behind and still change this shell's options:
-/// each runs the builtin itself. Any other (`env`, `nohup`, `timeout`,
-/// `find -exec`) starts a process of its own.
-const IN_SHELL: [&str; 3] = ["command", "builtin", "time"];
+/// zsh's precommand modifiers, which run the builtin after them in zsh. In
+/// bash and sh they are not words the shell knows, so nothing runs behind
+/// them.
+const ZSH_MODIFIERS: [&str; 3] = ["noglob", "nocorrect", "-"];
 
-/// Whether a unit behind `wrappers` runs in this shell.
-pub(crate) fn in_shell(wrappers: &[String]) -> bool {
+/// Whether a unit behind `wrappers` runs in the shell whose `flag` it
+/// changes. `time` is the keyword, which runs the line in this shell, only as
+/// the first word; anywhere else it is the program of that name. zsh's
+/// `command` looks up programs only, so with it among the wrappers the builtin
+/// after it never runs in zsh. `nocorrect` is a reserved word there, so like
+/// `time` it counts only in front: first, or after a leading `time` or
+/// `nocorrect`. After any other wrapper zsh looks it up as a command and fails.
+pub(crate) fn in_shell(wrappers: &[String], flag: Flag) -> bool {
     wrappers
         .iter()
-        .all(|wrapper| IN_SHELL.contains(&wrapper.as_str()))
+        .enumerate()
+        .all(|(at, wrapper)| match wrapper.as_str() {
+            "time" => at == 0,
+            "command" => !matches!(flag, Flag::Zsh),
+            "builtin" => true,
+            "nocorrect" => {
+                matches!(flag, Flag::Zsh)
+                    && wrappers[..at]
+                        .iter()
+                        .all(|before| matches!(before.as_str(), "time" | "nocorrect"))
+            }
+            modifier => matches!(flag, Flag::Zsh) && ZSH_MODIFIERS.contains(&modifier),
+        })
 }
 
 /// Whether giving the variable `name` the value `value` switches the option
@@ -93,7 +111,7 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
         Arg::Unknown(text) | Arg::Template { source: text, .. } => {
             text.trim_start_matches(['"', '\''])
         }
-        Arg::Input => return false,
+        Arg::Input | Arg::Null => return false,
     };
     let Some((name, value)) = text.split_once('=') else {
         return false;
@@ -461,10 +479,92 @@ mod tests {
         let wrappers = |names: &[&str]| -> Vec<String> {
             names.iter().map(|name| (*name).to_string()).collect()
         };
-        assert!(in_shell(&[]));
-        assert!(in_shell(&wrappers(&["command", "builtin", "time"])));
-        for name in ["env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo"] {
-            assert!(!in_shell(&wrappers(&[name])), "{name}");
+        for flag in [Flag::Bash, Flag::Zsh] {
+            assert!(in_shell(&[], flag));
+            assert!(in_shell(&wrappers(&["time", "builtin"]), flag));
+            assert!(in_shell(&wrappers(&["builtin"]), flag));
+            assert!(in_shell(&wrappers(&["time"]), flag));
+            // Only the first word is the keyword; later, `time` is a program.
+            for later in [["builtin", "time"], ["command", "time"]] {
+                assert!(!in_shell(&wrappers(&later), flag), "{later:?}");
+            }
+            for name in [
+                "env", "nohup", "timeout", "nice", "stdbuf", "find", "sudo", "coproc",
+            ] {
+                assert!(!in_shell(&wrappers(&[name]), flag), "{name}");
+            }
         }
+    }
+
+    /// `noglob`, `nocorrect` and `-` are zsh's: in bash the command after them
+    /// is not found, so the builtin never runs.
+    #[test]
+    fn zsh_modifiers_run_the_builtin_in_zsh_only() {
+        for name in ["noglob", "nocorrect", "-"] {
+            let wrappers = vec![name.to_string()];
+            assert!(in_shell(&wrappers, Flag::Zsh), "{name}");
+            assert!(!in_shell(&wrappers, Flag::Bash), "{name}");
+            let mixed = vec!["command".to_string(), name.to_string()];
+            assert!(!in_shell(&mixed, Flag::Zsh), "command {name}");
+            assert!(!in_shell(&mixed, Flag::Bash), "command {name}");
+            let before = vec![name.to_string(), "command".to_string()];
+            assert!(!in_shell(&before, Flag::Zsh), "{name} command");
+            let timed = vec!["time".to_string(), name.to_string()];
+            assert!(in_shell(&timed, Flag::Zsh), "time {name}");
+            // `nocorrect` is a reserved word, found only in front; the
+            // other two are looked up as commands and work after `builtin`.
+            let built = vec!["builtin".to_string(), name.to_string()];
+            assert_eq!(
+                in_shell(&built, Flag::Zsh),
+                name != "nocorrect",
+                "builtin {name}"
+            );
+            let after = vec![name.to_string(), "time".to_string()];
+            assert!(!in_shell(&after, Flag::Zsh), "{name} time");
+        }
+    }
+
+    /// `nocorrect` counts only in front: alone, or after a leading `time` or
+    /// `nocorrect`. After `noglob`, `-` or `builtin` zsh fails to find it.
+    #[test]
+    fn nocorrect_counts_only_in_front() {
+        let wrappers = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        };
+        for ok in [
+            &["nocorrect"][..],
+            &["time", "nocorrect"],
+            &["nocorrect", "nocorrect"],
+            &["time", "nocorrect", "nocorrect"],
+        ] {
+            assert!(in_shell(&wrappers(ok), Flag::Zsh), "{ok:?}");
+            assert!(!in_shell(&wrappers(ok), Flag::Bash), "{ok:?}");
+        }
+        for bad in [
+            &["noglob", "nocorrect"][..],
+            &["-", "nocorrect"],
+            &["builtin", "nocorrect"],
+            &["builtin", "-", "nocorrect"],
+            &["time", "builtin", "nocorrect"],
+        ] {
+            assert!(!in_shell(&wrappers(bad), Flag::Zsh), "{bad:?}");
+        }
+        // `noglob` and `-` still count behind `builtin`, `noglob` or `-`.
+        for ok in [
+            &["builtin", "noglob"][..],
+            &["noglob", "-"],
+            &["-", "noglob"],
+            &["builtin", "-"],
+        ] {
+            assert!(in_shell(&wrappers(ok), Flag::Zsh), "{ok:?}");
+        }
+    }
+
+    /// zsh's `command` looks up programs only; bash's runs the builtin.
+    #[test]
+    fn command_runs_the_builtin_in_bash_only() {
+        let wrappers = vec!["command".to_string()];
+        assert!(in_shell(&wrappers, Flag::Bash));
+        assert!(!in_shell(&wrappers, Flag::Zsh));
     }
 }
