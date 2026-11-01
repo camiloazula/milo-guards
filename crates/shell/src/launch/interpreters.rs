@@ -274,12 +274,11 @@ fn perl_substitution(statement: &str) -> bool {
 }
 
 /// The options of `bun` before its subcommand that take the next argument:
-/// every one `bun --help` lists as `--option=<val>`, since bun also takes the
-/// value as the next word. `--inspect` is left out, its value only follows `=`.
-pub(crate) const BUN_VALUES: [&str; 46] = [
+/// the ones `bun --help` lists as `--option=<val>` that bun also gives the
+/// next word as their value. `-c` and `--config` and `--inspect` are left
+/// out, their value only follows `=` (`bun -c rimraf a` runs `rimraf`).
+pub(crate) const BUN_VALUES: [&str; 44] = [
     "--cwd",
-    "-c",
-    "--config",
     "-r",
     "--preload",
     "--require",
@@ -375,7 +374,8 @@ pub(crate) fn after_run<'a>(key: &str, args: &'a [Arg]) -> &'a [Arg] {
 /// Whether a short word before bun's subcommand carries inline code: `-e`
 /// or `-p` with the code next or attached (`-e'code'`), also in a bundle of
 /// short options (`-pe`, `-bp`). A short option that takes a value ends the
-/// bundle: the rest of the word is its value (`-dNODE_ENV=x`).
+/// bundle: the rest of the word is its value (`-dNODE_ENV=x`, and `-ce` takes
+/// `e` as the config file, `-c` taking its value only after `=`).
 fn bun_inline(text: &str) -> bool {
     let Some(bundle) = text
         .strip_prefix('-')
@@ -399,6 +399,22 @@ fn bun_inline(text: &str) -> bool {
 /// (`bun run -`); `bun x` is a package runner; `bun exec` runs its
 /// arguments as a shell script; a file or a subcommand is its own business.
 pub(super) fn bun(unit: &Unit) -> Launch {
+    only_runs(unit, bun_launch(unit))
+}
+
+/// A line for cmd reads the parts of `bun` and `deno` that start a program
+/// (a package runner, a delete tool, an npm specifier, `bun run name`), and
+/// not what it reads of an interpreter or a POSIX shell, which cmd lines do
+/// not get.
+fn only_runs(unit: &Unit, launch: Launch) -> Launch {
+    match launch {
+        Launch::Replace(_) => launch,
+        _ if unit.shell != Shell::Cmd => launch,
+        _ => Launch::Itself,
+    }
+}
+
+fn bun_launch(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let first = after_options(args, &BUN_VALUES);
     let before = args.get(..first.unwrap_or(args.len())).unwrap_or_default();
@@ -430,24 +446,30 @@ pub(super) fn bun(unit: &Unit) -> Launch {
         }
         // `bun rimraf dir` runs the project's own delete tool by its name.
         name if DELETERS.contains(&name) => Launch::Replace(Box::new(running(unit, "bun", first))),
+        // `bun run name` runs a script of the project, a bin of it, or else
+        // any program on the path (`bun run rm -rf x` deletes): a word that
+        // is no file is judged as the program.
         "run" => match args
             .get(first + 1..)
             .and_then(|rest| after_options(rest, &BUN_VALUES))
             .map(|at| first + 1 + at)
         {
             Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
-            Some(at)
-                if args[at]
-                    .known()
-                    .is_some_and(|name| DELETERS.contains(&name)) =>
-            {
-                Launch::Replace(Box::new(running(unit, "bun", at)))
-            }
+            Some(at) if !is_file(&args[at]) => Launch::Replace(Box::new(running(unit, "bun", at))),
             _ => Launch::Itself,
         },
         _ if is_stdin(word) => Launch::Reads(Reads::Interpreter),
         _ => Launch::Itself,
     }
+}
+
+/// Whether the word `bun run` is given names a file: it has a folder in it or
+/// an extension (`./build.ts`, `src/main`, `build.ts`). A word only known when
+/// the line runs is not known to be one.
+fn is_file(arg: &Arg) -> bool {
+    arg.known().is_some_and(|text| {
+        text.contains(['/', '\\']) || std::path::Path::new(text).extension().is_some()
+    })
 }
 
 /// `deno`: `deno eval` and `deno repl` run code given inline or read from
@@ -457,6 +479,10 @@ pub(super) fn bun(unit: &Unit) -> Launch {
 /// default is `run`: `deno npm:pkg`); `deno x` is a package runner; a file or
 /// another subcommand is its own business.
 pub(super) fn deno(unit: &Unit) -> Launch {
+    only_runs(unit, deno_launch(unit))
+}
+
+fn deno_launch(unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
     let Some(first) = after_options(args, &DENO_VALUES) else {
         let prints = args.iter().filter_map(Arg::known).any(|text| {

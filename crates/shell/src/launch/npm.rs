@@ -291,9 +291,14 @@ const NPX_SWITCHES: [&str; 10] = [
     "h",
 ];
 
-/// The most steps one word is read for: a shorthand stands for words that
-/// are not shorthands, so a longer chain is not npm's.
-const MAX_STEPS: usize = 64;
+/// The most steps one word is read for. A shorthand stands for words that
+/// are not shorthands, so a word of `n` letters (`-yyyy`) is read as at most
+/// two words per letter, one more for a value after `=`, and one to start
+/// with: the bound grows with the word, so no word npm can read runs out of
+/// steps.
+fn max_steps(word: &str) -> usize {
+    4 * word.len() + 8
+}
 
 /// The settings of npm's config (a start of a name that no other name starts
 /// with stands for it).
@@ -370,7 +375,7 @@ fn takes_word(key: &str, word: &str) -> bool {
 /// How `npm` (and `npm exec`) read one word that starts with a dash, given
 /// the word after it.
 pub(super) fn npm_word(text: &str, next: Option<&Arg>) -> Word {
-    read_npm(text, next, false)
+    read_npm(text, next, false).word
 }
 
 /// How `npm exec` reads one word `npx` hands it: the same, after the words
@@ -379,15 +384,60 @@ pub(super) fn npm_word(text: &str, next: Option<&Arg>) -> Word {
 /// `--node-arg x`, `--always-spawn`, `--ignore-existing` and
 /// `--shell-auto-fallback`).
 fn npx_lead_word(text: &str, next: Option<&Arg>) -> Word {
-    read_npm(text, next, true)
+    read_npm(text, next, true).word
 }
 
-fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Word {
+/// What reading one word that starts with a dash came to.
+struct Read {
+    word: Word,
+    /// The script, when the word is (or stands for) `--call`: `-c`, `-yc`,
+    /// `--c`, `--call=x`, `-c=x`.
+    call: Option<Arg>,
+}
+
+/// The script `npm exec` and `npx` run for `--call` (`-c`) among `words`, the
+/// options before the program, read as [`read_npm`] reads each one. The
+/// option may be anywhere in them, also before `exec` (`npm -c 'x' exec`),
+/// at the end of a bundle (`-yc`), spelt `--c`, or given its value after `=`.
+pub(super) fn call_script(words: &[Arg], npx: bool) -> Option<Arg> {
+    let mut at = 0;
+    while let Some(arg) = words.get(at) {
+        let text = arg.known().unwrap_or_default();
+        if text == "--" {
+            return None;
+        }
+        if text.len() < 2 || !text.starts_with('-') {
+            at += 1;
+            continue;
+        }
+        let read = read_npm(text, words.get(at + 1), npx);
+        if read.call.is_some() {
+            return read.call;
+        }
+        at += if matches!(read.word, Word::Value) {
+            2
+        } else {
+            1
+        };
+    }
+    None
+}
+
+fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Read {
     let mut queue: VecDeque<String> = VecDeque::from([text.to_string()]);
     let mut used = false;
-    for _ in 0..MAX_STEPS {
+    let mut call = None;
+    let done = |used: bool, call| Read {
+        word: if used { Word::Value } else { Word::Flag },
+        call,
+    };
+    let operand = |call| Read {
+        word: Word::Operand,
+        call,
+    };
+    for _ in 0..max_steps(text) {
         let Some(word) = queue.pop_front() else {
-            return if used { Word::Value } else { Word::Flag };
+            return done(used, call);
         };
         let (option, attached) = match word.split_once('=') {
             Some((option, value)) => (option.to_string(), Some(value.to_string())),
@@ -395,7 +445,7 @@ fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Word {
         };
         // A word that is no option: a value nothing took.
         if option.len() < 2 || !option.starts_with('-') {
-            return Word::Operand;
+            return operand(call);
         }
         let mut name = option.trim_start_matches('-');
         if npx {
@@ -443,18 +493,29 @@ fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Word {
             None => next.map(|arg| arg.text().to_string()),
         };
         let Some(after) = after else { continue };
+        let calls = key == Some("call") && !boolean;
         let takes = if boolean {
             after == "true"
                 || after == "false"
                 || key.is_some_and(|key| !negated && takes_word(key, &after))
         } else {
-            !looks_like_option(&after)
+            // A value written after `=` is the value, whatever it looks like.
+            calls && attached.is_some() || !looks_like_option(&after)
         };
-        if takes && queue.pop_front().is_none() {
-            used = true;
+        if takes {
+            let value = queue.pop_front();
+            if calls {
+                call = Some(value.as_ref().map_or_else(
+                    || next.cloned().unwrap_or(Arg::Known(String::new())),
+                    |value| Arg::Known(value.clone()),
+                ));
+            }
+            if value.is_none() {
+                used = true;
+            }
         }
     }
-    Word::Operand
+    operand(call)
 }
 
 /// Where the program of `npx` starts in `args`: the first word `npm exec`
@@ -470,7 +531,7 @@ pub(super) fn npx_start(args: &[Arg]) -> Option<usize> {
 fn npx_word(text: &str, next: Option<&Arg>) -> Word {
     let mut queue: VecDeque<String> = VecDeque::from([text.to_string()]);
     let mut used = false;
-    for _ in 0..MAX_STEPS {
+    for _ in 0..max_steps(text) {
         let Some(word) = queue.pop_front() else {
             return if used { Word::Value } else { Word::Flag };
         };

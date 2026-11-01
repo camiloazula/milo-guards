@@ -81,21 +81,31 @@ program, so a word it took for a value that npm did not is the program);
 pnpm's is its own string and number settings, `exec`'s `--resume-from`,
 `dlx`'s `--allow-build` and npm's settings, which it reads too; yarn's is
 the options of `yarn --help` that name a folder, a host, a number or a type;
-bun's is every `--option=<val>` of `bun --help`; deno's is its option
-definitions that take one value; uv's is `uv run --help` and the hidden
+bun's is the `--option=<val>` options of `bun --help` that also take the next
+word (not `-c`, `--config` and `--inspect`, whose value only follows `=`:
+`bun -c rimraf a` runs `rimraf`); deno's is its option definitions that take one value; uv's is `uv run --help` and the hidden
 options real uv still takes a value for (`--python-preference`,
 `--python-fetch`, `--max-recursion-depth`); pipx's is `pipx run --help`
 (`--fetch-missing-python` is a flag). `npm exec` and `npm x` take the first
 `--` for themselves, before the program or after it (`npm exec sh -- -c
 'cmd'` runs `sh -c 'cmd'`); `npx` hands it on. `npx -c`, `npm exec -c` and
 `pnpm -c exec` (the option may stand before `exec` too) run a shell command,
-and so does `yarn exec`, whose arguments are a script. Each is read as a
-script: in cmd where the line is for Windows (npm and pnpm start the system
+and so does `yarn exec`, whose arguments are a script. npm's `-c` is found as
+npm reads it, among every option before the program, also before `exec`: at
+the end of a bundle (`npx -yc 'cmd'`), spelt `--c`, given its value after `=`
+(`npx -c='cmd'`), or put before the subcommand (`npm -c 'cmd' exec`). A bundle
+of any length is read to its end, never given up on as the program. Each is
+read as a script: in cmd where the line is for Windows (npm and pnpm start the system
 shell there, and PowerShell's own grammar does not apply), in POSIX otherwise.
-`pnpm`, `yarn` and `bun` (also `bun run`) start a delete tool by its name
-(`pnpm rimraf dist`, `bun run rimraf dist`). The delete tools that come as
-packages (`rimraf`, `del` and `del-cli`, `premove`, `rmrf`) delete their
-operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
+`pnpm`, `yarn` (also `yarn run`) and `bun` (also `bun run`) start a delete
+tool by its name (`pnpm rimraf dist`, `yarn run rimraf dist`). `bun run name`
+also starts any program on the path when it is no script (`bun run rm -rf
+x` deletes): a word after `bun run` and its options that is no file (no
+folder in it, no extension) is judged as the program, so `bun run build` is
+safe as an unknown name and `bun run sh -c 'rm -rf ~'` is read like `sh -c`.
+Bare `bun name` runs only scripts and bins of the project, so only a delete
+tool is read there. The delete tools that come as packages (`rimraf`, `del`
+and `del-cli`, `premove`, `rmrf`) delete their operands, judged as `rm` judges them: `bunx rimraf /` and `pnpm dlx rimraf ~`
 are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
 run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
 guard knows. What a runner starts is a program, never a builtin of the shell,
@@ -114,8 +124,12 @@ file`, so a script the same line writes is not read, also after options (`bun
 file.py`, and `uv run --script file`: `uv` runs Python on the file, like
 `python file`. `deno run npm:pkg` runs the package's program like a runner,
 and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
-is `run`. `deno x` and `dx` are package runners, like `bun x`. `deno -v` and
-`deno --help=full` only print. The options of `deno` that take their value
+is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+these runner parts of `bun`, `deno` and `dx` are read as in the other shells
+(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
+`dx rimraf C:\`); what they read of an interpreter (inline code, a script
+from the input, `bun exec`) is not. `deno -v` and `deno --help=full` only
+print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
 `coproc` is read as the shells read it. A simple command takes no name, so the

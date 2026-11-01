@@ -487,9 +487,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         // Package runners start the program they name.
         "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => runner(key, unit),
-        "dx" if posix => runner(key, unit),
-        "bun" if posix => bun(unit),
-        "deno" if posix => deno(unit),
+        "dx" => runner(key, unit),
+        "bun" => bun(unit),
+        "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
         key if posix && (INTERPRETERS.contains(&key) || key.starts_with("python3.")) => {
             interpreter(key, args)

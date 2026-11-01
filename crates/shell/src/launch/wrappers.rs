@@ -3,8 +3,8 @@
 //! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
 use super::interpreters::{reads_input, DENO_VALUES};
-use super::npm::{npm_word, npx_start, NPM_VALUES};
-use super::{after_options, after_options_by, is_stdin, join, option_value, Launch, Word};
+use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
+use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
@@ -595,7 +595,20 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
             Opts::List(YARN_VALUES),
         )
-        .or_else(|| direct(args, Opts::List(YARN_VALUES))),
+        .or_else(|| direct(args, Opts::List(YARN_VALUES)))
+        // `yarn rimraf` is short for `yarn run rimraf`.
+        .or_else(|| {
+            locate(
+                args,
+                &[(Opts::List(YARN_VALUES), &["run"])],
+                Opts::List(YARN_VALUES),
+            )
+            .filter(|(_, program)| {
+                program
+                    .and_then(|at| args[at].known())
+                    .is_some_and(|name| DELETERS.contains(&name))
+            })
+        }),
         "bun" => locate(
             args,
             &[(Opts::List(&[]), &["x"])],
@@ -636,8 +649,16 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
         Shell::Cmd
     };
     match key {
+        // `-c` (`--call`) runs a script in place of a program, wherever the
+        // option stands among npm's: in a bundle (`-yc`), spelt `--c`, with
+        // its value after `=`, and for npm also before `exec`.
         "npx" | "npm" => {
-            if let Some(script) = option_value(own, "-c", "--call") {
+            let options = if key == "npm" {
+                &args[..program.unwrap_or(args.len())]
+            } else {
+                own
+            };
+            if let Some(script) = call_script(options, key == "npx") {
                 return Launch::Script(shell, script);
             }
         }

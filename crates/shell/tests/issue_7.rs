@@ -1052,3 +1052,275 @@ fn what_a_package_runner_runs_is_a_program_and_never_moves_the_shell() {
         ],
     );
 }
+
+#[test]
+fn npm_runs_the_call_script_however_the_option_is_spelt_or_placed() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "npx -yc 'echo hi'",
+            "npm exec -yc 'echo hi'",
+            "npm -c 'echo hi' exec",
+            "npx --c 'echo hi'",
+            // `-c` after the program is the program's own.
+            "npx prettier -c .",
+            "npm exec prettier -- -c .",
+            "npx -y prettier -c .",
+        ],
+        &[
+            // A short bundle that ends in `c`.
+            ("npx -yc 'rm -rf ~'", Rule::Delete),
+            ("npx -qc 'rm -rf ~'", Rule::Delete),
+            ("npx -Dc 'rm -rf ~'", Rule::Delete),
+            ("npx -yyc 'rm -rf ~'", Rule::Delete),
+            ("npm exec -yc 'rm -rf ~'", Rule::Delete),
+            ("npm x -yc 'rm -rf ~'", Rule::Delete),
+            // The value after `=`.
+            ("npx -c='rm -rf ~'", Rule::Delete),
+            ("npx -yc='rm -rf ~'", Rule::Delete),
+            ("npx --call='rm -rf ~'", Rule::Delete),
+            ("npm exec -c='rm -rf ~'", Rule::Delete),
+            // The double-dash shorthand.
+            ("npx --c 'rm -rf ~'", Rule::Delete),
+            ("npm exec --c 'rm -rf ~'", Rule::Delete),
+            // `--cal` is `--call --all --long` to nopt, which reads single
+            // letters run together before an abbreviation.
+            // Before the subcommand.
+            ("npm -c 'rm -rf ~' exec", Rule::Delete),
+            ("npm --call 'rm -rf ~' x", Rule::Delete),
+            ("npm -yc 'rm -rf ~' exec", Rule::Delete),
+            ("npm --yes --call 'rm -rf ~' x", Rule::Delete),
+            ("npm --call='rm -rf ~' exe", Rule::Delete),
+            // A script only known when it runs.
+            ("npx -yc \"$SCRIPT\"", Rule::Unknown),
+            ("npm -c \"$SCRIPT\" exec", Rule::Unknown),
+            // Still a script after other options, and the program is not run.
+            ("npx -y -c 'rm -rf ~' prettier", Rule::Delete),
+            ("sudo npx -yc 'rm -rf ~'", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn npm_runs_the_call_script_in_cmd_on_windows_whichever_way_it_is_spelt() {
+    for shell in [Shell::PowerShell, Shell::Cmd] {
+        check(
+            shell,
+            &windows(),
+            &["npx -yc \"echo hi\"", "npm -c \"echo hi\" exec"],
+            &[
+                ("npx -yc \"rd /s /q C:\\Users\\me\"", Rule::Delete),
+                ("npx --c \"rd /s /q C:\\Users\\me\"", Rule::Delete),
+                ("npm exec -yc \"rd /s /q C:\\Users\\me\"", Rule::Delete),
+                ("npm -c \"rd /s /q C:\\Users\\me\" exec", Rule::Delete),
+                (
+                    "npm --yes --call \"rd /s /q C:\\Users\\me\" x",
+                    Rule::Delete,
+                ),
+            ],
+        );
+    }
+}
+
+#[test]
+fn npm_reads_the_call_script_given_after_an_equals_sign_in_cmd() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("npx -c=\"rd /s /q C:\\Users\\me\"", Rule::Delete),
+            ("npx -yc=\"rd /s /q C:\\Users\\me\"", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_run_of_short_options_in_front_of_the_program_is_read_to_its_end() {
+    // A bundle of `n` letters takes `n` steps: the limit grows with it.
+    for letters in [63, 64, 65, 70, 200, 1000] {
+        let bundle = "y".repeat(letters);
+        let risky: Vec<(String, Rule)> = [
+            format!("npx -{bundle} rimraf ~"),
+            format!("npm exec -{bundle} rimraf ~"),
+            format!("npm x -{bundle} rimraf ~"),
+            format!("npx -{bundle}c 'rm -rf ~'"),
+            format!("npm -{bundle}c 'rm -rf ~' exec"),
+        ]
+        .into_iter()
+        .map(|line| (line, Rule::Delete))
+        .collect();
+        check(
+            Shell::Posix,
+            &posix(),
+            &[
+                &format!("npx -{bundle} prettier --check ."),
+                &format!("npm exec -{bundle} prettier --check ."),
+            ],
+            &as_rows(&risky),
+        );
+    }
+}
+
+#[test]
+fn bun_takes_config_only_after_an_equals_sign() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "bun -c=bunfig.toml run build.ts",
+            "bun --config=bunfig.toml run build.ts",
+            "bun -c=bunfig.toml build.ts",
+            "bun -c run build.ts",
+            "bun --config run build.ts",
+        ],
+        &[
+            // The next word is not the value: it is the subcommand.
+            ("bun -c rimraf ~", Rule::Delete),
+            ("bun --config rimraf ~", Rule::Delete),
+            ("bun -c x rimraf ~", Rule::Delete),
+            ("bun --config x rimraf ~", Rule::Delete),
+            ("bun -c run rimraf ~", Rule::Delete),
+            ("bun --config run rm -rf ~", Rule::Delete),
+            ("bun -c -e 'x'", Rule::Unknown),
+            ("bun --config -e 'x'", Rule::Unknown),
+            ("bun -c=x -e 'x'", Rule::Unknown),
+            // `c` still ends a bundle: `-ce` takes `e` as the config value.
+            ("bun -ce 'x' rimraf ~", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &["bun -ce 'x' build.ts"],
+        &[("bun -ec 'x'", Rule::Unknown)],
+    );
+}
+
+#[test]
+fn bun_run_starts_any_program_on_the_path_that_is_no_file() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Names of scripts: unknown programs.
+            "bun run build",
+            "bun run dev",
+            "bun run start",
+            "bun run test",
+            "bun run lint",
+            "bun run format",
+            "bun run clean",
+            "bun run deploy",
+            "bun run typecheck",
+            "bun run test:unit",
+            "bun run build -- --watch",
+            "bun --hot run dev",
+            "bun run --silent build",
+            "bun run --bun dev",
+            "bun run --filter app build",
+            // Files.
+            "bun run ./build.ts",
+            "bun run src/main",
+            "bun run build.ts",
+            "bun run -- script.ts",
+            "bun run echo.sh",
+            // Known programs that only read.
+            "bun run echo X",
+            "bun run ls",
+            "bun run git status",
+            // `bun <name>` runs only scripts and local bins.
+            "bun build",
+            "bun sh -c 'rm -rf ~'",
+            "bun rm -rf ~",
+        ],
+        &[
+            ("bun run rm -rf ~", Rule::Delete),
+            ("bun run sh -c 'rm -rf ~'", Rule::Delete),
+            ("bun run bash -c 'rm -rf ~'", Rule::Delete),
+            ("bun run --silent bash -c 'rm -rf ~'", Rule::Delete),
+            ("bun --hot run rm -rf ~", Rule::Delete),
+            ("bun run --bun rm -rf ~", Rule::Delete),
+            ("bun run --cwd app rm -rf ~", Rule::Delete),
+            ("bun --cwd app run rm -rf ~", Rule::Delete),
+            ("bun run -- rm -rf ~", Rule::Delete),
+            ("bun run rimraf ~", Rule::Delete),
+            ("sudo bun run rm -rf ~", Rule::Delete),
+            ("bun run $TOOL dist", Rule::Unknown),
+            ("bun run node -e 'x'", Rule::Unknown),
+            ("echo ~ | xargs bun run rm -rf", Rule::Delete),
+            // What it runs is a program: `cd` does not move the shell.
+            ("bun run cd src && rm -f ../target/x.o", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn yarn_run_starts_a_delete_tool_of_the_project_like_yarn_does() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "yarn run rimraf dist",
+            "yarn run build",
+            "yarn run clean",
+            "yarn run --silent build",
+        ],
+        &[
+            ("yarn run rimraf ~", Rule::Delete),
+            ("yarn run --silent rimraf ~", Rule::Delete),
+            ("yarn --cwd app run rimraf ~", Rule::Delete),
+            ("yarn run del-cli ~", Rule::Delete),
+            ("yarn run premove ~", Rule::Delete),
+            ("yarn rimraf ~", Rule::Delete),
+            ("sudo yarn run rimraf ~", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn the_parts_of_bun_deno_and_dx_that_start_a_program_are_read_in_cmd_too() {
+    // What they read of an interpreter is not read in cmd lines.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &["bun -e x", "deno eval x", "deno", "bun run -", "bun exec x"],
+        &[],
+    );
+    for shell in [Shell::Cmd, Shell::PowerShell] {
+        check(
+            shell,
+            &windows(),
+            &[
+                "bun x prettier --check .",
+                "bunx prettier --check .",
+                "bun run build",
+                "bun run build.ts",
+                "bun rimraf dist",
+                "deno x prettier --check .",
+                "deno run npm:prettier .",
+                "dx prettier --check .",
+                "deno run main.ts",
+            ],
+            &[
+                ("bunx rimraf C:\\", Rule::Delete),
+                ("npx rimraf C:\\", Rule::Delete),
+                ("bun x rimraf C:\\", Rule::Delete),
+                ("bun rimraf C:\\", Rule::Delete),
+                ("bun run rimraf C:\\", Rule::Delete),
+                ("bun run --silent rimraf C:\\", Rule::Delete),
+                ("bun run rd /s /q C:\\Users\\me", Rule::Delete),
+                ("bun --hot run rimraf C:\\", Rule::Delete),
+                ("deno x rimraf C:\\", Rule::Delete),
+                ("deno x -y rimraf C:\\", Rule::Delete),
+                ("deno run npm:rimraf C:\\", Rule::Delete),
+                ("deno run -A npm:rimraf@5 C:\\", Rule::Delete),
+                ("deno npm:rimraf C:\\", Rule::Delete),
+                ("dx rimraf C:\\", Rule::Delete),
+                ("dx npm:rimraf C:\\", Rule::Delete),
+                ("dx -y rimraf C:\\", Rule::Delete),
+            ],
+        );
+    }
+}
