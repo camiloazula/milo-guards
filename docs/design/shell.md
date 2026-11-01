@@ -454,6 +454,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
 | `drop_data` | Deletes data in a database. |
+| `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
@@ -1623,6 +1624,139 @@ a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
 `sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
 tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
 
+## Containers, clusters, infrastructure and the cloud
+
+`destroy_resources` is for what a delete verb removes that is not a path:
+containers and their volumes, cluster objects, an infrastructure stack and
+what a cloud CLI deletes. `docker volume rm pgdata` names no file the guard
+looks at. The rule reads the program, its global options, its command and
+sub-command like the git rules do, and the few options that change what a
+command does. Listing, describing, creating and building are safe
+(`kubectl get`, `terraform plan`, `aws s3 ls`, `docker build`).
+
+One rule, one meaning: a local target (a `kind` or `minikube` cluster, a
+container on the local daemon) is as risky as a remote one, since the line
+cannot tell, and the reason says what it deletes, not where.
+
+**Containers** (`docker`, `podman`, `nerdctl`, `docker-compose`,
+`podman-compose`). `system prune`, `container prune`, `network prune`,
+`volume rm` and `volume prune`, `image prune -a`, `stack rm`, `service rm`,
+`compose down -v` and `compose rm -v`, and podman's `system reset`, `pod
+prune`, `machine rm` and `kube down` destroy. `rm` is read by what it takes:
+one named container is safe, forced or not (`docker rm -f web`); several
+forced at once, a choice made when the line runs (`$(docker ps -aq)`, a
+pipe's input, a variable that expands to several words), podman's `rm -a`
+and `--filter`, and `-v` (the container's volumes) are not. Which variables
+expand to several words depends on the shell: in a POSIX shell an unquoted
+one, and a quoted one holding an array (`"$@"`, `"${ids[@]}"`, one word per
+element), but not `"$name"`; in PowerShell any variable except `$env:` and a
+splat (`@ids`), since an array handed to a program is one argument per
+element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
+which is expanded as text. A POSIX word also splits when an unquoted `$`
+follows a quoted head (`"$a"$b`) and when it holds an unquoted brace list or
+sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the
+parser has already unquoted counts as bare. A command in a loop or a function
+body runs again with other values, so any operand there that holds an
+expansion is every item, whatever the variable is called and however it was
+set (`id="$c"`, `name=$(…)`, `$1` after a `shift`, `%%i`): `for c in $(docker
+ps -aq); do id="$c"; docker rm -f "$id"; done`, `docker ps -aq | while read -r
+l; do docker rm -f "${l%% *}"; done`, `f() { docker rm -f "$1"; }`. Loops are
+`for`, `select`, `while` and `until` and function bodies in a POSIX shell;
+`foreach`, `for`, `while`, `do` and `function` and the block of
+`ForEach-Object` (`%`) and `Where-Object` in PowerShell (`docker ps -aq | %
+{ $c = $_; docker rm -f "$c" }`); `for … do` in cmd (`for /f "delims="
+%%i in ('docker ps -aq') do docker rm -f "%%i"`, also behind `@` and in a
+`do (set id=%%i& …)` group). Outside a loop, a quoted variable that a `for`
+or a `read` sets is still every item. So `for c in web db; do docker rm -f
+"$c"; done` is risky too, as several forced at once, while `id=web; docker rm
+-f "$id"` is one value and `docker rm -f "$id"; for c in a b; do echo "$c";
+done` is safe. So `docker rm -f "$name"` is safe and `docker rm -f $ids` in
+PowerShell is
+not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a `image
+prune` without `-a` are safe, as are `network rm` and `builder prune`.
+The global options of each program that take a value (`-H`, `--context`,
+`-n`) are skipped to find the command.
+
+**Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
+a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
+--force`; `apply --prune`. `--dry-run=client` and `=server` only rehearse and
+are safe, the last one written counting. A replica count is read as Go reads
+an integer (`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero);
+one that is not a plain decimal and not a zero, or only known when it runs, is
+`unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
+`minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
+`--dry-run` (not `--dry-run=false`, and not a value only known when it runs,
+`--dry-run=$DRY`); `kind delete cluster`, `minikube delete` and `k3d cluster
+delete` (also `node` and `registry`).
+
+**Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
+(a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
+`-destroy=false`; any `-destroy` turned on before `--` counts, even with a
+`=false` after it, since a value option may have taken that word); `plan
+-destroy` is safe. `terragrunt` the same, also behind `run-all` and `run --all
+--`: the word after `--` is the terraform command (or `terraform` behind `exec
+--`), and every word before it is read, the options that take a value
+(`--queue-include-dir`, `--parallelism`) skipped. `pulumi destroy` (also
+`down`, unless `--preview-only`, a Go-style flag that `--preview-only=false`
+or a value only known when it runs turns off) and `pulumi stack rm`; `cdk
+destroy`, `cdktf destroy`, `sst remove`, `serverless remove` (also `sls`),
+`vagrant destroy`, `sam delete`.
+
+**Cloud.** Each CLI has a table of delete verbs in
+`detect/resources.rs`, with the options before the command that take a value,
+so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
+`--recursive`), `s3 rb`, `s3 sync --delete`, `terminate-*`, `delete-*`,
+`batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
+`--dry-run` and `s3`'s `--dryrun` make it safe, unless a later `--no-dry-run`
+turns it off (the CLI takes the last). `gcloud` (a `delete`, `delete-*`,
+`bulk-delete` or `destroy` among the first words, `storage rm`, and `storage rsync` with
+`--delete-unmatched-destination-objects`, which `gsutil rsync -d` and `aws s3
+sync --delete` match), `gsutil rm`, `rb` and `rsync -d`, `az` (`delete`,
+`delete-*`, `purge`, `storage remove`), `doctl` (`delete`, `delete-*`, `d`, `rm`), `flyctl`
+and `fly` (`destroy`, `delete`, `rm` and `remove` under any
+word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
+(`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
+(`apps:destroy`, `addons:destroy`, `pg:backups:delete`), `wrangler` (`delete` at any depth,
+`kv:namespace delete`), `firebase` (`…:delete` and `…:remove`, as in
+`database:remove`), `hcloud`, `scw`, `oci` (`delete`, `bulk-delete`,
+`terminate`), `eksctl` and `kops` (`delete`).
+
+A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
+before `--` and not as the value of an option that takes a value, since pflag
+and Go's flag package hand that option the next word even when it starts with
+`-` (`kubectl delete ns prod --cache-dir --dry-run=server` still deletes). It
+counts only with a value known to say yes: a value only known when it runs may
+be `false`, so `helm uninstall api --dry-run=$DRY` is risky, and so is
+PowerShell's `--dry-run=$false`.
+
+A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
+s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
+run-all $cmd`) is `unknown`: the line may be any of the above. For the cloud
+CLIs that read a verb at any depth, a word behind a verb that only reads,
+creates, copies, runs or changes one thing (`gcloud compute instances describe
+$vm`, `get-`, `add-`, `create-`, `update-`, `set-` and `list-` verbs, `put`,
+`submit`, `access`, `use`, `link`, `cp`, `mv`, `rsync`, `upload`, `download`,
+`publish`, `connect`, `activate`, `build`, `pull`, `promote`, `redeploy`,
+`tail`, `dev`, `execute`, `authenticate`, `invoke`) is that verb's operand, so
+it stays safe. So is the word after a heroku `topic:command`, which is a leaf
+verb too (`heroku config:set $(cat .env)` is safe). A word that is a group in
+a CLI that reads it (`gcloud run`, `gcloud projects`) is not one of them: the
+word after it is still a verb. A word that is an assignment (`FOO=$BAR`) is
+never read as a verb. The options of each CLI that take a value are
+listed, and a boolean flag is never in a list: a flag listed by mistake eats
+the command word after it (`cdk --json destroy`).
+
+Not read, so the caller has to account for them: a verb that deletes under
+another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
+that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
+`docker rmi -f` of every image); a program run on another machine
+(`ssh host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p --
+rm -rf /`); a command a tool reads from a file or its environment
+(`TF_CLI_ARGS=-destroy`, a `kubectl` plugin, a shell alias); and the `delete`
+verb of a resource that is named `delete` (`gcloud config set project delete`
+reads as a delete, because the verb is the last word of the command and the
+guard cannot tell it from a name that follows).
+
 ## Reads only
 
 `classify` says whether a line is safe to run without asking. A caller that
@@ -1640,7 +1774,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`, `destroy_resources`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&

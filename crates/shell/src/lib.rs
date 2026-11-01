@@ -144,6 +144,9 @@ pub enum Rule {
     SendSecret,
     /// Deletes data in a database.
     DropData,
+    /// Deletes containers, cluster objects, cloud resources or an
+    /// infrastructure stack.
+    DestroyResources,
     /// Runs a program or a script known only when it runs.
     Unknown,
     /// The line, or part of it, cannot be read.
@@ -152,7 +155,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -168,6 +171,7 @@ impl Rule {
         Self::StopSystem,
         Self::SendSecret,
         Self::DropData,
+        Self::DestroyResources,
         Self::Unknown,
         Self::Unreadable,
     ];
@@ -193,6 +197,7 @@ impl Rule {
             Self::StopSystem => "stop_system",
             Self::SendSecret => "send_secret",
             Self::DropData => "drop_data",
+            Self::DestroyResources => "destroy_resources",
             Self::Unknown => "unknown",
             Self::Unreadable => "unreadable",
         }

@@ -80,6 +80,10 @@ pub(crate) enum Reads {
 
 /// One program the line runs.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the walker learned about the unit; none combine into a state"
+)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -96,6 +100,10 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// Whether it sits in a loop or a function body, which runs it again
+    /// with other values: a variable it reads can name a different thing
+    /// each time, so every one of them together.
+    pub(crate) repeated: bool,
     /// Whether the script it runs is a download (`Invoke-Expression` given
     /// `(iwr url)`), which only runs when it does.
     pub(crate) downloaded: bool,
@@ -183,6 +191,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            repeated: false,
             downloaded: false,
             listings: Vec::new(),
             unread_item: false,
@@ -365,6 +374,10 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Variables a `for` loop or a `read` sets (lower case): each holds one
+    /// item of what the loop walks, so a rule that counts what a command
+    /// reaches reads `"$c"` as every item, not one.
+    looped: Vec<String>,
     /// The characters a backtick `u{…}` made in a PowerShell string that are
     /// a space that is not an ASCII one, a dash or a typographic quote: as a
     /// path or an argument each is the text it holds, but a script that holds
@@ -387,6 +400,9 @@ pub(crate) struct Split {
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
+    /// How deep the line is inside a loop or a function body, whose
+    /// commands run again with other values.
+    pub(crate) repeats: usize,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
@@ -527,6 +543,7 @@ impl Split {
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
         unit.hidden = self.hidden();
+        unit.repeated = self.repeats > 0;
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
@@ -901,7 +918,7 @@ impl Split {
     }
 
     /// Record the variable of a `for` loop, for `effect`.
-    pub(crate) fn loop_variable(&mut self, name: &str) {
+    pub(crate) fn kept_loop(&mut self, name: &str) {
         if self.kept.on {
             self.kept.loops.push(name.to_string());
         }
@@ -928,6 +945,21 @@ impl Split {
         if !self.reassigned.contains(&name) {
             self.reassigned.push(name);
         }
+    }
+
+    /// Record that a loop or a `read` sets the variable `name`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        if !self.looped.contains(&name) {
+            self.looped.push(name);
+        }
+    }
+
+    /// Whether a loop or a `read` in the line sets the variable `name`.
+    pub(crate) fn looped(&self, name: &str) -> bool {
+        self.looped
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
     }
 
     /// Whether the line sets the variable `name` anywhere.

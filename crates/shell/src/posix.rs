@@ -14,8 +14,12 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
-    for name in assigned(tree.root_node(), text) {
+    let (names, looped) = assigned(tree.root_node(), text);
+    for name in names {
         split.reassign(&name);
+    }
+    for name in looped {
+        split.loop_variable(&name);
     }
     if split.kept.on {
         environment(split, tree.root_node(), text);
@@ -174,17 +178,16 @@ fn dashes_before_heredoc(rest: &str) -> usize {
     }
 }
 
-/// The variables the line sets anywhere: assignments (also after `export`
-/// or `local`), `for` variables, `unset` and `read`.
-fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
+/// The variables the line sets anywhere (assignments, also after `export`
+/// or `local`, `for` variables, `unset` and `read`), and among them the ones
+/// a `for` loop or a `read` sets: each of those holds one item of what the
+/// loop walks or the input it reads. One walk of the tree finds both.
+fn assigned(root: Node<'_>, source: &str) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
+    let mut looped = Vec::new();
     unit::for_each_node(root, |node| match node.kind() {
         "variable_assignment" => names.extend(
             node.child_by_field_name("name")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
-        "for_statement" => names.extend(
-            node.child_by_field_name("variable")
                 .map(|name| unit::text(&name, source).to_string()),
         ),
         "unset_command" => {
@@ -194,21 +197,36 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
                     .map(|name| unit::text(&name, source).to_string()),
             );
         }
+        _ => {
+            let found = loop_variables(node, source);
+            names.extend(found.iter().cloned());
+            looped.extend(found);
+        }
+    });
+    (names, looped)
+}
+
+/// The variable of a `for` statement, or the names a `read` is given.
+fn loop_variables(node: Node<'_>, source: &str) -> Vec<String> {
+    match node.kind() {
+        "for_statement" => node
+            .child_by_field_name("variable")
+            .map(|name| unit::text(&name, source).to_string())
+            .into_iter()
+            .collect(),
         "command"
             if node
                 .child_by_field_name("name")
                 .is_some_and(|name| unit::text(&name, source) == "read") =>
         {
             let mut cursor = node.walk();
-            names.extend(
-                node.children_by_field_name("argument", &mut cursor)
-                    .map(|arg| unit::text(&arg, source).to_string())
-                    .filter(|arg| !arg.starts_with('-')),
-            );
+            node.children_by_field_name("argument", &mut cursor)
+                .map(|arg| unit::text(&arg, source).to_string())
+                .filter(|arg| !arg.starts_with('-'))
+                .collect()
         }
-        _ => {}
-    });
-    names
+        _ => Vec::new(),
+    }
 }
 
 /// The variables the line sets or unsets, for `effect`: assignments (also
@@ -245,7 +263,7 @@ fn environment(split: &mut Split, root: Node<'_>, source: &str) {
         }
         "for_statement" => {
             if let Some(name) = node.child_by_field_name("variable") {
-                split.loop_variable(unit::text(&name, source));
+                split.kept_loop(unit::text(&name, source));
             }
         }
         _ => {}
@@ -448,11 +466,13 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
                 self.children(node, stage, level);
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }

@@ -19,6 +19,7 @@ mod data;
 mod files;
 mod processes;
 mod regex;
+mod resources;
 mod secrets;
 mod send;
 mod settings;
@@ -208,6 +209,7 @@ impl Checker<'_> {
         self.files(unit, &key);
         self.send(at, unit, &key);
         self.data(at, unit, &key);
+        self.resources(unit, &key);
         self.system(unit, &key);
         self.settings(unit, &key);
         self.code(unit, &key);
