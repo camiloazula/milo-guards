@@ -2503,13 +2503,8 @@ impl<'s> Reader<'s> {
             }
             Some(Kind::Subprocess) => self.subprocess(&args),
             Some(Kind::Exec) => {
-                let words: Vec<Arg> = args
-                    .positional
-                    .clone()
-                    .into_iter()
-                    .map(|node| self.arg(node))
-                    .collect();
-                self.act(Some(Act::Program(words)));
+                let words = self.argv(args.positional.clone());
+                self.programs(words);
             }
             Some(Kind::Unread) => self.reading.unread(self.text(call)),
             Some(Kind::Eval) => {
@@ -3039,9 +3034,9 @@ impl<'s> Reader<'s> {
                     self.reading.unread(self.text(command));
                     return;
                 }
-                let mut words = vec![program];
-                words.extend(elements.into_iter().skip(1).map(|node| self.arg(node)));
-                self.reading.acts.push(Act::Program(words));
+                let mut words = vec![vec![program]];
+                words.extend(elements.into_iter().skip(1).map(|node| self.word(node)));
+                self.programs(words);
             } else {
                 self.reading.acts.push(Act::Program(vec![program]));
             }
@@ -3066,12 +3061,53 @@ impl<'s> Reader<'s> {
                     self.reading.acts.push(Act::Script(script));
                 }
             } else {
-                let words: Vec<Arg> = elements.into_iter().map(|node| self.arg(node)).collect();
-                self.reading.acts.push(Act::Program(words));
+                let words = self.argv(elements);
+                self.programs(words);
             }
         } else {
             let script = self.arg(command);
             self.reading.acts.push(Act::Script(script));
+        }
+    }
+
+    /// The words of a call that starts a program: the first is the program,
+    /// as the code gives it, and each of the others is read as a path is.
+    fn argv(&mut self, nodes: Vec<Node<'_>>) -> Vec<Vec<Arg>> {
+        nodes
+            .into_iter()
+            .enumerate()
+            .map(|(at, node)| {
+                if at == 0 {
+                    vec![self.arg(node)]
+                } else {
+                    self.word(node)
+                }
+            })
+            .collect()
+    }
+
+    /// An argument of a program as the strings it may be: a string the code
+    /// writes out as it is; else each string a name the code sets stands for,
+    /// the start it is known to have (`'/home/me/.ssh/' + name`), or a word
+    /// only known when the code runs.
+    fn word(&mut self, node: Node<'_>) -> Vec<Arg> {
+        if node.kind() == "string" {
+            if let Some(text) = self.value(node, 0) {
+                return vec![Arg::Known(text)];
+            }
+        }
+        let choices = self.read_arg(node);
+        if choices.is_empty() {
+            vec![Arg::Unknown(super::shorten(self.text(node)))]
+        } else {
+            choices
+        }
+    }
+
+    /// Run the programs the words give, one for each choice of strings.
+    fn programs(&mut self, words: Vec<Vec<Arg>>) {
+        for list in super::argument_lists(words) {
+            self.reading.acts.push(Act::Program(list));
         }
     }
 

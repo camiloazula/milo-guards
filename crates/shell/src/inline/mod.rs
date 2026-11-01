@@ -240,6 +240,36 @@ fn read_path(parts: Parts, code: &str) -> Arg {
     }
 }
 
+/// The argument lists a call that starts a program may run with, when a word
+/// of the list may be any of several strings (a name a loop sets to each of
+/// them): one list for each choice of one string for each word, so each is
+/// judged. Past [`MAX_CHOICES`] lists the words that are left are each one
+/// word only known when it runs. A word with no choice is one only known
+/// when it runs too.
+pub(super) fn argument_lists(words: Vec<Vec<Arg>>) -> Vec<Vec<Arg>> {
+    let mut lists: Vec<Vec<Arg>> = vec![Vec::new()];
+    for choices in words {
+        let choices =
+            if choices.is_empty() || lists.len().saturating_mul(choices.len()) > MAX_CHOICES {
+                let shown = choices.first().map_or("an argument", Arg::text);
+                vec![Arg::Unknown(shorten(shown))]
+            } else {
+                choices
+            };
+        lists = lists
+            .iter()
+            .flat_map(|list| {
+                choices.iter().map(move |choice| {
+                    let mut next = list.clone();
+                    next.push(choice.clone());
+                    next
+                })
+            })
+            .collect();
+    }
+    lists
+}
+
 /// The longest string worked out from names the code sets: a longer one is
 /// no string the reader knows. A name set to a string built from itself, or
 /// from another that was (`a = a + a`, repeated), doubles it with each line,
@@ -977,6 +1007,19 @@ pub(crate) fn options_load_foreign_code(values: &[Arg]) -> bool {
     })
 }
 
+/// Whether the values `PYTHONPATH` is given in front of python (a prefix
+/// assignment, `env PYTHONPATH=…`, an `export` before it) name a folder
+/// outside the workspace: python looks there for an import, and runs the
+/// `sitecustomize` it finds there before any code it is given, as it does a
+/// module `sys.path.insert` adds. An entry is split at `:`; an empty one is
+/// the working directory. A value only known when it runs may be one.
+pub(crate) fn path_loads_foreign_code(values: &[Arg]) -> bool {
+    values.iter().any(|value| match value.known() {
+        Some(text) => text.split(':').any(|entry| foreign_module(entry).is_some()),
+        None => true,
+    })
+}
+
 /// `deno eval [OPTIONS] CODE [ARGS]`: every word after `eval` that is not an
 /// option is read as code, and so is all that follows `--`. Only the first
 /// is the code and the rest are the arguments `Deno.args` holds, which read
@@ -1318,7 +1361,33 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
                     split.problem(Rule::Unknown, UNPLACED_RUN, Some(&shown));
                 }
                 let program = words.remove(0);
+                // A word only known when the code runs, or known in part, is
+                // a word the guard cannot judge: the line is `unknown`, unless
+                // the unit finds a key in the part that is known.
+                let finding = words
+                    .iter()
+                    .find(|word| word.known().is_none())
+                    .map(|word| Finding {
+                        rule: Rule::Unknown,
+                        reason: UNKNOWN_WORD.to_string(),
+                        target: Some(word.text().to_string()),
+                    });
+                let name = program.known().map(str::to_string);
+                let before = split.units.len();
                 launch::add(split, Unit::new(Shell::Posix, program, words, None), depth);
+                if let Some(finding) = finding {
+                    let unit = split.units.get(before..).and_then(|added| {
+                        added
+                            .iter()
+                            .position(|unit| unit.key().is_some() && unit.key() == name)
+                    });
+                    match unit {
+                        Some(at) => {
+                            split.loose.insert(before + at, finding);
+                        }
+                        None => split.findings.push(finding),
+                    }
+                }
             }
         }
         Act::Code(language, text) => apply(split, language, &text, depth + 1, unplaced),
@@ -1346,6 +1415,10 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
 /// Why a path that counts from a directory only known when the code runs is
 /// `unknown`.
 const UNPLACED_READ: &str = "opens a file from a directory only known when the code runs";
+
+/// Why a program started with a word only known when the code runs, or known
+/// in part, is `unknown`.
+const UNKNOWN_WORD: &str = "runs a program with an argument only known when the code runs";
 
 /// Why a program or script run from a directory only known when the code
 /// runs is `unknown`.

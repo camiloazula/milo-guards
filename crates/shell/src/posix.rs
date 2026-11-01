@@ -752,7 +752,9 @@ impl Walker<'_> {
         }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
+        // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
+        let paths = self.split.python_path.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -765,6 +767,7 @@ impl Walker<'_> {
         unit.stdin = stdin;
         launch::add(self.split, unit, self.depth);
         self.split.node_options.truncate(options);
+        self.split.python_path.truncate(paths);
         self.split.unscope_hidden(outer);
     }
 
@@ -920,11 +923,20 @@ impl Walker<'_> {
                     self.split.node_options.push(Arg::Known(value.to_string()));
                 } else if text == "NODE_OPTIONS" {
                     self.split.node_options.push(Arg::Unknown(text.to_string()));
+                } else if let Some(value) = text.strip_prefix("PYTHONPATH=") {
+                    self.split.python_path.push(Arg::Known(value.to_string()));
+                } else if text == "PYTHONPATH" {
+                    self.split.python_path.push(Arg::Unknown(text.to_string()));
                 }
             }
             None if source.starts_with("NODE_OPTIONS") => {
                 self.split
                     .node_options
+                    .push(Arg::Unknown(source.to_string()));
+            }
+            None if source.starts_with("PYTHONPATH") => {
+                self.split
+                    .python_path
                     .push(Arg::Unknown(source.to_string()));
             }
             None => {}
@@ -946,19 +958,24 @@ impl Walker<'_> {
         self.node_options(node);
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS`, when it is that
-    /// variable's.
+    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
+    /// when it is one of those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
-        if unit::text(&name, self.source) != "NODE_OPTIONS" {
+        let name = unit::text(&name, self.source);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        self.split.node_options.push(value);
+        if name == "PYTHONPATH" {
+            self.split.python_path.push(value);
+        } else {
+            self.split.node_options.push(value);
+        }
     }
 
     /// A command and what it holds. What its substitutions run is handed to

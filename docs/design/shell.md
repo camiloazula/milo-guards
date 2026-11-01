@@ -920,7 +920,15 @@ NODE_OPTIONS=…`, an `export` earlier in the line, and one in front of a shell
 that starts node (`NODE_OPTIONS=… bash -c 'node -e …'`) hand node its value,
 and one that loads a `data:` URL, or is only known when it runs, makes the line
 `unknown`. Any other value (`--max-old-space-size=4096`, `--require ./a.js`) is
-not read. `bun`:
+not read. Python's `PYTHONPATH` is read the same way for inline python (also a
+here-document): a prefix assignment, `env PYTHONPATH=…`, an `export` earlier in
+the line, and one in front of a shell that starts python hand it the value,
+split at `:`, and an entry outside the workspace (an absolute path, `~`, one
+that goes up with `../`), or a value only known when it runs, makes the line
+`unknown`, as a `sys.path` entry outside it does: python looks there for an
+import, and runs the `sitecustomize` it finds there before any `-c` code. An
+empty entry and a folder of the workspace (`PYTHONPATH=src`) are not read.
+`bun`:
 the same flags, and `--cwd DIR` (`--cwd=DIR`), which the code's relative paths
 are read from, as after a `cd`. `node` and `bun` run the last of several `-e`
 (`node -e A -e B`), so every piece of code is read, not the first; `-p` takes
@@ -1060,6 +1068,19 @@ A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
 '~'])`) is judged as the unit it is, `shell=True` or `{ shell: true }` making
 it a command line. A `chdir` moves the code's own paths, not the line's.
+
+Each word of the list after the program is read as the path of a read is: a
+name the code sets to a string is put back as that string (`f = 'id_rsa'`,
+`['cat', '/home/me/.ssh/' + f]`, a `for` over a list of them, one program for
+each choice), and the start a word is known to have is the folder it is under,
+so a key among them is `read_secret`, as `open(f)` of the same name says. A word
+the reader does not know whole (an element of `sys.argv`, the environment,
+`input()`, a listing or a loop over one, a `%`, `.format`, a method, a
+subscript or a conditional it does not fold) is a word the guard cannot judge,
+as `cat "$F"` is: the line is `unknown`, with the reason `runs a program with an
+argument only known when the code runs`, unless the unit already found a key in
+the part that is known. A spread of an array literal in the list is the words
+of that array; any other spread is such a word.
 
 A `chdir` is applied where the code runs it, which is not where it is written
 (a function defined before it and called after, a later pass of a loop, an

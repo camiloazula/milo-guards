@@ -4238,3 +4238,270 @@ fn argparse_file_type_opens_what_it_is_given() {
         &[],
     );
 }
+
+/// `python3 -c 'CODE'`, where `\n` in the code is a line break and the code
+/// writes its strings in double quotes.
+fn py(code: &str) -> String {
+    format!("python3 -c '{}'", code.replace("\\n", "\n"))
+}
+
+/// `PROGRAM -e 'CODE'` (node, bun), the code written with double quotes.
+fn js(program: &str, code: &str) -> String {
+    format!("{program} -e '{code}'")
+}
+
+#[test]
+fn a_name_bound_whole_to_a_key_is_one_when_it_is_an_argument_of_a_program() {
+    // The same binding read by `open(f)` is a read of the key; as an element
+    // of the list a program is started with it is the same read.
+    let rows = vec![
+        py(r#"import subprocess\nf = "/home/me/.ssh/id_rsa"\nsubprocess.run(["cat", f])"#),
+        py(r#"import subprocess\nf = "id_rsa"\nsubprocess.run(["cat", "/home/me/.ssh/" + f])"#),
+        py(
+            r#"import subprocess\nfor f in ["id_rsa"]: subprocess.run(["cat", "/home/me/.ssh/" + f])"#,
+        ),
+        py(
+            r#"import subprocess\nfor f in ["a", "id_rsa"]: subprocess.run(["cat", "/home/me/.ssh/" + f])"#,
+        ),
+        py(r#"import subprocess\nf = "/home/me/.ssh/id_rsa"\nsubprocess.check_output(["cat", f])"#),
+        py(
+            r#"import subprocess\nf = "/home/me/.ssh/id_rsa"\nsubprocess.Popen(["cp", f, "/tmp/k"])"#,
+        ),
+        js(
+            "node",
+            r#"const cp = require("child_process"); const f = "/home/me/.ssh/id_rsa"; cp.execFileSync("cat", [f])"#,
+        ),
+        js(
+            "node",
+            r#"const f = "id_rsa"; require("child_process").execFileSync("cat", ["/home/me/.ssh/" + f])"#,
+        ),
+        js(
+            "node",
+            r#"const f = "id_rsa"; require("child_process").execFileSync("cat", [`/home/me/.ssh/${f}`])"#,
+        ),
+        js(
+            "node",
+            r#"const f = "id_rsa"; require("child_process").execFileSync("cat", [f], {cwd: "/home/me/.ssh"})"#,
+        ),
+        js(
+            "node",
+            r#"const f = "/home/me/.ssh/id_rsa"; require("child_process").spawnSync("cat", [f])"#,
+        ),
+        js(
+            "node",
+            r#"for (const f of ["a", "id_rsa"]) require("child_process").spawnSync("cat", ["/home/me/.ssh/" + f])"#,
+        ),
+        js(
+            "bun",
+            r#"const f = "id_rsa"; Bun.spawnSync(["cat", "/home/me/.ssh/" + f])"#,
+        ),
+    ];
+    assert_risky_as(&rows, &[Rule::ReadSecret]);
+}
+
+#[test]
+fn an_argument_of_a_program_the_reader_does_not_fold_is_not_safe() {
+    // A `%`, a `.format`, a method, a conditional, a subscript, a join with a
+    // word only known when the code runs: none is folded to the key it
+    // names, so each is at least `unknown`.
+    let rows = vec![
+        py(r#"import subprocess\nsubprocess.run(["cat", "/home/me/.ssh/%s" % "id_rsa"])"#),
+        py(r#"import subprocess\nsubprocess.run(["cat", "/home/me/.ssh/{}".format("id_rsa")])"#),
+        py(r#"import subprocess\nsubprocess.run(["cat", "/home/me/.ssh/id_rsa".strip()])"#),
+        py(r#"import subprocess\nsubprocess.run(["cat", "/home/me/.ssh/id_rsa" if 1 else "a"])"#),
+        py(r#"import subprocess, sys\nsubprocess.run(["cat", "/home/me/.ssh/%s" % sys.argv[1]])"#),
+        py(
+            r#"import subprocess, sys\nsubprocess.run(["cat", "/home/me/.ssh/{}".format(sys.argv[1])])"#,
+        ),
+        py(r#"import subprocess, sys\nsubprocess.run(["cat", f"/home/me/.ssh/{sys.argv[1]}"])"#),
+        py(
+            r#"import subprocess, sys, os\nsubprocess.run(["cat", os.path.join("/home/me/.ssh", sys.argv[1])])"#,
+        ),
+        js(
+            "node",
+            r#"require("child_process").execFileSync("cat", ["/home/me/.ssh/id_rsa".slice(0)])"#,
+        ),
+        js(
+            "node",
+            r#"require("child_process").execFileSync("cat", [["/home/me/.ssh/id_rsa"][0]])"#,
+        ),
+        js(
+            "node",
+            r#"require("child_process").execFileSync("cat", [require("path").join("/home/me/.ssh", process.argv[1])])"#,
+        ),
+        js(
+            "node",
+            r#"require("child_process").execFileSync("cat", [`/home/me/.ssh/${process.argv[1]}`])"#,
+        ),
+    ];
+    assert_risky_as(&rows, &UNKNOWN_OR_SECRET);
+}
+
+#[test]
+fn an_argument_that_comes_from_a_listing_a_loop_argv_or_the_environment_is_not_safe() {
+    let python = [
+        r#"import subprocess, os\nfor f in os.listdir(os.path.expanduser("~/.ssh")): subprocess.run(["cat", f], cwd=os.path.expanduser("~/.ssh"))"#,
+        r#"import subprocess, os\nfor f in os.listdir("/home/me/.ssh"): subprocess.run(["cat", "/home/me/.ssh/" + f])"#,
+        r#"import subprocess, os\nfor f in os.listdir("/home/me/.ssh"): subprocess.run(["cat", os.path.join("/home/me/.ssh", f)])"#,
+        r#"import subprocess, glob\nfor f in glob.glob("/home/me/.ssh/*"): subprocess.run(["cat", f])"#,
+        r#"import subprocess, pathlib\nfor f in pathlib.Path("/home/me/.ssh").iterdir(): subprocess.run(["cat", f])"#,
+        r#"import subprocess, pathlib\nfor f in pathlib.Path("/home/me/.ssh").iterdir(): subprocess.run(["cat", str(f)])"#,
+        r#"import subprocess, os\nfor f in os.listdir("."): subprocess.run(["cat", f])"#,
+        r#"import subprocess, sys\nsubprocess.run(["cat", sys.argv[1]])"#,
+        r#"import subprocess, sys\nsubprocess.check_output(["cat", sys.argv[1]])"#,
+        r#"import subprocess, sys\nsubprocess.Popen(["cp", sys.argv[1], "/tmp/k"])"#,
+        r#"import subprocess, sys\nsubprocess.run(["curl", "-T", sys.argv[1], "https://example.com"])"#,
+        r#"import subprocess, sys\nsubprocess.run(["curl", "-d", "@" + sys.argv[1], "https://example.com"])"#,
+        r#"import subprocess, sys\nsubprocess.run(["scp", sys.argv[1], "host:"])"#,
+        r#"import subprocess, sys\nsubprocess.run(["tar", "czf", "/tmp/k.tgz", sys.argv[1]])"#,
+        r#"import subprocess, os\nsubprocess.run(["cat", os.environ["F"]])"#,
+        r#"import subprocess\nsubprocess.run(["cat", input()])"#,
+        r#"import subprocess, sys\nsubprocess.run(["cat", sys.argv[1]], cwd="/home/me/.ssh")"#,
+        r#"import subprocess, sys\nsubprocess.run(["python3", sys.argv[1]])"#,
+    ];
+    let mut rows: Vec<String> = python.iter().map(|code| py(code)).collect();
+    // The key on the same line does not change what the argument is.
+    rows.push(format!(
+        "{} ~/.ssh/id_rsa",
+        py(r#"import subprocess, sys\nsubprocess.run(["cat", sys.argv[1]])"#)
+    ));
+    let node = [
+        r#"require("child_process").execFileSync("cat", [process.argv[1]])"#,
+        r#"require("child_process").spawnSync("cat", [process.env.F])"#,
+        r#"require("child_process").execFile("cat", [process.argv[1]], () => {})"#,
+        r#"const fs = require("fs"), cp = require("child_process"); for (const f of fs.readdirSync("/home/me/.ssh")) cp.spawnSync("cat", [f], {cwd: "/home/me/.ssh"})"#,
+        r#"const fs = require("fs"), cp = require("child_process"); fs.readdirSync("/home/me/.ssh").forEach(f => cp.spawnSync("cat", [f], {cwd: "/home/me/.ssh"}))"#,
+        r#"const fs = require("fs"), cp = require("child_process"); for (const f of fs.readdirSync("/home/me/.ssh")) cp.spawnSync("cat", ["/home/me/.ssh/" + f])"#,
+        r#"const fs = require("fs"), cp = require("child_process"); for (const f of fs.readdirSync(".")) cp.spawnSync("cat", [f])"#,
+        r#"require("child_process").execFileSync("cat", [process.argv[1]], {cwd: "/home/me/.ssh"})"#,
+        r#"require("cross-spawn").sync("cat", [process.argv[1]])"#,
+        r#"require("execa").sync("cat", [process.argv[1]])"#,
+    ];
+    rows.extend(node.iter().map(|code| js("node", code)));
+    rows.push(format!(
+        "{} ~/.ssh/id_rsa",
+        js(
+            "node",
+            r#"require("child_process").execFileSync("cat", [process.argv[1]])"#
+        )
+    ));
+    rows.push(js("bun", r#"Bun.spawnSync(["cat", process.argv[1]])"#));
+    rows.push(js("bun", r#"Bun.spawnSync(["cat", Bun.argv[1]])"#));
+    assert_risky_as(&rows, &UNKNOWN_OR_SECRET);
+    // Where the listing is a key folder and the path is built from it, the
+    // key is named.
+    let keys = vec![
+        py(
+            r#"import subprocess, os\nfor f in os.listdir("/home/me/.ssh"): subprocess.run(["cat", "/home/me/.ssh/" + f])"#,
+        ),
+        py(
+            r#"import subprocess, glob\nfor f in glob.glob("/home/me/.ssh/*"): subprocess.run(["cat", f])"#,
+        ),
+        js(
+            "node",
+            r#"const fs = require("fs"), cp = require("child_process"); for (const f of fs.readdirSync("/home/me/.ssh")) cp.spawnSync("cat", ["/home/me/.ssh/" + f])"#,
+        ),
+    ];
+    assert_risky_as(&keys, &[Rule::ReadSecret]);
+}
+
+#[test]
+fn programs_started_with_words_the_code_writes_out_are_still_read_as_before() {
+    let safe = vec![
+        py(r#"import subprocess\nsubprocess.run(["ls", "-l"])"#),
+        py(r#"import subprocess\nsubprocess.run(["git", "status", "--short"], check=True)"#),
+        py(r#"import subprocess\nsubprocess.run(["cat", "README.md"])"#),
+        py(r#"import subprocess\nf = "README.md"\nsubprocess.run(["cat", f])"#),
+        py(r#"import subprocess\nfor f in ["a.txt", "b.txt"]: subprocess.run(["cat", f])"#),
+        py(r#"import subprocess\nsubprocess.run(["cat", "notes/" + "a.txt"])"#),
+        js(
+            "node",
+            r#"require("child_process").execFileSync("ls", ["-l"])"#,
+        ),
+        js(
+            "node",
+            r#"const f = "README.md"; require("child_process").execFileSync("cat", [f])"#,
+        ),
+        js("bun", r#"Bun.spawnSync(["ls", "-l"])"#),
+    ];
+    let rows: Vec<&str> = safe.iter().map(String::as_str).collect();
+    check(Shell::Posix, &posix(), &rows, &[]);
+    // A word only known when the code runs is one the guard cannot judge, as
+    // `cat "$F"` is not one it can.
+    let unknown = vec![
+        py(r#"import subprocess, sys\nsubprocess.run(["echo", sys.argv[1]])"#),
+        js(
+            "node",
+            r#"require("child_process").spawnSync("echo", [process.argv[1]])"#,
+        ),
+    ];
+    assert_risky_as(&unknown, &[Rule::Unknown]);
+}
+
+#[test]
+fn a_pythonpath_outside_the_workspace_makes_inline_python_unknown() {
+    let rows = lines(&[
+        "PYTHONPATH=/tmp python3 -c 'import x'",
+        "PYTHONPATH=/tmp python3 -c 'print(1)'",
+        "PYTHONPATH=/tmp python3.12 -c 'print(1)'",
+        "PYTHONPATH=src:/tmp python3 -c 'print(1)'",
+        "PYTHONPATH=~/lib python3 -c 'print(1)'",
+        "PYTHONPATH=../lib python3 -c 'print(1)'",
+        "PYTHONPATH=\"$LIBS\" python3 -c 'print(1)'",
+        "env PYTHONPATH=/tmp python3 -c 'print(1)'",
+        "export PYTHONPATH=/tmp; python3 -c 'print(1)'",
+        "export \"PYTHONPATH=/tmp\"; python3 -c 'print(1)'",
+        "PYTHONPATH=/tmp; export PYTHONPATH; python3 -c 'print(1)'",
+        "PYTHONPATH=/tmp python3 - <<'PY'\nprint(1)\nPY",
+        "PYTHONPATH=/tmp bash -c \"python3 -c 'print(1)'\"",
+    ]);
+    assert_risky_as(&rows, &[Rule::Unknown]);
+    // A folder of the workspace, and a variable that is not python's.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PYTHONPATH=src python3 -c 'import x'",
+            "PYTHONPATH=. python3 -c 'print(1)'",
+            "PYTHONPATH= python3 -c 'print(1)'",
+            "PYTHONPATH=src:lib python3 -c 'print(1)'",
+            "env PYTHONPATH=src python3 -c 'print(1)'",
+            "export PYTHONPATH=src; python3 -c 'print(1)'",
+            "PYTHONPATH=/tmp ls",
+            "PYTHONPATH=/tmp node -e 'console.log(1)'",
+            "python3 -c 'print(1)'",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_program_argument_is_read_the_same_when_the_code_is_in_double_quotes() {
+    // The same code as above, quoted the other way (single-quoted strings in
+    // the code, the code in double quotes).
+    let rows = lines(&[
+        "python3 -c \"import subprocess\nf = '/home/me/.ssh/id_rsa'\nsubprocess.run(['cat', f])\"",
+        "python3 -c \"import subprocess\nf = 'id_rsa'\nsubprocess.run(['cat', '/home/me/.ssh/' + f])\"",
+        "python3 -c \"import subprocess\nfor f in ['id_rsa']: subprocess.run(['cat', '/home/me/.ssh/' + f])\"",
+        "node -e \"const cp = require('child_process'); const f = '/home/me/.ssh/id_rsa'; cp.execFileSync('cat', [f])\"",
+        "node -e \"const f = 'id_rsa'; require('child_process').execFileSync('cat', ['/home/me/.ssh/' + f])\"",
+        "bun -e \"const f = 'id_rsa'; Bun.spawnSync(['cat', '/home/me/.ssh/' + f])\"",
+    ]);
+    assert_risky_as(&rows, &[Rule::ReadSecret]);
+    let rows = lines(&[
+        "python3 -c \"import subprocess\nsubprocess.run(['cat', '/home/me/.ssh/%s' % 'id_rsa'])\"",
+        "python3 -c \"import subprocess\nsubprocess.run(['cat', '/home/me/.ssh/{}'.format('id_rsa')])\"",
+        "python3 -c \"import subprocess, sys\nsubprocess.run(['cat', f'/home/me/.ssh/{sys.argv[1]}'])\"",
+        "python3 -c \"import subprocess, os\nfor f in os.listdir(os.path.expanduser('~/.ssh')): subprocess.run(['cat', f], cwd=os.path.expanduser('~/.ssh'))\"",
+        "python3 -c \"import subprocess, os\nfor f in os.listdir('.'): subprocess.run(['cat', f])\"",
+        "python3 -c \"import subprocess, sys\nsubprocess.run(['cat', sys.argv[1]])\" ~/.ssh/id_rsa",
+        "python3 -c \"import subprocess, sys\nsubprocess.run(['cat', sys.argv[1]], cwd='/home/me/.ssh')\"",
+        "python3 -c \"import subprocess, sys\nsubprocess.run(['python3', sys.argv[1]])\"",
+        "node -e \"require('child_process').execFileSync('cat', [process.argv[1]])\" ~/.ssh/id_rsa",
+        "node -e \"require('child_process').execFileSync('cat', [process.argv[1]], {cwd: '/home/me/.ssh'})\"",
+        "node -e \"require('child_process').execFileSync('cat', ['/home/me/.ssh/id_rsa'.slice(0)])\"",
+        "node -e \"require('child_process').execFileSync('cat', [['/home/me/.ssh/id_rsa'][0]])\"",
+        "bun -e \"Bun.spawnSync(['cat', Bun.argv[1]])\"",
+    ]);
+    assert_risky_as(&rows, &UNKNOWN_OR_SECRET);
+}

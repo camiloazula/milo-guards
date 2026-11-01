@@ -69,18 +69,26 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     let outer = split.scope_hidden(false);
     // What a wrapper in front of the program sets is the program's only.
     let options = split.node_options.len();
+    let paths = split.python_path.len();
     add_unit(split, unit, depth);
     split.node_options.truncate(options);
+    split.python_path.truncate(paths);
     split.unscope_hidden(outer);
 }
 
 /// Whether node, given code inline or from its input, is told to run code
 /// from a `data:` URL that is not read: by its own options, or by the
-/// `NODE_OPTIONS` it is given.
+/// `NODE_OPTIONS` it is given. Python is the same when `PYTHONPATH` puts a
+/// folder outside the workspace where its imports look.
 fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
-    matches!(key, "node" | "nodejs")
-        && (inline::loads_foreign_code(&unit.args)
-            || inline::options_load_foreign_code(&split.node_options))
+    match inline::language(key) {
+        Some(Language::JavaScript) if matches!(key, "node" | "nodejs") => {
+            inline::loads_foreign_code(&unit.args)
+                || inline::options_load_foreign_code(&split.node_options)
+        }
+        Some(Language::Python) => inline::path_loads_foreign_code(&split.python_path),
+        _ => false,
+    }
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
@@ -159,6 +167,9 @@ fn add_launched(
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));
+                split
+                    .python_path
+                    .extend(wrappers::python_path(&unit.args, start));
                 unit = inner(unit, key, start, &Hands::Nothing);
             }
             Launch::Input { start, replace } => {
@@ -166,6 +177,9 @@ fn add_launched(
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));
+                split
+                    .python_path
+                    .extend(wrappers::python_path(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }

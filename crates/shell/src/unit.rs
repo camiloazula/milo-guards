@@ -396,6 +396,10 @@ pub(crate) struct Split {
     /// line. Node reads them as its own options, and a script it starts gets
     /// them too.
     pub(crate) node_options: Vec<Arg>,
+    /// The values `PYTHONPATH` is given for the program being added, noted
+    /// as `node_options` is. Python puts each folder in it where an import
+    /// looks, and runs its `sitecustomize` before any code it is given.
+    pub(crate) python_path: Vec<Arg>,
     /// How deep the line is inside something that may not run, or runs in
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.

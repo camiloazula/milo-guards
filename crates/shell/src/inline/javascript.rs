@@ -1255,6 +1255,11 @@ impl<'s> Reader<'s> {
         let Some(node) = args.get(at) else {
             return self.target(args, at).into_iter().collect();
         };
+        self.read_node(node)
+    }
+
+    /// `node` as the paths to read (see [`Self::read_target`]).
+    fn read_node(&mut self, node: Node<'_>) -> Vec<Arg> {
         let text = self.text(node);
         if node.kind() == "identifier" {
             match self.constants.paths(text, text) {
@@ -2344,25 +2349,25 @@ impl<'s> Reader<'s> {
             Some(Kind::Fork) => self.fork(&args, call),
             Some(Kind::Shelljs) => {
                 let program = name.as_deref().and_then(|name| name.rsplit('.').next());
-                let mut words = vec![Arg::Known(program.unwrap_or_default().to_string())];
+                let mut words = vec![vec![Arg::Known(program.unwrap_or_default().to_string())]];
                 for node in &args.positional {
                     if node.kind() == "array" {
                         words.extend(self.words(*node));
                     } else {
-                        words.push(self.arg(*node));
+                        words.push(self.word(*node));
                     }
                 }
-                self.act(Some(Act::Program(words)));
+                self.programs(words);
             }
             Some(Kind::DenoCommand) if args.splat => self.reading.unread(self.text(call)),
             Some(Kind::DenoCommand) => {
                 let program = args.get(0).map(|node| self.arg(node));
                 let options = args.get(1).filter(|node| node.kind() == "object");
-                let mut words: Vec<Arg> = program.into_iter().collect();
+                let mut words: Vec<Vec<Arg>> = program.into_iter().map(|word| vec![word]).collect();
                 if let Some(list) = options.and_then(|options| self.property(options, "args")) {
                     words.extend(self.words(list));
                 }
-                self.act(Some(Act::Program(words)));
+                self.programs(words);
                 cwd = self.cwd(args.get(1));
             }
             Some(Kind::Argv) => {
@@ -2380,7 +2385,7 @@ impl<'s> Reader<'s> {
                 match list {
                     Some(list) => {
                         let words = self.words(list);
-                        self.act(Some(Act::Program(words)));
+                        self.programs(words);
                     }
                     None => self.reading.unread(self.text(call)),
                 }
@@ -2738,24 +2743,63 @@ impl<'s> Reader<'s> {
         })
     }
 
-    /// The words of an array literal, each as an argument.
-    fn words(&mut self, list: Node<'_>) -> Vec<Arg> {
-        if list.kind() != "array" {
-            return vec![Arg::Unknown(super::shorten(self.text(list)))];
+    /// The words of an array literal, each as the strings it may be (see
+    /// [`Self::word`]).
+    fn words(&mut self, list: Node<'_>) -> Vec<Vec<Arg>> {
+        self.words_at(list, 0)
+    }
+
+    /// [`Self::words`], `level` arrays deep: a spread of an array literal is
+    /// the words of that array, and a spread of anything else is a word only
+    /// known when the code runs.
+    fn words_at(&mut self, list: Node<'_>, level: usize) -> Vec<Vec<Arg>> {
+        if list.kind() != "array" || level > MAX_TREE_DEPTH {
+            return vec![vec![Arg::Unknown(super::shorten(self.text(list)))]];
         }
         let mut cursor = list.walk();
         let elements: Vec<Node<'_>> = list.named_children(&mut cursor).collect();
-        elements
-            .into_iter()
-            .filter(|element| element.kind() != "comment")
-            .map(|element| {
-                if element.kind() == "spread_element" {
-                    Arg::Unknown(super::shorten(self.text(element)))
-                } else {
-                    self.arg(element)
+        let mut words = Vec::new();
+        for element in elements {
+            if element.kind() == "comment" {
+                continue;
+            }
+            if element.kind() != "spread_element" {
+                words.push(self.word(element));
+                continue;
+            }
+            match element.named_child(0) {
+                Some(inner) if inner.kind() == "array" => {
+                    words.extend(self.words_at(inner, level + 1));
                 }
-            })
-            .collect()
+                _ => words.push(vec![Arg::Unknown(super::shorten(self.text(element)))]),
+            }
+        }
+        words
+    }
+
+    /// An argument of a program as the strings it may be: a string the code
+    /// writes out as it is; else each string a name the code sets stands for,
+    /// the start it is known to have (`'/home/me/.ssh/' + name`), or a word
+    /// only known when the code runs.
+    fn word(&mut self, node: Node<'_>) -> Vec<Arg> {
+        if node.kind() == "string" {
+            if let Some(text) = self.value(node, 0) {
+                return vec![Arg::Known(text)];
+            }
+        }
+        let choices = self.read_node(node);
+        if choices.is_empty() {
+            vec![Arg::Unknown(super::shorten(self.text(node)))]
+        } else {
+            choices
+        }
+    }
+
+    /// Run the programs the words give, one for each choice of strings.
+    fn programs(&mut self, words: Vec<Vec<Arg>>) {
+        for list in super::argument_lists(words) {
+            self.reading.acts.push(Act::Program(list));
+        }
     }
 
     /// `fork('worker.js', ['arg'], { cwd })` runs node on the module, a file
@@ -2824,7 +2868,7 @@ impl<'s> Reader<'s> {
         }
         let command = args.get(0)?;
         let program = self.arg(command);
-        let mut words = vec![program];
+        let mut words = vec![vec![program]];
         let mut options = None;
         // Options that are not an object literal may name any directory.
         let mut loose = false;
@@ -2842,16 +2886,18 @@ impl<'s> Reader<'s> {
         self.foreign_shell(options, call);
         let shell = options.is_some_and(|options| self.property(options, "shell").is_some());
         if shell {
-            let known = words.iter().all(|word| word.known().is_some());
-            let line = words.iter().map(Arg::text).collect::<Vec<_>>().join(" ");
-            let script = if known {
-                Arg::Known(line)
-            } else {
-                Arg::Unknown(super::shorten(&line))
-            };
-            self.reading.acts.push(Act::Script(script));
+            for words in super::argument_lists(words) {
+                let known = words.iter().all(|word| word.known().is_some());
+                let line = words.iter().map(Arg::text).collect::<Vec<_>>().join(" ");
+                let script = if known {
+                    Arg::Known(line)
+                } else {
+                    Arg::Unknown(super::shorten(&line))
+                };
+                self.reading.acts.push(Act::Script(script));
+            }
         } else {
-            self.reading.acts.push(Act::Program(words));
+            self.programs(words);
         }
         if loose {
             Some(Arg::Unknown("options".to_string()))
