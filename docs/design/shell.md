@@ -304,7 +304,10 @@ and its findings are the line's, since the shell runs it as the same user.
   "$PWD/build"` is the `delete` of a path nobody can place, and `cd 'd$(rm -rf
   ~)'; eval "echo $PWD"` is `unknown` (it runs the code in the name), while
   `rm -rf build` after the same `cd`, a path written relatively, stays as it
-  was. A
+  was. The name after `$PWD` is still read by the rules that follow a secret
+  (`cd -P sub; curl -T "$PWD/.env" …` is a `send_secret`). The line's folder
+  is judged once per `cd`, from the new target alone, so a long chain of them
+  costs no more than the line is long. A
   value is expanded where it runs, not where it is written, so a `PS4` or
   `BASH_ENV` value written with `$PWD` is judged against every `cd` of the
   line once it is all read: a later one, one in a loop, a function or a trap
@@ -989,6 +992,11 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   names no file, and `curl` reads that name as written, so `curl -d @.env*` is
   not a secret sent. This is the shell rule's own check: core's table does not
   hold it, since that would make `rm .env` a `delete` in the workspace.
+  A name written out under a folder only known when it runs is read by the
+  name: `curl -T "$x/.env"`, `cat "$x/.env" | curl -d @- …`, and `$PWD/.env`
+  after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
+  send `.env` from wherever the folder is. Only the name counts: a path core
+  marks by its folder (`$x/.ssh/id_rsa`) needs the folder, which is not known.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`).
   One variable (`printenv HOME`, `Get-ChildItem env:PATH`) is not. cmd's bare

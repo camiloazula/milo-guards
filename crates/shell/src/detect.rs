@@ -8,6 +8,7 @@ use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use milo_guards_core::spelling::glob;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
@@ -548,6 +549,48 @@ impl Checker<'_> {
             );
         }
     }
+}
+
+/// The word `arg` with each folder only known when it runs taken off the
+/// front of a name the line wrote out (`"$PWD/.env"` after a `cd` to a name
+/// that may hold code, `"$x/.env"`): the name, as the rules that follow a
+/// secret read it, since a secret is named by its file name wherever the
+/// folder is. `None` when no name is left to read or the word holds another
+/// expansion past the last folder.
+fn named_in_unknown_folder(arg: &Arg) -> Option<Arg> {
+    let Arg::Template { text, .. } = arg else {
+        return None;
+    };
+    let folder = format!("{}/", crate::posix::OPAQUE);
+    if !text.contains(&folder) {
+        return None;
+    }
+    let name = text.replace(&folder, "");
+    (!name.contains(crate::posix::OPAQUE)).then_some(Arg::Known(name))
+}
+
+/// `unit` with its words read by the name they end in, for the rules that
+/// follow a secret (`secret_read`, `send`, `secrets`): `curl -T "$PWD/.env"`
+/// sends `.env` from wherever `$PWD` is. The words of any other rule stay as
+/// the line wrote them, only known when it runs.
+fn named(unit: &Unit) -> Cow<'_, Unit> {
+    if unit.shell != Shell::Posix {
+        return Cow::Borrowed(unit);
+    }
+    let names: Vec<Option<Arg>> = unit.args.iter().map(named_in_unknown_folder).collect();
+    if names.iter().all(Option::is_none) {
+        return Cow::Borrowed(unit);
+    }
+    let args = unit
+        .args
+        .iter()
+        .zip(names)
+        .map(|(arg, name)| name.unwrap_or_else(|| arg.clone()))
+        .collect();
+    Cow::Owned(Unit {
+        args,
+        ..Unit::clone(unit)
+    })
 }
 
 /// The paths a listing stage hands on.

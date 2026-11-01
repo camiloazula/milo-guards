@@ -102,6 +102,10 @@ impl Checker<'_> {
         if !opens(unit.shell, key) {
             return;
         }
+        // A file named under a folder only known when it runs is read by
+        // its name (`cat "$x/.env"`).
+        let named = super::named(unit);
+        let unit: &Unit = &named;
         let split = self.split;
         // A `for` over words written out is read with each word in place of
         // its variable, as if the body were written out.
@@ -168,6 +172,8 @@ impl Checker<'_> {
     /// Judge one place a read lands on, and add the finding. `written` is
     /// the argument it came from (what a pipeline handed on is not one).
     fn secret_in(&mut self, scope: &Scope<'_>, arg: &Arg, written: &Arg, reach: Reach) {
+        let name = super::named_in_unknown_folder(arg);
+        let arg = name.as_ref().unwrap_or(arg);
         // Most words are one path as written.
         let spelled;
         let each: &[Arg] = if one_path(arg, scope.shell) {

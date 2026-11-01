@@ -301,6 +301,10 @@ pub(crate) struct Split {
     pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// Whether `dir` is a place the line moved to that may hold code (see
+    /// [`holds_code`]) or is only known when it runs, kept as the `cd`s are
+    /// read so the folder's whole name is not read again after each one.
+    dir_code: bool,
     /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
     /// `mount`) anywhere, before or after a `cd` in its text: a single letter
     /// in a `cd` may be one of another provider, not a disk.
@@ -443,6 +447,7 @@ pub(crate) struct Began {
 #[derive(Debug, Clone)]
 pub(crate) struct Place {
     dir: Option<Arg>,
+    dir_code: bool,
     moves: usize,
     later: usize,
 }
@@ -496,11 +501,7 @@ impl Split {
     /// makes `PWD` the physical path (`cd -P`, `set -P`: a link's target is
     /// the name) or sets `CDPATH` and moves (the folder it finds is the name).
     pub(crate) fn pwd_is_plain(&self) -> bool {
-        !(self.pwd.physical || self.moves_by_cdpath())
-            && self
-                .dir
-                .as_ref()
-                .is_none_or(|dir| dir.known().is_some_and(|name| !holds_code(name)))
+        !(self.pwd.physical || self.moves_by_cdpath() || self.dir_code)
     }
 
     /// Whether the line sets `CDPATH` and moves: the folder `cd` finds on it
@@ -588,16 +589,26 @@ impl Split {
             let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
             // Once the line makes a drive, a drive letter may name it: the
             // place is only known when it runs.
-            self.dir = Some(match dir {
+            let dir = match dir {
                 Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
                     Arg::Unknown(text)
                 }
                 dir => dir,
-            });
-            self.pwd.unplain |= self
-                .dir
-                .as_ref()
-                .is_none_or(|dir| dir.known().is_none_or(holds_code));
+            };
+            // The folder holds code when the target does (it replaced the
+            // folder, or was put after it), or when the folder did and the
+            // target was put after it: a join is longer than its target.
+            // Only the target is read, never the whole folder again.
+            let target_text = target.known();
+            self.dir_code = match &dir {
+                Arg::Known(text) => {
+                    target_text.is_none_or(holds_code)
+                        || (self.dir_code && target_text != Some(text.as_str()))
+                }
+                _ => true,
+            };
+            self.pwd.unplain |= self.dir_code;
+            self.dir = Some(dir);
         }
         self.units.push(unit);
     }
@@ -814,6 +825,7 @@ impl Split {
     pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
         if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
+            self.dir_code = true;
         }
         self.later.push(Later {
             units: began.units..self.units.len(),
@@ -889,6 +901,7 @@ impl Split {
     pub(crate) fn dir_snapshot(&self) -> Place {
         Place {
             dir: self.dir.clone(),
+            dir_code: self.dir_code,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -908,6 +921,7 @@ impl Split {
             }
         }
         self.dir = place.dir;
+        self.dir_code = place.dir_code;
         self.moves = place.moves;
     }
 
