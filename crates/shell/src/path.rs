@@ -166,10 +166,7 @@ impl Resolver {
     /// `\\?\UNC\server\share`) in PowerShell or cmd. Reading it contacts
     /// the server, which is offered the user's credentials.
     ///
-    /// Core reads a share's root only when it holds no wildcard, and takes
-    /// the `?` of a `\\?\` long path for one, so the root is read here: two
-    /// separators start it, and what is not a share is a long path or a device
-    /// that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`).
+    /// The spelling is read by core's `spelling::network`.
     pub(crate) fn network(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
         if shell == Shell::Posix {
             return false;
@@ -187,33 +184,7 @@ impl Resolver {
                 }
             }
         }
-        let separators = flavour(shell).separators();
-        let mut chars = text.chars();
-        if !(chars.next().is_some_and(|c| separators.contains(&c))
-            && chars.next().is_some_and(|c| separators.contains(&c)))
-        {
-            return false;
-        }
-        // Windows folds repeated separators and drops `.` parts, so
-        // `\\.\\UNC\host\share` and `\\.\.\UNC\host\share` are the same share; a
-        // `..` could undo any of it, so a path with one counts.
-        let mut raw = text[2..].split(separators);
-        let first = raw.next().unwrap_or_default();
-        let rest: Vec<&str> = raw
-            .filter(|part| !part.is_empty() && *part != ".")
-            .collect();
-        if first == ".." || rest.contains(&"..") {
-            return true;
-        }
-        match first {
-            // The long-path and device prefixes (`\\?\`, `\\.\`) name a
-            // disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) unless a share
-            // follows: `UNC\server\share`, or `GLOBALROOT\Device\Mup\server\share`.
-            "?" | "." => rest.first().is_some_and(|kind| {
-                kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
-            }),
-            _ => true,
-        }
+        milo_guards_core::spelling::network(text, flavour(shell))
     }
 
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in

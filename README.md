@@ -24,12 +24,26 @@ verdict back in microseconds.
   and changes the disk, `./script.sh` cannot be told. A line that only reads
   also says whether the reads stay in the workspace: `git status` does, `cat
   ~/.ssh/id_ed25519` does not.
+- **file** judges one read or write of a path through a file API, which no shell
+  line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
+  drives, shares, long paths, short names, any case): a read of
+  `~/.ssh/id_ed25519` is risky ("reads your SSH keys"), a read of `src/main.rs`
+  is safe, a write beyond the workspace or to a startup file or the
+  repository's history is risky, and a path that is not one literal path (a
+  wildcard, a variable) is unreadable.
+- **url** judges a URL an agent is about to fetch, by the host a URL parser reads
+  and never by how it is spelled. `http://2130706433/` is `127.0.0.1`, so it is
+  risky ("fetches your own machine"), like `http://192.168.1.1/` and
+  `http://169.254.169.254/` (a cloud metadata service); a URL with a password
+  in it (shown without the password), a `file:` URL and a scheme that is not the
+  web are risky too. `https://docs.rs/url` is safe.
 
-More guards will sit beside it.
+More guards will sit beside them.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell` feature is on by default.
+Depend on `milo-local-guards` by git. The `shell`, `file` and `url` features are on by
+default.
 
 ```toml
 [dependencies]
@@ -50,6 +64,15 @@ assert!(!assessment.is_safe());
 for finding in assessment.findings() {
     // Ask, refuse or let it through: that is your call.
     println!("{}: {}", finding.rule.name(), finding.reason); // delete: deletes your home directory
+}
+
+// The same places judge a read or a write of one path through a file API.
+use milo_local_guards::file::{judge, Access};
+
+assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
+
+for finding in judge(Access::Read, "~/.ssh/id_ed25519", &paths).findings() {
+    println!("{}: {}", finding.rule.name(), finding.reason); // read_secret: reads your SSH keys
 }
 ```
 

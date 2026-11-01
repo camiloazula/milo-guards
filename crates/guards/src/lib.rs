@@ -34,6 +34,8 @@
 //! | Feature | Module | Judges |
 //! | --- | --- | --- |
 //! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace |
+//! | `file` (default) | `file` | one read or write of a path through a file API |
+//! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
@@ -61,6 +63,50 @@
 //! # }
 //! ```
 //!
+//! The file guard judges one read or write of one path, with the same
+//! `Paths`:
+//!
+//! ```
+//! # #[cfg(feature = "file")] {
+//! use milo_local_guards::file::{judge, Access, Rule};
+//! use milo_local_guards::Paths;
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+//!
+//! // Reading and editing the workspace's files is the agent's own business.
+//! assert!(judge(Access::Read, "src/main.rs", &paths).is_safe());
+//! assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
+//!
+//! // Reading a key is a finding; so is writing beyond the workspace.
+//! let assessment = judge(Access::Read, "~/.ssh/id_ed25519", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
+//! let assessment = judge(Access::Write, "../other/x", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::WriteOutside);
+//! # }
+//! ```
+//!
+//! A fetch is judged by its host, however the address is spelled:
+//!
+//! ```
+//! # #[cfg(feature = "url")] {
+//! use milo_local_guards::url::{judge, Rule};
+//! use milo_local_guards::Paths;
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+//!
+//! assert!(judge("https://docs.rs/url", &paths).is_safe());
+//!
+//! // `2130706433` is `127.0.0.1`, whatever it looks like.
+//! let assessment = judge("http://2130706433:9090/admin", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::LocalAddress);
+//! assert_eq!(assessment.findings()[0].rule.name(), "local_address");
+//!
+//! // The cloud metadata service is its own rule.
+//! let assessment = judge("http://169.254.169.254/latest/meta-data/", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::Metadata);
+//! # }
+//! ```
+//!
 //! What the caller gates with is named in the same `Paths`. It is judged as a
 //! protected path even inside the workspace, and a reason uses the caller's
 //! words:
@@ -79,17 +125,42 @@
 //! assert!(classify("cat ~/.agent/config.yaml", Shell::Posix, &paths).is_safe());
 //! # }
 //! ```
+//!
+//! The file guard reports a write to the same path with the caller's words
+//! and a rule of its own, so a caller can refuse this one and only ask on the
+//! others:
+//!
+//! ```
+//! # #[cfg(feature = "file")] {
+//! use milo_local_guards::file::{judge, Access, Rule};
+//! use milo_local_guards::{Paths, Protected};
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
+//!     .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+//!
+//! let assessment = judge(Access::Write, "~/.agent/config.yaml", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::WriteProtected);
+//! assert_eq!(assessment.findings()[0].reason, "writes to the agent's settings");
+//! assert!(judge(Access::Read, "~/.agent/config.yaml", &paths).is_safe());
+//! # }
+//! ```
 
 pub use milo_guards_core::{Assessment, Finding, Paths, Protected, ProtectedKind, RuleName};
 
 #[cfg(feature = "shell")]
 pub use milo_guards_shell as shell;
 
+#[cfg(feature = "file")]
+pub use milo_guards_file as file;
+
+#[cfg(feature = "url")]
+pub use milo_guards_url as url;
+
 /// The README's example, compiled and run with the doctests so it cannot
 /// drift from the code. Only rustdoc's doctest pass reads the file, so
 /// building this crate never needs the README: a build that vendors only
 /// this crate's folder still works.
-#[cfg(all(doctest, feature = "shell"))]
+#[cfg(all(doctest, feature = "shell", feature = "file"))]
 #[allow(
     clippy::disallowed_macros,
     reason = "the README include is read by rustdoc's doctest pass only"
