@@ -2314,7 +2314,11 @@ the workspace, and `effect_paths` lists it like any other.
   as the target the system opens, and each read from that folder is listed from
   each, so a caller checks both (`cd link/../etc && cat hosts` lists
   `<cwd>/etc`, `<cwd>/etc/hosts`, `<cwd>/link/../etc` and
-  `<cwd>/link/../etc/hosts`). Only a relative operand is joined to the folder: a
+  `<cwd>/link/../etc/hosts`). A pattern in that folder is a read from it like
+  any other, so `cd link/.. && cat *` lists `<cwd>` and `<cwd>` with
+  `Glob("*")`: the shell expands the pattern in the folded folder, and a
+  caller that resolved `<cwd>/link/..` on the disk would expand another one.
+  Only a relative operand is joined to the folder: a
   path the line writes out whole (absolute, or `~`) is opened from its first
   part, even when it spells the folder, so `cd /w/link/.. && cat
   /w/link/../etc/hosts` lists only `/w/link/../etc/hosts` for the read. A `..`

@@ -199,7 +199,9 @@ impl Context<'_> {
                 joined
                     && text
                         .strip_prefix(dir)
-                        .is_some_and(|rest| rest.starts_with('/'))
+                        // A pattern in the folder reduces to the folder itself,
+                        // with nothing after it.
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
             }) {
                 Some(dir) => (dir.len(), dots_before_a_part(dir, shell)),
                 None => (0, false),

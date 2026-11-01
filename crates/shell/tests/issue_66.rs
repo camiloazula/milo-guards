@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use common::{check_effect, path_disagreement, posix, windows};
 use milo_guards_shell::{effect, effect_paths, Effect, How, Paths, Reach, ReadPath, Shell};
@@ -803,6 +803,80 @@ fn powershell_and_cmd_paths_keep_their_dotdot_too() {
             effect(line, shell, &win),
             Effect::ReadsOnly(Reach::Workspace),
             "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_in_the_folder_a_cd_moved_to_is_listed_in_the_folded_folder() {
+    // The shell goes to the folded folder and expands the pattern there. A
+    // caller that resolves `<R>/link/..` on the disk follows the link and
+    // expands a different folder, so the folded glob must be listed.
+    let paths = posix();
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            ("cd link/.. && cat *", vec![exact(ROOT), glob(ROOT, "*")]),
+            (
+                "cd link/../etc && cat *.conf",
+                vec![
+                    exact("/home/me/work/repo/etc"),
+                    glob("/home/me/work/repo/etc", "*.conf"),
+                    exact("/home/me/work/repo/link/../etc"),
+                    glob("/home/me/work/repo/link/../etc", "*.conf"),
+                ],
+            ),
+        ],
+    );
+    // `cd -P` keeps the physical path: the kept glob is listed beside the
+    // folded one (`cd -P` lists its own flag as a path, left out here).
+    let list: Vec<ReadPath> = effect_paths("cd -P link/.. && cat *", Shell::Posix, &paths)
+        .unwrap()
+        .into_iter()
+        .filter(|read| !read.path.ends_with("-P"))
+        .collect();
+    assert_eq!(
+        list,
+        vec![
+            exact(ROOT),
+            glob(ROOT, "*"),
+            exact("/home/me/work/repo/link/.."),
+            glob("/home/me/work/repo/link/..", "*"),
+        ]
+    );
+    // Every pattern after a cd that folds a `..`, whatever the pattern and
+    // however the cd is written, has the folded folder.
+    for line in [
+        "cd link/.. && cat *.rs",
+        "cd link/.. && grep x *",
+        "cd link/.. && echo *",
+        "cd link/.. && wc -l *",
+        "cd link/.. && head *",
+        "cd link/.. && cat ?",
+        "cd link/.. && cat [ab]",
+        "cd link/.. && cat .*",
+        "cd link/.. && for f in *; do cat \"$f\"; done",
+        "cd src/.. && cat *",
+        "cd a/b/../.. && cat *",
+        "cd src/../.. && cat *",
+        "cd link && cd .. && cat *",
+        "pushd link/.. && cat *",
+        "cd link/..; cat *",
+        "cd link/..\ncat *",
+    ] {
+        let listed = effect_paths(line, Shell::Posix, &paths).unwrap();
+        let folder = if line.contains("src/../..") {
+            "/home/me/work"
+        } else {
+            ROOT
+        };
+        assert!(
+            listed
+                .iter()
+                .any(|read| matches!(read.how, How::Glob(_))
+                    && read.path.as_path() == Path::new(folder)),
+            "{line}: {listed:?}"
         );
     }
 }
