@@ -323,14 +323,21 @@ itself.
     is part of the name.
   - **A part before the last** loses one trailing dot, and nothing else, so
     `.git.\objects` is `.git\objects`.
-  - **A part with a wildcard** is not trimmed: what a pattern like `.g*.` can
-    match is judged by `glob`, which does not yet read the trailing dot.
+  - **A part with a wildcard** is judged as written, except where it could
+    reach `.git` (see `glob::reaches_git` below): there it is also trimmed
+    like any other part, the last part of all losing every trailing dot and
+    space (`*git.` and `'*git '` are `*git`) and one before it one dot. A
+    part that only trimming makes a catch-all (`*.` is `*`) is not taken as
+    the whole folder, which the resolver judges for a catch-all as written:
+    it matches `.git`, so `del *.` and `del /s /q "*.* "` are judged as
+    taking the repository's history.
   - **Short names.** A part directly in a workspace folder that is `GIT~N`, or
     `GI`, four hex digits and `~N` (the form Windows hashes a name to once
     names collide), may be the 8.3 short name of `.git`, which drops the dot.
     It is judged as the repository's history. Any other `NAME~N` is a plain
     name (`PROGRA~1`, `GITHUB~1`), as is a `GIT~1` deeper down, like a `.git`
-    there.
+    there. A pattern that can match such a name is read the same way (see
+    `glob::reaches_git` below).
   - **Known only when it runs.** The path is `Unknown`, since the spelling
     does not say which name it is, when a part:
     - holds a `:` below the drive or share: a stream of a file or folder
@@ -361,8 +368,8 @@ itself.
   `Windows` flavour a wildcard part directly in a workspace folder can pick
   `.git` (`*git`, `?git`, `????`), and the resolver answers the repository's
   history for it. `glob::reaches_git` tells it. The first wildcard part must
-  match `.git`. When it is the last part (and not a catch-all, which is the
-  whole folder) it takes `.git` itself. When more follows, the next part
+  match `.git`. When it is the last part (and not a catch-all as written, which is
+  the whole folder) it takes `.git` itself. When more follows, the next part
   must match one of `.git`'s own entries (`HEAD`, `config`, `index`,
   `objects`, `refs`, `hooks`, `info`, `logs`, `packed-refs`, `modules`, `lfs`,
   `worktrees`, `shallow`, `ORIG_HEAD`, `MERGE_HEAD`, `rebase-merge`,
@@ -370,7 +377,18 @@ itself.
   it, `*\bin` and `*\obj` do not. Only the part after the one that matches
   `.git` is read, so `*\logs` or `*\config` at the workspace root is judged
   risky even if the `*` picks a folder of that name that is not `.git`; that
-  is accepted as rare. Deeper than the workspace
+  is accepted as rare. On `Windows` each part read is also trimmed as a
+  name is (the pattern as written is tried too), so `*git.`, `'*git '` and
+  `*\objects.` reach it, and a part that can match `.git`'s 8.3 short name
+  counts as matching `.git` (`GIT~?`, `*~1`, `GI????~1`; `PROGRA~?` and
+  `GITHUB~?` do not): cmd matches short names, PowerShell does not, but the
+  resolver does not know the shell, and a literal `GIT~1` is judged
+  the same way. The hashed form (`GI`, four hex digits, `~N`) exists only
+  once `GIT~1` to `GIT~4` are taken, so a pattern matches it only when it
+  holds a literal `~` (`GI????~1`, `*~1`); `*2024*`, `*a*` and `*cafe*` stay
+  ordinary patterns. A pattern with no `~` (`GI*`, `git*`, `*1`) matches no
+  short name: PowerShell has none, and `cmd` skips a folder that a wildcard
+  matches. Deeper than the workspace
   folder (`src\*git`, `src\*\bin`) only the workspace's own `.git` is the
   model's to protect, so they stay the agent's. On the `Posix` flavour a
   wildcard does not match a leading dot, so `*git` and `?git` pass, unless
