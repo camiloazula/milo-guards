@@ -524,9 +524,10 @@ of their strictest, so each family below was added on that test.
   `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
   from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
   file's content is not in the line. Long options may be abbreviated as
-  `getopt_long` programs take them (`iptables --fl`).
+  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
+  takes any unique prefix too (`--set-default=trusted`).
 - **Services the system runs.** `systemctl disable` and `mask`, unless
-  `--user` is the last of `--user` and `--system`; `launchctl bootout`,
+  `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
   `unload`, `remove` and `disable`. The one thing read as the workspace's own
   is a plist inside the workspace: `launchctl unload ./x.plist` and
   `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`

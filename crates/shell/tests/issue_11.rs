@@ -554,7 +554,13 @@ fn the_same_names_in_powershell_and_cmd_stay_as_they_were() {
         check(
             shell,
             &windows,
-            &["hostname", "hostname -s", "service stop"],
+            &[
+                "hostname",
+                "hostname -s",
+                "service stop",
+                "hostname newname",
+                "service ufw stop",
+            ],
             &[],
         );
     }
@@ -931,4 +937,39 @@ fn an_option_value_is_not_the_verb_or_the_user_switch() {
         ],
         &[],
     );
+}
+
+// What the second review found.
+
+#[test]
+fn hostnamectl_json_takes_a_value_that_does_not_hide_the_verb() {
+    risky(&[
+        "hostnamectl --json short set-hostname x",
+        "hostnamectl --json pretty set-hostname x",
+        "hostnamectl --js short hostname x",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &["hostnamectl --json=short hostname"],
+        &[],
+    );
+}
+
+#[test]
+fn abbreviated_scope_switches_still_end_user() {
+    risky(&[
+        "systemctl --user --sys disable x",
+        "systemctl --user --sy disable x",
+        "systemctl --user --g disable x",
+        "systemctl --user --glob disable x",
+    ]);
+}
+
+#[test]
+fn firewall_cmd_takes_a_unique_prefix_of_a_long_option() {
+    risky(&[
+        "firewall-cmd --set-def=trusted",
+        "firewall-cmd --set-default=trusted",
+    ]);
 }

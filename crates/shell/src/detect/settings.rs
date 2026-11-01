@@ -318,7 +318,7 @@ impl Checker<'_> {
             "nft" => self.nft(args),
             "ufw" => self.ufw(args),
             "firewall-cmd" => {
-                if has_long(args, "panic-on", 8) || has_long(args, "set-default-zone", 16) {
+                if has_long(args, "panic-on", 8) || has_long(args, "set-default-zone", 7) {
                     self.add(Rule::SystemSettings, "changes the firewall", None);
                 }
             }
@@ -563,7 +563,7 @@ impl Checker<'_> {
         for name in &walk.longs {
             if is_option(name, "user", 2) {
                 user = true;
-            } else if is_option(name, "system", 4) || *name == "global" {
+            } else if is_option(name, "system", 2) || is_option(name, "global", 1) {
                 user = false;
             }
         }
@@ -846,7 +846,8 @@ impl Checker<'_> {
         let (shorts, longs): (&str, &[&str]) = if key == "timedatectl" {
             ("HMp", &["host", "machine", "property"])
         } else {
-            ("HM", &["host", "machine"])
+            // `hostnamectl --json MODE` takes its value too.
+            ("HM", &["host", "machine", "json"])
         };
         let words = getopt_operands(args, shorts, longs);
         let sets = match first_word(&words) {
