@@ -543,6 +543,14 @@ fn read_text(language: Language, arg: &Arg) -> Reading {
     }
 }
 
+/// The files that the `.backup` and `.save` commands in the statement `arg`
+/// write.
+fn replaced_files(arg: &Arg, dialect: Dialect) -> Vec<String> {
+    statement_text(arg)
+        .map(|(text, holes)| reader::replaced_files(text, dialect, holes))
+        .unwrap_or_default()
+}
+
 /// What the file a `SQLite`-style client opens is: the agent's own, or not.
 struct Embedded<'a> {
     file: Option<&'a Arg>,
@@ -1065,16 +1073,16 @@ fn reads_input(unit: &Unit) -> bool {
     !files
 }
 
-/// The text of `args` joined, and whether it has expansions in it; `None`
-/// when a word is only known when it runs.
-fn joined(args: &[&Arg]) -> Option<(String, bool)> {
+/// The text of `args` joined by `separator`, and whether it has expansions in
+/// it; `None` when a word is only known when it runs.
+fn joined(args: &[&Arg], separator: char) -> Option<(String, bool)> {
     let mut text = String::new();
     let mut holes = false;
     for (at, arg) in args.iter().enumerate() {
         let (word, hole) = statement_text(arg)?;
         holes |= hole;
         if at > 0 {
-            text.push(' ');
+            text.push(separator);
         }
         text.push_str(word);
     }
@@ -1102,7 +1110,7 @@ fn echo_said(unit: &Unit) -> Said {
         }
     }
     let words: Vec<&Arg> = rest.iter().collect();
-    let Some((text, holes)) = joined(&words) else {
+    let Some((text, holes)) = joined(&words, ' ') else {
         return Said {
             texts: [NOTHING_KNOWN; READINGS],
             newline,
@@ -1185,10 +1193,18 @@ fn printf_said(unit: &Unit, left: usize) -> Said {
     }
 }
 
-/// What a piped `Write-Output` says: its words, as written.
+/// What a piped `Write-Output` says: its words, as written. PowerShell sends
+/// each argument to a program as a line of its own, and `cmd`'s `echo` says
+/// them with a space between.
 fn output_said(unit: &Unit) -> Said {
     let words: Vec<&Arg> = unit.args.iter().collect();
-    let said = joined(&words).map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes));
+    let separator = if unit.shell == Shell::PowerShell {
+        '\n'
+    } else {
+        ' '
+    };
+    let said =
+        joined(&words, separator).map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes));
     Said {
         texts: [said.clone(), said.clone(), said.clone(), said],
         newline: true,
@@ -1228,6 +1244,10 @@ fn unique<'a>(texts: impl Iterator<Item = &'a Arg>) -> Vec<&'a Arg> {
 /// A stage of a pipeline: the pipeline and the stage's index in it.
 type StageKey = (usize, usize);
 
+/// Where a unit runs: the folder a `cd` moved it to, and whether its
+/// wildcards match hidden names.
+type RunsIn = (Option<Arg>, bool);
+
 /// What the line says to its clients, worked out once for each stage and
 /// reused for every client of the stage after it: a line may hold thousands
 /// of clients, and each one reading again what every program of the stage
@@ -1241,6 +1261,12 @@ pub(super) struct Cache {
     /// The stages and languages whose findings a client has already given;
     /// another client of the same language says the same.
     judged: HashSet<(StageKey, Language)>,
+    /// The files that `.backup` and `.save` in what each stage says write,
+    /// for each dialect.
+    files: HashMap<(StageKey, Language), Rc<Vec<String>>>,
+    /// The places (the folder a `cd` moved to, and whether wildcards match
+    /// hidden names) whose clients have judged those files.
+    backed: HashMap<(StageKey, Language), Vec<RunsIn>>,
 }
 
 /// The stage whose output is the input of `unit`.
@@ -1387,7 +1413,7 @@ impl Checker<'_> {
                     self.add(Rule::DropData, "deletes data in a database", name);
                 }
             }
-            "mysqladmin" => self.mysqladmin(args),
+            "mysqladmin" | "mariadb-admin" => self.mysqladmin(args),
             _ => {}
         }
     }
@@ -1436,6 +1462,53 @@ impl Checker<'_> {
         }
     }
 
+    /// The files that the `.backup` and `.save` commands in what the stage
+    /// `key` says write, worked out once.
+    fn stage_files(&mut self, key: StageKey, dialect: Dialect) -> Rc<Vec<String>> {
+        let language = Language::Sql(dialect);
+        if let Some(files) = self.data.files.get(&(key, language)) {
+            return Rc::clone(files);
+        }
+        let mut files: Vec<String> = Vec::new();
+        for text in self.stage_said(key).iter() {
+            for name in replaced_files(text, dialect) {
+                if !files.contains(&name) {
+                    files.push(name);
+                }
+            }
+        }
+        let files = Rc::new(files);
+        self.data.files.insert((key, language), Rc::clone(&files));
+        files
+    }
+
+    /// Say that a file a database client replaces is not the agent's own.
+    fn judge_files(&mut self, unit: &Unit, files: &[String]) {
+        for name in files {
+            if !self.is_own_database(unit, name) {
+                let target = Arg::Known(name.clone());
+                self.add(
+                    Rule::DropData,
+                    "replaces a file outside the workspace",
+                    Some(&target),
+                );
+            }
+        }
+    }
+
+    /// Whether the database `name` (as given to `sqlite3` or `duckdb`) is the
+    /// agent's own: in memory, or a file the workspace or a temporary folder
+    /// holds.
+    fn is_own_database(&self, unit: &Unit, name: &str) -> bool {
+        match database(name) {
+            Database::Memory => true,
+            Database::Path(path) => self
+                .place(unit.shell, unit.scope(), &Arg::Known(path))
+                .harmless(),
+            Database::Elsewhere => false,
+        }
+    }
+
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
@@ -1443,12 +1516,8 @@ impl Checker<'_> {
         statements.extend(self.split.fed_to(at).cloned());
         let own_file = match found.file {
             None => true,
-            Some(file) => match file.known().map(database) {
-                Some(Database::Memory) => true,
-                Some(Database::Path(path)) => self
-                    .place(unit.shell, unit.scope(), &Arg::Known(path))
-                    .harmless(),
-                Some(Database::Elsewhere) => false,
+            Some(file) => match file.known() {
+                Some(name) => self.is_own_database(unit, name),
                 None => self.place(unit.shell, unit.scope(), file).harmless(),
             },
         };
@@ -1468,6 +1537,22 @@ impl Checker<'_> {
             .chain(said_readings.iter())
             .any(|reading| reading.moves);
         let own = !moves && (found.read_only || own_file);
+        // `.backup` and `.save` replace the file they are given, even for a
+        // client opened `-readonly`.
+        for statement in &statements {
+            self.judge_files(unit, &replaced_files(statement, dialect));
+        }
+        if let Some(key) = feeding(unit) {
+            // What the stage says is worked out once, and judged once for
+            // each place its clients run in.
+            let place = (unit.dir.clone(), unit.hidden);
+            let judged = self.data.backed.entry((key, language)).or_default();
+            if !judged.contains(&place) {
+                judged.push(place);
+                let files = self.stage_files(key, dialect);
+                self.judge_files(unit, &files);
+            }
+        }
         let all = statements
             .iter()
             .zip(readings)

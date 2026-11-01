@@ -634,37 +634,58 @@ fn is_word(token: Option<&Token>, word: &str) -> bool {
     matches!(token, Some(Token::Word(w)) if w == word)
 }
 
-/// Whether the statement `tokens`, whose `DELETE` or `UPDATE` is at `verb`,
-/// has a `WHERE` that picks rows. A `WHERE` that picks all of them (`WHERE
-/// 1`, `WHERE TRUE`, `WHERE 1 = 1`) does not.
-fn has_where(tokens: &[Token], verb: usize) -> bool {
+/// For every `DELETE` or `UPDATE` of the statement `tokens`, whether it has a
+/// `WHERE` that picks rows; the answers are at the verb's index. A `WHERE`
+/// that picks all of them (`WHERE 1`, `WHERE TRUE`, `WHERE 1 = 1`) does not.
+/// A verb's `WHERE` is the first one at its own depth of parentheses, before a
+/// `)` that closes it or a word that starts the next statement. All of them
+/// are found in one pass, so a statement of many verbs is read in linear time.
+fn wheres(tokens: &[Token]) -> Vec<bool> {
+    let mut found = vec![false; tokens.len()];
+    // The verbs still looking for their `WHERE`, with the depth each is at;
+    // a `)` ends the deeper ones, so the depths never fall up the stack.
+    let mut pending: Vec<(usize, usize)> = Vec::new();
     let mut depth = 0usize;
-    for (at, token) in tokens.iter().enumerate().skip(verb + 1) {
+    for (at, token) in tokens.iter().enumerate() {
         match token {
             Token::Symbol('(') => depth += 1,
             Token::Symbol(')') => {
-                if depth == 0 {
-                    return false;
+                while pending.last().is_some_and(|(_, held)| *held >= depth) {
+                    pending.pop();
                 }
-                depth -= 1;
+                depth = depth.saturating_sub(1);
             }
-            Token::Word(word) if depth == 0 => {
-                if word == "WHERE" {
-                    return !picks_all(tokens.get(at + 1..).unwrap_or_default());
+            Token::Word(word) => {
+                let here = pending
+                    .iter()
+                    .rev()
+                    .take_while(|(_, held)| *held == depth)
+                    .count();
+                if here > 0 && word == "WHERE" {
+                    let picks = !picks_all(tokens.get(at + 1..).unwrap_or_default());
+                    for (verb, _) in pending.split_off(pending.len() - here) {
+                        if let Some(found) = found.get_mut(verb) {
+                            *found = picks;
+                        }
+                    }
+                } else if STARTS_A_STATEMENT.contains(&word.as_str()) {
+                    pending.truncate(pending.len() - here);
                 }
-                if STARTS_A_STATEMENT.contains(&word.as_str()) {
-                    return false;
+                if matches!(word.as_str(), "DELETE" | "UPDATE") {
+                    pending.push((at, depth));
                 }
             }
             _ => {}
         }
     }
-    false
+    found
 }
 
 /// Whether the condition that starts `tokens` is one that is true for every
 /// row.
 fn picks_all(tokens: &[Token]) -> bool {
+    // No condition that picks all rows has more than three parts, so a
+    // fourth is enough to say it is not one.
     let condition: Vec<&str> = tokens
         .iter()
         .take_while(|token| {
@@ -680,6 +701,7 @@ fn picks_all(tokens: &[Token]) -> bool {
             Token::Symbol('(' | ')') => None,
             _ => Some("?"),
         })
+        .take(4)
         .collect();
     matches!(
         condition.as_slice(),
@@ -710,15 +732,11 @@ fn is_merge(tokens: &[Token]) -> bool {
     }
 }
 
-/// Whether the `THEN` before the verb at `verb` ends a `WHEN [NOT] MATCHED …`
-/// clause: only there is `THEN DELETE` or `THEN UPDATE` part of a `MERGE`,
-/// which picks its rows with its `ON`.
-fn in_matched_clause(tokens: &[Token], verb: usize) -> bool {
-    let Some(when) = tokens.get(..verb).and_then(|before| {
-        before
-            .iter()
-            .rposition(|token| is_word(Some(token), "WHEN"))
-    }) else {
+/// Whether the `THEN` before a verb ends a `WHEN [NOT] MATCHED …` clause, given
+/// where the last `WHEN` before it is: only there is `THEN DELETE` or `THEN
+/// UPDATE` part of a `MERGE`, which picks its rows with its `ON`.
+fn in_matched_clause(tokens: &[Token], when: Option<usize>) -> bool {
+    let Some(when) = when else {
         return false;
     };
     is_word(tokens.get(when + 1), "MATCHED")
@@ -895,12 +913,19 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
         return Reading::UNREADABLE;
     }
     let merge = is_merge(tokens);
+    // Worked out once, for the first verb that needs it, and the last `WHEN`
+    // seen: a statement of many verbs is read in linear time.
+    let mut picked: Option<Vec<bool>> = None;
+    let mut when = None;
     for (at, token) in tokens.iter().enumerate() {
         if let Some(found) = dynamic_sql(tokens, at, scope) {
             reading.merge(found);
         }
         let Token::Word(word) = token else { continue };
         let before = at.checked_sub(1).and_then(|i| tokens.get(i));
+        if word == "WHEN" {
+            when = Some(at);
+        }
         match word.as_str() {
             "DROP" if !drops_no_data(tokens, at, scope.dialect) => reading.destroys = true,
             "TRUNCATE" if tokens.get(at + 1) != Some(&Token::Symbol('(')) => {
@@ -910,8 +935,14 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                 let part = matches!(before, Some(Token::Symbol(',')))
                     || matches!(before, Some(Token::Word(w)) if NOT_A_VERB_AFTER.contains(&w.as_str()))
                     || is_clause(tokens, at)
-                    || (merge && is_word(before, "THEN") && in_matched_clause(tokens, at));
-                if !part && !has_where(tokens, at) {
+                    || (merge && is_word(before, "THEN") && in_matched_clause(tokens, when));
+                if !part
+                    && !picked
+                        .get_or_insert_with(|| wheres(tokens))
+                        .get(at)
+                        .copied()
+                        .unwrap_or_default()
+                {
                     reading.destroys = true;
                 }
             }
@@ -1026,9 +1057,43 @@ fn meta_name(text: &str) -> (String, &str) {
 /// Both shells take any start of a command's name for the command
 /// (`.sh echo hi` runs `.shell`, `.rea` is `.read`), so a name counts as every
 /// one of these it starts.
-const DOT_COMMANDS: [&str; 9] = [
+const DOT_COMMANDS: [&str; 11] = [
     ".shell", ".system", ".open", ".attach", ".read", ".output", ".once", ".import", ".restore",
+    ".backup", ".save",
 ];
+
+/// Whether the dot command `name` is `.backup` or `.save`, which write the
+/// database to a file that they replace. Both shells take the shortest start
+/// of the name that no other command has: `.bac` and `.sa`; `.ba` is also
+/// `.bail`, and `.b` and `.s` start many.
+fn is_backup(name: &str) -> bool {
+    let starts = |command: &str, least: usize| name.len() >= least && command.starts_with(name);
+    starts(".backup", ".bac".len()) || starts(".save", ".sa".len())
+}
+
+/// The files that the `.backup` and `.save` commands of `text` write, as the
+/// last word of each: `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace
+/// the file whatever the database they copy from. Only the clients with dot
+/// commands have them.
+pub(super) fn replaced_files(text: &str, dialect: Dialect, holes: bool) -> Vec<String> {
+    if !dialect.dot_commands() {
+        return Vec::new();
+    }
+    let Some(tokens) = tokenize(text, dialect, holes, Backslash::Dialect) else {
+        return Vec::new();
+    };
+    tokens
+        .iter()
+        .filter_map(|token| match token {
+            Token::Meta(text) => {
+                let (name, rest) = meta_name(text);
+                let (words, _) = meta_words(rest);
+                is_backup(&name).then(|| words.last().cloned()).flatten()
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 /// What a client command (`\c db`, `\! ls`, `.shell ls`, `\gexec`) does.
 /// `holes` says the text came from a double-quoted shell word.
@@ -1079,6 +1144,15 @@ fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Re
     // `.restore` replaces the whole database with a file.
     if name == ".restore" {
         reading.destroys = true;
+    }
+    // `.backup` and `.save` replace a file that only the shell knows.
+    if matches!(name, ".backup" | ".save")
+        && holes
+        && words
+            .last()
+            .is_some_and(|word| word.starts_with(['$', '`', '%']))
+    {
+        reading.unreadable = true;
     }
     reading
 }
@@ -1255,6 +1329,76 @@ pub(super) fn runs_script(command: &str) -> bool {
     )
 }
 
+/// Whether the Lua script `script` empties a database or deletes what it
+/// lists: it names `FLUSHALL` or `FLUSHDB`, or calls `DEL` or `UNLINK` and
+/// also `KEYS` or `SCAN`. The commands are the strings it calls, so `KEYS[1]`,
+/// the keys the script is given, is not a listing.
+fn script_destroys(script: &str) -> bool {
+    let lower = script.to_ascii_lowercase();
+    if lower.contains("flushall") || lower.contains("flushdb") {
+        return true;
+    }
+    let (mut deletes, mut lists) = (false, false);
+    for text in lua_strings(&lower) {
+        match text.trim() {
+            "del" | "unlink" => deletes = true,
+            "keys" | "scan" => lists = true,
+            _ => {}
+        }
+    }
+    deletes && lists
+}
+
+/// The strings of a Lua script: `'…'`, `"…"` and `[[…]]` (with any number of
+/// `=` between the brackets).
+fn lua_strings(script: &str) -> Vec<String> {
+    let chars: Vec<char> = script.chars().collect();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        match c {
+            '\'' | '"' => {
+                let mut text = String::new();
+                at += 1;
+                while let Some(&next) = chars.get(at) {
+                    at += 1;
+                    match next {
+                        '\\' => {
+                            text.extend(chars.get(at));
+                            at += 1;
+                        }
+                        next if next == c => break,
+                        next => text.push(next),
+                    }
+                }
+                found.push(text);
+            }
+            '[' => {
+                let equals = chars
+                    .get(at + 1..)
+                    .map_or(0, |rest| rest.iter().take_while(|c| **c == '=').count());
+                if chars.get(at + 1 + equals) == Some(&'[') {
+                    let close: Vec<char> = std::iter::once(']')
+                        .chain(std::iter::repeat_n('=', equals))
+                        .chain(std::iter::once(']'))
+                        .collect();
+                    let body = chars.get(at + 2 + equals..).unwrap_or_default();
+                    let end = body
+                        .windows(close.len())
+                        .position(|window| window == close.as_slice())
+                        .unwrap_or(body.len());
+                    found.push(body.get(..end).unwrap_or_default().iter().collect());
+                    at += 2 + equals + end + close.len();
+                } else {
+                    at += 1;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    found
+}
+
 /// What one Redis command, as its words, does: empties a database. A script
 /// (`EVAL`) that calls such a command does too.
 pub(super) fn redis(words: &[&str]) -> Reading {
@@ -1263,10 +1407,7 @@ pub(super) fn redis(words: &[&str]) -> Reading {
     };
     let destroys = match command.to_ascii_lowercase().as_str() {
         "flushall" | "flushdb" => true,
-        _ if runs_script(command) => words.iter().any(|word| {
-            let word = word.to_ascii_lowercase();
-            word.contains("flushall") || word.contains("flushdb")
-        }),
+        _ if runs_script(command) => words.iter().any(|word| script_destroys(word)),
         _ => false,
     };
     Reading {

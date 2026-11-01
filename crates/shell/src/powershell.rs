@@ -453,7 +453,7 @@ impl Walker<'_> {
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
-                    value.push_str(&unescape(
+                    value.push_str(&unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
                     ));
                     if child.kind() != "variable" {
@@ -470,7 +470,9 @@ impl Walker<'_> {
                     }
                     at = child.end_byte();
                 }
-                value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
+                value.push_str(&unescape_expandable(
+                    self.source.get(at..end).unwrap_or_default(),
+                ));
                 // A string of nothing but `$null` is still the device.
                 if nulls && value.is_empty() {
                     return Arg::Known(NULL.to_string());
@@ -626,6 +628,56 @@ fn unescape(text: &str) -> String {
             }
         } else {
             value.push(c);
+        }
+    }
+    value
+}
+
+/// What a backtick makes of the text in an expandable string or here-string:
+/// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
+/// other character after it is itself (`` `$ ``, `` `" ``).
+fn unescape_expandable(text: &str) -> String {
+    let mut value = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '`' {
+            value.push(c);
+            continue;
+        }
+        let Some(next) = chars.next() else { break };
+        match next {
+            '0' => value.push('\0'),
+            'a' => value.push('\x07'),
+            'b' => value.push('\x08'),
+            'e' => value.push('\x1b'),
+            'f' => value.push('\x0c'),
+            'n' => value.push('\n'),
+            'r' => value.push('\r'),
+            't' => value.push('\t'),
+            'v' => value.push('\x0b'),
+            'u' if chars.peek() == Some(&'{') => {
+                chars.next();
+                let mut digits = String::new();
+                while let Some(digit) = chars.next_if(char::is_ascii_hexdigit) {
+                    digits.push(digit);
+                }
+                let closed = chars.next_if_eq(&'}').is_some();
+                let decoded = u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .filter(|_| closed)
+                    .and_then(char::from_u32);
+                if let Some(decoded) = decoded {
+                    value.push(decoded);
+                } else {
+                    // Not a character: PowerShell does not run the line.
+                    value.push_str("`u{");
+                    value.push_str(&digits);
+                    if closed {
+                        value.push('}');
+                    }
+                }
+            }
+            other => value.push(other),
         }
     }
     value

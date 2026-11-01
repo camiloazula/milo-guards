@@ -22,19 +22,39 @@ fn repeated(part: &str) -> String {
     part.repeat(64 * 1024 / part.len())
 }
 
+/// The best of three times the guard takes to judge `line`.
+fn took(line: &str) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let _ = classify(line, Shell::Posix, &posix());
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default()
+}
+
 #[test]
 fn many_clients_on_one_line_are_read_in_linear_time() {
     // Each `redis-cli del` that is given keys asks whether the line lists
     // keys; each client asks for the text fed to it. Neither may walk every
-    // unit or every text of the line again.
-    for line in [repeated("redis-cli del $x; "), repeated("psql <<< x; ")] {
-        let started = std::time::Instant::now();
-        let _ = classify(&line, Shell::Posix, &posix());
-        let took = started.elapsed();
+    // unit or every text of the line again. A line of a quarter of the size
+    // takes about a quarter of the time, and one read in quadratic time
+    // sixteen times as long; the lines are compared with each other, so a
+    // busy machine, which slows both, does not fail the test.
+    let floor = std::time::Duration::from_millis(5);
+    for part in ["redis-cli del $x; ", "psql <<< x; "] {
+        let mut last = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let linear = (0..3).any(|_| {
+            let small = took(&part.repeat(16 * 1024 / part.len()));
+            let big = took(&repeated(part));
+            last = (small, big);
+            big <= 10 * small.max(floor)
+        });
         assert!(
-            took < std::time::Duration::from_millis(200),
-            "{} bytes took {took:?}",
-            line.len()
+            linear,
+            "{part}: 16 KB took {:?}, 64 KB took {:?}",
+            last.0, last.1
         );
     }
 }

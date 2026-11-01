@@ -477,7 +477,14 @@ On PowerShell a value that is piped
 on says its text as `Write-Output` would: a string or a here-string
 (`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
 variable, `(Get-Content q.sql)`, `$x.y`, `"a" + "b"`) says what is only known
-when it runs, so it is `unknown`. A stage that is a group (`{ echo 'BEGIN;';
+when it runs, so it is `unknown`. In a double-quoted string or a
+double-quoted here-string a backtick makes the character PowerShell gives it
+(`` `n `` and `` `r `` a line break, `` `t `` a tab, `` `0 ``, `` `a ``, `` `b ``,
+`` `e ``, `` `f ``, `` `v `` and `` `u{…} `` the others), so `"SELECT 1;`nDROP
+TABLE t"` is two statements and `iex @"` … `"@` runs the lines that a
+backtick breaks. Several arguments to `Write-Output` or `echo` are one line
+each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;
+`cmd`'s `echo` joins them with a space. A stage that is a group (`{ echo 'BEGIN;';
 echo 'DELETE FROM t;'; } |
 psql`) is read program by program, and as the one text they say in turn
 (`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
@@ -579,15 +586,25 @@ followed by such a word reads the word as the statement too.
   command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
   `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
   command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
-  `.output`, `.once`, `.import` and `.restore`.
-- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one, and a
+  `.output`, `.once`, `.import`, `.restore`, `.backup` and `.save`.
+  `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace the file they are
+  given, whatever database they copy from and `-readonly` or not, so the last
+  word is judged like any file: in the workspace, a temporary directory or
+  memory it is safe, anywhere else it is `drop_data`. The names are the
+  shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
+  not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
+  refuse a file that exists and are safe.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+  `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
+  calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
   deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
   runs the command on every node, and is read as the command.
 - **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
   command key), `deleteMany` and `remove` with no filter or `{}`.
-- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop`. `mysqladmin` runs a
+- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
+  drop`, MariaDB's name for it. `mysqladmin` runs a
   command from any unique start of its name (`mysqladmin proc stat` works),
   so a command word of two letters or more that starts `drop`, in any case,
   is `drop`: `dro`, `dr`.
