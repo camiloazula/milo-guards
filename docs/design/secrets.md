@@ -121,7 +121,12 @@ password by the word `password` after a `machine`, a `login` or `default`.
 A Discord bot token is three dotted parts of base64url, and the lengths alone
 are those of a chain of ordinary identifiers (`Controller.handler.processRequest`),
 so its first part must also decode to the 17 to 21 digits of a user's id, as
-every real token's does.
+every real token's does. A match that fails this check is searched again from
+one character after its start, not after its end, so a decoy that overlaps or
+precedes a real token (`NMTIz…` with a glued letter, a chain of identifiers
+whose last part swallows the id) does not hide it; up to three base64url
+characters may touch the front of the token, as such a decoy leaves, but four
+or more make it the tail of a longer id.
 
 ## A private key
 
@@ -221,8 +226,10 @@ secret stays in a scrubbed text.
 - a call (`get_token()`, `env::var("X")?;`), an index (`env["X"]`) or a chain
   of names (`self.token`, `config::TOKEN`);
 - the value of a name of a cursor of pagination (`next_page_token`,
-  `nextToken`, `page_token`, `continuation_token`, `pagination_token`,
-  `cursor_token`): the text a server gives back to ask for the next page;
+  `nextToken`, `prev_page_token`, `continuation_token`, `pagination_token`,
+  `cursor_token`): the text a server gives back to ask for the next page. A
+  bare `page_token` is not on the list: it is also the name of a Facebook page
+  access token, so it stays a secret;
 - a quoted word of a locale file: the name is in quotes too (`"password":
   "Contraseña"`, `"forgot_password": "Forgot?"`), and the value is one word of
   letters, the first a capital and the rest lower case, at most 24 letters, with

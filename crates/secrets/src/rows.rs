@@ -69,6 +69,10 @@ struct Spec {
     /// the `/` that ends it. The read text is still run, to find what is
     /// written in escapes.
     raw: bool,
+    /// Whether a match that is no hit lets the search go on one character
+    /// after its start and not after its end: for a row whose matches are
+    /// short and whose check can reject a decoy that hides a real token.
+    rescan: bool,
 }
 
 impl Spec {
@@ -89,7 +93,13 @@ impl Spec {
             mask: Mask::Prefix(4),
             alone: true,
             raw: false,
+            rescan: false,
         }
+    }
+
+    const fn rescan(mut self) -> Self {
+        self.rescan = true;
+        self
     }
 
     const fn group(mut self, group: usize) -> Self {
@@ -207,12 +217,33 @@ fn run(
     if !spec.needles.is_empty() && !spec.needles.iter().any(|needle| lower.contains(needle)) {
         return;
     }
-    for captures in regex.captures_iter(text) {
+    let mut at = 0;
+    while at <= text.len() {
+        let Some(captures) = regex.captures_at(text, at) else {
+            break;
+        };
+        let whole = captures.get(0).map_or(at..at, |m| m.start()..m.end());
+        // Where the search goes on: after the match, or, when the match is
+        // no hit and the row is told to rescan, one character after its
+        // start, so a decoy cannot swallow a real token that overlaps it or
+        // follows it. A match is short, so the cost stays linear.
+        let past = if whole.end > whole.start {
+            whole.end
+        } else {
+            text::next_boundary(text, whole.end)
+        };
+        let rejected = if spec.rescan {
+            text::next_boundary(text, whole.start)
+        } else {
+            past
+        };
         let Some(secret) = captures.get(spec.group) else {
+            at = rejected;
             continue;
         };
         let (start, end) = (secret.start(), secret.end());
         if spec.alone && !text::alone(text, start, end) {
+            at = rejected;
             continue;
         }
         let candidate = Candidate {
@@ -223,8 +254,10 @@ fn run(
             context: captures.get(spec.context).map_or("", |c| c.as_str()),
         };
         if !(spec.check)(&candidate) {
+            at = rejected;
             continue;
         }
+        at = past;
         let (start, end) = reading.map_or((start, end), |reading| {
             (reading.read_point(start), reading.read_point(end))
         });
@@ -267,13 +300,30 @@ fn telegram(candidate: &Candidate<'_>) -> bool {
     left && right && varied(candidate)
 }
 
-/// A Discord bot token: its first part is the base64url of a user's id, and
-/// it varies as a signature does.
+/// A Discord bot token: its first part is the base64url of a user's id, it
+/// varies as a signature does, and it is not the tail of a longer word.
+///
+/// Up to three base64url characters may touch its front: a decoy match
+/// (`NMTIz…`) starts one letter too early, and that letter must not hide the
+/// token that begins after it. Four or more are a longer id of which this
+/// is only a tail (an id's digits come in groups of four characters), and a
+/// letter or digit after it is a longer third part.
 fn discord_bot(candidate: &Candidate<'_>) -> bool {
-    candidate
-        .secret
-        .split_once('.')
-        .is_some_and(|(id, _)| base64::is_numeric_id(id))
+    let glued = candidate
+        .text
+        .get(..candidate.start)
+        .unwrap_or_default()
+        .chars()
+        .rev()
+        .take(4)
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .count();
+    glued < 4
+        && !text::after(candidate.text, candidate.end).is_some_and(|c| c.is_ascii_alphanumeric())
+        && candidate
+            .secret
+            .split_once('.')
+            .is_some_and(|(id, _)| base64::is_numeric_id(id))
         && varied(candidate)
 }
 
@@ -453,7 +503,9 @@ fn secrets() -> Vec<Spec> {
         // signature, three base64url parts; a webhook is a URL with its
         // token in it. The lengths alone are those of a chain of ordinary
         // identifiers (`Controller.handler.processRequest`): the first part
-        // must decode to the digits of an id.
+        // must decode to the digits of an id. A match that fails that check
+        // is searched again from one character after its start, and a
+        // letter glued before the id does not hide it.
         Spec::new(
             ApiKey,
             "holds a Discord bot token",
@@ -461,7 +513,9 @@ fn secrets() -> Vec<Spec> {
             r"[MNO][A-Za-z0-9_\-]{22,27}\.[A-Za-z0-9_\-]{6,7}\.[A-Za-z0-9_\-]{27,40}",
         )
         .mask(Mask::Length)
-        .check(discord_bot),
+        .check(discord_bot)
+        .unbounded()
+        .rescan(),
         Spec::new(
             ApiKey,
             "holds a Discord webhook URL",

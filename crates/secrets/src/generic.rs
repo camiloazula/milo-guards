@@ -406,8 +406,10 @@ impl LineIndex {
 /// `nextToken`, `continuation_token`): an opaque text the server gives back
 /// to ask for the next page, which opens no door.
 fn is_cursor(name: &str) -> bool {
-    const ENDINGS: [&str; 5] = [
-        "pagetoken",
+    const ENDINGS: [&str; 7] = [
+        "nextpagetoken",
+        "prevpagetoken",
+        "previouspagetoken",
         "nexttoken",
         "continuationtoken",
         "paginationtoken",

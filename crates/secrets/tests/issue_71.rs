@@ -145,13 +145,56 @@ fn a_cursor_of_pagination_is_no_token() {
     assert_safe(&[
         "\"next_page_token\": \"CgsIABCDEF12345\"".to_string(),
         "{\"nextPageToken\": \"CgsIABCDEF12345\"}".to_string(),
-        "{\"page_token\": \"CgsIABCDEF12345\"}".to_string(),
+        "{\"prev_page_token\": \"CgsIABCDEF12345\"}".to_string(),
         "{\"NextToken\": \"AAAAAAAAAAABBBBBBBBBB1234567890\"}".to_string(),
         "\"continuation_token\": \"eyJhIjoxfQ12345\"".to_string(),
         "next_page_token=CgsIABCDEF12345".to_string(),
-        "params.page_token = \"CgsIABCDEF12345\";".to_string(),
+        "params.next_page_token = \"CgsIABCDEF12345\";".to_string(),
         "pagination_token: Zm9vYmFyMDEyMzQ1".to_string(),
     ]);
+}
+
+#[test]
+fn a_page_access_token_is_still_a_secret() {
+    let facebook = "EAAGm0PX4ZCpsBAKZB7Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1UgZDZD";
+    let word = "Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug";
+    let rows = [
+        format!("PAGE_TOKEN={facebook}"),
+        format!("FB_PAGE_TOKEN={facebook}"),
+        format!("export FACEBOOK_PAGE_TOKEN=\"{facebook}\""),
+        format!("page_token={facebook}"),
+        format!("{{\"page_token\": \"{facebook}\"}}"),
+        format!("WEBPAGE_TOKEN={word}"),
+        format!("homepage_token = \"{word}\""),
+    ];
+    for row in &rows {
+        assert!(!find(row).is_safe(), "{row:?} is a secret");
+    }
+}
+
+#[test]
+fn a_decoy_discord_match_does_not_hide_the_real_token() {
+    let rows = [
+        // The decoy begins at a glued letter, and the real token is inside it.
+        (
+            "NMTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+        (
+            "O_MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+        // The third part of the decoy swallows the id of the real token.
+        (
+            "see NavigationControllerDelegate.handler.MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+    ];
+    let rows: Vec<(String, String)> = rows
+        .into_iter()
+        .map(|(text, secret)| (text.to_string(), secret.to_string()))
+        .collect();
+    assert_found(&rows, Rule::ApiKey);
 }
 
 #[test]
