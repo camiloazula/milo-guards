@@ -535,15 +535,23 @@ of their strictest, so each family below was added on that test.
   every plist in that search path (`-D system`, `-D all`), so it is risky
   whatever the domain. A command word only known when it runs
   (`systemctl $verb x`) is risky. `systemctl` options that take a value
-  (`-t`, `--message`, `--capsule`, `--what`, `--timestamp`, `--image` and
-  the like, also abbreviated) do not count as the verb.
-- **Stopping a service.** `systemctl stop` and `service … stop` are safe,
-  because `stop docker` is a common development step, and `stop` is not a
-  change to what the system runs at boot; `launchctl stop` and `start`,
+  (`-t`, `--message`, `--capsule`, `--what`, `--timestamp`, `--image`,
+  `--legend` and the like, also abbreviated) do not count as the verb, and
+  are not read as `--user` or `--system` either: one walk of the arguments
+  skips the values and finds those two (`systemctl -p --user disable x` is
+  a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
+  `-p`/`--property` value the same way.
+- **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
+  stop` are safe, because `stop docker` is a common development step, and
+  `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
   `restart`, `enable` and `reload` are safe too. The exception is a unit
   that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
   `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
-  as turning that protection off, so it is risky. `systemctl` matches a
+  as turning that protection off, so it is risky. `systemctl kill` sends
+  SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
+  refuses `stop`, so `kill` is how it is stopped), so it is read through the
+  same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
+  'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
   (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name

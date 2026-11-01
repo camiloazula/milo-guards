@@ -48,7 +48,7 @@ const SYSTEMCTL_SHORT: &str = "tpsHMnoPC";
 
 /// Long options of `systemctl` whose value is the next argument (or after
 /// `=`).
-const SYSTEMCTL_LONG: [&str; 25] = [
+const SYSTEMCTL_LONG: [&str; 26] = [
     "type",
     "property",
     "signal",
@@ -74,6 +74,7 @@ const SYSTEMCTL_LONG: [&str; 25] = [
     "drop-in",
     "when",
     "check-inhibitors",
+    "legend",
 ];
 
 /// Files that hold `SELinux`'s mode, where a write turns it off at boot.
@@ -148,22 +149,35 @@ fn short_options<'a>(args: &'a [Arg], takes_value: &str) -> Vec<(char, Given<'a>
     found
 }
 
-/// The arguments that are not options, for a program that reads them with
-/// `getopt_long`: `shorts` are the short options that take a value, `longs`
-/// the long ones, which may be abbreviated (an abbreviation that fits two
-/// options is an error to the program, so it changes nothing).
-fn getopt_operands<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Vec<&'a Arg> {
-    let mut operands = Vec::new();
+/// The arguments of a program that reads them with `getopt_long`, told
+/// apart: `shorts` are the short options that take a value, `longs` the long
+/// ones, which may be abbreviated (an abbreviation that fits two options is
+/// an error to the program, so it changes nothing).
+struct Walk<'a> {
+    /// The arguments that are not options.
+    operands: Vec<&'a Arg>,
+    /// The long options given as options, as written and without their
+    /// `=value`: an argument that is another option's value is not one.
+    longs: Vec<&'a str>,
+}
+
+/// Walks `args` the way `getopt_long` does.
+fn getopt_walk<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Walk<'a> {
+    let mut walk = Walk {
+        operands: Vec::new(),
+        longs: Vec::new(),
+    };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.known() {
             Some("--") => {
-                operands.extend(iter);
+                walk.operands.extend(iter);
                 break;
             }
             Some(text) if text.len() > 1 && text.starts_with('-') => {
                 let takes_next = match text.strip_prefix("--") {
                     Some(name) => {
+                        walk.longs.push(name.split('=').next().unwrap_or(name));
                         !name.contains('=') && longs.iter().any(|full| is_option(name, full, 1))
                     }
                     None => text[1..]
@@ -175,10 +189,16 @@ fn getopt_operands<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Vec<&'a
                     iter.next();
                 }
             }
-            _ => operands.push(arg),
+            _ => walk.operands.push(arg),
         }
     }
-    operands
+    walk
+}
+
+/// The arguments that are not options, for a program that reads them with
+/// `getopt_long`.
+fn getopt_operands<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Vec<&'a Arg> {
+    getopt_walk(args, shorts, longs).operands
 }
 
 /// Whether a unit name is a pattern, which `systemctl` matches against the
@@ -538,18 +558,19 @@ impl Checker<'_> {
     /// off. Stopping any other unit is everyday work (`stop docker`), and
     /// `--user` units are the user's own.
     fn systemctl(&mut self, args: &[Arg]) {
+        let walk = getopt_walk(args, SYSTEMCTL_SHORT, &SYSTEMCTL_LONG);
         let mut user = false;
-        for name in long_names(args) {
+        for name in &walk.longs {
             if is_option(name, "user", 2) {
                 user = true;
-            } else if is_option(name, "system", 4) || name == "global" {
+            } else if is_option(name, "system", 4) || *name == "global" {
                 user = false;
             }
         }
         if user {
             return;
         }
-        let words = getopt_operands(args, SYSTEMCTL_SHORT, &SYSTEMCTL_LONG);
+        let words = walk.operands;
         match first_word(&words) {
             Word::Missing => {}
             Word::Unknown => self.add(
@@ -568,20 +589,19 @@ impl Checker<'_> {
                     words.get(1).copied(),
                 ),
                 // A pattern (`firewall*`) matches the loaded units, so it may
-                // stop one that protects the machine.
-                "stop" => {
+                // stop one that protects the machine. `kill` sends SIGTERM
+                // unless told otherwise, which ends a daemon as `stop` does.
+                "stop" | "kill" => {
+                    let verb = if sub == "kill" { "kills" } else { "stops" };
                     for unit in words.iter().skip(1) {
                         let reason = match unit.known() {
-                            None => "stops a service that protects the system",
-                            Some(name) if protects(name) => {
-                                "stops a service that protects the system"
+                            Some(name) if is_pattern(name) && !protects(name) => {
+                                format!("{verb} services that may protect the system")
                             }
-                            Some(name) if is_pattern(name) => {
-                                "stops services that may protect the system"
-                            }
-                            Some(_) => continue,
+                            Some(name) if !protects(name) => continue,
+                            _ => format!("{verb} a service that protects the system"),
                         };
-                        self.add(Rule::SystemSettings, reason, Some(unit));
+                        self.add(Rule::SystemSettings, &reason, Some(unit));
                     }
                 }
                 _ => {}
@@ -821,7 +841,14 @@ impl Checker<'_> {
     /// `hostnamectl` that set a value when they are given one (`hostname
     /// NAME`, `chassis vm`) and print it when they are not.
     fn set_commands(&mut self, args: &[Arg], key: &str) {
-        let words = operands(args, &["-H", "--host", "-M", "--machine"]);
+        // `timedatectl` also takes `-p NTP` (`--property`), whose value is
+        // not the command.
+        let (shorts, longs): (&str, &[&str]) = if key == "timedatectl" {
+            ("HMp", &["host", "machine", "property"])
+        } else {
+            ("HM", &["host", "machine"])
+        };
+        let words = getopt_operands(args, shorts, longs);
         let sets = match first_word(&words) {
             Word::Missing => false,
             Word::Unknown => true,

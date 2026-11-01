@@ -877,3 +877,58 @@ fn defaults_say_whether_they_delete_or_replace() {
         ),
     ]);
 }
+
+#[test]
+fn killing_a_protector_is_stopping_it() {
+    risky(&[
+        "systemctl kill firewalld",
+        "systemctl kill -s KILL auditd",
+        "systemctl kill --signal=KILL ufw",
+        "systemctl kill 'fire*'",
+        "systemctl kill $u",
+        "systemctl kill docker ufw",
+    ]);
+    assert_reasons(&[
+        (
+            "systemctl kill ufw",
+            "kills a service that protects the system",
+        ),
+        (
+            "systemctl kill 'fire*'",
+            "kills services that may protect the system",
+        ),
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "systemctl kill docker",
+            "systemctl --user kill firewalld",
+            "systemctl kill -s HUP nginx",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn an_option_value_is_not_the_verb_or_the_user_switch() {
+    risky(&[
+        "systemctl --legend false disable firewalld",
+        "systemctl --leg false disable firewalld",
+        "systemctl -p --user disable firewalld",
+        "systemctl --message --user disable firewalld",
+        "timedatectl -p NTP set-ntp false",
+        "timedatectl --property NTP set-timezone UTC",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "systemctl --legend false status nginx",
+            "systemctl --user -p x disable web",
+            "timedatectl -p NTP show",
+            "timedatectl --property NTP status",
+        ],
+        &[],
+    );
+}
