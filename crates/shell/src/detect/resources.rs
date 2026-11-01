@@ -8,6 +8,7 @@
 //! safe; what is left is a table of delete verbs for each CLI.
 
 use super::Checker;
+use crate::path::brace_list;
 use crate::unit::{has_flag, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -28,11 +29,8 @@ impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        let help = args
-            .iter()
-            .filter_map(Arg::known)
-            .any(|text| matches!(text, "--help" | "-help"));
-        if help {
+        let values = values_of(key);
+        if helped(args, &values) {
             return;
         }
         let said = match key {
@@ -53,31 +51,31 @@ impl Checker<'_> {
             "pulumi" => pulumi(args),
             "cdk" => first_word(
                 args,
-                CDK_VALUES,
+                &values,
                 |word| word == "destroy",
                 "destroys the stacks of a CDK app",
             ),
             "cdktf" => first_word(
                 args,
-                &[],
+                &values,
                 |word| word == "destroy",
                 "destroys the stacks of a CDKTF app",
             ),
             "sst" => first_word(
                 args,
-                SST_VALUES,
+                &values,
                 |word| word == "remove",
                 "removes everything an SST app created",
             ),
             "serverless" | "sls" => first_word(
                 args,
-                SERVERLESS_VALUES,
+                &values,
                 |word| word == "remove",
                 "removes a Serverless service and its resources",
             ),
             "vagrant" => first_word(
                 args,
-                &[],
+                &values,
                 |word| word == "destroy",
                 "destroys virtual machines",
             ),
@@ -85,7 +83,7 @@ impl Checker<'_> {
             "aws" => aws(args),
             "gcloud" => cloud(
                 args,
-                GCLOUD_VALUES,
+                &values,
                 6,
                 |before, word| {
                     matches!(word, "delete" | "destroy")
@@ -96,7 +94,7 @@ impl Checker<'_> {
             "gsutil" => gsutil(args),
             "az" => cloud(
                 args,
-                AZ_VALUES,
+                &values,
                 5,
                 |_, word| {
                     word == "delete"
@@ -108,84 +106,84 @@ impl Checker<'_> {
             ),
             "doctl" => cloud(
                 args,
-                DOCTL_VALUES,
+                &values,
                 4,
                 |_, word| matches!(word, "delete" | "del" | "d" | "rm"),
                 "deletes DigitalOcean resources",
             ),
             "flyctl" | "fly" => cloud(
                 args,
-                FLY_VALUES,
+                &values,
                 3,
                 |_, word| matches!(word, "destroy" | "delete" | "rm" | "remove"),
                 "destroys a Fly.io app, machine or volume",
             ),
             "vercel" => cloud(
                 args,
-                VERCEL_VALUES,
+                &values,
                 2,
                 |_, word| matches!(word, "remove" | "rm" | "del"),
                 "removes Vercel deployments, projects or settings",
             ),
             "heroku" => cloud(
                 args,
-                HEROKU_VALUES,
+                &values,
                 2,
                 |_, word| word == "destroy" || word.ends_with(":destroy"),
                 "destroys a Heroku app or add-on",
             ),
             "wrangler" => cloud(
                 args,
-                WRANGLER_VALUES,
+                &values,
                 4,
                 |_, word| word == "delete" || word.ends_with(":delete"),
                 "deletes Cloudflare resources",
             ),
             "firebase" => cloud(
                 args,
-                FIREBASE_VALUES,
+                &values,
                 1,
                 |_, word| word.ends_with(":delete"),
                 "deletes Firebase resources",
             ),
             "hcloud" => cloud(
                 args,
-                &[],
+                &values,
                 3,
                 |_, word| word == "delete",
                 "deletes Hetzner Cloud resources",
             ),
             "scw" => cloud(
                 args,
-                SCW_VALUES,
+                &values,
                 4,
                 |_, word| matches!(word, "delete" | "terminate"),
                 "deletes Scaleway resources",
             ),
             "oci" => cloud(
                 args,
-                OCI_VALUES,
+                &values,
                 6,
                 |_, word| matches!(word, "delete" | "terminate"),
                 "deletes Oracle Cloud resources",
             ),
             "eksctl" => cloud(
                 args,
-                EKSCTL_VALUES,
+                &values,
                 2,
                 |_, word| word == "delete",
                 "deletes an EKS cluster or its parts",
             ),
             "kops" => cloud(
                 args,
-                KOPS_VALUES,
+                &values,
                 2,
                 |_, word| word == "delete",
                 "deletes a kops cluster or its parts",
             ),
             "sam" => first_word(
                 args,
-                &[],
+                &values,
                 |word| word == "delete",
                 "deletes an AWS SAM application's stack",
             ),
@@ -215,6 +213,44 @@ fn article(program: &str) -> &'static str {
     } else {
         "a"
     }
+}
+
+/// The options a program (and the programs it runs) take a value for, which
+/// are the words a rehearsal or help flag can be the value of. A wrapper
+/// reads the lists of what it wraps too: reading one word too many as a value
+/// only makes a line riskier.
+fn values_of(key: &str) -> Vec<&'static str> {
+    let list: &[&[&'static str]] = match key {
+        "docker" | "podman" | "nerdctl" => &[ENGINE_VALUES, COMPOSE_VALUES, RM_VALUES],
+        "docker-compose" | "podman-compose" => &[COMPOSE_VALUES],
+        "kubectl" | "oc" | "k3s" => &[KUBECTL_VALUES],
+        "microk8s" => &[SMALL_CLUSTER_VALUES, KUBECTL_VALUES],
+        "minikube" => &[MINIKUBE_VALUES, KUBECTL_VALUES],
+        "helm" => &[HELM_VALUES],
+        "kind" | "k3d" => &[SMALL_CLUSTER_VALUES],
+        "terragrunt" => &[TERRAGRUNT_VALUES],
+        "pulumi" => &[PULUMI_VALUES],
+        "cdk" => &[CDK_VALUES],
+        "sst" => &[SST_VALUES],
+        "serverless" | "sls" => &[SERVERLESS_VALUES],
+        "aws" => &[AWS_VALUES],
+        "gcloud" => &[GCLOUD_VALUES],
+        "gsutil" => &[GSUTIL_VALUES],
+        "az" => &[AZ_VALUES],
+        "doctl" => &[DOCTL_VALUES],
+        "flyctl" | "fly" => &[FLY_VALUES],
+        "vercel" => &[VERCEL_VALUES],
+        "heroku" => &[HEROKU_VALUES],
+        "wrangler" => &[WRANGLER_VALUES],
+        "firebase" => &[FIREBASE_VALUES],
+        "hcloud" => &[HCLOUD_VALUES],
+        "scw" => &[SCW_VALUES],
+        "oci" => &[OCI_VALUES],
+        "eksctl" => &[EKSCTL_VALUES],
+        "kops" => &[KOPS_VALUES],
+        _ => &[],
+    };
+    list.concat()
 }
 
 // What each program takes a value for, before its command. A value that is
@@ -358,6 +394,9 @@ const HELM_VALUES: &[&str] = &[
     "--registry-config",
     "--repository-cache",
     "--repository-config",
+    "--description",
+    "--cascade",
+    "--timeout",
 ];
 
 /// Options of minikube that take a value.
@@ -412,6 +451,17 @@ const TERRAGRUNT_VALUES: &[&str] = &[
     "--download-dir",
     "--tf-path",
     "--log-level",
+    "--queue-include-dir",
+    "--queue-exclude-dir",
+    "--terragrunt-include-dir",
+    "--terragrunt-exclude-dir",
+    "--parallelism",
+    "--terragrunt-parallelism",
+    "--source",
+    "--terragrunt-source",
+    "--iam-assume-role",
+    "--terragrunt-iam-role",
+    "--log-format",
 ];
 
 /// Options of cdk that take a value.
@@ -559,6 +609,15 @@ const WRANGLER_VALUES: &[&str] = &[
 /// Options of firebase that take a value.
 const FIREBASE_VALUES: &[&str] = &["--project", "-P", "--config", "--token", "--account"];
 
+/// Options of hcloud that take a value.
+const HCLOUD_VALUES: &[&str] = &[
+    "--config",
+    "--context",
+    "--endpoint",
+    "--poll-interval",
+    "--debug-file",
+];
+
 /// Options of scw that take a value.
 const SCW_VALUES: &[&str] = &["-p", "--profile", "-c", "--config", "-o", "--output"];
 
@@ -617,6 +676,39 @@ fn command<'a>(args: &'a [Arg], values: &[&str]) -> Option<(&'a Arg, &'a [Arg])>
     None
 }
 
+/// The arguments an option or flag can be read from, and the index of the
+/// `--` that ends them, if there is one. pflag and Go's flag package give an
+/// option that takes a value the next word even when it starts with `-`, so
+/// the value of each option in `values` is left out (`--cache-dir
+/// --dry-run=server` is a directory, not a rehearsal), and nothing after `--`
+/// is a flag.
+fn walk<'a>(args: &'a [Arg], values: &[&str]) -> (Vec<&'a Arg>, Option<usize>) {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("--") => return (found, Some(at)),
+            Some(text) if is_option(arg) && values.contains(&text) => at += 1,
+            _ => found.push(arg),
+        }
+        at += 1;
+    }
+    (found, None)
+}
+
+/// The arguments before `--` that are not the value of an option in `values`.
+fn flags<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
+    walk(args, values).0
+}
+
+/// Whether the line asks for help, which runs nothing.
+fn helped(args: &[Arg], values: &[&str]) -> bool {
+    flags(args, values)
+        .into_iter()
+        .filter_map(Arg::known)
+        .any(|text| matches!(text, "--help" | "-help"))
+}
+
 /// Every word that is not an option, in order, as [`command`] reads them.
 fn words<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
     let mut found = Vec::new();
@@ -644,7 +736,9 @@ fn is_one_of(arg: Option<&Arg>, names: &[&str]) -> bool {
 /// `%VAR%` and `!VAR!` as text, so an unquoted one is several words.
 fn computed(arg: &Arg, shell: Shell) -> bool {
     match arg {
-        Arg::Known(_) => false,
+        // The quotes are gone from a known word: a brace list in it was
+        // written bare or quoted, and bare is the likelier.
+        Arg::Known(text) => shell == Shell::Posix && brace_words(text),
         Arg::Input => true,
         Arg::Unknown(text) | Arg::Template { source: text, .. } => {
             text.contains("$(")
@@ -656,6 +750,7 @@ fn computed(arg: &Arg, shell: Shell) -> bool {
                             || text.contains("$@")
                             || text.contains("${@")
                             || text.contains("[@]")
+                            || splits(text)
                     }
                     Shell::PowerShell => {
                         text.starts_with('(')
@@ -674,28 +769,92 @@ fn computed(arg: &Arg, shell: Shell) -> bool {
     }
 }
 
-/// A Go-style boolean flag (`-destroy`, `--destroy=false`): given, and not
-/// turned off by the last value written.
-fn go_flag(args: &[Arg], name: &str) -> bool {
-    let mut on = false;
-    for arg in args {
-        let Some(text) = written(arg).strip_prefix('-') else {
-            continue;
-        };
-        let text = text.strip_prefix('-').unwrap_or(text);
-        if text == name {
-            on = true;
-        } else if let Some(value) = text
-            .strip_prefix(name)
-            .and_then(|rest| rest.strip_prefix('='))
-        {
-            on = !matches!(
-                value.to_ascii_lowercase().as_str(),
-                "false" | "f" | "0" | "no" | "off"
-            );
+/// Whether a word of a POSIX shell is read as several words when it runs
+/// though it is not a variable that is only known then: it holds an unquoted
+/// `$` (`"$a"$b` splits at what `$b` holds, not at the quoted head) or a
+/// brace list outside quotes (`web{1,2}`, `{a,b}`, `x{1..3}`).
+fn splits(text: &str) -> bool {
+    let mut quote = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            // Inside double quotes a backslash keeps the next character; a
+            // variable there does not split.
+            (Some('"') | None, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            // `$'tab\t'` and `$"text"` are quotes, not expansions.
+            (None, '$') if !matches!(chars.peek(), Some((_, '\'' | '"')) | None) => return true,
+            (None, '{') if brace_words(text.get(at..).unwrap_or_default()) => return true,
+            _ => {}
         }
     }
-    on
+    false
+}
+
+/// Whether `text` holds a brace list (`{a,b}`) or a sequence (`{1..3}`): a
+/// word the shell makes several of.
+fn brace_words(text: &str) -> bool {
+    brace_list(text)
+        || match (text.find('{'), text.rfind('}')) {
+            (Some(open), Some(close)) if open < close => text[open..close].contains(".."),
+            _ => false,
+        }
+}
+
+/// What a Go-style boolean flag (`-destroy`, `--destroy=false`) is given.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Given {
+    On,
+    Off,
+    /// A value only known when it runs, or one the flag does not read.
+    Unknown,
+}
+
+/// What `arg` gives the flag `name`, or `None` when it is not that flag.
+fn given(arg: &Arg, name: &str) -> Option<Given> {
+    let text = written(arg).strip_prefix('-')?;
+    let text = text.strip_prefix('-').unwrap_or(text);
+    let value = if text == name {
+        "true"
+    } else {
+        text.strip_prefix(name)?.strip_prefix('=')?
+    };
+    if arg.known().is_none() {
+        return Some(Given::Unknown);
+    }
+    Some(match value.to_ascii_lowercase().as_str() {
+        "false" | "f" | "0" | "no" | "off" => Given::Off,
+        "true" | "t" | "1" | "client" | "server" => Given::On,
+        _ => Given::Unknown,
+    })
+}
+
+/// Whether a flag that makes a line destroy (`terraform apply -destroy`) is
+/// turned on anywhere before `--`. Not the last one written: Go's flag
+/// package takes the word after an option that takes a value as its value
+/// (`-backup -destroy=false`), so a later `=false` may not be one, and a
+/// value only known when it runs counts as on.
+fn turned_on(args: &[Arg], name: &str) -> bool {
+    flags(args, &[])
+        .into_iter()
+        .filter_map(|arg| given(arg, name))
+        .any(|given| given != Given::Off)
+}
+
+/// Whether a flag that makes a line only rehearse (`helm uninstall
+/// --dry-run`, `pulumi destroy --preview-only`) is turned on: the last one
+/// written, and only a value that is known to say yes counts, since a value
+/// only known when it runs may be `false`.
+fn rehearsal(args: &[Arg], values: &[&str], name: &str) -> bool {
+    flags(args, values)
+        .into_iter()
+        .filter_map(|arg| given(arg, name))
+        .next_back()
+        == Some(Given::On)
 }
 
 /// A command whose only name is its first word.
@@ -762,11 +921,8 @@ const LEAF_VERBS: &[&str] = &[
 /// (or bare, as older versions took it), the last one written.
 fn dry_run(args: &[Arg]) -> bool {
     let mut on = false;
-    for arg in args {
+    for arg in flags(args, KUBECTL_VALUES) {
         let Some(text) = arg.known() else { continue };
-        if text == "--" {
-            break;
-        }
         if text == "--dry-run" {
             on = true;
         } else if let Some(value) = text.strip_prefix("--dry-run=") {
@@ -906,6 +1062,15 @@ fn compose(args: &[Arg]) -> Say<'_> {
 }
 
 fn kubectl(args: &[Arg]) -> Say<'_> {
+    // `minikube kubectl -- delete …`: the `--` is minikube's, and what
+    // follows is kubectl's own line, help flag included.
+    let args = match args.first().and_then(Arg::known) {
+        Some("--") => args.get(1..).unwrap_or_default(),
+        _ => args,
+    };
+    if helped(args, KUBECTL_VALUES) {
+        return Safe;
+    }
     let Some((cmd, rest)) = command(args, KUBECTL_VALUES) else {
         return Safe;
     };
@@ -996,10 +1161,12 @@ fn helm(args: &[Arg]) -> Say<'_> {
         return Safe;
     };
     match cmd.known() {
-        Some("uninstall" | "un" | "delete" | "del") if !go_flag(rest, "dry-run") => Destroys(
-            "uninstalls a Helm release",
-            words(rest, HELM_VALUES).first().copied(),
-        ),
+        Some("uninstall" | "un" | "delete" | "del") if !rehearsal(rest, HELM_VALUES, "dry-run") => {
+            Destroys(
+                "uninstalls a Helm release",
+                words(rest, HELM_VALUES).first().copied(),
+            )
+        }
         Some(_) => Safe,
         None => Unread(None),
     }
@@ -1045,41 +1212,64 @@ fn k3d(args: &[Arg]) -> Say<'_> {
     }
 }
 
+const TERRAFORM_DESTROYS: &str = "destroys the infrastructure a configuration manages";
+
 fn terraform(args: &[Arg]) -> Say<'_> {
     let Some((cmd, rest)) = command(args, &[]) else {
         return Safe;
     };
     match cmd.known() {
-        Some("destroy") => Destroys("destroys the infrastructure a configuration manages", None),
-        Some("apply") if go_flag(rest, "destroy") => {
-            Destroys("destroys the infrastructure a configuration manages", None)
-        }
+        Some("destroy") => Destroys(TERRAFORM_DESTROYS, None),
+        Some("apply") if turned_on(rest, "destroy") => Destroys(TERRAFORM_DESTROYS, None),
         Some(_) => Safe,
         None => Unread(None),
     }
 }
 
 /// terragrunt: terraform's commands, also run over every module (`run-all
-/// destroy`, `run --all -- destroy`, the old `destroy-all`).
+/// destroy`, `run --all -- destroy`, the old `destroy-all`). What follows a
+/// `--` is handed to terraform (or to the program `exec` runs), so its first
+/// word is the command; before it, any word is read.
 fn terragrunt(args: &[Arg]) -> Say<'_> {
-    let words = words(args, TERRAGRUNT_VALUES);
+    let (own, passed) = match walk(args, TERRAGRUNT_VALUES).1 {
+        Some(at) => (
+            args.get(..at).unwrap_or_default(),
+            Some(args.get(at + 1..).unwrap_or_default()),
+        ),
+        None => (args, None),
+    };
+    let words = words(own, TERRAGRUNT_VALUES);
     let named = |names: &[&str]| {
         words
             .iter()
-            .take(4)
             .any(|word| word.known().is_some_and(|text| names.contains(&text)))
     };
-    if named(&["destroy", "destroy-all"]) || (named(&["apply"]) && go_flag(args, "destroy")) {
-        return Destroys("destroys the infrastructure a configuration manages", None);
+    let destroy = turned_on(own, "destroy");
+    if named(&["destroy", "destroy-all"]) || (named(&["apply"]) && destroy) {
+        return Destroys(TERRAFORM_DESTROYS, None);
+    }
+    if let Some((word, rest)) = passed.and_then(|passed| command(passed, &[])) {
+        match word.known() {
+            Some("destroy") => return Destroys(TERRAFORM_DESTROYS, None),
+            Some("apply") if destroy || turned_on(rest, "destroy") => {
+                return Destroys(TERRAFORM_DESTROYS, None)
+            }
+            // `exec -- terraform destroy`.
+            Some("terraform" | "tofu") => match terraform(rest) {
+                Safe => {}
+                said => return said,
+            },
+            Some(_) => {}
+            None => return Unread(None),
+        }
     }
     // A word only known when it runs where the command goes: nothing but
     // `run-all`, `run` and their like come before it.
-    let mut before_command = true;
-    for word in words.iter().take(4) {
+    for word in &words {
         match word.known() {
-            None if before_command => return Unread(None),
+            None => return Unread(None),
             Some("run-all" | "run" | "hcl" | "exec") => {}
-            _ => before_command = false,
+            Some(_) => break,
         }
     }
     Safe
@@ -1090,7 +1280,7 @@ fn pulumi(args: &[Arg]) -> Say<'_> {
         return Safe;
     };
     match cmd.known() {
-        Some("destroy" | "down") if !go_flag(rest, "preview-only") => {
+        Some("destroy" | "down") if !rehearsal(rest, PULUMI_VALUES, "preview-only") => {
             Destroys("destroys the resources of a Pulumi stack", None)
         }
         Some("stack") => {
@@ -1123,7 +1313,7 @@ fn aws(args: &[Arg]) -> Say<'_> {
         return Unread(None);
     };
     let target = words.get(2).copied();
-    if has_flag(args, None, Some("dry-run")) || has_flag(args, None, Some("dryrun")) {
+    if rehearses(args) {
         return Safe;
     }
     match (service_name, verb) {
@@ -1150,6 +1340,25 @@ fn aws(args: &[Arg]) -> Say<'_> {
         }
         _ => Safe,
     }
+}
+
+/// Whether an aws line only rehearses: `--dry-run` (`--dryrun` for `s3`),
+/// unless a later `--no-dry-run` turns it off. The CLI reads the last of the
+/// two.
+fn rehearses(args: &[Arg]) -> bool {
+    let mut on = false;
+    for text in flags(args, &[]).into_iter().filter_map(Arg::known) {
+        if text == "--no-dry-run" {
+            on = false;
+        } else if let Some(name) = text.strip_prefix("--") {
+            if ["dry-run", "dryrun"].iter().any(|flag| {
+                name == *flag || name.strip_prefix(flag).is_some_and(|r| r.starts_with('='))
+            }) {
+                on = true;
+            }
+        }
+    }
+    on
 }
 
 fn gsutil(args: &[Arg]) -> Say<'_> {

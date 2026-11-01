@@ -226,7 +226,7 @@ fn device(text: &str, shell: Shell) -> Option<Place> {
 }
 
 /// Whether `text` holds a brace list: a `{` with a `,` before a later `}`.
-fn brace_list(text: &str) -> bool {
+pub(crate) fn brace_list(text: &str) -> bool {
     match (text.find('{'), text.rfind('}')) {
         (Some(open), Some(close)) if open < close => text[open..close].contains(','),
         _ => false,

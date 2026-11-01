@@ -746,8 +746,11 @@ one, and a quoted one holding an array (`"$@"`, `"${ids[@]}"`, one word per
 element), but not `"$name"`; in PowerShell any variable except `$env:` and a
 splat (`@ids`), since an array handed to a program is one argument per
 element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
-which is expanded as text. So `docker rm -f "$name"` is safe and `docker rm -f
-$ids` in PowerShell is not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
+which is expanded as text. A POSIX word also splits when an unquoted `$`
+follows a quoted head (`"$a"$b`) and when it holds an unquoted brace list or
+sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the
+parser has already unquoted counts as bare. So `docker rm -f "$name"` is safe
+and `docker rm -f $ids` in PowerShell is not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a
 `image prune` without `-a` are safe, as are `network rm` and `builder prune`.
 The global options of each program that take a value (`-H`, `--context`,
 `-n`) are skipped to find the command.
@@ -758,14 +761,20 @@ a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
 are safe, the last one written counting. A replica count only known when it
 runs is `unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
 `minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
-`--dry-run` (not `--dry-run=false`); `kind delete cluster`, `minikube delete` and `k3d cluster
+`--dry-run` (not `--dry-run=false`, and not a value only known when it runs,
+`--dry-run=$DRY`); `kind delete cluster`, `minikube delete` and `k3d cluster
 delete` (also `node` and `registry`).
 
 **Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
 (a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
-`-destroy=false`); `plan -destroy` is safe. `terragrunt` the same, also behind
-`run-all` and `run --all --`. `pulumi destroy` (also `down`, unless
-`--preview-only`, a Go-style flag that `--preview-only=false` turns off) and
+`-destroy=false`; any `-destroy` turned on before `--` counts, even with a
+`=false` after it, since a value option may have taken that word); `plan -destroy` is safe. `terragrunt` the same, also behind
+`run-all` and `run --all --`: the word after `--` is the terraform command
+(or `terraform` behind `exec --`), and every word before it is read, the
+options that take a value (`--queue-include-dir`, `--parallelism`)
+skipped. `pulumi destroy` (also `down`, unless
+`--preview-only`, a Go-style flag that `--preview-only=false` or a value only
+known when it runs turns off) and
 `pulumi stack rm`; `cdk destroy`, `cdktf destroy`, `sst
 remove`, `serverless remove` (also `sls`), `vagrant destroy`, `sam delete`.
 
@@ -774,7 +783,8 @@ remove`, `serverless remove` (also `sls`), `vagrant destroy`, `sam delete`.
 so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
 `--recursive`), `s3 rb`, `s3 sync --delete`, `terminate-*`, `delete-*`,
 `batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
-`--dry-run` and `s3`'s `--dryrun` make it safe. `gcloud` (a `delete` or
+`--dry-run` and `s3`'s `--dryrun` make it safe, unless a later `--no-dry-run`
+turns it off (the CLI takes the last). `gcloud` (a `delete` or
 `destroy` among the first words, and `storage rm`), `gsutil rm`, `rb` and
 `rsync -d`, `az` (`delete`, `delete-*`, `purge`), `doctl` (`delete`, `d`,
 `rm`), `flyctl` and `fly` (`destroy`, `delete`, `rm` and `remove` under any
@@ -783,6 +793,14 @@ word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
 (`apps:destroy`, `addons:destroy`), `wrangler` (`delete` at any depth,
 `kv:namespace delete`), `firebase` (`…:delete`), `hcloud`, `scw`, `oci`,
 `eksctl` and `kops` (`delete`).
+
+A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
+before `--` and not as the value of an option that takes a value, since pflag
+and Go's flag package hand that option the next word even when it starts with
+`-` (`kubectl delete ns prod --cache-dir --dry-run=server` still deletes). It
+counts only with a value known to say yes: a value only known when it runs may
+be `false`, so `helm uninstall api --dry-run=$DRY` is risky, and so is
+PowerShell's `--dry-run=$false`.
 
 A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
 s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
