@@ -494,10 +494,22 @@ fn moves_to(unit: &Unit) -> Option<Arg> {
         }
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
+            // `--` ends the parameters, so it is not the path: `cd -- -` is
+            // the history step and `cd -- X` goes to X.
+            let mut positional = params.positional.iter().copied();
+            let end = params
+                .positional
+                .iter()
+                .position(|arg| arg.known() == Some("--"));
+            let first = match end {
+                Some(0) => positional.nth(1),
+                _ => positional.next(),
+            };
             let target = params
                 .values(&["path", "literalpath"])
                 .first()
-                .or(params.positional.first())
+                .copied()
+                .or(first)
                 .map(|target| match target {
                     // PowerShell 6.2+ reads `-` and `+` as a step back or
                     // forward in location history, not a folder.

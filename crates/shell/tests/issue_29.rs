@@ -636,3 +636,36 @@ fn a_device_path_of_new_item_is_not_the_item_when_a_name_is_given() {
         ],
     );
 }
+
+#[test]
+fn the_end_of_parameters_token_is_not_the_path_of_a_cd() {
+    // `--` ends the parameters, so `cd -- -` is the history step and
+    // `cd -- X` goes to X.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["cd -- src; npm test", "cd -- .\\src; npm test"],
+        &[
+            (
+                "cd HKCU:\\Software; cd C:\\x; cd -- -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd HKCU:\\Software; cd C:\\x; Set-Location -- -; Remove-Item NUL -Recurse",
+                Rule::Delete,
+            ),
+            (
+                "cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- -; Remove-Item -Recurse -Force *",
+                Rule::Delete,
+            ),
+            (
+                "cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- +; Remove-Item -Recurse -Force *",
+                Rule::Delete,
+            ),
+            (
+                "cd -- C:\\Windows\\System32; Remove-Item -Recurse -Force *",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
