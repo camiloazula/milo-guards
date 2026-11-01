@@ -18,10 +18,12 @@ fn expected(rule: Rule) -> &'static str {
         Rule::GitHistory => "git_history",
         Rule::Permissions => "permissions",
         Rule::SystemSettings => "system_settings",
+        Rule::ReadSecret => "read_secret",
         Rule::Elevated => "elevated",
         Rule::RunDownloaded => "run_downloaded",
         Rule::RunInput => "run_input",
         Rule::StopSystem => "stop_system",
+        Rule::SendSecret => "send_secret",
         Rule::Unknown => "unknown",
         Rule::Unreadable => "unreadable",
     }

@@ -184,12 +184,8 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Rename-Item -Path src\\a.rs -NewName b.rs",
             "Rename-Item -LiteralPath src\\a.rs -NewName b.rs",
             "Rename-Item -NewName b.rs src\\a.rs",
-            "Rename-Item -Path src\\a.rs -NewName $name",
             "rni src\\a.rs b.rs",
             "ren src\\a.rs b.rs",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
-            "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
             "Get-ChildItem *.txt | ForEach-Object { Rename-Item $_ -NewName x }",
             "Move-Item src\\a src\\b",
             "Get-ChildItem src | Move-Item -Destination old",
@@ -201,6 +197,47 @@ fn item_cmdlets_inside_the_workspace_stay_safe() {
             "Copy-Item HKCU:\\Software\\x src\\y -Force",
         ],
         &[],
+    );
+}
+
+/// A new name only known when it runs may be a startup file's (`.envrc`), so
+/// it is an overwrite even for an item inside the workspace.
+#[test]
+fn a_new_name_only_known_when_it_runs_is_an_overwrite() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            (
+                "Rename-Item -Path src\\a.rs -NewName $name",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+            (
+                "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
+                Rule::Overwrite,
+            ),
+        ],
     );
 }
 
@@ -318,12 +355,7 @@ fn what_get_item_and_listings_hand_on_inside_the_workspace_stays_safe() {
     check(
         Shell::PowerShell,
         &windows(),
-        &[
-            "Get-Item * | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }",
-            "Get-Item src | Rename-Item -NewName old",
-        ],
+        &["Get-Item src | Rename-Item -NewName old"],
         &[],
     );
 }
