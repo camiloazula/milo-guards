@@ -264,7 +264,11 @@ folder a `cd` moved to.
   `-` count for zsh's flag only: in bash and sh they are not found and the
   builtin after them never runs, so `shopt -s dotglob; noglob shopt -u dotglob;
   rm -rf *git` is still risky and `setopt globdots; noglob unsetopt globdots;
-  rm -rf *git` is not. Behind `env`, `nohup`, `timeout`, `nice`, `stdbuf`,
+  rm -rf *git` is not. `nocorrect` is a reserved word in zsh, so like `time` it
+  counts only in front, alone or after a leading `time` or `nocorrect`; after
+  `noglob`, `-` or `builtin` zsh looks it up as a command and fails, so
+  `setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git` is still
+  risky. Behind `env`, `nohup`, `timeout`, `nice`, `stdbuf`,
   `sudo` or `find -exec` they run in a process of their own and change nothing.
   In a pipeline, after `&`, on the right of `&&` or `||`, in an `if`, `case`,
   loop or function body, they change nothing either: the line may not run them,

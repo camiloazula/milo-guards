@@ -251,9 +251,36 @@ fn a_zsh_modifier_turns_zshs_flag_off_and_never_bashs() {
             "setopt globdots; - unsetopt globdots; rm -rf *git",
             "setopt globdots; time noglob unsetopt globdots; rm -rf *git",
             "setopt globdots; builtin noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; time nocorrect unsetopt globdots; rm -rf *git",
+            "setopt globdots; nocorrect nocorrect unsetopt globdots; rm -rf *git",
+            "setopt globdots; noglob - unsetopt globdots; rm -rf *git",
+            "setopt globdots; - noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; builtin - unsetopt globdots; rm -rf *git",
             "shopt -s dotglob; command shopt -u dotglob; rm -rf *git",
         ],
         &[
+            // `nocorrect` is a reserved word: after any wrapper but a leading
+            // `time` or `nocorrect` zsh does not find it and the flag stays on.
+            (
+                "setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; - nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; builtin nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; builtin - nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; time builtin nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
             (
                 "setopt globdots; noglob command unsetopt globdots; rm -rf *git",
                 Rule::Delete,
