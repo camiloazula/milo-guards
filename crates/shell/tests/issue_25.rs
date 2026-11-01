@@ -679,3 +679,79 @@ fn stash_is_one_of_the_names_git_holds() {
         ],
     );
 }
+
+#[test]
+fn every_dot_before_a_wildcard_can_match_nothing_in_a_filter() {
+    let long = "*.".repeat(25_000);
+    let long = format!("Get-ChildItem -Recurse -Force -Filter {long} | Remove-Item -Force");
+    let mut lines: Vec<String> = vec![
+        "Get-ChildItem -Recurse -Force -Filter HEAD.*.* | Remove-Item -Force".into(),
+        "Get-ChildItem -Force -Filter *.*.*.* | Remove-Item -Recurse -Force".into(),
+        long,
+    ];
+    for filter in [
+        "config.*.*",
+        "config.?.?",
+        "objects.*.*",
+        "HEAD.?.*",
+        "*.?.?",
+        "*.*.*.*",
+    ] {
+        for flags in [
+            "-Recurse -Force",
+            "-Recurse -Force -Depth 3",
+            "-Hidden -Recurse",
+            "-Recurse -Attributes Hidden",
+        ] {
+            lines.push(format!(
+                "Get-ChildItem {flags} -Filter {filter} | Remove-Item -Recurse -Force"
+            ));
+        }
+    }
+    let rows: Vec<(&str, Rule)> = lines
+        .iter()
+        .map(|line| (line.as_str(), Rule::Delete))
+        .collect();
+    check(Shell::PowerShell, &windows(), &[], &rows);
+}
+
+#[test]
+fn del_s_reads_every_dot_before_a_wildcard_as_a_dos_dot() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("del /s /q HEAD.*.*", Rule::Delete),
+            ("del /s /q config.*.*", Rule::Delete),
+            ("del /s /q *.?.?", Rule::Delete),
+            ("del /s /q *.*.*.*", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_dot_before_a_literal_stays_a_plain_dot() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del /s /q *.obj",
+            "del /s /q *.tmp",
+            "del /s /q main.obj",
+            "del /s /q foo.*",
+            "del /s /q test.*.js",
+        ],
+        &[],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Recurse -Force -Filter *.obj | Remove-Item -Force",
+            "Get-ChildItem -Recurse -Force -Filter *.tmp | Remove-Item -Force",
+            "Get-ChildItem -Recurse -Force -Filter test.*.js | Remove-Item -Force",
+        ],
+        &[],
+    );
+}

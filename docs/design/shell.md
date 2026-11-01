@@ -340,7 +340,8 @@ a path.
   system against the 8.3 short name, `GIT~1` on the system drive, so `-Filter
   g*`, `*~1`, `GIT~?` and `?????` hand on `.git` too, read as cmd reads a
   wildcard, DOS wildcards included: `<` is a `*`, `>` a `?` that can match
-  nothing, and `"` a `.` that can match nothing (`-Filter .gi<`, `<`) (`-Include`
+  nothing, and `"` a `.` that can match nothing (`-Filter .gi<`, `<`), and a `.`
+  followed by `*` or `?` can match nothing too (`-Filter HEAD.*.*` finds `HEAD`) (`-Include`
   is PowerShell's own matching, against the long name only, where these are
   plain characters). A recursive
   listing (`-Recurse`, `-Depth`) searches the folders below, so
@@ -390,9 +391,9 @@ a path.
   (`del HEAD` is safe). Whether `del /s` descends into hidden folders has
   not been checked on a Windows machine; it is taken to, since a false safe is
   the worse mistake, and the rows relax if it is found not to. The pattern is
-  read by cmd's rules, not PowerShell's: a `.` followed only by `*` or `?` at
-  the end also matches a name with no extension (`del /s /q main.*` takes the
-  branch `main`), a run of `?` at the end or just before a `.` can match
+  read by cmd's rules, not PowerShell's: a `.` followed by `*` or `?`
+  also matches nothing, as cmd's DOS dot does (`del /s /q main.*` takes the
+  branch `main`, `del /s /q HEAD.*.*` takes `HEAD`), a run of `?` at the end or just before a `.` can match
   nothing (`HEAD?`, `????????`), cmd's DOS wildcards are read (`<` is a
   `*`, `>` a `?` that can match nothing, `"` a `.` that can match nothing:
   `del /s /q "HEA>"`, `del /s /q "<"`), and the 8.3 short names of the long ones are

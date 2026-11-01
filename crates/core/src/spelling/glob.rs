@@ -105,9 +105,9 @@ const GIT_SHORT_NAMES: [&str; 12] = [
 /// how PowerShell does:
 /// - a trailing dot or space is not part of a name, so the pattern is read
 ///   both with and without it;
-/// - a `.` followed only by `*` or `?` to the end of the pattern also matches
-///   a name with no extension (`main.*` finds `main`, as `dir foo.*` lists
-///   `foo`);
+/// - a `.` followed by `*` or `?` also matches nothing, as cmd turns it into
+///   a DOS dot (`main.*` finds `main`, as `dir foo.*` lists `foo`, and
+///   `HEAD.*.*` finds `HEAD`);
 /// - a run of `?` at the end of the pattern, or just before a `.`, can match
 ///   nothing (`HEAD?` finds `HEAD`, `main?.x` finds `main.x`);
 /// - the 8.3 short names of the long ones are tried as well (`PACKED~1`,
@@ -265,9 +265,9 @@ fn can_match_cmd<'a>(
 }
 
 /// The tokens of a cmd pattern and which of them can match nothing: a `?` in
-/// a run at the end or just before a `.`, a `.` followed only by `*` or
-/// `?` to the end (a `*` can always match nothing), and cmd's own `>` and `"`
-/// anywhere.
+/// a run at the end or just before a `.`, a `.` followed by `*` or `?`
+/// (cmd's DOS dot, which can match nothing at the end of a name; any such dot
+/// is taken to, to err to Risky), and cmd's own `>` and `"` anywhere.
 fn cmd_tokens(pattern: &str, dos: bool) -> (Vec<Token>, Vec<bool>) {
     let tokens = tokens_in(pattern, Flavour::Windows, dos);
     let mut optional: Vec<bool> = tokens
@@ -286,6 +286,9 @@ fn cmd_tokens(pattern: &str, dos: bool) -> (Vec<Token>, Vec<bool>) {
     }
     for (at, token) in tokens.iter().enumerate() {
         if *token == Token::Literal('.') {
+            if matches!(tokens.get(at + 1), Some(Token::Star | Token::Any)) {
+                optional[at] = true;
+            }
             let run = tokens[..at]
                 .iter()
                 .rev()
@@ -667,6 +670,9 @@ mod tests {
             "[a-z]ndex",
             "main.*",
             "HEAD.*",
+            "HEAD.*.*",
+            "*.?.?",
+            "*.*.*.*",
             "HEAD?",
             "main.?",
             "????????",
