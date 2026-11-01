@@ -67,7 +67,10 @@ impl Checker<'_> {
                 |word| word == "remove",
                 "removes everything an SST app created",
             ),
-            "serverless" | "sls" => first_word(
+            // In PowerShell a bare `sls` is the alias of Select-String, and
+            // an alias wins over any program on the path: it never runs
+            // serverless. `sls.cmd`, a path and `serverless` still do.
+            "serverless" | "sls" if !is_select_string_alias(unit) => first_word(
                 args,
                 &values,
                 |word| word == "remove",
@@ -211,6 +214,16 @@ impl Checker<'_> {
             ),
         }
     }
+}
+
+/// Whether the unit is PowerShell's `sls`, written bare (any case, no
+/// extension, no path): the alias of `Select-String`.
+fn is_select_string_alias(unit: &Unit) -> bool {
+    unit.shell == Shell::PowerShell
+        && unit
+            .program
+            .known()
+            .is_some_and(|program| program.eq_ignore_ascii_case("sls"))
 }
 
 /// The article before a program's name: `an aws command`, `a docker command`.

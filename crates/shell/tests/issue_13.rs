@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::{check, posix, rules, windows};
-use milo_guards_shell::{classify, Rule, Shell};
+use common::{check, check_effect, posix, rules, windows};
+use milo_guards_shell::{classify, effect, Effect, Reach, Rule, Shell};
 
 const DESTROY: Rule = Rule::DestroyResources;
 
@@ -984,4 +984,52 @@ fn a_package_runner_runs_the_infrastructure_cli() {
             ("npx sst remove", DESTROY),
         ],
     );
+}
+
+#[test]
+fn sls_in_powershell_is_select_string() {
+    // The alias wins over any program on the path: this never runs serverless.
+    let searches = [
+        "Get-Content app.log | sls remove",
+        "git log --oneline | sls remove",
+        "gci -r | sls \"remove\"",
+        "sls remove *.txt",
+        "sls -Pattern remove -Path *.txt",
+        "SLS remove",
+    ];
+    check(Shell::PowerShell, &windows(), &searches, &[]);
+    let reads: Vec<&str> = searches
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("git "))
+        .collect();
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        Effect::ReadsOnly(Reach::Workspace),
+        &reads,
+    );
+    // Whatever `git log` itself reads as, the alias adds nothing to it.
+    assert_eq!(
+        effect(
+            "git log --oneline | sls remove",
+            Shell::PowerShell,
+            &windows()
+        ),
+        effect(
+            "git log --oneline | Select-String remove",
+            Shell::PowerShell,
+            &windows()
+        )
+    );
+    // A program with an extension, or serverless itself, is still serverless.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[("sls.cmd remove", DESTROY), ("serverless remove", DESTROY)],
+    );
+    // No alias in cmd or on a POSIX shell.
+    check(Shell::Cmd, &windows(), &[], &[("sls remove", DESTROY)]);
+    check(Shell::Posix, &posix(), &[], &[("sls remove", DESTROY)]);
 }
