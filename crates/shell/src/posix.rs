@@ -378,8 +378,12 @@ impl Walker<'_> {
                         self.split.hide();
                     }
                     if child.kind() != "variable_assignment" {
-                        let expanded = unit::text(&child, self.source).contains(['$', '`']);
-                        self.startup_words(&[self.arg(child)], expanded);
+                        let text = unit::text(&child, self.source);
+                        let written = startup::Written {
+                            expanded: text.contains(['$', '`']),
+                            pwd: text.contains("PWD"),
+                        };
+                        self.startup_words(&[self.arg(child)], written);
                     }
                 }
                 self.children(node, stage, level);
@@ -604,7 +608,7 @@ impl Walker<'_> {
             .children(&mut cursor)
             .filter(|child| child.kind() == "variable_assignment")
             .collect();
-        let mut startup = Rc::clone(&self.split.startup);
+        let mut startup = Rc::default();
         for assignment in &assignments {
             if let Some(file) = self.startup(*assignment) {
                 if !startup::push(&mut startup, file) {
@@ -702,16 +706,22 @@ impl Walker<'_> {
                 Some("export" | "declare" | "typeset" | "local" | "readonly")
             )
         {
-            self.startup_words(&args[at..], true);
+            // The words are values already, so the line can no longer say
+            // whether `$PWD` was one of them: it is taken as if it was.
+            let written = startup::Written {
+                expanded: true,
+                pwd: true,
+            };
+            self.startup_words(&args[at..], written);
         }
     }
 
     /// The `NAME=value` words of `words`, read as assignments that set a
     /// variable the shell runs later.
-    fn startup_words(&mut self, words: &[Arg], expanded: bool) {
+    fn startup_words(&mut self, words: &[Arg], written: startup::Written) {
         for word in words {
             if let Some((name, value)) = startup::word(word) {
-                if let Some(file) = startup::read(self.split, &name, &value, self.depth, expanded) {
+                if let Some(file) = startup::read(self.split, &name, &value, self.depth, written) {
                     self.split.add_startup(file);
                 }
             }
@@ -727,9 +737,13 @@ impl Walker<'_> {
             return None;
         }
         let written = node.child_by_field_name("value")?;
-        let expanded = unit::text(&written, source).contains(['$', '`']);
+        let text = unit::text(&written, source);
+        let how = startup::Written {
+            expanded: text.contains(['$', '`']),
+            pwd: text.contains("PWD"),
+        };
         let value = self.arg(written);
-        startup::read(self.split, name, &value, self.depth, expanded)
+        startup::read(self.split, name, &value, self.depth, how)
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a

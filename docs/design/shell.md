@@ -239,7 +239,15 @@ and its findings are the line's, since the shell runs it as the same user.
   that a place the line sets (`HOME=…`) and `PWD` after a `cd` to a name
   that may hold code (`cd 'd$(rm -rf ~)'`, `cd "$x"`: the folder's name is
   chosen by the line, and the value holds it) are `unknown`; `cd sub` leaves
-  `PWD` plain. A
+  `PWD` plain. `PWD` is not plain either when the `cd` or `pushd` has a
+  wildcard in its target (`cd d*` may match a folder the line made, `*`, `?`,
+  `[`, an extglob's `+(`, `@(`, `!(`), when the line makes it the physical
+  path (`cd -P`, `set -P`, `set -o physical`: a link's target is the name), or
+  when the line sets `CDPATH` and moves (the folder it finds is the name). A
+  value is expanded where it runs, not where it is written, so a `PS4` or
+  `BASH_ENV` value written with `$PWD` is judged against every `cd` of the
+  line once it is all read: a later one, one in a loop, a function or a trap
+  action make it `unknown` as an earlier one does. A
   `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
   `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
   `printf -v PS4 …` give them a value the line does not show: `unknown`.
@@ -257,7 +265,14 @@ and its findings are the line's, since the shell runs it as the same user.
   other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
   `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
   not run it. A file the line does not write is not read, as for `bash
-  e.sh`. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
+  e.sh`. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
+  `/proc/self/fd/0`) makes that shell read its input as a script, as `bash
+  /dev/stdin` does: `curl … | BASH_ENV=/dev/stdin bash -c true` is
+  `RunDownloaded` and `BASH_ENV=/dev/stdin bash -c true < x.sh` is
+  `RunInput`. A file the line sets with `export` or as a statement is
+  checked against every shell the line starts, wherever it sits (a trap
+  action, an earlier pass of a loop, a function body, a command before the
+  assignment), as the files the line writes are, whatever the order. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
   after a `cd` it is read from the folder the shell runs in; one an
   expansion made (`BASH_ENV=$PWD/e.sh`) was resolved where the assignment
   ran, so it is checked from there too. A line sets at most 16 different

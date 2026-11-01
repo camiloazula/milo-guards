@@ -2,7 +2,7 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, find_targets, is_stdin, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
@@ -139,7 +139,7 @@ impl Checker<'_> {
             return;
         };
         self.elevated(unit, &key);
-        self.reads(unit);
+        self.reads(unit, unit.reads);
         self.write_then_run(unit, &key);
         self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
@@ -171,13 +171,13 @@ impl Checker<'_> {
 
     /// A shell or an interpreter reading what to run from its input: a
     /// download piped into it is a downloaded script.
-    fn reads(&mut self, unit: &Unit) {
+    fn reads(&mut self, unit: &Unit, reads: Reads) {
         let downloaded = unit.stage.is_some_and(|stage| {
             self.downloaders
                 .get(&stage.pipeline)
                 .is_some_and(|&first| first < stage.index)
         });
-        match (unit.reads, downloaded) {
+        match (reads, downloaded) {
             (Reads::Shell | Reads::Interpreter, true) => {
                 self.add(Rule::RunDownloaded, "runs a downloaded script", None);
             }
@@ -393,7 +393,17 @@ impl Checker<'_> {
         if unit.shell != Shell::Posix || key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
             return;
         }
-        for entry in unit.startup.iter() {
+        // The files the line sets for every shell it starts count wherever
+        // the unit sits, as the files it writes do: an assignment is read
+        // where it is written, and a trap action, the next pass of a loop or
+        // a function body runs after it.
+        for entry in unit.startup.iter().chain(self.split.startup.iter()) {
+            // `BASH_ENV=/dev/stdin` is the shell's input run as a script, as
+            // `bash /dev/stdin` is.
+            if entry.file.known().is_some_and(is_stdin) {
+                self.reads(unit, Reads::Shell);
+                continue;
+            }
             self.runs_written(unit, &entry.file, unit.dir.as_ref());
             // A name an expansion made (`$PWD/e.sh`) is the file where the
             // line assigned it, whatever folder the shell runs from.

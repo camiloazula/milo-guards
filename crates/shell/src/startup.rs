@@ -137,19 +137,33 @@ fn prompt(text: &str) -> Cow<'_, str> {
     Cow::Owned(decoded)
 }
 
+/// How an assignment was written.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Written {
+    /// Whether the name was written with an expansion in it.
+    pub(crate) expanded: bool,
+    /// Whether the value may hold `$PWD`: it is judged against every `cd` of
+    /// the line, wherever it sits (see [`Split::pwd_used`]).
+    pub(crate) pwd: bool,
+}
+
 /// Read the assignment `name=value`: the findings it carries, and the file
-/// `BASH_ENV` names when it names one the guard can read. `expanded` is
-/// whether the name was written with an expansion in it.
+/// `BASH_ENV` names when it names one the guard can read.
 pub(crate) fn read(
     split: &mut Split,
     name: &str,
     value: &Arg,
     depth: usize,
-    expanded: bool,
+    written: Written,
 ) -> Option<Startup> {
+    // `CDPATH=x cd sub` moves to a folder the line made: `PWD` is its name.
+    if name == "CDPATH" {
+        split.reassign(name);
+    }
     if !VARIABLES.contains(&name) {
         return None;
     }
+    let Written { expanded, pwd } = written;
     let bash_env = name == "BASH_ENV";
     let text = match value {
         Arg::Known(text) | Arg::Template { text, .. } => text.as_str(),
@@ -178,6 +192,9 @@ pub(crate) fn read(
             Some(value.text()),
         );
     }
+    if pwd && !unknown && !named_by_expansion {
+        split.pwd_used(value.text());
+    }
     match value {
         Arg::Known(file) if bash_env && !code && !file.is_empty() => Some(Startup {
             file: value.clone(),
@@ -194,9 +211,20 @@ pub(crate) fn env(split: &mut Split, words: &[Arg], depth: usize) -> Vec<Startup
     words
         .iter()
         .filter_map(word)
-        // `env -C DIR` runs the command elsewhere, so a name is taken as
-        // one an expansion made.
-        .filter_map(|(name, value)| read(split, &name, &value, depth, true))
+        // The words are values already, so the line can no longer say
+        // whether `$PWD` was one of them: it is taken as if it was.
+        .filter_map(|(name, value)| {
+            read(
+                split,
+                &name,
+                &value,
+                depth,
+                Written {
+                    expanded: false,
+                    pwd: true,
+                },
+            )
+        })
         .collect()
 }
 
