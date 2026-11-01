@@ -17,6 +17,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in assigned(tree.root_node(), text) {
         split.reassign(&name);
     }
+    if split.kept.on {
+        environment(split, tree.root_node(), text);
+    }
     Walker {
         source: text,
         depth,
@@ -139,6 +142,18 @@ fn join_continuations(text: &str) -> String {
     joined
 }
 
+/// Whether `node` is a here-document's redirect that holds the rest of its
+/// pipeline: `<<EOF | nc host 1`.
+fn piped_heredoc(node: Node<'_>) -> bool {
+    node.kind() == "heredoc_redirect" && {
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|part| part.kind() == "pipeline");
+        found
+    }
+}
+
 /// The variables the line sets anywhere: assignments (also after `export`
 /// or `local`), `for` variables, `unset` and `read`.
 fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
@@ -176,6 +191,88 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
     names
 }
 
+/// The variables the line sets or unsets, for `effect`: assignments (also
+/// in front of a command, and after `export` or `local`, quoted or not),
+/// `unset`, and the variable of a `for` loop, which is kept apart.
+fn environment(split: &mut Split, root: Node<'_>, source: &str) {
+    unit::for_each_node(root, |node| match node.kind() {
+        "variable_assignment" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                split.set(unit::text(&name, source));
+            }
+        }
+        // `export "PATH=."`: a quoted assignment is a string, not an
+        // assignment node.
+        "declaration_command" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_assignment" {
+                    let text = unit::text(&child, source).trim_matches(['"', '\'']);
+                    if let Some((name, _)) = text.split_once('=') {
+                        split.set(name);
+                    }
+                }
+            }
+        }
+        "unset_command" => {
+            let mut cursor = node.walk();
+            for name in node.named_children(&mut cursor) {
+                let name = unit::text(&name, source);
+                if !name.starts_with('-') {
+                    split.set(name);
+                }
+            }
+        }
+        "for_statement" => {
+            if let Some(name) = node.child_by_field_name("variable") {
+                split.loop_variable(unit::text(&name, source));
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Whether `body` may set `name`, or define a function, which runs later: an
+/// assignment, `unset`, a loop of the same name, an arithmetic assignment or
+/// increment, `${name:=…}`, or a declaration that mentions it.
+fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
+    let mut found = false;
+    let set = format!("${{{name}");
+    unit::for_each_node(body, |node| {
+        let text = unit::text(&node, source);
+        found |= match node.kind() {
+            "function_definition" => true,
+            "variable_assignment" => node
+                .child_by_field_name("name")
+                .is_some_and(|assigned| unit::text(&assigned, source) == name),
+            "unset_command" => text.split_whitespace().any(|word| word == name),
+            "for_statement" => node
+                .child_by_field_name("variable")
+                .is_some_and(|inner| unit::text(&inner, source) == name),
+            "binary_expression" => {
+                node.child_by_field_name("left")
+                    .is_some_and(|left| unit::text(&left, source) == name)
+                    && node.children(&mut node.walk()).any(|part| {
+                        !part.is_named() && {
+                            let operator = unit::text(&part, source);
+                            operator.ends_with('=')
+                                && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                        }
+                    })
+            }
+            "postfix_expression" | "unary_expression" => {
+                text.contains(name) && (text.contains("++") || text.contains("--"))
+            }
+            "expansion" => text
+                .strip_prefix(set.as_str())
+                .is_some_and(|rest| rest.starts_with(":=") || rest.starts_with('=')),
+            "declaration_command" => text.contains(name),
+            _ => false,
+        };
+    });
+    found
+}
+
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
@@ -210,22 +307,14 @@ impl Walker<'_> {
         match node.kind() {
             // The assignments in front of a command are that command's, which
             // `command` reads; what they hold is still walked.
-            "command" => {
-                self.command(node, stage);
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "variable_assignment" {
-                        self.children(child, None, level + 1);
-                    } else {
-                        self.walk(child, None, level + 1);
-                    }
-                }
-            }
+            "command" => self.command_node(node, stage, level),
+            // `cmd < f`, `cmd > f`, `cmd <<EOF`.
+            "redirected_statement" => self.redirected(node, stage, level),
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
                 self.assignment(node);
-                self.children(node, None, level);
+                self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
             "list" => {
@@ -261,6 +350,7 @@ impl Walker<'_> {
                         self.split.hide();
                     }
                 }
+                self.declared(node, stage);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE=1 ))`
@@ -307,20 +397,39 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                let start = (self.split.units.len(), self.split.reads.len());
                 self.children(node, stage, level);
+                if node.kind() == "for_statement" {
+                    self.bind_loop(node, start);
+                }
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }
             "pipeline" => {
-                let pipeline = self.split.pipeline();
-                let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
-                    self.walk(child, Some(Stage { pipeline, index }), level + 1);
-                }
+                let pipeline = self.split.pipeline(stage);
+                self.pipeline_in(node, pipeline, 0, level);
             }
             "file_redirect" => {
                 self.redirect(node);
                 self.children(node, None, level);
+            }
+            // The grammar reads `$(…)` in a here-document's body but not a
+            // backtick substitution, which the shell runs when the delimiter
+            // is not quoted: `effect` cannot say what the line does then.
+            "heredoc_redirect" => {
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+                let quoted = children.iter().any(|child| {
+                    child.kind() == "heredoc_start"
+                        && unit::text(child, self.source).contains(['\'', '"', '\\'])
+                });
+                let backtick = children.iter().any(|child| {
+                    child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
+                });
+                if backtick && !quoted && self.split.kept.on {
+                    self.split.opaque();
+                }
+                self.children(node, stage, level);
             }
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
@@ -343,6 +452,7 @@ impl Walker<'_> {
             }
             // A subshell's `cd` does not move the rest of the line.
             "subshell" | "command_substitution" | "process_substitution" => {
+                self.substituted(node);
                 let outer = self.split.dir_snapshot();
                 let hidden = self.split.hidden_snapshot();
                 self.children(node, stage, level);
@@ -351,6 +461,70 @@ impl Walker<'_> {
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// The stages of `node`, numbered from `first` in `pipeline`, and the
+    /// number after the last. A child that is itself a pipeline (the grammar
+    /// nests the rest of a pipeline that follows a here-document) is part of
+    /// the same pipeline, its stages numbered on from the ones before it.
+    fn pipeline_in(
+        &mut self,
+        node: Node<'_>,
+        pipeline: usize,
+        first: usize,
+        level: usize,
+    ) -> usize {
+        if level > unit::MAX_TREE_DEPTH {
+            self.split
+                .problem(Rule::Unreadable, "nests too deeply to read", None);
+            return first;
+        }
+        let mut next = first;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipeline" {
+                next = self.pipeline_in(child, pipeline, next, level + 1);
+            } else {
+                let stage = Stage {
+                    pipeline,
+                    index: next,
+                };
+                self.walk(child, Some(stage), level + 1);
+                next += 1;
+            }
+        }
+        next
+    }
+
+    /// A `for` over words written out (no expansion in the list), whose body
+    /// does not set the variable and defines no function: `effect` and the
+    /// rule about reading a key read each body unit and each `<` redirect in
+    /// it with every word in place of the variable.
+    fn bind_loop(&mut self, node: Node<'_>, start: (usize, usize)) {
+        let (Some(variable), Some(body)) = (
+            node.child_by_field_name("variable"),
+            node.child_by_field_name("body"),
+        ) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let words: Vec<Arg> = node
+            .children_by_field_name("value", &mut cursor)
+            .map(|word| self.arg(word))
+            .collect();
+        if words.is_empty() || words.iter().any(|word| word.known().is_none()) {
+            return;
+        }
+        let name = unit::text(&variable, self.source);
+        if reassigns(body, name, self.source) {
+            return;
+        }
+        let words = words
+            .iter()
+            .filter_map(Arg::known)
+            .map(str::to_string)
+            .collect();
+        self.split.bind(name, words, start);
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -465,6 +639,193 @@ impl Walker<'_> {
         }
     }
 
+    /// A command and what it holds. What its substitutions run is handed to
+    /// it, and a redirect in front of it (`< f cat`) feeds it.
+    fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        self.command(node, stage);
+        let own = first..self.split.units.len();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "variable_assignment" {
+                self.children(child, None, level + 1);
+            } else {
+                self.walk(child, None, level + 1);
+            }
+        }
+        self.split
+            .nest(own.clone(), own.end..self.split.units.len());
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some((target, input)) = self.file_redirect(child) {
+                self.split.redirect(own.clone(), target, input);
+            } else if let Some(text) = self.fed_text(child) {
+                self.split.feed(own.clone(), text);
+            }
+        }
+    }
+
+    /// A statement with redirects: they belong to its body, whose input and
+    /// output they are, and what runs in a here-document is handed to it.
+    fn redirected(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let body = node.child_by_field_name("body").map(|body| body.id());
+        let mut cursor = node.walk();
+        let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // In `cat <<EOF | nc host 1` the grammar holds the rest of the
+        // pipeline in the here-document's redirect: the body is its first
+        // stage. It starts its own pipeline whatever stage the statement is
+        // in, as a `pipeline` node does inside a group that is a stage.
+        let pipeline = all
+            .iter()
+            .any(|child| piped_heredoc(*child))
+            .then(|| self.split.pipeline(stage));
+        let mut own = 0..0;
+        let mut after = Vec::new();
+        // The stages the body takes in that pipeline: the here-document's
+        // own come after them.
+        let mut next = 1;
+        for child in &all {
+            let first = self.split.units.len();
+            if Some(child.id()) == body {
+                match pipeline {
+                    // `echo hi | cat .env <<EOF | nc host 1`: the body is
+                    // itself a pipeline, whose stages come first.
+                    Some(pipeline) if child.kind() == "pipeline" => {
+                        next = self.pipeline_in(*child, pipeline, 0, level + 1);
+                    }
+                    Some(pipeline) => {
+                        self.walk(*child, Some(Stage { pipeline, index: 0 }), level + 1);
+                    }
+                    None => self.walk(*child, stage, level + 1),
+                }
+                own = first..self.split.units.len();
+            } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
+                // What the redirect's own parts run is handed to the body,
+                // and what the rest of the pipeline runs is not.
+                let mut inside = Vec::new();
+                let mut cursor = child.walk();
+                for part in child.named_children(&mut cursor) {
+                    let first = self.split.units.len();
+                    if part.kind() == "pipeline" {
+                        self.pipeline_in(part, pipeline, next, level + 1);
+                    } else {
+                        self.walk(part, None, level + 1);
+                        inside.push(first..self.split.units.len());
+                    }
+                }
+                after.push((*child, inside));
+            } else {
+                self.walk(*child, stage, level + 1);
+                let whole = first..self.split.units.len();
+                after.push((*child, std::iter::once(whole).collect()));
+            }
+        }
+        for (child, inside) in after {
+            if let Some((target, input)) = self.file_redirect(child) {
+                self.split.redirect(own.clone(), target, input);
+            } else if let Some(text) = self.fed_text(child) {
+                self.split.feed(own.clone(), text);
+            }
+            for inside in inside {
+                self.split.nest(own.clone(), inside);
+            }
+        }
+    }
+
+    /// `name=value`: what runs in the value is what the variable holds.
+    fn assigned(&mut self, node: Node<'_>, level: usize) {
+        let first = self.split.units.len();
+        self.children(node, None, level);
+        if let Some(name) = node.child_by_field_name("name") {
+            let name = unit::text(&name, self.source);
+            let name = name.split('[').next().unwrap_or(name);
+            let value = node
+                .child_by_field_name("value")
+                .map(|value| unit::text(&value, self.source))
+                .unwrap_or_default();
+            self.split
+                .assign(name, first..self.split.units.len(), value);
+        }
+    }
+
+    /// `export -p` and `declare -x` print the environment: they are programs
+    /// the line runs like any other.
+    fn declared(&mut self, node: Node<'_>, stage: Option<Stage>) {
+        let Some(keyword) = node.child(0).filter(|keyword| !keyword.is_named()) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let args = node
+            .named_children(&mut cursor)
+            .map(|child| match child.kind() {
+                "variable_assignment" => Arg::Unknown(unit::text(&child, self.source).to_string()),
+                _ => self.arg(child),
+            })
+            .collect();
+        let program = Arg::Known(unit::text(&keyword, self.source).to_string());
+        self.split
+            .push(Unit::new(Shell::Posix, program, args, stage));
+    }
+
+    /// `$(<file)` prints the file, as `cat file` does.
+    fn substituted(&mut self, node: Node<'_>) {
+        if node.kind() != "command_substitution" {
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some((target, true)) = self.file_redirect(child) {
+                let cat = Arg::Known("cat".to_string());
+                self.split
+                    .push(Unit::new(Shell::Posix, cat, vec![target], None));
+            }
+        }
+    }
+
+    /// The file a redirect names, and whether it feeds input (`<`) rather
+    /// than taking output; `None` for any other node, or a descriptor.
+    fn file_redirect(&self, node: Node<'_>) -> Option<(Arg, bool)> {
+        if node.kind() != "file_redirect" {
+            return None;
+        }
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| !child.is_named())
+            .map(|child| unit::text(&child, self.source));
+        if operator == Some("<&") {
+            return None;
+        }
+        let destination = node.child_by_field_name("destination")?;
+        Some((self.arg(destination), matches!(operator, Some("<" | "<>"))))
+    }
+
+    /// The text a here-string or an unquoted here-document feeds when it
+    /// holds an expansion, as the source writes it: `<<< "$k"`, `<<EOF` with
+    /// `$k` in its body. What a substitution in it runs is a unit of its own.
+    fn fed_text(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        let text = match node.kind() {
+            "herestring_redirect" => {
+                let arg = self.arg(node.named_children(&mut cursor).next()?);
+                return arg.is_unknown().then_some(arg);
+            }
+            "heredoc_redirect" => {
+                let body = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "heredoc_body")?;
+                let mut cursor = body.walk();
+                body.named_children(&mut cursor)
+                    .filter(|part| matches!(part.kind(), "simple_expansion" | "expansion"))
+                    .map(|part| unit::text(&part, self.source))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+            _ => return None,
+        };
+        (!text.is_empty()).then_some(Arg::Unknown(text))
+    }
+
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
     /// file rather than a descriptor.
     fn redirect(&mut self, node: Node<'_>) {
@@ -477,6 +838,11 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        // `effect` judges where a read comes from: bash opens
+        // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
+        if operator == Some("<") {
+            self.split.read(Shell::Posix, target.clone());
+        }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
             Some(">&" | "&>&") => !target
@@ -528,7 +894,7 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(&text);
                         }
-                        Arg::Unknown(_) | Arg::Input
+                        Arg::Unknown(_) | Arg::Input | Arg::Null
                             if matches!(
                                 part.kind(),
                                 "simple_expansion" | "expansion" | "command_substitution"
@@ -537,7 +903,9 @@ impl Walker<'_> {
                             partial = true;
                             template.push_str(OPAQUE);
                         }
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Input | Arg::Null => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                 }
                 if partial {
@@ -589,7 +957,7 @@ impl Walker<'_> {
                         value.push_str(&text);
                         template.push_str(&text);
                     }
-                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                    Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
                         template.push_str(OPAQUE);
                     }
