@@ -455,7 +455,9 @@ const ZIP_LONG_VALUES: &[&str] = &[
 /// its input (`-@`). The patterns that follow a bare `-x` stay, up to a lone
 /// `@`; those that follow a bare `-i` only choose among the operands, and
 /// stand in for them when none is given. `-xpat` and `--exclude=pat` are one
-/// value and open no list.
+/// value and open no list. An argument that only a run can show, inside a
+/// list, may end it (it may start with `-` or be `@`), so the list is
+/// closed after it.
 fn zip(args: &[Arg]) -> Vec<Arg> {
     let mut moves = false;
     let mut from_input = false;
@@ -478,6 +480,12 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                 Some(ZipList::Exclude) => {}
                 Some(ZipList::Include) => included.push(arg.clone()),
                 None => positional.push(arg.clone()),
+            }
+            // An argument only known when it runs may start with `-` or be
+            // a lone `@`, which end the list: the names after it are
+            // operands again.
+            if list.is_some() && may_be_switch(arg) {
+                list = None;
             }
             continue;
         };
@@ -603,37 +611,75 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
     members
 }
 
+/// What can be read of the start of an argument, as far as it is text: the
+/// value of one that is known, and the text as written of one only known
+/// when it runs (`-p"$PASS"` starts with `-p`).
+fn readable(arg: &Arg) -> &str {
+    match arg {
+        Arg::Known(text) | Arg::Unknown(text) | Arg::Template { text, .. } => text,
+        Arg::Input => "",
+    }
+}
+
+/// Whether an argument can be nothing but a switch, however it expands: it
+/// is only known when it runs and no letter of its start is plain text that
+/// rules a switch out.
+fn may_be_switch(arg: &Arg) -> bool {
+    arg.known().is_none()
+        && !readable(arg)
+            .starts_with(|c: char| c.is_alphanumeric() || matches!(c, '.' | '/' | '~' | '\\' | '_'))
+}
+
 /// The files `7z a` and `7z u` delete after adding them, which `-sdel`
 /// asks for: the operands after the archive's name, the patterns of `-i`,
-/// and the lists named with `@`; with none of them, `*`.
+/// and the lists named with `@`; with none of them, `*`. An argument whose
+/// readable start is `-` is a switch whatever follows (`-p"$PASS"`); one
+/// that may be `-i` adds a member only known when it runs. An argument
+/// wholly unknown (`$OPTS`) may be a switch too, so the default `*` stays
+/// among the members when the operands that are known leave none.
 fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
     let list = || Arg::Unknown("<files from a list>".to_string());
     let mut deletes = false;
     let mut adds = false;
     let mut included = false;
     let mut positional = 0;
+    // The operands that cannot be a switch: the command, the archive and
+    // the names after it.
+    let mut definite = 0;
     let mut members = Vec::new();
     let mut options_done = false;
     for arg in args {
-        let switch = arg
-            .known()
-            .filter(|text| !options_done && text.starts_with('-') && text.len() > 1);
-        let Some(text) = switch else {
-            positional += 1;
-            match positional {
-                // The command: one that is not known may add.
-                1 => {
-                    adds = arg
-                        .known()
-                        .is_none_or(|text| matches!(text.to_ascii_lowercase().as_str(), "a" | "u"));
+        let start = readable(arg);
+        let is_switch = !options_done && start.starts_with('-') && start.len() > 1;
+        let text = match arg.known() {
+            Some(text) if is_switch => text,
+            None if is_switch => {
+                // Only known when it runs: a switch, which may be `-i`.
+                let letter = start[1..].chars().next();
+                if letter.is_none_or(|c| c.eq_ignore_ascii_case(&'i') || !c.is_ascii_alphabetic()) {
+                    included = true;
+                    members.push(Arg::Unknown(arg.text().to_string()));
                 }
-                2 => {}
-                _ => members.push(match arg.known() {
-                    Some(text) if text.starts_with('@') => list(),
-                    _ => arg.clone(),
-                }),
+                continue;
             }
-            continue;
+            _ => {
+                positional += 1;
+                definite += usize::from(!may_be_switch(arg));
+                match positional {
+                    // The command: one that is not known may add.
+                    1 => {
+                        adds = arg.known().is_none_or(|text| {
+                            matches!(text.to_ascii_lowercase().as_str(), "a" | "u")
+                        });
+                    }
+                    2 => {}
+                    _ => members.push(match arg.known() {
+                        Some(text) if text.starts_with('@') => list(),
+                        _ => arg.clone(),
+                    }),
+                }
+                continue;
+            }
         };
         if text == "--" {
             options_done = true;
@@ -655,8 +701,11 @@ fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
         }
     }
     // Given no names and no `-i`, `a` and `u` pack everything under the
-    // working directory (the default wildcard `*`).
-    if members.is_empty() && !included && positional >= 2 {
+    // working directory (the default wildcard `*`). An argument that may be
+    // a switch leaves it as one reading, so it stays when the operands that
+    // are certain are no more than the command and the archive.
+    let all_known = members.iter().all(|member| member.known().is_some());
+    if !included && positional >= 2 && definite <= 2 && all_known {
         members.push(Arg::Known("*".to_string()));
     }
     if deletes && adds {

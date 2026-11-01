@@ -702,3 +702,52 @@ fn zip_unicode_option_takes_a_value() {
         ],
     );
 }
+
+#[test]
+fn seven_zip_switch_with_a_value_only_known_when_it_runs_is_no_operand() {
+    // `-p"$PASS"` starts with `-`: a switch, so the archive is still the
+    // first name and, with none after it, the default `*` is packed and
+    // deleted.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["7z a -p\"$PASS\" x.7z src -sdel"],
+        &[
+            ("7z a -p\"$PASS\" x.7z -sdel", Rule::Delete),
+            ("7z a -sdel -p\"$PASS\" x.7z", Rule::Delete),
+            ("7z a -x!\"$SKIP\" x.7z -sdel", Rule::Delete),
+            ("7z a -sdel -mx=\"$LEVEL\" backup.7z", Rule::Delete),
+            ("7z a -t\"$FMT\" -sdel out.7z", Rule::Delete),
+            ("7z a -w\"$T\" x.7z -sdel", Rule::Delete),
+            ("7z a $OPTS x.7z -sdel", Rule::Delete),
+            ("7z a \"$OPTS\" x.7z -sdel", Rule::Delete),
+            ("7z a x.7z -i\"$PAT\" -sdel", Rule::Delete),
+            ("7z a x.7z -i!\"$PAT\" -sdel", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[("7z a -sdel -p%PW% x.7z", Rule::Delete)],
+    );
+}
+
+#[test]
+fn zip_unknown_argument_inside_a_list_ends_it() {
+    // A variable can be a switch or `@`, which zip ends the list at, so the
+    // names after it are operands again.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["zip -m x.zip src -x \"$X\" '*.o'"],
+        &[
+            ("zip -m x.zip src -x \"$X\" ~", Rule::Delete),
+            ("zip -m x.zip src -x $X ~", Rule::Delete),
+            ("zip -m x.zip -x \"$X\" ~", Rule::Delete),
+            ("zip -mr x.zip src -x \"$X\" /etc", Rule::Delete),
+            ("zip -m x.zip src --exclude \"$X\" ~", Rule::Delete),
+            ("zip -m x.zip src -i \"$X\" ~", Rule::Delete),
+        ],
+    );
+}

@@ -445,7 +445,13 @@ in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
 a member. An operand only known when it runs is a member known only when it
 runs; with `zip`, so is a first operand that is, since it may be the archive
 and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
-the files the stage before it lists.
+the files the stage before it lists. With `7z`, an argument whose readable
+start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
+(`$OPTS`) may be a switch too, so the default `*` stays among the members when
+the operands that are certain are only the command and the archive. With
+`zip`, an argument only known when it runs inside a `-x` or `-i` list may
+start with `-` or be `@`, which end the list, so the names after it are
+operands again.
 
 `7z` matches a wildcard itself, quoted or not, and a name that starts with a
 dot is among the matches. `zip` does so on Windows; on Unix it matches
