@@ -7,7 +7,7 @@
 /// dialects differ in a way that would hide or show a statement, each one is
 /// read as itself. A construct a dialect is not known to have is not read, so
 /// what it would hide is read as code, never skipped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Dialect {
     /// `psql`: `$tag$` and `E'…'` strings, block comments that nest, and
     /// backslash commands anywhere outside a string.
@@ -49,7 +49,31 @@ enum Nesting {
     Unsure,
 }
 
+/// How a string takes a backslash. A server setting the text can change
+/// (`sql_mode` in MySQL, `standard_conforming_strings` in PostgreSQL) turns
+/// the escape on or off, so a text is read with the rule the dialect has and
+/// with the others it may have: what any of them shows counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backslash {
+    /// The dialect's own: `E'…'` in PostgreSQL, every string in MySQL.
+    Dialect,
+    /// None: MySQL's `NO_BACKSLASH_ESCAPES`.
+    Never,
+    /// In `'…'` strings and not in `"…"` identifiers: MySQL's `ANSI_QUOTES`,
+    /// and PostgreSQL with `standard_conforming_strings` off.
+    SingleQuotes,
+}
+
 impl Dialect {
+    /// The other rules a string of this dialect may be read with.
+    fn other_backslash(self) -> &'static [Backslash] {
+        match self {
+            Self::MySql => &[Backslash::Never, Backslash::SingleQuotes],
+            Self::Postgres => &[Backslash::SingleQuotes],
+            _ => &[],
+        }
+    }
+
     fn hash_comments(self) -> bool {
         matches!(self, Self::MySql | Self::ClickHouse)
     }
@@ -198,9 +222,14 @@ const STARTS_A_STATEMENT: [&str; 11] = [
 ];
 
 /// Words after `DROP` that take away something other than data: `ALTER
-/// COLUMN c DROP NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP
-/// EXPRESSION`, `DROP CONSTRAINT`.
-const DROPS_NO_DATA: [&str; 5] = ["NOT", "DEFAULT", "IDENTITY", "EXPRESSION", "CONSTRAINT"];
+/// COLUMN c DROP NOT NULL`, `DROP DEFAULT`, `DROP CONSTRAINT`. They are
+/// reserved words, so no column has the name.
+const DROPS_NO_DATA: [&str; 3] = ["NOT", "DEFAULT", "CONSTRAINT"];
+
+/// The words after `DROP` that take away something other than data only in
+/// `ALTER [COLUMN] c DROP IDENTITY` and `DROP EXPRESSION`: they are not
+/// reserved, so `ALTER TABLE t DROP identity` drops a column of that name.
+const DROPS_NO_DATA_OF_A_COLUMN: [&str; 2] = ["IDENTITY", "EXPRESSION"];
 
 /// Whether `chars` holds a shell expansion (`$x`, `${x}`, `$(x)`, cmd's `%x%`)
 /// starting at `at`, and where it ends.
@@ -290,6 +319,23 @@ fn bracketed(chars: &[char], at: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// The index after the `psql` variable that starts at `at` (`:name`,
+/// `:'name'`, `:"name"`): a quoted one runs to its closing quote, or to the
+/// end when it has none.
+fn psql_variable_end(chars: &[char], at: usize) -> usize {
+    if let Some(&quote @ ('\'' | '"')) = chars.get(at + 1) {
+        return chars
+            .get(at + 2..)
+            .and_then(|rest| rest.iter().position(|c| *c == quote))
+            .map_or(chars.len(), |close| at + 2 + close + 1);
+    }
+    let mut end = at + 1;
+    while chars.get(end).is_some_and(|c| is_word_char(*c)) {
+        end += 1;
+    }
+    end
 }
 
 /// The index after the block comment that starts at `at`, or `None` when it
@@ -390,7 +436,7 @@ fn psql_command(chars: &[char], at: usize) -> (String, usize) {
 /// is never closed: the rest of the text could be anything. `holes` says the
 /// text came from a double-quoted shell word, where `$x` and `` `x` `` are
 /// the shell's expansions.
-fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
+fn tokenize(text: &str, dialect: Dialect, holes: bool, backslash: Backslash) -> Option<Vec<Token>> {
     let chars: Vec<char> = text.chars().collect();
     let mut tokens: Vec<Token> = Vec::new();
     let mut at = 0;
@@ -458,7 +504,11 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                         .checked_sub(2)
                         .and_then(|i| chars.get(i))
                         .is_none_or(|c| !is_word_char(*c));
-                let escapes = escaped || dialect.backslash_escapes();
+                let escapes = match backslash {
+                    Backslash::Dialect => escaped || dialect.backslash_escapes(),
+                    Backslash::Never => false,
+                    Backslash::SingleQuotes => c == '\'',
+                };
                 let end = quoted(&chars, at, escapes)?;
                 tokens.push(Token::Quoted(quote_of(&chars, at, end, escapes)));
                 at = end;
@@ -481,6 +531,20 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                     tokens.push(Token::Symbol('%'));
                     at += 1;
                 }
+            }
+            // A variable the client fills in, where a statement starts: `psql`'s
+            // `:name`, `:'name'` and `:"name"`, and `sqlcmd`'s `$(name)`. What it
+            // holds is not on the line.
+            ':' if dialect == Dialect::Postgres
+                && starts_statement
+                && next.is_some_and(|c| is_word_char(c) || matches!(c, '\'' | '"')) =>
+            {
+                at = psql_variable_end(&chars, at);
+                tokens.push(Token::Hole);
+            }
+            '$' if dialect == Dialect::SqlServer && starts_statement && next == Some('(') => {
+                at = hole_end(&chars, at).unwrap_or(chars.len());
+                tokens.push(Token::Hole);
             }
             '$' => {
                 if holes {
@@ -660,8 +724,8 @@ fn in_matched_clause(tokens: &[Token], verb: usize) -> bool {
 }
 
 /// Whether the `DROP` at `at` takes away something other than data: `DROP
-/// NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP EXPRESSION`, `DROP
-/// CONSTRAINT`, `ON COMMIT DROP`, which ends a temporary table, and
+/// NOT NULL`, `DROP DEFAULT`, `DROP CONSTRAINT`, `ALTER [COLUMN] c DROP
+/// IDENTITY` and `DROP EXPRESSION`, `ON COMMIT DROP`, which ends a temporary table, and
 /// `ClickHouse`'s `SYSTEM DROP … CACHE`.
 fn drops_no_data(tokens: &[Token], at: usize, dialect: Dialect) -> bool {
     let on_commit =
@@ -670,6 +734,22 @@ fn drops_no_data(tokens: &[Token], at: usize, dialect: Dialect) -> bool {
     on_commit
         || system
         || matches!(tokens.get(at + 1), Some(Token::Word(word)) if DROPS_NO_DATA.contains(&word.as_str()))
+        || (matches!(tokens.get(at + 1), Some(Token::Word(word)) if DROPS_NO_DATA_OF_A_COLUMN.contains(&word.as_str()))
+            && alters_a_column(tokens, at))
+}
+
+/// Whether what is before the `DROP` at `at` is `ALTER [COLUMN] name`: the
+/// statement changes one column and does not drop it.
+fn alters_a_column(tokens: &[Token], at: usize) -> bool {
+    let name = |token: Option<&Token>| match token {
+        Some(Token::Word(_)) => true,
+        Some(Token::Quoted(quote)) => !quote.string,
+        _ => false,
+    };
+    let before = |back: usize| at.checked_sub(back).and_then(|i| tokens.get(i));
+    name(before(1))
+        && (is_word(before(2), "ALTER")
+            || (is_word(before(2), "COLUMN") && is_word(before(3), "ALTER")))
 }
 
 /// Whether the `DELETE` or `UPDATE` at `at` is part of another statement
@@ -698,6 +778,8 @@ struct Scope {
     in_do: bool,
     /// How many strings deep it is: SQL in the text of SQL.
     depth: usize,
+    /// How a string takes a backslash.
+    backslash: Backslash,
 }
 
 /// The most strings of SQL inside strings of SQL that are read.
@@ -979,27 +1061,39 @@ fn meta(text: &str, holes: bool) -> Reading {
 
 /// What the SQL in `text` does. `holes` says `text` came from a
 /// double-quoted shell word, whose expansions are only known when it runs.
+/// Where the server decides how a backslash in a string reads, it is read
+/// with each rule, and what any of them shows counts; a reading whose strings
+/// do not close is not one the text can have, and is left out.
 pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
-    read_sql(
-        text,
-        Scope {
-            dialect,
-            holes,
-            in_do: false,
-            depth: 0,
-        },
-    )
+    let scope = Scope {
+        dialect,
+        holes,
+        in_do: false,
+        depth: 0,
+        backslash: Backslash::Dialect,
+    };
+    let mut reading = read_sql(text, scope);
+    for &backslash in dialect.other_backslash() {
+        if let Some(other) = try_read_sql(text, Scope { backslash, ..scope }) {
+            reading.merge(other);
+        }
+    }
+    reading
 }
 
 /// What the SQL in `text` does, read in `scope`.
 fn read_sql(text: &str, scope: Scope) -> Reading {
+    try_read_sql(text, scope).unwrap_or(Reading::UNREADABLE)
+}
+
+/// What the SQL in `text` does, read in `scope`; `None` when it cannot be
+/// cut into tokens or is nested too deep.
+fn try_read_sql(text: &str, scope: Scope) -> Option<Reading> {
     // SQL in a string in SQL, so deep that it is not read.
     if scope.depth > MAX_DEPTH {
-        return Reading::UNREADABLE;
+        return None;
     }
-    let Some(tokens) = tokenize(text, scope.dialect, scope.holes) else {
-        return Reading::UNREADABLE;
-    };
+    let tokens = tokenize(text, scope.dialect, scope.holes, scope.backslash)?;
     let mut reading = Reading::default();
     let mut start = 0;
     for at in 0..=tokens.len() {
@@ -1017,7 +1111,7 @@ fn read_sql(text: &str, scope: Scope) -> Reading {
             Some(_) => {}
         }
     }
-    reading
+    Some(reading)
 }
 
 /// What the `MongoDB` shell script in `text` does: drops a database or a

@@ -734,22 +734,17 @@ impl Walker<'_> {
                     .get(..from)
                     .and_then(|before| before.rfind('\n'))
                     .map_or(0, |newline| newline + 1);
-                let text = self.source.get(from..end).unwrap_or_default().to_string();
-                let mut expands = lost.iter().any(|argument| argument.kind() != "word");
-                if let Some(body) = body {
-                    let mut parts = body.walk();
-                    expands |= body
-                        .named_children(&mut parts)
-                        .any(|part| part.kind() != "heredoc_content");
-                }
-                Some(if expands {
-                    Arg::Template {
-                        source: text.clone(),
-                        text,
-                    }
-                } else {
-                    Arg::Known(text)
-                })
+                let raw = self.source.get(from..end).unwrap_or_default();
+                // The delimiter is quoted when any part of it is: `'EOF'`,
+                // `"EOF"`, `\EOF`.
+                let quoted = kind("heredoc_start").is_some_and(|start| {
+                    unit::text(start, self.source).contains(['\'', '"', '\\'])
+                });
+                let strips = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
+                Some(heredoc_fed(raw, strips, quoted))
             }
             _ => None,
         }
@@ -919,6 +914,58 @@ impl Walker<'_> {
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+}
+
+/// The text a here-document feeds, from the lines of its body as written.
+/// `<<-` takes the tabs off the front of each line, whatever the delimiter.
+/// With a quoted delimiter the body is fed as it is. With an unquoted one the
+/// shell reads it as the inside of a double-quoted word, without the quotes:
+/// a backslash before a newline joins the lines, and before `$`, a backtick
+/// or a backslash it goes and leaves the character; any other backslash
+/// stays. What is left of `$` or a backtick is an expansion, so the text is a
+/// template (`$$` is the shell's process id, and tree-sitter does not read it
+/// as an expansion). A body with both an escaped and an expanding `$` or
+/// backtick is known only when it runs: a template reads each `$` it holds as
+/// an expansion, and would take a character the client gets as it is for one.
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+    let lines: String = if strips {
+        raw.split_inclusive('\n')
+            .map(|line| line.trim_start_matches('\t'))
+            .collect()
+    } else {
+        raw.to_string()
+    };
+    if quoted {
+        return Arg::Known(lines);
+    }
+    let mut text = String::with_capacity(lines.len());
+    let (mut escaped, mut expands) = (false, false);
+    let mut chars = lines.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('\\', Some('\n')) => {
+                chars.next();
+            }
+            ('\\', Some(next @ ('$' | '`' | '\\'))) => {
+                chars.next();
+                text.push(next);
+                escaped |= next != '\\';
+            }
+            ('$' | '`', _) => {
+                expands = true;
+                text.push(c);
+            }
+            _ => text.push(c),
+        }
+    }
+    match (escaped, expands) {
+        (true, true) => Arg::Unknown(raw.to_string()),
+        (false, true) => Arg::Template {
+            text,
+            source: raw.to_string(),
+        },
+        (_, false) => Arg::Known(text),
     }
 }
 

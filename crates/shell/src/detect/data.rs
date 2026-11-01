@@ -7,6 +7,9 @@
 //! `echo` piped in). A file of statements (`psql -f`, `< seed.sql`) is the
 //! workspace's own code and is not read.
 
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
 use super::Checker;
 use crate::unit::{Arg, Unit};
 use crate::{Rule, Shell};
@@ -39,10 +42,12 @@ struct Client {
     language: Language,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Language {
     Sql(Dialect),
     Mongo,
+    /// `redis-cli`'s commands, one on each line.
+    Redis,
 }
 
 const PSQL: Client = Client {
@@ -466,13 +471,19 @@ impl Client {
 
     /// What the statement `arg` does.
     fn read(&self, arg: &Arg) -> Reading {
-        let Some((text, holes)) = statement_text(arg) else {
-            return Reading::UNREADABLE;
-        };
-        match self.language {
-            Language::Sql(dialect) => reader::sql(text, dialect, holes),
-            Language::Mongo => reader::mongo(text, holes),
-        }
+        read_text(self.language, arg)
+    }
+}
+
+/// What the text `arg`, written in `language`, does.
+fn read_text(language: Language, arg: &Arg) -> Reading {
+    let Some((text, holes)) = statement_text(arg) else {
+        return Reading::UNREADABLE;
+    };
+    match language {
+        Language::Sql(dialect) => reader::sql(text, dialect, holes),
+        Language::Mongo => reader::mongo(text, holes),
+        Language::Redis => reader::redis_lines(text, holes),
     }
 }
 
@@ -726,6 +737,8 @@ struct Said {
     texts: [Arg; READINGS],
     /// Whether it ends the text with a newline.
     newline: bool,
+    /// Whether it says more than the stage may: the text is not read.
+    over: bool,
 }
 
 /// What a shell decodes where shells differ. A line is read as every one of
@@ -895,11 +908,21 @@ fn echoed(text: &str, shell: Quirks) -> (String, bool) {
 /// so more is a format blown up on purpose, and is not read.
 const PRINTED_LIMIT: usize = 1 << 16;
 
+/// What `printf` prints, as far as it is read.
+enum Printed {
+    Text(String),
+    /// Another directive or escape than the ones that are read, or more than
+    /// [`PRINTED_LIMIT`].
+    Unknown,
+    /// More than what is left of the stage's [`TEXT_LIMIT`].
+    Over,
+}
+
 /// What `printf FORMAT ARGUMENT…` prints in `shell`, as `printf` reads it:
 /// the format's escapes and `%s`, `%b`, `%d` and `%%` filled from the
-/// arguments, the format used again while arguments are left. `None` for any
-/// other directive or escape.
-fn printed(format: &str, args: &[&str], shell: Quirks) -> Option<String> {
+/// arguments, the format used again while arguments are left. It stops as
+/// soon as it prints more than `left`, the text the stage may still say.
+fn printed(format: &str, args: &[&str], shell: Quirks, left: usize) -> Printed {
     let mut out = String::new();
     let mut used = 0;
     loop {
@@ -910,11 +933,14 @@ fn printed(format: &str, args: &[&str], shell: Quirks) -> Option<String> {
                 '\\' => match escape(&mut chars, &mut out, Reads::Format, shell) {
                     Escape::Decoded => {}
                     Escape::Literal => out.push('\\'),
-                    Escape::Ends | Escape::Unknown => return None,
+                    Escape::Ends | Escape::Unknown => return Printed::Unknown,
                 },
                 '%' => {
                     let arg = args.get(used).copied();
-                    match chars.next()? {
+                    let Some(directive) = chars.next() else {
+                        return Printed::Unknown;
+                    };
+                    match directive {
                         '%' => out.push('%'),
                         's' => {
                             used += 1;
@@ -925,7 +951,7 @@ fn printed(format: &str, args: &[&str], shell: Quirks) -> Option<String> {
                             let (text, ended) = echoed(arg.unwrap_or_default(), shell);
                             out.push_str(&text);
                             if ended {
-                                return Some(out);
+                                return fit(out, left);
                             }
                         }
                         'd' | 'i' => {
@@ -933,21 +959,38 @@ fn printed(format: &str, args: &[&str], shell: Quirks) -> Option<String> {
                             let number = arg.unwrap_or("0");
                             let digits = number.strip_prefix(['-', '+']).unwrap_or(number);
                             if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-                                return None;
+                                return Printed::Unknown;
                             }
                             out.push_str(number);
                         }
-                        _ => return None,
+                        _ => return Printed::Unknown,
                     }
                 }
                 c => out.push(c),
             }
         }
-        if used >= args.len() || used == before || out.len() > PRINTED_LIMIT {
+        if used >= args.len() || used == before || out.len() > PRINTED_LIMIT.min(left) {
             break;
         }
     }
-    (out.len() <= PRINTED_LIMIT).then_some(out)
+    fit(out, left)
+}
+
+/// `out` as what `printf` printed, when it is within the limits.
+fn fit(out: String, left: usize) -> Printed {
+    if out.len() > PRINTED_LIMIT {
+        Printed::Unknown
+    } else if out.len() > left {
+        Printed::Over
+    } else {
+        Printed::Text(out)
+    }
+}
+
+/// Whether the `cat` reads only its input: no arguments, or only `-`, which
+/// is its input too.
+fn reads_input_only(unit: &Unit) -> bool {
+    unit.args.iter().all(|arg| arg.known() == Some("-"))
 }
 
 /// The text of `args` joined, and whether it has expansions in it; `None`
@@ -991,6 +1034,7 @@ fn echo_said(unit: &Unit) -> Said {
         return Said {
             texts: [NOTHING_KNOWN; READINGS],
             newline,
+            over: false,
         };
     };
     let written = attached(&text, holes);
@@ -1006,11 +1050,13 @@ fn echo_said(unit: &Unit) -> Said {
             decoded(SHELLS.get(2)),
         ],
         newline,
+        over: false,
     }
 }
 
-/// What a piped `printf` says: its format filled from its arguments.
-fn printf_said(unit: &Unit) -> Said {
+/// What a piped `printf` says: its format filled from its arguments, as far
+/// as `left` of the stage's text allows.
+fn printf_said(unit: &Unit, left: usize) -> Said {
     let mut rest = unit.args.iter();
     let mut format = None;
     while let Some(arg) = rest.next() {
@@ -1030,6 +1076,7 @@ fn printf_said(unit: &Unit) -> Said {
         }
     }
     let rest: Vec<&Arg> = rest.collect();
+    let mut over = false;
     let said = format.and_then(|format| {
         let (format, holes) = statement_text(format)?;
         let mut args = Vec::new();
@@ -1042,7 +1089,14 @@ fn printf_said(unit: &Unit) -> Said {
         // Every shell's reading of it, or none when one cannot be read.
         let mut texts = Vec::new();
         for shell in &SHELLS {
-            texts.push(attached(&printed(format, &args, *shell)?, holey));
+            match printed(format, &args, *shell, left) {
+                Printed::Text(text) => texts.push(attached(&text, holey)),
+                Printed::Unknown => return None,
+                Printed::Over => {
+                    over = true;
+                    return None;
+                }
+            }
         }
         Some(texts)
     });
@@ -1055,6 +1109,7 @@ fn printf_said(unit: &Unit) -> Said {
     Said {
         texts: [text(0), text(0), text(1), text(2)],
         newline: false,
+        over,
     }
 }
 
@@ -1065,6 +1120,7 @@ fn output_said(unit: &Unit) -> Said {
     Said {
         texts: [said.clone(), said.clone(), said.clone(), said],
         newline: true,
+        over: false,
     }
 }
 
@@ -1097,52 +1153,76 @@ fn unique<'a>(texts: impl Iterator<Item = &'a Arg>) -> Vec<&'a Arg> {
     found
 }
 
+/// A stage of a pipeline: the pipeline and the stage's index in it.
+type StageKey = (usize, usize);
+
+/// What the line says to its clients, worked out once for each stage and
+/// reused for every client of the stage after it: a line may hold thousands
+/// of clients, and each one reading again what every program of the stage
+/// before says would be the clients times the programs.
+#[derive(Default)]
+pub(super) struct Cache {
+    /// What each stage says, as texts.
+    said: HashMap<StageKey, Rc<Vec<Arg>>>,
+    /// What each of those texts does, for each language it is read in.
+    read: HashMap<(StageKey, Language), Rc<Vec<Reading>>>,
+    /// The stages and languages whose findings a client has already given;
+    /// another client of the same language says the same.
+    judged: HashSet<(StageKey, Language)>,
+}
+
+/// The stage whose output is the input of `unit`.
+fn feeding(unit: &Unit) -> Option<StageKey> {
+    let stage = unit.stage.filter(|stage| stage.index > 0)?;
+    Some((stage.pipeline, stage.index - 1))
+}
+
 impl Checker<'_> {
-    /// The text on the line that is fed to the client at `at`: a
-    /// here-string, a here-document, or what the `echo`, `printf` (or `cat`
-    /// fed a here-document) of the stage before it say, every program of that
-    /// stage: `{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } | psql`.
-    fn fed_statements(&self, at: usize, unit: &Unit) -> Vec<Arg> {
-        let mut found: Vec<Arg> = self.split.fed_to(at).cloned().collect();
-        let Some(stage) = unit.stage.filter(|stage| stage.index > 0) else {
-            return found;
-        };
-        let producers = self
-            .stages
-            .get(&(stage.pipeline, stage.index - 1))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        // A group too large to read each time a client of the stage after it
-        // asks is not read.
+    /// The text a stage says to the stage after it: what the `echo`,
+    /// `printf` (or `cat` fed a here-document) of every program of the stage
+    /// say, `{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } | psql`.
+    fn stage_texts(&self, key: StageKey) -> Vec<Arg> {
+        let producers = self.stages.get(&key).map(Vec::as_slice).unwrap_or_default();
+        // A group too large to read is not read.
         if producers.len() > MAX_PRODUCERS {
-            found.push(NOTHING_KNOWN);
-            return found;
+            return vec![NOTHING_KNOWN];
         }
+        let mut found = Vec::new();
         let mut said = Vec::new();
+        // What the stage may still say; once it has said more the rest is
+        // not decoded.
+        let mut left = TEXT_LIMIT;
+        let mut over = false;
         for &producer in producers {
             let Some(unit) = self.split.units.get(producer) else {
                 continue;
             };
-            match unit.key().as_deref() {
-                Some("echo") if unit.shell == Shell::Posix => said.push(echo_said(unit)),
-                Some("echo" | "write-output") => said.push(output_said(unit)),
-                Some("printf") => said.push(printf_said(unit)),
-                Some("cat") if unit.args.is_empty() => {
-                    found.extend(self.split.fed_to(producer).cloned());
-                }
-                _ => {}
+            let key = unit.key();
+            if key.as_deref() == Some("cat") && reads_input_only(unit) {
+                found.extend(self.split.fed_to(producer).cloned());
+                continue;
             }
+            if over {
+                continue;
+            }
+            let each = match key.as_deref() {
+                Some("echo") if unit.shell == Shell::Posix => echo_said(unit),
+                Some("echo" | "write-output") => output_said(unit),
+                Some("printf") => printf_said(unit, left),
+                _ => continue,
+            };
+            let size: usize = unique(each.texts.iter())
+                .iter()
+                .map(|text| text.text().len())
+                .sum();
+            if each.over || size > left {
+                over = true;
+                continue;
+            }
+            left -= size;
+            said.push(each);
         }
-        let size: usize = said
-            .iter()
-            .map(|each| {
-                unique(each.texts.iter())
-                    .iter()
-                    .map(|text| text.text().len())
-                    .sum::<usize>()
-            })
-            .sum();
-        if size > TEXT_LIMIT {
+        if over {
             found.push(NOTHING_KNOWN);
             return found;
         }
@@ -1162,6 +1242,32 @@ impl Checker<'_> {
             found.extend(unique(whole.iter()).into_iter().cloned());
         }
         found
+    }
+
+    /// What the stage `key` says, worked out once.
+    fn stage_said(&mut self, key: StageKey) -> Rc<Vec<Arg>> {
+        if let Some(said) = self.data.said.get(&key) {
+            return Rc::clone(said);
+        }
+        let said = Rc::new(self.stage_texts(key));
+        self.data.said.insert(key, Rc::clone(&said));
+        said
+    }
+
+    /// What each text the stage `key` says does when it is read in
+    /// `language`, worked out once.
+    fn stage_readings(&mut self, key: StageKey, language: Language) -> Rc<Vec<Reading>> {
+        if let Some(readings) = self.data.read.get(&(key, language)) {
+            return Rc::clone(readings);
+        }
+        let readings: Vec<Reading> = self
+            .stage_said(key)
+            .iter()
+            .map(|text| read_text(language, text))
+            .collect();
+        let readings = Rc::new(readings);
+        self.data.read.insert((key, language), Rc::clone(&readings));
+        readings
     }
 
     /// Database clients and the tools that drop a database.
@@ -1239,10 +1345,22 @@ impl Checker<'_> {
     /// since the line cannot tell a scratch one from production.
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
         let mut statements = client.statements(args);
-        statements.extend(self.fed_statements(at, unit));
+        statements.extend(self.split.fed_to(at).cloned());
         for statement in &statements {
             let reading = client.read(statement);
             self.judge(reading, Some(statement), false);
+        }
+        // What the stage before it says is judged once: every client of the
+        // same language finds the same.
+        let Some(key) = feeding(unit) else {
+            return;
+        };
+        if self.data.judged.insert((key, client.language)) {
+            let said = self.stage_said(key);
+            let readings = self.stage_readings(key, client.language);
+            for (statement, reading) in said.iter().zip(readings.iter()) {
+                self.judge(*reading, Some(statement), false);
+            }
         }
     }
 
@@ -1250,7 +1368,7 @@ impl Checker<'_> {
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
         let mut statements = found.statements.clone();
-        statements.extend(self.fed_statements(at, unit));
+        statements.extend(self.split.fed_to(at).cloned());
         let own_file = match found.file {
             None => true,
             Some(file) => match file.known().map(database) {
@@ -1262,18 +1380,27 @@ impl Checker<'_> {
                 None => self.place(unit.shell, unit.scope(), file).harmless(),
             },
         };
+        let language = Language::Sql(dialect);
         let readings: Vec<Reading> = statements
             .iter()
-            .map(|statement| match statement_text(statement) {
-                Some((text, holes)) => reader::sql(text, dialect, holes),
-                None => Reading::UNREADABLE,
-            })
+            .map(|statement| read_text(language, statement))
             .collect();
+        let (said, said_readings) = match feeding(unit) {
+            Some(key) => (self.stage_said(key), self.stage_readings(key, language)),
+            None => (Rc::default(), Rc::default()),
+        };
         // `ATTACH` and `.open` reach another file than the one given, and
         // `-readonly` does not hold for it.
-        let moves = readings.iter().any(|reading| reading.moves);
+        let moves = readings
+            .iter()
+            .chain(said_readings.iter())
+            .any(|reading| reading.moves);
         let own = !moves && (found.read_only || own_file);
-        for (statement, reading) in statements.iter().zip(readings) {
+        let all = statements
+            .iter()
+            .zip(readings)
+            .chain(said.iter().zip(said_readings.iter().copied()));
+        for (statement, reading) in all {
             self.judge(reading, found.file.or(Some(statement)), own);
         }
     }
@@ -1309,10 +1436,12 @@ impl Checker<'_> {
                 None => reading.merge(Reading::UNREADABLE),
             }
         }
-        for text in self.fed_statements(at, unit) {
-            match statement_text(&text) {
-                Some((text, holes)) => reading.merge(reader::redis_lines(text, holes)),
-                None => reading.merge(Reading::UNREADABLE),
+        for text in self.split.fed_to(at) {
+            reading.merge(read_text(Language::Redis, text));
+        }
+        if let Some(key) = feeding(unit) {
+            for said in self.stage_readings(key, Language::Redis).iter() {
+                reading.merge(*said);
             }
         }
         self.judge(reading, target, false);
@@ -1373,9 +1502,14 @@ impl Checker<'_> {
                 _ => commands.push(arg),
             }
         }
+        // `mysqladmin` runs the command that any unique start of its name
+        // (two letters or more) says: `dro` and `dr` are `drop`.
         if let Some(drop) = commands.iter().find(|arg| {
-            arg.known()
-                .is_some_and(|text| text.eq_ignore_ascii_case("drop"))
+            arg.known().is_some_and(|text| {
+                text.len() > 1
+                    && text.len() <= "drop".len()
+                    && "drop".starts_with(&text.to_ascii_lowercase())
+            })
         }) {
             let name = commands
                 .iter()

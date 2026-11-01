@@ -467,7 +467,13 @@ Reading, inserting, creating and a statement that picks its rows are safe.
 **Where the statement is.** Only text on the line itself is read: an option, an
 operand, a here-document or here-string fed to the client, or the text a
 piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
-says. A stage that is a group (`{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } |
+says. A `cat` whose arguments are all `-` reads its input as a `cat` with none
+does (`cat - <<< 'DROP TABLE t' | psql`). On PowerShell a value that is piped
+on says its text as `Write-Output` would: a string or a here-string
+(`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
+variable, `(Get-Content q.sql)`, `$x.y`, `"a" + "b"`) says what is only known
+when it runs, so it is `unknown`. A stage that is a group (`{ echo 'BEGIN;';
+echo 'DELETE FROM t;'; } |
 psql`) is read program by program, and as the one text they say in turn
 (`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
 format: `\n \t \\ \xHH` and the other single-character escapes, `\NNN` as one
@@ -484,6 +490,23 @@ leave `\NNN` with no 0 in front, and zsh and dash leave `\"`, `\'` and `\?` in a
 format. A file of statements (`psql -f
 migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
 the workspace's own code and is safe, as `python3 scripts/gen.py` is.
+
+An unquoted here-document is read as the shell feeds it: the shell treats its
+body as the inside of a double-quoted word, so a backslash before a newline
+joins the lines (`DR\` then `OP TABLE t` is `DROP TABLE t`), a backslash
+before `$`, a backtick or a backslash goes and leaves the character (`\\!`
+is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
+DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
+backtick is an expansion, as in a double-quoted word, so the body is a
+template; a body with both an escaped and an expanding `$` or backtick is
+`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+(`<<'EOF'`, `<<\EOF`) feeds the body as it is.
+
+What a stage says is worked out once and read once for each client language,
+whatever the number of clients after it, so the time grows with the line and
+not with the clients times the programs. A stage that says more than 256 KB
+is `unknown`, and a `printf` stops printing when the stage's share is used
+up.
 
 | Client | Statement |
 | --- | --- |
@@ -525,9 +548,12 @@ refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
   FROM` or `UPDATE t SET` after it are the next statement. `ON COMMIT DELETE
   ROWS` empties a temporary table at the end of a transaction, and is none.
   A `DROP` that takes away no data is none: `DROP NOT NULL`, `DROP DEFAULT`,
-  `DROP IDENTITY`, `DROP EXPRESSION`, `DROP CONSTRAINT`, `ON COMMIT DROP`
-  and ClickHouse's `SYSTEM DROP DNS CACHE`; `DROP COLUMN`, `DROP PARTITION`
-  and a bare `DROP` are. `DELETE` and `UPDATE` inside a `WITH` or after
+  `DROP CONSTRAINT`, `ON COMMIT DROP`, ClickHouse's `SYSTEM DROP DNS CACHE`,
+  and `DROP IDENTITY` and `DROP EXPRESSION` only after `ALTER [COLUMN]
+  <name>` (the word `COLUMN` is optional and neither word is reserved, so
+  `ALTER TABLE users DROP identity` drops a column called `identity`);
+  `DROP COLUMN`, `DROP PARTITION` and a bare `DROP` are. `DELETE` and
+  `UPDATE` inside a `WITH` or after
   `EXPLAIN ANALYZE` count. `DO $$ … $$` and `DO '…'` (any string) are read as
   the statements they hold, and PL/pgSQL's `EXECUTE` in the body (not
   `EXECUTE FUNCTION`) runs text only known when it runs, so it is `unknown`.
@@ -546,7 +572,10 @@ refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
   runs the command on every node, and is read as the command.
 - **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
   command key), `deleteMany` and `remove` with no filter or `{}`.
-- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop`.
+- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop`. `mysqladmin` runs a
+  command from any unique start of its name (`mysqladmin proc stat` works),
+  so a command word of two letters or more that starts `drop`, in any case,
+  is `drop`: `dro`, `dr`.
 
 **How a statement is read.** A keyword reader over the text, with no SQL
 grammar. It skips comments and string literals, splits on `;`, and reads each
@@ -564,7 +593,21 @@ one dialect hides is not hidden in another:
 | CQL (`cqlsh`) | `//` comments, `$$` strings |
 
 A construct a dialect is not known to have is not read as hiding anything, so
-what it holds is read as code. In `psql` a backslash outside a string starts a
+what it holds is read as code. Whether a backslash escapes in a string is a
+server setting the line can change, so the text is read with the other rule
+too, in the two dialects where the setting exists, and what any reading shows
+counts: MySQL and MariaDB also with no backslash escapes
+(`NO_BACKSLASH_ESCAPES`) and with them in `'…'` strings only (`ANSI_QUOTES`,
+where `"a\"` is an identifier), PostgreSQL also with them in `'…'` strings
+(`standard_conforming_strings` off). `mysql -e "SET
+sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; -- '"` drops the
+table, as does a `psql` text that sets `standard_conforming_strings = off`
+and then has `'a\'' ; DROP TABLE t; --'`, where the string takes `\'`. A reading in which a string is never closed is not
+one the text can have, and is left out: `SELECT 'it\'s'` is safe in MySQL.
+The same text without the `SET`, `SELECT 'a\'; DROP TABLE t; -- '`, is
+`drop_data` for the same reason: a server set that way runs the `DROP`.
+
+In `psql` a backslash outside a string starts a
 command that ends at the end of its line or at the next backslash outside a
 quote, which starts the next command (or is `\\`, and the SQL goes on after
 it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
@@ -575,6 +618,13 @@ a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
 followed by `|` run a program. A statement the reader has to guess at is
 `unknown`, never safe: a string, a comment or a `$$` string that is never
 closed.
+
+A variable the client fills in is only known when it runs, and where it starts
+a statement the statement is `unknown`: `psql`'s `:name`, `:'name'` and
+`:"name"` (`psql -v q='DROP TABLE t' <<< ':q'`, a `\set q …` and then `:q`) and
+`sqlcmd`'s `$(name)` (`sqlcmd -v s="DROP TABLE t" -Q '$(s)'`). A `:name` or
+`$(name)` further in is read as a word (`WHERE a = :x`), as a shell expansion
+is, and `::` is a cast.
 
 A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
 q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
@@ -616,14 +666,15 @@ Not read, so the caller has to account for them: a statement behind a program
 the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
 -c …`); a statement handed over by a file, a process substitution
 (`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
-`cat` (`echo … | sed … | psql`); a PowerShell string piped on (`'DROP TABLE t'
-| psql`); stored procedures (`CALL p()`, `EXEC p`), whatever they run; the
+`cat` (`echo … | sed … | psql`); stored procedures (`CALL p()`, `EXEC p`),
+whatever they run; the
 text of a prepared statement that is not on the line (`EXECUTE s` after a
 `PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
-`psql` variables (`\set q …` then `:q`, `-v q=…`); `sqlcmd`'s `!!` and `GO`
-and `$(var)`; a stage between `echo` and the client (`echo … | tee | psql`);
-other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
+(`WHERE a = :x`: it is read as a word, and may hold more than a value);
+`sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
+tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
 
 ## Tests
 

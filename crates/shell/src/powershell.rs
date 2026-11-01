@@ -139,14 +139,20 @@ impl Walker<'_> {
             "pipeline_chain" => {
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
+                let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for (index, child) in stages.iter().enumerate() {
+                    // A value that is piped on (`'DROP TABLE t' | psql`) is
+                    // a stage that says it, as `Write-Output` would.
+                    if child.kind() == "logical_expression" && index + 1 < stages.len() {
+                        self.value_stage(*child, Stage { pipeline, index });
+                    }
                     // The first command in a `ForEach-Object` block reads
                     // `$_` from the stage the block is.
                     let stage = match (index, self.item) {
                         (0, Some(item)) => item,
                         _ => Stage { pipeline, index },
                     };
-                    self.walk(child, Some(stage), level + 1);
+                    self.walk(*child, Some(stage), level + 1);
                 }
             }
             "command" => {
@@ -187,6 +193,40 @@ impl Walker<'_> {
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A stage that is an expression and not a command: it says its value
+    /// to the next stage, as `Write-Output value` does. A string says its
+    /// text; a variable or anything computed says what is only known when it
+    /// runs.
+    fn value_stage(&mut self, node: Node<'_>, stage: Stage) {
+        let mut node = node;
+        // The chain of expressions a value is wrapped in, one child each.
+        while matches!(
+            node.kind(),
+            "logical_expression"
+                | "bitwise_expression"
+                | "comparison_expression"
+                | "additive_expression"
+                | "multiplicative_expression"
+                | "format_expression"
+                | "range_expression"
+        ) {
+            let mut cursor = node.walk();
+            let mut children = node.named_children(&mut cursor);
+            match (children.next(), children.next()) {
+                (Some(only), None) => node = only,
+                _ => break,
+            }
+        }
+        let value = self.expr(node);
+        let program = Arg::Known("Write-Output".to_string());
+        self.split.push(Unit::new(
+            Shell::PowerShell,
+            program,
+            vec![value],
+            Some(stage),
+        ));
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -402,9 +442,12 @@ impl Walker<'_> {
                     .unwrap_or(text)
                     .replace("''", "'"),
             ),
-            "expandable_string_literal" => {
-                let start = literal.start_byte() + 1;
-                let end = literal.end_byte().saturating_sub(1).max(start);
+            "expandable_string_literal" | "expandable_here_string_literal" => {
+                // `"…"` or `@"` … `"@`.
+                let here = literal.kind() == "expandable_here_string_literal";
+                let quotes = if here { 2 } else { 1 };
+                let start = literal.start_byte() + quotes;
+                let end = literal.end_byte().saturating_sub(quotes).max(start);
                 let mut value = String::new();
                 let mut nulls = false;
                 let mut at = start;
@@ -431,6 +474,10 @@ impl Walker<'_> {
                 // A string of nothing but `$null` is still the device.
                 if nulls && value.is_empty() {
                     return Arg::Known(NULL.to_string());
+                }
+                if here {
+                    // The lines between the two markers.
+                    return Arg::Known(value.trim_matches(['\r', '\n']).to_string());
                 }
                 Arg::Known(value.replace("\"\"", "\""))
             }
