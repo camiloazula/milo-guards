@@ -989,3 +989,123 @@ fn a_prompt_escape_the_guard_cannot_decode_beside_code_characters_is_unknown() {
         ],
     );
 }
+
+#[test]
+fn a_dollar_before_the_code_does_not_hide_it() {
+    // bash 3.2 decodes three-digit octal escapes only, newer bash one to
+    // three; `\$`, `\0`, `\[` and `\]` leave a `$` right before a `$(`, which
+    // runs.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["PS4='$$ '; set -x; true"],
+        &[
+            // bash 3.2 runs nothing for `\$(`; the guard does not know that of
+            // every bash, so it reads the `$(` as code.
+            ("PS4='\\$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='\\$$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='+ \\$$(rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\\\$$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='\\\\\\044$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='\\44$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\0$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='\\44\\]$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4=\"\\\\\\$\\$(rm -rf ~)\"; set -x; true", Rule::Delete),
+            ("PS4='$$$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$$`rm -rf ~`'; set -x; true", Rule::Delete),
+            ("PS4='${x}$$(rm -rf ~)'; set -x; true", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_bash_env_in_front_of_a_special_builtin_stays_set() {
+    // In POSIX mode, and for an `EXIT` or `RETURN` trap, the assignment
+    // outlives the builtin it is in front of.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo 'echo hi' > e.sh; BASH_ENV=e.sh true; bash -c true",
+            "echo 'echo hi' > e.sh; BASH_ENV=e.sh echo hi; bash -c true",
+            "echo 'echo hi' > e.sh; BASH_ENV=e.sh cd sub; bash -c true",
+            "echo 'echo hi' > e.sh; BASH_ENV=e.sh :",
+            "echo 'echo hi' > other.sh; BASH_ENV=e.sh :; bash -c true",
+        ],
+        &[
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh :; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh export X; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh readonly X; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh set -e; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh shift; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh unset X; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh trap '' INT; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh times; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh eval true; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh . ./other.sh; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "trap 'bash -c true' EXIT; echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh exit",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh exec bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn pwd_is_not_a_known_path_after_a_cd_that_may_land_on_a_made_name() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The same files named relatively, or after a plain `cd`.
+            "cd -P sub; rm -rf build",
+            "cd build*; rm -rf out",
+            "cd sub; rm -rf \"$PWD/build\"",
+            "rm -rf \"$PWD/build\"",
+            "cd sub; mv a \"$PWD/b\"",
+        ],
+        &[
+            ("cd -P sub; rm -rf \"$PWD/build\"", Rule::Delete),
+            ("cd build*; rm -rf \"$PWD/out\"", Rule::Delete),
+            ("cd 'v1.2*'; rm -rf \"$PWD/dist\"", Rule::Delete),
+            ("set -P; cd sub; mv a \"$PWD/b\"", Rule::Overwrite),
+            // The name is code that runs when the line expands `$PWD` again.
+            ("cd 'd$(rm -rf ~)'; eval \"echo $PWD\"", Rule::Unknown),
+            ("cd 'd$(rm -rf ~)'; bash -c \"echo $PWD\"", Rule::Unknown),
+        ],
+    );
+}

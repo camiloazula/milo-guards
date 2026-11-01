@@ -23,6 +23,14 @@ const MOST: usize = 16;
 /// eighteen digits are below 2^63, so they cannot wrap.
 const MOST_DIGITS: usize = 18;
 
+/// The POSIX special builtins: an assignment in front of one stays set after
+/// it, and is exported (in POSIX mode, and for the `EXIT` and `RETURN` traps
+/// bash runs after it).
+pub(crate) const SPECIAL: [&str; 15] = [
+    ":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set",
+    "shift", "times", "trap", "unset",
+];
+
 /// A file `BASH_ENV` names, and where it was named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Startup {
@@ -114,13 +122,21 @@ struct Prompt<'a> {
 
 /// `text` as bash prints a prompt from it, before the expansion that finds
 /// `$(` in it: `\N`, `\NN` and `\NNN`, one to three octal digits, are the
-/// character with that code (`\0` is nothing), `\[` and `\]` are nothing
+/// character with that code (`\0` is nothing), and `\[` and `\]` are nothing
 /// (bash prints them as readline's markers, or as nothing without line
-/// editing: nothing is the reading that finds code), and `\$` is `$` (`#`
-/// for root, which holds no code). `\\` is a backslash, which ends no
-/// escape. `\D{fmt}` is the output of `strftime`, which may be any text: it
-/// is left as written and reported. Any other escape prints a name or a
-/// number, never a `$`, `(` or backtick, and is left as written.
+/// editing: nothing is the reading that finds code). bash 3.2, the
+/// `/bin/bash` of a Mac, decodes only three-digit escapes (`\44(` prints as
+/// written); newer bash reads one to three digits. The code is found under
+/// the reading that decodes more, which holds the code of the other too.
+/// `\$` is read as `$` (`#` for root, which holds no code). bash 3.2 keeps
+/// it as an escaped `$` that starts no code by itself (`PS4='\$(rm -rf ~)'`
+/// runs nothing there), but other versions are not known to, so a `$(`
+/// after it is read as code: the safe side. What the `$` joins with is
+/// [`quote`]'s to settle (`\$$(rm -rf ~)` runs the `$(`). `\\` is a
+/// backslash, which ends no escape. `\D{fmt}` is the output of `strftime`,
+/// which may be any text: it is left as written and reported. Any other
+/// escape prints a name or a number, never a `$`, `(` or backtick, and is
+/// left as written.
 fn prompt(text: &str) -> Prompt<'_> {
     if !text.contains('\\') {
         return Prompt {
@@ -440,7 +456,11 @@ fn quote(text: &str) -> Option<String> {
         }
         // One character, which may be more than one byte.
         let width = text[at..].chars().next().map_or(1, char::len_utf8);
-        if matches!(bytes[at], b'"' | b'\\') {
+        // A `$` that opens no code is text: written `\$` it cannot join the
+        // `$(` that follows it into a `$$` (the shell's number) and a `(`.
+        // `${` stays, so a funsub is still seen.
+        let text_dollar = bytes[at] == b'$' && bytes.get(at + 1) != Some(&b'{');
+        if text_dollar || matches!(bytes[at], b'"' | b'\\') {
             quoted.push('\\');
         }
         quoted.push_str(&text[at..at + width]);

@@ -29,7 +29,8 @@ const ELEVATORS: [&str; 8] = [
 ];
 
 /// Builtins that start no program: they print, test, move or set a variable,
-/// so a `BASH_ENV` file is not run for them.
+/// so a `BASH_ENV` file is not run for them (one set in front of a special
+/// builtin stays set for the rest of the line: see `startup::SPECIAL`).
 const STARTS_NOTHING: [&str; 21] = [
     "echo", "printf", "true", "false", ":", "cd", "export", "unset", "set", "pwd", "test", "[",
     "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",

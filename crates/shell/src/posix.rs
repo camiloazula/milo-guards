@@ -609,9 +609,18 @@ impl Walker<'_> {
             .filter(|child| child.kind() == "variable_assignment")
             .collect();
         let mut startup = Rc::default();
+        // In front of a special builtin the assignment outlives it: it stays
+        // set, and exported, for the rest of the line (POSIX mode, and an
+        // `EXIT` or `RETURN` trap that runs with it still set). It is read
+        // as the line-level statement it then is.
+        let outlives = program
+            .known()
+            .is_some_and(|name| startup::SPECIAL.contains(&name));
         for assignment in &assignments {
             if let Some(file) = self.startup(*assignment) {
-                if !startup::push(&mut startup, file) {
+                if outlives {
+                    self.split.add_startup(file);
+                } else if !startup::push(&mut startup, file) {
                     self.split.startup_overflow();
                 }
             }

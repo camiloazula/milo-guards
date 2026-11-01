@@ -230,9 +230,17 @@ and its findings are the line's, since the shell runs it as the same user.
   before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
   ~\140'` are the `$(` and the backticks they spell, and a `PS4` is read
   with each `\N`, `\NN` and `\NNN` of one to three octal digits decoded, as
-  bash does (`PS4='\44(rm -rf ~)'` is the `$(` too; `\033[1m` colours stay
-  text, and `\0` is nothing). `\[` and `\]` are read as nothing, and `\$`
-  as `$`, so `PS4='$\[\](rm -rf ~)'` is the `delete` of `~`. `\D{fmt}` is
+  newer bash does (`PS4='\44(rm -rf ~)'` is the `$(` too; `\033[1m` colours stay
+  text, and `\0` is nothing). bash 3.2, the `/bin/bash` of a Mac, decodes
+  only three-digit escapes (`\44(` prints as written), so the code is found
+  under both readings, the one that decodes more. `\[` and `\]` are read as
+  nothing, so `PS4='$\[\](rm -rf ~)'` is the `delete` of `~`. `\$` is read
+  as `$`: bash 3.2 keeps it as an escaped `$`, which starts no code by itself
+  (`PS4='\$(rm -rf ~)'` runs nothing there), but the guard does not rely on
+  that for every bash, so it is `delete` too. A `$` that is text, whatever
+  made it (`\$`, a short escape, `\0`, `\[`), never joins the `$(` right after
+  it into the shell's own number: `PS4='\$$(rm -rf ~)'` and
+  `PS4='\44\]$(rm -rf ~)'` run the `$(`, and are the `delete` of `~`. `\D{fmt}` is
   `strftime`'s output, which may be any text, so a `PS4` with one that also
   holds `$`, `(` or a backtick is `unknown` (`PS4='\D{$}(rm -rf ~)'`;
   `PS4='+ \D{%T} '` stays safe). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
@@ -248,7 +256,12 @@ and its findings are the line's, since the shell runs it as the same user.
   wildcard in its target (`cd d*` may match a folder the line made, `*`, `?`,
   `[`, an extglob's `+(`, `@(`, `!(`), when the line makes it the physical
   path (`cd -P`, `set -P`, `set -o physical`: a link's target is the name), or
-  when the line sets `CDPATH` and moves (the folder it finds is the name). A
+  when the line sets `CDPATH` and moves (the folder it finds is the name). This holds for `$PWD` as a path as well, in any command, not only in a `PS4`:
+  after such a `cd` it is known only when it runs, so `cd -P sub; rm -rf
+  "$PWD/build"` is the `delete` of a path nobody can place, and `cd 'd$(rm -rf
+  ~)'; eval "echo $PWD"` is `unknown` (it runs the code in the name), while
+  `rm -rf build` after the same `cd`, a path written relatively, stays as it
+  was. A
   value is expanded where it runs, not where it is written, so a `PS4` or
   `BASH_ENV` value written with `$PWD` is judged against every `cd` of the
   line once it is all read: a later one, one in a loop, a function or a trap
@@ -269,7 +282,14 @@ and its findings are the line's, since the shell runs it as the same user.
   when it runs, and a shell reached through `find -exec`, `npx` and the
   other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
   `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
-  not run it. A file the line does not write is not read, as for `bash
+  not run it, but a `BASH_ENV` in front of a special builtin (`:`, `.`,
+  `break`, `continue`, `eval`, `exec`, `exit`, `export`, `readonly`,
+  `return`, `set`, `shift`, `times`, `trap`, `unset`) stays set after it, and
+  is exported: in POSIX mode, and for an `EXIT` or `RETURN` trap. It is read
+  as a statement of its own line, as `BASH_ENV=e.sh; bash -c true` is, so
+  `BASH_ENV=e.sh :; bash -c true` runs `e.sh` when the line writes it; in
+  front of `true` or `echo`, which are not special, it is gone after the
+  command. A file the line does not write is not read, as for `bash
   e.sh`. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
   `/proc/self/fd/0`) makes that shell read its input as a script, as `bash
   /dev/stdin` does: `curl … | BASH_ENV=/dev/stdin bash -c true` is
