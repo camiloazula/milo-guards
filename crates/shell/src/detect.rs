@@ -4,8 +4,9 @@
 use crate::launch::{
     after_run, find_targets, is_stdin, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
+use milo_guards_core::spelling::glob;
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,6 +15,8 @@ use crate::{Finding, Rule, Shell};
 
 mod code;
 mod files;
+mod secrets;
+mod send;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -51,7 +54,22 @@ const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
-pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
+/// What the rules found in a split line: the findings of the whole line,
+/// and where each came from.
+#[derive(Debug, Default)]
+pub(crate) struct Judged {
+    /// Every finding, each once: what `classify` answers.
+    pub(crate) found: Vec<Finding>,
+    /// What splitting itself found: what could not be read, scripts known
+    /// only when they run.
+    pub(crate) line: Vec<Finding>,
+    /// What each unit produced, in the order of `Split::units`.
+    pub(crate) units: Vec<Vec<Finding>>,
+    /// What each redirect's write produced, in the order of `Split::writes`.
+    pub(crate) writes: Vec<Vec<Finding>>,
+}
+
+pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let mut checker = Checker {
         split,
         resolver,
@@ -60,6 +78,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
     // scans of every unit.
@@ -87,15 +106,34 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
-    for unit in &split.units {
-        checker.unit(unit);
+    checker.flow = checker.trace();
+    // What each step adds to `found` is what that step found: the findings
+    // from `split.findings` come first, and are the line's own.
+    let mut line = checker.found.clone();
+    let mut units = Vec::with_capacity(split.units.len());
+    for (at, unit) in split.units.iter().enumerate() {
+        let before = checker.found.len();
+        checker.unit(at, unit);
+        units.push(checker.found[before..].to_vec());
     }
+    // A read through `<` is not a unit's: it belongs to the line.
+    let before = checker.found.len();
+    checker.redirected_reads();
+    line.extend_from_slice(&checker.found[before..]);
+    let mut writes = Vec::with_capacity(split.writes.len());
     for write in &split.writes {
+        let before = checker.found.len();
         checker.write(write.shell, write.scope(), &write.target, "writes to");
+        writes.push(checker.found[before..].to_vec());
     }
     let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
-    checker.found
+    Judged {
+        found: checker.found,
+        line,
+        units,
+        writes,
+    }
 }
 
 struct Checker<'a> {
@@ -113,6 +151,9 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Where secrets are read and where they go, for the rule that finds
+    /// them sent away.
+    flow: send::Flow,
 }
 
 impl Checker<'_> {
@@ -133,7 +174,8 @@ impl Checker<'_> {
         });
     }
 
-    fn unit(&mut self, unit: &Unit) {
+    fn unit(&mut self, at: usize, unit: &Unit) {
+        self.called(unit);
         let Some(key) = unit.key() else {
             // A program only known when it runs may be a shell, or start one.
             self.startup_then_run(unit, None);
@@ -141,9 +183,11 @@ impl Checker<'_> {
         };
         self.elevated(unit, &key);
         self.reads(unit, unit.reads);
+        self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
         self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
+        self.send(at, unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }
@@ -219,7 +263,7 @@ impl Checker<'_> {
                 ..unit.scope()
             };
             for arg in found {
-                match self.place(unit.shell, scope, &arg) {
+                match self.place(unit.shell, scope, &arg, Access::Item) {
                     place if place.harmless() => {}
                     Place::Registry => {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
@@ -240,7 +284,7 @@ impl Checker<'_> {
     /// `rm -rf /tmp/x` deletes it).
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg]) {
         for source in sources {
-            let place = self.place(unit.shell, unit.scope(), source);
+            let place = self.place(unit.shell, unit.scope(), source, Access::Item);
             if !place.harmless() {
                 self.add(
                     Rule::Delete,
@@ -252,19 +296,58 @@ impl Checker<'_> {
     }
 
     /// Where `arg` lands, run from `dir` where a `cd` moved.
-    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+    fn place(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
-            .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+            .place(scope.dir, arg, shell, scope.hidden, access)
     }
 
     /// As [`place`](Self::place), for a path something is written into.
-    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
-            .place_into(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+            .place_into(scope.dir, arg, shell, scope.hidden, access)
+    }
+
+    /// The words of a file a tool runs on its own that a write to `arg` is,
+    /// run from `dir` where a `cd` moved; with `below`, one that a recursive
+    /// copy to it can replace.
+    fn startup(
+        &self,
+        shell: Shell,
+        scope: Scope<'_>,
+        arg: &Arg,
+        below: bool,
+    ) -> Option<&'static str> {
+        self.resolver.startup(
+            &path::within(scope.dir, arg, shell),
+            shell,
+            scope.hidden,
+            below,
+        )
+    }
+
+    /// A folder made at `target`: as a write, except that an empty folder is
+    /// no code, so one on the list of what a tool runs on its own is not a
+    /// finding (`mkdir -p .github/workflows`); what is written into it is.
+    fn make_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, access: Access) {
+        if self.startup(shell, scope, target, false).is_none() {
+            self.write_as(shell, scope, target, "creates", access);
+        }
     }
 
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
-        match self.place_into(shell, scope, target) {
+        self.write_as(shell, scope, target, verb, Access::Content);
+    }
+
+    /// A write of `target`, by how it reaches it (see [`Access`]).
+    fn write_as(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        access: Access,
+    ) {
+        match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),
@@ -307,30 +390,54 @@ impl Checker<'_> {
             _ => None,
         };
         let words = recursive
-            .then(|| protected(self.place(shell, scope, destination)))
+            .then(|| protected(self.place(shell, scope, destination, Access::Item)))
             .flatten();
         match words {
             Some(words) => {
                 self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
             }
-            None => self.write(shell, scope, destination, "writes to"),
+            None => self.write_as(shell, scope, destination, "writes to", Access::Item),
+        }
+        // A recursive copy can replace anything below a folder that holds a
+        // file a tool runs on its own (`cp -r x .github`).
+        if recursive {
+            if let Some(words) = self.startup(shell, scope, destination, true) {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
         }
         let Some(text) = destination.known() else {
             return;
         };
-        let folder = text.trim_end_matches(if shell == Shell::Posix {
+        let separators = if shell == Shell::Posix {
             &['/'][..]
         } else {
             &['/', '\\'][..]
-        });
+        };
+        let folder = text.trim_end_matches(separators);
+        // Several sources, a trailing separator, `.` and `..` can only be a
+        // folder (`-t` is made one by `sources_and_destination`).
+        let folder_for_sure = leaves.len() > 1
+            || text.ends_with(separators)
+            || matches!(text.rsplit(separators).next(), Some("." | ".."));
         for leaf in leaves {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
-                self.place(shell, scope, &landing)
+                self.place(shell, scope, &landing, Access::Item)
             } else {
-                self.place_into(shell, scope, &landing)
+                self.place_into(shell, scope, &landing, Access::Item)
             };
             if let Some(words) = protected(place) {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
+            // The file lands at its own name, which can be one a tool runs
+            // on its own (`cp lefthook.yml sub/`). A destination that may be
+            // a file as well as a folder (`cp .envrc .envrc.bak`) is not read
+            // as a folder here, nor is a source that is a pattern read as a
+            // name: only a destination that is a folder for certain is.
+            let started = self
+                .startup(shell, scope, &landing, recursive)
+                .filter(|_| folder_for_sure && !glob::has_wildcard(leaf));
+            if let Some(words) = started {
                 self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
             }
         }
@@ -351,7 +458,7 @@ impl Checker<'_> {
 
     fn permissions(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
         for target in targets {
-            match self.place(unit.shell, unit.scope(), target) {
+            match self.place(unit.shell, unit.scope(), target, Access::Item) {
                 place if place.harmless() => {}
                 Place::Workspace { exact: true } => {}
                 Place::Registry => {
@@ -488,6 +595,21 @@ fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
         .collect()
 }
 
+/// A destination given by `-t`, which is a folder: spelled with a trailing
+/// separator, so that what lands in it is read as landing in a folder.
+fn folder(arg: &Arg) -> Arg {
+    match arg {
+        Arg::Known(text) if !text.ends_with('/') => Arg::Known(format!("{text}/")),
+        other => other.clone(),
+    }
+}
+
+/// The options of `cp`, `install`, `mv` and `ln` that take a value, which is
+/// not an operand.
+const COPY_VALUED: [&str; 8] = [
+    "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
+];
+
 /// `mv`/`cp`-style operands: the sources and the destination, with `-t
 /// DIR` (`-tDIR`, `--target-directory[=]DIR`) naming the destination when
 /// given.
@@ -507,9 +629,9 @@ fn sources_and_destination<'a>(
         if text == "--" {
             options = false;
         } else if text == "-t" || text == "--target-directory" {
-            target = iter.next().cloned();
+            target = iter.next().map(folder);
         } else if let Some(dir) = text.strip_prefix("--target-directory=") {
-            target = Some(Arg::Known(dir.to_string()));
+            target = Some(folder(&Arg::Known(dir.to_string())));
         } else if takes_value.contains(&text) {
             iter.next();
         } else if text.starts_with("--") {
@@ -519,9 +641,9 @@ fn sources_and_destination<'a>(
             if let Some(at) = bundle.find('t') {
                 let rest = &bundle[at + 1..];
                 target = if rest.is_empty() {
-                    iter.next().cloned()
+                    iter.next().map(folder)
                 } else {
-                    Some(Arg::Known(rest.to_string()))
+                    Some(folder(&Arg::Known(rest.to_string())))
                 };
             }
         } else {
@@ -553,12 +675,7 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .cloned()
             .collect(),
         "cp" | "install" | "mv" | "ln" if unit.shell != Shell::PowerShell => {
-            let (sources, destination) = sources_and_destination(
-                args,
-                &[
-                    "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
-                ],
-            );
+            let (sources, destination) = sources_and_destination(args, &COPY_VALUED);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
         "copy-item" | "move-item" => {
@@ -567,7 +684,9 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             params
                 .values(&["destination"])
                 .first()
-                .map_or_else(Vec::new, |destination| into_folder(destination, &sources))
+                .map_or_else(Vec::new, |destination| {
+                    into_folder(&or_here(destination), &sources)
+                })
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
@@ -583,6 +702,15 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .map(|file| Arg::Known(file.to_string()))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// A `$null` destination of `Copy-Item` or `Move-Item` is no destination, so
+/// the item goes to the folder the line is in.
+fn or_here(destination: &Arg) -> Arg {
+    match destination {
+        Arg::Null => Arg::Known(".".to_string()),
+        other => other.clone(),
     }
 }
 

@@ -331,6 +331,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         hidden: false,
         startup: Rc::default(),
+        depth: unit.depth,
     }))
 }
 
@@ -905,6 +906,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         dir: None,
         hidden: false,
         startup: Rc::clone(&unit.startup),
+        depth: unit.depth,
     }
 }
 

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{check, check_effect, posix};
-use milo_guards_shell::{Effect, Rule, Shell};
+use milo_guards_shell::{Effect, Reach, Rule, Shell};
 
 #[test]
 fn a_modifier_or_coproc_does_not_hide_the_command_it_runs() {
@@ -80,7 +80,7 @@ fn what_they_run_decides_the_effect() {
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &["noglob ls *.txt", "nocorrect ls", "- ls", "coproc cat"],
     );
     check_effect(
@@ -138,6 +138,24 @@ fn coproc_reads_the_program_inside_a_group() {
             ("coproc { { rm -rf ~; }; }", Rule::Delete),
             ("coproc NAME { { rm -rf ~; }; }", Rule::Delete),
             ("coproc { { { rm -rf ~; }; }; }", Rule::Delete),
+        ],
+    );
+}
+
+/// zsh reads a `{` stuck to a word as a group and runs it; the grammar reads
+/// `{rm` as a program of that name, so the group is not read.
+#[test]
+fn coproc_of_a_group_with_the_braces_stuck_to_a_word_is_unreadable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("coproc {rm -rf ~;}", Rule::Unreadable),
+            ("coproc {{rm -rf ~;};}", Rule::Unreadable),
+            ("coproc NAME {rm -rf ~;}", Rule::Unreadable),
+            ("coproc { {rm -rf ~;}; }", Rule::Delete),
+            ("coproc {ls;}", Rule::Unreadable),
         ],
     );
 }
@@ -208,7 +226,7 @@ fn a_coproc_assignment_is_a_variable_set_for_effect() {
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &["coproc LANG=C ls", "env LANG=C ls"],
     );
     check_effect(
@@ -233,9 +251,36 @@ fn a_zsh_modifier_turns_zshs_flag_off_and_never_bashs() {
             "setopt globdots; - unsetopt globdots; rm -rf *git",
             "setopt globdots; time noglob unsetopt globdots; rm -rf *git",
             "setopt globdots; builtin noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; time nocorrect unsetopt globdots; rm -rf *git",
+            "setopt globdots; nocorrect nocorrect unsetopt globdots; rm -rf *git",
+            "setopt globdots; noglob - unsetopt globdots; rm -rf *git",
+            "setopt globdots; - noglob unsetopt globdots; rm -rf *git",
+            "setopt globdots; builtin - unsetopt globdots; rm -rf *git",
             "shopt -s dotglob; command shopt -u dotglob; rm -rf *git",
         ],
         &[
+            // `nocorrect` is a reserved word: after any wrapper but a leading
+            // `time` or `nocorrect` zsh does not find it and the flag stays on.
+            (
+                "setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; - nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; builtin nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; builtin - nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; time builtin nocorrect unsetopt globdots; rm -rf *git",
+                Rule::Delete,
+            ),
             (
                 "setopt globdots; noglob command unsetopt globdots; rm -rf *git",
                 Rule::Delete,

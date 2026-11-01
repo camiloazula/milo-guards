@@ -8,12 +8,15 @@
 //! places.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 
-use super::{git, git_subcommand, Effect};
-use crate::path::{self, Place, Resolver};
+use super::paths::Landed;
+use super::reach::{self, Manner};
+use super::{git, git_subcommand, Kind};
+use crate::path::{Access, Place, Resolver};
 use crate::powershell::Params;
-use crate::unit::{Arg, Binding, Unit};
+use crate::unit::{Arg, Binding, Stage, Unit};
 use crate::Shell;
 
 /// What judging a unit needs besides the unit.
@@ -21,6 +24,17 @@ pub(super) struct Context<'a> {
     pub(super) resolver: &'a Resolver,
     /// The first unit at each pipeline stage, for what a stage is handed.
     pub(super) producers: HashMap<(usize, usize), &'a Unit>,
+    /// Whether a read of the line landed beyond the workspace so far, for
+    /// [`super::Reach`].
+    pub(super) beyond: Cell<bool>,
+    /// Where each read landed, as written, when the caller asks for the
+    /// paths (`None` otherwise, so that `effect` pays nothing for them).
+    pub(super) landed: Option<RefCell<Vec<Landed>>>,
+    /// The pipeline stages whose listing a later stage hands to a program that
+    /// opens the names, as (pipeline, index).
+    pub(super) followed: RefCell<BTreeSet<(usize, usize)>>,
+    /// The stage of the unit being read.
+    pub(super) stage: Cell<Option<Stage>>,
 }
 
 /// Whether reading from `arg`, written from `dir`, is a read of a place the
@@ -30,15 +44,35 @@ pub(super) struct Context<'a> {
 /// `\\?\UNC\server\share`): reading those contacts the network, and a share
 /// is offered the user's credentials.
 pub(super) fn place_effect(
+    context: &Context<'_>,
+    shell: Shell,
+    dir: Option<&Arg>,
+    arg: &Arg,
+    how: Manner,
+) -> Kind {
+    let (kind, place) = place_kind(context.resolver, shell, dir, arg, how.hidden);
+    if let Some(place) = place {
+        context.land(shell, dir, arg, place, how);
+    }
+    kind
+}
+
+/// As [`place_effect`], without saying where the read lands: the answer, and
+/// the place when the argument was read that far.
+pub(super) fn place_kind(
     resolver: &Resolver,
     shell: Shell,
     dir: Option<&Arg>,
     arg: &Arg,
-) -> Effect {
+    hidden: bool,
+) -> (Kind, Option<Place>) {
+    // PowerShell's `$null` is the null device, which holds nothing.
+    if matches!(arg, Arg::Null) {
+        return (Kind::Reads, Some(Place::Null));
+    }
     let Some(text) = arg.known() else {
-        return Effect::Unknown;
+        return (Kind::Unknown, None);
     };
-    let from = path::within(dir, arg, shell);
     // PowerShell expands a variable inside a bare token (`--contents=$p`),
     // which its parse reads as written (`2>$null` is the null device).
     if (shell == Shell::PowerShell
@@ -46,11 +80,14 @@ pub(super) fn place_effect(
         && !text.to_ascii_lowercase().ends_with("$null"))
         || (shell == Shell::Posix && names_network_device(text))
         || resolver.network(dir, arg, shell)
-        || matches!(resolver.place(&from, shell, false), Place::Unknown)
     {
-        Effect::Unknown
+        return (Kind::Unknown, None);
+    }
+    let place = resolver.place(dir, arg, shell, hidden, Access::Item);
+    if matches!(place, Place::Unknown) {
+        (Kind::Unknown, Some(place))
     } else {
-        Effect::ReadsOnly
+        (Kind::Reads, Some(place))
     }
 }
 
@@ -65,8 +102,8 @@ pub(super) fn names_network_device(text: &str) -> bool {
 /// known, a path known only when it runs (`cat $f`) does not. A name of the
 /// network anywhere in the arguments is not reading. What a pipeline hands the
 /// unit counts when the stages before it list known places.
-pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect {
-    let mut effect = Effect::ReadsOnly;
+pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
+    let mut effect = Kind::Reads;
     // A value inside an argument (`--exclude-from=\\evil\s\x`, `-O//evil/s/x`,
     // `/f:\\evil\x`) is checked for the spelling of a network device or a
     // share, like a whole argument, whatever option it belongs to.
@@ -80,17 +117,36 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect 
                 )
         });
         if network {
-            effect = Effect::Unknown;
+            effect = Kind::Unknown;
         }
     }
-    for arg in path_args(unit, key) {
+    let opened = path_args(unit, key);
+    let how = reach::how(unit, key, context.landed.is_some());
+    // A folder `-C` names is judged like a place; where it lands is the
+    // repository's, which the folders chained together make.
+    for dir in &opened.dirs {
+        if place_kind(
+            context.resolver,
+            unit.shell,
+            unit.dir.as_ref(),
+            dir,
+            unit.hidden,
+        )
+        .0 == Kind::Unknown
+        {
+            effect = Kind::Unknown;
+        }
+    }
+    for arg in &opened.places {
         let own = match arg.as_ref() {
-            Arg::Input if fed_by_listing(unit, context, false) => Effect::ReadsOnly,
-            Arg::Input => Effect::Unknown,
-            known => place_effect(context.resolver, unit.shell, unit.dir.as_ref(), known),
+            // What a listing hands on is read where it was listed, which is
+            // judged there.
+            Arg::Input if fed_by_listing(unit, context, false) => Kind::Reads,
+            Arg::Input => Kind::Unknown,
+            known => place_effect(context, unit.shell, unit.dir.as_ref(), known, how),
         };
-        if own == Effect::Unknown {
-            effect = Effect::Unknown;
+        if own == Kind::Unknown {
+            effect = Kind::Unknown;
         }
     }
     // A cmdlet that takes a path from the pipeline by value or by property
@@ -100,8 +156,13 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect 
         let text = matches!(key, "select-string" | "sls");
         let handed = unit.stage.is_some_and(|stage| stage.index > 0);
         if handed && !fed_by_listing(unit, context, text) {
-            effect = Effect::Unknown;
+            effect = Kind::Unknown;
         }
+    }
+    // Where it reads without being told, and what its operands reach that
+    // the table does not call a place.
+    if reach::reads(unit, key, &opened, how, context) == Kind::Unknown {
+        effect = Kind::Unknown;
     }
     effect
 }
@@ -125,7 +186,7 @@ fn values(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The PowerShell cmdlets whose path parameters take pipeline input.
-fn binds_pipeline(key: &str) -> bool {
+pub(crate) fn binds_pipeline(key: &str) -> bool {
     matches!(
         key,
         "get-childitem"
@@ -178,7 +239,7 @@ pub(super) fn takes_no_paths(shell: Shell, key: &str) -> bool {
 /// Whether the unit's output is the names of what is in known places: `ls`,
 /// `fd`, `dir`, `Get-ChildItem`, `git ls-files`, and a `find` that prints only
 /// what it finds (`-printf` and `-exec` print any text).
-fn lists(unit: &Unit) -> bool {
+pub(crate) fn lists(unit: &Unit) -> bool {
     let Some(key) = unit.key() else {
         return false;
     };
@@ -198,7 +259,7 @@ fn lists(unit: &Unit) -> bool {
 /// Whether the unit only selects, orders or shows part of what it is handed
 /// (so what it hands on is still what the stage before it listed): it reads
 /// no file of its own.
-fn passes(unit: &Unit) -> bool {
+pub(crate) fn passes(unit: &Unit) -> bool {
     let Some(key) = unit.key() else {
         return false;
     };
@@ -207,7 +268,7 @@ fn passes(unit: &Unit) -> bool {
             matches!(
                 key.as_str(),
                 "head" | "tail" | "sort" | "grep" | "egrep" | "fgrep"
-            ) && path_args(unit, &key).is_empty()
+            ) && path_args(unit, &key).places.is_empty()
         }
         Shell::PowerShell => match key.as_str() {
             "where-object" | "sort-object" => true,
@@ -233,6 +294,8 @@ fn passes(unit: &Unit) -> bool {
 /// through any stage that only passes them on. `text` says strings and
 /// search results do as well, for a cmdlet that searches them rather than
 /// opens them.
+///
+/// It also notes the stage that lists, in `context.followed`, for the paths.
 fn fed_by_listing(unit: &Unit, context: &Context<'_>, text: bool) -> bool {
     let mut at = unit.stage;
     while let Some(stage) = at.filter(|stage| stage.index > 0) {
@@ -244,6 +307,10 @@ fn fed_by_listing(unit: &Unit, context: &Context<'_>, text: bool) -> bool {
             return false;
         };
         if lists(producer) {
+            // The names are opened by the stage that is handed them, so the
+            // folder that was listed is read through whatever is in it.
+            let lister = (stage.pipeline, stage.index - 1);
+            context.followed.borrow_mut().insert(lister);
             return true;
         }
         if text
@@ -505,12 +572,322 @@ const fn none() -> Spec {
     }
 }
 
+/// A spec with nothing set.
+const NONE: Spec = none();
+
+// Programs that are not reads-only (they may write, or `effect` has not been
+// taught them) but show or pass on what is in the files they open, for the
+// rule that reports a read of a secret. Each entry says what the program's
+// own options take, so a value is not mistaken for a file.
+
+const NL: Spec = Spec {
+    valued: "bfhdilnsvw",
+    valued_longs: &[
+        "body-numbering",
+        "footer-numbering",
+        "header-numbering",
+        "section-delimiter",
+        "line-increment",
+        "join-blank-lines",
+        "number-format",
+        "number-separator",
+        "starting-line-number",
+        "number-width",
+    ],
+    ..none()
+};
+const TAC: Spec = Spec {
+    valued: "s",
+    valued_longs: &["separator"],
+    ..none()
+};
+const FOLD: Spec = Spec {
+    valued: "w",
+    valued_longs: &["width"],
+    ..none()
+};
+const PASTE: Spec = Spec {
+    valued: "d",
+    valued_longs: &["delimiters"],
+    ..none()
+};
+const CUT: Spec = Spec {
+    valued: "bcdf",
+    valued_longs: &[
+        "bytes",
+        "characters",
+        "delimiter",
+        "fields",
+        "output-delimiter",
+    ],
+    ..none()
+};
+const EXPAND: Spec = Spec {
+    valued: "t",
+    valued_longs: &["tabs"],
+    ..none()
+};
+const UNIQ: Spec = Spec {
+    valued: "fsw",
+    valued_longs: &[
+        "skip-fields",
+        "skip-chars",
+        "check-chars",
+        "group",
+        "all-repeated",
+    ],
+    ..none()
+};
+const CMP: Spec = Spec {
+    valued: "ni",
+    valued_longs: &["bytes", "ignore-initial"],
+    ..none()
+};
+const OD: Spec = Spec {
+    valued: "AjNtSwv",
+    valued_longs: &[
+        "address-radix",
+        "skip-bytes",
+        "read-bytes",
+        "format",
+        "strings",
+        "width",
+    ],
+    ..none()
+};
+const XXD: Spec = Spec {
+    valued: "cglosn",
+    ..none()
+};
+const HEXDUMP: Spec = Spec {
+    valued: "nseL",
+    files: "f",
+    valued_longs: &["length", "skip", "format", "color"],
+    file_longs: &["format-file"],
+    ..none()
+};
+const STRINGS: Spec = Spec {
+    valued: "nTte",
+    valued_longs: &["bytes", "target", "encoding", "radix"],
+    ..none()
+};
+const BASE64: Spec = Spec {
+    valued: "w",
+    valued_longs: &["wrap"],
+    ..none()
+};
+const BAT: Spec = Spec {
+    valued: "lLHrm",
+    valued_longs: &[
+        "language",
+        "theme",
+        "style",
+        "paging",
+        "pager",
+        "wrap",
+        "tabs",
+        "color",
+        "decorations",
+        "line-range",
+        "highlight-line",
+        "map-syntax",
+        "terminal-width",
+        "file-name",
+        "diff-context",
+    ],
+    ..none()
+};
+// The first operand is the program, unless `-e` or `-f` gives it; `-f FILE`
+// is a program file.
+const AWK: Spec = Spec {
+    valued: "Fv",
+    valued_longs: &["field-separator", "assign"],
+    files: "f",
+    file_longs: &["file"],
+    pattern: true,
+    given: "f",
+    given_longs: &["file"],
+    ..none()
+};
+const SED: Spec = Spec {
+    valued: "el",
+    valued_longs: &["expression", "line-length"],
+    files: "f",
+    file_longs: &["file"],
+    pattern: true,
+    given: "ef",
+    given_longs: &["expression", "file"],
+    ..none()
+};
+// `tar -cf out.tar dir`, `-C dir`, `-T list`: every other operand is read.
+const TAR: Spec = Spec {
+    valued: "CILbNVgHKs",
+    valued_longs: &[
+        "directory",
+        "use-compress-program",
+        "blocking-factor",
+        "transform",
+        "strip-components",
+        "owner",
+        "group",
+        "label",
+        "exclude",
+        "level",
+        "newer",
+    ],
+    files: "fTX",
+    file_longs: &["file", "files-from", "exclude-from"],
+    ..none()
+};
+const ARCHIVE: Spec = Spec {
+    valued: "STMbBo",
+    valued_longs: &["suffix", "threads", "memlimit", "output"],
+    files: "D",
+    file_longs: &["dictionary"],
+    ..none()
+};
+const ZIP: Spec = Spec {
+    valued: "bnPtTOsF",
+    ..none()
+};
+const GPG: Spec = Spec {
+    valued: "ruRoz",
+    valued_longs: &[
+        "recipient",
+        "local-user",
+        "output",
+        "homedir",
+        "passphrase",
+        "cipher-algo",
+        "digest-algo",
+        "compress-algo",
+        "default-key",
+        "keyring",
+        "status-fd",
+        "logger-fd",
+    ],
+    file_longs: &["passphrase-file"],
+    ..none()
+};
+
+/// The places a program opens to show or pass on what is in them, for the
+/// programs that [`path_args`] does not know because `effect` does not call
+/// them reads-only: `None` for any other program. `more` and the
+/// compressors only read what they are given; `awk`, `sed` and `tar` take
+/// their program or their archive first.
+pub(crate) fn extra_paths<'a>(unit: &'a Unit, key: &str) -> Option<Vec<Cow<'a, Arg>>> {
+    let args = unit.args.as_slice();
+    let spec: &Spec = match (unit.shell, key) {
+        (Shell::Posix, "tac") => &TAC,
+        (Shell::Posix, "rev" | "more" | "most" | "comm") => &NONE,
+        (Shell::Posix, "nl") => &NL,
+        (Shell::Posix, "fold") => &FOLD,
+        (Shell::Posix, "paste") => &PASTE,
+        (Shell::Posix, "cut") => &CUT,
+        (Shell::Posix, "expand" | "unexpand") => &EXPAND,
+        (Shell::Posix, "uniq") => &UNIQ,
+        (Shell::Posix, "cmp") => &CMP,
+        (Shell::Posix, "od") => &OD,
+        (Shell::Posix, "xxd") => &XXD,
+        (Shell::Posix, "hexdump" | "hd") => &HEXDUMP,
+        (Shell::Posix, "strings") => &STRINGS,
+        (Shell::Posix, "base64" | "base32" | "basenc") => &BASE64,
+        (Shell::Posix, "bat" | "batcat") => &BAT,
+        (Shell::Posix, "awk" | "gawk" | "mawk" | "nawk") => &AWK,
+        (Shell::Posix, "sed") => &SED,
+        (Shell::Posix, "tar") => {
+            // Old style: `tar cf out.tar dir` has its options in the first
+            // word, with no dash.
+            let old = args
+                .first()
+                .and_then(Arg::known)
+                .is_some_and(|first| !first.starts_with('-'));
+            return Some(paths_of(args.get(usize::from(old)..)?, &TAR).places);
+        }
+        (
+            Shell::Posix,
+            "gzip" | "gunzip" | "zcat" | "gzcat" | "bzip2" | "bunzip2" | "bzcat" | "xz" | "unxz"
+            | "xzcat" | "zstd" | "unzstd" | "zstdcat" | "lz4" | "brotli",
+        ) => &ARCHIVE,
+        (Shell::Posix, "zip") => &ZIP,
+        (Shell::Posix, "7z" | "7za" | "7zz") => &NONE,
+        (Shell::Posix, "gpg" | "gpg2") => &GPG,
+        _ => return None,
+    };
+    Some(paths_of(args, spec).places)
+}
+
+/// The places `openssl` reads: the file after `-in`, `-inkey`, `-key`,
+/// `-keyfile`, `-cert`, `-certfile`, `-CAfile` and `-passin file:`; its
+/// options have one dash.
+pub(crate) fn openssl_paths(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
+    let mut paths = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("-in" | "-inkey" | "-key" | "-keyfile" | "-cert" | "-certfile" | "-CAfile") => {
+                paths.extend(iter.next().map(Cow::Borrowed));
+            }
+            Some("-passin" | "-passout") => {
+                if let Some(next) = iter.next() {
+                    match next.known().map(|text| text.strip_prefix("file:")) {
+                        Some(Some(file)) => paths.push(Cow::Owned(Arg::Known(file.to_string()))),
+                        Some(None) => {}
+                        None => paths.push(Cow::Borrowed(next)),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+/// What the operands of a `git` command name that it reads: the same as
+/// [`path_args`] gives, without the folder `-C` names, which git only looks in.
+pub(crate) fn git_reads(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("-C") => at += 2,
+            Some("--no-pager" | "-P" | "--no-optional-locks") => at += 1,
+            _ => break,
+        }
+    }
+    let Some(subcommand) = args.get(at).and_then(Arg::known) else {
+        return Vec::new();
+    };
+    let rest = args.get(at + 1..).unwrap_or_default();
+    git::read(subcommand, rest)
+        .into_iter()
+        .flat_map(|reading| reading.paths)
+        .collect()
+}
+
+/// What a unit opens: the places its program names, and what [`reach`] needs
+/// to know about how it was given them.
+#[derive(Default)]
+pub(super) struct Opened<'a> {
+    /// Every place the program opens: its operands, and the values of the
+    /// options that take a file.
+    pub(super) places: Vec<Cow<'a, Arg>>,
+    /// How many of them are operands, the places it searches or lists: a file
+    /// an option names (`grep -f words.txt`) is not one.
+    pub(super) operands: usize,
+    /// For `git`, the operands that are revisions and pathspecs, which git
+    /// takes inside the work tree and the guard does not read as places.
+    pub(super) pathspecs: Vec<&'a Arg>,
+    /// For `git`, the folders `-C` names, in order: each is relative to the
+    /// one before it.
+    pub(super) dirs: Vec<&'a Arg>,
+}
+
 /// The arguments of `unit` that are places its program opens, and the places
 /// that switches name (`findstr /F:file`), which are not whole arguments.
-fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
+fn path_args<'a>(unit: &'a Unit, key: &str) -> Opened<'a> {
     let args = unit.args.as_slice();
     if takes_no_paths(unit.shell, key) {
-        return Vec::new();
+        return Opened::default();
     }
     if key == "git" {
         return git_paths(args);
@@ -541,8 +918,18 @@ fn path_args<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
     paths
 }
 
-fn borrowed(args: Vec<&Arg>) -> Vec<Cow<'_, Arg>> {
-    args.into_iter().map(Cow::Borrowed).collect()
+/// The places a program opens as the table says, for the rule about reading
+/// a key: the same table [`operands`] judges and `reach` reads.
+pub(crate) fn path_places<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
+    path_args(unit, key).places
+}
+
+fn borrowed(args: Vec<&Arg>) -> Opened<'_> {
+    Opened {
+        operands: args.len(),
+        places: args.into_iter().map(Cow::Borrowed).collect(),
+        ..Opened::default()
+    }
 }
 
 /// The places a cmd program names. `findstr` takes switches with `/` or `-`
@@ -557,7 +944,7 @@ fn borrowed(args: Vec<&Arg>) -> Vec<Cow<'_, Arg>> {
 /// `dir` has `/`-switches that are all data (`/A:`, `/O:`, `/T:`) and `type`
 /// has none. A value known only when it runs, or an operand that is, is an
 /// operand, and so a place.
-fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
+fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Opened<'a> {
     let mut paths = Vec::new();
     let mut operands: Vec<&Arg> = Vec::new();
     let findstr = key == "findstr";
@@ -603,8 +990,13 @@ fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
     {
         operands.remove(0);
     }
+    let count = operands.len();
     paths.extend(operands.into_iter().map(Cow::Borrowed));
-    paths
+    Opened {
+        places: paths,
+        operands: count,
+        ..Opened::default()
+    }
 }
 
 /// What an argument of `findstr` is.
@@ -710,13 +1102,13 @@ fn find_starts(args: &[Arg]) -> Vec<&Arg> {
 /// reading subcommand names (see [`git::read`]). The other operands are
 /// revisions and pathspecs inside the work tree, which git does not take
 /// outside it, and are not read as places.
-fn git_paths(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
-    let mut paths = Vec::new();
+fn git_paths(args: &[Arg]) -> Opened<'_> {
+    let mut opened = Opened::default();
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.known() {
             Some("-C") => {
-                paths.extend(args.get(at + 1).map(Cow::Borrowed));
+                opened.dirs.extend(args.get(at + 1));
                 at += 2;
             }
             Some("--no-pager" | "-P" | "--no-optional-locks") => at += 1,
@@ -725,13 +1117,12 @@ fn git_paths(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
     }
     if let Some(subcommand) = args.get(at).and_then(Arg::known) {
         let rest = args.get(at + 1..).unwrap_or_default();
-        paths.extend(
-            git::read(subcommand, rest)
-                .into_iter()
-                .flat_map(|reading| reading.paths),
-        );
+        if let Some(reading) = git::read(subcommand, rest) {
+            opened.places.extend(reading.paths);
+            opened.pathspecs = reading.operands;
+        }
     }
-    paths
+    opened
 }
 
 /// The places a PowerShell cmdlet names: `-Path` and `-LiteralPath` (of
@@ -747,20 +1138,64 @@ fn powershell_paths<'a>(key: &str, args: &'a [Arg]) -> Vec<&'a Arg> {
     let searching = matches!(key, "select-string" | "sls");
     let pattern = params.values(&["pattern"]);
     let skip = usize::from(searching && pattern.is_empty());
-    paths.extend(params.positional.iter().skip(skip).copied());
+    // `Get-ChildItem` takes `-Depth` and `-Attributes` with a value, which is
+    // no place. The shared parameter table does not know them (a name there
+    // would swallow the target of a `Remove-Item -Depth ~`), so a value that
+    // follows one, and is a number or an attribute's name, is left out here.
+    let swallowed: Vec<&Arg> = if key == "get-childitem" {
+        args.windows(2)
+            .filter(|pair| listing_parameter(&pair[0]) && listing_value(&pair[1]))
+            .map(|pair| &pair[1])
+            .collect()
+    } else {
+        Vec::new()
+    };
+    paths.extend(
+        params
+            .positional
+            .iter()
+            .skip(skip)
+            .copied()
+            .filter(|arg| !swallowed.iter().any(|value| std::ptr::eq(*value, *arg))),
+    );
     paths
+}
+
+/// Whether `arg` is `-Depth` or `-Attributes`, or an abbreviation of either
+/// that no other parameter of `Get-ChildItem` shares (two letters at least).
+fn listing_parameter(arg: &Arg) -> bool {
+    let Some(name) = arg.known().and_then(|text| text.strip_prefix('-')) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.len() >= 2
+        && !name.contains(':')
+        && ("depth".starts_with(&name) || "attributes".starts_with(&name))
+}
+
+/// Whether `arg` can be the value of `-Depth` or `-Attributes` and nothing
+/// else: a number, or attribute names (`Hidden`, `!System`, `Hidden+System`)
+/// with no separator, drive or dot in them.
+fn listing_value(arg: &Arg) -> bool {
+    arg.known().is_some_and(|text| {
+        !text.is_empty()
+            && (text.chars().all(|c| c.is_ascii_digit())
+                || text
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic() || matches!(c, '!' | '+' | ',')))
+    })
 }
 
 /// One argument read for its flag: what is known of it up to the first
 /// expansion, and whether anything after that is unknown.
-fn shape(arg: &Arg) -> Option<(&str, bool)> {
+pub(super) fn shape(arg: &Arg) -> Option<(&str, bool)> {
     match arg {
         Arg::Known(text) => Some((text, false)),
         Arg::Template { text, .. } => {
             let at = text.find(crate::posix::OPAQUE).unwrap_or(text.len());
             Some((&text[..at], true))
         }
-        Arg::Unknown(_) | Arg::Input => None,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => None,
     }
 }
 
@@ -769,7 +1204,7 @@ fn shape(arg: &Arg) -> Option<(&str, bool)> {
 /// a place, or a pattern, is left out when it is known or its expansions
 /// are quoted: an unquoted one could split into more arguments, options
 /// among them, and counts as an operand.
-fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
+fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Opened<'a> {
     let mut paths: Vec<Cow<'a, Arg>> = Vec::new();
     let mut operands: Vec<&Arg> = Vec::new();
     let mut given = false;
@@ -859,8 +1294,13 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
             paths.push(Cow::Borrowed(pattern));
         }
     }
+    let count = operands.len();
     paths.extend(operands.into_iter().map(Cow::Borrowed));
-    paths
+    Opened {
+        places: paths,
+        operands: count,
+        ..Opened::default()
+    }
 }
 
 /// A PowerShell bare word with its quotes taken off as PowerShell takes them:
@@ -919,7 +1359,7 @@ pub(super) fn inert(arg: &Arg) -> bool {
     match arg {
         Arg::Known(_) => true,
         Arg::Template { source, .. } => expansions(source).iter().all(|found| found.quoted),
-        Arg::Unknown(_) | Arg::Input => false,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => false,
     }
 }
 
@@ -1008,7 +1448,7 @@ fn expansions(source: &str) -> Vec<Expansion> {
 /// a copy of the unit for each one, as if the body were written out. `None`
 /// when nothing the unit has refers to a variable, or there are too many
 /// combinations to read.
-pub(super) fn substituted(unit: &Unit, enclosing: &[&Binding]) -> Option<Vec<Unit>> {
+pub(crate) fn substituted(unit: &Unit, enclosing: &[&Binding]) -> Option<Vec<Unit>> {
     /// The most combinations of words read for one unit.
     const LIMIT: usize = 64;
     if enclosing.is_empty() || enclosing.len() > 3 {
@@ -1106,6 +1546,6 @@ fn substitute(arg: &Arg, pairs: &[(&str, &str)]) -> Option<Arg> {
             value.push_str(pieces.last()?);
             Some(Arg::Known(value))
         }
-        Arg::Known(_) | Arg::Input => None,
+        Arg::Known(_) | Arg::Input | Arg::Null => None,
     }
 }

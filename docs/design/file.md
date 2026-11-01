@@ -37,7 +37,7 @@ nowhere else.
 | --- | --- |
 | `read_secret` | A read of a key or a credential: a place core marks `Secret`, or a path under one, or a disk. |
 | `write_outside` | A write beyond the workspace: outside it, a system folder, the home directory, the workspace folder itself, a temporary folder itself, a disk. |
-| `write_sensitive` | A write to a key, a credential, a shell startup file, or the repository's history. |
+| `write_sensitive` | A write to a key, a credential, a shell startup file, a file a tool runs on its own, or the repository's history. |
 | `write_protected` | A write to a path the caller protects, in the caller's words. |
 | `network_share` | A read or a write that reaches a network share (`\\server\share`). Added to the rule the place itself breaks. |
 | `unreadable` | A path that is not one literal path, or that cannot be placed. |
@@ -49,8 +49,9 @@ decides.
 Reasons follow the verb of the access: `reads your SSH keys`, `reads the
 system's password hashes`, `reads a disk, and every key on it`, `writes to a
 path outside the workspace`, `writes to your home directory`, `writes to the
-whole workspace`, `writes to a shell startup file`, `writes to the
-repository's history`, `writes to the agent's settings`, `reaches a network
+whole workspace`, `writes to a shell startup file`, `writes to a file a tool
+runs on its own`, `writes to the repository's history`, `writes to the
+agent's settings`, `reaches a network
 share`. An unreadable path says why: `is empty`, `is too long to read`, `has a
 control character`, `starts with a space`, `has a wildcard`, `has a variable
 or a command`, `is another user's home directory`, `has a pattern that can
@@ -73,6 +74,11 @@ What counts as a secret is core's table of places known to hold one, with its
 Reading the repository's history and the caller's own settings stays safe on
 purpose.
 
+The shell guard gives the same answer for the same file: `cat <path>` is its
+`read_secret` exactly when a read of `<path>` is this guard's. A test in the
+front door (`crates/guards/tests/agree.rs`) holds them to it on every path of
+this guard's tables; see [Shell](shell.md#reading-a-key).
+
 ### Writing
 
 A write to a path that is not harmless is `write_protected` for a protected
@@ -85,6 +91,18 @@ is a program git runs later, so its reason says what it is: `writes to a git
 hook, which runs code`; the rest of `.git` is `writes to the repository's
 history`. A write to a device that is not safe (`/dev/fd/3` is any file the
 process has open) is `write_outside`.
+
+A write to a workspace's own file that a tool runs on its own is
+`write_sensitive` too, at any depth: `.vscode/tasks.json`, `.envrc`,
+`.husky/pre-commit`, `.github/workflows/ci.yml`, `.gitlab-ci.yml`,
+`.devcontainer/devcontainer.json`, `.mcp.json` and the rest of core's list
+(see [Core](core.md#what-core-judges)), with the reason `writes to a file a
+tool runs on its own`. A read of one is safe, and so is a write to a file that
+only runs when someone asks (`Makefile`, `justfile`, `package.json`). The rule
+is read for the workspace's own paths only: beyond it the place already says
+so, and the repository's history, a protected path and a key keep their own
+words. `~/.envrc` is also read as a folder named `~` in the working directory,
+as every `~` path is, and that reading is the workspace's own.
 
 A file API names the file itself, so the path is judged by core's full rule,
 the holding rule included: a write to `conf` is a finding when `conf/app/x.yaml`
@@ -194,6 +212,9 @@ each with its test row:
   be named so: Remix's `routes/$id.tsx`, Java's `Outer$Inner.class`, Office's
   `~$doc.docx`.
 - `~foo.tmp` and `~$x.docx` (a `~` that is not the home directory).
+- A write to a file named like one a tool runs on its own, in a folder that is
+  not its tool's (`docs/examples/Jenkinsfile`, `fixtures/.envrc`): the names
+  are found at any depth, as a `.git` is.
 - A bracket class outside the workspace (`/etc/[h]osts`) is `unreadable`, and
   so is `[.]git/config` inside it (it can pick `.git`).
 - A write by another case than the workspace is spelled with
@@ -205,6 +226,12 @@ each with its test row:
 
 Not covered, on purpose, and what to do:
 
+- **Files a tool runs that are not on the list.** Core lists the places known
+  to run code on their own; `.vscode/extensions.json`, `.cargo/config.toml`, a
+  tool's own config and a script a `package.json` names are not in it, and a
+  write to one is safe here. `lefthook.json` and `lefthook.toml` are not
+  either (a `*.json` pattern would otherwise be a finding); `lefthook.yml` and
+  `lefthook.yaml` are.
 - **Symlinks.** A symlink is judged by its own name, so a link in the
   workspace to `~/.ssh` and a Windows junction are the caller's to refuse
   (the caller who can read the disk can resolve first, and hand the result in).

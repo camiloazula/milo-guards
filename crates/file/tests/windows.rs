@@ -224,7 +224,6 @@ fn everyday_writes_are_safe() {
             "C:/Users/me/dev/repo/x",
             r"\Users\me\dev\repo\x",
             r".gitignore",
-            r".github\workflows\ci.yml",
             r".gitx\config",
             "C:x",
             r"c:src\x.rs",

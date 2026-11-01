@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use super::operands::{dashed, inert};
-use super::Effect;
+use super::Kind;
 use crate::unit::Arg;
 
 /// The options a subcommand knows as reading ones.
@@ -388,8 +388,10 @@ impl Opts {
 /// What reading a subcommand's arguments found: its effect, and the places it
 /// names.
 pub(super) struct Reading<'a> {
-    pub(super) effect: Effect,
+    pub(super) effect: Kind,
     pub(super) paths: Vec<Cow<'a, Arg>>,
+    /// The operands that are not options: revisions and pathspecs.
+    pub(super) operands: Vec<&'a Arg>,
 }
 
 /// The arguments of `subcommand`, when it is one that only reads. `--output`
@@ -411,7 +413,7 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
                 &text[..text.find(crate::posix::OPAQUE).unwrap_or(text.len())],
                 true,
             ),
-            Arg::Unknown(_) | Arg::Input => {
+            Arg::Unknown(_) | Arg::Input | Arg::Null => {
                 unknown = true;
                 continue;
             }
@@ -490,14 +492,18 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
         }
     }
     if no_index {
-        paths.extend(operands.into_iter().map(Cow::Borrowed));
+        paths.extend(operands.iter().copied().map(Cow::Borrowed));
     }
     let effect = if changes {
-        Effect::Changes
+        Kind::Changes
     } else if unknown {
-        Effect::Unknown
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     };
-    Some(Reading { effect, paths })
+    Some(Reading {
+        effect,
+        paths,
+        operands,
+    })
 }

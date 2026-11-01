@@ -1,30 +1,39 @@
-//! Whether a line only reads: the second answer beside `classify`, taken from
-//! the same split and the same findings.
+//! Whether a line only reads, and where: the second answer beside
+//! `classify`, taken from the same split and the same findings.
 //!
 //! A line is [`Effect::ReadsOnly`] only when everything in it is understood
 //! and none of it changes anything: every unit is a known reader run with
 //! reading flags, no redirect writes a file, nothing is known only when it
-//! runs, and the rules found nothing but an elevation. A reader is a program
-//! in a short table; a program the table does not know is
-//! [`Effect::Unknown`], never reading.
+//! runs, and the rules found nothing but an elevation or a read of a key. A
+//! reader is a program in a short table; a program the table does not know
+//! is [`Effect::Unknown`], never reading. The same table says which files a
+//! reader opens, which is what the rule about reading a key judges. Where the
+//! reads land is [`Reach`]: the `reach` module says what a unit reads.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Access, Place, Resolver};
 
 mod git;
-mod operands;
+pub(crate) mod operands;
+mod paths;
+mod reach;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use operands::{dashed, inert, operands, place_effect, substituted, unquoted, Context};
+use reach::Manner;
+
+pub use paths::{How, ReadPath};
 
 /// What a line does to the machine, as far as the guard can read: the answer
 /// of [`effect`](fn@crate::effect), beside [`classify`](crate::classify)'s.
 ///
 /// The two answers are independent. `mkdir build` is safe and
 /// [`Changes`](Self::Changes); `cat ~/.ssh/id_ed25519` is
-/// [`ReadsOnly`](Self::ReadsOnly) and not a line to run without a thought.
-/// What to do with either is the caller's policy.
+/// [`ReadsOnly`](Self::ReadsOnly) with a [`Reach::Beyond`], and not a line to
+/// run without a thought. What to do with either is the caller's policy.
 ///
 /// This enum is exhaustive on purpose, as [`Rule`] is: the three answers
 /// are the whole question, and a fourth would change what a caller's gate
@@ -33,9 +42,9 @@ use operands::{dashed, inert, operands, place_effect, substituted, unquoted, Con
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Effect {
     /// Every part of the line is a known reader run with reading flags and
-    /// nothing is written: it changes nothing on the machine (it may still
-    /// read what it should not).
-    ReadsOnly,
+    /// nothing is written: it changes nothing on the machine. The [`Reach`]
+    /// says whether what it reads stays in the workspace.
+    ReadsOnly(Reach),
     /// Something in the line is a known writer, or writes through a
     /// redirect, or is a package manager or a build tool, or a rule found
     /// it risky for what it changes.
@@ -46,10 +55,81 @@ pub enum Effect {
     Unknown,
 }
 
+/// Where the reads of a line that only reads land: the second half of
+/// [`Effect::ReadsOnly`].
+///
+/// `Reach` is about reading what is not the project's. [`Workspace`](Self::Workspace)
+/// says every place the line reads is the project's own: inside a workspace
+/// folder (the repository's history, a startup file and a path the caller
+/// protects are inside it too), a temporary file, or the null device.
+/// [`Beyond`](Self::Beyond) says at least one read lands elsewhere: the home
+/// folder, a system folder, anything else outside the workspace, or a secret (a
+/// key, a credential) even inside it. A line that reads nothing (`echo hi`,
+/// `pwd`) is `Workspace`.
+///
+/// What a line reads is every file operand and the source of every `<`
+/// redirect, the folders a lister lists, and the working directory when a
+/// reader with no file operand reads it implicitly (`ls`, `git status`,
+/// `rg TODO`, `find`, `grep -r x`): so `ls` run from outside the workspace,
+/// or after `cd ~`, is `Beyond`. A reader whose implicit input the guard
+/// cannot place is `Beyond`, never `Workspace`. A reader that goes below the
+/// folders it names (a recursive search, a listing of every name) reaches what
+/// is below them: a folder that holds a secret read that way is `Beyond`.
+///
+/// This enum is exhaustive on purpose, for the same reason as [`Effect`]: a
+/// third answer would change what a caller's careful mode means by "stays in
+/// the workspace".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reach {
+    /// Every read lands inside a workspace folder, in a temporary file, or on
+    /// the null device, and none is a secret.
+    Workspace,
+    /// At least one read lands elsewhere, or is a secret.
+    Beyond,
+}
+
+/// What one unit or one line does, before [`Reach`] is added to a line that
+/// only reads: the answer the tables give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Reads,
+    Changes,
+    Unknown,
+}
+
 /// The effect of a line already split and judged by the rules. `classify`
 /// uses the same `split` and `findings`, so the two answers cannot disagree
 /// about what the units are.
 pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Effect {
+    read(split, findings, resolver, false).effect
+}
+
+/// The places a line that only reads reads, and how each is read, from the
+/// same reading as [`of`]: `None` for any other line. Absolute, sorted,
+/// without repeats. A read that is not a place on a disk (a device, a path on
+/// another drive's own working directory) has none and is left out; it is
+/// judged by its place already.
+pub(crate) fn paths(
+    split: &Split,
+    findings: &[Finding],
+    resolver: &Resolver,
+) -> Option<Vec<ReadPath>> {
+    let reads = read(split, findings, resolver, true);
+    matches!(reads.effect, Effect::ReadsOnly(_))
+        .then(|| paths::resolve(&reads.landed, &reads.followed, resolver))
+}
+
+/// What reading a line gave: its effect, and when the paths were asked for,
+/// where each read landed and which pipeline stages hand names on to a
+/// program that opens them.
+struct Read {
+    effect: Effect,
+    landed: Vec<paths::Landed>,
+    followed: BTreeSet<(usize, usize)>,
+}
+
+/// Read the line once: its effect, and the paths when `collect` asks.
+fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool) -> Read {
     let mut seen = Seen::default();
     for finding in findings {
         seen.add(rule_effect(finding.rule));
@@ -60,17 +140,14 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
     seen.unknown |= split.kept.sets.iter().any(|name| !harmless(name));
     seen.unknown |= split.kept.loops.iter().any(|name| !plain_loop(name));
     for write in &split.writes {
-        let target = path::within(write.dir.as_ref(), &write.target, write.shell);
-        let place = resolver.place(&target, write.shell, write.hidden);
+        let place = resolver.place(
+            write.dir.as_ref(),
+            &write.target,
+            write.shell,
+            write.hidden,
+            Access::Content,
+        );
         seen.changes |= !matches!(place, Place::Null);
-    }
-    for read in &split.kept.reads {
-        seen.add(place_effect(
-            resolver,
-            read.shell,
-            read.dir.as_ref(),
-            &read.target,
-        ));
     }
     // The first unit at each pipeline stage, for what a stage is handed.
     let mut producers = HashMap::new();
@@ -84,12 +161,25 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
     let context = Context {
         resolver,
         producers,
+        beyond: Cell::new(false),
+        landed: collect.then(|| RefCell::new(Vec::new())),
+        followed: RefCell::default(),
+        stage: Cell::new(None),
     };
+    for read in &split.reads {
+        seen.add(place_effect(
+            &context,
+            read.shell,
+            read.dir.as_ref(),
+            &read.target,
+            Manner::default(),
+        ));
+    }
     for (at, unit) in split.units.iter().enumerate() {
+        context.stage.set(unit.stage);
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.
         let enclosing: Vec<_> = split
-            .kept
             .bindings
             .iter()
             .filter(|binding| binding.units.contains(&at))
@@ -103,7 +193,12 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
             None => seen.add(unit_effect(unit, &context)),
         }
     }
-    seen.effect()
+    let effect = seen.effect(context.beyond.get());
+    Read {
+        effect,
+        landed: context.landed.map(RefCell::into_inner).unwrap_or_default(),
+        followed: context.followed.into_inner(),
+    }
 }
 
 /// What has been seen so far: a change beats not knowing, which beats
@@ -115,31 +210,34 @@ struct Seen {
 }
 
 impl Seen {
-    fn add(&mut self, effect: Effect) {
+    fn add(&mut self, effect: Kind) {
         match effect {
-            Effect::ReadsOnly => {}
-            Effect::Changes => self.changes = true,
-            Effect::Unknown => self.unknown = true,
+            Kind::Reads => {}
+            Kind::Changes => self.changes = true,
+            Kind::Unknown => self.unknown = true,
         }
     }
 
     /// A line with a known writer changes things whatever else it holds;
     /// what the guard cannot read only matters when nothing is known to
-    /// change.
-    fn effect(&self) -> Effect {
+    /// change. A line that only reads reaches `beyond` the workspace or
+    /// stays in it.
+    fn effect(&self, beyond: bool) -> Effect {
         if self.changes {
             Effect::Changes
         } else if self.unknown {
             Effect::Unknown
+        } else if beyond {
+            Effect::ReadsOnly(Reach::Beyond)
         } else {
-            Effect::ReadsOnly
+            Effect::ReadsOnly(Reach::Workspace)
         }
     }
 }
 
 /// What a finding of `rule` says about the line's effect. No fallback arm: a
 /// new rule must be placed here.
-fn rule_effect(rule: Rule) -> Effect {
+fn rule_effect(rule: Rule) -> Kind {
     match rule {
         Rule::Delete
         | Rule::WipeDisk
@@ -149,10 +247,15 @@ fn rule_effect(rule: Rule) -> Effect {
         | Rule::GitHistory
         | Rule::Permissions
         | Rule::SystemSettings
-        | Rule::StopSystem => Effect::Changes,
-        Rule::RunDownloaded | Rule::RunInput | Rule::Unknown | Rule::Unreadable => Effect::Unknown,
+        | Rule::StopSystem => Kind::Changes,
+        Rule::RunDownloaded | Rule::RunInput | Rule::Unknown | Rule::Unreadable => Kind::Unknown,
         // Running as root changes nothing by itself: `sudo cat` reads only.
-        Rule::Elevated => Effect::ReadsOnly,
+        // Nor does reading a key: `cat ~/.ssh/id_ed25519` reads only, and the
+        // finding says which file (the line's `Reach` is `Beyond`); what to
+        // do about it is the caller's.
+        Rule::Elevated | Rule::ReadSecret => Kind::Reads,
+        // Sending a secret away sends data off the machine: it is not a read.
+        Rule::SendSecret => Kind::Changes,
     }
 }
 
@@ -233,9 +336,14 @@ const WRAPPERS: [&str; 19] = [
 const SYSTEM_FOLDERS: [&str; 4] = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
 
 /// What one unit does.
-fn unit_effect(unit: &Unit, context: &Context<'_>) -> Effect {
-    // A PowerShell word with quotes in it (`--contents="\\evil\s"`) is judged
-    // as the program receives it.
+fn unit_effect(unit: &Unit, context: &Context<'_>) -> Kind {
+    judge_unit(&received(unit), context)
+}
+
+/// The unit with its arguments as the program receives them: a PowerShell
+/// word with quotes in it (`--contents="\\evil\s"`) reaches the program with
+/// the quotes taken off, and is judged so.
+pub(crate) fn received(unit: &Unit) -> Cow<'_, Unit> {
     if unit.shell == Shell::PowerShell
         && unit
             .args
@@ -248,24 +356,34 @@ fn unit_effect(unit: &Unit, context: &Context<'_>) -> Effect {
                 *text = unquoted(text);
             }
         }
-        return judge_unit(&copy, context);
+        return Cow::Owned(copy);
     }
-    judge_unit(unit, context)
+    Cow::Borrowed(unit)
 }
 
 /// What one unit does, its arguments as the program receives them.
-fn judge_unit(unit: &Unit, context: &Context<'_>) -> Effect {
+fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
     let resolver = context.resolver;
     let Some(key) = program(unit) else {
-        return Effect::Unknown;
+        return Kind::Unknown;
     };
     // A `cd` the guard follows only moves the line.
     let own = if let Some(target) = moves_to(unit) {
+        // Going into a folder is a read of it: `cd ~` leaves the workspace
+        // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
-        if matches!(resolver.place(&at, unit.shell, false), Place::Unknown) {
-            Effect::Unknown
+        let place = resolver.place(
+            unit.dir.as_ref(),
+            &target,
+            unit.shell,
+            unit.hidden,
+            Access::Item,
+        );
+        context.land(unit.shell, None, &at, place, Manner::default());
+        if matches!(place, Place::Unknown) {
+            Kind::Unknown
         } else {
-            Effect::ReadsOnly
+            Kind::Reads
         }
     } else {
         match unit.shell {
@@ -279,8 +397,8 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Effect {
         .iter()
         .all(|wrapper| WRAPPERS.contains(&wrapper.as_str()));
     match own {
-        Effect::ReadsOnly if !known_wrappers => Effect::Unknown,
-        Effect::ReadsOnly => operands(unit, &key, context),
+        Kind::Reads if !known_wrappers => Kind::Unknown,
+        Kind::Reads => operands(unit, &key, context),
         other => other,
     }
 }
@@ -319,7 +437,7 @@ fn program(unit: &Unit) -> Option<String> {
 /// every option it is given is one of these: an option the guard does not
 /// know could do anything (`sudo -e` edits a file, `env -P` changes where
 /// programs are found), and `time -o FILE` writes one.
-pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
+pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Kind {
     let none = Options::default();
     let spec = match key {
         "sudo" | "doas" | "gsudo" | "pkexec" => Options {
@@ -330,11 +448,13 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
             ..none
         },
         // Assignments are bare words, and are recorded as variables set.
+        // `-C` and `--chdir` move the program to another folder, which the
+        // guard does not follow: they are not read, so the line is `Unknown`.
         "env" => Options {
             flags: "i0",
-            valued: "uC",
+            valued: "u",
             longs: &["ignore-environment", "null"],
-            valued_longs: &["unset", "chdir"],
+            valued_longs: &["unset"],
             ..none
         },
         "nice" => Options {
@@ -396,7 +516,7 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Effect {
             ..none
         },
         "command" => Options { flags: "p", ..none },
-        _ => return Effect::ReadsOnly,
+        _ => return Kind::Reads,
     };
     options(own, &spec)
 }
@@ -416,7 +536,7 @@ struct Options {
 
 /// `Changes` when a writing option is given, `Unknown` when one the spec
 /// does not name is, or one known only when it runs.
-fn options(own: &[Arg], spec: &Options) -> Effect {
+fn options(own: &[Arg], spec: &Options) -> Kind {
     let (mut changes, mut unknown) = (false, false);
     let mut iter = own.iter();
     while let Some(arg) = iter.next() {
@@ -462,11 +582,11 @@ fn options(own: &[Arg], spec: &Options) -> Effect {
         }
     }
     if changes {
-        Effect::Changes
+        Kind::Changes
     } else if unknown {
-        Effect::Unknown
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     }
 }
 
@@ -475,7 +595,7 @@ fn options(own: &[Arg], spec: &Options) -> Effect {
 /// exactly one of `reads`; a prefix of a writing option is a write, and
 /// anything else is not known, a prefix of a program-running one included.
 /// Names compare without case, as `less` does.
-fn abbreviated(args: &[Arg], reads: &[&str], writes: &[&str]) -> Effect {
+fn abbreviated(args: &[Arg], reads: &[&str], writes: &[&str]) -> Kind {
     let (mut changes, mut unknown) = (false, false);
     for text in args.iter().filter_map(Arg::known) {
         if text == "--" {
@@ -497,26 +617,26 @@ fn abbreviated(args: &[Arg], reads: &[&str], writes: &[&str]) -> Effect {
         }
     }
     if changes {
-        Effect::Changes
+        Kind::Changes
     } else if unknown {
-        Effect::Unknown
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     }
 }
 
 /// Both the long options by prefix and the short ones for a program.
-fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Effect {
+fn gnu(args: &[Arg], shorts: &[char], reads: &[&str], writes: &[&str]) -> Kind {
     let short = shorts
         .iter()
         .any(|&letter| has_flag(args, Some(letter), None));
     let long = abbreviated(args, reads, writes);
-    if short || long == Effect::Changes {
-        Effect::Changes
-    } else if long == Effect::Unknown {
-        Effect::Unknown
+    if short || long == Kind::Changes {
+        Kind::Changes
+    } else if long == Kind::Unknown {
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     }
 }
 
@@ -548,29 +668,29 @@ fn given(args: &[Arg], flags: &[Flag]) -> bool {
 /// A reader some of whose flags write or run something. An argument known
 /// only when it runs is judged with the places the program opens (see
 /// [`operands`]), where it is not a value or a pattern.
-fn guarded(args: &[Arg], writes: &[Flag], runs: &[Flag]) -> Effect {
+fn guarded(args: &[Arg], writes: &[Flag], runs: &[Flag]) -> Kind {
     if given(args, writes) {
-        Effect::Changes
+        Kind::Changes
     } else if given(args, runs) {
-        Effect::Unknown
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     }
 }
 
 /// The table for a POSIX shell.
-fn posix(key: &str, unit: &Unit) -> Effect {
+fn posix(key: &str, unit: &Unit) -> Kind {
     let args = unit.args.as_slice();
     match key {
         // No flag of these writes or runs anything.
         "ls" | "cat" | "head" | "tail" | "wc" | "stat" | "pwd" | "echo" | "grep" | "egrep"
         | "fgrep" | "diff" | "du" | "df" | "which" | "realpath" | "basename" | "dirname"
-        | "true" | "false" | "test" | "[" => Effect::ReadsOnly,
+        | "true" | "false" | "test" | "[" => Kind::Reads,
         // `printf -v NAME` sets a variable.
         "printf" => match args.first().map(Arg::known) {
-            Some(Some(first)) if first.starts_with("-v") => Effect::Unknown,
-            Some(None) => Effect::Unknown,
-            _ => Effect::ReadsOnly,
+            Some(Some(first)) if first.starts_with("-v") => Kind::Unknown,
+            Some(None) => Kind::Unknown,
+            _ => Kind::Reads,
         },
         // GNU `sort`, `file` and `less` take any unambiguous prefix of a
         // long option, so only the long options named here read (see
@@ -638,7 +758,7 @@ fn posix(key: &str, unit: &Unit) -> Effect {
                 ],
                 &["log-file"],
             ) {
-                Effect::ReadsOnly if command => Effect::Unknown,
+                Kind::Reads if command => Kind::Unknown,
                 other => other,
             }
         }
@@ -664,7 +784,7 @@ fn posix(key: &str, unit: &Unit) -> Effect {
                 !name.is_empty() && ("exec".starts_with(name) || "exec-batch".starts_with(name))
             });
             if abbreviated {
-                Effect::Unknown
+                Kind::Unknown
             } else {
                 guarded(
                     args,
@@ -675,15 +795,15 @@ fn posix(key: &str, unit: &Unit) -> Effect {
         }
         "find" => find(args),
         "git" => git(args),
-        key if WRITERS.contains(&key) || TOOLS.contains(&key) => Effect::Changes,
-        _ => Effect::Unknown,
+        key if WRITERS.contains(&key) || TOOLS.contains(&key) => Kind::Changes,
+        _ => Kind::Unknown,
     }
 }
 
 /// `find`: the actions that write; what `-exec` and `-ok` run are units of
 /// their own. An argument known only when it runs could be `-delete`, unless
 /// it is the value of a test that takes one (`-name "$p"`) and is quoted.
-fn find(args: &[Arg]) -> Effect {
+fn find(args: &[Arg]) -> Kind {
     const WRITES: [&str; 5] = ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
     /// The tests whose next argument is a pattern, a number or a type.
     const VALUED: [&str; 28] = [
@@ -721,11 +841,11 @@ fn find(args: &[Arg]) -> Effect {
         .filter_map(Arg::known)
         .any(|text| WRITES.contains(&text))
     {
-        return Effect::Changes;
+        return Kind::Changes;
     }
     // The start points are read from a file, which the guard never sees.
     if args.iter().any(|arg| arg.known() == Some("-files0-from")) {
-        return Effect::Unknown;
+        return Kind::Unknown;
     }
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -735,14 +855,14 @@ fn find(args: &[Arg]) -> Effect {
                     .next()
                     .is_some_and(|value| dashed(value) || !inert(value))
                 {
-                    return Effect::Unknown;
+                    return Kind::Unknown;
                 }
             }
             Some(_) => {}
-            None => return Effect::Unknown,
+            None => return Kind::Unknown,
         }
     }
-    Effect::ReadsOnly
+    Kind::Reads
 }
 
 /// The subcommands of git that change the repository or the work tree.
@@ -788,16 +908,16 @@ pub(super) fn git_subcommand(args: &[Arg]) -> Option<&str> {
 /// `git`: after the options that only choose where to look and how to page,
 /// the subcommand. `-c` and every other option before it can make git run a
 /// command, so they are not read.
-fn git(args: &[Arg]) -> Effect {
+fn git(args: &[Arg]) -> Kind {
     let mut at = 0;
     let subcommand = loop {
         let Some(text) = args.get(at).and_then(Arg::known) else {
-            return Effect::Unknown;
+            return Kind::Unknown;
         };
         match text {
             "-C" => at += 2,
             "--no-pager" | "-P" | "--no-optional-locks" => at += 1,
-            other if other.starts_with('-') => return Effect::Unknown,
+            other if other.starts_with('-') => return Kind::Unknown,
             other => break other,
         }
     };
@@ -806,13 +926,13 @@ fn git(args: &[Arg]) -> Effect {
         // Each knows the options that read; any other is `Unknown`, and
         // `--output` writes a file (see [`git`]).
         "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "ls-files" => {
-            git::read(subcommand, rest).map_or(Effect::Unknown, |reading| reading.effect)
+            git::read(subcommand, rest).map_or(Kind::Unknown, |reading| reading.effect)
         }
         "branch" => listing(rest, &BRANCH),
         "tag" => listing(rest, &TAG),
         "remote" => match rest {
-            [] => Effect::ReadsOnly,
-            [only] if matches!(only.known(), Some("-v" | "--verbose")) => Effect::ReadsOnly,
+            [] => Kind::Reads,
+            [only] if matches!(only.known(), Some("-v" | "--verbose")) => Kind::Reads,
             [first, ..]
                 if matches!(
                     first.known(),
@@ -829,12 +949,12 @@ fn git(args: &[Arg]) -> Effect {
                     )
                 ) =>
             {
-                Effect::Changes
+                Kind::Changes
             }
-            _ => Effect::Unknown,
+            _ => Kind::Unknown,
         },
-        other if GIT_WRITERS.contains(&other) => Effect::Changes,
-        _ => Effect::Unknown,
+        other if GIT_WRITERS.contains(&other) => Kind::Changes,
+        _ => Kind::Unknown,
     }
 }
 
@@ -928,7 +1048,7 @@ const TAG: Listing = Listing {
 /// `git branch` and `git tag`: reading only when every flag is one that
 /// lists and there is no operand to create (`git branch topic` makes one),
 /// except patterns after `--list`.
-fn listing(args: &[Arg], spec: &Listing) -> Effect {
+fn listing(args: &[Arg], spec: &Listing) -> Kind {
     let (mut changes, mut unknown, mut operand, mut list) = (false, false, false, false);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -971,22 +1091,22 @@ fn listing(args: &[Arg], spec: &Listing) -> Effect {
         }
     }
     if changes || (operand && !list && !unknown) {
-        Effect::Changes
+        Kind::Changes
     } else if unknown {
-        Effect::Unknown
+        Kind::Unknown
     } else {
-        Effect::ReadsOnly
+        Kind::Reads
     }
 }
 
 /// The table for PowerShell, by the cmdlet's name (an alias the guard knows
 /// is already its cmdlet).
-fn powershell(key: &str, unit: &Unit) -> Effect {
+fn powershell(key: &str, unit: &Unit) -> Kind {
     match key {
         "get-childitem" | "get-content" | "select-string" | "get-item" | "get-location"
         | "test-path" | "resolve-path" | "write-output" | "write-host" | "where-object"
         | "select-object" | "sort-object" | "measure-object" | "cat" | "gc" | "type" | "sls"
-        | "echo" | "pwd" => Effect::ReadsOnly,
+        | "echo" | "pwd" => Kind::Reads,
         "remove-item"
         | "copy-item"
         | "move-item"
@@ -1004,22 +1124,22 @@ fn powershell(key: &str, unit: &Unit) -> Effect {
         | "stop-process"
         | "mkdir"
         | "md"
-        | "ren" => Effect::Changes,
+        | "ren" => Kind::Changes,
         "git" => git(&unit.args),
-        key if TOOLS.contains(&key) => Effect::Changes,
-        _ => Effect::Unknown,
+        key if TOOLS.contains(&key) => Kind::Changes,
+        _ => Kind::Unknown,
     }
 }
 
 /// The table for cmd.
-fn cmd(key: &str, unit: &Unit) -> Effect {
+fn cmd(key: &str, unit: &Unit) -> Kind {
     match key {
-        "dir" | "type" | "findstr" | "echo" | "cd" | "chdir" => Effect::ReadsOnly,
+        "dir" | "type" | "findstr" | "echo" | "cd" | "chdir" => Kind::Reads,
         "del" | "erase" | "rd" | "rmdir" | "md" | "mkdir" | "copy" | "xcopy" | "move" | "ren"
         | "rename" | "robocopy" | "attrib" | "icacls" | "takeown" | "format" | "diskpart"
-        | "reg" | "taskkill" | "shutdown" => Effect::Changes,
+        | "reg" | "taskkill" | "shutdown" => Kind::Changes,
         "git" => git(&unit.args),
-        key if TOOLS.contains(&key) => Effect::Changes,
-        _ => Effect::Unknown,
+        key if TOOLS.contains(&key) => Kind::Changes,
+        _ => Kind::Unknown,
     }
 }

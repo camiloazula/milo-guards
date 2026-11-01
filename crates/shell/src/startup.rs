@@ -220,7 +220,7 @@ pub(crate) fn read(
     let text = match value {
         Arg::Known(text) | Arg::Template { text, .. } => text.as_str(),
         // An ANSI-C string holds its escapes undecoded, so it is not read.
-        Arg::Unknown(_) | Arg::Input => "",
+        Arg::Unknown(_) | Arg::Input | Arg::Null => "",
     };
     // `PS4='\044(cmd)'`: the prompt's escapes are decoded first.
     let Prompt { text, undecoded } = if bash_env {
@@ -320,7 +320,7 @@ pub(crate) fn word(arg: &Arg) -> Option<(String, Arg)> {
                 },
             )
         }),
-        Arg::Unknown(_) | Arg::Input => None,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => None,
     }
 }
 
