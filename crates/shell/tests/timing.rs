@@ -24,6 +24,10 @@ fn serial() -> MutexGuard<'static, ()> {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn wide_random_lines_never_panic_and_stay_quick() {
     let _serial = serial();
     // The time a turn can wait for one line, with room for the debug build
@@ -75,6 +79,10 @@ fn wide_random_lines_never_panic_and_stay_quick() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch an explosion"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
     let _serial = serial();
@@ -150,6 +158,10 @@ fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_line_at_the_length_limit_is_read_in_time() {
     let _serial = serial();
