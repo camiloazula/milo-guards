@@ -15,6 +15,7 @@ mod code;
 mod files;
 mod processes;
 mod regex;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -144,6 +145,7 @@ impl Checker<'_> {
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -273,6 +275,7 @@ impl Checker<'_> {
 
     /// A write to `target`, which is a `what` in the words of a reason.
     fn write_to(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str, what: &str) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place(shell, scope, target) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
