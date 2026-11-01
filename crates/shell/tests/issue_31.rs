@@ -350,3 +350,120 @@ fn a_word_with_an_extended_glob_operator_stays_unreadable() {
         ],
     );
 }
+
+#[test]
+fn a_qualifier_stays_on_a_command_that_turns_its_words_into_a_script() {
+    // `eval`, `watch` and `trap` run the words after zsh has expanded the
+    // pattern with its qualifier, so the `rm` inside is handed `.git`.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A pattern that cannot match a hidden name stays as safe as it was.
+            "eval rm -rf *.o(D)",
+            "watch rm -f *.o(D)",
+            "trap rm\\ -f\\ *.o(D) EXIT",
+            // The qualifier is for its own command, and not for the next.
+            "eval echo *.o(D); rm -rf *git",
+            "watch echo *.o(D); rm -rf *git",
+            // A script that is only a string has no qualifier.
+            "eval 'rm -rf *.o'",
+            "eval echo hi",
+        ],
+        &[
+            ("eval rm -rf *git(D)", Rule::Delete),
+            ("eval rm -rf -- *git(D)", Rule::Delete),
+            ("eval 'rm -rf' *git(D)", Rule::Delete),
+            ("eval echo hi\\; rm -rf *git(D)", Rule::Delete),
+            ("command eval rm -rf *git(D)", Rule::Delete),
+            ("builtin eval rm -rf *git(D)", Rule::Delete),
+            ("noglob eval rm -rf *git(D)", Rule::Delete),
+            ("time eval rm -rf *git(D)", Rule::Delete),
+            ("x=$(eval rm -rf *git(D))", Rule::Delete),
+            ("watch rm -rf *git(D)", Rule::Delete),
+            ("watch -n 1 rm -rf *git(D)", Rule::Delete),
+            ("trap rm\\ -rf\\ *git(D) EXIT", Rule::Delete),
+            // The same, with the option for the whole line.
+            ("setopt globdots; eval rm -rf *git", Rule::Delete),
+            ("setopt globdots; watch rm -rf *git", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_posix_class_in_a_bracket_matches_a_hidden_name() {
+    // `[[:alpha:]]` is one letter, `[[:punct:]]` one punctuation character
+    // (a dot is one): with the qualifier, or `dotglob`, they match `.git`.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A class that does not take what the pattern needs there.
+            "rm -rf *[[:digit:]]it(D)",
+            "rm -rf *g[[:digit:]]t(D)",
+            "rm -rf [[:alpha:]]git(D)",
+            "rm -rf *[![:alpha:]]it(D)",
+            "rm -rf *[[:upper:]]it(D)",
+            "rm -rf *[[:space:]]it(D)",
+            "rm -rf *[[:alpha:]].o(D)",
+            "shopt -s dotglob; rm -rf *[[:digit:]]it",
+            "shopt -s dotglob; rm -rf [[:alpha:]]git",
+            // The dot is hidden unless the option is on.
+            "rm -rf *[[:alpha:]]it",
+            "rm -rf [[:punct:]]git",
+            "rm -rf [.[:alpha:]]git",
+        ],
+        &[
+            ("rm -rf *[[:alpha:]]it(D)", Rule::Delete),
+            ("rm -rf ?[[:alpha:]]it(D)", Rule::Delete),
+            ("rm -rf [[:punct:]]git(D)", Rule::Delete),
+            ("rm -rf [.[:alpha:]]git(D)", Rule::Delete),
+            ("rm -rf [[:punct:][:alpha:]]git(D)", Rule::Delete),
+            ("rm -rf *g[[:alpha:]]t(D)", Rule::Delete),
+            ("rm -rf *[[:alpha:]]*(D)", Rule::Delete),
+            ("rm -rf [[:punct:]]*(D)", Rule::Delete),
+            ("rm -rf *[[:lower:]]it(D)", Rule::Delete),
+            ("rm -rf *[[:alnum:]]it(D)", Rule::Delete),
+            ("rm -rf *[[:graph:]]it(D)", Rule::Delete),
+            ("rm -rf [![:alpha:]]git(D)", Rule::Delete),
+            ("rm -rf [![:digit:]]git(D)", Rule::Delete),
+            ("rm -rf [[:alpha:][:punct:]]git(D)", Rule::Delete),
+            // Not read exactly, so taken as any character.
+            ("rm -rf *[[:nosuch:]]it(D)", Rule::Delete),
+            ("rm -rf [[=a=]]*(D)", Rule::Delete),
+            ("rm -rf [[.-.]]git(D)", Rule::Delete),
+            ("rm -rf [a-[.z.]]git(D)", Rule::Delete),
+            // With the option for the whole line.
+            ("shopt -s dotglob; rm -rf *[[:alpha:]]it", Rule::Delete),
+            ("shopt -s dotglob; rm -rf [[:punct:]]git", Rule::Delete),
+            ("shopt -s dotglob; rm -rf [.[:alpha:]]git", Rule::Delete),
+            ("setopt globdots; rm -rf *[[:alpha:]]it", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn an_arithmetic_chain_that_assigns_globignore_turns_hidden_names_on() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The variable is read, or compared, and not assigned to.
+            "(( x = GLOBIGNORE )); rm -rf *git",
+            "(( x = y = GLOBIGNORE )); rm -rf *git",
+            "(( x = GLOBIGNORE == 1 )); rm -rf *git",
+            "(( x = XGLOBIGNORE = 1 )); rm -rf *git",
+            "x=$(( x = GLOBIGNORE )); rm -rf *git",
+            "(( x = GLOBIGNORE = 1 )); rm -f *.o",
+        ],
+        &[
+            ("(( x = GLOBIGNORE = 1 )); rm -rf *git", Rule::Delete),
+            ("$(( x = GLOBIGNORE = 1 )); rm -rf *git", Rule::Delete),
+            ("echo $(( x = GLOBIGNORE = 1 )); rm -rf *git", Rule::Delete),
+            ("(( x = y = GLOBIGNORE = 1 )); rm -rf *git", Rule::Delete),
+            ("(( GLOBIGNORE = x = 1 )); rm -rf *git", Rule::Delete),
+            ("(( x += GLOBIGNORE += 1 )); rm -rf *git", Rule::Delete),
+            ("(( x = (GLOBIGNORE = 1) )); rm -rf *git", Rule::Delete),
+        ],
+    );
+}

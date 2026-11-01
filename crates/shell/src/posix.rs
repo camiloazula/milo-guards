@@ -404,6 +404,46 @@ impl Walker<'_> {
         })
     }
 
+    /// The operands of a chain of assignments in `(( ))`, in order, as the
+    /// text each is written in: `x = y = 1` is `x`, `y` and `1`, however the
+    /// parse nests it. Anything else is one operand.
+    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>) {
+        let assigning = node.kind() == "binary_expression" && {
+            let mut cursor = node.walk();
+            let found = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            found.is_some_and(|operator| {
+                operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+            })
+        };
+        match (
+            assigning,
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            (true, Some(left), Some(right)) => {
+                self.chain_operands(left, out);
+                self.chain_operands(right, out);
+            }
+            _ => out.push(node),
+        }
+    }
+
+    /// Whether `node`, an assignment in `(( ))`, gives `GLOBIGNORE` a value
+    /// at any place of a chain: `GLOBIGNORE = 1`, `x = GLOBIGNORE = 1`. Every
+    /// operand but the last is assigned to; the last is the value.
+    fn assigns_in_chain(&self, node: Node<'_>) -> bool {
+        let mut operands = Vec::new();
+        self.chain_operands(node, &mut operands);
+        operands.split_last().is_some_and(|(_, targets)| {
+            targets
+                .iter()
+                .any(|target| unit::text(target, self.source).trim() == dotglob::GLOBIGNORE)
+        })
+    }
+
     /// Whether `node` or anything in it assigns `GLOBIGNORE` with a `${…}`:
     /// the shell expands the words of a command before it expands the
     /// command's own wildcards, so `rm -rf ${GLOBIGNORE:=x}*git` has it set
@@ -502,11 +542,7 @@ impl Walker<'_> {
                 let assigns = operator.is_some_and(|operator| {
                     operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
                 });
-                let left = node.child_by_field_name("left");
-                if assigns
-                    && left
-                        .is_some_and(|left| unit::text(&left, self.source) == dotglob::GLOBIGNORE)
-                {
+                if assigns && self.assigns_in_chain(node) {
                     self.split.hide();
                 }
                 self.children(node, stage, level);
@@ -825,7 +861,7 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.startup = startup;
         launch::add(self.split, unit, self.depth);
-        self.split.qualify(before);
+        self.split.restore_qualified(before);
         self.split.unscope_hidden(outer);
     }
 
@@ -1144,7 +1180,7 @@ impl Walker<'_> {
         if writes {
             self.split.write(Shell::Posix, target);
         }
-        self.split.qualify(before);
+        self.split.restore_qualified(before);
     }
 
     /// An argument's value, where its spelling gives it.

@@ -708,8 +708,21 @@ impl Split {
 
     /// Say the command being added has a word with a `(D)` glob qualifier,
     /// and say what it was, for the caller to put back after the command.
+    ///
+    /// A command that is read while another is being added (the words of
+    /// `eval`, `watch` or `trap` turned into a script) keeps the outer one's
+    /// qualifier: the shell expands the pattern, with the qualifier, before
+    /// it hands what it matched on, so a script that is made of those names
+    /// reads them as hidden ones too.
     pub(crate) fn qualify(&mut self, on: bool) -> bool {
-        std::mem::replace(&mut self.qualified, on)
+        let before = self.qualified;
+        self.qualified = on || before;
+        before
+    }
+
+    /// Put back what [`Self::qualify`] said, once the command is added.
+    pub(crate) fn restore_qualified(&mut self, before: bool) {
+        self.qualified = before;
     }
 
     /// Whether the command being added hands the option to a shell it

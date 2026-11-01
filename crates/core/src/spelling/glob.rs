@@ -266,7 +266,72 @@ enum Token {
         negated: bool,
         /// Inclusive ranges; a single character is a range of one.
         ranges: Vec<(char, char)>,
+        /// POSIX classes written as `[:alpha:]` inside the brackets.
+        named: Vec<Named>,
     },
+}
+
+/// A POSIX character class, `[:alpha:]` inside a bracket expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    Alpha,
+    Digit,
+    Alnum,
+    Upper,
+    Lower,
+    Punct,
+    Space,
+    Blank,
+    Cntrl,
+    Print,
+    Graph,
+    Xdigit,
+}
+
+impl Named {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "alpha" => Self::Alpha,
+            "digit" => Self::Digit,
+            "alnum" => Self::Alnum,
+            "upper" => Self::Upper,
+            "lower" => Self::Lower,
+            "punct" => Self::Punct,
+            "space" => Self::Space,
+            "blank" => Self::Blank,
+            "cntrl" => Self::Cntrl,
+            "print" => Self::Print,
+            "graph" => Self::Graph,
+            "xdigit" => Self::Xdigit,
+            _ => return None,
+        })
+    }
+
+    /// Whether `c` is in the class. A character outside ASCII is read by
+    /// what Unicode says, which a locale may read more widely: names in a
+    /// protected folder are ASCII, so that is the side that matters.
+    fn holds(self, c: char) -> bool {
+        match self {
+            Self::Alpha => c.is_alphabetic(),
+            Self::Digit => c.is_ascii_digit(),
+            Self::Alnum => c.is_alphanumeric(),
+            Self::Upper => c.is_uppercase(),
+            Self::Lower => c.is_lowercase(),
+            Self::Punct => {
+                if c.is_ascii() {
+                    c.is_ascii_punctuation()
+                } else {
+                    !c.is_alphanumeric() && !c.is_whitespace() && !c.is_control()
+                }
+            }
+            Self::Space => c.is_whitespace(),
+            Self::Blank => matches!(c, ' ' | '\t'),
+            Self::Cntrl => c.is_control(),
+            Self::Print => !c.is_control(),
+            Self::Graph => !c.is_control() && !c.is_whitespace(),
+            Self::Xdigit => c.is_ascii_hexdigit(),
+        }
+    }
 }
 
 /// `c` in the cases a Windows name compares by: its first lower and upper
@@ -294,7 +359,11 @@ impl Token {
             Self::Star => false,
             Self::Any => true,
             Self::Literal(literal) => same(*literal),
-            Self::Class { negated, ranges } => {
+            Self::Class {
+                negated,
+                ranges,
+                named,
+            } => {
                 let within = |c: char, low: char, high: char| low <= c && c <= high;
                 let inside = ranges.iter().any(|&(low, high)| {
                     within(c, low, high)
@@ -303,7 +372,7 @@ impl Token {
                                 || within(upper, low, high)
                                 // A lone member compares like a literal.
                                 || (low == high && same(low))))
-                });
+                }) || named.iter().any(|class| class.holds(c));
                 inside != *negated
             }
         }
@@ -351,29 +420,86 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
 /// The class that starts just after a `[`, and how many characters it takes
 /// up to its `]`; `None` when no `]` closes it. On Windows `!` and `^` first
 /// in it are members, and a backtick makes the next character a member.
+///
+/// On POSIX `[:alpha:]` inside the brackets is a class of its own, and
+/// `[=a=]` and `[.a.]` are an equivalence class and a collating symbol. The
+/// first is read; the others, an unknown class name, and a range that starts
+/// or ends on one are not read exactly, so the bracket takes any character.
 fn class(chars: &[char], windows: bool) -> Option<(Token, usize)> {
     let negated = !windows && matches!(chars.first(), Some('!' | '^'));
     let mut at = usize::from(negated);
     let mut ranges = Vec::new();
+    let mut named = Vec::new();
+    let mut any = false;
     let mut first = true;
     loop {
+        let here = at;
         let mut low = *chars.get(at)?;
         at += 1;
         if low == ']' && !first {
-            return Some((Token::Class { negated, ranges }, at));
+            let token = if any {
+                Token::Any
+            } else {
+                Token::Class {
+                    negated,
+                    ranges,
+                    named,
+                }
+            };
+            return Some((token, at));
         }
         if windows && low == '`' {
             low = *chars.get(at)?;
             at += 1;
         }
         first = false;
+        if !windows {
+            if let Some((kind, inner, end)) = element(chars, here) {
+                let name: String = inner.iter().collect();
+                match (kind, Named::from_name(&name)) {
+                    (':', Some(class)) => named.push(class),
+                    _ => any = true,
+                }
+                at = end;
+                // A range that starts on it is not read.
+                if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|c| *c != ']') {
+                    any = true;
+                }
+                continue;
+            }
+        }
         if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|next| *next != ']') {
+            // A range that ends on one is not read either.
+            if !windows {
+                if let Some((_, _, end)) = element(chars, at + 1) {
+                    any = true;
+                    at = end;
+                    continue;
+                }
+            }
             ranges.push((low, chars[at + 1]));
             at += 2;
         } else {
             ranges.push((low, low));
         }
     }
+}
+
+/// The POSIX bracket element that starts at `at`, if one does: `[:alpha:]`,
+/// `[=a=]` or `[.a.]`. Its kind (`:`, `=` or `.`), what it holds, and where
+/// it ends, just after its `]`. What it holds has no bracket in it, so `[:[:]`
+/// is no element and its `]` stays the class's own.
+fn element(chars: &[char], at: usize) -> Option<(char, &[char], usize)> {
+    if chars.get(at) != Some(&'[') {
+        return None;
+    }
+    let kind = *chars.get(at + 1).filter(|c| matches!(c, ':' | '=' | '.'))?;
+    let start = at + 2;
+    // A name is short; looking only that far keeps a long run of `[:` linear.
+    let limit = (start + 16).min(chars.len().saturating_sub(1));
+    let close = (start..limit).find(|&j| chars[j] == kind && chars[j + 1] == ']')?;
+    let inner = &chars[start..close];
+    (!inner.iter().any(|c| matches!(c, '[' | ']'))).then_some((kind, inner, close + 2))
 }
 
 /// What a wildcard pattern matches inside the folder before it.
@@ -567,6 +693,55 @@ mod tests {
         assert!(matches("a[", "a[", posix, false));
         assert!(!matches("[a", "a", posix, false));
         assert!(matches("[!", "[!", posix, false));
+    }
+
+    #[test]
+    fn posix_classes_inside_a_bracket() {
+        let posix = Flavour::Posix;
+        assert!(matches("[[:alpha:]]x", "bx", posix, false));
+        assert!(!matches("[[:alpha:]]x", "1x", posix, false));
+        assert!(matches("[[:digit:]]x", "1x", posix, false));
+        assert!(matches("[[:punct:]]git", ".git", posix, true));
+        assert!(!matches("[[:punct:]]git", ".git", posix, false));
+        assert!(matches("[.[:alpha:]]git", ".git", posix, true));
+        assert!(matches("*[[:alpha:]]it", ".git", posix, true));
+        assert!(matches("?[[:alpha:]]it", ".git", posix, true));
+        assert!(matches("[[:punct:][:alpha:]]x", "_x", posix, false));
+        assert!(matches("[[:blank:]]x", "\tx", posix, false));
+        assert!(matches("[[:xdigit:]]x", "fx", posix, false));
+        assert!(!matches("[[:xdigit:]]x", "gx", posix, false));
+        // Negated, and with a range or a literal beside the class.
+        assert!(matches("[![:alpha:]]x", "1x", posix, false));
+        assert!(!matches("[![:alpha:]]x", "bx", posix, false));
+        assert!(matches("[^[:digit:]]x", "bx", posix, false));
+        assert!(matches("[a-c[:digit:]]x", "5x", posix, false));
+        assert!(!matches("[a-c[:digit:]]x", "dx", posix, false));
+        // Not read exactly: any character, whether negated or not.
+        assert!(matches("[[:nosuch:]]x", "?x", posix, false));
+        assert!(matches("[![:nosuch:]]x", "bx", posix, false));
+        assert!(matches("[[=a=]]x", "qx", posix, false));
+        assert!(matches("[[.ab.]]x", "qx", posix, false));
+        assert!(matches("[a-[.z.]]x", "qx", posix, false));
+        assert!(matches("[[:alpha:]-z]x", "1x", posix, false));
+        // Without the closing `:]` the `[` is a member of the class.
+        assert!(matches("[[:alpha]x", ":x", posix, false));
+        assert!(matches("[[:alpha]x", "ax", posix, false));
+        assert!(!matches("[[:alpha]x", "bx", posix, false));
+        // PowerShell reads no such class: the brackets close at the first `]`.
+        assert!(!matches("[[:alpha:]]x", "bx", Flavour::Windows, true));
+    }
+
+    #[test]
+    fn a_long_run_of_posix_class_openers_is_read() {
+        let pattern = "[:".repeat(40_000);
+        let closed = format!("[{pattern}]");
+        for flavour in [Flavour::Posix, Flavour::Windows] {
+            assert!(!matches(&closed, ".git", flavour, true));
+        }
+        let equals = format!("[{}]", "[=".repeat(40_000));
+        assert!(!matches(&equals, ".git", Flavour::Posix, true));
+        let dots = format!("[{}]", "[.".repeat(40_000));
+        assert!(!matches(&dots, ".git", Flavour::Posix, true));
     }
 
     #[test]

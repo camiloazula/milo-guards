@@ -468,7 +468,8 @@ folder a `cd` moved to.
   line of its own, after `export`, `declare`, `typeset`, `local` or `readonly`
   (quoted too: `export "GLOBIGNORE=x"`), with `+=`, as `let GLOBIGNORE=1` or
   `(( GLOBIGNORE=1 ))`, `(( GLOBIGNORE++ ))` (also `--` and in front, and
-  `+=` and the like), `let` reading its words as `(( ))` does (`let
+  `+=` and the like), `(( x = GLOBIGNORE = 1 ))` (anywhere in a chain of
+  assignments, however the parse nests it), `let` reading its words as `(( ))` does (`let
   GLOBIGNORE++`, `let ++GLOBIGNORE`, `let GLOBIGNORE+=1`, `let
   "GLOBIGNORE+=1"`, in any comma-separated part or value of a word), as
   `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or by an
@@ -491,7 +492,10 @@ folder a `cd` moved to.
   had one is judged with hidden names matching, and so is a redirect target
   that had one, a `for` list (the loop's body), and, through a listing, the
   command it feeds. It is the command's alone: `rm -rf *.o(D); rm -rf *git`
-  is still safe. A word is read as having one when a `(…)` ends it (the next
+  is still safe. A command that turns its words into a script (`eval rm -rf
+  *git(D)`, `watch rm -rf *git(D)`, `trap rm\ -rf\ *git(D) EXIT`) keeps it for
+  the commands that script holds: the shell expanded the pattern first, so the
+  `rm` inside is handed `.git`. A word is read as having one when a `(…)` ends it (the next
   character is a space, `;`, `&`, `|`, `<`, `>` or `)`), the character in
   front is not what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(`, `@(` or `!(`, the
   `(` is not inside quotes, and what is inside holds `D` and nothing but

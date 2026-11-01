@@ -407,7 +407,12 @@ itself.
   `.git`) and a backtick making the next character itself, and compares
   names without case by the Unicode case of each character, class members
   included (a dotless `i`
-  counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts. Its
+  counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts, and a
+  class holds POSIX classes: `[[:alpha:]]`, `[[:punct:]]` and the rest are
+  read (`[[:punct:]]git` and `[.[:alpha:]]git` match `.git` with `hidden`).
+  An unknown class name, `[=a=]`, `[.a.]`, and a range that starts or ends on
+  one are not read exactly, so that bracket takes any character, a leading dot
+  included (a pattern that reads wider is a risk, never a false safe). Its
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
   sets it on `Windows`, and on `Posix` when the caller passes it to
   `place_hidden`.
