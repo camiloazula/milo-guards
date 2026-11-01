@@ -964,3 +964,24 @@ fn the_reason_for_an_unknown_command_reads_right() {
         assert_eq!(findings[0].reason, expected, "{line}");
     }
 }
+
+#[test]
+fn a_package_runner_runs_the_infrastructure_cli() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "npx cdk diff",
+            "pnpm dlx cdk synth",
+            "heroku config:set $(cat .env)",
+        ],
+        &[
+            ("npx cdk destroy", DESTROY),
+            ("pnpm dlx cdk destroy", DESTROY),
+            ("bunx cdk destroy", DESTROY),
+            ("npm exec -- cdk destroy", DESTROY),
+            ("npx wrangler delete", DESTROY),
+            ("npx sst remove", DESTROY),
+        ],
+    );
+}

@@ -903,6 +903,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        repeated: false,
         depth: unit.depth,
     }
 }

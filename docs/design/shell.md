@@ -1350,10 +1350,11 @@ $vm`, `get-`, `add-`, `create-`, `update-`, `set-` and `list-` verbs, `put`,
 `submit`, `access`, `use`, `link`, `cp`, `mv`, `rsync`, `upload`, `download`,
 `publish`, `connect`, `activate`, `build`, `pull`, `promote`, `redeploy`,
 `tail`, `dev`, `execute`, `authenticate`, `invoke`) is that verb's operand, so
-it stays safe. A word that is a group in a CLI that reads it (`gcloud run`,
-`gcloud projects`) is not one of them: the word after it is still a verb. So is the word after a
-`topic:command` of heroku (`heroku config:set $(cat .env)`), and a word that
-is an assignment (`FOO=$BAR`) is never read as a verb. The options of each CLI that take a value are
+it stays safe. So is the word after a heroku `topic:command`, which is a leaf
+verb too (`heroku config:set $(cat .env)` is safe). A word that is a group in
+a CLI that reads it (`gcloud run`, `gcloud projects`) is not one of them: the
+word after it is still a verb. A word that is an assignment (`FOO=$BAR`) is
+never read as a verb. The options of each CLI that take a value are
 listed, and a boolean flag is never in a list: a flag listed by mistake eats
 the command word after it (`cdk --json destroy`).
 
