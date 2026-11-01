@@ -15,11 +15,13 @@ use crate::{Finding, Rule, Shell};
 
 mod archives;
 mod code;
+mod data;
 mod files;
 mod processes;
 mod regex;
 mod secrets;
 mod send;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -73,6 +75,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        stages: HashMap::new(),
+        scans_keys: None,
+        data: data::Cache::default(),
         lengths: HashMap::new(),
         pipelines: HashMap::new(),
         flow: send::Flow::default(),
@@ -95,6 +100,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
         }
@@ -150,6 +160,14 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Every unit at each pipeline stage, by its index in the split: a stage
+    /// can be a group of several.
+    stages: HashMap<(usize, usize), Vec<usize>>,
+    /// Whether the line lists keys in Redis, once worked out: every
+    /// `redis-cli del` that is given keys asks, and the answer is the line's.
+    scans_keys: Option<bool>,
+    /// What the line says to its database clients, read once for each stage.
+    data: data::Cache,
     /// The number of stages of each pipeline.
     lengths: HashMap<usize, usize>,
     /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
@@ -189,7 +207,9 @@ impl Checker<'_> {
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.send(at, unit, &key);
+        self.data(at, unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -257,10 +277,16 @@ impl Checker<'_> {
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        self.delete_matching(unit, targets, verb, false);
+    }
+
+    /// [`Checker::delete`], where `hidden` says the program matches the
+    /// wildcards itself, with names that start with a dot among them.
+    fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
-                hidden: unit.hidden || listed_hidden,
+                hidden: unit.hidden || listed_hidden || hidden,
                 ..unit.scope()
             };
             for arg in found {
@@ -441,7 +467,8 @@ impl Checker<'_> {
         self.write_to(shell, scope, target, verb, "a file", access);
     }
 
-    /// A write to `target`, which is a `what` in the words of a reason.
+    /// A write to `target`, which is a `what` in the words of a reason, by
+    /// how it reaches it (see [`Access`]).
     fn write_to(
         &mut self,
         shell: Shell,
@@ -451,6 +478,7 @@ impl Checker<'_> {
         what: &str,
         access: Access,
     ) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}

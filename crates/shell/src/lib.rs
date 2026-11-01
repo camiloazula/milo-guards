@@ -142,6 +142,8 @@ pub enum Rule {
     StopSystem,
     /// Sends a key, a credential or the environment off the machine.
     SendSecret,
+    /// Deletes data in a database.
+    DropData,
     /// Runs a program or a script known only when it runs.
     Unknown,
     /// The line, or part of it, cannot be read.
@@ -150,7 +152,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -165,6 +167,7 @@ impl Rule {
         Self::RunInput,
         Self::StopSystem,
         Self::SendSecret,
+        Self::DropData,
         Self::Unknown,
         Self::Unreadable,
     ];
@@ -189,6 +192,7 @@ impl Rule {
             Self::RunInput => "run_input",
             Self::StopSystem => "stop_system",
             Self::SendSecret => "send_secret",
+            Self::DropData => "drop_data",
             Self::Unknown => "unknown",
             Self::Unreadable => "unreadable",
         }

@@ -135,6 +135,10 @@ fn took(line: &str, shell: Shell) -> std::time::Duration {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_run_of_variables_in_a_word_is_quoted_in_linear_time() {
     // Each `$` after a `:` is where a word can start; the run it is in goes
     // on to a `(` that ends it badly, and must be read once. A `${` with a
@@ -152,6 +156,10 @@ fn a_long_run_of_variables_in_a_word_is_quoted_in_linear_time() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_line_that_can_send_nothing_is_read_quickly() {
     // With no program that sends anything, no secret is followed.
     let echo = "echo a; ".repeat(8_000);
