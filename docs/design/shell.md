@@ -388,10 +388,12 @@ unknown too. Quotes alone leave the drive alone, as a quoted path to a program
 is a plain word; they count only when they make a `cd` or a drive of the name.
 
 A program that starts another in a folder runs it there: cmd's `start /d
-FOLDER` (also `/dFOLDER`), `powershell` and `pwsh` with `-WorkingDirectory` or
-`-wd`, and `Start-Process -WorkingDirectory`. What it starts, and the scripts
-that run, are read from that folder, and the line is put back where it was
-after. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
+FOLDER` (also `/dFOLDER`), `pwsh` with `-WorkingDirectory` or `-wd`, and
+`Start-Process -WorkingDirectory`. What it starts, and the scripts that run, are
+read from that folder, and the line is put back where it was after. Windows
+PowerShell (`powershell`) has no `-WorkingDirectory`: it reads the first
+parameter it does not know as the start of the command text, so what follows
+runs in the line's own folder. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
 is only known when it runs is somewhere unknown, so after `cd C:\Windows` from
 `D:` (which sets the working directory of `C:` and leaves the line on `D:`),
 `start /d C: cmd /c rd /s /q System32` deletes under `C:\Windows`, and is

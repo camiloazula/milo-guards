@@ -101,9 +101,9 @@ fn add_launched(
 fn started_in(unit: &Unit, key: &str) -> Option<(Arg, Shell)> {
     match key {
         "start" if unit.shell == Shell::Cmd => start_folder(&unit.args).map(|f| (f, Shell::Cmd)),
-        "powershell" | "pwsh" => {
-            powershell_folder(&unit.args).map(|folder| (folder, Shell::PowerShell))
-        }
+        // Only `pwsh` has `-WorkingDirectory`: Windows PowerShell reads an
+        // unknown parameter as the start of the command text.
+        "pwsh" => powershell_folder(&unit.args).map(|folder| (folder, Shell::PowerShell)),
         "start-process" if unit.shell == Shell::PowerShell => {
             let params = Params::read(&unit.args);
             let folder = params.values(&["workingdirectory"]).last().copied()?;
@@ -603,7 +603,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             interpreter(key, args)
         }
         "cmd" => cmd(args),
-        "powershell" | "pwsh" => powershell(args),
+        "powershell" | "pwsh" => powershell(args, key == "pwsh"),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
             Launch::Downloaded
         }

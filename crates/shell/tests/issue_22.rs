@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::check;
+use common::{check, windows};
 use milo_guards_shell::{Paths, Rule, Shell};
 
 /// A machine whose working directory is on `C:` and whose workspaces are on
@@ -527,12 +527,18 @@ fn a_started_powershell_runs_in_the_folder_its_working_directory_names() {
     let risky = deletes(&[
         r#"cd C:\Windows & pwsh -wd C: -c "Remove-Item System32 -Recurse""#,
         r#"cd C:\Windows & pwsh -WorkingDirectory C: -c "Remove-Item System32 -Recurse""#,
-        r#"cd C:\Windows & powershell -wd C: -c "Remove-Item System32 -Recurse""#,
         r#"cd C:\Windows & pwsh -wor C: -c "Remove-Item System32 -Recurse""#,
         r#"cd C:\Windows & pwsh -NoProfile -wd C: -c "Remove-Item System32 -Recurse""#,
         r#"pwsh -wd %X% -c "Remove-Item System32 -Recurse""#,
     ]);
-    check(Shell::Cmd, &d_repo(), &[], &risky);
+    // Windows PowerShell has no `-wd`: `C:` starts the command text, the
+    // line stays in `D:\ws\repo`, and nothing is deleted outside it.
+    check(
+        Shell::Cmd,
+        &d_repo(),
+        &[r#"cd C:\Windows & powershell -wd C: -c "Remove-Item System32 -Recurse""#],
+        &risky,
+    );
     check(
         Shell::PowerShell,
         &d_repo(),
@@ -547,4 +553,28 @@ fn a_started_powershell_runs_in_the_folder_its_working_directory_names() {
             r"Start-Process cmd -WorkingDirectory C: -ArgumentList '/c rd /s /q System32'",
         ]),
     );
+}
+
+/// Windows PowerShell (`powershell`, version 5.1) has no `-WorkingDirectory`:
+/// it reads the first parameter it does not know as the start of the command
+/// text, so the statements after it run in the line's own folder. Only `pwsh`
+/// runs them in the folder it is given.
+#[test]
+fn windows_powershell_has_no_working_directory_parameter() {
+    let risky = deletes(&[
+        r#"powershell -wd C:\Users\me\dev\repo\a\b -c "Get-Date; Remove-Item -Recurse ..\..\x""#,
+        r#"powershell -WorkingDirectory C:\Users\me\dev\repo\a\b -Command "Get-Date; Remove-Item -Recurse ..\..\x""#,
+        r#"powershell.exe -wd C:\Users\me\dev\repo\a\b -c "ls; Remove-Item -Recurse ..\..\x""#,
+        r#"powershell -wo C:\Users\me\dev\repo\a\b -c "Get-Date; Remove-Item -Recurse ..\..\x""#,
+        r#"powershell -NoProfile -wd C:\Users\me\dev\repo\a\b -c "Get-Date; Remove-Item -Recurse ..\..\x""#,
+    ]);
+    check(Shell::PowerShell, &windows(), &[], &risky);
+    check(Shell::Cmd, &windows(), &[], &risky);
+    // `pwsh` runs the statements in the folder it is given.
+    let safe = [
+        r#"pwsh -wd C:\Users\me\dev\repo\a\b -c "Get-Date; Remove-Item -Recurse ..\..\x""#,
+        r#"pwsh -WorkingDirectory C:\Users\me\dev\repo\a\b -Command "Get-Date; Remove-Item -Recurse ..\..\x""#,
+    ];
+    check(Shell::PowerShell, &windows(), &safe, &[]);
+    check(Shell::Cmd, &windows(), &safe, &[]);
 }

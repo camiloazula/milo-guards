@@ -211,20 +211,21 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
 /// argument that is not a parameter) runs the rest; `-EncodedCommand` runs
 /// what cannot be read; `-File` runs a script file; with none of them it
 /// reads commands from its input.
-pub(super) fn powershell(args: &[Arg]) -> Launch {
-    powershell_in(args, &mut None)
+pub(super) fn powershell(args: &[Arg], pwsh: bool) -> Launch {
+    powershell_in(args, pwsh, &mut None)
 }
 
-/// The folder `-WorkingDirectory` (`-wd`) gives `powershell` or `pwsh` to
-/// run in, when it names one.
+/// The folder `-WorkingDirectory` (`-wd`) gives `pwsh` to run in, when it
+/// names one. Windows PowerShell has no such parameter: it reads the first
+/// one it does not know as the start of the command text.
 pub(super) fn powershell_folder(args: &[Arg]) -> Option<Arg> {
     let mut folder = None;
-    powershell_in(args, &mut folder);
+    powershell_in(args, true, &mut folder);
     folder
 }
 
 /// [`powershell`], and the folder it is told to run in put in `folder`.
-fn powershell_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
+fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
@@ -273,7 +274,8 @@ fn powershell_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
                 Some(Arg::Known(_)) | None => Launch::Itself,
                 Some(script) => Launch::Script(Shell::PowerShell, script.clone()),
             };
-        } else if name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name))
+        } else if pwsh
+            && (name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name)))
         {
             *folder = args.get(at + 1).cloned();
             at += 2;
