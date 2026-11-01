@@ -648,8 +648,9 @@ when it runs, is `Unknown`.
   the device namespace), which offers the user's credentials to the server. A
   long path or device that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) is
   not a share. Repeated separators and `.` parts are folded as Windows folds
-  them (`\\.\\UNC\host\share`), and a path with `..` in its root counts. A
-  `<` redirect is read in cmd too, with a handle in front (`0<`).
+  them (`\\.\\UNC\host\share`), and a path with `..` in its root counts. Core
+  reads that spelling (`spelling::network`), the file guard's `network_share`
+  too. A `<` redirect is read in cmd too, with a handle in front (`0<`).
 - Not read, so the caller has to account for them: an alias or function
   defined outside the line, the `PATH` the shell runs with, and an option set
   by a start-up file. A name in the table is taken to be the program that

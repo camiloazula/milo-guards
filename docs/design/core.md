@@ -83,7 +83,7 @@ does touching it mean? The answer is a **`Place`**.
 | `Workspace { exact }` | A workspace folder itself, or a folder holding one. |
 | `Home { exact }` | The home directory itself, or a folder holding it. |
 | `Top(words)` | The root of a disk, a system folder, or a top-level folder. |
-| `Sensitive(words)` | Keys, credentials, shell startup files, the repository's history. |
+| `Sensitive(words, kind)` | Keys, credentials, shell startup files, the repository's history; `kind` is a `Sensitivity`. |
 | `Protected(words)` | A path the caller named in `Paths::protected`, in the caller's words. |
 | `Disk` | A disk device. |
 | `Registry` | The Windows registry. |
@@ -98,7 +98,22 @@ the words of a reason, so a rule can say `deletes {words}`.
 `Place` is `#[non_exhaustive]`: a place may be added, so a `match` on it needs
 a fallback arm. A fallback should treat the new place as not harmless.
 
-`Resolver::new(&Paths)` builds a resolver. `place(path, flavour)` says where a
+**`Sensitivity`** says what touching a `Sensitive` place means, so a guard can
+tell reading a key from reading a startup file without matching on the words:
+
+| Kind | What it is | A read | A write |
+| --- | --- | --- | --- |
+| `Secret` | A key or a credential: SSH, GPG, cloud and registry logins, keychains, the system's password hashes and host keys. | Exposes it. | Replaces it. |
+| `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login. | Harmless. | Plants a command. |
+| `History` | The repository's history: a workspace's own `.git`. | The agent's everyday work. | Loses work. |
+
+`Sensitivity` is exhaustive, unlike `Place`: what a read of each kind means is
+a guard's policy, so a kind added later must break each guard's `match` at
+compile time instead of falling into a fallback arm that reads it as harmless.
+
+`Resolver::new(&Paths)` builds a resolver. `flavour()` says how paths are
+spelled on the machine `Paths` describes: `Windows` when the home directory is
+a Windows path (a drive, a share), `Posix` otherwise. `place(path, flavour)` says where a
 path lands. `key(path, flavour)` gives a string that is the same for two
 spellings of one file, which a guard uses to notice a script that a line both
 writes and runs. It is `None` when the path is not one definite file: a device
@@ -130,11 +145,45 @@ itself.
 - `.` and `..` are applied. A `..` at the top is dropped.
 - A path is compared with the directories in `Paths`: the home directory, the
   workspaces, the temporary folders, the system folders, and a list of
-  sensitive places under the home directory (SSH keys, cloud credentials,
-  shell startup files, keychains, the PowerShell profile). A workspace's own
-  `.git` is sensitive.
+  sensitive places. The list is of places known to hold something, not a
+  proof that nowhere else does:
+  - under the home directory, with a `Sensitivity` each: keys and credentials
+    (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.netrc`,
+    `.git-credentials`, `.npmrc`, `.pypirc`, `.vault-token`, `.oci`,
+    `.password-store`, `.config/gh`, `.config/gcloud`, `.cargo/credentials*`,
+    keyrings, macOS keychains, Windows saved logins and encryption keys) are
+    `Secret`; shell startup files, `.gitconfig`, fish's config, the
+    PowerShell profile, `Library/LaunchAgents`, `.config/autostart` and the
+    Windows Startup folder are `Startup`;
+  - the same places in any other user's home directory (the folders beside
+    this one: `/home/other`, `/Users/other`, `C:\Users\other`) and in the root
+    user's (`/root`, `/var/root`);
+  - the system's own secrets, as `Secret`: `/etc/shadow` and its kin, the
+    host SSH keys, private TLS keys, WireGuard and Kerberos keys, saved
+    network passwords, the macOS keychains and password database (under
+    `/private` too), and on Windows the account database in
+    `System32\config`, the DPAPI keys and `ProgramData\ssh`.
+
+  A workspace's own `.git` is `History`.
+  - **A workspace that holds a sensitive place does not make it the agent's.**
+    When the home directory is the workspace (or a folder above it, or
+    another user's home), `.ssh/id_rsa` is `Secret` and `.git` stays
+    `History`; only a workspace inside a sensitive folder
+    (`~/.docker/proj`) keeps its own paths `Inside`. A sensitive place is
+    also judged before a temporary folder.
 - Windows paths compare without case. POSIX paths compare with it, except
-  protected paths, which compare without case on every host.
+  the home directory, the sensitive places and protected paths, which compare
+  without case on every host: a macOS file system ignores it, and a name that
+  differs only by case is the same folder there. Case is the Unicode simple
+  fold of each character, as NTFS and APFS read it, so the long s `ſ` is an
+  `s` and the Kelvin sign `K` a `k` (`.ſsh` is `.ssh`). The workspace and the
+  temporary folders still compare as spelled on POSIX, so a path in them by
+  another case is judged outside, never inside.
+- A name is also its Windows 8.3 short name, in the home directory and the
+  sensitive places as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
+  is `C:\Users\Camilo Azula\.ssh\id_rsa`. A POSIX name has no short form.
+- On POSIX `/System/Volumes/Data/...` is `/...`: macOS mounts its data volume
+  there as well, so the three parts are dropped when something follows them.
 - A protected path, and anything under it, is `Protected`. **Protected wins over
   the workspace**, and over a temporary folder: a protected file inside a
   workspace folder is `Protected`, not `Inside`, because the caller named it on
@@ -229,7 +278,13 @@ itself.
       (`x.txt:stream`, `.git::$INDEX_ALLOCATION`). The drive (`C:`), the share
       and the devices (`NUL:`) are read first; a shell's own provider prefix
       (`HKLM:`) is the shell's, read before the path reaches core. One letter
-      and a colon (`x:stream`) is a drive, as Windows reads it;
+      and a colon is a drive, as Windows reads it;
+    - is on a drive's own working directory, on a drive other than the
+      working directory's (`D:x`, `D:`: a letter, a colon and no separator).
+      Which folder that is depends on the process. On the drive the working
+      directory is on it is relative to it (`C:..\..\.ssh` from
+      `C:\Users\me\dev\repo` is the home directory's `.ssh`), and `C:\x` with
+      its separator is the drive's root;
     - is nothing but dots and spaces, and not exactly `.` or `..`
       (`...`, `. `, `.. `), wherever it is;
     - is before the last and still ends in a dot or a space once its one
@@ -282,6 +337,13 @@ itself.
   On `Windows`, `*.*` as a last part is a catch-all like `*`. That is cmd's
   meaning; in PowerShell it needs a dot in the name, so taking it as every
   entry is the wider reading.
+- A Windows **long path** is the drive or the share it names: `\\?\C:\x` is
+  `C:\x`, and `\\?\UNC\server\share\x` is `\\server\share\x`, with either
+  separator (`//?/C:/x`) and any case. A long path that names neither
+  (`\\?\GLOBALROOT\...`, `\\?\Volume{...}\...`, `\\?\C:x`) is in a namespace
+  of its own, a `Disk`, like everything below `\\.\`. The folders in `Paths` may be
+  spelled as long paths too (a canonical path on Windows is): the prefix is
+  read the same way.
 - Devices are told by their spelling. On POSIX the path's `.` and `..` are
   applied first, then the name must be exactly one of `/dev/null`,
   `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`, `/dev/random`,
@@ -321,6 +383,11 @@ guard keeps these:
 - `listed`, which says what a listing hands on to the next command: a pattern
   as written, so it is judged as a delete of it would be.
 
+The file guard keeps less: a file API takes one literal path, so it answers
+`Unreadable` for a wildcard, a variable and `~user` itself, and hands core
+`Home` for a `~` at the start (and the literal reading of the same text as
+well).
+
 The seam is the text of a path. Above it is everything the input's syntax
 decides. Below it is only how a path is spelled on a system.
 
@@ -331,7 +398,10 @@ resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
 (`has_wildcard`, `matches`, `reaches_git`, and `shape` with its `Shape`, which
-is `#[non_exhaustive]`).
+is `#[non_exhaustive]`), `network` (whether a text names a place on another
+machine: a share, spelled with two separators or as a long path or device path;
+`false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
+separator).
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 
