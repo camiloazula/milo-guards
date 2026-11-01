@@ -14,10 +14,16 @@ use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
+mod archives;
 mod code;
+mod data;
 mod files;
+mod processes;
+mod regex;
+mod resources;
 mod secrets;
 mod send;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -34,7 +40,7 @@ const ELEVATORS: [&str; 8] = [
 
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
-const DOWNLOADERS: [&str; 10] = [
+pub(crate) const DOWNLOADERS: [&str; 10] = [
     "curl",
     "wget",
     "fetch",
@@ -71,6 +77,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        stages: HashMap::new(),
+        scans_keys: None,
+        data: data::Cache::default(),
+        lengths: HashMap::new(),
+        pipelines: HashMap::new(),
         flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
@@ -91,6 +102,13 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
+            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
+            *length = (*length).max(stage.index + 1);
         }
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -144,6 +162,19 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Every unit at each pipeline stage, by its index in the split: a stage
+    /// can be a group of several.
+    stages: HashMap<(usize, usize), Vec<usize>>,
+    /// Whether the line lists keys in Redis, once worked out: every
+    /// `redis-cli del` that is given keys asks, and the answer is the line's.
+    scans_keys: Option<bool>,
+    /// What the line says to its database clients, read once for each stage.
+    data: data::Cache,
+    /// The number of stages of each pipeline.
+    lengths: HashMap<usize, usize>,
+    /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
+    /// first asks for it.
+    pipelines: HashMap<usize, Option<std::rc::Rc<processes::Pipeline>>>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
@@ -178,7 +209,10 @@ impl Checker<'_> {
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.send(at, unit, &key);
+        self.data(at, unit, &key);
+        self.resources(unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -249,10 +283,16 @@ impl Checker<'_> {
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        self.delete_matching(unit, targets, verb, false);
+    }
+
+    /// [`Checker::delete`], where `hidden` says the program matches the
+    /// wildcards itself, with names that start with a dot among them.
+    fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
-                hidden: unit.hidden || listed_hidden,
+                hidden: unit.hidden || listed_hidden || hidden,
                 ..unit.scope()
             };
             for arg in found {
@@ -313,12 +353,41 @@ impl Checker<'_> {
     /// `ForEach-Object` block). A positional may be the
     /// rest of a list (`-Path a,b`, `a, b`) or an item that a parameter the
     /// guard reads as a switch (`-n`) or `--` pushed out of the first place,
-    /// so each is judged; a value or a new name that is a place of its own
-    /// (`Set-Item src\a HKLM:\x`) makes the cmdlet fail,
-    /// so judging it costs only commands that do nothing.
-    fn list_items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
+    /// so each is judged. With no path named and no `-Value`, `Set-Item`
+    /// takes its value as the last positional (`value_last`), which is not
+    /// a path unless it is the only one or it names a place whose change
+    /// matters (it may be the end of a list).
+    fn list_items(&self, unit: &Unit, params: &Params<'_>, value_last: bool) -> Vec<Arg> {
         let mut paths = params.values(&["path", "literalpath"]);
-        paths.extend(params.positional.iter().copied());
+        let positional = &params.positional;
+        let value_named = params
+            .named
+            .iter()
+            .any(|(name, _)| "value".starts_with(name.as_str()));
+        let count = if value_last && !value_named && paths.is_empty() && positional.len() > 1 {
+            positional.len() - 1
+        } else {
+            positional.len()
+        };
+        paths.extend(positional.iter().take(count).copied());
+        // The last positional may be the end of a list (`Set-Item a, HKLM:\x`)
+        // as well as the value, so it is judged when it names a place whose
+        // change matters (the registry, a disk, a home, a sensitive file).
+        if count < positional.len() {
+            let last = positional[positional.len() - 1];
+            let place = self.place(unit.shell, unit.scope(), last, Access::Item);
+            if !matches!(
+                place,
+                Place::Inside
+                    | Place::Temp { .. }
+                    | Place::Null
+                    | Place::Workspace { .. }
+                    | Place::Unknown
+                    | Place::Outside
+            ) {
+                paths.push(last);
+            }
+        }
         self.listed_paths(unit, paths)
     }
 
@@ -418,6 +487,11 @@ impl Checker<'_> {
         self.write_as(shell, scope, target, verb, Access::Content);
     }
 
+    /// A write into a folder, as an archive unpacked into it makes.
+    fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        self.write_to(shell, scope, target, verb, "a folder", Access::Content);
+    }
+
     /// A write of `target`, by how it reaches it (see [`Access`]).
     fn write_as(
         &mut self,
@@ -427,6 +501,21 @@ impl Checker<'_> {
         verb: &str,
         access: Access,
     ) {
+        self.write_to(shell, scope, target, verb, "a file", access);
+    }
+
+    /// A write to `target`, which is a `what` in the words of a reason, by
+    /// how it reaches it (see [`Access`]).
+    fn write_to(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        target: &Arg,
+        verb: &str,
+        what: &str,
+        access: Access,
+    ) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
@@ -434,12 +523,12 @@ impl Checker<'_> {
             Place::Registry => self.add(Rule::SystemSettings, "changes the registry", Some(target)),
             Place::Outside => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file outside the workspace"),
+                format!("{verb} {what} outside the workspace"),
                 Some(target),
             ),
             Place::Unknown => self.add(
                 Rule::Overwrite,
-                format!("{verb} a file only known when it runs"),
+                format!("{verb} {what} only known when it runs"),
                 Some(target),
             ),
             place => self.add(

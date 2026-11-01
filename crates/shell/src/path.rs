@@ -50,16 +50,19 @@ enum Start<'a> {
 /// The `name:` a path starts with, and what follows it: a disk's drive
 /// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, a drive made
 /// with `New-PSDrive`: `my_drive:`, `my-drive:`). A PowerShell drive's name
-/// may hold any character but `: / \ . ~` (`x.txt:stream` is a file's
-/// stream, not a drive). Read before anything else, since a wildcard after
-/// it (`HKCU:*`) does not change what it names.
+/// may hold any character but `: / \ . ~` and a wildcard. Read before
+/// anything else, since a wildcard after it (`HKCU:*`) does not change what
+/// it names (`x.txt:stream` is a file's stream, not a drive).
 fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
     if shell == Shell::Posix {
         return None;
     }
     let (name, rest) = text.split_once(':')?;
     let named = if shell == Shell::PowerShell {
-        !name.is_empty() && !name.contains(['/', '\\', '.', '~'])
+        !name.is_empty()
+            && !name.contains(['/', '\\', '.', '~'])
+            && !name.contains(flavour(shell).separators())
+            && !glob::has_wildcard(name)
     } else {
         is_letter(name)
     };
@@ -765,7 +768,7 @@ fn device(text: &str, shell: Shell) -> Option<Place> {
 }
 
 /// Whether `text` holds a brace list: a `{` with a `,` before a later `}`.
-fn brace_list(text: &str) -> bool {
+pub(crate) fn brace_list(text: &str) -> bool {
     match (text.find('{'), text.rfind('}')) {
         (Some(open), Some(close)) if open < close => text[open..close].contains(','),
         _ => false,
