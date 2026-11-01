@@ -24,14 +24,16 @@ pub(crate) fn alone(text: &str, start: usize, end: usize) -> bool {
         && !after(text, end).is_some_and(|c| c.is_ascii_alphanumeric())
 }
 
-/// Whether the last 16 characters of `secret` are varied enough to be
-/// random. A key is random; a placeholder (`xxxxxxxx`, `00000000`,
-/// `abababab`) is not, and writing one in a README is not a leak.
+/// Whether the last 32 characters of `secret` have six different ones at
+/// least. A key is random; a placeholder (`xxxxxxxx`, `00000000`, `abababab`,
+/// after however long a prefix) is not, and writing one in a README is not a
+/// leak. A key that is random in its front and repeats at its end is still a
+/// key.
 pub(crate) fn varied(secret: &str) -> bool {
-    let mut tail: Vec<char> = secret.chars().rev().take(16).collect();
-    tail.sort_unstable();
-    tail.dedup();
-    tail.len() >= 6
+    let mut body: Vec<char> = secret.chars().rev().take(32).collect();
+    body.sort_unstable();
+    body.dedup();
+    body.len() >= 6
 }
 
 /// Whether `value` is no value at all but a stand-in for one: a reference to
@@ -79,7 +81,7 @@ fn is_mask(value: &str) -> bool {
         && (chars.all(|c| c == first)
             || value
                 .chars()
-                .all(|c| matches!(c, '*' | 'x' | 'X' | '.' | '-' | '_' | '#' | '\u{2022}')))
+                .all(|c| matches!(c, '*' | 'x' | 'X' | '.' | '#' | '\u{2022}')))
 }
 
 /// Whether `text[start..end]` is a piece of a longer dotted number
@@ -99,7 +101,7 @@ pub(crate) fn in_longer_number(text: &str, start: usize, end: usize) -> bool {
 }
 
 /// Words a value is when it stands for a missing one, written as a whole
-/// word: the literals of a language and the label of a field.
+/// word: the literals of a language.
 const LITERALS: [&str; 12] = [
     "string",
     "str",
@@ -115,13 +117,14 @@ const LITERALS: [&str; 12] = [
     "masked",
 ];
 
-/// What a stand-in value begins with, with case, `_`, `-` and `.` left out.
-/// A closed list: a word is added with a row in the tests, never to catch a
-/// secret that someone found, which is the other list's job (there is none).
+/// The words a stand-in is written with, with case, `_`, `-` and `.` left
+/// out: a closed list. A stand-in is one of these, alone or with the word the
+/// name ends in, and up to three digits (`example`, `changeme123`,
+/// `dummy_password`, `your_api_key_here`); never one of them followed by
+/// other characters, which is a value that begins with a word.
 const STEMS: [&str; 10] = [
     "changeme",
-    "change-me",
-    "change_me",
+    "replaceme",
     "replace",
     "dummy",
     "placeholder",
@@ -129,6 +132,7 @@ const STEMS: [&str; 10] = [
     "sample",
     "todo",
     "fixme",
+    "your",
 ];
 
 /// `value` with letters lowercased and `_`, `-` and `.` left out: the form
@@ -142,69 +146,128 @@ pub(crate) fn squeezed(value: &str) -> String {
         .collect()
 }
 
-/// Whether `value` has the shape of a stand-in for a value, by shape and not
-/// by a list of words:
-///
-/// - **upper snake case**, the name of a constant (`DEFAULT_TOKEN`,
-///   `REPLACE_ME`);
-/// - **repeated characters**, or too few different ones to be random
-///   (`xxxxxxxx`, `ghp_` and thirty-six `x`);
-/// - **elided**, with `...` or `…` in it (`sk-...`);
-/// - **its own name**, when `name_word` (the word the name ends in:
-///   `password`, `apikey`) is in the value (`api_key=api_key`,
-///   `dummy_password`, `my-secret-2`);
-/// - **a stem** from a closed list that begins a value written to be
-///   replaced (`changeme123`), or a literal (`string`, `null`).
-pub(crate) fn is_placeholder(value: &str, name_word: Option<&str>) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let squeezed = squeezed(value);
-    // A stem begins the value and is a word of its own: `changeme123` and
-    // `replace-with-your-token`, not `Replacement9`.
-    let stem = STEMS.iter().any(|stem| {
-        lower
-            .strip_prefix(stem)
-            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_lowercase()))
-    });
-    // The word the name ends in, and the word before `key` in it.
-    let own = name_word.is_some_and(|word| {
-        let words = [
-            Some(word),
-            word.strip_suffix("key").filter(|w| w.len() >= 5),
-        ];
-        // A short word is in too many passwords: it must be all of it. And a
-        // value with a run of digits is a value.
-        let few_digits = squeezed.bytes().filter(u8::is_ascii_digit).count() <= 3;
-        words.into_iter().flatten().any(|word| {
-            if word.len() >= 5 {
-                squeezed.contains(word) && few_digits
-            } else {
-                squeezed == word
-            }
-        })
-    });
-    is_placeholder_shape(value)
-        || LITERALS.contains(&squeezed.as_str())
-        || stem
-        || own
-        || lower.starts_with("your_")
-        || lower.starts_with("your-")
+/// Where a value was found, for judging whether it is a stand-in.
+pub(crate) struct Standin<'a> {
+    /// The word the name ends in (`password`, `apikey`), if there is a name.
+    pub(crate) word: Option<&'a str>,
+    /// Whether the value was in quotes.
+    pub(crate) quoted: bool,
+    /// Whether it is the password of an address.
+    pub(crate) address: bool,
 }
 
-/// The shapes of a stand-in that need no name: all but its own name, the
-/// literals and the stems.
-pub(crate) fn is_placeholder_shape(value: &str) -> bool {
-    let upper_snake = value.contains('_')
-        && value.starts_with(|c: char| c.is_ascii_uppercase())
-        && value
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-    let few = value.chars().count() >= 16 && !varied(value);
-    // The values AWS's documentation shows end in `EXAMPLE` or `EXAMPLEKEY`.
-    let documented = value.ends_with("EXAMPLE") || value.ends_with("EXAMPLEKEY");
-    upper_snake
-        || few
+/// Whether `value` is a stand-in for a value. **A stand-in is recognised by
+/// the shape of the whole value, never by a prefix or by what it contains**;
+/// anything else is a value, since a password missed costs more than a mask
+/// too many. The shapes:
+///
+/// - **its own name**, all of it: `api_key=api_key`, `password=PASSWORD`,
+///   `token=Token` (case, `_`, `-` and `.` left out on both sides);
+/// - **a literal**: `string`, `null`, `true`, …;
+/// - **a stem** of a closed list, alone or with the name's word, and up to
+///   three digits: `changeme123`, `dummy_password`, `your_api_key_here`;
+/// - **a constant**, unquoted and not in an address: upper snake case, letters
+///   only (a trailing number of one or two digits is allowed): `DEFAULT_TOKEN`,
+///   `REPLACE_ME`. `K7X_93QZ_M2PL` is a value;
+/// - **a mask** (`****`, `xxxxxxxx`), **few characters** repeated
+///   (`abababab`), or **an elision**: a short head that ends in `_` or `-`
+///   (or is a key's capital letters, `AKIA`), and a run of `.`, `…`, `*`, `x`
+///   or `0` to the end: `sk-...`, `ghp_xxxxxxxx`. A visible head and tail
+///   around the dots (`ab...cd9X`) is a value;
+/// - **documented** by AWS: twenty or forty characters that end in `EXAMPLE` or
+///   `EXAMPLEKEY`.
+pub(crate) fn is_placeholder(value: &str, context: &Standin<'_>) -> bool {
+    let squeezed = squeezed(value);
+    // The word the name ends in, and the word before `key` in it.
+    let words = context.word.map(|word| {
+        [
+            Some(word),
+            word.strip_suffix("key").filter(|w| w.len() >= 5),
+        ]
+    });
+    let own = words
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|word| squeezed == word);
+    let digits = squeezed
+        .bytes()
+        .rev()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    let stem =
+        digits <= 3
+            && squeezed.get(..squeezed.len() - digits).is_some_and(|rest| {
+                STEMS.iter().any(|stem| {
+                    let after = rest.strip_prefix(stem);
+                    after.is_some_and(|after| {
+                        after.is_empty()
+                            || words.into_iter().flatten().flatten().any(|word| {
+                                after == word || after.strip_prefix(word) == Some("here")
+                            })
+                    })
+                })
+            });
+    let documented = matches!(value.len(), 20 | 40)
+        && (value.ends_with("EXAMPLE") || value.ends_with("EXAMPLEKEY"));
+    let constant = !context.quoted && !context.address && is_constant(value);
+    own || LITERALS.contains(&squeezed.as_str())
+        || stem
+        || constant
         || documented
         || is_mask(value)
-        || value.contains("...")
-        || value.contains('…')
+        || has_few_characters(value)
+        || is_elided(value)
+}
+
+/// Upper snake case: two or more words of capital letters joined by `_`,
+/// the last of them a number of one or two digits instead, if it is.
+fn is_constant(value: &str) -> bool {
+    let words: Vec<&str> = value.split('_').collect();
+    let Some((last, head)) = words.split_last() else {
+        return false;
+    };
+    words.len() >= 2
+        && head
+            .iter()
+            .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_uppercase()))
+        && !last.is_empty()
+        && (last.bytes().all(|b| b.is_ascii_uppercase())
+            || (last.len() <= 2 && last.bytes().all(|b| b.is_ascii_digit())))
+}
+
+/// Eight or more characters of at most two kinds, letters or digits among
+/// them: `abababab`.
+fn has_few_characters(value: &str) -> bool {
+    let mut kinds: Vec<char> = value.chars().collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    value.chars().count() >= 8
+        && kinds.len() <= 2
+        && value.chars().any(|c| c.is_ascii_alphanumeric())
+}
+
+/// A short head and a run of dots, `…`, stars or `x`s to the end.
+fn is_elided(value: &str) -> bool {
+    let Some(last) = value.chars().next_back() else {
+        return false;
+    };
+    let least = match last {
+        '…' => 1,
+        '.' | '*' => 3,
+        'x' | 'X' | '0' | '#' => 8,
+        _ => return false,
+    };
+    let run = value.chars().rev().take_while(|c| *c == last).count();
+    let head = value
+        .char_indices()
+        .rev()
+        .nth(run - 1)
+        .and_then(|(at, _)| value.get(..at))
+        .unwrap_or_default();
+    run >= least
+        && head.chars().count() <= 16
+        && (head.is_empty()
+            || head.ends_with(['_', '-'])
+            || (head.len() <= 8 && head.bytes().all(|b| b.is_ascii_uppercase())))
 }

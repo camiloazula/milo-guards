@@ -730,7 +730,7 @@ fn the_probe_rows_of_precision_are_safe() {
     s(
         &mut bad,
         "helm values",
-        "auth:\n  existingSecret: my-secret-2\n  secretKey: postgres-password",
+        "auth:\n  secretKey: postgres-password\n  existingSecret: my-secret",
     );
     s(
         &mut bad,

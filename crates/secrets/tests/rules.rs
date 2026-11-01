@@ -792,3 +792,87 @@ fn a_provider_shape_with_nothing_to_say_it_is_one_is_safe() {
         );
     }
 }
+
+#[test]
+fn braces_quote_a_value_of_a_connection_string() {
+    for (text, value) in [
+        ("Driver={SQL};Uid=me;Pwd={F4kePass9};", "F4kePass9"),
+        ("Driver={SQL};Uid=me;Pwd={F4ke;Pass9=x};", "F4ke;Pass9=x"),
+        ("Driver={SQL};Uid=me;Pwd={F4ke}}Pass9};", "F4ke}}Pass9"),
+    ] {
+        let found = only_span(text);
+        assert_eq!(found.0, Rule::GenericSecret, "{text:?}");
+        assert_eq!(found.1, value, "{text:?}");
+    }
+    // A template or a value that is its own name is no password.
+    for text in [
+        "token={{ token }}",
+        "token={token}",
+        "Pwd={}",
+        "password={PASSWORD}",
+    ] {
+        assert!(find(text).is_safe(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_quote_that_closes_the_string_a_name_is_in_is_one_only_if_it_is_not_escaped() {
+    for (text, value) in [
+        ("[\"password=F4kePa\\\"ss9word\"]", "F4kePa\\\"ss9word"),
+        ("'password=F4kePa''ss9word'", "F4kePa''ss9word"),
+        (
+            "\"password=F4ke\\\\\\\"Pass9word\"",
+            "F4ke\\\\\\\"Pass9word",
+        ),
+        ("echo \"password=F4kePass9word\" >> .env", "F4kePass9word"),
+        ("'password=F4kePass9word' x", "F4kePass9word"),
+    ] {
+        assert_eq!(
+            only_span(text),
+            (Rule::GenericSecret, value.to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bracket_in_a_value_ends_it_when_the_name_is_in_one() {
+    // Known limit: a closing bracket is not escaped by anything, so the value
+    // of a name inside brackets ends at the first one. The part after it is
+    // not covered; the rest of the text is read on.
+    for (text, covered) in [
+        ("[password=F4kePass9]word]", "F4kePass9"),
+        ("f(password=F4kePass9)word)", "F4kePass9"),
+        ("{password=F4kePass9}word}", "F4kePass9"),
+    ] {
+        assert_eq!(
+            only_span(text),
+            (Rule::GenericSecret, covered.to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_limits_of_reading_a_value_are_kept_as_rows() {
+    // `&` before something that reads as another pair ends a value, even
+    // when it was part of the password.
+    assert_eq!(
+        only_span("SECRET=F4kePa&ss9=word"),
+        (Rule::GenericSecret, "F4kePa".to_string())
+    );
+    // A quoted value with a space in it is prose to this guard.
+    assert!(find("export PASSWORD=\"F4ke Pass9 x\"").is_safe());
+    // A block of key written on one line with spaces for its line ends is not
+    // read: a text of plain words between the lines is no key.
+    let body = fill("FakeKeyBody0+/", 64);
+    assert!(find(&format!(
+        "KEY=\"-----BEGIN RSA PRIVATE KEY----- {body} {body} -----END RSA PRIVATE KEY-----\""
+    ))
+    .is_safe());
+    // A password of fewer than six characters, and a password that is the
+    // value of a name that does not end in a word of a secret's, are not
+    // found.
+    assert!(find("password=Ab3d9").is_safe());
+    assert!(find("passcode=F4kePass9word").is_safe());
+}

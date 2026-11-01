@@ -31,6 +31,13 @@ pub(crate) struct Candidate<'a> {
     pub(crate) context: &'a str,
 }
 
+/// A password in an address is judged without a name, and is no constant.
+const ADDRESS: text::Standin<'static> = text::Standin {
+    word: None,
+    quoted: false,
+    address: true,
+};
+
 /// What a row does once its pattern has matched.
 type Check = fn(&Candidate<'_>) -> bool;
 
@@ -286,7 +293,14 @@ fn netrc(candidate: &Candidate<'_>) -> bool {
     (head.is_empty() || head.ends_with(char::is_whitespace))
         && (names(b"machine ") || names(b"login ") || names(b"default"))
         && !text::is_reference(candidate.secret)
-        && !text::is_placeholder(candidate.secret, Some("password"))
+        && !text::is_placeholder(
+            candidate.secret,
+            &text::Standin {
+                word: Some("password"),
+                quoted: false,
+                address: false,
+            },
+        )
 }
 
 fn varied(candidate: &Candidate<'_>) -> bool {
@@ -574,7 +588,7 @@ fn secrets() -> Vec<Spec> {
         .mask(Mask::Length)
         .unbounded()
         .raw()
-        .check(|c| !text::is_reference(c.secret) && !text::is_placeholder(c.secret, None)),
+        .check(|c| !text::is_reference(c.secret) && !text::is_placeholder(c.secret, &ADDRESS)),
         Spec::new(
             UrlCredentials,
             "holds a password in a URL",
@@ -588,7 +602,7 @@ fn secrets() -> Vec<Spec> {
         .raw()
         .check(|c| {
             !text::is_reference(c.secret)
-                && !text::is_placeholder(c.secret, None)
+                && !text::is_placeholder(c.secret, &ADDRESS)
                 && !is_database(c.context)
         }),
         // -- headers --

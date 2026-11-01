@@ -179,7 +179,36 @@ fn read_value(written: &str, from: usize, enclosure: Option<Enclosure>) -> Optio
         // A quote that never closes is not one: the value is what follows.
         return read_unquoted(written, from + opening, enclosure);
     }
+    // The braces of a connection string quote a value that holds `;`:
+    // `Pwd={a;b}`, with `}}` for a brace of the value. `{{` and `{%` are the
+    // marks of a template.
+    if first == '{' && !rest.starts_with("{{") && !rest.starts_with("{%") {
+        if let Some((length, after)) = read_braced(rest.get(1..)?) {
+            return Some(Value {
+                start: from + 1,
+                end: from + 1 + length,
+                after: from + 1 + after,
+                quoted: true,
+            });
+        }
+    }
     read_unquoted(written, from, enclosure)
+}
+
+/// The length of a value in braces and of it with the closing brace.
+fn read_braced(inner: &str) -> Option<(usize, usize)> {
+    let mut chars = inner.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\n' | '\r' => return None,
+            '}' if chars.peek().is_some_and(|(_, next)| *next == '}') => {
+                chars.next();
+            }
+            '}' => return Some((at, at + 1)),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The length of a value in quotes, and the length of it with its closing
@@ -215,17 +244,35 @@ fn read_unquoted(written: &str, from: usize, enclosure: Option<Enclosure>) -> Op
     let rest = written.get(from..)?;
     let bytes = rest.as_bytes();
     let closer = enclosure.map(|e| e.closer);
+    // A quote that closes the string the name is in, as a string escapes it:
+    // `\"` and `''` are part of the value, a bare `"` or `'` is the end.
+    let is_quote = closer.is_some_and(|c| matches!(c, '"' | '\''));
+    let escaping = is_quote && !enclosure.is_some_and(|e| e.escaped);
     let mut length = 0;
+    let mut backslashes = 0;
     while let Some(&byte) = bytes.get(length) {
+        let at_closer = closer.is_some_and(|c| u32::from(byte) == u32::from(c));
+        if at_closer && escaping {
+            if backslashes % 2 == 1 {
+                backslashes = 0;
+                length += 1;
+                continue;
+            }
+            if byte == b'\'' && bytes.get(length + 1) == Some(&b'\'') {
+                length += 2;
+                continue;
+            }
+        }
         let ends = match byte {
             b' ' | b'\t' | b'\r' | b'\n' => true,
             b'&' => names_a_pair(bytes, length + 1, true),
             b';' => names_a_pair(bytes, length + 1, false),
-            _ => closer.is_some_and(|c| u32::from(byte) == u32::from(c)),
+            _ => at_closer,
         };
         if ends {
             break;
         }
+        backslashes = if byte == b'\\' { backslashes + 1 } else { 0 };
         length += 1;
     }
     // The escaped closer of `\"…\"` takes its backslash with it.
@@ -305,7 +352,14 @@ fn accept(word: &str, raw: &str, quoted: bool, tied: bool) -> bool {
     };
     if value.chars().count() < MIN_VALUE
         || text::is_reference(value)
-        || text::is_placeholder(value, Some(word))
+        || text::is_placeholder(
+            value,
+            &text::Standin {
+                word: Some(word),
+                quoted,
+                address: false,
+            },
+        )
     {
         return false;
     }

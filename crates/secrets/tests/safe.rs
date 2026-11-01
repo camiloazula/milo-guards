@@ -326,58 +326,55 @@ fn what_is_found_is_not_found_twice() {
 }
 
 #[test]
-fn a_stand_in_is_safe_by_its_shape() {
-    // Upper snake case, the name of a constant.
-    // Repeated characters, or too few different ones.
-    // A value that contains its own name. An elision. A stem from the closed
-    // list, and a literal.
+fn a_stand_in_is_safe_by_the_shape_of_the_whole_value() {
     let rows = [
-        // upper snake case
+        // a constant: upper snake case, letters only, not in quotes
         "password: DEFAULT_PASSWORD",
         "token=DEFAULT_TOKEN",
         "def auth(self, password=None, token=DEFAULT_TOKEN):",
         "CLIENT_SECRET=REPLACE_ME",
         "API_KEY=YOUR_API_KEY_HERE",
         "secret: SECRET_FROM_VAULT",
-        "secret = \"MY_SECRET_2\"",
-        // repeated characters
+        "secret = MY_SECRET_2",
+        // repeated characters, or two kinds of them
         "password=aaaaaaaaaa",
         "token: \"0000000000000000\"",
         "secret=abababababababababab",
-        "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "api_key=1111111111111111",
-        // its own name
+        // a mask or an elision: a head that ends in `_` or `-`, or capitals
+        "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "AWS_KEY=AKIAXXXXXXXXXXXXXXXX",
+        "OPENAI_API_KEY=sk-...",
+        "OPENAI_API_KEY=\"sk-…\"",
+        "token=ghp_...",
+        "password=********",
+        // its own name, all of it
         "api_key=api_key",
         "API_KEY=api-key",
         "apiKey: apiKey",
         "api_key = \"API_KEY\"",
         "password=password",
-        "db_password=dummy_password",
-        "secret: test-secret-value",
-        "secret_key: my-secret-2",
-        "existingSecret: my-secret-2",
-        "token: my-token-1",
+        "password=PASSWORD",
+        "token=Token",
+        "secret_key: secret",
         "pass=pass",
-        // an elision
-        "OPENAI_API_KEY=sk-...",
-        "OPENAI_API_KEY=\"sk-…\"",
-        "token=ghp_...",
-        // the closed list of stems, and literals
+        // a stem, alone or with the name's word, and up to three digits
         "password=changeme",
         "PASSWORD: changeme123",
-        "password: \"change-me-please\"",
         "password=change_me_1",
-        "token=replace-with-your-token-1",
-        "secret=dummy-value-1",
+        "password: \"change-me\"",
+        "db_password=dummy_password",
         "password: placeholder1",
-        "token: example-token-1",
+        "token: example-token",
         "secret=sample-secret-1",
-        "password=todo-fix-this-1",
+        "secret=Example",
+        "token=todo",
+        "api_key=your_api_key_here",
+        "password: \"your-password\"",
         "password: string;",
         "\"password\": \"string\"",
         "token: undefined,",
-        // in an address, by the shapes that need no name
-        "postgres://user:CHANGE_ME@db.fake.test/app",
+        // in an address
         "postgres://user:changeme@db.fake.test/app",
         "https://user:xxxxxxxx@host.fake.test/",
     ];
@@ -391,9 +388,52 @@ fn a_stand_in_is_safe_by_its_shape() {
 }
 
 #[test]
+fn a_value_that_only_looks_like_a_stand_in_is_found() {
+    // Containing the name's word, beginning with a stem, a constant with a
+    // number in every word, a head and a tail around dots: values.
+    for row in [
+        // contains its own name
+        "password=Password1",
+        "password=MyPassword!",
+        "secret=supersecret42",
+        "api_key=prod_api_key_9Xq",
+        "client_secret: \"MySecret!Strong#Pass\"",
+        "token=mytoken_A1b2C3zz",
+        "token=token-8f3a9c2e",
+        "secret_key: my-secret-2",
+        "existingSecret: my-secret-2",
+        "POSTGRES_PASSWORD=mysecretpassword",
+        "password: Password1",
+        // begins with a stem
+        "password=Example#2024",
+        "password=Sample1234",
+        "secret=Todo4Ever99",
+        "token=Replace!Me9x",
+        "postgres://u:Dummy2024x@db.fake.test/x",
+        "password=changeme-9Xq2",
+        "token=replace-with-your-token-1",
+        "secret=dummy-value-1",
+        "password=todo-fix-this-1",
+        // a constant, but a value: quoted, in an address, digits in every word
+        "DB_PASSWORD=K7X_93QZ_M2PL_W8RT",
+        "secret: \"QZ7W_P3XK_M2LV_9TRB\"",
+        "secret = \"MY_SECRET_2\"",
+        "postgres://u:PROD_PW_7X3K@db.fake.test/x",
+        "JWT_SECRET=MY_APP_JWT_KEY_2024",
+        // a head and a tail around dots, a long mask-like password
+        "password=ab...cd9X",
+        "password=Zq9!aaaaaaaaaaaaaaaaaa",
+        "password=-_-_-_-_",
+        "api_key=a1b2c3a1b2c3a1b2c3a1b2c3",
+    ] {
+        assert!(!find(row).is_safe(), "{row:?}");
+    }
+}
+
+#[test]
 fn a_stand_in_shape_does_not_hide_a_value_that_is_one() {
     // The shapes are of a stand-in; a value that is none of them is a secret,
-    // whatever it looks like next to its name.
+    // whatever it looks like beside its name.
     for row in [
         "password=F4kePass9word1",
         "api_key=F4keApiKey0123456789abcdef",
