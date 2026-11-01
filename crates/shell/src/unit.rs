@@ -78,7 +78,7 @@ pub(crate) enum Reads {
 }
 
 /// One program the line runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -336,6 +336,9 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How many times the line has forked into two readings, each judged
+    /// (see [`crate::launch::Launch::Either`]).
+    forks: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -438,6 +441,13 @@ impl Later {
 }
 
 impl Split {
+    /// Count one more fork of the line into two readings; `false` once
+    /// `most` forks have been made, when the line is not read any further.
+    pub(crate) fn fork(&mut self, most: usize) -> bool {
+        self.forks += 1;
+        self.forks <= most
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
@@ -447,10 +457,10 @@ impl Split {
             .filter(|_| unit.shell == Shell::Posix)
             .and_then(|key| dotglob::change(&key, &unit.args))
         {
-            // Behind `env` or `nohup` a builtin runs in a process of its own.
-            let own = dotglob::in_shell(&unit.wrappers);
-            let certain = own && unit.stage.is_none();
             for (flag, on) in [(Flag::Bash, change.bash), (Flag::Zsh, change.zsh)] {
+                // Behind `env` or `nohup` a builtin runs in a process of its
+                // own, and behind zsh's `noglob` bash runs nothing.
+                let certain = dotglob::in_shell(&unit.wrappers, flag) && unit.stage.is_none();
                 match on {
                     Some(true) => self.set_flag(flag, true),
                     Some(false) => self.show(flag, certain),
@@ -854,6 +864,15 @@ impl Split {
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
+    // What a package runner starts is a program (`npx cd src`), not the
+    // shell's builtin: it cannot move the shell.
+    if unit
+        .wrappers
+        .iter()
+        .any(|wrapper| crate::launch::RUNNERS.contains(&wrapper.as_str()))
+    {
+        return None;
+    }
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
