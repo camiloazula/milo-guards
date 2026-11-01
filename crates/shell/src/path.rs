@@ -7,8 +7,10 @@
 //! provider paths (`HKLM:\Software`, `FileSystem::C:\x`) and `$null`, brace
 //! lists, and a `cd` that moved the line.
 
+use std::path::PathBuf;
+
 use milo_guards_core::spelling::glob;
-use milo_guards_core::{Flavour, Paths, Spelling};
+use milo_guards_core::{Flavour, Paths, Sensitivity, Spelling};
 
 pub(crate) use milo_guards_core::Place;
 
@@ -101,16 +103,119 @@ fn drive_of(dir: &str) -> Option<char> {
 /// Judges path arguments against the caller's directories.
 pub(crate) struct Resolver {
     core: milo_guards_core::Resolver,
+    /// Whether a plain relative path (see [`plain_relative`]) is the agent's
+    /// own, since the working directory is in a workspace that holds no key.
+    clear: bool,
     /// The drive the working directory is on, upper case; `None` when it is
     /// on no drive.
     cwd_drive: Option<char>,
+    /// The directories, kept for `effect` only (see [`Resolver::keep`]).
+    paths: Option<Paths>,
 }
 
 impl Resolver {
     pub(crate) fn new(paths: &Paths) -> Self {
+        let core = milo_guards_core::Resolver::new(paths);
         Self {
-            core: milo_guards_core::Resolver::new(paths),
+            clear: core.cwd_is_clear(),
+            core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
+            paths: None,
+        }
+    }
+
+    /// Keep the directories, for what only `effect` asks: whether a path is
+    /// inside a workspace folder whatever else it is, and the workspace
+    /// folders themselves. `classify` does not keep them.
+    pub(crate) fn keep(&mut self, paths: &Paths) {
+        self.paths = Some(paths.clone());
+    }
+
+    /// The workspace folders, as spelled, when kept.
+    pub(crate) fn workspaces(&self) -> Vec<String> {
+        self.paths.as_ref().map_or_else(Vec::new, |paths| {
+            paths
+                .workspaces
+                .iter()
+                .map(|folder| folder.to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    /// Whether `arg` (already joined to where an earlier `cd` moved) is a path
+    /// inside a workspace folder, or the folder itself, however else it is
+    /// judged: a protected path or a startup file in the workspace is inside
+    /// it, which the place of either does not say. Judged by the spelling
+    /// alone, as the paths are (their keys, which are the same for every
+    /// spelling of one file); a pattern by the folder it starts in. `false`
+    /// for what cannot be read that far.
+    pub(crate) fn inside_workspace(&self, arg: &Arg, shell: Shell) -> bool {
+        let (Some(text), Some(paths)) = (arg.known(), self.paths.as_ref()) else {
+            return false;
+        };
+        if brace_list(text) {
+            return false;
+        }
+        let flavour = flavour(shell);
+        let folder = pattern_folder(text);
+        let spelling = match start(&folder, shell) {
+            Start::Plain => Spelling::Plain(&folder),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return false,
+        };
+        let Some(key) = self.core.key(spelling, flavour) else {
+            return false;
+        };
+        paths.workspaces.iter().any(|workspace| {
+            let text = workspace.to_string_lossy();
+            self.core
+                .key(Spelling::Plain(&text), flavour)
+                .is_some_and(|folder| {
+                    key == folder
+                        || key.starts_with(&folder)
+                            && (folder.ends_with('|') || key[folder.len()..].starts_with('/'))
+                })
+        })
+    }
+
+    /// Whether reading `arg` (joined to where an earlier `cd` moved), as a
+    /// pattern the shell expands or, when `deep`, as a folder read with
+    /// everything below it, can reach a secret that its place does not say.
+    /// What cannot be spelled out can.
+    pub(crate) fn reaches_secret(&self, arg: &Arg, shell: Shell, hidden: bool, deep: bool) -> bool {
+        let Some(text) = arg.known() else {
+            return true;
+        };
+        if brace_list(text) {
+            return true;
+        }
+        if device(text, shell).is_some() {
+            return false;
+        }
+        let flavour = flavour(shell);
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider.eq_ignore_ascii_case("filesystem")
+                    && self.reaches_secret(&Arg::Known(rest.to_string()), shell, hidden, deep);
+            }
+        }
+        match start(text, shell) {
+            Start::Plain => self
+                .core
+                .reaches_secret(Spelling::Plain(text), flavour, hidden, deep),
+            Start::Home(rest) => {
+                self.core
+                    .reaches_secret(Spelling::Home(rest), flavour, hidden, deep)
+            }
+            Start::Provider(..) => false,
+            Start::DriveRelative(letter, rest) => {
+                self.on_cwd_drive(letter, rest).is_some_and(|rest| {
+                    self.core
+                        .reaches_secret(Spelling::Plain(rest), flavour, hidden, deep)
+                })
+            }
+            Start::Unknown => true,
         }
     }
 
@@ -149,6 +254,37 @@ impl Resolver {
         }
     }
 
+    /// The absolute path `text` (already joined to where an earlier `cd`
+    /// moved) names, by its spelling: `~` and `..` applied, the working
+    /// directory in front of a relative one, nothing read from the disk. `None`
+    /// for what is not a place on a disk: a device, a PowerShell drive that is
+    /// not a disk (`HKLM:`, `Env:`), a path on another drive's own working
+    /// directory, and what cannot be spelled out (`~user`).
+    pub(crate) fn absolute(&self, text: &str, shell: Shell) -> Option<PathBuf> {
+        if brace_list(text) || device(text, shell).is_some() {
+            return None;
+        }
+        let flavour = flavour(shell);
+        // `FileSystem::C:\x` is the provider's own path to `C:\x`.
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.absolute(rest, shell))
+                    .flatten();
+            }
+        }
+        match start(text, shell) {
+            Start::Plain => self.core.absolute(Spelling::Plain(text), flavour),
+            Start::Home(rest) => self.core.absolute(Spelling::Home(rest), flavour),
+            Start::DriveRelative(letter, rest) => self
+                .on_cwd_drive(letter, rest)
+                .and_then(|rest| self.core.absolute(Spelling::Plain(rest), flavour)),
+            Start::Provider(..) | Start::Unknown => None,
+        }
+    }
+
     /// Whether `arg`, written from `dir`, is a file that cannot be placed:
     /// not a device, and unknown by itself or by where `dir` moved to.
     pub(crate) fn unplaced(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
@@ -166,10 +302,7 @@ impl Resolver {
     /// `\\?\UNC\server\share`) in PowerShell or cmd. Reading it contacts
     /// the server, which is offered the user's credentials.
     ///
-    /// Core reads a share's root only when it holds no wildcard, and takes
-    /// the `?` of a `\\?\` long path for one, so the root is read here: two
-    /// separators start it, and what is not a share is a long path or a device
-    /// that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`).
+    /// The spelling is read by core's `spelling::network`.
     pub(crate) fn network(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
         if shell == Shell::Posix {
             return false;
@@ -187,33 +320,146 @@ impl Resolver {
                 }
             }
         }
-        let separators = flavour(shell).separators();
-        let mut chars = text.chars();
-        if !(chars.next().is_some_and(|c| separators.contains(&c))
-            && chars.next().is_some_and(|c| separators.contains(&c)))
+        milo_guards_core::spelling::network(text, flavour(shell))
+    }
+
+    /// What reading `arg`, written from `dir`, exposes when it is a key or a
+    /// credential: the words for it (`your SSH keys`). A place core marks as
+    /// holding one, a disk (its bytes hold every key on it) and, in a POSIX
+    /// shell, what the kernel serves (`/proc/self/environ`, `/dev/mem`): the
+    /// answers the file guard gives a read of the same path. `None` for
+    /// anything else, a path known only when it runs included.
+    pub(crate) fn secret(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        // Most words are a name in the workspace, which is no secret.
+        if dir.is_none()
+            && self.clear
+            && arg.known().is_some_and(|text| plain_relative(text, shell))
         {
-            return false;
+            return None;
         }
-        // Windows folds repeated separators and drops `.` parts, so
-        // `\\.\\UNC\host\share` and `\\.\.\UNC\host\share` are the same share; a
-        // `..` could undo any of it, so a path with one counts.
-        let mut raw = text[2..].split(separators);
-        let first = raw.next().unwrap_or_default();
-        let rest: Vec<&str> = raw
-            .filter(|part| !part.is_empty() && *part != ".")
-            .collect();
-        if first == ".." || rest.contains(&"..") {
-            return true;
+        let owned;
+        let arg = if dir.is_some() {
+            owned = within(dir, arg, shell);
+            &owned
+        } else {
+            arg
+        };
+        let text = arg.known()?;
+        let mut place = self.place_of(text, shell, hidden, true);
+        // A Windows name the spelling does not settle (a stream, a part with
+        // a trailing space) is read for the file it is a name of; PowerShell
+        // takes `id_rsa::$DATA` for a provider's path, which is outside.
+        if matches!(place, Place::Unknown | Place::Outside) && shell != Shell::Posix {
+            if let Some(file) = without_streams(text) {
+                place = self.place_of(&file, shell, hidden, true);
+            }
         }
-        match first {
-            // The long-path and device prefixes (`\\?\`, `\\.\`) name a
-            // disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) unless a share
-            // follows: `UNC\server\share`, or `GLOBALROOT\Device\Mup\server\share`.
-            "?" | "." => rest.first().is_some_and(|kind| {
-                kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
-            }),
-            _ => true,
+        match place {
+            Place::Sensitive(words, Sensitivity::Secret) => return Some(words),
+            Place::Disk => return Some("a disk, and every key on it"),
+            _ => {}
         }
+        self.picks(text, shell, hidden).or_else(|| {
+            // What the kernel serves is not in the workspace, a temporary
+            // folder or the home directory, so it is only looked for in the
+            // places that are none of them (`/dev/fd/3` is the null device
+            // to core, a path in another case is outside).
+            if matches!(place, Place::Top(_) | Place::Outside | Place::Null) {
+                self.kernel(text, shell)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The key or credential a pattern can pick (`~/.s*/id_rsa`): see
+    /// [`milo_guards_core::Resolver::picks_secret`].
+    fn picks(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        if !glob::has_wildcard(text) || brace_list(text) {
+            return None;
+        }
+        let flavour = flavour(shell);
+        // `FileSystem::C:\x*` is the provider's own path.
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.picks(rest, shell, hidden))
+                    .flatten();
+            }
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            Start::DriveRelative(letter, rest) => Spelling::Plain(self.on_cwd_drive(letter, rest)?),
+            Start::Provider(..) | Start::Unknown => return None,
+        };
+        self.core.picks_secret(spelling, flavour, hidden)
+    }
+
+    /// The words for a place that holds keys without being one: the home
+    /// directory, a folder holding it, the root of the disk. Reading a
+    /// folder all the way down reads what is in it.
+    pub(crate) fn holder(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        if dir.is_none()
+            && self.clear
+            && arg.known().is_some_and(|text| plain_relative(text, shell))
+        {
+            return None;
+        }
+        let arg = within(dir, arg, shell);
+        let text = arg.known()?;
+        let holds = |place: Place| {
+            matches!(
+                place,
+                Place::Home { .. } | Place::Top("the root of the disk")
+            )
+            .then(|| place.words())
+        };
+        if let Some(words) = holds(self.place_of(text, shell, hidden, true)) {
+            return Some(words);
+        }
+        // A POSIX pattern part that can match `..` (`.*`) may be the parent:
+        // each reading core gives is asked, as `place` asks them all.
+        if shell != Shell::Posix || !glob::has_wildcard(text) || brace_list(text) {
+            return None;
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return None,
+        };
+        self.core
+            .places(spelling, Flavour::Posix, hidden)
+            .into_iter()
+            .find_map(holds)
+    }
+
+    /// What the kernel serves that `text` names, in a POSIX shell: see
+    /// [`milo_guards_core::Resolver::kernel`].
+    fn kernel(&self, text: &str, shell: Shell) -> Option<&'static str> {
+        if shell != Shell::Posix || brace_list(text) {
+            return None;
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return None,
+        };
+        self.core.kernel(spelling, Flavour::Posix)
     }
 
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
@@ -231,6 +477,59 @@ impl Resolver {
         match arg.known() {
             Some(text) => self.place_of(text, shell, hidden, false),
             None => Place::Unknown,
+        }
+    }
+
+    /// The words of a file a tool runs on its own that a write to `arg`
+    /// is, in a workspace folder at any depth (`.envrc`,
+    /// `.github/workflows/ci.yml`); with `below`, one a recursive copy to it
+    /// can replace, so a folder that holds one counts too (`.github`).
+    /// `None` for any other path, and for one the shell reads another way
+    /// (a brace list, a device, a registry or other provider path).
+    pub(crate) fn startup(
+        &self,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        below: bool,
+    ) -> Option<&'static str> {
+        self.startup_of(arg.known()?, shell, hidden, below)
+    }
+
+    fn startup_of(
+        &self,
+        text: &str,
+        shell: Shell,
+        hidden: bool,
+        below: bool,
+    ) -> Option<&'static str> {
+        if brace_list(text) || device(text, shell).is_some() {
+            return None;
+        }
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.startup_of(rest, shell, hidden, below))
+                    .flatten();
+            }
+        }
+        let flavour = flavour(shell);
+        let ask = |spelling| {
+            if below {
+                self.core.startup_below(spelling, flavour, hidden)
+            } else {
+                self.core.startup(spelling, flavour, hidden)
+            }
+        };
+        match start(text, shell) {
+            Start::Plain => ask(Spelling::Plain(text)),
+            Start::Home(rest) => ask(Spelling::Home(rest)),
+            Start::DriveRelative(letter, rest) => {
+                ask(Spelling::Plain(self.on_cwd_drive(letter, rest)?))
+            }
+            Start::Provider(..) | Start::Unknown => None,
         }
     }
 
@@ -280,6 +579,68 @@ impl Resolver {
             Start::Unknown => Place::Unknown,
         }
     }
+}
+
+/// Whether a path is a name or a few from the working directory and nothing
+/// else: plain characters, no `..`, no `~`, no drive, no variable, no root. In
+/// a workspace that holds no key it lands in the workspace.
+fn plain_relative(text: &str, shell: Shell) -> bool {
+    !text.is_empty()
+        && !text.starts_with(['/', '\\'])
+        && text.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'-'
+                        | b'.'
+                        | b'/'
+                        | b'\\'
+                        | b' '
+                        | b'+'
+                        | b','
+                        | b'*'
+                        | b'?'
+                        | b'['
+                        | b']'
+                )
+        })
+        && text.split(['/', '\\']).all(|part| part != "..")
+        // A POSIX pattern part that can match `..` (`.*`, `.?`) climbs in an
+        // old shell.
+        && (shell != Shell::Posix
+            || text.split('/').all(|part| {
+                !(part.starts_with('.')
+                    && glob::has_wildcard(part)
+                    && glob::matches(part, "..", Flavour::Posix, false))
+            }))
+}
+
+/// A Windows path with what makes its name unreadable taken off each part: a
+/// stream (`id_rsa::$DATA`, `id_rsa:x`, `.ssh::$INDEX_ALLOCATION`), and the
+/// dots and spaces Windows drops from the end of a name. A drive's own colon
+/// stays. `None` when nothing is taken off.
+fn without_streams(text: &str) -> Option<String> {
+    let mut changed = false;
+    let parts: Vec<&str> = text
+        .split(['/', '\\'])
+        .map(|part| {
+            let drive = part.len() == 2 && part.ends_with(':');
+            let name = if drive {
+                part
+            } else {
+                part.split(':').next().unwrap_or(part)
+            };
+            let name = if matches!(name, "." | "..") {
+                name
+            } else {
+                name.trim_end_matches([' ', '.'])
+            };
+            changed |= name.len() != part.len();
+            name
+        })
+        .collect();
+    // The separators are put back as `\`, which Windows reads as it reads `/`.
+    changed.then(|| parts.join("\\"))
 }
 
 /// A device a path names: the core's, and PowerShell's and cmd's `$null`.
@@ -340,5 +701,38 @@ pub(crate) fn listed(text: &str, filtered: bool) -> String {
         format!("{text}/x")
     } else {
         text.to_string()
+    }
+}
+
+/// The parent folder a wildcard part can also pick, written as a path to
+/// read: a part that starts with a dot and matches `..` (`.*`, `.?`) is
+/// `..` in the shells whose patterns match it, so `cat .*/x` can read the
+/// folder above. `None` when no part can.
+pub(crate) fn climb(text: &str, shell: Shell) -> Option<String> {
+    let flavour = flavour(shell);
+    let mut start = 0;
+    for part in text.split(flavour.separators()) {
+        if part.starts_with('.')
+            && glob::has_wildcard(part)
+            && glob::matches(part, "..", flavour, true)
+        {
+            return Some(format!("{}..", &text[..start]));
+        }
+        start += part.len() + 1;
+    }
+    None
+}
+
+/// The folder a pattern starts in: what comes before its first wildcard,
+/// up to the last separator before it (`.` when nothing does), or the text
+/// itself when it holds none.
+pub(crate) fn pattern_folder(text: &str) -> String {
+    let Some(wild) = text.find(['*', '?', '[']) else {
+        return text.to_string();
+    };
+    match text[..wild].rfind(['/', '\\']) {
+        Some(0) => text[..1].to_string(),
+        Some(at) => text[..at].to_string(),
+        None => ".".to_string(),
     }
 }

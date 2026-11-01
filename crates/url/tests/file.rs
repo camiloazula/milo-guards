@@ -77,9 +77,11 @@ fn the_path_is_judged_after_escapes_and_dot_segments() {
 
 #[test]
 fn the_words_are_cores_and_a_file_url_is_a_finding_whatever_they_are() {
-    // A POSIX path keeps its case, so `.SSH` is not the SSH folder to core;
-    // the URL is a finding all the same, and only the words differ.
+    // Core compares the SSH folder's name without case on every host, and
+    // the URL guard says what core says.
     let (reason, _) = read("file:///home/me/.SSH/id_rsa", &posix());
+    assert_eq!(reason, "reads your SSH keys");
+    let (reason, _) = read("file:///home/me/.sshx/id_rsa", &posix());
     assert_eq!(reason, "reads a path outside the workspace");
 }
 
@@ -129,6 +131,10 @@ fn a_windows_path_is_read_as_one() {
         ),
         (
             "file:///C:/Windows/System32/config/SAM",
+            "reads the Windows account database",
+        ),
+        (
+            "file:///C:/Windows/System32/notepad.exe",
             "reads a system folder",
         ),
     ] {
