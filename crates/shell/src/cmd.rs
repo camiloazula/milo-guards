@@ -55,10 +55,11 @@ const BUILTINS: &[&str] = &[
 /// `.bat` or `.cmd`, or one with no extension (PATHEXT may find `x.bat` for
 /// `x`, `npm.cmd` for `npm`). A cmd builtin, a drive switch (`D:`), and a
 /// name with another extension (`x.exe`) are not. A name written with a
-/// character cmd reads differently, or one that holds a second colon, may be
-/// anything.
+/// character cmd reads differently (`?` and `*` match in the file search
+/// cmd makes, so `x.b?t` may find `x.bat`), or one that holds a second
+/// colon, may be anything.
 fn may_be_batch(word: &str) -> bool {
-    if word.contains(['^', ';', ',', '=', '%', '!']) {
+    if word.contains(['^', ';', ',', '=', '%', '!', '?', '*']) {
         return true;
     }
     // cmd drops the quotes of a name.
@@ -492,17 +493,20 @@ impl<'a> Walker<'a> {
         if let Some(at) = unquoted_operator(text) {
             let rest = text[at..].trim_start_matches(['&', '|', ' ', '\t']);
             if !rest.is_empty() {
-                // `set X=1 || cd D:\y`: `set` works, so what follows `||`
-                // (or a lone `|`, a pipe) does not run in this process.
-                let operator = &text[at..text.len() - rest.len()];
-                let branch = usize::from(operator.contains('|'));
+                let operator = text[at..text.len() - rest.len()].trim();
+                // A lone `|` is a pipe: both sides run in a child process
+                // of their own, so what follows keeps to its own script.
+                // After `&`, `&&` or `||` cmd runs the rest in this very
+                // process, so its `cd`, drive switch, `call` and batch file
+                // move the line: read it here.
+                let pipe = operator == "|";
+                // Only a lone `&` is sure: a `set` can fail (`set /p` on an
+                // empty input, `set /a` on a division by zero), so what
+                // follows `&&` runs only when it worked and what follows
+                // `||` only when it failed, as in `cond_exec`.
+                let branch = usize::from(operator != "&");
                 self.split.branches += branch;
-                // After `&` or `&&` cmd runs the rest in this very process,
-                // so its `cd`, drive switch, `call` and batch file move the
-                // line: read it here, not as a script of its own. What
-                // follows `||` or a pipe does not run here, so it keeps to
-                // its own.
-                unit::script_in(self.split, rest, Shell::Cmd, self.depth + 1, branch == 0);
+                unit::script_in(self.split, rest, Shell::Cmd, self.depth + 1, !pipe);
                 self.split.branches -= branch;
             }
         }

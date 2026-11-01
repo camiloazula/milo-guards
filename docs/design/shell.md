@@ -1157,8 +1157,14 @@ a path.
   the same process and may `cd` anywhere), and so after a batch file run
   without `call` (`x.bat`, `x.cmd`), which runs in the same process the same
   way, and after a name with no extension (`x`, `npm`, `mvn`), which PATHEXT
-  may resolve to a batch file (`x.bat`, `npm.cmd`). A cmd builtin, a drive
-  switch and a name with another extension (`x.exe`) change nothing. A file
+  may resolve to a batch file (`x.bat`, `npm.cmd`), and after a name with a
+  wildcard (`x.b?t`, `x.*`), which cmd finds by a file search where `?` and `*`
+  match. A cmd builtin, a drive
+  switch and a name with another extension (`x.exe`) change nothing. What
+  follows a `set` value is run in the line's own process after `&`, `&&` and
+  `||` (only a lone `|`, a pipe, runs it in a child), but only a lone `&` makes
+  it sure: a `set` can fail (`set /p` on an empty input, `set /a` on a division
+  by zero), so what follows `&&` or `||` may not run. A file
   the command redirects is read before the command runs, so it is resolved
   before the folders are given up. This changes how a drive's folder and
   `C:x` are read only: a plain relative path after `npm install` is as before. When the

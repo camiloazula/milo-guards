@@ -1045,18 +1045,85 @@ fn what_follows_a_set_value_runs_in_the_line_so_its_cd_moves_the_line() {
 
 #[test]
 fn what_follows_a_set_value_but_does_not_run_there_leaves_the_folder_alone() {
-    // `||` and a pipe do not run the rest in this process, `^&` and a quoted
-    // `&` end nothing, and a `cd` below the folder stays under it.
+    // A pipe runs both sides in a child process, `^&` and a quoted `&` end
+    // nothing, and a `cd` below the folder stays under it.
     check(
         Shell::Cmd,
         &two_drives(),
         &[
-            r"cd D:\ws\a & (set X=1 || cd D:\Users) & rd /s /q D:me",
             r"cd D:\ws\a & (set X=1 | cd D:\Users) & rd /s /q D:me",
             r"cd D:\ws\a & (set X=1^& cd D:\Users) & rd /s /q D:me",
             r#"cd D:\ws\a & (set X="1 & cd D:\Users") & rd /s /q D:me"#,
             r"(set X=1 & cd sub) & del *.obj",
         ],
+        &[],
+    );
+}
+
+/// Run `lines` as a cmd line, inside `cmd /c "..."` from PowerShell, and
+/// inside `cmd /c "..."` from a POSIX shell; every one must be a delete.
+fn deletes_in_cmd_and_wrapped(lines: &[&'static str]) {
+    check(Shell::Cmd, &two_drives(), &[], &deletes(lines));
+    let wrapped: Vec<String> = lines
+        .iter()
+        .map(|line| format!(r#"cmd /c "{line}""#))
+        .collect();
+    let wrapped: Vec<&str> = wrapped.iter().map(String::as_str).collect();
+    let risky = |shell| {
+        let rows: Vec<(&str, Rule)> = wrapped.iter().map(|line| (*line, Rule::Delete)).collect();
+        check(shell, &two_drives(), &[], &rows);
+    };
+    risky(Shell::PowerShell);
+    risky(Shell::Posix);
+}
+
+#[test]
+fn a_set_that_may_fail_does_not_make_the_cd_after_and_and_sure() {
+    // `set /p` fails on an empty input (an agent's stdin) and `set /a` on a
+    // division by zero; `&&` then skips the `cd`, but the `& rd` still runs
+    // on the drive `cd D:\Users\me` set.
+    deletes_in_cmd_and_wrapped(&[
+        r"cd D:\Users\me & set /p X=? && cd D:\ws\a\b & rd /s /q D:..",
+        r"cd D:\Users\me & (set /p X=? && cd D:\ws\a\b) & rd /s /q D:..",
+        r"cd D:\Users\me & set /a X=1/0 && cd D:\ws\a\b & rd /s /q D:..",
+    ]);
+    // A lone `&` after the set is sure: the `cd` runs whatever the set did.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[r"cd D:\Users\me & set /p X=? & cd D:\ws\a\b & rd /s /q D:.."],
+        &[],
+    );
+}
+
+#[test]
+fn what_follows_a_set_value_after_or_or_runs_in_the_line_when_the_set_fails() {
+    // `||` runs the rest in the line's own process when the set fails, so a
+    // `cd` there moves the line, and it is not sure to have run.
+    deletes_in_cmd_and_wrapped(&[
+        r"cd D:\ws\a\b & (set /p X=? || cd D:\Users) & rd /s /q D:me",
+        r"cd D:\ws\a\b & (set /p X=?||cd D:\Users)&rd /s /q D:me",
+        r"cd D:\ws\a\b & (set /p X=? || cd D:\Users & echo) & rd /s /q D:me",
+        r"cd D:\ws\a & (set X=1 || cd D:\Users) & rd /s /q D:me",
+        r"(set /p X=? || cd C:\Windows) & rd /s /q System32",
+    ]);
+}
+
+#[test]
+fn a_wildcard_in_a_command_name_may_find_a_batch_file() {
+    // cmd finds a program by a file search in which `?` and `*` match, so
+    // `x.b?t` may run `x.bat` in the line's own process, and it may `cd`.
+    deletes_in_cmd_and_wrapped(&[
+        r"cd D:\ws\a\b & x.b?t & rd /s /q D:..",
+        r"cd D:\ws\a\b & x.ba? & rd /s /q D:..",
+        r"cd D:\ws\a\b & x.c?d & rd /s /q D:..",
+        r"cd D:\ws\a\b & x.* & rd /s /q D:..",
+    ]);
+    // A name with another extension still runs no batch file.
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[r"cd D:\ws\a\b & x.exe & rd /s /q D:..\b"],
         &[],
     );
 }
