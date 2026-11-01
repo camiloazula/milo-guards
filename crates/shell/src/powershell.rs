@@ -698,3 +698,68 @@ fn parameter(arg: &Arg) -> Option<&str> {
     name.starts_with(|c: char| c.is_ascii_alphabetic())
         .then_some(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::VALUES;
+
+    /// The parameters `classify` reads a value for, as they were when `Reach`
+    /// landed. A name added to the shared list swallows the argument after it,
+    /// which can be the target of a delete (`Remove-Item -Depth ~ -Recurse`), so
+    /// a cmdlet's own value parameters belong to its reader (`Get-ChildItem
+    /// -Depth` is in `effect`), and this list changes only with a row for each
+    /// name in `tests/windows.rs`.
+    const PINNED: [&str; 45] = [
+        "path",
+        "literalpath",
+        "destination",
+        "filepath",
+        "argumentlist",
+        "verb",
+        "value",
+        "filter",
+        "include",
+        "exclude",
+        "encoding",
+        "name",
+        "id",
+        "command",
+        "scriptblock",
+        "executionpolicy",
+        "scope",
+        "computername",
+        "credential",
+        "uri",
+        "outfile",
+        "workingdirectory",
+        "itemtype",
+        "stream",
+        "width",
+        // The common parameters and their aliases: a value is never an operand.
+        "erroraction",
+        "ea",
+        "warningaction",
+        "wa",
+        "informationaction",
+        "infa",
+        "errorvariable",
+        "ev",
+        "warningvariable",
+        "wv",
+        "informationvariable",
+        "iv",
+        "outvariable",
+        "ov",
+        "outbuffer",
+        "ob",
+        "pipelinevariable",
+        "pv",
+        "progressaction",
+        "proga",
+    ];
+
+    #[test]
+    fn the_shared_value_parameters_are_the_pinned_list() {
+        assert_eq!(VALUES, PINNED);
+    }
+}

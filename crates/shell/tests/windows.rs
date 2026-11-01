@@ -51,6 +51,12 @@ fn risky_powershell() {
         &windows(),
         &[],
         &[
+            // A value parameter of `Get-ChildItem` is not one of `Remove-Item`: it
+            // must not swallow the target.
+            ("Remove-Item -Depth ~ -Recurse", Rule::Delete),
+            ("Remove-Item -at C:\\ -Recurse", Rule::Delete),
+            ("ri -Attributes ~ -Recurse -Force", Rule::Delete),
+            ("rm -dep ~ -r", Rule::Delete),
             ("Remove-Item -Recurse -Force ~", Rule::Delete),
             ("Remove-Item -Recurse -Force $env:USERPROFILE", Rule::Delete),
             ("rm -r -fo $HOME\\Documents", Rule::Delete),

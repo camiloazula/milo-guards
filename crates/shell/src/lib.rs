@@ -20,7 +20,8 @@
 //!
 //! [`effect`] answers a second question from the same split and findings:
 //! does the line only read? It is [`Effect::ReadsOnly`] when every unit is a
-//! known reader, [`Effect::Changes`] when one writes, and
+//! known reader, and then says by a [`Reach`] whether what it reads stays in
+//! the workspace; [`Effect::Changes`] when one writes, and
 //! [`Effect::Unknown`] when anything is not understood.
 //!
 //! What cannot be read is risky: a program or a script known only when it
@@ -40,7 +41,7 @@ mod posix;
 mod powershell;
 mod unit;
 
-pub use effect::Effect;
+pub use effect::{Effect, Reach};
 pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
@@ -195,7 +196,10 @@ struct Reading {
 impl Reading {
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
         let split = unit::split(command, shell, effect);
-        let resolver = path::Resolver::new(paths);
+        let mut resolver = path::Resolver::new(paths);
+        if effect {
+            resolver.keep(paths);
+        }
         let findings = detect::findings(&split, &resolver);
         Self {
             split,
@@ -221,16 +225,24 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 ///
 /// It is a second answer beside [`classify`], not a rule: safe and reads
 /// only are different things (`mkdir build` is safe and [`Effect::Changes`];
-/// `cat ~/.ssh/id_ed25519` is [`Effect::ReadsOnly`]). It comes from the same
+/// `cat ~/.ssh/id_ed25519` is [`Effect::ReadsOnly`]). A line that only reads
+/// says where it reads: [`Reach::Workspace`] when every place is inside a
+/// workspace folder, a temporary file or the null device, and
+/// [`Reach::Beyond`] when any is not. It comes from the same
 /// split as `classify`, so what is a unit, a wrapper or a nested script is
 /// the same in both, and a caller reads both answers. What cannot be read
 /// is [`Effect::Unknown`], never reads-only.
 ///
 /// ```
-/// use milo_guards_shell::{classify, effect, Effect, Paths, Shell};
+/// use milo_guards_shell::{classify, effect, Effect, Paths, Reach, Shell};
 ///
 /// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
-/// assert_eq!(effect("git status && git diff", Shell::Posix, &paths), Effect::ReadsOnly);
+/// let stays = Effect::ReadsOnly(Reach::Workspace);
+/// assert_eq!(effect("git status && git diff", Shell::Posix, &paths), stays);
+/// // It only reads, and what it reads is not the project.
+/// let beyond = Effect::ReadsOnly(Reach::Beyond);
+/// assert_eq!(effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths), beyond);
+/// assert_eq!(effect("ls", Shell::Posix, &Paths::new("/etc", "/home/me", ["/work/app"])), beyond);
 /// // Safe, and it changes the disk.
 /// assert!(classify("mkdir build", Shell::Posix, &paths).is_safe());
 /// assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
