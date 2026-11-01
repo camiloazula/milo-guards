@@ -177,7 +177,12 @@ impl milo_guards_core::RuleName for Rule {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let split = unit::split(command, shell, path::drive_of(&paths.cwd.to_string_lossy()));
+    let split = unit::split(
+        command,
+        shell,
+        path::drive_of(&paths.cwd.to_string_lossy()),
+        path::drive_of(&paths.home.to_string_lossy()),
+    );
     let findings = detect::findings(&split, &path::Resolver::new(paths));
     if findings.is_empty() {
         Assessment::Safe

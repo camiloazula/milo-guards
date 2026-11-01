@@ -160,6 +160,19 @@ does not name). Which drive the line is on is not known after `popd`, from a
 working directory on no drive, or beside a `/d` that does not come first, and
 a `cd` to another drive then leaves the line somewhere unknown.
 
+A path that starts at home (`~`, which `%TEMP%`, `%TMP%`, `%USERPROFILE%`,
+`%APPDATA%` and `%LOCALAPPDATA%` become) is on the home directory's drive, and
+is read like a path with that drive letter: `cd %TEMP%` from `D:\ws\repo`
+leaves the line on `D:` when home is on `C:`. When home is on no drive, a `cd`
+to it leaves the line somewhere unknown. cmd refuses a network path
+(`\\host\share`, `//host/share`) as a working directory, so a `cd` or `chdir`
+to one, with or without `/d`, leaves the line where it was (somewhere unknown
+while the drive is only a guess). A PowerShell `Set-Location`, `cd` or
+`Push-Location` to a path with a drive letter, or at home, moves the line onto
+that drive as a guess, as `cd /d` does; a relative one keeps the drive and
+whether it is sure; a provider path (`Env:`), a network path or an unknown one
+leaves the drive unknown. A `cmd /c` the line runs later starts from there.
+
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 

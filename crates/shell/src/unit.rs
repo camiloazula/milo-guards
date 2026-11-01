@@ -216,6 +216,10 @@ pub(crate) struct Split {
     /// drive makes it a guess: it may sit in a branch, in a pipe stage or
     /// behind `start`, or fail, and then the line never left its drive.
     drive_sure: bool,
+    /// The drive the home directory is on (upper case), `None` when it is
+    /// on no drive: where a path that starts at home (`~`, which cmd's
+    /// `%TEMP%` and `%USERPROFILE%` become) is.
+    home_drive: Option<char>,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -333,10 +337,20 @@ impl Split {
             self.in_body.push(self.units.len());
         }
         if let Some(target) = moves_to(&unit) {
-            let effect = if unit.shell == Shell::Cmd {
-                cmd_effect(&unit, &target, self.drive, self.drive_sure)
-            } else {
-                Effect::Moves(None, false)
+            let effect = match unit.shell {
+                Shell::Cmd => cmd_effect(
+                    &unit,
+                    &target,
+                    (self.drive, self.drive_sure),
+                    self.home_drive,
+                ),
+                Shell::PowerShell => ps_effect(
+                    &unit,
+                    &target,
+                    (self.drive, self.drive_sure),
+                    self.home_drive,
+                ),
+                Shell::Posix => Effect::Moves(None, false),
             };
             match effect {
                 Effect::Stays => {}
@@ -651,37 +665,93 @@ enum Effect {
     Unsure(Option<char>),
 }
 
+/// Whether `text` names a network path (`\\host\share`, `//host/share`).
+fn is_network(text: &str) -> bool {
+    text.starts_with("\\\\") || text.starts_with("//")
+}
+
+/// Whether `text` starts at the home directory: `~`, which cmd's `%TEMP%`,
+/// `%USERPROFILE%` and the like become.
+fn at_home(text: &str) -> bool {
+    text.strip_prefix('~')
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
+}
+
+/// The drive a path names.
+enum Named {
+    /// This drive, by its letter or because the path starts at home.
+    On(char),
+    /// The path starts at a home that is on no drive.
+    Nowhere,
+    /// The path names no drive.
+    None,
+}
+
+/// The drive `text` names, from its letter or from the home directory it
+/// starts at.
+fn named_drive(text: &str, home_drive: Option<char>) -> Named {
+    if let Some(letter) = crate::path::drive_of(text) {
+        Named::On(letter)
+    } else if at_home(text) {
+        home_drive.map_or(Named::Nowhere, Named::On)
+    } else {
+        Named::None
+    }
+}
+
 /// What the cmd unit `unit`, which moves to `target`, does to where the line
-/// is, the line being on `drive`, which is certain when `sure`. `cd` without
-/// `/d` does not change the drive: for a path on another drive it sets that
-/// drive's own working directory and the line stays; `/d` changes both, as
-/// `pushd` and `D:` do. None of them can change the drive when it names the
-/// drive the line is on; to another drive each may sit in a branch or a pipe
-/// stage, or fail, so the drive is then only a guess, and a `cd` without `/d`
-/// to a path on a drive other than the guess leaves the line somewhere
-/// unknown.
-fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>, sure: bool) -> Effect {
+/// is, the line being on `drive` (with whether that is certain) and the home
+/// directory on `home_drive`. `cd` without `/d` does not change the drive:
+/// for a path on another drive it sets that drive's own working directory
+/// and the line stays; `/d` changes both, as `pushd` and `D:` do. None of
+/// them can change the drive when it names the drive the line is on; to
+/// another drive each may sit in a branch or a pipe stage, or fail, so the
+/// drive is then only a guess, and a `cd` without `/d` to a path on a drive
+/// other than the guess leaves the line somewhere unknown. cmd refuses a
+/// network path as a working directory, so a `cd` to one leaves the line
+/// where it was.
+fn cmd_effect(
+    unit: &Unit,
+    target: &Arg,
+    (drive, sure): (Option<char>, bool),
+    home_drive: Option<char>,
+) -> Effect {
     // A move onto `there`: certain only when the line was certainly there.
     let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
     if let Some(letter) = drive_switch(unit) {
         return onto(Some(letter));
     }
     let key = unit.key().unwrap_or_default();
+    let refused = || {
+        if sure {
+            Effect::Stays
+        } else {
+            Effect::Unsure(None)
+        }
+    };
     match key.as_str() {
         "popd" => return Effect::Moves(None, false),
         "pushd" => {
             // A network path is mapped to a drive letter the line does not
             // name, so the line is on an unknown drive then.
-            let network = |text: &str| text.starts_with("\\\\") || text.starts_with("//");
             return match target.known() {
-                Some(text) if network(text) => Effect::Moves(None, false),
-                Some(text) => onto(crate::path::drive_of(text).or(drive)),
+                Some(text) if is_network(text) => Effect::Moves(None, false),
+                Some(text) => match named_drive(text, home_drive) {
+                    Named::On(there) => onto(Some(there)),
+                    Named::Nowhere => Effect::Moves(None, false),
+                    Named::None => onto(drive),
+                },
                 None => Effect::Moves(None, false),
             };
         }
         "cd" | "chdir" => {}
-        // `cd..`, `cd\`: no drive in them.
-        _ => return Effect::Moves(drive, sure),
+        // `cd..`, `cd\`: no drive in them, but a network path can follow.
+        _ => {
+            return match target.known() {
+                Some(text) if is_network(text) => refused(),
+                _ => Effect::Moves(drive, sure),
+            };
+        }
     }
     let is_switch = |arg: &Arg| arg.known().is_some_and(|t| t.eq_ignore_ascii_case("/d"));
     let leading = unit.args.first().is_some_and(is_switch);
@@ -693,8 +763,16 @@ fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>, sure: bool) -> Eff
             Effect::Moves(drive, sure)
         };
     };
-    let Some(there) = crate::path::drive_of(text) else {
-        return Effect::Moves(drive, sure);
+    if is_network(text) {
+        return refused();
+    }
+    let there = match named_drive(text, home_drive) {
+        Named::On(there) => there,
+        // Home is on no drive: where it is, and whether `cd` leaves the
+        // line, cannot be told.
+        Named::Nowhere if leading => return Effect::Moves(None, false),
+        Named::Nowhere => return Effect::Unsure(None),
+        Named::None => return Effect::Moves(drive, sure),
     };
     if leading {
         onto(Some(there))
@@ -706,6 +784,37 @@ fn cmd_effect(unit: &Unit, target: &Arg, drive: Option<char>, sure: bool) -> Eff
             Some(_) if sure => Effect::Stays,
             _ => Effect::Unsure(None),
         }
+    }
+}
+
+/// What the PowerShell unit `unit`, which moves to `target`, does to where a
+/// line that may run `cmd` is: a move to a path with a drive letter (or at
+/// home) is onto that drive, only a guess unless the line was certainly
+/// there; a relative path keeps the drive and whether it is certain; a
+/// provider path (`Env:`, `HKLM:`), a network path or an unknown one leaves
+/// the drive unknown.
+fn ps_effect(
+    unit: &Unit,
+    target: &Arg,
+    (drive, sure): (Option<char>, bool),
+    home_drive: Option<char>,
+) -> Effect {
+    let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
+    if let Some(letter) = drive_switch(unit) {
+        return onto(Some(letter));
+    }
+    let Some(text) = target.known() else {
+        return Effect::Moves(None, false);
+    };
+    if is_network(text) {
+        return Effect::Moves(None, false);
+    }
+    match named_drive(text, home_drive) {
+        Named::On(there) => onto(Some(there)),
+        Named::Nowhere => Effect::Moves(None, false),
+        // A provider path (`Env:`, `Microsoft.PowerShell.Core\Registry::`).
+        Named::None if text.contains(':') => Effect::Moves(None, false),
+        Named::None => Effect::Moves(drive, sure),
     }
 }
 
@@ -785,10 +894,16 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-pub(crate) fn split(command: &str, shell: Shell, drive: Option<char>) -> Split {
+pub(crate) fn split(
+    command: &str,
+    shell: Shell,
+    drive: Option<char>,
+    home_drive: Option<char>,
+) -> Split {
     let mut split = Split {
         drive,
         drive_sure: drive.is_some(),
+        home_drive,
         ..Split::default()
     };
     script(&mut split, command, shell, 0);
