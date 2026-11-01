@@ -15,6 +15,32 @@ const WORDS: &str = "a file a tool runs on its own";
 /// Every place on the list, as a file or something below a folder, and at
 /// depth.
 const PLACES: &[&str] = &[
+    ".vscode/settings.json",
+    "proj.code-workspace",
+    "a/b/proj2.code-workspace",
+    "mise.toml",
+    ".mise.toml",
+    "mise.local.toml",
+    ".mise.local.toml",
+    ".zed/tasks.json",
+    ".gitpod.yml",
+    ".gitea/workflows/ci.yml",
+    ".forgejo/workflows/ci.yml",
+    ".woodpecker.yml",
+    ".woodpecker/build.yml",
+    ".githooks/pre-commit",
+    ".githooks",
+    ".cursor/hooks.json",
+    ".windsurf/hooks.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".gemini/settings.json",
+    ".codex/config.toml",
+    ".roo/mcp.json",
+    ".amazonq/mcp.json",
+    ".kiro/settings/mcp.json",
+    ".kiro/hooks/x.kiro.hook",
+    ".continue/mcpServers/x.yaml",
     ".vscode/tasks.json",
     ".vscode/launch.json",
     ".vscode/mcp.json",
@@ -62,7 +88,6 @@ const EVERYDAY: &[&str] = &[
     ".envrc.bak",
     "envrc",
     "tasks.json",
-    ".vscode/settings.json",
     ".vscode/extensions.json",
     ".vscodex/tasks.json",
     "vscode/tasks.json",
@@ -454,11 +479,10 @@ fn a_pattern_that_can_pick_one_is_one() {
             "sed -i s/a/b/ src/*.rs",
             "sed -i s/a/b/ *.md",
             "sed -i s/a/b/ *.json",
-            "sed -i s/a/b/ *.toml",
             "sed -i s/a/b/ src/*",
             "tee src/*",
             "echo x > src/*.txt",
-            "sed -i s/a/b/ .vscode/s*",
+            "sed -i s/a/b/ .vscode/e*",
             "sed -i s/a/b/ .github/*.md",
             "sed -i s/a/b/ lefthook.y",
             "sed -i s/a/b/ Makefile*",
@@ -570,7 +594,7 @@ fn cmd_reads_every_spelling_windows_resolves_to_one_name() {
         Shell::Cmd,
         &windows(),
         &[
-            "echo x > VSCODE~1\\SETTIN~1.JSO",
+            "echo x > VSCODE~1\\EXTENS~1.JSO",
             "echo x > PROGRA~1\\x",
             "echo x > ENVRCX~1",
             "del VSCODE~1\\TASKS~1.JSO",
@@ -722,7 +746,7 @@ fn powershell_reads_every_spelling_windows_resolves_to_one_name() {
         Shell::PowerShell,
         &windows(),
         &[
-            "Set-Content VSCODE~1\\SETTIN~1.JSO x",
+            "Set-Content VSCODE~1\\EXTENS~1.JSO x",
             "Set-Content PROGRA~1\\x x",
             "Set-Content ENVRCX~1 x",
             "Set-Content .envrcx x",
@@ -987,6 +1011,317 @@ fn making_a_folder_is_not_a_write_of_one() {
                 Rule::Overwrite,
             ),
             ("New-Item -ItemType File .husky", Rule::Overwrite),
+        ],
+    );
+}
+
+fn agent_windows() -> Paths {
+    windows().with_protected([Protected::folder(
+        r"C:\Users\me\dev\repo\.agent",
+        "the agent's settings",
+    )])
+}
+
+fn agent_posix() -> Paths {
+    posix().with_protected([Protected::folder(
+        "/home/me/work/repo/.agent",
+        "the agent's settings",
+    )])
+}
+
+/// A rename lands the file at the new name, in the source's folder: what a
+/// `Move-Item` and an `mv` find, a rename finds too.
+#[test]
+fn powershell_renames_and_links_write_the_new_name() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Rename-Item a b",
+            "Rename-Item old.txt new.txt",
+            "Rename-Item -Path a.txt -NewName b.txt",
+            "ren a.txt b.txt",
+            "rni a.txt b.txt",
+            "Rename-Item README.md Readme.md",
+            "Rename-Item .vscode\\old.json other.json",
+            "Rename-Item .vscode\\old.json extensions.json",
+            "Rename-Item sub\\a .envrcx",
+            "Rename-Item .envrc old.txt",
+            "Rename-Item -Path .husky -NewName old-husky",
+            "New-Item -Path .vscode -Name extensions.json",
+            "New-Item -ItemType SymbolicLink -Path link -Value target",
+            "New-Item -ItemType Directory -Path .github -Name workflows",
+            "New-Item -ItemType Directory -Name .husky",
+            "New-Item -Type Directory .githooks",
+        ],
+        &[
+            ("Rename-Item a .envrc", Rule::Overwrite),
+            ("Rename-Item -Path a -NewName .envrc", Rule::Overwrite),
+            (
+                "Rename-Item -LiteralPath a -NewName .envrc",
+                Rule::Overwrite,
+            ),
+            ("Rename-Item -NewName .envrc -Path a", Rule::Overwrite),
+            ("Rename-Item -Path:a -NewName:.envrc", Rule::Overwrite),
+            ("ren a .envrc", Rule::Overwrite),
+            ("rni a .envrc", Rule::Overwrite),
+            ("REN a .ENVRC", Rule::Overwrite),
+            ("Rename-Item a .envrc.", Rule::Overwrite),
+            ("Rename-Item a ENVRC~1", Rule::Overwrite),
+            ("Rename-Item a '.envrc '", Rule::Overwrite),
+            ("Rename-Item sub\\a .envrc", Rule::Overwrite),
+            (
+                "Rename-Item C:\\Users\\me\\dev\\repo\\sub\\a .envrc",
+                Rule::Overwrite,
+            ),
+            ("Rename-Item .vscode\\old.json tasks.json", Rule::Overwrite),
+            ("Rename-Item .vscode\\old.json TASKS~1.JSO", Rule::Overwrite),
+            (
+                "Rename-Item .vscode\\old.json settings.json",
+                Rule::Overwrite,
+            ),
+            (
+                "Rename-Item .github\\workflows\\a.txt ci.yml",
+                Rule::Overwrite,
+            ),
+            ("Rename-Item .github\\a workflows", Rule::Overwrite),
+            ("Rename-Item old .husky", Rule::Overwrite),
+            ("Rename-Item old Jenkinsfile", Rule::Overwrite),
+            ("Rename-Item old proj.code-workspace", Rule::Overwrite),
+            ("Rename-Item old mise.toml", Rule::Overwrite),
+            (
+                "Get-ChildItem *.txt | Rename-Item -NewName .envrc",
+                Rule::Overwrite,
+            ),
+            // A name or a folder only known when it runs.
+            ("Rename-Item a $name", Rule::Overwrite),
+            ("Rename-Item $path .envrc", Rule::Overwrite),
+            (
+                "Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }",
+                Rule::Overwrite,
+            ),
+            // Links.
+            (
+                "New-Item -ItemType SymbolicLink -Path .envrc -Value a",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -ItemType HardLink -Path .envrc -Value a",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -ItemType Junction -Path .husky -Value x",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -Type SymbolicLink -Path .vscode\\tasks.json -Value a",
+                Rule::Overwrite,
+            ),
+            ("ni -Type SymbolicLink .envrc -Value a", Rule::Overwrite),
+            ("ni -ItemType SymbolicLink .envrc -Value a", Rule::Overwrite),
+            (
+                "New-Item -ItemType SymbolicLink -Name .envrc -Value a",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -ItemType SymbolicLink -Path l -Value C:\\Users\\me\\.ssh",
+                Rule::Overwrite,
+            ),
+            // `-Name` in the folder `-Path` names.
+            ("New-Item -Path .vscode -Name tasks.json", Rule::Overwrite),
+            ("New-Item -Name .envrc", Rule::Overwrite),
+            (
+                "New-Item -Path . -Name .envrc -ItemType File",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -ItemType File -Path .github\\workflows -Name ci.yml",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -Path .github\\workflows\\ -Name ci.yml",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -Path GITHUB~1\\workflows -Name ci.yml",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn cmd_renames_and_links_write_the_new_name() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "ren a b",
+            "ren a.txt b.txt",
+            "rename a.txt b.txt",
+            "ren sub\\a .envrcx",
+            "ren .vscode\\old.json extensions.json",
+            "ren .envrc old.txt",
+            "ren .husky old-husky",
+            "mklink link target",
+            "mklink /d link target",
+            "mklink /h link target",
+            "mklink /j link target",
+        ],
+        &[
+            ("ren a .envrc", Rule::Overwrite),
+            ("rename a .envrc", Rule::Overwrite),
+            ("REN a .ENVRC", Rule::Overwrite),
+            ("ren a .envrc.", Rule::Overwrite),
+            ("ren a ENVRC~1", Rule::Overwrite),
+            ("ren sub\\a .envrc", Rule::Overwrite),
+            (
+                "ren C:\\Users\\me\\dev\\repo\\sub\\a .envrc",
+                Rule::Overwrite,
+            ),
+            ("ren .vscode\\old.json tasks.json", Rule::Overwrite),
+            ("ren .vscode\\old.json settings.json", Rule::Overwrite),
+            ("ren .github\\workflows\\a.txt ci.yml", Rule::Overwrite),
+            ("ren old .husky", Rule::Overwrite),
+            ("ren old Jenkinsfile", Rule::Overwrite),
+            ("ren old %NAME%", Rule::Overwrite),
+            ("ren %OLD% .envrc", Rule::Overwrite),
+            ("cd .vscode & ren old.json tasks.json", Rule::Overwrite),
+            ("mklink .envrc a", Rule::Overwrite),
+            ("mklink /h .envrc a", Rule::Overwrite),
+            ("mklink /H .envrc a", Rule::Overwrite),
+            ("mklink /d .github\\workflows x", Rule::Overwrite),
+            ("mklink /D .husky x", Rule::Overwrite),
+            ("mklink /j .husky x", Rule::Overwrite),
+            ("mklink /d /j .husky x", Rule::Overwrite),
+            ("mklink .vscode\\tasks.json a", Rule::Overwrite),
+            ("mklink /h .vscode/tasks.json a", Rule::Overwrite),
+            ("mklink ENVRC~1 a", Rule::Overwrite),
+            ("mklink /d link C:\\Users\\me\\.ssh", Rule::Overwrite),
+            (
+                "mklink /h link C:\\Users\\me\\.ssh\\id_rsa",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_posix_rename_writes_the_new_name() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "rename .htm .html *.htm",
+            "rename -n a b f",
+            "rename -v old new old.txt",
+            "rename old .envrcx old",
+            "rename 's/a/b/' x",
+            "rename 's/\\.htm$/.html/' *.htm",
+            "rename 's/ /_/g' *",
+            "rename 's/foo/bar/' *",
+            "rename 's/^old-//' old-a.txt",
+            "rename -e 's/a/b/' -e 's/b/c/' a",
+            "rename -- old new old",
+            "rename old new",
+            "ln -s a b",
+            "ln a b",
+        ],
+        &[
+            ("rename old .envrc old", Rule::Overwrite),
+            ("rename -v old .envrc old", Rule::Overwrite),
+            ("rename -a old .envrc old", Rule::Overwrite),
+            ("rename old .envrc sub/old", Rule::Overwrite),
+            ("rename old tasks.json .vscode/old", Rule::Overwrite),
+            ("rename old .ENVRC old", Rule::Overwrite),
+            ("rename old ci.yml .github/workflows/old", Rule::Overwrite),
+            ("rename 's/^tmp$/.envrc/' tmp", Rule::Overwrite),
+            ("rename 's/old/.envrc/' sub/old", Rule::Overwrite),
+            ("rename 's/x\\.txt$/.envrc/' x.txt", Rule::Overwrite),
+            ("rename 's/a/.vscode\\/tasks.json/' a", Rule::Overwrite),
+            ("rename 's|a|.vscode/tasks.json|' a", Rule::Overwrite),
+            ("rename -e 's/a/.envrc/' a", Rule::Overwrite),
+            ("rename -e 's/a/b/' -e 's/b/.envrc/' a", Rule::Overwrite),
+            ("rename --expr='s/a/.envrc/' a", Rule::Overwrite),
+            ("rename -n 's/a/.envrc/' a", Rule::Overwrite),
+            ("rename 's/a/.envrc/g' a", Rule::Overwrite),
+            ("rename 's/^old/.git/' old/x", Rule::Overwrite),
+            // A name that is not plain text is a file only known when it runs.
+            ("rename 's/(.*)/$1/' a", Rule::Overwrite),
+            ("rename 's/a/b/i' x", Rule::Overwrite),
+            ("rename 's/a/b/e' x", Rule::Overwrite),
+            ("rename 'y/a-z/A-Z/' x", Rule::Overwrite),
+            ("rename 's/a+/.envrc/' a", Rule::Overwrite),
+            ("rename old $NEW old", Rule::Overwrite),
+            ("rename 's/a/b/' $F", Rule::Overwrite),
+            // Links without `-f`.
+            ("ln a .envrc", Rule::Overwrite),
+            ("ln -s a .envrc", Rule::Overwrite),
+            ("ln -sr a .envrc", Rule::Overwrite),
+            ("ln -T a .envrc", Rule::Overwrite),
+            ("ln -s a .husky/pre-commit", Rule::Overwrite),
+            ("ln -s a .github/workflows/ci.yml", Rule::Overwrite),
+            ("ln -sf a .envrc", Rule::Overwrite),
+            ("ln -sfn a .husky", Rule::Overwrite),
+            ("ln -s a sub/.envrc", Rule::Overwrite),
+        ],
+    );
+}
+
+/// The same hole for the caller's own files: a rename or a link onto a
+/// protected name is a write of it.
+#[test]
+fn a_rename_or_a_link_onto_a_protected_name_is_a_write_of_it() {
+    check(
+        Shell::PowerShell,
+        &agent_windows(),
+        &["Rename-Item a b", "ren a .agentx", "New-Item -Name .agentx"],
+        &[
+            ("Rename-Item a .agent", Rule::Overwrite),
+            ("Rename-Item a .AGENT", Rule::Overwrite),
+            ("Rename-Item -Path a -NewName .agent", Rule::Overwrite),
+            ("ren a .agent", Rule::Overwrite),
+            ("rni a AGENT~1", Rule::Overwrite),
+            ("Rename-Item .\\a .agent", Rule::Overwrite),
+            (
+                "New-Item -ItemType SymbolicLink -Path .agent -Value a",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -Name .agent -ItemType Junction -Value x",
+                Rule::Overwrite,
+            ),
+            ("New-Item -Path .agent -Name rules", Rule::Overwrite),
+            // What is renamed away is a delete of it, as `mv` is.
+            ("Rename-Item .agent old", Rule::Delete),
+            ("ren .agent old", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &agent_windows(),
+        &["ren a b", "ren a .agentx", "mklink link target"],
+        &[
+            ("ren a .agent", Rule::Overwrite),
+            ("rename a .AGENT", Rule::Overwrite),
+            ("ren a AGENT~1", Rule::Overwrite),
+            ("ren .\\a .agent", Rule::Overwrite),
+            ("mklink .agent a", Rule::Overwrite),
+            ("mklink /d .agent a", Rule::Overwrite),
+            ("mklink /j .agent\\rules a", Rule::Overwrite),
+            ("ren .agent old", Rule::Delete),
+        ],
+    );
+    check(
+        Shell::Posix,
+        &agent_posix(),
+        &["rename old new old", "ln -s a b"],
+        &[
+            ("rename old .agent old", Rule::Overwrite),
+            ("rename 's/^old$/.agent/' old", Rule::Overwrite),
+            ("ln -s a .agent", Rule::Overwrite),
+            ("ln a .agent/rules", Rule::Overwrite),
+            ("ln -sf a .AGENT", Rule::Overwrite),
         ],
     );
 }

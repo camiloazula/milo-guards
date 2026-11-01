@@ -336,10 +336,25 @@ own.
 | `cp -r a .github`, `cp -a a .vscode`, `rsync -a a/ .github/`, `xcopy /s a .github`, `Copy-Item -Recurse a .vscode` | `overwrite`: a recursive copy can replace anything below a folder that holds one |
 | `sed -i s/a/b/ .github/workflows/*.yml`, `sed -i s/a/b/ .vscode/*.json`, `sed -i s/a/b/ */Jenkinsfile`, `sed -i s/a/b/ *.yml` | `overwrite`: a pattern that can pick one |
 | `cat .envrc`, `grep x .github/workflows/*`, `cp .envrc /tmp/x`, `rm .envrc`, `rm -rf .husky`, `mv .envrc /tmp/x`, `chmod +x .husky/pre-commit` | safe: a read, a delete or a move away of one is not a write that plants code |
-| `echo x > Makefile`, `sed -i s/a/b/ package.json`, `echo x > justfile`, `echo x > .vscode/settings.json` | safe: they only run when someone asks |
+| `echo x > Makefile`, `sed -i s/a/b/ package.json`, `echo x > justfile`, `echo x > .vscode/extensions.json` | safe: they only run when someone asks |
+| `ren a .envrc`, `rename a .envrc`, `Rename-Item a .envrc`, `Rename-Item -Path a -NewName .envrc`, `rni .vscode\old.json tasks.json`, `mklink .envrc a`, `mklink /h .envrc a`, `New-Item -ItemType SymbolicLink -Path .envrc -Value a`, `New-Item -Path .vscode -Name tasks.json`, `rename old .envrc old`, `rename 's/^tmp$/.envrc/' tmp`, `ln a .envrc` | `overwrite`: a rename or a link puts a file at the new name, which for a rename is in the source's folder |
 | `mkdir -p .github/workflows`, `mkdir .husky`, `md .devcontainer`, `New-Item -ItemType Directory .vscode` | safe: an empty folder is no code, and what is written into it is judged then |
 | `cp .envrc .envrc.bak`, `cp -r .vscode backup`, `cp *.yml deploy/`, `sed -i s/a/b/ src/*` | safe: a destination that may be a file is not read as a folder, a source pattern is not read as a name, and a pattern of nothing but wildcards names none |
 | `echo x > /home/me/other/.envrc`, `echo x > .git/.envrc`, `echo x > /tmp/x/.envrc` | each keeps its own place: beyond the workspace, the history, a temporary file |
+
+A rename or a link is a write of its destination, as a `mv` or an `ln` is:
+`Rename-Item`, `ren`, `rni`, cmd's `ren` and `rename`, `mklink` with any switch,
+`New-Item -ItemType SymbolicLink`, `HardLink` or `Junction` (`-Type` too), and
+`New-Item -Name` in the folder `-Path` names. A rename's new name is a name,
+so it lands in the source's folder (`Rename-Item .vscode\old.json tasks.json`
+is `.vscode\tasks.json`); what is renamed away is judged as `mv` judges it. The
+same holds for a protected name (`ren a .agent`). POSIX `rename` is read as
+util-linux's `rename FROM TO file...` and as perl's `rename 's/FROM/TO/'
+file...` (and `-e`): a plain `s/FROM/TO/` or `s/FROM/TO/g`, with `\.`, `^` and
+`$` in `FROM`, is worked out on each file's name; anything else (a class,
+`+`, a backreference in `TO`, a flag, `y///`, a name or a file only known when
+it runs) is a file only known when it runs, which is an accepted false alarm
+for `rename 's/(\d+)/x$1/' *.jpg`.
 
 What it does not read: unpacking an archive, `git checkout`, `git apply`,
 `git restore`, `git stash pop` and `patch` can write one without naming it;

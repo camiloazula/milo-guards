@@ -222,11 +222,11 @@ each with its test row:
 Not covered, on purpose, and what to do:
 
 - **Files a tool runs that are not on the list.** Core lists the places known
-  to run code on their own; `.vscode/settings.json`, `.cargo/config.toml`,
-  `mise.toml`, a tool's own config and a script a `package.json` names are
-  not in it, and a write to one is safe here. `lefthook.json` and
-  `lefthook.toml` are not either (a `*.json` or `*.toml` pattern would
-  otherwise be a finding); `lefthook.yml` and `lefthook.yaml` are.
+  to run code on their own; `.vscode/extensions.json`, `.cargo/config.toml`, a
+  tool's own config and a script a `package.json` names are not in it, and a
+  write to one is safe here. `lefthook.json` and `lefthook.toml` are not
+  either (a `*.json` pattern would otherwise be a finding); `lefthook.yml` and
+  `lefthook.yaml` are.
 - **Symlinks.** A symlink is judged by its own name, so a link in the
   workspace to `~/.ssh` and a Windows junction are the caller's to refuse
   (the caller who can read the disk can resolve first, and hand the result in).
