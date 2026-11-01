@@ -1,7 +1,9 @@
 //! The rules: each reads a unit's program, flags, operands and redirects,
 //! and judges every path by where it resolves.
 
-use crate::launch::{find_targets, INTERPRETERS, SHELLS};
+use crate::launch::{
+    after_run, find_targets, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+};
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use milo_guards_core::spelling::glob;
@@ -505,6 +507,7 @@ impl Checker<'_> {
     fn write_then_run(&mut self, unit: &Unit, key: &str) {
         let runner = SHELLS.contains(&key)
             || INTERPRETERS.contains(&key)
+            || key == "uv"
             || key.starts_with("python3.")
             || (unit.shell == Shell::Posix && matches!(key, "source" | "."));
         if !runner {
@@ -813,10 +816,21 @@ fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
     if matches!(key, "source" | ".") {
         return args.first();
     }
-    let values: &[&str] = if SHELLS.contains(&key) {
-        &["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]
-    } else {
-        &["-W", "-X", "-r", "--require", "--import", "--loader"]
+    // `uv run file.py` runs Python on the file.
+    if key == "uv" {
+        return uv_script(args);
+    }
+    // `bun run file` and `deno run file` run the file after the subcommand,
+    // which may stand after options (`bun --hot run file`).
+    let values: &[&str] = match key {
+        "bun" => &BUN_VALUES,
+        "deno" => &DENO_VALUES,
+        _ if SHELLS.contains(&key) => &["-o", "+o", "-O", "+O", "--rcfile", "--init-file"],
+        _ => &["-W", "-X", "-r", "--require", "--import", "--loader"],
+    };
+    let args = match key {
+        "bun" | "deno" => after_run(key, args),
+        _ => args,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {

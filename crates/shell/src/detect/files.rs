@@ -20,6 +20,16 @@ impl Checker<'_> {
                 &operands(args, &["-n", "-s", "--iterations", "--size"]),
                 "shreds",
             ),
+            // Delete tools that come as packages (`npx rimraf dist`): the
+            // paths are the operands, as for `rm`. `del --dry-run` only lists.
+            "rimraf" | "del-cli" | "premove" | "rmrf" | "del"
+                if key != "del" || shell == Shell::Posix =>
+            {
+                let dry = matches!(key, "del" | "del-cli") && has_flag(args, None, Some("dry-run"));
+                if !dry {
+                    self.delete(unit, &operands(args, &[]), "deletes");
+                }
+            }
             "find" if shell == Shell::Posix => {
                 if args.iter().any(|arg| arg.known() == Some("-delete")) {
                     let found = find_targets(args);
