@@ -33,13 +33,15 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
+| `just timing` | every test, in an optimized build (`cargo test --release --workspace --all-features --locked`): the tests that time the guard compare against limits that describe an optimized build, so they are ignored under coverage (`cfg(coverage)`) and run here |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just deny` | the dependency gates in `deny.toml`: permissive licences only, crates.io only, no banned crates (`cargo deny check bans licenses sources`) |
 
-The code is compiled by clippy's check pass and by the one instrumented build
-every unit and integration test runs from; the doctests and rustdoc build what
-they need on top. `just test` runs every test, doctests included, without
+The code is compiled by clippy's check pass, by the one instrumented build
+every unit and integration test but the timing tests runs from, and by one
+optimized build that runs every test; the doctests and rustdoc build what they
+need on top. `just test` runs every test, doctests included, without
 coverage, quicker while working.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database

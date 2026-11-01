@@ -6,6 +6,7 @@
 
 use crate::dotglob;
 use crate::powershell::Params;
+use crate::startup;
 use crate::unit::{self, has_flag, Arg, Origin, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
@@ -24,7 +25,7 @@ use wrappers::{
     cmd, env, env_sets, powershell, powershell_folder, rsh, runner, start, start_folder,
     start_process, tmux, xargs,
 };
-pub(crate) use wrappers::{uv_script, RUNNERS};
+pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -184,7 +185,18 @@ fn add_in(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                // `env BASH_ENV=f bash`: the shell it starts runs `f`.
+                let files = if key == "env" && unit.shell == Shell::Posix {
+                    startup::env(split, &unit.args[..start], depth)
+                } else {
+                    Vec::new()
+                };
                 unit = inner(unit, key, start, &Hands::Nothing);
+                for file in files {
+                    if !startup::push(&mut unit.startup, file) {
+                        split.startup_overflow();
+                    }
+                }
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
@@ -335,6 +347,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         origins,
         mut wrappers,
         stage,
+        startup,
         depth,
         ..
     } = unit;
@@ -367,6 +380,8 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup,
+        repeated: false,
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,

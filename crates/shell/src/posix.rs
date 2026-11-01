@@ -1,31 +1,74 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
+use std::rc::Rc;
+
 use tree_sitter::{Node, TreeCursor};
 
 use crate::dotglob;
 use crate::launch;
+use crate::startup;
 use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let text = join_continuations(text);
+    let (text, marks) = join_continuations(text);
     let text = text.as_str();
     let language = tree_sitter_bash::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
-    for name in assigned(tree.root_node(), text) {
+    let (names, looped) = assigned(tree.root_node(), text);
+    for name in names {
         split.reassign(&name);
+    }
+    for name in looped {
+        split.loop_variable(&name);
     }
     if split.kept.on {
         environment(split, tree.root_node(), text);
     }
     Walker {
         source: text,
+        marks: &marks,
         depth,
         split,
     }
     .walk(tree.root_node(), None, 0);
+}
+
+/// Whether a character may stand in a zsh glob qualifier the guard reads:
+/// the file tests and flags, digits for `m`, `u` and the like, `^` to
+/// negate, `-` to follow links, `,` to separate. Not `e` (runs a string),
+/// `+` (runs a function), `P` (adds a string it holds as a word before each
+/// match: `*(DP./usr.)` is `/usr` and every name), `:` (a modifier), `[` (a
+/// subscript) or anything that can hold a substitution.
+fn qualifier_char(c: char) -> bool {
+    (c.is_ascii_alphanumeric() && !"eP".contains(c)) || ".^/@=%*,-".contains(c)
+}
+
+/// How many characters of `rest`, the text after a `(`, make a zsh glob
+/// qualifier that holds `D` (`*git(D)`, `*(.D)`), the `)` included. `word` is
+/// the text in front of the `(`, back to the last space: it must end a word,
+/// so not a space or what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(` and `!(`
+/// something else. The `)` must end the word too.
+///
+/// A word that holds `^`, `#`, or a `~` that does not start it is left as it
+/// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
+/// `.#git(D)` match `.git`, which a guard that reads them as plain text
+/// would not see.
+fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
+    word.chars()
+        .last()
+        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
+        return None;
+    }
+    let end = rest.iter().position(|c| *c == ')')?;
+    let body = &rest[..end];
+    let ends = rest
+        .get(end + 1)
+        .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
+    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -33,8 +76,14 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
 /// comments and here-document bodies, where it stays. A body is copied as it
 /// is, so a quote in it (`don't`) cannot leave the rest of the line looking
 /// quoted.
-fn join_continuations(text: &str) -> String {
+///
+/// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
+/// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
+/// given back as the offset in the new text where it was, the end of its
+/// word, for [`Walker::qualified`].
+fn join_continuations(text: &str) -> (String, Vec<usize>) {
     let chars: Vec<char> = text.chars().collect();
+    let mut marks = Vec::new();
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
     // Here-documents opened on the current line, read from the next one:
@@ -47,6 +96,16 @@ fn join_continuations(text: &str) -> String {
             joined.push(c);
             single = c != '\'';
             continue;
+        }
+        // zsh's `(D)` glob qualifier at the end of a word.
+        if c == '(' && !double {
+            let rest = chars.get(at..).unwrap_or_default();
+            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
+            if let Some(length) = qualifier(word, rest) {
+                at += length;
+                marks.push(joined.len());
+                continue;
+            }
         }
         match c {
             '\\' => match chars.get(at) {
@@ -139,7 +198,7 @@ fn join_continuations(text: &str) -> String {
             _ => joined.push(c),
         }
     }
-    joined
+    (joined, marks)
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -154,17 +213,36 @@ fn piped_heredoc(node: Node<'_>) -> bool {
     }
 }
 
-/// The variables the line sets anywhere: assignments (also after `export`
-/// or `local`), `for` variables, `unset` and `read`.
-fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
+/// How many words of `rest`, the text after a command, are a lone `-` that
+/// the grammar leaves out: those that stand between the command and a
+/// here-document (`<<`, not the here-string `<<<`).
+fn dashes_before_heredoc(rest: &str) -> usize {
+    let mut rest = rest.trim_start_matches([' ', '\t']);
+    let mut found = 0;
+    while let Some(after) = rest.strip_prefix('-') {
+        if !after.starts_with([' ', '\t', '<']) {
+            return 0;
+        }
+        found += 1;
+        rest = after.trim_start_matches([' ', '\t']);
+    }
+    if found > 0 && rest.starts_with("<<") && !rest.starts_with("<<<") {
+        found
+    } else {
+        0
+    }
+}
+
+/// The variables the line sets anywhere (assignments, also after `export`
+/// or `local`, `for` variables, `unset` and `read`), and among them the ones
+/// a `for` loop or a `read` sets: each of those holds one item of what the
+/// loop walks or the input it reads. One walk of the tree finds both.
+fn assigned(root: Node<'_>, source: &str) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
+    let mut looped = Vec::new();
     unit::for_each_node(root, |node| match node.kind() {
         "variable_assignment" => names.extend(
             node.child_by_field_name("name")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
-        "for_statement" => names.extend(
-            node.child_by_field_name("variable")
                 .map(|name| unit::text(&name, source).to_string()),
         ),
         "unset_command" => {
@@ -174,21 +252,36 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
                     .map(|name| unit::text(&name, source).to_string()),
             );
         }
+        _ => {
+            let found = loop_variables(node, source);
+            names.extend(found.iter().cloned());
+            looped.extend(found);
+        }
+    });
+    (names, looped)
+}
+
+/// The variable of a `for` statement, or the names a `read` is given.
+fn loop_variables(node: Node<'_>, source: &str) -> Vec<String> {
+    match node.kind() {
+        "for_statement" => node
+            .child_by_field_name("variable")
+            .map(|name| unit::text(&name, source).to_string())
+            .into_iter()
+            .collect(),
         "command"
             if node
                 .child_by_field_name("name")
                 .is_some_and(|name| unit::text(&name, source) == "read") =>
         {
             let mut cursor = node.walk();
-            names.extend(
-                node.children_by_field_name("argument", &mut cursor)
-                    .map(|arg| unit::text(&arg, source).to_string())
-                    .filter(|arg| !arg.starts_with('-')),
-            );
+            node.children_by_field_name("argument", &mut cursor)
+                .map(|arg| unit::text(&arg, source).to_string())
+                .filter(|arg| !arg.starts_with('-'))
+                .collect()
         }
-        _ => {}
-    });
-    names
+        _ => Vec::new(),
+    }
 }
 
 /// The variables the line sets or unsets, for `effect`: assignments (also
@@ -225,7 +318,7 @@ fn environment(split: &mut Split, root: Node<'_>, source: &str) {
         }
         "for_statement" => {
             if let Some(name) = node.child_by_field_name("variable") {
-                split.loop_variable(unit::text(&name, source));
+                split.kept_loop(unit::text(&name, source));
             }
         }
         _ => {}
@@ -309,11 +402,98 @@ fn words_lost_after_redirect(command: Node<'_>) -> bool {
 
 struct Walker<'a> {
     source: &'a str,
+    /// Where `source` had a `(D)` glob qualifier taken out (see
+    /// [`join_continuations`]).
+    marks: &'a [usize],
     depth: usize,
     split: &'a mut Split,
 }
 
 impl Walker<'_> {
+    /// Whether `node` is, or ends with, a word that had a `(D)` glob
+    /// qualifier: its wildcards can match a leading dot.
+    fn qualified(&self, node: Node<'_>) -> bool {
+        self.marks
+            .iter()
+            .any(|mark| (node.start_byte()..=node.end_byte()).contains(mark))
+    }
+
+    /// Whether `node`, a `${…}`, assigns `GLOBIGNORE` a value that is not
+    /// empty: `${GLOBIGNORE:=x}` when it is unset or empty, `${GLOBIGNORE=x}`
+    /// when it is unset. Whether it was is not known, so the assignment is
+    /// taken as made.
+    fn assigns_ignore(&self, node: Node<'_>) -> bool {
+        let text = unit::text(&node, self.source);
+        let Some(inner) = text
+            .strip_prefix("${")
+            .and_then(|inner| inner.strip_suffix('}'))
+            .and_then(|inner| inner.strip_prefix(dotglob::GLOBIGNORE))
+        else {
+            return false;
+        };
+        // `GLOBIGNORE[0]`: an element of it is set, and the first is read.
+        let inner = match inner.strip_prefix('[') {
+            Some(subscript) => subscript.split_once(']').map_or("", |(_, rest)| rest),
+            None => inner,
+        };
+        let value = inner.strip_prefix(":=").or_else(|| inner.strip_prefix('='));
+        value.is_some_and(|value| {
+            dotglob::assigns_hiding(&Arg::Unknown(format!("{}={value}", dotglob::GLOBIGNORE)))
+        })
+    }
+
+    /// The operands of a chain of assignments in `(( ))`, in order, as the
+    /// text each is written in: `x = y = 1` is `x`, `y` and `1`, however the
+    /// parse nests it. Anything else is one operand.
+    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>) {
+        let assigning = node.kind() == "binary_expression" && {
+            let mut cursor = node.walk();
+            let found = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            found.is_some_and(|operator| {
+                operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+            })
+        };
+        match (
+            assigning,
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            (true, Some(left), Some(right)) => {
+                self.chain_operands(left, out);
+                self.chain_operands(right, out);
+            }
+            _ => out.push(node),
+        }
+    }
+
+    /// Whether `node`, an assignment in `(( ))`, gives `GLOBIGNORE` a value
+    /// at any place of a chain: `GLOBIGNORE = 1`, `x = GLOBIGNORE = 1`. Every
+    /// operand but the last is assigned to; the last is the value.
+    fn assigns_in_chain(&self, node: Node<'_>) -> bool {
+        let mut operands = Vec::new();
+        self.chain_operands(node, &mut operands);
+        operands.split_last().is_some_and(|(_, targets)| {
+            targets
+                .iter()
+                .any(|target| unit::text(target, self.source).trim() == dotglob::GLOBIGNORE)
+        })
+    }
+
+    /// Whether `node` or anything in it assigns `GLOBIGNORE` with a `${…}`:
+    /// the shell expands the words of a command before it expands the
+    /// command's own wildcards, so `rm -rf ${GLOBIGNORE:=x}*git` has it set
+    /// when `*git` is read.
+    fn holds_ignore_assignment(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node(node, |inner| {
+            found |= inner.kind() == "expansion" && self.assigns_ignore(inner);
+        });
+        found
+    }
+
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.walk_in(node, stage, level, false);
     }
@@ -378,8 +558,16 @@ impl Walker<'_> {
                     if child.kind() != "variable_assignment" && self.arg_hides(child) {
                         self.split.hide();
                     }
+                    if child.kind() != "variable_assignment" {
+                        let text = unit::text(&child, self.source);
+                        let written = startup::Written {
+                            expanded: text.contains(['$', '`']),
+                            pwd: text.contains("PWD"),
+                        };
+                        self.startup_words(&[self.arg(child)], written);
+                    }
                 }
-                self.declared(node, stage);
+                self.declaration(node, stage);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE=1 ))`
@@ -392,11 +580,24 @@ impl Walker<'_> {
                 let assigns = operator.is_some_and(|operator| {
                     operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
                 });
-                let left = node.child_by_field_name("left");
-                if assigns
-                    && left
-                        .is_some_and(|left| unit::text(&left, self.source) == dotglob::GLOBIGNORE)
-                {
+                if assigns && self.assigns_in_chain(node) {
+                    self.split.hide();
+                }
+                self.children(node, stage, level);
+            }
+            // `: ${GLOBIGNORE:=x}`: the expansion sets it.
+            "expansion" => {
+                if self.assigns_ignore(node) {
+                    self.split.hide();
+                }
+                self.children(node, stage, level);
+            }
+            // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
+            // becomes 1 or -1.
+            "postfix_expression" | "unary_expression" => {
+                let text = unit::text(&node, self.source);
+                let bare = text.replace("++", "").replace("--", "");
+                if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
                     self.split.hide();
                 }
                 self.children(node, stage, level);
@@ -418,6 +619,16 @@ impl Walker<'_> {
                 {
                     self.split.hide();
                 }
+                // `for f in *git(D); do rm -rf "$f"; done`: the body works
+                // on names the qualifier let a wildcard match.
+                let mut cursor = node.walk();
+                if node.kind() == "for_statement"
+                    && node
+                        .children_by_field_name("value", &mut cursor)
+                        .any(|word| self.qualified(word))
+                {
+                    self.split.hide_functions();
+                }
                 if let Some(name) = node
                     .child_by_field_name("name")
                     .filter(|_| node.kind() == "function_definition")
@@ -428,11 +639,13 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
                 self.children(node, stage, level);
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }
@@ -621,11 +834,18 @@ impl Walker<'_> {
         let Some(name) = node.child_by_field_name("name") else {
             return;
         };
+        // `rm -rf ${GLOBIGNORE:=x}*git`: set while the words are expanded,
+        // before the wildcard is.
+        if self.holds_ignore_assignment(node) {
+            self.split.hide();
+        }
         let program = self.arg(name);
         let mut cursor = node.walk();
         let nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
+        let qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
@@ -647,6 +867,11 @@ impl Walker<'_> {
                 args.push(self.arg(arg));
             }
         }
+        // The grammar leaves a `-` that is the last word before a
+        // here-document out of the tree (`cat a - <<EOF` has the argument
+        // `a` only): it is an argument all the same.
+        let lost = dashes_before_heredoc(self.source.get(node.end_byte()..).unwrap_or_default());
+        args.extend(std::iter::repeat_n(Arg::Known("-".to_string()), lost));
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.
@@ -662,12 +887,48 @@ impl Walker<'_> {
                     .enumerate()
                     .any(|(at, arg)| arg.known() == Some("-v") && names(at + 1))
             }
-            Some("let") => args.iter().any(dotglob::assigns_hiding),
+            Some("let") => args
+                .iter()
+                .any(|arg| dotglob::assigns_hiding(arg) || dotglob::arithmetic_hides(arg)),
             _ => false,
         };
         if sets {
             self.split.hide();
         }
+        if program
+            .known()
+            .is_some_and(|name| startup::read_into(name, &args))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a variable the shell runs later to a value only known when it runs",
+                Some(program.text()),
+            );
+        }
+        // `BASH_ENV=f bash -c '…'`: the shell it starts runs `f` first.
+        let mut cursor = node.walk();
+        let assignments: Vec<Node<'_>> = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .collect();
+        let mut startup = Rc::default();
+        // In front of a special builtin the assignment outlives it: it stays
+        // set, and exported, for the rest of the line (POSIX mode, and an
+        // `EXIT` or `RETURN` trap that runs with it still set). It is read
+        // as the line-level statement it then is.
+        let outlives = program
+            .known()
+            .is_some_and(|name| startup::SPECIAL.contains(&name));
+        for assignment in &assignments {
+            if let Some(file) = self.startup(*assignment) {
+                if outlives {
+                    self.split.add_startup(file);
+                } else if !startup::push(&mut startup, file) {
+                    self.split.startup_overflow();
+                }
+            }
+        }
+        self.declared(program.known(), &args);
         // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
         let mut cursor = node.walk();
         let prefixed = node
@@ -691,11 +952,11 @@ impl Walker<'_> {
             );
         }
         let outer = self.split.scope_hidden(prefixed);
-        launch::add(
-            self.split,
-            Unit::new(Shell::Posix, program, args, stage),
-            self.depth,
-        );
+        let before = self.split.qualify(qualified);
+        let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        unit.startup = startup;
+        launch::add(self.split, unit, self.depth);
+        self.split.restore_qualified(before);
         self.split.unscope_hidden(outer);
     }
 
@@ -723,6 +984,80 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        // `BASH_ENV=f` on a line of its own, or after `export`, is the
+        // file every shell started from here on runs.
+        if let Some(file) = self.startup(node) {
+            self.split.add_startup(file);
+        }
+    }
+
+    /// `builtin export PS4=…`, `command declare PS4=…`: the same
+    /// assignments as `export` itself makes, behind the builtins that
+    /// run it.
+    fn declared(&mut self, program: Option<&str>, args: &[Arg]) {
+        let mut at = 0;
+        let mut name = program;
+        while matches!(name, Some("builtin" | "command")) {
+            if name == Some("command") {
+                while let Some(flags) = args
+                    .get(at)
+                    .and_then(Arg::known)
+                    .filter(|word| word.starts_with('-'))
+                {
+                    // `command -v export …` only says what `export` is.
+                    if flags.contains(['v', 'V']) {
+                        return;
+                    }
+                    at += 1;
+                }
+            }
+            name = args.get(at).and_then(Arg::known);
+            at += 1;
+        }
+        if program != name
+            && matches!(
+                name,
+                Some("export" | "declare" | "typeset" | "local" | "readonly")
+            )
+        {
+            // The words are values already, so the line can no longer say
+            // whether `$PWD` was one of them: it is taken as if it was.
+            let written = startup::Written {
+                expanded: true,
+                pwd: true,
+            };
+            self.startup_words(&args[at..], written);
+        }
+    }
+
+    /// The `NAME=value` words of `words`, read as assignments that set a
+    /// variable the shell runs later.
+    fn startup_words(&mut self, words: &[Arg], written: startup::Written) {
+        for word in words {
+            if let Some((name, value)) = startup::word(word) {
+                if let Some(file) = startup::read(self.split, &name, &value, self.depth, written) {
+                    self.split.add_startup(file);
+                }
+            }
+        }
+    }
+
+    /// Read the assignment `node` for a variable the shell runs later (see
+    /// [`startup`]): the file it names when it is `BASH_ENV`.
+    fn startup(&mut self, node: Node<'_>) -> Option<startup::Startup> {
+        let source = self.source;
+        let name = startup::variable(unit::text(&node.child_by_field_name("name")?, source));
+        if !startup::VARIABLES.contains(&name) {
+            return None;
+        }
+        let written = node.child_by_field_name("value")?;
+        let text = unit::text(&written, source);
+        let how = startup::Written {
+            expanded: text.contains(['$', '`']),
+            pwd: text.contains("PWD"),
+        };
+        let value = self.arg(written);
+        startup::read(self.split, name, &value, self.depth, how)
     }
 
     /// A command and what it holds. What its substitutions run is handed to
@@ -747,6 +1082,9 @@ impl Walker<'_> {
                 self.split.redirect(own.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
+            }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
             }
         }
     }
@@ -812,6 +1150,9 @@ impl Walker<'_> {
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
+            if let Some(text) = self.fed_literal(child) {
+                self.split.text_fed(own.clone(), text);
+            }
             for inside in inside {
                 self.split.nest(own.clone(), inside);
             }
@@ -836,7 +1177,7 @@ impl Walker<'_> {
 
     /// `export -p` and `declare -x` print the environment: they are programs
     /// the line runs like any other.
-    fn declared(&mut self, node: Node<'_>, stage: Option<Stage>) {
+    fn declaration(&mut self, node: Node<'_>, stage: Option<Stage>) {
         let Some(keyword) = node.child(0).filter(|keyword| !keyword.is_named()) else {
             return;
         };
@@ -912,6 +1253,62 @@ impl Walker<'_> {
         (!text.is_empty()).then_some(Arg::Unknown(text))
     }
 
+    /// The text a here-string or a here-document feeds, as written, whether
+    /// or not it holds an expansion (a template when it does): the
+    /// statements a database client reads from its input.
+    fn fed_literal(&self, node: Node<'_>) -> Option<Arg> {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "herestring_redirect" => Some(self.arg(node.named_children(&mut cursor).next()?)),
+            "heredoc_redirect" => {
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let kind = |kind: &str| children.iter().find(|child| child.kind() == kind);
+                let body = kind("heredoc_body");
+                let opened = kind("heredoc_start").map(|start| start.end_position().row);
+                // A first line that starts with a backslash is read as
+                // arguments of the redirect, not as the start of the body;
+                // the body is what is on the lines after the one that
+                // opens it.
+                let mut arguments = node.walk();
+                let lost: Vec<Node<'_>> = node
+                    .children_by_field_name("argument", &mut arguments)
+                    .filter(|argument| {
+                        opened.is_some_and(|row| argument.start_position().row > row)
+                    })
+                    .collect();
+                let from = lost
+                    .iter()
+                    .map(Node::start_byte)
+                    .chain(body.map(Node::start_byte))
+                    .min();
+                let end = kind("heredoc_end")
+                    .map(Node::start_byte)
+                    .or_else(|| body.map(Node::end_byte));
+                let (Some(from), Some(end)) = (from, end) else {
+                    return Some(Arg::Known(String::new()));
+                };
+                // From the start of its line.
+                let from = self
+                    .source
+                    .get(..from)
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |newline| newline + 1);
+                let raw = self.source.get(from..end).unwrap_or_default();
+                // The delimiter is quoted when any part of it is: `'EOF'`,
+                // `"EOF"`, `\EOF`.
+                let quoted = kind("heredoc_start").is_some_and(|start| {
+                    unit::text(start, self.source).contains(['\'', '"', '\\'])
+                });
+                let strips = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
+                Some(heredoc_fed(raw, strips, quoted))
+            }
+            _ => None,
+        }
+    }
+
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
     /// file rather than a descriptor.
     fn redirect(&mut self, node: Node<'_>) {
@@ -924,6 +1321,7 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        let before = self.split.qualify(self.qualified(destination));
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
         if operator == Some("<") {
@@ -939,6 +1337,7 @@ impl Walker<'_> {
         if writes {
             self.split.write(Shell::Posix, target);
         }
+        self.split.restore_qualified(before);
     }
 
     /// An argument's value, where its spelling gives it.
@@ -1069,8 +1468,8 @@ impl Walker<'_> {
     }
 
     /// `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` as paths the resolver reads,
-    /// unless the line sets them; any other variable is only known when it
-    /// runs.
+    /// unless the line sets them (or moves, for `$PWD`, to a name that may
+    /// hold code); any other variable is only known when it runs.
     fn variable(&self, source: &str) -> Arg {
         let name = source
             .strip_prefix("${")
@@ -1079,10 +1478,65 @@ impl Walker<'_> {
             .filter(|name| !self.split.reassigned(name));
         match name {
             Some("HOME") => Arg::Known("~".to_string()),
-            Some("PWD") => Arg::Known(".".to_string()),
+            // After a `cd` to a name the line chose that may hold code
+            // (`d$(rm -rf ~)`, or one only known when it runs), `$PWD` is
+            // that name: text a `PS4` or `BASH_ENV` expands again.
+            Some("PWD") if self.split.pwd_is_plain() => Arg::Known(".".to_string()),
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+}
+
+/// The text a here-document feeds, from the lines of its body as written.
+/// `<<-` takes the tabs off the front of each line, whatever the delimiter.
+/// With a quoted delimiter the body is fed as it is. With an unquoted one the
+/// shell reads it as the inside of a double-quoted word, without the quotes:
+/// a backslash before a newline joins the lines, and before `$`, a backtick
+/// or a backslash it goes and leaves the character; any other backslash
+/// stays. What is left of `$` or a backtick is an expansion, so the text is a
+/// template (`$$` is the shell's process id, and tree-sitter does not read it
+/// as an expansion). A body with both an escaped and an expanding `$` or
+/// backtick is known only when it runs: a template reads each `$` it holds as
+/// an expansion, and would take a character the client gets as it is for one.
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+    let lines: String = if strips {
+        raw.split_inclusive('\n')
+            .map(|line| line.trim_start_matches('\t'))
+            .collect()
+    } else {
+        raw.to_string()
+    };
+    if quoted {
+        return Arg::Known(lines);
+    }
+    let mut text = String::with_capacity(lines.len());
+    let (mut escaped, mut expands) = (false, false);
+    let mut chars = lines.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('\\', Some('\n')) => {
+                chars.next();
+            }
+            ('\\', Some(next @ ('$' | '`' | '\\'))) => {
+                chars.next();
+                text.push(next);
+                escaped |= next != '\\';
+            }
+            ('$' | '`', _) => {
+                expands = true;
+                text.push(c);
+            }
+            _ => text.push(c),
+        }
+    }
+    match (escaped, expands) {
+        (true, true) => Arg::Unknown(raw.to_string()),
+        (false, true) => Arg::Template {
+            text,
+            source: raw.to_string(),
+        },
+        (_, false) => Arg::Known(text),
     }
 }
 

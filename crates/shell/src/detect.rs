@@ -2,13 +2,15 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, find_targets, is_stdin, powershell_file, uv_script, BUN_VALUES, DENO_VALUES,
+    INTERPRETERS, SHELLS,
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use milo_guards_core::spelling::glob;
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -16,11 +18,14 @@ use milo_guards_core::Flavour;
 
 mod archives;
 mod code;
+mod data;
 mod files;
 mod processes;
 mod regex;
+mod resources;
 mod secrets;
 mod send;
+mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -34,6 +39,17 @@ const ELEVATORS: [&str; 8] = [
     "run0",
     "systemd-run",
 ];
+
+/// Builtins that start no program: they print, test, move or set a variable,
+/// so a `BASH_ENV` file is not run for them (one set in front of a special
+/// builtin stays set for the rest of the line: see `startup::SPECIAL`).
+const STARTS_NOTHING: [&str; 21] = [
+    "echo", "printf", "true", "false", ":", "cd", "export", "unset", "set", "pwd", "test", "[",
+    "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
+];
+
+/// The extensions Windows runs a program by when its name has none.
+const WINDOWS_EXTENSIONS: [&str; 4] = [".bat", ".cmd", ".com", ".exe"];
 
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
@@ -70,10 +86,13 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         split,
         resolver,
         found: split.findings.clone(),
-        written: Vec::new(),
+        written: HashSet::new(),
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        stages: HashMap::new(),
+        scans_keys: None,
+        data: data::Cache::default(),
         lengths: HashMap::new(),
         pipelines: HashMap::new(),
         flow: send::Flow::default(),
@@ -96,6 +115,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
         }
@@ -126,7 +150,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
         writes.push(checker.found[before..].to_vec());
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
     Judged {
         found: checker.found,
@@ -142,7 +166,7 @@ struct Checker<'a> {
     found: Vec<Finding>,
     /// Every file the line writes, by [`Resolver::file_key`]: redirects,
     /// downloads, copies, `tee`, `dd`.
-    written: Vec<String>,
+    written: HashSet<String>,
     /// Whether the line writes a file it cannot place (a target known only
     /// when it runs, or after a `cd` to such a place): it has no key, but
     /// may be a script the line runs.
@@ -151,6 +175,14 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Every unit at each pipeline stage, by its index in the split: a stage
+    /// can be a group of several.
+    stages: HashMap<(usize, usize), Vec<usize>>,
+    /// Whether the line lists keys in Redis, once worked out: every
+    /// `redis-cli del` that is given keys asks, and the answer is the line's.
+    scans_keys: Option<bool>,
+    /// What the line says to its database clients, read once for each stage.
+    data: data::Cache,
     /// The number of stages of each pipeline.
     lengths: HashMap<usize, usize>,
     /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
@@ -165,7 +197,7 @@ impl Checker<'_> {
     /// Note a file the line writes, from `dir`.
     fn written(&mut self, dir: Option<&Arg>, target: &Arg, shell: Shell) {
         if let Some(key) = self.resolver.file_key(dir, target, shell) {
-            self.written.push(key);
+            self.written.insert(key);
         } else if self.resolver.unplaced(dir, target, shell) {
             self.unplaced_write = true;
         }
@@ -182,15 +214,22 @@ impl Checker<'_> {
     fn unit(&mut self, at: usize, unit: &Unit) {
         self.called(unit);
         let Some(key) = unit.key() else {
+            // A program only known when it runs may be a shell, or start one.
+            self.startup_then_run(unit, None);
             return;
         };
         self.elevated(unit, &key);
-        self.reads(unit);
+        self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
+        self.program_then_run(unit);
+        self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
         self.send(at, unit, &key);
+        self.data(at, unit, &key);
+        self.resources(unit, &key);
         self.system(unit, &key);
+        self.settings(unit, &key);
         self.code(unit, &key);
     }
 
@@ -218,13 +257,13 @@ impl Checker<'_> {
 
     /// A shell or an interpreter reading what to run from its input: a
     /// download piped into it is a downloaded script.
-    fn reads(&mut self, unit: &Unit) {
+    fn reads(&mut self, unit: &Unit, reads: Reads) {
         let downloaded = unit.stage.is_some_and(|stage| {
             self.downloaders
                 .get(&stage.pipeline)
                 .is_some_and(|&first| first < stage.index)
         });
-        match (unit.reads, downloaded) {
+        match (reads, downloaded) {
             (Reads::Shell | Reads::Interpreter, true) => {
                 self.add(Rule::RunDownloaded, "runs a downloaded script", None);
             }
@@ -261,10 +300,16 @@ impl Checker<'_> {
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        self.delete_matching(unit, targets, verb, false);
+    }
+
+    /// [`Checker::delete`], where `hidden` says the program matches the
+    /// wildcards itself, with names that start with a dot among them.
+    fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
-                hidden: unit.hidden || listed_hidden,
+                hidden: unit.hidden || listed_hidden || hidden,
                 ..unit.scope()
             };
             for arg in found {
@@ -447,7 +492,8 @@ impl Checker<'_> {
         self.write_to(shell, scope, target, verb, "a file", access);
     }
 
-    /// A write to `target`, which is a `what` in the words of a reason.
+    /// A write to `target`, which is a `what` in the words of a reason, by
+    /// how it reaches it (see [`Access`]).
     fn write_to(
         &mut self,
         shell: Shell,
@@ -457,6 +503,7 @@ impl Checker<'_> {
         what: &str,
         access: Access,
     ) {
+        self.selinux_file(shell, scope.dir, target);
         match self.place_into(shell, scope, target, access) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
@@ -584,8 +631,27 @@ impl Checker<'_> {
     }
 
     /// A shell or interpreter that runs a script the same line writes, so
-    /// what it does is not in the line.
+    /// what it does is not in the line. PowerShell runs a file by `-File`
+    /// (`pwsh`, a first word that is not a parameter, too) and
+    /// `Invoke-Command -FilePath`, and a name with no extension may be the
+    /// `.ps1` it tries first.
     fn write_then_run(&mut self, unit: &Unit, key: &str) {
+        let file = match key {
+            "powershell" | "pwsh" => powershell_file(&unit.args, key == "pwsh"),
+            "invoke-command" if unit.shell == Shell::PowerShell => Params::read(&unit.args)
+                .values(&["filepath"])
+                .first()
+                .map(|file| (*file).clone()),
+            _ => None,
+        };
+        if let Some(file) = file {
+            let before = self.found.len();
+            self.runs_written(unit, &file, unit.dir.as_ref());
+            if self.found.len() == before {
+                self.extension_then_run(unit, &file);
+            }
+            return;
+        }
         let runner = SHELLS.contains(&key)
             || INTERPRETERS.contains(&key)
             || key == "uv"
@@ -597,11 +663,115 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
+        self.runs_written(unit, script, unit.dir.as_ref());
+    }
+
+    /// A program started by a path (`./x.sh`, `x/run`, `/tmp/x`) is that
+    /// file run as the program, as `sh x.sh` runs it, so it is checked
+    /// against the files the line writes the same way. A bare name is looked
+    /// up in `PATH`, not in the folder, so it is not a file the line wrote;
+    /// cmd looks in the working folder first, so a bare name there is the
+    /// file when the line writes one of that name (not judged when it cannot
+    /// be placed: `dir` and `echo` are programs of cmd, not files). For a
+    /// Windows shell a name with no extension may be the file with one of
+    /// the executable extensions (`a` runs `a.bat`), and PowerShell also
+    /// tries `a.ps1` first.
+    fn program_then_run(&mut self, unit: &Unit) {
+        let Some(program) = unit.program.known() else {
+            return;
+        };
+        let by_path = program.contains(separators(unit.shell));
+        if !by_path && unit.shell != Shell::Cmd {
+            return;
+        }
+        if by_path {
+            let before = self.found.len();
+            self.runs_written(unit, &unit.program, unit.dir.as_ref());
+            if self.found.len() != before {
+                return;
+            }
+        } else if self.names_written(unit, program) {
+            self.add_run_written(&unit.program);
+            return;
+        }
+        self.extension_then_run(unit, &unit.program);
+    }
+
+    /// `script`, a name with no extension, run on a Windows shell: it may be
+    /// the file the line writes with one of the executable extensions, and
+    /// PowerShell tries `.ps1` first.
+    fn extension_then_run(&mut self, unit: &Unit, script: &Arg) {
+        let Some(name) = script.known() else {
+            return;
+        };
+        let last = name.rsplit(separators(unit.shell)).next().unwrap_or(name);
+        if unit.shell == Shell::Posix || last.contains('.') {
+            return;
+        }
+        let first = (unit.shell == Shell::PowerShell).then_some(".ps1");
+        if first
+            .into_iter()
+            .chain(WINDOWS_EXTENSIONS)
+            .any(|extension| self.names_written(unit, &format!("{name}{extension}")))
+        {
+            self.add_run_written(script);
+        }
+    }
+
+    /// Whether the line writes the file `name` names from where `unit` runs.
+    fn names_written(&self, unit: &Unit, name: &str) -> bool {
+        self.resolver
+            .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
+            .is_some_and(|wanted| self.written.contains(&wanted))
+    }
+
+    fn add_run_written(&mut self, script: &Arg) {
+        self.add(
+            Rule::Unknown,
+            "runs a script the same line writes",
+            Some(script),
+        );
+    }
+
+    /// A program that starts a bash runs the file `BASH_ENV` names before
+    /// that bash's own script, when the same line writes it: a shell, and
+    /// any program that may start one (`make` runs its recipes with the
+    /// `SHELL` of its makefile, a script with a `#!/bin/bash` line, `git`
+    /// its hooks). What starts nothing is a builtin that only prints, tests
+    /// or sets a variable ([`STARTS_NOTHING`]); `key` is `None` for a
+    /// program only known when it runs.
+    fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
+        if unit.shell != Shell::Posix || key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
+            return;
+        }
+        // The files the line sets for every shell it starts count wherever
+        // the unit sits, as the files it writes do: an assignment is read
+        // where it is written, and a trap action, the next pass of a loop or
+        // a function body runs after it.
+        for entry in unit.startup.iter().chain(self.split.startup.iter()) {
+            // `BASH_ENV=/dev/stdin` is the shell's input run as a script, as
+            // `bash /dev/stdin` is.
+            if entry.file.known().is_some_and(is_stdin) {
+                self.reads(unit, Reads::Shell);
+                continue;
+            }
+            self.runs_written(unit, &entry.file, unit.dir.as_ref());
+            // A name an expansion made (`$PWD/e.sh`) is the file where the
+            // line assigned it, whatever folder the shell runs from.
+            if entry.expanded && entry.assigned.as_ref() != unit.dir.as_ref() {
+                self.runs_written(unit, &entry.file, entry.assigned.as_ref());
+            }
+        }
+    }
+
+    /// `unit` runs `script`, from `dir`: say so when the line writes it, or
+    /// may.
+    fn runs_written(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
         // A script path the guard cannot place (after a `cd` to somewhere
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.
         if (!self.written.is_empty() || self.unplaced_write)
-            && path::within(unit.dir.as_ref(), script, unit.shell).is_unknown()
+            && path::within(dir, script, unit.shell).is_unknown()
         {
             self.add(
                 Rule::Unknown,
@@ -610,20 +780,55 @@ impl Checker<'_> {
             );
             return;
         }
-        let Some(wanted) = self
-            .resolver
-            .file_key(unit.dir.as_ref(), script, unit.shell)
-        else {
+        let Some(wanted) = self.resolver.file_key(dir, script, unit.shell) else {
             return;
         };
         if self.written.contains(&wanted) {
-            self.add(
-                Rule::Unknown,
-                "runs a script the same line writes",
-                Some(script),
-            );
+            self.add_run_written(script);
         }
     }
+}
+
+/// The word `arg` with each folder only known when it runs taken off the
+/// front of a name the line wrote out (`"$PWD/.env"` after a `cd` to a name
+/// that may hold code, `"$x/.env"`): the name, as the rules that follow a
+/// secret read it, since a secret is named by its file name wherever the
+/// folder is. `None` when no name is left to read or the word holds another
+/// expansion past the last folder.
+fn named_in_unknown_folder(arg: &Arg) -> Option<Arg> {
+    let Arg::Template { text, .. } = arg else {
+        return None;
+    };
+    let folder = format!("{}/", crate::posix::OPAQUE);
+    if !text.contains(&folder) {
+        return None;
+    }
+    let name = text.replace(&folder, "");
+    (!name.contains(crate::posix::OPAQUE)).then_some(Arg::Known(name))
+}
+
+/// `unit` with its words read by the name they end in, for the rules that
+/// follow a secret (`secret_read`, `send`, `secrets`): `curl -T "$PWD/.env"`
+/// sends `.env` from wherever `$PWD` is. The words of any other rule stay as
+/// the line wrote them, only known when it runs.
+fn named(unit: &Unit) -> Cow<'_, Unit> {
+    if unit.shell != Shell::Posix {
+        return Cow::Borrowed(unit);
+    }
+    let names: Vec<Option<Arg>> = unit.args.iter().map(named_in_unknown_folder).collect();
+    if names.iter().all(Option::is_none) {
+        return Cow::Borrowed(unit);
+    }
+    let args = unit
+        .args
+        .iter()
+        .zip(names)
+        .map(|(arg, name)| name.unwrap_or_else(|| arg.clone()))
+        .collect();
+    Cow::Owned(Unit {
+        args,
+        ..Unit::clone(unit)
+    })
 }
 
 /// The parameters of a listing stage: `Get-ChildItem` has switch aliases that
@@ -1088,6 +1293,15 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     }
     files.retain(|file| file.known() != Some("-"));
     files
+}
+
+/// The characters that separate the parts of a path in `shell`.
+fn separators(shell: Shell) -> &'static [char] {
+    if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    }
 }
 
 /// The script a shell or interpreter runs from a file: its first operand

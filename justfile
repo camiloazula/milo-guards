@@ -9,12 +9,13 @@
 _default:
     @just --list --unsorted
 
-# The gate, and the only one (CONTRIBUTING.md). It compiles twice: clippy's
-# check pass, and one instrumented build of every test, which runs them and
-# measures coverage. Advisories are not part of it: they change without a
+# The gate, and the only one (CONTRIBUTING.md). It compiles three times:
+# clippy's check pass, one instrumented build of every test, which runs them
+# and measures coverage, and one optimized build, which runs the tests that
+# time the guard. Advisories are not part of it: they change without a
 # commit, so they are their own recipe and their own CI job.
-# Every check: format, clippy, tests with coverage, doctests, rustdoc, dependencies.
-verify: format-check lint coverage doc-test doc deny
+# Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, dependencies.
+verify: format-check lint coverage timing doc-test doc deny
 
 # The `cargo lint` alias in .cargo/config.toml runs the same.
 # Clippy on the whole workspace, warnings denied.
@@ -45,6 +46,13 @@ test:
 coverage:
     cargo llvm-cov clean --profraw-only
     cargo llvm-cov --no-clean --workspace --all-features --locked --fail-under-lines 90
+
+# The tests that time the guard compare against limits that describe an
+# optimized build, and the instrumented build of `coverage` is several times
+# slower, so they are ignored there (`cfg(coverage)`) and run here.
+# Every test, in an optimized build: the timing tests among them.
+timing:
+    cargo test --release --workspace --all-features --locked
 
 # The examples in the documentation and the README, compiled and run.
 # Every doctest.

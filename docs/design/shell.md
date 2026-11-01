@@ -245,6 +245,111 @@ and its findings are the line's, since the shell runs it as the same user.
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
   `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
 - cmd has nothing like it.
+- **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
+  (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
+  line, and the value of `BASH_ENV` once when a non-interactive bash starts,
+  then runs the file it names; other shells differ, but every shell is
+  judged as bash. An assignment counts as a statement
+  (`PS4=…`, also `+=`, and `PS4[0]=…`: only a subscript of at most 18
+  digits that is not all zeros is another element; any other may be the
+  first element, which is the value, and a longer number wraps round to it,
+  as bash keeps a subscript in 64 bits: `PS4[18446744073709551616]` is
+  `PS4[0]`), after `export`,
+  `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
+  behind `builtin` and `command`: `builtin export PS4=…`; `command -v
+  export PS4=…` only says what `export` is and sets nothing), in front of a
+  command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
+  other wrappers). A value with code in it, `$(` or a backtick, is read as the
+  script it is, as an action that runs later (see below), so `PS4='$(rm -rf
+  ~)'; set -x; true` is the `delete` of `~`: the text around the code is
+  not run, only what is in it. The code is read as written, with its own
+  quotes and backslashes (`PS4='$(rm -rf "$HOME")'`); only the text around
+  it is quoted. Where the code ends is found by reading its quotes, `${…}`,
+  nested `$(…)` and backticks, and a value that does not end, or whose code
+  holds a here-document, a comment, a `case` or a funsub (where a `)` or a
+  line may not be the code's own), is `unreadable`. A funsub, `${ cmd; }` or `${| cmd; }`
+  (`${` and a blank, a newline or `|`), is code too, and comes out
+  `unreadable` as it does anywhere else. bash decodes the prompt's escapes
+  before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
+  ~\140'` are the `$(` and the backticks they spell, and a `PS4` is read
+  with each `\N`, `\NN` and `\NNN` of one to three octal digits decoded, as
+  newer bash does (`PS4='\44(rm -rf ~)'` is the `$(` too; `\033[1m` colours stay
+  text, and `\0` is nothing). bash 3.2, the `/bin/bash` of a Mac, decodes
+  only three-digit escapes (`\44(` prints as written), so the code is found
+  under both readings, the one that decodes more. `\[` and `\]` are read as
+  nothing, so `PS4='$\[\](rm -rf ~)'` is the `delete` of `~`. `\$` is read
+  as `$`: bash 3.2 keeps it as an escaped `$`, which starts no code by itself
+  (`PS4='\$(rm -rf ~)'` runs nothing there), but the guard does not rely on
+  that for every bash, so it is `delete` too. A `$` that is text, whatever
+  made it (`\$`, a short escape, `\0`, `\[`), never joins the `$(` right after
+  it into the shell's own number: `PS4='\$$(rm -rf ~)'` and
+  `PS4='\44\]$(rm -rf ~)'` run the `$(`, and are the `delete` of `~`. `\D{fmt}` is
+  `strftime`'s output, which may be any text, so a `PS4` with one that also
+  holds `$`, `(` or a backtick is `unknown` (`PS4='\D{$}(rm -rf ~)'`;
+  `PS4='+ \D{%T} '` stays safe). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
+  reason `sets a variable the shell runs later to a value only known when it
+  runs`: the shell expands it again and runs whatever it finds. Text and the
+  variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
+  $LINENO: "` (also `BASH_SOURCE`, `FUNCNAME` with a number as subscript,
+  `SECONDS`, `RANDOM`, `$$`, `HOME`, `PWD`, `TMPDIR`) stay safe, except
+  that a place the line sets (`HOME=…`) and `PWD` after a `cd` to a name
+  that may hold code (`cd 'd$(rm -rf ~)'`, `cd "$x"`: the folder's name is
+  chosen by the line, and the value holds it) are `unknown`; `cd sub` leaves
+  `PWD` plain. `PWD` is not plain either when the `cd` or `pushd` has a
+  wildcard in its target (`cd d*` may match a folder the line made, `*`, `?`,
+  `[`, an extglob's `+(`, `@(`, `!(`), when the line makes it the physical
+  path (`cd -P`, `set -P`, `set -o physical`: a link's target is the name), or
+  when the line sets `CDPATH` and moves (the folder it finds is the name). This holds for `$PWD` as a path as well, in any command, not only in a `PS4`:
+  after such a `cd` it is known only when it runs, so `cd -P sub; rm -rf
+  "$PWD/build"` is the `delete` of a path nobody can place, and `cd 'd$(rm -rf
+  ~)'; eval "echo $PWD"` is `unknown` (it runs the code in the name), while
+  `rm -rf build` after the same `cd`, a path written relatively, stays as it
+  was. The name after `$PWD` is still read by the rules that follow a secret
+  (`cd -P sub; curl -T "$PWD/.env" …` is a `send_secret`). The line's folder
+  is judged once per `cd`, from the new target alone, so a long chain of them
+  costs no more than the line is long. A
+  value is expanded where it runs, not where it is written, so a `PS4` or
+  `BASH_ENV` value written with `$PWD` is judged against every `cd` of the
+  line once it is all read: a later one, one in a loop, a function or a trap
+  action make it `unknown` as an earlier one does. A
+  `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
+  `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
+  `printf -v PS4 …` give them a value the line does not show: `unknown`.
+  `PROMPT_COMMAND`, `PS0`, `PS1` and `ENV` run only in an interactive shell,
+  which the guard reads as running its input already.
+- **`BASH_ENV=<file>` is running `<file>`.** Every shell the line starts with
+  it set (`BASH_ENV=e.sh bash -c true`, `env BASH_ENV=e.sh bash`, `sudo`, or
+  `export BASH_ENV=e.sh` before it) is checked as a shell that runs a script
+  file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
+  download, a copy) is `unknown`, with the reason `runs a script the same line
+  writes`. So is any program that may start a bash, not only a shell:
+  `make` (its recipes run with the makefile's `SHELL`), `./build.sh` (a
+  `#!/bin/bash` line), `npm test`, `git commit` (hooks), a program only known
+  when it runs, and a shell reached through `find -exec`, `npx` and the
+  other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
+  `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
+  not run it, but a `BASH_ENV` in front of a special builtin (`:`, `.`,
+  `break`, `continue`, `eval`, `exec`, `exit`, `export`, `readonly`,
+  `return`, `set`, `shift`, `times`, `trap`, `unset`) stays set after it, and
+  is exported: in POSIX mode, and for an `EXIT` or `RETURN` trap. It is read
+  as a statement of its own line, as `BASH_ENV=e.sh; bash -c true` is, so
+  `BASH_ENV=e.sh :; bash -c true` runs `e.sh` when the line writes it; in
+  front of `true` or `echo`, which are not special, it is gone after the
+  command. A file the line does not write is not read, as for `bash
+  e.sh`. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
+  `/proc/self/fd/0`) makes that shell read its input as a script, as `bash
+  /dev/stdin` does: `curl … | BASH_ENV=/dev/stdin bash -c true` is
+  `RunDownloaded` and `BASH_ENV=/dev/stdin bash -c true < x.sh` is
+  `RunInput`. A file the line sets with `export` or as a statement is
+  checked against every shell the line starts, wherever it sits (a trap
+  action, an earlier pass of a loop, a function body, a command before the
+  assignment), as the files the line writes are, whatever the order. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
+  after a `cd` it is read from the folder the shell runs in; one an
+  expansion made (`BASH_ENV=$PWD/e.sh`) was resolved where the assignment
+  ran, so it is checked from there too. A line sets at most 16 different
+  files (the same one again counts once); one more makes the line `unknown`,
+  with the reason `sets BASH_ENV to more files than the guard reads`. Not
+  read: `${PS4:=…}`, a `for PS4 in …` loop and a nameref to either variable.
 
 The action runs in this shell, later: after the line's last command, or
 between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the
@@ -329,7 +434,7 @@ provider path, or a place only known when it runs, `cd ~` fails and the line
 stays where it was, so a path starting with `~` is only known when it runs, and
 so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
 first stage of its pipeline gets its path from the pipeline, not from home. A
-drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+drive's name may hold any character but `/ \ . ~`, a separator and a wildcard (`my_reg:`), so any such
 name before a colon, other than one letter, is a drive that is not a disk. Once
 the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
 even after the `cd` (a function body, a loop), a single letter in a `cd`
@@ -430,12 +535,51 @@ folder a `cd` moved to.
 - **`GLOBIGNORE`** turns it on when it is not empty: as `GLOBIGNORE=x` on a
   line of its own, after `export`, `declare`, `typeset`, `local` or `readonly`
   (quoted too: `export "GLOBIGNORE=x"`), with `+=`, as `let GLOBIGNORE=1` or
-  `(( GLOBIGNORE=1 ))`, as `read GLOBIGNORE` or `printf -v GLOBIGNORE`, or as
-  a `for` variable. An empty value turns nothing on. A command with
+  `(( GLOBIGNORE=1 ))`, `(( GLOBIGNORE++ ))` (also `--` and in front, and
+  `+=` and the like), `(( x = GLOBIGNORE = 1 ))` (anywhere in a chain of
+  assignments, however the parse nests it), `let` reading its words as `(( ))` does (`let
+  GLOBIGNORE++`, `let ++GLOBIGNORE`, `let GLOBIGNORE+=1`, `let
+  "GLOBIGNORE+=1"`, in any comma-separated part or value of a word), as
+  `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or by an
+  expansion that assigns it: `: ${GLOBIGNORE:=x}`, `${GLOBIGNORE=x}`,
+  `${GLOBIGNORE[0]:=x}`, anywhere a word is expanded (an argument, an
+  assignment's value, inside quotes). Whether the variable was already set is
+  not known, so the assignment counts as made; `${GLOBIGNORE:=}` assigns
+  nothing that matters and `${GLOBIGNORE:-x}` and `${GLOBIGNORE:+x}` do not
+  assign. A command expands its words before its wildcards, so `rm -rf
+  ${GLOBIGNORE:=x}*git` is judged with the option on. An empty value turns
+  nothing on. A command with
   `GLOBIGNORE=x` in front of it, or after `env`, was expanded by the shell
   before the variable applies, so only a script it starts (`GLOBIGNORE=x bash
   -c '…'`) is judged with it on. `BASHOPTS=dotglob` does the same for the bash
   it starts; as a statement it counts as on.
+- **zsh's `(D)` glob qualifier** lets the patterns of one command match hidden
+  names without any option: `rm -rf *git(D)`. The grammar cannot read a
+  qualifier, so before the line is parsed each one is taken out of its word
+  (`*git(D)` becomes `*git`) and its place kept; a command with a word that
+  had one is judged with hidden names matching, and so is a redirect target
+  that had one, a `for` list (the loop's body), and, through a listing, the
+  command it feeds. It is the command's alone: `rm -rf *.o(D); rm -rf *git`
+  is still safe. A command that turns its words into a script (`eval rm -rf
+  *git(D)`, `watch rm -rf *git(D)`, `trap rm\ -rf\ *git(D) EXIT`) keeps it for
+  the commands that script holds: the shell expanded the pattern first, so the
+  `rm` inside is handed `.git`. A word is read as having one when a `(…)` ends it (the next
+  character is a space, `;`, `&`, `|`, `<`, `>` or `)`), the character in
+  front is not what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(`, `@(` or `!(`, the
+  `(` is not inside quotes, and what is inside holds `D` and nothing but
+  letters other than `e` and `P`, digits, and `.^/@=%*,-` (`(D)`, `(.D)`,
+  `(D/)`, `(^D)`, `(mh-1D)`). A qualifier with `e` (runs a string), `+` (runs
+  a function), `P` (adds the string it holds as an extra word before each
+  match: `*(DP./usr.)` is `/usr` and every name), `:`, `[`, or a substitution
+  is not taken out and stays unreadable as before, and so does one without `D`
+  (`*.o(N)`), which says nothing about hidden names. So does a qualifier on a
+  word that holds `^`, `#` or a `~` that does not start it: with `extendedglob`
+  (an rc file may set it) `^x(D)`, `*git~x(D)` and `.#git(D)` match `.git`, and
+  the word cannot be read as a plain pattern. Where hidden names match, `**/`
+  and `***/` also stand for no folder, so `**/*git(D)` is read as `*git(D)` too,
+  which reaches `.git` of the workspace folder (so does `**/*git` with
+  `dotglob` and `globstar`). `bash -c 'rm -rf *git(D)'` and the rest read the qualifier in
+  the script, where it is not inside quotes.
 - **A shell's own start-up options** turn it on for the script that shell runs:
   `bash -O dotglob -c '…'`, `zsh -o globdots -c '…'`, `zsh -o dotglob`, `zsh -4`,
   `zsh --globdots`, and a name only known when it runs.
@@ -495,9 +639,7 @@ folder a `cd` moved to.
 
 Not read, so the caller has to account for them: an option set by `~/.zshenv`
 or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
-from the environment the guard's caller runs in, and a `GLOBIGNORE` set by
-`${GLOBIGNORE:=x}`. zsh's `(D)` glob qualifier (`rm -rf *git(D)`) is not read
-either.
+from the environment the guard's caller runs in.
 
 ## The rules
 
@@ -507,20 +649,22 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy; on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
 | `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
+| `drop_data` | Deletes data in a database. |
+| `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
@@ -707,6 +851,50 @@ The reasons say `unpacks into your home directory`, `unpacks into a folder
 outside the workspace`, `unpacks into a folder only known when it runs`. A
 folder that is the workspace, inside it or a temporary file is not risky.
 
+### Archiving that removes what it archives
+
+Three options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+members named on the line are judged as the operands of `rm` are (see
+Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
+your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
+and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
+Packing without the option is no `delete`: `tar -cf x.tar src` is safe. What
+it packs is still read, so `tar -cf x.tar ~` is `read_secret` (it reads your
+home directory, and the keys in it).
+
+| Program | Option | Members |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
+
+A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
+--remove-files`) is judged as if it packed. A `tar` option that takes a value
+in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
+a member. An operand only known when it runs is a member known only when it
+runs; with `zip`, so is a first operand that is, since it may be the archive
+and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
+the files the stage before it lists. With `7z`, an argument whose readable
+start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
+(`$OPTS`) may be a switch too, so the default `*` stays among the members when
+the operands that are certain are only the command and the archive. With
+`zip`, an argument only known when it runs inside a `-x` or `-i` list may
+start with `-` or be `@`, which end the list, so the names after it are
+operands again.
+
+`7z` matches a wildcard itself, quoted or not, and a name that starts with a
+dot is among the matches. `zip` does so on Windows; on Unix it matches
+wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
+names inside the archive, so there `zip -m x.zip 'a*'` and
+`zip -mr x.zip '*git'` delete nothing. The guard judges the members of `zip` and `7z` alike, with the wildcards matching names that start
+with a dot, whatever the shell. For `zip` on Unix this is a cautious choice,
+not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
+`.git`, and so is the unquoted `zip -mr x.zip *git`.
+
+`tar` is given the names the shell expands, so `tar -cf x.tar *git
+--remove-files` leaves `.git` as `rm -rf *git` does.
+
 ### Git tags and submodules
 
 `git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
@@ -726,6 +914,107 @@ a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
 bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
 `unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
 `unknown`.
+
+### Machine settings on macOS and Linux
+
+`system_settings` also covers the changes to the machine that `sudo` does not
+show. The guard keeps to what is system-wide or turns protection off; reading
+a setting and a user's own settings stay safe. Callers treat the rule as one
+of their strictest, so each family below was added on that test.
+
+- **Security switches.** `spctl --master-disable`, `--global-disable` and
+  `--disable` (Gatekeeper); `csrutil disable`, `authenticated-root disable`
+  and `enable --without …` (System Integrity Protection); `setenforce` to
+  anything but `1` or `Enforcing`; any write to `/etc/selinux/config` or
+  `/etc/sysconfig/selinux`, whatever the program (a redirect, `tee`, `sed -i`,
+  `cp`); `nvram` that sets, deletes or clears a variable (`boot-args`). A
+  value only known when it runs is risky. `spctl --master-enable`, `csrutil
+  status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
+  safe.
+- **The firewall.** `iptables` and `ip6tables` (and their `-legacy` and
+  `-nft` builds) with `-F`/`--flush`, `-X`/`--delete-chain` or a default
+  policy of ACCEPT (`-P chain ACCEPT`, `--policy`) for `INPUT`, `FORWARD` or
+  a chain only known when it runs; the chain may be attached (`-PINPUT`,
+  `-nPINPUT`, `--policy=INPUT`), and then the policy is the next argument.
+  `OUTPUT` accepting is the default, so it is not read. `nft` joins its
+  arguments with spaces and reads them as one line, so each command in
+  them (split at whitespace, `;` and newlines, whichever argument it is in,
+  `nft 'flush ruleset'` as well) is read: `flush ruleset|table|chain` and
+  `delete|destroy table|chain` are risky, and so is a `flush`, `delete` or
+  `destroy` of an object not known to be a set, map, rule or the like
+  (`nft flush $what`), or a command word only known when it runs; `-d` and
+  `--debug` take a level, as `-f` and `-I` take a value. Under `-j` or
+  `--json` (or a prefix of it, or inside a bundle such as `-aj`) the operands
+  are JSON, which is not read, so any `{` or `[` in them is risky
+  (`nft -j list ruleset` is safe). `ufw disable`,
+  `reset` and `default allow` for `incoming`, `routed`, no direction (which
+  means incoming) or an unknown one; `ufw default allow outgoing` is ufw's
+  stock default and is safe. `firewall-cmd --panic-on` and
+  `--set-default-zone`; `pfctl -d` and `-F` with `all`, `rules` or `nat`,
+  which may be abbreviated (`-F a`) and attached (`-Fa`, `-qFrules`), or
+  with a modifier only known when it runs; `socketfilterfw --setglobalstate
+  off`. Adding or deleting one rule, `-P chain DROP`, listing, `ufw allow`,
+  `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
+  from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
+  file's content is not in the line. Long options may be abbreviated as
+  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
+  takes any unique prefix too (`--set-default=trusted`).
+- **Services the system runs.** `systemctl disable` and `mask`, unless
+  `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
+  `unload`, `remove` and `disable`. The one thing read as the workspace's own
+  is a plist inside the workspace: `launchctl unload ./x.plist` and
+  `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`
+  (a label), `bootout system/…`, and any plist in `/Library/LaunchDaemons` or
+  `~/Library/LaunchAgents` are not. `launchctl unload -D domain` unloads
+  every plist in that search path (`-D system`, `-D all`), so it is risky
+  whatever the domain. A command word only known when it runs
+  (`systemctl $verb x`) is risky. `systemctl` options that take a value
+  (`-t`, `--message`, `--capsule`, `--what`, `--timestamp`, `--image`,
+  `--legend` and the like, also abbreviated) do not count as the verb, and
+  are not read as `--user` or `--system` either: one walk of the arguments
+  skips the values and finds those two (`systemctl -p --user disable x` is
+  a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
+  `-p`/`--property` value the same way.
+- **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
+  stop` are safe, because `stop docker` is a common development step, and
+  `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
+  `restart`, `enable` and `reload` are safe too. The exception is a unit
+  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
+  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  as turning that protection off, so it is risky. `systemctl kill` sends
+  SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
+  refuses `stop`, so `kill` is how it is stopped), so it is read through the
+  same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
+  'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
+  unit name holding `*`, `?` or `[` against the loaded units, so a pattern
+  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  action only known when it runs may be `stop`, so it is risky when the name
+  protects the machine or is only known when it runs (`service ufw
+  $action`); `service nginx $action` is safe, as `service nginx stop` is.
+- **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
+  `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
+  `listbackups`, `status`, `startbackup` and `enable` are safe.
+- **Machine-wide preferences.** `defaults delete <domain>` with no key,
+  `defaults import` (the reason says "deletes" for a delete with no key and
+  "replaces" for an import), and any `defaults write`, `delete`, `import` or
+  `rename` whose domain is a path in a system folder
+  (`/Library/Preferences/…`); `pmset` with `-a`, `-b`, `-c` or `-u`, or with
+  any first operand but the actions that only act or read (`sleepnow`,
+  `displaysleepnow`, `touch`, `noidle`, `boot`), because the flag is
+  optional in `pmset sleep 0` and the operand is then a setting; `-g` reads;
+  `networksetup` and `systemsetup` options that start `-set`, `-add`,
+  `-remove`, `-create`, `-delete`, `-rename`, `-duplicate`, `-order`,
+  `-import`; `scutil --set`; `hostnamectl set-…` and `timedatectl set-…`,
+  and the verbs `hostnamectl` has since systemd 249 (`hostname`,
+  `icon-name`, `chassis`, `deployment`, `location`) when given a value
+  (`hostnamectl hostname newname`; with none they print); `hostname name`
+  and `hostname -F`. An application's own keys
+  (`defaults write com.example.app key value`, `defaults delete com.apple.dock
+  persistent-apps`), a path in the workspace or the user's own folder,
+  `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
+
+`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
+they are Windows programs and are left alone.
 
 ### The rule enum is exhaustive on purpose
 
@@ -765,7 +1054,7 @@ a path.
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
   A drive's name is whatever comes before the first `:` when that holds no
-  separator, no `.` and no `~`, so a drive made with `New-PSDrive`
+  `/`, `\`, `.` or `~`, no separator and no wildcard, so a drive made with `New-PSDrive`
   (`my_drive:*`, `my-drive:\*`) is a drive, outside the workspace, and
   `x.txt:stream` is a file's stream, not a drive.
 - The item cmdlets are judged by where their path lands, as `Remove-Item` is:
@@ -1246,6 +1535,7 @@ A line is never safe because the guard gave up on it. These come back risky:
   out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`),
   and so does the argument after a parameter written with a colon
   (`-Confirm:$false`), a common parameter (`-ErrorAction Stop`) and `-Args`.
+- A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
@@ -1262,12 +1552,37 @@ Some risks only show when units are read together.
   later write to `z` lands on the startup file.
 - **A script a line writes and then runs.** It is risky however it was
   written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
-  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `run_downloaded`. The guard
-  matches the two by the file they name (core's `key`).
+  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `unknown` ("runs a script the
+  same line writes"; `run_downloaded` is a download piped into a shell). The
+  guard matches the two by the file they name (core's `key`).
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
   A line that writes nothing has no such script.
+  The file may be run as the program itself, not only handed to a shell: a
+  program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
+  file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x
+  run; ./run` are `unknown` with the same reason, however the program is
+  wrapped (`sudo`, `env`, `nohup`, `xargs`, `find -exec`, `bash -c`) or when it
+  runs (a trap whose action runs `./x.sh` before the line writes it). A bare
+  name (`x.sh`) is looked up in `PATH`, not in the folder, so it is not the
+  file; `./gradlew build` with nothing written first stays safe. On Windows
+  file names are not case sensitive and a name with no extension runs the file
+  with `.bat`, `.cmd`, `.com` or `.exe` (`a` runs `a.bat`), and PowerShell
+  tries `.ps1` first (`.\a` runs `a.ps1`); cmd looks in the
+  working folder first, so a bare name there is the file the line writes when
+  it names one (it is not judged when it cannot be placed: `dir` and `echo`
+  are programs of cmd, not files).
+  PowerShell runs a script file by name too, so these are `unknown` with the
+  same reason when the line writes the file: `powershell` or `pwsh -File
+  i.ps1` (`-f`, `-fi`, `/File`, `-File:i.ps1`, after any other option; a name
+  with no extension is the `.ps1` PowerShell tries first), the first word that
+  is not a parameter (`pwsh i.ps1` runs it as a file), and `Invoke-Command
+  -FilePath i.ps1`. `powershell -File scripts\build.ps1` with nothing written
+  first stays safe. After `-WorkingDirectory` the file is read from a folder
+  the line gives, so it counts as only known when it runs: `unknown` once the
+  line writes any file. `pwsh -File i.ps1` from a POSIX shell is read the same
+  way.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
@@ -1305,6 +1620,11 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   names no file, and `curl` reads that name as written, so `curl -d @.env*` is
   not a secret sent. This is the shell rule's own check: core's table does not
   hold it, since that would make `rm .env` a `delete` in the workspace.
+  A name written out under a folder only known when it runs is read by the
+  name: `curl -T "$x/.env"`, `cat "$x/.env" | curl -d @- …`, and `$PWD/.env`
+  after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
+  send `.env` from wherever the folder is. Only the name counts: a path core
+  marks by its folder (`$x/.ssh/id_rsa`) needs the folder, which is not known.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`).
   One variable (`printenv HOME`, `Get-ChildItem env:PATH`) is not. cmd's bare
@@ -1375,6 +1695,415 @@ when it runs (`curl -d @$F`); a connection opened with `exec 3<>/dev/tcp/…`;
 a key with an unusual name); and a `find -exec` whose filter picks secrets by a
 name the guard does not know (`-name '*.pem'`).
 
+## Data in a database
+
+`drop_data` is for a statement a database client is given that drops,
+truncates or empties something. The guard sees files and disks, and a database
+is neither: `psql -c 'DROP TABLE users'` touches no path the line names.
+Reading, inserting, creating and a statement that picks its rows are safe.
+
+**Where the statement is.** Only text on the line itself is read: an option, an
+operand, a here-document or here-string fed to the client, or the text a
+piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
+says. A `cat` reads its input, and passes the text fed to it on, when it has
+no file operand, or has `-` or `/dev/stdin` among its operands, whatever its
+options (`cat - <<< 'DROP TABLE t' | psql`, `cat schema.sql - <<EOF | psql`,
+`cat -s <<EOF | psql`); a `cat` of files only ignores its input. An operand
+only known when it runs may be `-`. The grammar leaves a lone `-` that is the
+last word before a here-document out of its tree, so the guard puts it back.
+On PowerShell a value that is piped
+on says its text as `Write-Output` would: a string or a here-string
+(`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
+variable, `(Get-Content q.sql)`, `$x.y`, `"a" + "b"`) says what is only known
+when it runs, so it is `unknown`. In a double-quoted string or a
+double-quoted here-string a backtick makes the character PowerShell gives it
+(`` `n `` and `` `r `` a line break, `` `t `` a tab, `` `0 ``, `` `a ``, `` `b ``,
+`` `e ``, `` `f ``, `` `v `` and `` `u{…} `` the others), so `"SELECT 1;`nDROP
+TABLE t"` is two statements and `iex @"` … `"@` runs the lines that a
+backtick breaks. A `` `u{…} `` that makes a character PowerShell reads as more
+than a character when the text runs as code (a space that is not an ASCII one,
+such as U+00A0 or U+3000, which splits words; a dash from U+2013 to U+2015; a
+typographic quote from U+2018 to U+201E) leaves a script read from the string
+known only when it runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"`
+is `unknown`. So is a script that holds such a character wherever it is read
+from: `cmd /c "pwsh -c Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"` hands
+PowerShell only part of the string, and the guard asks about the character, not
+the whole string. As a path or any other argument the string is the text it holds:
+`Get-Content "~\x`u{a0}\..\.ssh\id_rsa"` reads the key.
+Several arguments to `Write-Output` or `echo` are one line
+each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;
+`cmd`'s `echo` joins them with a space. A stage that is a group (`{ echo 'BEGIN;';
+echo 'DELETE FROM t;'; } |
+psql`) is read program by program, and as the one text they say in turn
+(`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
+format: `\n \t \\ \xHH` and the other single-character escapes, `\NNN` as one
+to three octal digits with the 0 in front counting as one (`\0121` is a newline
+and a `1`), and `%s`, `%b`, `%d` and `%%` filled from the arguments, the format
+used again while arguments are left; any other directive or escape (and `\c`,
+which shells read differently in a format) makes the text `unknown`. `%b` and
+`echo -e` take `\0NNN`, and `\c` ends their output. `echo` is read as written
+and as decoded, since `sh`, `zsh` and `echo -e` turn `\n` into a newline.
+Where shells differ in what they decode, the text is read as each of bash, zsh
+and dash prints it, and a statement any of them shows counts: dash leaves
+`\xHH` as written (and decodes `\n` next to it), bash's `echo -e` and zsh's
+leave `\NNN` with no 0 in front, and zsh and dash leave `\"`, `\'` and `\?` in a
+format. A file of statements (`psql -f
+migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
+the workspace's own code and is safe, as `python3 scripts/gen.py` is.
+
+An unquoted here-document is read as the shell feeds it: the shell treats its
+body as the inside of a double-quoted word, so a backslash before a newline
+joins the lines (`DR\` then `OP TABLE t` is `DROP TABLE t`), a backslash
+before `$`, a backtick or a backslash goes and leaves the character (`\\!`
+is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
+DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
+backtick is an expansion, as in a double-quoted word, so the body is a
+template; a body with both an escaped and an expanding `$` or backtick is
+`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+(`<<'EOF'`, `<<\EOF`) feeds the body as it is.
+
+What a stage says is worked out once and read once for each client language,
+whatever the number of clients after it, so the time grows with the line and
+not with the clients times the programs. A stage that says more than 256 KB
+is `unknown`, and a `printf` stops printing when the stage's share is used
+up.
+
+| Client | Statement |
+| --- | --- |
+| `psql` | `-c`, `--command` |
+| `mysql`, `mariadb` | `-e`, `--execute`, `--init-command` |
+| `sqlite3` | the operands after the file, `-cmd` |
+| `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
+| `mongosh`, `mongo` | `--eval` |
+| `redis-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `cqlsh` | `-e`, `--execute` |
+
+Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
+`--command=SQL`), and a long option may be any unique start of one of the
+client's long options, as `getopt_long` reads it: `psql --co` is `--command`,
+while `--c` starts both `--command` and `--csv`, is ambiguous, and psql
+refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
+(`--init_command`). A password option that takes its value only when it is
+attached leaves the next word alone: in `mongosh` (which reads its options as
+yargs does) a word that starts with `-` is never the value of any option, and
+`clickhouse-client --password` takes none from one, so `mongosh -u admin -p
+--eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
+TABLE t'` read the statement option after the password. A statement option
+followed by such a word reads the word as the statement too.
+
+**What destroys.**
+
+- **SQL.** `DROP` (a table, database, schema, index, view, anything; also
+  `ALTER TABLE … DROP`), `TRUNCATE`, `DELETE` and `UPDATE` with no `WHERE`. A
+  `WHERE` that picks every row (`WHERE 1`, `WHERE true`, `WHERE 1 = 1`) is
+  none. A `WHERE` belongs to its own statement: in a batch with no `;`, the
+  `WHERE` of a later `SELECT`, `EXEC` or `PRINT` is not the `UPDATE`'s
+  (`UPDATE t SET a = 1 SELECT 1 WHERE b = 2` updates every row).
+  `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT UPDATE` and `THEN
+  DELETE` after a `WHEN [NOT] MATCHED` of a `MERGE` are parts of other
+  statements, and `TRUNCATE(x)` is a function; a `THEN DELETE` anywhere else
+  (`IF x THEN DELETE FROM t`, `EXCEPTION WHEN OTHERS THEN DELETE FROM t`) is
+  a statement. `ON DELETE` and `ON UPDATE` are a rule, not a statement, only
+  when the word after the verb is a referential action or rule word
+  (`CASCADE`, `SET`, `RESTRICT`, `NO`, `TO`, `CURRENT_TIMESTAMP`, `NOW`,
+  `LOCALTIME`, `LOCALTIMESTAMP`): `ON DELETE CASCADE`, `ON UPDATE SET NULL`,
+  `CREATE RULE r AS ON DELETE TO t`. `SET NOCOUNT ON DELETE FROM t` is a
+  statement: in a T-SQL batch with no `;` the `ON` ends a `SET`, and `DELETE
+  FROM` or `UPDATE t SET` after it are the next statement. `ON COMMIT DELETE
+  ROWS` empties a temporary table at the end of a transaction, and is none.
+  A `DROP` that takes away no data is none: `DROP NOT NULL`, `DROP DEFAULT`,
+  `DROP CONSTRAINT`, `ON COMMIT DROP`, ClickHouse's `SYSTEM DROP DNS CACHE`,
+  and `DROP IDENTITY` and `DROP EXPRESSION` only after `ALTER [COLUMN]
+  <name>` (the word `COLUMN` is optional and neither word is reserved, so
+  `ALTER TABLE users DROP identity` drops a column called `identity`);
+  `DROP COLUMN`, `DROP PARTITION` and a bare `DROP` are. `DELETE` and
+  `UPDATE` inside a `WITH` or after
+  `EXPLAIN ANALYZE` count. `DO $$ … $$` and `DO '…'` (any string) are read as
+  the statements they hold, and PL/pgSQL's `EXECUTE` in the body (not
+  `EXECUTE FUNCTION`) runs text only known when it runs, so it is `unknown`.
+  Text given to something that runs it is read as SQL where it is a literal:
+  `EXEC('…')` and `EXECUTE('…')`, `sp_executesql`, `sp_MSforeachtable` and
+  `sp_MSforeachdb` (the literal text of every argument) in T-SQL, and
+  `PREPARE s FROM '…'` in MySQL; text that is not a literal (`EXEC('DROP ' +
+  @t)`, `sp_executesql @sql`, `PREPARE s FROM @q`) is `unknown`. A string
+  inside a string is read up to eight levels deep, and deeper is `unknown`.
+  In SQLite and DuckDB, `.restore` replaces the whole database with a file,
+  so it destroys. Both shells take any start of a dot command's name for the
+  command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
+  `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
+  command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
+  `.output`, `.once`, `.import`, `.restore`, `.backup` and `.save`.
+  `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace the file they are
+  given, whatever database they copy from and `-readonly` or not, so the last
+  word is judged like any file: in the workspace, a temporary directory or
+  memory it is safe, anywhere else it is `drop_data`. The names are the
+  shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
+  not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
+  refuse a file that exists and are safe.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+  `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
+  calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
+  `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
+  redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
+  deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
+  runs the command on every node, and is read as the command.
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
+  command key), `deleteMany` and `remove` with no filter or `{}`.
+- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
+  drop`, MariaDB's name for it. `mysqladmin` runs a
+  command from any unique start of its name (`mysqladmin proc stat` works),
+  so a command word of two letters or more that starts `drop`, in any case,
+  is `drop`: `dro`, `dr`.
+
+**How a statement is read.** A keyword reader over the text, with no SQL
+grammar. It skips comments and string literals, splits on `;`, and reads each
+client as its own dialect, with only the quoting that client has, so that what
+one dialect hides is not hidden in another:
+
+| Dialect | Quoting and comments |
+| --- | --- |
+| PostgreSQL (`psql`) | `$tag$ … $tag$` and `E'…'` strings, block comments that nest, backslash commands; no backtick |
+| SQLite (`sqlite3`) | backtick and `[…]` identifiers, dot commands, a line that starts with `#` when no statement is pending is skipped; no `$tag$`, no `E'…'` |
+| DuckDB | PostgreSQL's parser: `$tag$ … $tag$` and `E'…'` strings, dot commands, `#` lines as SQLite's; a block comment that holds `/*` is `unknown`, since it is not known whether it nests |
+| SQL Server (`sqlcmd`) | `[…]` identifiers, block comments that nest |
+| MySQL, MariaDB | `#` comments, backslash escapes, backticks, `/*! … */` comments that run, `--` needing a space, `\g` and `\G` ending a statement, `\!` |
+| ClickHouse | `#` comments, block comments that nest, backslash escapes, backticks, `$tag$` strings, `\G` |
+| CQL (`cqlsh`) | `//` comments, `$$` strings |
+
+A construct a dialect is not known to have is not read as hiding anything, so
+what it holds is read as code. Whether a backslash escapes in a string is a
+server setting the line can change, so the text is read with the other rule
+too, in the two dialects where the setting exists, and what any reading shows
+counts: MySQL and MariaDB also with no backslash escapes
+(`NO_BACKSLASH_ESCAPES`) and with them in `'…'` strings only (`ANSI_QUOTES`,
+where `"a\"` is an identifier), PostgreSQL also with them in `'…'` strings
+(`standard_conforming_strings` off). `mysql -e "SET
+sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; -- '"` drops the
+table, as does a `psql` text that sets `standard_conforming_strings = off`
+and then has `'a\'' ; DROP TABLE t; --'`, where the string takes `\'`. The
+`mysql` and `mariadb` clients send each statement as its `;` arrives, and
+`psql` reading its input does the same, so in a reading where a string is never
+closed the statements that end before it still run: they are judged, and only
+the open tail, which no client sends as a statement, is left out. `SELECT
+'it\'s'` is safe in MySQL, and `SELECT 'a\'; DROP TABLE t; SELECT '` is not. A
+`--` that no space follows is no comment in MySQL, so `SELECT "a\"; DROP TABLE
+t; --"` leaves only `--"` open, and the `DROP` runs.
+The same text without the `SET`, `SELECT 'a\'; DROP TABLE t; -- '`, is
+`drop_data` for the same reason: a server set that way runs the `DROP`.
+
+In `psql` a backslash outside a string starts a
+command that ends at the end of its line or at the next backslash outside a
+quote, which starts the next command (or is `\\`, and the SQL goes on after
+it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
+touch f` runs `touch`. A here-document whose first line starts with a
+backslash is read from that line. `\gexec` and
+`\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
+a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
+followed by `|` run a program. A statement the reader has to guess at is
+`unknown`, never safe: a string, a comment or a `$$` string that is never
+closed.
+
+A variable the client fills in is only known when it runs, and where it starts
+a statement the statement is `unknown`: `psql`'s `:name`, `:'name'` and
+`:"name"` (`psql -v q='DROP TABLE t' <<< ':q'`, a `\set q …` and then `:q`) and
+`sqlcmd`'s `$(name)` (`sqlcmd -v s="DROP TABLE t" -Q '$(s)'`). A `:name` or
+`$(name)` further in is read as a word (`WHERE a = :x`), as a shell expansion
+is, and `::` is a cast.
+
+A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
+q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
+a database statement only known when it runs`. In a double-quoted
+POSIX statement the expansions stand as words, so `psql -c "DELETE FROM users
+WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
+`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A `$` that starts
+an expansion ends the word before it, since the expansion may be empty:
+`psql -c "DROP$x TABLE t"`, `"TRUNCATE$x t"` and `"DELETE$opts FROM t"` are
+`drop_data`, and so is `mongosh --eval "db.dropDatabase$x()"`. A template
+with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
+) $x"`, `echo "SELECT 1 \`; DROP TABLE t; \` $x" | psql`) is `unknown`, as an
+unquoted here-document with both is: the shell passes the escaped text to the
+client as it is, and the reader would take `\$(`, `\${` and a pair of
+backticks for one expansion that hides the text between them; this covers
+`echo`, `printf` and `Write-Output` too. On PowerShell and
+cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
+`%id%`) is not read as a word, so any statement with one is `unknown`
+(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
+(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
+PowerShell word has none. A client command that runs a
+program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
+`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
+and `system` in `mysql` (it is no command of another client: ClickHouse's
+`SYSTEM FLUSH LOGS` is a statement).
+A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
+when it runs is `unknown` too.
+
+**A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
+database file are judged like any file: inside the workspace or a temporary
+directory, in memory (`:memory:`, no file) or opened `-readonly`, a `DROP`
+is safe; anywhere else, or a file only known when it runs, it is `drop_data`.
+`ATTACH`, `.open` and `.attach` reach another file, so they make the file
+given not the only one, and the statements are judged as a file outside the
+workspace, `-readonly` or not. A name with a scheme is read from its path when
+it is a `file:` URI (`file:/home/me/x.db`, `file:///home/me/x.db`,
+`file://localhost/…`, `%HH` decoded; `mode=memory` is in memory) and is not
+the agent's own otherwise (`md:`, `motherduck:`, `s3://`); a Windows drive
+(`C:`) is a path. The options that take a value are the ones `sqlite3 -help`
+lists, the two-value `-lookaside` and `-pagecache` included, so none moves the
+file onto its value. Every server database is risky, because the line cannot
+tell a scratch database from production.
+
+Migrations run by the project's own tool (`sqlx migrate run`, `rails
+db:migrate`) are safe: the guard reads no program that is not on its list.
+
+Not read, so the caller has to account for them: a statement behind a program
+the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
+-c …`); a statement handed over by a file, a process substitution
+(`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
+`cat` (`echo … | sed … | psql`); stored procedures (`CALL p()`, `EXEC p`),
+whatever they run; the
+text of a prepared statement that is not on the line (`EXECUTE s` after a
+`PREPARE` in an earlier call; one in the same text is read); a `WHERE`
+that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
+a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
+(`WHERE a = :x`: it is read as a word, and may hold more than a value);
+`sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
+tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+
+## Containers, clusters, infrastructure and the cloud
+
+`destroy_resources` is for what a delete verb removes that is not a path:
+containers and their volumes, cluster objects, an infrastructure stack and
+what a cloud CLI deletes. `docker volume rm pgdata` names no file the guard
+looks at. The rule reads the program, its global options, its command and
+sub-command like the git rules do, and the few options that change what a
+command does. Listing, describing, creating and building are safe
+(`kubectl get`, `terraform plan`, `aws s3 ls`, `docker build`).
+
+One rule, one meaning: a local target (a `kind` or `minikube` cluster, a
+container on the local daemon) is as risky as a remote one, since the line
+cannot tell, and the reason says what it deletes, not where.
+
+**Containers** (`docker`, `podman`, `nerdctl`, `docker-compose`,
+`podman-compose`). `system prune`, `container prune`, `network prune`,
+`volume rm` and `volume prune`, `image prune -a`, `stack rm`, `service rm`,
+`compose down -v` and `compose rm -v`, and podman's `system reset`, `pod
+prune`, `machine rm` and `kube down` destroy. `rm` is read by what it takes:
+one named container is safe, forced or not (`docker rm -f web`); several
+forced at once, a choice made when the line runs (`$(docker ps -aq)`, a
+pipe's input, a variable that expands to several words), podman's `rm -a`
+and `--filter`, and `-v` (the container's volumes) are not. Which variables
+expand to several words depends on the shell: in a POSIX shell an unquoted
+one, and a quoted one holding an array (`"$@"`, `"${ids[@]}"`, one word per
+element), but not `"$name"`; in PowerShell any variable except `$env:` and a
+splat (`@ids`), since an array handed to a program is one argument per
+element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
+which is expanded as text. A POSIX word also splits when an unquoted `$`
+follows a quoted head (`"$a"$b`) and when it holds an unquoted brace list or
+sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the
+parser has already unquoted counts as bare. A command in a loop or a function
+body runs again with other values, so any operand there that holds an
+expansion is every item, whatever the variable is called and however it was
+set (`id="$c"`, `name=$(…)`, `$1` after a `shift`, `%%i`): `for c in $(docker
+ps -aq); do id="$c"; docker rm -f "$id"; done`, `docker ps -aq | while read -r
+l; do docker rm -f "${l%% *}"; done`, `f() { docker rm -f "$1"; }`. Loops are
+`for`, `select`, `while` and `until` and function bodies in a POSIX shell;
+`foreach`, `for`, `while`, `do` and `function` and the block of
+`ForEach-Object` (`%`) and `Where-Object` in PowerShell (`docker ps -aq | %
+{ $c = $_; docker rm -f "$c" }`); `for … do` in cmd (`for /f "delims="
+%%i in ('docker ps -aq') do docker rm -f "%%i"`, also behind `@` and in a
+`do (set id=%%i& …)` group). Outside a loop, a quoted variable that a `for`
+or a `read` sets is still every item. So `for c in web db; do docker rm -f
+"$c"; done` is risky too, as several forced at once, while `id=web; docker rm
+-f "$id"` is one value and `docker rm -f "$id"; for c in a b; do echo "$c";
+done` is safe. So `docker rm -f "$name"` is safe and `docker rm -f $ids` in
+PowerShell is
+not. Images are rebuilt or pulled again, so `rmi`, `image rm` and a `image
+prune` without `-a` are safe, as are `network rm` and `builder prune`.
+The global options of each program that take a value (`-H`, `--context`,
+`-n`) are skipped to find the command.
+
+**Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
+a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
+--force`; `apply --prune`. `--dry-run=client` and `=server` only rehearse and
+are safe, the last one written counting. A replica count is read as Go reads
+an integer (`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero);
+one that is not a plain decimal and not a zero, or only known when it runs, is
+`unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
+`minikube kubectl --`. `helm uninstall` (also `delete`, `del`, `un`) unless
+`--dry-run` (not `--dry-run=false`, and not a value only known when it runs,
+`--dry-run=$DRY`); `kind delete cluster`, `minikube delete` and `k3d cluster
+delete` (also `node` and `registry`).
+
+**Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
+(a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
+`-destroy=false`; any `-destroy` turned on before `--` counts, even with a
+`=false` after it, since a value option may have taken that word); `plan
+-destroy` is safe. `terragrunt` the same, also behind `run-all` and `run --all
+--`: the word after `--` is the terraform command (or `terraform` behind `exec
+--`), and every word before it is read, the options that take a value
+(`--queue-include-dir`, `--parallelism`) skipped. `pulumi destroy` (also
+`down`, unless `--preview-only`, a Go-style flag that `--preview-only=false`
+or a value only known when it runs turns off) and `pulumi stack rm`; `cdk
+destroy`, `cdktf destroy`, `sst remove`, `serverless remove` (also `sls`),
+`vagrant destroy`, `sam delete`.
+
+**Cloud.** Each CLI has a table of delete verbs in
+`detect/resources.rs`, with the options before the command that take a value,
+so a new CLI is a few lines. `aws`: `s3 rm` (the reason says when it is
+`--recursive`), `s3 rb`, `s3 sync --delete`, `terminate-*`, `delete-*`,
+`batch-delete-*`, `purge-*`, `schedule-key-deletion`, `deregister-image`;
+`--dry-run` and `s3`'s `--dryrun` make it safe, unless a later `--no-dry-run`
+turns it off (the CLI takes the last). `gcloud` (a `delete`, `delete-*`,
+`bulk-delete` or `destroy` among the first words, `storage rm`, and `storage rsync` with
+`--delete-unmatched-destination-objects`, which `gsutil rsync -d` and `aws s3
+sync --delete` match), `gsutil rm`, `rb` and `rsync -d`, `az` (`delete`,
+`delete-*`, `purge`, `storage remove`), `doctl` (`delete`, `delete-*`, `d`, `rm`), `flyctl`
+and `fly` (`destroy`, `delete`, `rm` and `remove` under any
+word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
+(`remove`, `rm`, `del`, also `env rm` and `project rm`), `heroku`
+(`apps:destroy`, `addons:destroy`, `pg:backups:delete`), `wrangler` (`delete` at any depth,
+`kv:namespace delete`), `firebase` (`…:delete` and `…:remove`, as in
+`database:remove`), `hcloud`, `scw`, `oci` (`delete`, `bulk-delete`,
+`terminate`), `eksctl` and `kops` (`delete`).
+
+A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
+before `--` and not as the value of an option that takes a value, since pflag
+and Go's flag package hand that option the next word even when it starts with
+`-` (`kubectl delete ns prod --cache-dir --dry-run=server` still deletes). It
+counts only with a value known to say yes: a value only known when it runs may
+be `false`, so `helm uninstall api --dry-run=$DRY` is risky, and so is
+PowerShell's `--dry-run=$false`.
+
+A command word only known when it runs (`docker $cmd`, `kubectl "$@"`, `aws
+s3 $verb`, `gcloud projects $verb prod`, `kind delete $what`, `terragrunt
+run-all $cmd`) is `unknown`: the line may be any of the above. For the cloud
+CLIs that read a verb at any depth, a word behind a verb that only reads,
+creates, copies, runs or changes one thing (`gcloud compute instances describe
+$vm`, `get-`, `add-`, `create-`, `update-`, `set-` and `list-` verbs, `put`,
+`submit`, `access`, `use`, `link`, `cp`, `mv`, `rsync`, `upload`, `download`,
+`publish`, `connect`, `activate`, `build`, `pull`, `promote`, `redeploy`,
+`tail`, `dev`, `execute`, `authenticate`, `invoke`) is that verb's operand, so
+it stays safe. So is the word after a heroku `topic:command`, which is a leaf
+verb too (`heroku config:set $(cat .env)` is safe). A word that is a group in
+a CLI that reads it (`gcloud run`, `gcloud projects`) is not one of them: the
+word after it is still a verb. A word that is an assignment (`FOO=$BAR`) is
+never read as a verb. The options of each CLI that take a value are
+listed, and a boolean flag is never in a list: a flag listed by mistake eats
+the command word after it (`cdk --json destroy`).
+
+Not read, so the caller has to account for them: a verb that deletes under
+another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
+that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
+`docker rmi -f` of every image); a program run on another machine
+(`ssh host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p --
+rm -rf /`); a command a tool reads from a file or its environment
+(`TF_CLI_ARGS=-destroy`, a `kubectl` plugin, a shell alias); and the `delete`
+verb of a resource that is named `delete` (`gcloud config set project delete`
+reads as a delete, because the verb is the last word of the command and the
+guard cannot tell it from a name that follows).
+
 ## Reads only
 
 `classify` says whether a line is safe to run without asking. A caller that
@@ -1392,7 +2121,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`, `destroy_resources`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&

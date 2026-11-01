@@ -2,6 +2,8 @@
 //! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`,
 //! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
+use std::rc::Rc;
+
 use super::interpreters::{reads_input, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
@@ -212,7 +214,11 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
 /// what cannot be read; `-File` runs a script file; with none of them it
 /// reads commands from its input.
 pub(super) fn powershell(args: &[Arg], pwsh: bool) -> Launch {
-    powershell_in(args, pwsh, &mut None)
+    match powershell_entry(args, pwsh, &mut None) {
+        Entry::Launch(launch) => launch,
+        Entry::File(_) => Launch::Itself,
+        Entry::Rest(rest, _) => Launch::Script(Shell::PowerShell, join(rest)),
+    }
 }
 
 /// The folder `-WorkingDirectory` (`-wd`) gives `pwsh` to run in, when it
@@ -220,26 +226,59 @@ pub(super) fn powershell(args: &[Arg], pwsh: bool) -> Launch {
 /// one it does not know as the start of the command text.
 pub(super) fn powershell_folder(args: &[Arg]) -> Option<Arg> {
     let mut folder = None;
-    powershell_in(args, true, &mut folder);
+    powershell_entry(args, true, &mut folder);
     folder
 }
 
-/// [`powershell`], and the folder it is told to run in put in `folder`.
-fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
+/// The script file `powershell` or `pwsh` runs from its arguments: the one
+/// `-File` names, or the first word that is not a parameter (which `pwsh`
+/// runs as a file and Windows PowerShell as a command). `None` when it is not
+/// known now, or no file is run.
+pub(crate) fn powershell_file(args: &[Arg], pwsh: bool) -> Option<Arg> {
+    match powershell_entry(args, pwsh, &mut None) {
+        Entry::File(file) => Some(file),
+        Entry::Rest([first, ..], moved) => first.known().map(|file| file_arg(file, moved)),
+        Entry::Launch(_) | Entry::Rest(..) => None,
+    }
+}
+
+/// How `powershell` and `pwsh` start, before it is a [`Launch`].
+enum Entry<'a> {
+    /// What the arguments make it do.
+    Launch(Launch),
+    /// `-File name`, with the name known now: it runs that script file.
+    File(Arg),
+    /// A first word that is not a parameter, with the words after it: run as
+    /// a command.
+    Rest(&'a [Arg], bool),
+}
+
+/// [`Entry`] for the arguments, and the folder `pwsh` is told to run in put
+/// in `folder`.
+fn powershell_entry<'a>(args: &'a [Arg], pwsh: bool, folder: &mut Option<Arg>) -> Entry<'a> {
     let mut at = 0;
+    // Whether `-WorkingDirectory` has moved the folder a file is read from.
+    let mut moved = false;
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
-            return Launch::Script(Shell::PowerShell, join(&args[at..]));
+            return Entry::Rest(&args[at..], moved);
         };
         let Some(name) = text.strip_prefix('-').or_else(|| text.strip_prefix('/')) else {
-            return Launch::Script(Shell::PowerShell, join(&args[at..]));
+            return Entry::Rest(&args[at..], moved);
         };
+        // `-File:name`: the value joined to the parameter.
+        if let Some((param, value)) = name.split_once(':') {
+            let param = param.to_ascii_lowercase();
+            if !value.is_empty() && !param.is_empty() && "file".starts_with(&param) {
+                return Entry::File(file_arg(value, moved));
+            }
+        }
         let name = name.trim_end_matches(':').to_ascii_lowercase();
         if name.is_empty() {
-            return Launch::Reads(Reads::Shell);
+            return Entry::Launch(Launch::Reads(Reads::Shell));
         }
         if matches!(name.as_str(), "help" | "h" | "?") {
-            return Launch::Itself;
+            return Entry::Launch(Launch::Itself);
         }
         // `-Version 2` picks the engine and the command after it still runs;
         // `-Version` alone prints the version.
@@ -249,7 +288,7 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
                 .and_then(Arg::known)
                 .is_some_and(|next| !next.starts_with(['-', '/']));
             if !value {
-                return Launch::Itself;
+                return Entry::Launch(Launch::Itself);
             }
             at += 2;
         } else if matches!(name.as_str(), "ex" | "ep")
@@ -260,19 +299,22 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
             || name == "ec"
             || (name.len() >= 2 && "encodedcommand".starts_with(&name))
         {
-            return Launch::Encoded;
+            return Entry::Launch(Launch::Encoded);
         } else if "command".starts_with(&name) {
             let rest = &args[at + 1..];
-            return match rest {
+            return Entry::Launch(match rest {
                 [] => Launch::Itself,
                 [only] if only.known() == Some("-") => Launch::Reads(Reads::Shell),
                 rest => Launch::Script(Shell::PowerShell, join(rest)),
-            };
+            });
         } else if "file".starts_with(&name) {
             return match args.get(at + 1) {
-                Some(Arg::Known(stdin)) if is_stdin(stdin) => Launch::Reads(Reads::Shell),
-                Some(Arg::Known(_)) | None => Launch::Itself,
-                Some(script) => Launch::Script(Shell::PowerShell, script.clone()),
+                Some(Arg::Known(stdin)) if is_stdin(stdin) => {
+                    Entry::Launch(Launch::Reads(Reads::Shell))
+                }
+                Some(Arg::Known(file)) => Entry::File(file_arg(file, moved)),
+                None => Entry::Launch(Launch::Itself),
+                Some(script) => Entry::Launch(Launch::Script(Shell::PowerShell, script.clone())),
             };
         } else if name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name))
         {
@@ -285,9 +327,10 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
                 // `-wd ...`: a command that is not found, which runs nothing
                 // and moves nothing (`-wd Set-Location X; ...` does not
                 // change the folder, and the `;` statement after it runs).
-                return Launch::Script(Shell::PowerShell, join(&args[at..]));
+                return Entry::Launch(Launch::Script(Shell::PowerShell, join(&args[at..])));
             }
             *folder = args.get(at + 1).cloned();
+            moved = true;
             at += 2;
         } else if matches!(
             name.as_str(),
@@ -308,7 +351,17 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
             at += 1;
         }
     }
-    Launch::Reads(Reads::Shell)
+    Entry::Launch(Launch::Reads(Reads::Shell))
+}
+
+/// The script `file` names. After `-WorkingDirectory` it is read from a
+/// folder the line gives, so it is only known when it runs.
+fn file_arg(file: &str, moved: bool) -> Arg {
+    if moved {
+        Arg::Unknown(file.to_string())
+    } else {
+        Arg::Known(file.to_string())
+    }
 }
 
 /// `Start-Process`: the program in `-FilePath` (`-Path` and `-PSPath` are its
@@ -357,6 +410,8 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup: Rc::default(),
+        repeated: false,
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,
@@ -957,6 +1012,8 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        startup: Rc::clone(&unit.startup),
+        repeated: false,
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,

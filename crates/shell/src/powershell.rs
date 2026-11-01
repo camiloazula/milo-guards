@@ -58,6 +58,24 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split.reassign(&name);
         split.set(&name);
     }
+    // `foreach ($c in …)`: the variable holds one item of what it walks.
+    unit::for_each_node(tree.root_node(), |node| {
+        if node.kind() == "foreach_statement" {
+            let mut cursor = node.walk();
+            let variable = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "variable");
+            if let Some(variable) = variable {
+                let name = unit::text(&variable, text).trim();
+                let name = name
+                    .strip_prefix("${")
+                    .and_then(|rest| rest.strip_suffix('}'))
+                    .or_else(|| name.strip_prefix('$'))
+                    .unwrap_or(name);
+                split.loop_variable(name);
+            }
+        }
+    });
     let mut walker = Walker {
         source: text,
         depth,
@@ -189,14 +207,20 @@ impl Walker<'_> {
             "pipeline_chain" => {
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
+                let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for (index, child) in stages.iter().enumerate() {
+                    // A value that is piped on (`'DROP TABLE t' | psql`) is
+                    // a stage that says it, as `Write-Output` would.
+                    if child.kind() == "logical_expression" && index + 1 < stages.len() {
+                        self.value_stage(*child, Stage { pipeline, index });
+                    }
                     // The first command in a `ForEach-Object` block reads
                     // `$_` from the stage the block is.
                     let stage = match (index, self.item) {
                         (0, Some(item)) => item,
                         _ => Stage { pipeline, index },
                     };
-                    self.walk(child, Some(stage), level + 1);
+                    self.walk(*child, Some(stage), level + 1);
                 }
             }
             "command" => {
@@ -204,8 +228,12 @@ impl Walker<'_> {
                 let key = self.command(node, stage);
                 let own = first..self.split.units.len();
                 let outer = self.item;
-                if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
+                // The block of `ForEach-Object` and `Where-Object` runs once
+                // for each item of its input.
+                let each = matches!(key.as_deref(), Some("foreach-object" | "where-object"));
+                if each {
                     self.item = stage;
+                    self.split.repeats += 1;
                 }
                 // The block of an event runs later, in this session.
                 let later = key
@@ -217,6 +245,9 @@ impl Walker<'_> {
                     self.split.end_later(began, false);
                 }
                 self.item = outer;
+                if each {
+                    self.split.repeats -= 1;
+                }
                 // What a sub-expression in its arguments runs is handed to it.
                 self.split
                     .nest(own.clone(), own.end..self.split.units.len());
@@ -226,6 +257,14 @@ impl Walker<'_> {
                 let began = self.split.begin_later();
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
+            }
+            // A loop, or a function that is called more than once, runs
+            // what it holds again with other values.
+            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
+            | "function_statement" => {
+                self.split.repeats += 1;
+                self.children(node, stage, level);
+                self.split.repeats -= 1;
             }
             "redirection" => {
                 self.redirect(node);
@@ -244,6 +283,40 @@ impl Walker<'_> {
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A stage that is an expression and not a command: it says its value
+    /// to the next stage, as `Write-Output value` does. A string says its
+    /// text; a variable or anything computed says what is only known when it
+    /// runs.
+    fn value_stage(&mut self, node: Node<'_>, stage: Stage) {
+        let mut node = node;
+        // The chain of expressions a value is wrapped in, one child each.
+        while matches!(
+            node.kind(),
+            "logical_expression"
+                | "bitwise_expression"
+                | "comparison_expression"
+                | "additive_expression"
+                | "multiplicative_expression"
+                | "format_expression"
+                | "range_expression"
+        ) {
+            let mut cursor = node.walk();
+            let mut children = node.named_children(&mut cursor);
+            match (children.next(), children.next()) {
+                (Some(only), None) => node = only,
+                _ => break,
+            }
+        }
+        let value = self.expr(node);
+        let program = Arg::Known("Write-Output".to_string());
+        self.split.push(Unit::new(
+            Shell::PowerShell,
+            program,
+            vec![value],
+            Some(stage),
+        ));
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -290,18 +363,24 @@ impl Walker<'_> {
                     "array_literal_expression" => {
                         let mut items = element.walk();
                         for (index, item) in element.named_children(&mut items).enumerate() {
-                            let shape = self.shape(item, index > 0);
-                            let got = self.element_args(item, program_key.as_deref(), &mut origins);
-                            args.extend(got);
-                            shape.keep_aligned(&mut shapes, args.len());
+                            self.push_element(
+                                &mut args,
+                                &mut shapes,
+                                &mut origins,
+                                item,
+                                program_key.as_deref(),
+                                index > 0,
+                            );
                         }
                     }
-                    _ => {
-                        let shape = self.shape(element, false);
-                        let got = self.element_args(element, program_key.as_deref(), &mut origins);
-                        args.extend(got);
-                        shape.keep_aligned(&mut shapes, args.len());
-                    }
+                    _ => self.push_element(
+                        &mut args,
+                        &mut shapes,
+                        &mut origins,
+                        element,
+                        program_key.as_deref(),
+                        false,
+                    ),
                 }
             }
         }
@@ -346,23 +425,36 @@ impl Walker<'_> {
         key
     }
 
-    /// The arguments an element stands for, as [`Self::element_values`]
-    /// reads them, with where each value came from put in `origins`.
-    fn element_args(
+    /// Add what an element stands for to `args`, one shape to `shapes` for
+    /// each argument, and where each value came from to `origins`, so the
+    /// three stay in step: the element's own shape goes with the first
+    /// argument, and any more it stands for (the three of a `Where-Object`
+    /// name filter) are plain.
+    fn push_element(
         &self,
+        args: &mut Vec<Arg>,
+        shapes: &mut Vec<blocks::Shape>,
+        origins: &mut Vec<Origin>,
         element: Node<'_>,
         program: Option<&str>,
-        origins: &mut Vec<Origin>,
-    ) -> Vec<Arg> {
+        joined: bool,
+    ) {
         self.system.set(false);
-        let args = self.element_values(element, program);
+        let made = self.element_values(element, program);
         let origin = if self.system.replace(false) {
             Origin::System
         } else {
             Origin::Typed
         };
-        origins.extend(args.iter().map(|_| origin));
-        args
+        for (at, arg) in made.into_iter().enumerate() {
+            shapes.push(if at == 0 {
+                self.shape(element, joined)
+            } else {
+                blocks::Shape::default()
+            });
+            origins.push(origin);
+            args.push(arg);
+        }
     }
 
     /// The arguments an element stands for: one, or three when it is the
@@ -944,17 +1036,23 @@ impl Walker<'_> {
                     .unwrap_or(text)
                     .replace("''", "'"),
             ),
-            "expandable_string_literal" => {
-                let start = literal.start_byte() + 1;
-                let end = literal.end_byte().saturating_sub(1).max(start);
+            "expandable_string_literal" | "expandable_here_string_literal" => {
+                // `"…"` or `@"` … `"@`.
+                let here = literal.kind() == "expandable_here_string_literal";
+                let quotes = if here { 2 } else { 1 };
+                let start = literal.start_byte() + quotes;
+                let end = literal.end_byte().saturating_sub(quotes).max(start);
                 let mut value = String::new();
                 let mut nulls = false;
+                let mut splits = Vec::new();
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
-                    value.push_str(&unescape(
+                    let (before, made) = unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
-                    ));
+                    );
+                    splits.extend(made);
+                    value.push_str(&before);
                     if child.kind() != "variable" {
                         return Arg::Unknown(source.to_string());
                     }
@@ -969,12 +1067,24 @@ impl Walker<'_> {
                     }
                     at = child.end_byte();
                 }
-                value.push_str(&unescape(self.source.get(at..end).unwrap_or_default()));
+                let (rest, made) =
+                    unescape_expandable(self.source.get(at..end).unwrap_or_default());
+                splits.extend(made);
+                value.push_str(&rest);
                 // A string of nothing but `$null` is still the null value.
                 if nulls && value.is_empty() {
                     return Arg::Null;
                 }
-                Arg::Known(value.replace("\"\"", "\""))
+                let value = if here {
+                    // The lines between the two markers.
+                    value.trim_matches(['\r', '\n']).to_string()
+                } else {
+                    value.replace("\"\"", "\"")
+                };
+                // The value is the string as an argument; only a script read
+                // from it is not what it says (see `Split::note_splitting`).
+                self.split.note_splitting(&splits);
+                Arg::Known(value)
             }
             "verbatim_here_string_characters" => Arg::Known(
                 text.trim_start_matches("@'")
@@ -1178,6 +1288,76 @@ fn unescape(text: &str) -> String {
         }
     }
     value
+}
+
+/// What a backtick makes of the text in an expandable string or here-string:
+/// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
+/// other character after it is itself (`` `$ ``, `` `" ``). The second value
+/// holds each character a `` `u{…} `` made that PowerShell reads as more than
+/// a character once the text is run as code (a space that is not an ASCII one,
+/// a dash or a quote that looks like another): as an argument the string is
+/// the text it holds, but read again as a script it is not the words it runs
+/// as.
+fn unescape_expandable(text: &str) -> (String, Vec<char>) {
+    let mut splits = Vec::new();
+    let mut value = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '`' {
+            value.push(c);
+            continue;
+        }
+        let Some(next) = chars.next() else { break };
+        match next {
+            '0' => value.push('\0'),
+            'a' => value.push('\x07'),
+            'b' => value.push('\x08'),
+            'e' => value.push('\x1b'),
+            'f' => value.push('\x0c'),
+            'n' => value.push('\n'),
+            'r' => value.push('\r'),
+            't' => value.push('\t'),
+            'v' => value.push('\x0b'),
+            'u' if chars.peek() == Some(&'{') => {
+                chars.next();
+                let mut digits = String::new();
+                while let Some(digit) = chars.next_if(char::is_ascii_hexdigit) {
+                    digits.push(digit);
+                }
+                let closed = chars.next_if_eq(&'}').is_some();
+                let decoded = u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .filter(|_| closed)
+                    .and_then(char::from_u32);
+                if let Some(decoded) = decoded {
+                    if splits_words(decoded) {
+                        splits.push(decoded);
+                    }
+                    value.push(decoded);
+                } else {
+                    // Not a character: PowerShell does not run the line.
+                    value.push_str("`u{");
+                    value.push_str(&digits);
+                    if closed {
+                        value.push('}');
+                    }
+                }
+            }
+            other => value.push(other),
+        }
+    }
+    (value, splits)
+}
+
+/// Whether PowerShell reads `c`, run as code, as something other than the
+/// character it is: a space that is not an ASCII one (U+00A0, U+0085,
+/// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) splits
+/// words, a dash (U+2013 to U+2015) starts a parameter, and a typographic
+/// quote (U+2018 to U+201E) opens or closes a string. The guard's own read of
+/// a nested line does not know them, so a script with one in it is not read.
+fn splits_words(c: char) -> bool {
+    (!c.is_ascii() && c.is_whitespace())
+        || matches!(c, '\u{2013}'..='\u{2015}' | '\u{2018}'..='\u{201e}')
 }
 
 /// Switch parameters (they take no value) that the rules meet.

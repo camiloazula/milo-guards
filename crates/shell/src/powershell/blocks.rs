@@ -250,22 +250,6 @@ pub(super) struct Shape {
     pub joined: bool,
 }
 
-impl Shape {
-    /// Note this shape for the argument an element stands for, and give any
-    /// further argument that element was read as (a `Where-Object` block read
-    /// as `Name -eq value`) a plain shape, so `shapes` stays as long as the
-    /// `len` arguments read so far.
-    pub(super) fn keep_aligned(self, shapes: &mut Vec<Shape>, len: usize) {
-        shapes.push(self);
-        let rest = Shape {
-            block: false,
-            splat: false,
-            joined: self.joined,
-        };
-        shapes.resize(len.max(shapes.len()), rest);
-    }
-}
-
 /// An argument and its shape.
 struct Item<'a> {
     arg: &'a Arg,

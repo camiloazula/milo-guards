@@ -247,7 +247,9 @@ fn rule_effect(rule: Rule) -> Kind {
         | Rule::GitHistory
         | Rule::Permissions
         | Rule::SystemSettings
-        | Rule::StopSystem => Kind::Changes,
+        | Rule::StopSystem
+        | Rule::DropData
+        | Rule::DestroyResources => Kind::Changes,
         Rule::RunDownloaded | Rule::RunInput | Rule::Unknown | Rule::Unreadable => Kind::Unknown,
         // Running as root changes nothing by itself: `sudo cat` reads only.
         // Nor does reading a key: `cat ~/.ssh/id_ed25519` reads only, and the

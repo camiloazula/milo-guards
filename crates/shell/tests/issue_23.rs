@@ -480,6 +480,13 @@ fn set_item_judges_every_positional_of_a_list() {
             ),
             ("Set-Item src\\a, HKLM:\\x 1", Rule::SystemSettings),
             ("Set-Item HKLM:\\x", Rule::SystemSettings),
+            ("Set-Item src\\a, C:\\Users\\other\\x", Rule::Overwrite),
+            ("Set-Item src\\a, D:\\data\\x", Rule::Overwrite),
+            ("Set-Item src\\a, $p", Rule::Overwrite),
+            ("si src\\a, $p", Rule::Overwrite),
+            ("Set-Item src\\a, ..", Rule::Overwrite),
+            ("Set-Item src\\a, Env:PATH", Rule::Overwrite),
+            ("Set-Item src\\a C:\\Users\\other\\x", Rule::Overwrite),
         ],
     );
 }
@@ -873,6 +880,10 @@ fn the_file_switch_of_a_listing_does_not_take_the_folder() {
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_hidden_listing_is_read_quickly() {
     // Each place is also judged for the secret it may reach, so a line of
