@@ -542,6 +542,11 @@ impl Checker<'_> {
                 continue;
             };
             let at = text.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
+            // cmd reads no wildcard in a folder part (`*\x`): the resolver
+            // judges the whole path.
+            if glob::has_wildcard(&text[..at]) {
+                continue;
+            }
             let reaches = glob::can_match_git_entry(&text[at..], Flavour::Windows);
             let folder = Arg::Known(folder_of(&text[..at]));
             if reaches

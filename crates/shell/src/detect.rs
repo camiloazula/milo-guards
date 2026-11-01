@@ -697,7 +697,14 @@ fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<A
         for pattern in patterns {
             match &pattern.arg {
                 Arg::Known(text) => {
-                    found.push(Arg::Known(inside(folder, text)));
+                    // The resolver reads a wildcard with a `~` (`*~1`) as
+                    // possibly a short name, which `-Include` never matches.
+                    let written = if pattern.filter {
+                        text.clone()
+                    } else {
+                        long_names_only(text)
+                    };
+                    found.push(Arg::Known(inside(folder, &written)));
                     // A `-Filter` is the file system's own matching: cmd's
                     // wildcards, the short name and all. `-Include` is
                     // PowerShell's, against the long name.
@@ -726,6 +733,20 @@ fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<A
         }
     }
     found
+}
+
+/// An `-Include` pattern written so the resolver reads it against long names
+/// only: each `~` of a wildcard is put in a class (`*~1` is `*[~]1`), so it is
+/// no longer a pattern for an 8.3 short name (`GIT~1`), which `-Include` is
+/// never matched against. It picks the same long names. A text with no
+/// wildcard, or with a class of its own (a `~` there is a member, and is not
+/// to be put in another class), is as written.
+fn long_names_only(text: &str) -> String {
+    if glob::has_wildcard(text) && !text.contains('[') {
+        text.replace('~', "[~]")
+    } else {
+        text.to_string()
+    }
 }
 
 /// The most places times patterns a hidden listing is matched for; more is not
