@@ -198,6 +198,40 @@ fn a_decoy_discord_match_does_not_hide_the_real_token() {
 }
 
 #[test]
+fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
+    // The base64url of an id made of digits holds no `_` or `-`, so one that
+    // touches the token ends the run of letters before it, whatever it was.
+    let secret = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q";
+    let rows: Vec<(String, String)> = [
+        "token_",
+        "key-",
+        "prod_",
+        "abc_",
+        "my-bot-",
+        "secrets/discord-bot-",
+        "____",
+        "----",
+        "--token--",
+    ]
+    .into_iter()
+    .map(|head| (format!("{head}{secret}"), secret.to_string()))
+    .collect();
+    assert_found(&rows, Rule::ApiKey);
+    assert!(
+        !find(&format!("secrets/discord-bot-{secret}.txt")).is_safe(),
+        "a token in a file name is a secret"
+    );
+    // Four letters or digits right before the token are still a longer id.
+    for head in ["abcd", "x_abcd", "Zm9v1234"] {
+        let row = format!("{head}{secret}");
+        assert!(
+            find_spans(&row).iter().all(|s| s.rule != Rule::ApiKey),
+            "{row:?} is the tail of a longer id"
+        );
+    }
+}
+
+#[test]
 fn a_short_quoted_token_is_no_token() {
     assert_safe(&[
         "let token = \"abc123\";".to_string(),

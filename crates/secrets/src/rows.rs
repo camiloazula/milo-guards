@@ -303,11 +303,14 @@ fn telegram(candidate: &Candidate<'_>) -> bool {
 /// A Discord bot token: its first part is the base64url of a user's id, it
 /// varies as a signature does, and it is not the tail of a longer word.
 ///
-/// Up to three base64url characters may touch its front: a decoy match
+/// Up to three letters or digits may touch its front: a decoy match
 /// (`NMTIz…`) starts one letter too early, and that letter must not hide the
 /// token that begins after it. Four or more are a longer id of which this
 /// is only a tail (an id's digits come in groups of four characters), and a
-/// letter or digit after it is a longer third part.
+/// letter or digit after it is a longer third part. Only the run of letters
+/// and digits counts: the base64url of an id made of digits never holds `_`
+/// or `-`, so one that touches the token proves it is not the tail of a
+/// longer id (`token_…`, `my-bot-…`), and the run stops there.
 fn discord_bot(candidate: &Candidate<'_>) -> bool {
     let glued = candidate
         .text
@@ -316,7 +319,7 @@ fn discord_bot(candidate: &Candidate<'_>) -> bool {
         .chars()
         .rev()
         .take(4)
-        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .take_while(char::is_ascii_alphanumeric)
         .count();
     glued < 4
         && !text::after(candidate.text, candidate.end).is_some_and(|c| c.is_ascii_alphanumeric())

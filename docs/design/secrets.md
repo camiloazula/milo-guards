@@ -124,9 +124,12 @@ so its first part must also decode to the 17 to 21 digits of a user's id, as
 every real token's does. A match that fails this check is searched again from
 one character after its start, not after its end, so a decoy that overlaps or
 precedes a real token (`NMTIz…` with a glued letter, a chain of identifiers
-whose last part swallows the id) does not hide it; up to three base64url
-characters may touch the front of the token, as such a decoy leaves, but four
-or more make it the tail of a longer id.
+whose last part swallows the id) does not hide it; up to three letters or
+digits may touch the front of the token, as such a decoy leaves, but four or
+more make it the tail of a longer id. Only the run of letters and digits right
+before the token counts: the base64url of an id made of digits never holds `_`
+or `-`, so one of them touching the token (`token_…`, `my-bot-…`) shows it is
+not the tail of a longer id, and the run stops there.
 
 ## A private key
 
