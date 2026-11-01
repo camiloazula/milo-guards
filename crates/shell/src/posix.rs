@@ -11,7 +11,7 @@ use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let text = join_continuations(text);
+    let (text, marks) = join_continuations(text);
     let text = text.as_str();
     let language = tree_sitter_bash::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
@@ -29,10 +29,46 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     }
     Walker {
         source: text,
+        marks: &marks,
         depth,
         split,
     }
     .walk(tree.root_node(), None, 0);
+}
+
+/// Whether a character may stand in a zsh glob qualifier the guard reads:
+/// the file tests and flags, digits for `m`, `u` and the like, `^` to
+/// negate, `-` to follow links, `,` to separate. Not `e` (runs a string),
+/// `+` (runs a function), `P` (adds a string it holds as a word before each
+/// match: `*(DP./usr.)` is `/usr` and every name), `:` (a modifier), `[` (a
+/// subscript) or anything that can hold a substitution.
+fn qualifier_char(c: char) -> bool {
+    (c.is_ascii_alphanumeric() && !"eP".contains(c)) || ".^/@=%*,-".contains(c)
+}
+
+/// How many characters of `rest`, the text after a `(`, make a zsh glob
+/// qualifier that holds `D` (`*git(D)`, `*(.D)`), the `)` included. `word` is
+/// the text in front of the `(`, back to the last space: it must end a word,
+/// so not a space or what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(` and `!(`
+/// something else. The `)` must end the word too.
+///
+/// A word that holds `^`, `#`, or a `~` that does not start it is left as it
+/// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
+/// `.#git(D)` match `.git`, which a guard that reads them as plain text
+/// would not see.
+fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
+    word.chars()
+        .last()
+        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
+        return None;
+    }
+    let end = rest.iter().position(|c| *c == ')')?;
+    let body = &rest[..end];
+    let ends = rest
+        .get(end + 1)
+        .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
+    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -40,8 +76,14 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
 /// comments and here-document bodies, where it stays. A body is copied as it
 /// is, so a quote in it (`don't`) cannot leave the rest of the line looking
 /// quoted.
-fn join_continuations(text: &str) -> String {
+///
+/// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
+/// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
+/// given back as the offset in the new text where it was, the end of its
+/// word, for [`Walker::qualified`].
+fn join_continuations(text: &str) -> (String, Vec<usize>) {
     let chars: Vec<char> = text.chars().collect();
+    let mut marks = Vec::new();
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
     // Here-documents opened on the current line, read from the next one:
@@ -54,6 +96,16 @@ fn join_continuations(text: &str) -> String {
             joined.push(c);
             single = c != '\'';
             continue;
+        }
+        // zsh's `(D)` glob qualifier at the end of a word.
+        if c == '(' && !double {
+            let rest = chars.get(at..).unwrap_or_default();
+            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
+            if let Some(length) = qualifier(word, rest) {
+                at += length;
+                marks.push(joined.len());
+                continue;
+            }
         }
         match c {
             '\\' => match chars.get(at) {
@@ -146,7 +198,7 @@ fn join_continuations(text: &str) -> String {
             _ => joined.push(c),
         }
     }
-    joined
+    (joined, marks)
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -350,11 +402,98 @@ fn words_lost_after_redirect(command: Node<'_>) -> bool {
 
 struct Walker<'a> {
     source: &'a str,
+    /// Where `source` had a `(D)` glob qualifier taken out (see
+    /// [`join_continuations`]).
+    marks: &'a [usize],
     depth: usize,
     split: &'a mut Split,
 }
 
 impl Walker<'_> {
+    /// Whether `node` is, or ends with, a word that had a `(D)` glob
+    /// qualifier: its wildcards can match a leading dot.
+    fn qualified(&self, node: Node<'_>) -> bool {
+        self.marks
+            .iter()
+            .any(|mark| (node.start_byte()..=node.end_byte()).contains(mark))
+    }
+
+    /// Whether `node`, a `${…}`, assigns `GLOBIGNORE` a value that is not
+    /// empty: `${GLOBIGNORE:=x}` when it is unset or empty, `${GLOBIGNORE=x}`
+    /// when it is unset. Whether it was is not known, so the assignment is
+    /// taken as made.
+    fn assigns_ignore(&self, node: Node<'_>) -> bool {
+        let text = unit::text(&node, self.source);
+        let Some(inner) = text
+            .strip_prefix("${")
+            .and_then(|inner| inner.strip_suffix('}'))
+            .and_then(|inner| inner.strip_prefix(dotglob::GLOBIGNORE))
+        else {
+            return false;
+        };
+        // `GLOBIGNORE[0]`: an element of it is set, and the first is read.
+        let inner = match inner.strip_prefix('[') {
+            Some(subscript) => subscript.split_once(']').map_or("", |(_, rest)| rest),
+            None => inner,
+        };
+        let value = inner.strip_prefix(":=").or_else(|| inner.strip_prefix('='));
+        value.is_some_and(|value| {
+            dotglob::assigns_hiding(&Arg::Unknown(format!("{}={value}", dotglob::GLOBIGNORE)))
+        })
+    }
+
+    /// The operands of a chain of assignments in `(( ))`, in order, as the
+    /// text each is written in: `x = y = 1` is `x`, `y` and `1`, however the
+    /// parse nests it. Anything else is one operand.
+    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>) {
+        let assigning = node.kind() == "binary_expression" && {
+            let mut cursor = node.walk();
+            let found = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            found.is_some_and(|operator| {
+                operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+            })
+        };
+        match (
+            assigning,
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            (true, Some(left), Some(right)) => {
+                self.chain_operands(left, out);
+                self.chain_operands(right, out);
+            }
+            _ => out.push(node),
+        }
+    }
+
+    /// Whether `node`, an assignment in `(( ))`, gives `GLOBIGNORE` a value
+    /// at any place of a chain: `GLOBIGNORE = 1`, `x = GLOBIGNORE = 1`. Every
+    /// operand but the last is assigned to; the last is the value.
+    fn assigns_in_chain(&self, node: Node<'_>) -> bool {
+        let mut operands = Vec::new();
+        self.chain_operands(node, &mut operands);
+        operands.split_last().is_some_and(|(_, targets)| {
+            targets
+                .iter()
+                .any(|target| unit::text(target, self.source).trim() == dotglob::GLOBIGNORE)
+        })
+    }
+
+    /// Whether `node` or anything in it assigns `GLOBIGNORE` with a `${…}`:
+    /// the shell expands the words of a command before it expands the
+    /// command's own wildcards, so `rm -rf ${GLOBIGNORE:=x}*git` has it set
+    /// when `*git` is read.
+    fn holds_ignore_assignment(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node(node, |inner| {
+            found |= inner.kind() == "expansion" && self.assigns_ignore(inner);
+        });
+        found
+    }
+
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.walk_in(node, stage, level, false);
     }
@@ -441,11 +580,24 @@ impl Walker<'_> {
                 let assigns = operator.is_some_and(|operator| {
                     operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
                 });
-                let left = node.child_by_field_name("left");
-                if assigns
-                    && left
-                        .is_some_and(|left| unit::text(&left, self.source) == dotglob::GLOBIGNORE)
-                {
+                if assigns && self.assigns_in_chain(node) {
+                    self.split.hide();
+                }
+                self.children(node, stage, level);
+            }
+            // `: ${GLOBIGNORE:=x}`: the expansion sets it.
+            "expansion" => {
+                if self.assigns_ignore(node) {
+                    self.split.hide();
+                }
+                self.children(node, stage, level);
+            }
+            // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
+            // becomes 1 or -1.
+            "postfix_expression" | "unary_expression" => {
+                let text = unit::text(&node, self.source);
+                let bare = text.replace("++", "").replace("--", "");
+                if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
                     self.split.hide();
                 }
                 self.children(node, stage, level);
@@ -466,6 +618,16 @@ impl Walker<'_> {
                         .is_some_and(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE)
                 {
                     self.split.hide();
+                }
+                // `for f in *git(D); do rm -rf "$f"; done`: the body works
+                // on names the qualifier let a wildcard match.
+                let mut cursor = node.walk();
+                if node.kind() == "for_statement"
+                    && node
+                        .children_by_field_name("value", &mut cursor)
+                        .any(|word| self.qualified(word))
+                {
+                    self.split.hide_functions();
                 }
                 if let Some(name) = node
                     .child_by_field_name("name")
@@ -672,11 +834,18 @@ impl Walker<'_> {
         let Some(name) = node.child_by_field_name("name") else {
             return;
         };
+        // `rm -rf ${GLOBIGNORE:=x}*git`: set while the words are expanded,
+        // before the wildcard is.
+        if self.holds_ignore_assignment(node) {
+            self.split.hide();
+        }
         let program = self.arg(name);
         let mut cursor = node.walk();
         let nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
+        let qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
@@ -718,7 +887,9 @@ impl Walker<'_> {
                     .enumerate()
                     .any(|(at, arg)| arg.known() == Some("-v") && names(at + 1))
             }
-            Some("let") => args.iter().any(dotglob::assigns_hiding),
+            Some("let") => args
+                .iter()
+                .any(|arg| dotglob::assigns_hiding(arg) || dotglob::arithmetic_hides(arg)),
             _ => false,
         };
         if sets {
@@ -781,9 +952,11 @@ impl Walker<'_> {
             );
         }
         let outer = self.split.scope_hidden(prefixed);
+        let before = self.split.qualify(qualified);
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.startup = startup;
         launch::add(self.split, unit, self.depth);
+        self.split.restore_qualified(before);
         self.split.unscope_hidden(outer);
     }
 
@@ -1148,6 +1321,7 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        let before = self.split.qualify(self.qualified(destination));
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
         if operator == Some("<") {
@@ -1163,6 +1337,7 @@ impl Walker<'_> {
         if writes {
             self.split.write(Shell::Posix, target);
         }
+        self.split.restore_qualified(before);
     }
 
     /// An argument's value, where its spelling gives it.

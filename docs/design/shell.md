@@ -467,12 +467,51 @@ folder a `cd` moved to.
 - **`GLOBIGNORE`** turns it on when it is not empty: as `GLOBIGNORE=x` on a
   line of its own, after `export`, `declare`, `typeset`, `local` or `readonly`
   (quoted too: `export "GLOBIGNORE=x"`), with `+=`, as `let GLOBIGNORE=1` or
-  `(( GLOBIGNORE=1 ))`, as `read GLOBIGNORE` or `printf -v GLOBIGNORE`, or as
-  a `for` variable. An empty value turns nothing on. A command with
+  `(( GLOBIGNORE=1 ))`, `(( GLOBIGNORE++ ))` (also `--` and in front, and
+  `+=` and the like), `(( x = GLOBIGNORE = 1 ))` (anywhere in a chain of
+  assignments, however the parse nests it), `let` reading its words as `(( ))` does (`let
+  GLOBIGNORE++`, `let ++GLOBIGNORE`, `let GLOBIGNORE+=1`, `let
+  "GLOBIGNORE+=1"`, in any comma-separated part or value of a word), as
+  `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or by an
+  expansion that assigns it: `: ${GLOBIGNORE:=x}`, `${GLOBIGNORE=x}`,
+  `${GLOBIGNORE[0]:=x}`, anywhere a word is expanded (an argument, an
+  assignment's value, inside quotes). Whether the variable was already set is
+  not known, so the assignment counts as made; `${GLOBIGNORE:=}` assigns
+  nothing that matters and `${GLOBIGNORE:-x}` and `${GLOBIGNORE:+x}` do not
+  assign. A command expands its words before its wildcards, so `rm -rf
+  ${GLOBIGNORE:=x}*git` is judged with the option on. An empty value turns
+  nothing on. A command with
   `GLOBIGNORE=x` in front of it, or after `env`, was expanded by the shell
   before the variable applies, so only a script it starts (`GLOBIGNORE=x bash
   -c '…'`) is judged with it on. `BASHOPTS=dotglob` does the same for the bash
   it starts; as a statement it counts as on.
+- **zsh's `(D)` glob qualifier** lets the patterns of one command match hidden
+  names without any option: `rm -rf *git(D)`. The grammar cannot read a
+  qualifier, so before the line is parsed each one is taken out of its word
+  (`*git(D)` becomes `*git`) and its place kept; a command with a word that
+  had one is judged with hidden names matching, and so is a redirect target
+  that had one, a `for` list (the loop's body), and, through a listing, the
+  command it feeds. It is the command's alone: `rm -rf *.o(D); rm -rf *git`
+  is still safe. A command that turns its words into a script (`eval rm -rf
+  *git(D)`, `watch rm -rf *git(D)`, `trap rm\ -rf\ *git(D) EXIT`) keeps it for
+  the commands that script holds: the shell expanded the pattern first, so the
+  `rm` inside is handed `.git`. A word is read as having one when a `(…)` ends it (the next
+  character is a space, `;`, `&`, `|`, `<`, `>` or `)`), the character in
+  front is not what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(`, `@(` or `!(`, the
+  `(` is not inside quotes, and what is inside holds `D` and nothing but
+  letters other than `e` and `P`, digits, and `.^/@=%*,-` (`(D)`, `(.D)`,
+  `(D/)`, `(^D)`, `(mh-1D)`). A qualifier with `e` (runs a string), `+` (runs
+  a function), `P` (adds the string it holds as an extra word before each
+  match: `*(DP./usr.)` is `/usr` and every name), `:`, `[`, or a substitution
+  is not taken out and stays unreadable as before, and so does one without `D`
+  (`*.o(N)`), which says nothing about hidden names. So does a qualifier on a
+  word that holds `^`, `#` or a `~` that does not start it: with `extendedglob`
+  (an rc file may set it) `^x(D)`, `*git~x(D)` and `.#git(D)` match `.git`, and
+  the word cannot be read as a plain pattern. Where hidden names match, `**/`
+  and `***/` also stand for no folder, so `**/*git(D)` is read as `*git(D)` too,
+  which reaches `.git` of the workspace folder (so does `**/*git` with
+  `dotglob` and `globstar`). `bash -c 'rm -rf *git(D)'` and the rest read the qualifier in
+  the script, where it is not inside quotes.
 - **A shell's own start-up options** turn it on for the script that shell runs:
   `bash -O dotglob -c '…'`, `zsh -o globdots -c '…'`, `zsh -o dotglob`, `zsh -4`,
   `zsh --globdots`, and a name only known when it runs.
@@ -532,9 +571,7 @@ folder a `cd` moved to.
 
 Not read, so the caller has to account for them: an option set by `~/.zshenv`
 or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
-from the environment the guard's caller runs in, and a `GLOBIGNORE` set by
-`${GLOBIGNORE:=x}`. zsh's `(D)` glob qualifier (`rm -rf *git(D)`) is not read
-either.
+from the environment the guard's caller runs in.
 
 ## The rules
 

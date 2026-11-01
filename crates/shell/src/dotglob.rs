@@ -129,6 +129,94 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
     hides(name, Some(&value))
 }
 
+/// Whether an argument of `let`, which reads each one as arithmetic as
+/// `(( ))` does, gives `GLOBIGNORE` a value: `GLOBIGNORE=1`, `GLOBIGNORE+=1`
+/// (any operator in front of the `=`), `GLOBIGNORE++`, `--GLOBIGNORE`, in
+/// any of the comma-separated parts of it or inside another one's value
+/// (`x=GLOBIGNORE++`, `x=GLOBIGNORE=1`). An empty variable is 0 for each, so
+/// the result is a number and never empty.
+pub(crate) fn arithmetic_hides(arg: &Arg) -> bool {
+    let text = match arg {
+        Arg::Known(text) => text.as_str(),
+        Arg::Unknown(text) | Arg::Template { source: text, .. } => text.trim_matches(['"', '\'']),
+        Arg::Input | Arg::Null => return false,
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let name: Vec<char> = GLOBIGNORE.chars().collect();
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // Whether `GLOBIGNORE` stands at `at` as a name of its own.
+    let named = |at: usize| {
+        chars.get(at..at + name.len()) == Some(&name)
+            && !at
+                .checked_sub(1)
+                .and_then(|before| chars.get(before))
+                .is_some_and(|c| word(*c))
+            && !chars.get(at + name.len()).is_some_and(|c| word(*c))
+    };
+    // Whether the text right of `from` (to the right) or left of it (to
+    // the left) is `++` or `--`, spaces aside.
+    let step = |from: usize, right: bool| {
+        let near: Vec<char> = if right {
+            chars[from..]
+                .iter()
+                .copied()
+                .filter(|c| *c != ' ')
+                .take(2)
+                .collect()
+        } else {
+            let mut near: Vec<char> = chars[..from]
+                .iter()
+                .rev()
+                .copied()
+                .filter(|c| *c != ' ')
+                .take(2)
+                .collect();
+            near.reverse();
+            near
+        };
+        near == ['+', '+'] || near == ['-', '-']
+    };
+    let steps = (0..chars.len())
+        .filter(|at| named(*at))
+        .any(|at| step(at + name.len(), true) || step(at, false));
+    // `GLOBIGNORE[0]` is the first element; skip a subscript.
+    let assigned = (0..chars.len()).filter(|at| chars[*at] == '=').any(|at| {
+        let previous = at.checked_sub(1).map(|before| chars[before]);
+        let doubled = chars.get(at + 1) == Some(&'=');
+        if doubled || matches!(previous, Some('=' | '!')) {
+            return false;
+        }
+        let mut end = at;
+        match previous {
+            Some('<' | '>') => {
+                // `<<=` and `>>=` assign; a single `<=` or `>=` compares.
+                if at < 2 || chars[at - 2] != previous.unwrap_or(' ') {
+                    return false;
+                }
+                end = at - 2;
+            }
+            Some('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^') => end = at - 1,
+            _ => {}
+        }
+        let mut start = end;
+        while start > 0 && chars[start - 1] == ' ' {
+            start -= 1;
+        }
+        if start > 0 && chars[start - 1] == ']' {
+            let Some(open) = chars[..start].iter().rposition(|c| *c == '[') else {
+                return false;
+            };
+            start = open;
+        }
+        start >= name.len()
+            && named(start - name.len())
+            && chars[at + 1..]
+                .iter()
+                .any(|c| !c.is_whitespace() && !"\"'".contains(*c))
+    });
+    steps || assigned
+}
+
 /// What the builtin `key` does to the option when run with `args`: `shopt`
 /// is bash's, `setopt`, `unsetopt` and `set` are zsh's. A name only known when
 /// it runs is taken to switch both on. `source` and `.` run a file the guard

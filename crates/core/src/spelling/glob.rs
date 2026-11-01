@@ -192,14 +192,19 @@ fn hex_shapes(short: bool) -> Vec<NameShape> {
     shapes
 }
 
-/// Whether the (non-cmd) pattern can match a name of one of `shapes`.
+/// Whether the (non-cmd) pattern can match a name of one of `shapes`. As in
+/// [`matches()`], a pattern on POSIX may be read by bash or by zsh (`[.x.]`
+/// and `[=x=]` differ), and can match when either reading does.
 fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape]) -> bool {
-    let tokens = tokens(pattern, flavour);
-    let optional = vec![false; tokens.len()];
     let fold = flavour == Flavour::Windows;
-    shapes.iter().any(|shape| {
-        matches_by(&tokens, &optional, shape.len(), &|at, token| {
-            shape[at].iter().any(|c| token.takes(*c, fold))
+    let readings: &[bool] = if fold { &[false] } else { &[false, true] };
+    readings.iter().any(|&zsh| {
+        let tokens = tokens(pattern, flavour, zsh);
+        let optional = vec![false; tokens.len()];
+        shapes.iter().any(|shape| {
+            matches_by(&tokens, &optional, shape.len(), &|at, token| {
+                shape[at].iter().any(|c| token.takes(*c, fold))
+            })
         })
     })
 }
@@ -270,7 +275,7 @@ fn can_match_cmd<'a>(
 /// (cmd's DOS dot, which can match nothing at the end of a name; any such dot
 /// is taken to, to err to Risky), and cmd's own `>` and `"` anywhere.
 fn cmd_tokens(pattern: &str, dos: bool) -> (Vec<Token>, Vec<bool>) {
-    let tokens = tokens_in(pattern, Flavour::Windows, dos);
+    let tokens = tokens_in(pattern, Flavour::Windows, false, dos);
     let mut optional: Vec<bool> = tokens
         .iter()
         .map(|token| matches!(token, Token::DosAny | Token::DosDot))
@@ -373,8 +378,19 @@ fn matches_by(
 #[must_use]
 pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
     let fold = flavour == Flavour::Windows;
-    let tokens = tokens(pattern, flavour);
+    // `[.x.]` and `[=x=]` are elements in bash and plain members in zsh, and
+    // a pattern on POSIX may be read by either: it matches when either
+    // reading of it does.
     let name: Vec<char> = name.chars().collect();
+    let readings: &[bool] = if fold { &[false] } else { &[false, true] };
+    readings.iter().any(|&zsh| {
+        let tokens = tokens(pattern, flavour, zsh);
+        matches_tokens(&tokens, &name, fold, hidden)
+    })
+}
+
+/// Whether the `tokens` of a pattern match the file name `name`.
+fn matches_tokens(tokens: &[Token], name: &[char], fold: bool, hidden: bool) -> bool {
     if !hidden && name.first() == Some(&'.') && tokens.first() != Some(&Token::Literal('.')) {
         return false;
     }
@@ -423,6 +439,9 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 /// not the whole folder, which the caller judges for a catch-all as written:
 /// it matches `.git`, so it reaches it.
 ///
+/// On POSIX a first part of `**` or `***` also stands for no folder, so the
+/// parts after it are tried as the pattern's own.
+///
 /// `hidden` is the same as for [`matches()`].
 #[must_use]
 pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
@@ -451,6 +470,16 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
                 || (short && windows && matches_short_git(pattern, flavour))
         })
     };
+    // On POSIX `**/` and `***/` (bash with `globstar`, zsh) match no folder
+    // at all too, so what follows is read against the folder itself:
+    // `**/*git` reaches `.git` where `*git` does.
+    if !windows
+        && parts.len() > 1
+        && matches!(parts[0], "**" | "***")
+        && reaches_git(&parts[1..], flavour, hidden)
+    {
+        return true;
+    }
     if parts.is_empty() || !reaches(0, &PROTECTED, true) {
         return false;
     }
@@ -496,7 +525,7 @@ fn bits(of: Takes, holds: impl Fn(char) -> bool) -> Takes {
 /// risky, since PowerShell does not match short names and `cmd` skips a
 /// folder a wildcard matches.
 fn matches_short_git(part: &str, flavour: Flavour) -> bool {
-    let tokens = tokens(part, flavour);
+    let tokens = tokens(part, flavour, false);
     if !tokens.contains(&Token::Literal('~')) {
         return false;
     }
@@ -565,7 +594,72 @@ enum Token {
         negated: bool,
         /// Inclusive ranges; a single character is a range of one.
         ranges: Vec<(char, char)>,
+        /// POSIX classes written as `[:alpha:]` inside the brackets.
+        named: Vec<Named>,
     },
+}
+
+/// A POSIX character class, `[:alpha:]` inside a bracket expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    Alpha,
+    Digit,
+    Alnum,
+    Upper,
+    Lower,
+    Punct,
+    Space,
+    Blank,
+    Cntrl,
+    Print,
+    Graph,
+    Xdigit,
+}
+
+impl Named {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "alpha" => Self::Alpha,
+            "digit" => Self::Digit,
+            "alnum" => Self::Alnum,
+            "upper" => Self::Upper,
+            "lower" => Self::Lower,
+            "punct" => Self::Punct,
+            "space" => Self::Space,
+            "blank" => Self::Blank,
+            "cntrl" => Self::Cntrl,
+            "print" => Self::Print,
+            "graph" => Self::Graph,
+            "xdigit" => Self::Xdigit,
+            _ => return None,
+        })
+    }
+
+    /// Whether `c` is in the class. A character outside ASCII is read by
+    /// what Unicode says, which a locale may read more widely: names in a
+    /// protected folder are ASCII, so that is the side that matters.
+    fn holds(self, c: char) -> bool {
+        match self {
+            Self::Alpha => c.is_alphabetic(),
+            Self::Digit => c.is_ascii_digit(),
+            Self::Alnum => c.is_alphanumeric(),
+            Self::Upper => c.is_uppercase(),
+            Self::Lower => c.is_lowercase(),
+            Self::Punct => {
+                if c.is_ascii() {
+                    c.is_ascii_punctuation()
+                } else {
+                    !c.is_alphanumeric() && !c.is_whitespace() && !c.is_control()
+                }
+            }
+            Self::Space => c.is_whitespace(),
+            Self::Blank => matches!(c, ' ' | '\t'),
+            Self::Cntrl => c.is_control(),
+            Self::Print => !c.is_control(),
+            Self::Graph => !c.is_control() && !c.is_whitespace(),
+            Self::Xdigit => c.is_ascii_hexdigit(),
+        }
+    }
 }
 
 /// `c` in the cases a Windows name compares by: its first lower and upper
@@ -594,7 +688,11 @@ impl Token {
             Self::Any | Self::DosAny => true,
             Self::DosDot => c == '.',
             Self::Literal(literal) => same(*literal),
-            Self::Class { negated, ranges } => {
+            Self::Class {
+                negated,
+                ranges,
+                named,
+            } => {
                 let within = |c: char, low: char, high: char| low <= c && c <= high;
                 let inside = ranges.iter().any(|&(low, high)| {
                     within(c, low, high)
@@ -603,27 +701,35 @@ impl Token {
                                 || within(upper, low, high)
                                 // A lone member compares like a literal.
                                 || (low == high && same(low))))
-                });
+                }) || named.iter().any(|class| class.holds(c));
                 inside != *negated
             }
         }
     }
 }
 
-fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
-    tokens_in(pattern, flavour, false)
+/// The tokens of `pattern`. `zsh` says a POSIX bracket is read as zsh reads
+/// it, where `[.` and `[=` are plain members; otherwise as bash reads it.
+fn tokens(pattern: &str, flavour: Flavour, zsh: bool) -> Vec<Token> {
+    tokens_in(pattern, flavour, zsh, false)
 }
 
-/// The tokens of `pattern`; with `dos`, also cmd's own wildcards, which the
-/// file system's matching reads and PowerShell's own does not: `<` is a `*`
-/// (that stops at the last dot, taken here as a `*`), `>` is a `?` that can
-/// match nothing, and `"` is a `.` that can match nothing.
-fn tokens_in(pattern: &str, flavour: Flavour, dos: bool) -> Vec<Token> {
+/// The tokens of `pattern`, read as [`tokens`] does; with `dos`, also cmd's
+/// own wildcards, which the file system's matching reads and PowerShell's own
+/// does not: `<` is a `*` (that stops at the last dot, taken here as a `*`),
+/// `>` is a `?` that can match nothing, and `"` is a `.` that can match
+/// nothing.
+fn tokens_in(pattern: &str, flavour: Flavour, zsh: bool, dos: bool) -> Vec<Token> {
     let windows = flavour == Flavour::Windows;
     let chars: Vec<char> = pattern.chars().collect();
     // A `[` after the last `]` has nothing to close it: it is a plain `[`.
     // Finding that once keeps a long run of `[` linear.
     let last_close = chars.iter().rposition(|c| *c == ']');
+    // A bracket whose only `]`s sit inside `[:a:]`-style elements has a last
+    // close and still no end. The places a failed scan stepped on are marked
+    // here, so the next `[` stops at the first one: from there it can only
+    // fail the same way, and no place is stepped on twice.
+    let mut dead = vec![false; chars.len()];
     let mut out = Vec::new();
     let mut at = 0;
     while at < chars.len() {
@@ -644,7 +750,7 @@ fn tokens_in(pattern: &str, flavour: Flavour, dos: bool) -> Vec<Token> {
             '>' if dos => out.push(Token::DosAny),
             '"' if dos => out.push(Token::DosDot),
             '[' if last_close.is_some_and(|close| at <= close) => {
-                match class(&chars[at..], windows) {
+                match class(&chars[at..], windows, zsh, &mut dead[at..]) {
                     Some((token, used)) => {
                         out.push(token);
                         at += used;
@@ -661,29 +767,105 @@ fn tokens_in(pattern: &str, flavour: Flavour, dos: bool) -> Vec<Token> {
 /// The class that starts just after a `[`, and how many characters it takes
 /// up to its `]`; `None` when no `]` closes it. On Windows `!` and `^` first
 /// in it are members, and a backtick makes the next character a member.
-fn class(chars: &[char], windows: bool) -> Option<(Token, usize)> {
+///
+/// On POSIX `[:alpha:]` inside the brackets is a class of its own, and
+/// `[=a=]` and `[.a.]` are an equivalence class and a collating symbol. The
+/// first is read; the others, an unknown class name, and a range that starts
+/// or ends on one are not read exactly, so the bracket takes any character.
+/// zsh has no `[=a=]` or `[.a.]`: with `zsh` set they are not elements, `[`
+/// and `.` or `=` are plain members, and the first `]` closes the bracket.
+///
+/// `dead` is as long as `chars`. A place past the first that a scan stepped
+/// on is marked in it: what follows such a place does not depend on where the
+/// scan began, so a scan that comes to a marked place is one that failed, and
+/// fails at once. A scan that closes leaves marks only before the next
+/// bracket starts. This keeps a run of brackets that never close linear.
+fn class(chars: &[char], windows: bool, zsh: bool, dead: &mut [bool]) -> Option<(Token, usize)> {
     let negated = !windows && matches!(chars.first(), Some('!' | '^'));
     let mut at = usize::from(negated);
     let mut ranges = Vec::new();
+    let mut named = Vec::new();
+    let mut any = false;
     let mut first = true;
     loop {
+        let here = at;
+        // The first step reads a `]` as a member, so it is not the same step
+        // for a scan that began elsewhere: only the later ones are marked.
+        if !first {
+            if *dead.get(here)? {
+                return None;
+            }
+            dead[here] = true;
+        }
         let mut low = *chars.get(at)?;
         at += 1;
         if low == ']' && !first {
-            return Some((Token::Class { negated, ranges }, at));
+            let token = if any {
+                Token::Any
+            } else {
+                Token::Class {
+                    negated,
+                    ranges,
+                    named,
+                }
+            };
+            return Some((token, at));
         }
         if windows && low == '`' {
             low = *chars.get(at)?;
             at += 1;
         }
         first = false;
+        if !windows {
+            if let Some((kind, inner, end)) = element(chars, here, zsh) {
+                let name: String = inner.iter().collect();
+                match (kind, Named::from_name(&name)) {
+                    (':', Some(class)) => named.push(class),
+                    _ => any = true,
+                }
+                at = end;
+                // A range that starts on it is not read.
+                if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|c| *c != ']') {
+                    any = true;
+                }
+                continue;
+            }
+        }
         if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|next| *next != ']') {
+            // A range that ends on one is not read either.
+            if !windows {
+                if let Some((_, _, end)) = element(chars, at + 1, zsh) {
+                    any = true;
+                    at = end;
+                    continue;
+                }
+            }
             ranges.push((low, chars[at + 1]));
             at += 2;
         } else {
             ranges.push((low, low));
         }
     }
+}
+
+/// The POSIX bracket element that starts at `at`, if one does: `[:alpha:]`,
+/// `[=a=]` or `[.a.]`. Its kind (`:`, `=` or `.`), what it holds, and where
+/// it ends, just after its `]`. What it holds has no bracket in it, so `[:[:]`
+/// is no element and its `]` stays the class's own. With `zsh` only `[:a:]`
+/// is one.
+fn element(chars: &[char], at: usize, zsh: bool) -> Option<(char, &[char], usize)> {
+    if chars.get(at) != Some(&'[') {
+        return None;
+    }
+    let kind = *chars
+        .get(at + 1)
+        .filter(|c| **c == ':' || (!zsh && matches!(c, '=' | '.')))?;
+    let start = at + 2;
+    // A name is short; looking only that far keeps a long run of `[:` linear.
+    let limit = (start + 16).min(chars.len().saturating_sub(1));
+    let close = (start..limit).find(|&j| chars[j] == kind && chars[j + 1] == ']')?;
+    let inner = &chars[start..close];
+    (!inner.iter().any(|c| matches!(c, '[' | ']'))).then_some((kind, inner, close + 2))
 }
 
 /// What a wildcard pattern matches inside the folder before it.
@@ -1003,6 +1185,182 @@ mod tests {
         assert!(matches("a[", "a[", posix, false));
         assert!(!matches("[a", "a", posix, false));
         assert!(matches("[!", "[!", posix, false));
+    }
+
+    #[test]
+    fn posix_classes_inside_a_bracket() {
+        let posix = Flavour::Posix;
+        assert!(matches("[[:alpha:]]x", "bx", posix, false));
+        assert!(!matches("[[:alpha:]]x", "1x", posix, false));
+        assert!(matches("[[:digit:]]x", "1x", posix, false));
+        assert!(matches("[[:punct:]]git", ".git", posix, true));
+        assert!(!matches("[[:punct:]]git", ".git", posix, false));
+        assert!(matches("[.[:alpha:]]git", ".git", posix, true));
+        assert!(matches("*[[:alpha:]]it", ".git", posix, true));
+        assert!(matches("?[[:alpha:]]it", ".git", posix, true));
+        assert!(matches("[[:punct:][:alpha:]]x", "_x", posix, false));
+        assert!(matches("[[:blank:]]x", "\tx", posix, false));
+        assert!(matches("[[:xdigit:]]x", "fx", posix, false));
+        assert!(!matches("[[:xdigit:]]x", "gx", posix, false));
+        // Negated, and with a range or a literal beside the class.
+        assert!(matches("[![:alpha:]]x", "1x", posix, false));
+        assert!(!matches("[![:alpha:]]x", "bx", posix, false));
+        assert!(matches("[^[:digit:]]x", "bx", posix, false));
+        assert!(matches("[a-c[:digit:]]x", "5x", posix, false));
+        assert!(!matches("[a-c[:digit:]]x", "dx", posix, false));
+        // Not read exactly: any character, whether negated or not.
+        assert!(matches("[[:nosuch:]]x", "?x", posix, false));
+        assert!(matches("[![:nosuch:]]x", "bx", posix, false));
+        assert!(matches("[[=a=]]x", "qx", posix, false));
+        assert!(matches("[[.ab.]]x", "qx", posix, false));
+        assert!(matches("[a-[.z.]]x", "qx", posix, false));
+        assert!(matches("[[:alpha:]-z]x", "1x", posix, false));
+        // Without the closing `:]` the `[` is a member of the class.
+        assert!(matches("[[:alpha]x", ":x", posix, false));
+        assert!(matches("[[:alpha]x", "ax", posix, false));
+        assert!(!matches("[[:alpha]x", "bx", posix, false));
+        // PowerShell reads no such class: the brackets close at the first `]`.
+        assert!(!matches("[[:alpha:]]x", "bx", Flavour::Windows, true));
+    }
+
+    #[test]
+    fn a_bracket_with_a_collating_element_is_read_as_bash_and_as_zsh_do() {
+        let posix = Flavour::Posix;
+        // zsh has no `[.x.]` or `[=x=]`: `[` and `.` are members and the first
+        // `]` closes the bracket. Bash has no `]` left to close the first `[`,
+        // so it is a plain `[`. A pattern matches when either reading does.
+        for pattern in [
+            "[[.x.]*git",
+            "[[.x.]git",
+            "[a[.x.]git",
+            "[[=.=]*git",
+            "[[=.=]git",
+        ] {
+            assert!(matches(pattern, ".git", posix, true), "{pattern}");
+            assert!(!matches(pattern, ".git", posix, false), "{pattern}");
+        }
+        // Neither reading has a member that takes the dot.
+        assert!(!matches("[[=x=]git", ".git", posix, true));
+        assert!(!matches("[a[.x.]git", "git", posix, true));
+        // Bash's reading still holds: the `[` is plain and `[.x]` a class.
+        assert!(matches("[[.x.]*git", "[.git", posix, true));
+        assert!(matches("[[.x.]*git", "[xgit", posix, true));
+        // With a `]` after the element, bash reads an element and a class.
+        assert!(matches("[[.x.]]git", "xgit", posix, true));
+        assert!(matches("[[=x=]]git", "qgit", posix, true));
+        // PowerShell reads it as zsh does, with its one reading.
+        assert!(matches("[[.x.]*git", ".git", Flavour::Windows, true));
+        assert!(!matches("[[.x.]]git", "xgit", Flavour::Windows, true));
+    }
+
+    #[test]
+    fn a_shape_is_matched_by_either_reading_of_a_posix_bracket() {
+        // zsh reads `[[.a.]` as a class of `[`, `.` and `a`, so `[[.a.]?` can
+        // be a loose object's two hex digits (`a0`); bash reads a plain `[`.
+        assert!(can_match_git_entry("[[.a.]?", Flavour::Posix));
+        // Neither reading takes a name of two hex digits.
+        assert!(!can_match_git_entry("[[.x.]?", Flavour::Posix));
+    }
+
+    #[test]
+    fn a_long_run_of_posix_class_openers_is_read() {
+        let pattern = "[:".repeat(40_000);
+        let closed = format!("[{pattern}]");
+        for flavour in [Flavour::Posix, Flavour::Windows] {
+            assert!(!matches(&closed, ".git", flavour, true));
+        }
+        let equals = format!("[{}]", "[=".repeat(40_000));
+        assert!(!matches(&equals, ".git", Flavour::Posix, true));
+        let dots = format!("[{}]", "[.".repeat(40_000));
+        assert!(!matches(&dots, ".git", Flavour::Posix, true));
+        // A bracket whose only `]`s close elements never closes itself, and
+        // each `[` after it must not scan to the end again.
+        for element in ["[[:a:]", "[[.x.]", "[[=x=]", "[[:alpha:]", "[[::]"] {
+            let run = element.repeat(10_000);
+            for pattern in [run.clone(), format!("{run}]"), format!("x{run}y")] {
+                assert!(!matches(&pattern, ".git", Flavour::Posix, true));
+            }
+        }
+        // The `]` that closes is still found after a run that did not.
+        assert!(matches("[[:a:][[:a:]]x", "[x", Flavour::Posix, true));
+        assert!(matches("[[:a:][[:a:][[:a:]]x", "[x", Flavour::Posix, true));
+        assert!(matches("[[:a:][[:a:]]]x", "?]x", Flavour::Posix, true));
+    }
+
+    /// What each `[` of `pattern` that can be closed reads, the way [`tokens`]
+    /// asks `class`; `shared` keeps the marks of failed scans from one `[` to
+    /// the next, as `tokens` does, and otherwise each scan starts clean.
+    fn brackets(
+        pattern: &str,
+        windows: bool,
+        zsh: bool,
+        shared: bool,
+    ) -> Vec<Option<(Token, usize)>> {
+        let chars: Vec<char> = pattern.chars().collect();
+        let last_close = chars.iter().rposition(|c| *c == ']');
+        let mut dead = vec![false; chars.len()];
+        let (mut at, mut out) = (0, Vec::new());
+        while at < chars.len() {
+            let c = chars[at];
+            at += 1;
+            match c {
+                '`' if windows && at < chars.len() => at += 1,
+                '[' if last_close.is_some_and(|close| at <= close) => {
+                    let mut clean = vec![false; chars.len()];
+                    let marks = if shared { &mut dead } else { &mut clean };
+                    let read = class(&chars[at..], windows, zsh, &mut marks[at..]);
+                    if let Some((_, used)) = &read {
+                        at += used;
+                    }
+                    out.push(read);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_failed_scan_marks_only_what_fails_the_same_way_from_elsewhere() {
+        // Every pattern of up to six of the characters that make or break a
+        // bracket: each `[` reads the same with the marks of the scans
+        // before it as with none.
+        let alphabet = ['[', ']', ':', '=', '.', 'a', '-', '!', '`'];
+        let mut patterns = vec![String::new()];
+        let mut from = 0;
+        for _ in 0..6 {
+            let to = patterns.len();
+            for at in from..to {
+                for c in alphabet {
+                    let mut longer = patterns[at].clone();
+                    longer.push(c);
+                    patterns.push(longer);
+                }
+            }
+            from = to;
+        }
+        for pattern in &patterns {
+            for (windows, zsh) in [(false, false), (false, true), (true, false)] {
+                assert_eq!(
+                    brackets(pattern, windows, zsh, true),
+                    brackets(pattern, windows, zsh, false),
+                    "{pattern:?} windows: {windows} zsh: {zsh}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bracket_after_a_failed_scan_is_still_read() {
+        let posix = Flavour::Posix;
+        // The first `[` fails: its only `]` closes an element. It is a plain
+        // `[`, and the `[` of the element opens a bracket of its own.
+        assert!(matches("[[:a:]", "[a", posix, false));
+        assert!(matches("[[:a:]", "[:", posix, false));
+        assert!(!matches("[[:a:]", "[b", posix, false));
+        assert!(matches("[a[:a:]", "[aa", posix, false));
+        assert!(matches("[a[:a:]", "[a:", posix, false));
+        assert!(!matches("[a[:a:]", "[ab", posix, false));
     }
 
     #[test]
