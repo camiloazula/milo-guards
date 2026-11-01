@@ -273,6 +273,10 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
 
 /// Everything a line was split into.
 #[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the one walk of the line latches"
+)]
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
