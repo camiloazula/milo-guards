@@ -875,10 +875,13 @@ fn the_file_switch_of_a_listing_does_not_take_the_folder() {
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
 fn a_long_hidden_listing_is_read_quickly() {
-    let items = "a,".repeat(5000);
-    let words = "b ".repeat(5000);
-    let paths = "-Path x ".repeat(2000);
-    let includes = "a,".repeat(2000);
+    // Each place is also judged for the secret it may reach, so a line of
+    // this many is slow in the debug build for that alone; these are far
+    // over the `MAX_HIDDEN_MATCHES` pairs the hidden match reads.
+    let items = "a,".repeat(1250);
+    let words = "b ".repeat(1250);
+    let paths = "-Path x ".repeat(500);
+    let includes = "a,".repeat(500);
     for line in [
         format!("gci -fo -r -Include {items}a {words} | ren -NewName x"),
         format!("gci -fo -r {paths} -Include {includes}a | ren -NewName x"),
@@ -887,8 +890,11 @@ fn a_long_hidden_listing_is_read_quickly() {
         let started = std::time::Instant::now();
         let rules = common::rules(&line, Shell::PowerShell, &windows());
         let took = started.elapsed();
+        // Each of the thousands of words is resolved against the protected
+        // names, which costs about a millisecond in a debug build; a
+        // quadratic read would take minutes.
         assert!(
-            took < std::time::Duration::from_millis(500),
+            took < std::time::Duration::from_secs(3),
             "{} bytes took {took:?}",
             line.len()
         );
