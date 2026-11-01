@@ -2,13 +2,14 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, find_targets, is_stdin, uv_script, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use milo_guards_core::spelling::glob;
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -36,6 +37,14 @@ const ELEVATORS: [&str; 8] = [
     "runas",
     "run0",
     "systemd-run",
+];
+
+/// Builtins that start no program: they print, test, move or set a variable,
+/// so a `BASH_ENV` file is not run for them (one set in front of a special
+/// builtin stays set for the rest of the line: see `startup::SPECIAL`).
+const STARTS_NOTHING: [&str; 21] = [
+    "echo", "printf", "true", "false", ":", "cd", "export", "unset", "set", "pwd", "test", "[",
+    "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
 ];
 
 /// Programs that download, whose output piped into a shell is a downloaded
@@ -73,7 +82,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         split,
         resolver,
         found: split.findings.clone(),
-        written: Vec::new(),
+        written: HashSet::new(),
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
@@ -137,7 +146,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
         writes.push(checker.found[before..].to_vec());
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
     Judged {
         found: checker.found,
@@ -153,7 +162,7 @@ struct Checker<'a> {
     found: Vec<Finding>,
     /// Every file the line writes, by [`Resolver::file_key`]: redirects,
     /// downloads, copies, `tee`, `dd`.
-    written: Vec<String>,
+    written: HashSet<String>,
     /// Whether the line writes a file it cannot place (a target known only
     /// when it runs, or after a `cd` to such a place): it has no key, but
     /// may be a script the line runs.
@@ -184,7 +193,7 @@ impl Checker<'_> {
     /// Note a file the line writes, from `dir`.
     fn written(&mut self, dir: Option<&Arg>, target: &Arg, shell: Shell) {
         if let Some(key) = self.resolver.file_key(dir, target, shell) {
-            self.written.push(key);
+            self.written.insert(key);
         } else if self.resolver.unplaced(dir, target, shell) {
             self.unplaced_write = true;
         }
@@ -201,12 +210,15 @@ impl Checker<'_> {
     fn unit(&mut self, at: usize, unit: &Unit) {
         self.called(unit);
         let Some(key) = unit.key() else {
+            // A program only known when it runs may be a shell, or start one.
+            self.startup_then_run(unit, None);
             return;
         };
         self.elevated(unit, &key);
-        self.reads(unit);
+        self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
+        self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
         self.send(at, unit, &key);
         self.data(at, unit, &key);
@@ -240,13 +252,13 @@ impl Checker<'_> {
 
     /// A shell or an interpreter reading what to run from its input: a
     /// download piped into it is a downloaded script.
-    fn reads(&mut self, unit: &Unit) {
+    fn reads(&mut self, unit: &Unit, reads: Reads) {
         let downloaded = unit.stage.is_some_and(|stage| {
             self.downloaders
                 .get(&stage.pipeline)
                 .is_some_and(|&first| first < stage.index)
         });
-        match (unit.reads, downloaded) {
+        match (reads, downloaded) {
             (Reads::Shell | Reads::Interpreter, true) => {
                 self.add(Rule::RunDownloaded, "runs a downloaded script", None);
             }
@@ -627,11 +639,48 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
+        self.runs_written(unit, script, unit.dir.as_ref());
+    }
+
+    /// A program that starts a bash runs the file `BASH_ENV` names before
+    /// that bash's own script, when the same line writes it: a shell, and
+    /// any program that may start one (`make` runs its recipes with the
+    /// `SHELL` of its makefile, a script with a `#!/bin/bash` line, `git`
+    /// its hooks). What starts nothing is a builtin that only prints, tests
+    /// or sets a variable ([`STARTS_NOTHING`]); `key` is `None` for a
+    /// program only known when it runs.
+    fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
+        if unit.shell != Shell::Posix || key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
+            return;
+        }
+        // The files the line sets for every shell it starts count wherever
+        // the unit sits, as the files it writes do: an assignment is read
+        // where it is written, and a trap action, the next pass of a loop or
+        // a function body runs after it.
+        for entry in unit.startup.iter().chain(self.split.startup.iter()) {
+            // `BASH_ENV=/dev/stdin` is the shell's input run as a script, as
+            // `bash /dev/stdin` is.
+            if entry.file.known().is_some_and(is_stdin) {
+                self.reads(unit, Reads::Shell);
+                continue;
+            }
+            self.runs_written(unit, &entry.file, unit.dir.as_ref());
+            // A name an expansion made (`$PWD/e.sh`) is the file where the
+            // line assigned it, whatever folder the shell runs from.
+            if entry.expanded && entry.assigned.as_ref() != unit.dir.as_ref() {
+                self.runs_written(unit, &entry.file, entry.assigned.as_ref());
+            }
+        }
+    }
+
+    /// `unit` runs `script`, from `dir`: say so when the line writes it, or
+    /// may.
+    fn runs_written(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
         // A script path the guard cannot place (after a `cd` to somewhere
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.
         if (!self.written.is_empty() || self.unplaced_write)
-            && path::within(unit.dir.as_ref(), script, unit.shell).is_unknown()
+            && path::within(dir, script, unit.shell).is_unknown()
         {
             self.add(
                 Rule::Unknown,
@@ -640,10 +689,7 @@ impl Checker<'_> {
             );
             return;
         }
-        let Some(wanted) = self
-            .resolver
-            .file_key(unit.dir.as_ref(), script, unit.shell)
-        else {
+        let Some(wanted) = self.resolver.file_key(dir, script, unit.shell) else {
             return;
         };
         if self.written.contains(&wanted) {
@@ -654,6 +700,48 @@ impl Checker<'_> {
             );
         }
     }
+}
+
+/// The word `arg` with each folder only known when it runs taken off the
+/// front of a name the line wrote out (`"$PWD/.env"` after a `cd` to a name
+/// that may hold code, `"$x/.env"`): the name, as the rules that follow a
+/// secret read it, since a secret is named by its file name wherever the
+/// folder is. `None` when no name is left to read or the word holds another
+/// expansion past the last folder.
+fn named_in_unknown_folder(arg: &Arg) -> Option<Arg> {
+    let Arg::Template { text, .. } = arg else {
+        return None;
+    };
+    let folder = format!("{}/", crate::posix::OPAQUE);
+    if !text.contains(&folder) {
+        return None;
+    }
+    let name = text.replace(&folder, "");
+    (!name.contains(crate::posix::OPAQUE)).then_some(Arg::Known(name))
+}
+
+/// `unit` with its words read by the name they end in, for the rules that
+/// follow a secret (`secret_read`, `send`, `secrets`): `curl -T "$PWD/.env"`
+/// sends `.env` from wherever `$PWD` is. The words of any other rule stay as
+/// the line wrote them, only known when it runs.
+fn named(unit: &Unit) -> Cow<'_, Unit> {
+    if unit.shell != Shell::Posix {
+        return Cow::Borrowed(unit);
+    }
+    let names: Vec<Option<Arg>> = unit.args.iter().map(named_in_unknown_folder).collect();
+    if names.iter().all(Option::is_none) {
+        return Cow::Borrowed(unit);
+    }
+    let args = unit
+        .args
+        .iter()
+        .zip(names)
+        .map(|(arg, name)| name.unwrap_or_else(|| arg.clone()))
+        .collect();
+    Cow::Owned(Unit {
+        args,
+        ..Unit::clone(unit)
+    })
 }
 
 /// The parameters of a listing stage: `Get-ChildItem` has switch aliases that

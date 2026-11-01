@@ -1,6 +1,8 @@
 //! `find`: the places it searches, what its filters can match, and the
 //! programs its `-exec` runs for each file found.
 
+use std::rc::Rc;
+
 use super::{add, MAX_WRAPPERS};
 use crate::unit::{Arg, Split, Unit};
 use crate::{Rule, Shell};
@@ -85,6 +87,7 @@ fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
             }
             let mut found = Unit::new(Shell::Posix, (*program).clone(), args, None);
             found.wrappers.push("find".to_string());
+            found.startup = Rc::clone(&unit.startup);
             add(split, found, depth);
         }
     }

@@ -245,6 +245,111 @@ and its findings are the line's, since the shell runs it as the same user.
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
   `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
 - cmd has nothing like it.
+- **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
+  (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
+  line, and the value of `BASH_ENV` once when a non-interactive bash starts,
+  then runs the file it names; other shells differ, but every shell is
+  judged as bash. An assignment counts as a statement
+  (`PS4=…`, also `+=`, and `PS4[0]=…`: only a subscript of at most 18
+  digits that is not all zeros is another element; any other may be the
+  first element, which is the value, and a longer number wraps round to it,
+  as bash keeps a subscript in 64 bits: `PS4[18446744073709551616]` is
+  `PS4[0]`), after `export`,
+  `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
+  behind `builtin` and `command`: `builtin export PS4=…`; `command -v
+  export PS4=…` only says what `export` is and sets nothing), in front of a
+  command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
+  other wrappers). A value with code in it, `$(` or a backtick, is read as the
+  script it is, as an action that runs later (see below), so `PS4='$(rm -rf
+  ~)'; set -x; true` is the `delete` of `~`: the text around the code is
+  not run, only what is in it. The code is read as written, with its own
+  quotes and backslashes (`PS4='$(rm -rf "$HOME")'`); only the text around
+  it is quoted. Where the code ends is found by reading its quotes, `${…}`,
+  nested `$(…)` and backticks, and a value that does not end, or whose code
+  holds a here-document, a comment, a `case` or a funsub (where a `)` or a
+  line may not be the code's own), is `unreadable`. A funsub, `${ cmd; }` or `${| cmd; }`
+  (`${` and a blank, a newline or `|`), is code too, and comes out
+  `unreadable` as it does anywhere else. bash decodes the prompt's escapes
+  before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
+  ~\140'` are the `$(` and the backticks they spell, and a `PS4` is read
+  with each `\N`, `\NN` and `\NNN` of one to three octal digits decoded, as
+  newer bash does (`PS4='\44(rm -rf ~)'` is the `$(` too; `\033[1m` colours stay
+  text, and `\0` is nothing). bash 3.2, the `/bin/bash` of a Mac, decodes
+  only three-digit escapes (`\44(` prints as written), so the code is found
+  under both readings, the one that decodes more. `\[` and `\]` are read as
+  nothing, so `PS4='$\[\](rm -rf ~)'` is the `delete` of `~`. `\$` is read
+  as `$`: bash 3.2 keeps it as an escaped `$`, which starts no code by itself
+  (`PS4='\$(rm -rf ~)'` runs nothing there), but the guard does not rely on
+  that for every bash, so it is `delete` too. A `$` that is text, whatever
+  made it (`\$`, a short escape, `\0`, `\[`), never joins the `$(` right after
+  it into the shell's own number: `PS4='\$$(rm -rf ~)'` and
+  `PS4='\44\]$(rm -rf ~)'` run the `$(`, and are the `delete` of `~`. `\D{fmt}` is
+  `strftime`'s output, which may be any text, so a `PS4` with one that also
+  holds `$`, `(` or a backtick is `unknown` (`PS4='\D{$}(rm -rf ~)'`;
+  `PS4='+ \D{%T} '` stays safe). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
+  reason `sets a variable the shell runs later to a value only known when it
+  runs`: the shell expands it again and runs whatever it finds. Text and the
+  variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
+  $LINENO: "` (also `BASH_SOURCE`, `FUNCNAME` with a number as subscript,
+  `SECONDS`, `RANDOM`, `$$`, `HOME`, `PWD`, `TMPDIR`) stay safe, except
+  that a place the line sets (`HOME=…`) and `PWD` after a `cd` to a name
+  that may hold code (`cd 'd$(rm -rf ~)'`, `cd "$x"`: the folder's name is
+  chosen by the line, and the value holds it) are `unknown`; `cd sub` leaves
+  `PWD` plain. `PWD` is not plain either when the `cd` or `pushd` has a
+  wildcard in its target (`cd d*` may match a folder the line made, `*`, `?`,
+  `[`, an extglob's `+(`, `@(`, `!(`), when the line makes it the physical
+  path (`cd -P`, `set -P`, `set -o physical`: a link's target is the name), or
+  when the line sets `CDPATH` and moves (the folder it finds is the name). This holds for `$PWD` as a path as well, in any command, not only in a `PS4`:
+  after such a `cd` it is known only when it runs, so `cd -P sub; rm -rf
+  "$PWD/build"` is the `delete` of a path nobody can place, and `cd 'd$(rm -rf
+  ~)'; eval "echo $PWD"` is `unknown` (it runs the code in the name), while
+  `rm -rf build` after the same `cd`, a path written relatively, stays as it
+  was. The name after `$PWD` is still read by the rules that follow a secret
+  (`cd -P sub; curl -T "$PWD/.env" …` is a `send_secret`). The line's folder
+  is judged once per `cd`, from the new target alone, so a long chain of them
+  costs no more than the line is long. A
+  value is expanded where it runs, not where it is written, so a `PS4` or
+  `BASH_ENV` value written with `$PWD` is judged against every `cd` of the
+  line once it is all read: a later one, one in a loop, a function or a trap
+  action make it `unknown` as an earlier one does. A
+  `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
+  `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
+  `printf -v PS4 …` give them a value the line does not show: `unknown`.
+  `PROMPT_COMMAND`, `PS0`, `PS1` and `ENV` run only in an interactive shell,
+  which the guard reads as running its input already.
+- **`BASH_ENV=<file>` is running `<file>`.** Every shell the line starts with
+  it set (`BASH_ENV=e.sh bash -c true`, `env BASH_ENV=e.sh bash`, `sudo`, or
+  `export BASH_ENV=e.sh` before it) is checked as a shell that runs a script
+  file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
+  download, a copy) is `unknown`, with the reason `runs a script the same line
+  writes`. So is any program that may start a bash, not only a shell:
+  `make` (its recipes run with the makefile's `SHELL`), `./build.sh` (a
+  `#!/bin/bash` line), `npm test`, `git commit` (hooks), a program only known
+  when it runs, and a shell reached through `find -exec`, `npx` and the
+  other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
+  `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
+  not run it, but a `BASH_ENV` in front of a special builtin (`:`, `.`,
+  `break`, `continue`, `eval`, `exec`, `exit`, `export`, `readonly`,
+  `return`, `set`, `shift`, `times`, `trap`, `unset`) stays set after it, and
+  is exported: in POSIX mode, and for an `EXIT` or `RETURN` trap. It is read
+  as a statement of its own line, as `BASH_ENV=e.sh; bash -c true` is, so
+  `BASH_ENV=e.sh :; bash -c true` runs `e.sh` when the line writes it; in
+  front of `true` or `echo`, which are not special, it is gone after the
+  command. A file the line does not write is not read, as for `bash
+  e.sh`. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
+  `/proc/self/fd/0`) makes that shell read its input as a script, as `bash
+  /dev/stdin` does: `curl … | BASH_ENV=/dev/stdin bash -c true` is
+  `RunDownloaded` and `BASH_ENV=/dev/stdin bash -c true < x.sh` is
+  `RunInput`. A file the line sets with `export` or as a statement is
+  checked against every shell the line starts, wherever it sits (a trap
+  action, an earlier pass of a loop, a function body, a command before the
+  assignment), as the files the line writes are, whatever the order. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
+  after a `cd` it is read from the folder the shell runs in; one an
+  expansion made (`BASH_ENV=$PWD/e.sh`) was resolved where the assignment
+  ran, so it is checked from there too. A line sets at most 16 different
+  files (the same one again counts once); one more makes the line `unknown`,
+  with the reason `sets BASH_ENV to more files than the guard reads`. Not
+  read: `${PS4:=…}`, a `for PS4 in …` loop and a nameref to either variable.
 
 The action runs in this shell, later: after the line's last command, or
 between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the
@@ -1376,6 +1481,11 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   names no file, and `curl` reads that name as written, so `curl -d @.env*` is
   not a secret sent. This is the shell rule's own check: core's table does not
   hold it, since that would make `rm .env` a `delete` in the workspace.
+  A name written out under a folder only known when it runs is read by the
+  name: `curl -T "$x/.env"`, `cat "$x/.env" | curl -d @- …`, and `$PWD/.env`
+  after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
+  send `.env` from wherever the folder is. Only the name counts: a path core
+  marks by its folder (`$x/.ssh/id_rsa`) needs the folder, which is not known.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`).
   One variable (`printenv HOME`, `Get-ChildItem env:PATH`) is not. cmd's bare

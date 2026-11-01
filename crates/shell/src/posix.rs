@@ -1,9 +1,12 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
+use std::rc::Rc;
+
 use tree_sitter::{Node, TreeCursor};
 
 use crate::dotglob;
 use crate::launch;
+use crate::startup;
 use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -416,8 +419,16 @@ impl Walker<'_> {
                     if child.kind() != "variable_assignment" && self.arg_hides(child) {
                         self.split.hide();
                     }
+                    if child.kind() != "variable_assignment" {
+                        let text = unit::text(&child, self.source);
+                        let written = startup::Written {
+                            expanded: text.contains(['$', '`']),
+                            pwd: text.contains("PWD"),
+                        };
+                        self.startup_words(&[self.arg(child)], written);
+                    }
                 }
-                self.declared(node, stage);
+                self.declaration(node, stage);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE=1 ))`
@@ -713,6 +724,40 @@ impl Walker<'_> {
         if sets {
             self.split.hide();
         }
+        if program
+            .known()
+            .is_some_and(|name| startup::read_into(name, &args))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a variable the shell runs later to a value only known when it runs",
+                Some(program.text()),
+            );
+        }
+        // `BASH_ENV=f bash -c '…'`: the shell it starts runs `f` first.
+        let mut cursor = node.walk();
+        let assignments: Vec<Node<'_>> = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .collect();
+        let mut startup = Rc::default();
+        // In front of a special builtin the assignment outlives it: it stays
+        // set, and exported, for the rest of the line (POSIX mode, and an
+        // `EXIT` or `RETURN` trap that runs with it still set). It is read
+        // as the line-level statement it then is.
+        let outlives = program
+            .known()
+            .is_some_and(|name| startup::SPECIAL.contains(&name));
+        for assignment in &assignments {
+            if let Some(file) = self.startup(*assignment) {
+                if outlives {
+                    self.split.add_startup(file);
+                } else if !startup::push(&mut startup, file) {
+                    self.split.startup_overflow();
+                }
+            }
+        }
+        self.declared(program.known(), &args);
         // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
         let mut cursor = node.walk();
         let prefixed = node
@@ -736,11 +781,9 @@ impl Walker<'_> {
             );
         }
         let outer = self.split.scope_hidden(prefixed);
-        launch::add(
-            self.split,
-            Unit::new(Shell::Posix, program, args, stage),
-            self.depth,
-        );
+        let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        unit.startup = startup;
+        launch::add(self.split, unit, self.depth);
         self.split.unscope_hidden(outer);
     }
 
@@ -768,6 +811,80 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        // `BASH_ENV=f` on a line of its own, or after `export`, is the
+        // file every shell started from here on runs.
+        if let Some(file) = self.startup(node) {
+            self.split.add_startup(file);
+        }
+    }
+
+    /// `builtin export PS4=…`, `command declare PS4=…`: the same
+    /// assignments as `export` itself makes, behind the builtins that
+    /// run it.
+    fn declared(&mut self, program: Option<&str>, args: &[Arg]) {
+        let mut at = 0;
+        let mut name = program;
+        while matches!(name, Some("builtin" | "command")) {
+            if name == Some("command") {
+                while let Some(flags) = args
+                    .get(at)
+                    .and_then(Arg::known)
+                    .filter(|word| word.starts_with('-'))
+                {
+                    // `command -v export …` only says what `export` is.
+                    if flags.contains(['v', 'V']) {
+                        return;
+                    }
+                    at += 1;
+                }
+            }
+            name = args.get(at).and_then(Arg::known);
+            at += 1;
+        }
+        if program != name
+            && matches!(
+                name,
+                Some("export" | "declare" | "typeset" | "local" | "readonly")
+            )
+        {
+            // The words are values already, so the line can no longer say
+            // whether `$PWD` was one of them: it is taken as if it was.
+            let written = startup::Written {
+                expanded: true,
+                pwd: true,
+            };
+            self.startup_words(&args[at..], written);
+        }
+    }
+
+    /// The `NAME=value` words of `words`, read as assignments that set a
+    /// variable the shell runs later.
+    fn startup_words(&mut self, words: &[Arg], written: startup::Written) {
+        for word in words {
+            if let Some((name, value)) = startup::word(word) {
+                if let Some(file) = startup::read(self.split, &name, &value, self.depth, written) {
+                    self.split.add_startup(file);
+                }
+            }
+        }
+    }
+
+    /// Read the assignment `node` for a variable the shell runs later (see
+    /// [`startup`]): the file it names when it is `BASH_ENV`.
+    fn startup(&mut self, node: Node<'_>) -> Option<startup::Startup> {
+        let source = self.source;
+        let name = startup::variable(unit::text(&node.child_by_field_name("name")?, source));
+        if !startup::VARIABLES.contains(&name) {
+            return None;
+        }
+        let written = node.child_by_field_name("value")?;
+        let text = unit::text(&written, source);
+        let how = startup::Written {
+            expanded: text.contains(['$', '`']),
+            pwd: text.contains("PWD"),
+        };
+        let value = self.arg(written);
+        startup::read(self.split, name, &value, self.depth, how)
     }
 
     /// A command and what it holds. What its substitutions run is handed to
@@ -887,7 +1004,7 @@ impl Walker<'_> {
 
     /// `export -p` and `declare -x` print the environment: they are programs
     /// the line runs like any other.
-    fn declared(&mut self, node: Node<'_>, stage: Option<Stage>) {
+    fn declaration(&mut self, node: Node<'_>, stage: Option<Stage>) {
         let Some(keyword) = node.child(0).filter(|keyword| !keyword.is_named()) else {
             return;
         };
@@ -1176,8 +1293,8 @@ impl Walker<'_> {
     }
 
     /// `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` as paths the resolver reads,
-    /// unless the line sets them; any other variable is only known when it
-    /// runs.
+    /// unless the line sets them (or moves, for `$PWD`, to a name that may
+    /// hold code); any other variable is only known when it runs.
     fn variable(&self, source: &str) -> Arg {
         let name = source
             .strip_prefix("${")
@@ -1186,7 +1303,10 @@ impl Walker<'_> {
             .filter(|name| !self.split.reassigned(name));
         match name {
             Some("HOME") => Arg::Known("~".to_string()),
-            Some("PWD") => Arg::Known(".".to_string()),
+            // After a `cd` to a name the line chose that may hold code
+            // (`d$(rm -rf ~)`, or one only known when it runs), `$PWD` is
+            // that name: text a `PS4` or `BASH_ENV` expands again.
+            Some("PWD") if self.split.pwd_is_plain() => Arg::Known(".".to_string()),
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
         }
