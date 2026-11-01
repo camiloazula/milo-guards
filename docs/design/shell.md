@@ -467,7 +467,10 @@ folder a `cd` moved to.
 - **`GLOBIGNORE`** turns it on when it is not empty: as `GLOBIGNORE=x` on a
   line of its own, after `export`, `declare`, `typeset`, `local` or `readonly`
   (quoted too: `export "GLOBIGNORE=x"`), with `+=`, as `let GLOBIGNORE=1` or
-  `(( GLOBIGNORE=1 ))`, `(( GLOBIGNORE++ ))` (also `--` and in front), as
+  `(( GLOBIGNORE=1 ))`, `(( GLOBIGNORE++ ))` (also `--` and in front, and
+  `+=` and the like), `let` reading its words as `(( ))` does (`let
+  GLOBIGNORE++`, `let ++GLOBIGNORE`, `let GLOBIGNORE+=1`, `let
+  "GLOBIGNORE+=1"`, in any comma-separated part or value of a word), as
   `read GLOBIGNORE` or `printf -v GLOBIGNORE`, as a `for` variable, or by an
   expansion that assigns it: `: ${GLOBIGNORE:=x}`, `${GLOBIGNORE=x}`,
   `${GLOBIGNORE[0]:=x}`, anywhere a word is expanded (an argument, an
@@ -492,12 +495,19 @@ folder a `cd` moved to.
   character is a space, `;`, `&`, `|`, `<`, `>` or `)`), the character in
   front is not what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(`, `@(` or `!(`, the
   `(` is not inside quotes, and what is inside holds `D` and nothing but
-  letters other than `e`, digits, and `.^/@=%*,-` (`(D)`, `(.D)`, `(D/)`,
-  `(^D)`, `(mh-1D)`). A qualifier with `e` (runs a string), `+` (runs a
-  function), `:`, `[`, or a substitution is not taken out and stays unreadable
-  as before, and so does one without `D` (`*.o(N)`), which says nothing about
-  hidden names. `bash -c 'rm -rf *git(D)'` and the rest read the qualifier
-  in the script, where it is not inside quotes.
+  letters other than `e` and `P`, digits, and `.^/@=%*,-` (`(D)`, `(.D)`,
+  `(D/)`, `(^D)`, `(mh-1D)`). A qualifier with `e` (runs a string), `+` (runs
+  a function), `P` (adds the string it holds as an extra word before each
+  match: `*(DP./usr.)` is `/usr` and every name), `:`, `[`, or a substitution
+  is not taken out and stays unreadable as before, and so does one without `D`
+  (`*.o(N)`), which says nothing about hidden names. So does a qualifier on a
+  word that holds `^`, `#` or a `~` that does not start it: with `extendedglob`
+  (an rc file may set it) `^x(D)`, `*git~x(D)` and `.#git(D)` match `.git`, and
+  the word cannot be read as a plain pattern. Where hidden names match, `**/`
+  and `***/` also stand for no folder, so `**/*git(D)` is read as `*git(D)` too,
+  which reaches `.git` of the workspace folder (so does `**/*git` with
+  `dotglob` and `globstar`). `bash -c 'rm -rf *git(D)'` and the rest read the qualifier in
+  the script, where it is not inside quotes.
 - **A shell's own start-up options** turn it on for the script that shell runs:
   `bash -O dotglob -c '…'`, `zsh -o globdots -c '…'`, `zsh -o dotglob`, `zsh -4`,
   `zsh --globdots`, and a name only known when it runs.

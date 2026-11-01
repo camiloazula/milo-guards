@@ -36,6 +36,14 @@ fn an_expansion_that_assigns_globignore_turns_hidden_names_on() {
             "(( GLOBIGNORE == 1 )); rm -rf *git",
             "(( x++ )); rm -rf *git",
             "(( -GLOBIGNORE )); rm -rf *git",
+            // `let` reads each word as arithmetic: naming the variable, a
+            // comparison, or another variable does not set it.
+            "let GLOBIGNORE; rm -rf *git",
+            "let GLOBIGNORE<=1; rm -rf *git",
+            "let x++; rm -rf *git",
+            "let XGLOBIGNORE++; rm -rf *git",
+            "let GLOBIGNORE=; rm -rf *git",
+            "let x=GLOBIGNORE+1; rm -rf *git",
             "echo '${GLOBIGNORE:=x}'; rm -rf *git",
             // With the option on, a pattern that cannot match a hidden name
             // is as safe as it was.
@@ -96,6 +104,28 @@ fn an_expansion_that_assigns_globignore_turns_hidden_names_on() {
             ("(( --GLOBIGNORE )); rm -rf *git", Rule::Delete),
             ("x=$(( GLOBIGNORE++ )); rm -rf *git", Rule::Delete),
             ("echo $(( GLOBIGNORE+=2 )); rm -rf *git", Rule::Delete),
+            ("(( GLOBIGNORE += 1 )); rm -rf *git", Rule::Delete),
+            // `let` does the same with each of its words, `++` and `+=`
+            // included, quoted or not, and in any part of a word.
+            ("let GLOBIGNORE=1; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE++; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE--; rm -rf *git", Rule::Delete),
+            ("let ++GLOBIGNORE; rm -rf *git", Rule::Delete),
+            ("let --GLOBIGNORE; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE+=1; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE-=1; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE*=2; rm -rf *git", Rule::Delete),
+            ("let \"GLOBIGNORE+=1\"; rm -rf *git", Rule::Delete),
+            ("let 'GLOBIGNORE += 1'; rm -rf *git", Rule::Delete),
+            ("let \"GLOBIGNORE++\"; rm -rf *git", Rule::Delete),
+            ("let '++ GLOBIGNORE'; rm -rf *git", Rule::Delete),
+            ("let \"GLOBIGNORE[0]+=1\"; rm -rf *git", Rule::Delete),
+            ("let x=1,GLOBIGNORE-=1; rm -rf *git", Rule::Delete),
+            ("let x=GLOBIGNORE++; rm -rf *git", Rule::Delete),
+            ("let x=GLOBIGNORE=1; rm -rf *git", Rule::Delete),
+            ("let a=1 GLOBIGNORE+=1; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE+=$x; rm -rf *git", Rule::Delete),
+            ("let GLOBIGNORE++ && rm -rf *git", Rule::Delete),
         ],
     );
 }
@@ -117,6 +147,13 @@ fn a_d_glob_qualifier_lets_that_commands_wildcards_match_hidden_names() {
             "rm -rf *.o(oD)",
             "rm -rf build/*(D)",
             "rm -rf target*(D)",
+            "rm -rf *.o(^D)",
+            "rm -rf **/*.o(D)",
+            "rm -rf ***/*.o(D)",
+            // `**/` takes in the folder itself, and a name without a dot
+            // that way is still no hidden name.
+            "rm -rf **/*git",
+            "rm -rf **/*.o",
             // The history of a folder below the workspace is not the
             // workspace's, with `dotglob` as with the qualifier.
             "cd sub; rm -rf *git(D)",
@@ -197,6 +234,15 @@ fn a_d_glob_qualifier_lets_that_commands_wildcards_match_hidden_names() {
             ("rm -rf *git(D,.)", Rule::Delete),
             ("rm -rf *git(mh-1D)", Rule::Delete),
             ("rm -rf *git(-D)", Rule::Delete),
+            // `**/` and `***/` match no folder too, so `*git` is read in the
+            // workspace folder itself, where `.git` is.
+            ("rm -rf **/*git(D)", Rule::Delete),
+            ("rm -rf **/*git(D/)", Rule::Delete),
+            ("rm -rf ./**/*git(D)", Rule::Delete),
+            ("rm -rf ***/*git(D)", Rule::Delete),
+            ("rm -rf **/**/*git(D)", Rule::Delete),
+            ("ls -d **/*git(D) | xargs rm -rf", Rule::Delete),
+            ("shopt -s dotglob globstar; rm -rf **/*git", Rule::Delete),
             // The names a listing or a loop hands on.
             ("ls -d *git(D) | xargs rm -rf", Rule::Delete),
             ("for f in *git(D); do rm -rf \"$f\"; done", Rule::Delete),
@@ -237,6 +283,70 @@ fn a_qualifier_that_can_run_code_or_is_not_read_stays_unreadable() {
             ("rm -rf *.o(N)", Rule::Unreadable),
             ("rm -rf *.o(.)", Rule::Unreadable),
             ("rm -rf *.o()", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_qualifier_with_p_stays_unreadable() {
+    // `P` adds the string it holds as a word before each match, so `mv
+    // *(DP./usr.)` is `mv /usr` and every name: not a pattern of names.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("mv *(DP./usr.)", Rule::Unreadable),
+            ("mv *(DP./root.)", Rule::Unreadable),
+            ("mv *(DP./usr/local/bin.)", Rule::Unreadable),
+            ("mv *(DP./opt.)", Rule::Unreadable),
+            ("chmod *(DP.777.)", Rule::Unreadable),
+            ("chmod *(DP.-R.P.777.)", Rule::Unreadable),
+            ("chown *(DP.-R.P.root.)", Rule::Unreadable),
+            ("ln *(DP.-sf.P./usr/bin/x.)", Rule::Unreadable),
+            ("cp *(DP.-t.) /tmp/x", Rule::Unreadable),
+            ("rm -rf *.o(PD)", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_word_with_an_extended_glob_operator_stays_unreadable() {
+    // With `extendedglob` (on in an rc file, or by `setopt`), `^x` is every
+    // name but `x`, `a~b` is `a` but not `b`, and `#` repeats: `.git` is
+    // among them. A word with one is not read as a plain pattern.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The `^` in the qualifier is the qualifier's, and `~` first is
+            // the home folder, which the qualifier is still read after.
+            "rm -rf *.o(^D)",
+            "ls ~/*.o(D)",
+            // Only the word in front of the qualifier is looked at.
+            "echo ^x; rm -rf *.o(D)",
+            "echo a~b; rm -rf *.o(D)",
+        ],
+        &[
+            ("zsh -o extendedglob -c 'rm -rf ^x(D)'", Rule::Unreadable),
+            (
+                "zsh -o extendedglob -c 'rm -rf *git~x(D)'",
+                Rule::Unreadable,
+            ),
+            (
+                "zsh -c 'setopt extendedglob; rm -rf ^x(D)'",
+                Rule::Unreadable,
+            ),
+            ("setopt extendedglob; rm -rf ^x(D)", Rule::Unreadable),
+            ("setopt extended_glob; rm -rf ^x(D)", Rule::Unreadable),
+            ("setopt extendedglob; rm -rf *git~x(D)", Rule::Unreadable),
+            ("setopt extendedglob; rm -rf .#git(D)", Rule::Unreadable),
+            // Without the option on in the line, an rc file may have it.
+            ("rm -rf ^x(D)", Rule::Unreadable),
+            ("rm -rf *git~x(D)", Rule::Unreadable),
+            ("rm -rf ^*.o(D)", Rule::Unreadable),
+            ("rm -rf .#git(D)", Rule::Unreadable),
+            ("rm -rf (.|)git(D)", Rule::Unreadable),
         ],
     );
 }

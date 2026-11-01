@@ -115,6 +115,9 @@ pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> boo
 /// not the whole folder, which the caller judges for a catch-all as written:
 /// it matches `.git`, so it reaches it.
 ///
+/// On POSIX a first part of `**` or `***` also stands for no folder, so the
+/// parts after it are tried as the pattern's own.
+///
 /// `hidden` is the same as for [`matches()`].
 #[must_use]
 pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
@@ -143,6 +146,16 @@ pub fn reaches_git(parts: &[&str], flavour: Flavour, hidden: bool) -> bool {
                 || (short && windows && matches_short_git(pattern, flavour))
         })
     };
+    // On POSIX `**/` and `***/` (bash with `globstar`, zsh) match no folder
+    // at all too, so what follows is read against the folder itself:
+    // `**/*git` reaches `.git` where `*git` does.
+    if !windows
+        && parts.len() > 1
+        && matches!(parts[0], "**" | "***")
+        && reaches_git(&parts[1..], flavour, hidden)
+    {
+        return true;
+    }
     if parts.is_empty() || !reaches(0, &PROTECTED, true) {
         return false;
     }

@@ -35,19 +35,30 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
 /// the file tests and flags, digits for `m`, `u` and the like, `^` to
 /// negate, `-` to follow links, `,` to separate. Not `e` (runs a string),
-/// `+` (runs a function), `:` (a modifier), `[` (a subscript) or anything
-/// that can hold a substitution.
+/// `+` (runs a function), `P` (adds a string it holds as a word before each
+/// match: `*(DP./usr.)` is `/usr` and every name), `:` (a modifier), `[` (a
+/// subscript) or anything that can hold a substitution.
 fn qualifier_char(c: char) -> bool {
-    (c.is_ascii_alphanumeric() && c != 'e') || ".^/@=%*,-".contains(c)
+    (c.is_ascii_alphanumeric() && !"eP".contains(c)) || ".^/@=%*,-".contains(c)
 }
 
 /// How many characters of `rest`, the text after a `(`, make a zsh glob
-/// qualifier that holds `D` (`*git(D)`, `*(.D)`), the `)` included. `before`
-/// is the character in front of the `(`: it must end a word, so not a space
-/// or what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(` and `!(` something else.
-/// The `)` must end the word too.
-fn qualifier(before: Option<char>, rest: &[char]) -> Option<usize> {
-    before.filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+/// qualifier that holds `D` (`*git(D)`, `*(.D)`), the `)` included. `word` is
+/// the text in front of the `(`, back to the last space: it must end a word,
+/// so not a space or what makes `$(`, `<(`, `>(`, `((`, `a=(`, `+(` and `!(`
+/// something else. The `)` must end the word too.
+///
+/// A word that holds `^`, `#`, or a `~` that does not start it is left as it
+/// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
+/// `.#git(D)` match `.git`, which a guard that reads them as plain text
+/// would not see.
+fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
+    word.chars()
+        .last()
+        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
+        return None;
+    }
     let end = rest.iter().position(|c| *c == ')')?;
     let body = &rest[..end];
     let ends = rest
@@ -85,7 +96,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
-            if let Some(length) = qualifier(joined.chars().last(), rest) {
+            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
+            if let Some(length) = qualifier(word, rest) {
                 at += length;
                 marks.push(joined.len());
                 continue;
@@ -744,7 +756,9 @@ impl Walker<'_> {
                     .enumerate()
                     .any(|(at, arg)| arg.known() == Some("-v") && names(at + 1))
             }
-            Some("let") => args.iter().any(dotglob::assigns_hiding),
+            Some("let") => args
+                .iter()
+                .any(|arg| dotglob::assigns_hiding(arg) || dotglob::arithmetic_hides(arg)),
             _ => false,
         };
         if sets {
