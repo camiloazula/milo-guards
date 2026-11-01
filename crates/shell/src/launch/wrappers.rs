@@ -340,13 +340,14 @@ fn file_arg(file: &str, moved: bool) -> Arg {
     }
 }
 
-/// `Start-Process`: the program in `-FilePath` (or first), its arguments in
+/// `Start-Process`: the program in `-FilePath` (`-Path` and `-PSPath` are its
+/// aliases, which `Params` reads as `-LiteralPath`; or first), its arguments in
 /// `-ArgumentList` (or after it), and `-Verb RunAs` to run it elevated.
 pub(super) fn start_process(unit: &Unit) -> Launch {
     let params = Params::read(&unit.args);
     let mut positional = params.positional.iter();
     let program = params
-        .values(&["filepath"])
+        .values(&["filepath", "path", "literalpath"])
         .first()
         .copied()
         .or_else(|| positional.next().copied());
@@ -385,6 +386,10 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         hidden: false,
         startup: Rc::default(),
+        repeated: false,
+        downloaded: false,
+        listings: Vec::new(),
+        unread_item: false,
         depth: unit.depth,
     }))
 }
@@ -960,6 +965,10 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         dir: None,
         hidden: false,
         startup: Rc::clone(&unit.startup),
+        repeated: false,
+        downloaded: false,
+        listings: Vec::new(),
+        unread_item: false,
         depth: unit.depth,
     }
 }

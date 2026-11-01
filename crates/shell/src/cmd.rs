@@ -94,6 +94,12 @@ impl Walker<'_> {
                 self.children(node, stage, level);
             }
             "comment" => self.comment(node),
+            // `for %%i in (…) do …`: what it does runs once for each item.
+            "for_stmt" => {
+                self.split.repeats += 1;
+                self.children(node, stage, level);
+                self.split.repeats -= 1;
+            }
             _ => self.children(node, stage, level),
         }
     }
