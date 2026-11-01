@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 use super::paths::Landed;
 use super::reach::{self, Manner};
 use super::{git, git_subcommand, Kind};
-use crate::path::{self, Place, Resolver};
+use crate::path::{Access, Place, Resolver};
 use crate::powershell::Params;
 use crate::unit::{Arg, Binding, Stage, Unit};
 use crate::Shell;
@@ -66,10 +66,13 @@ pub(super) fn place_kind(
     arg: &Arg,
     hidden: bool,
 ) -> (Kind, Option<Place>) {
+    // PowerShell's `$null` is the null device, which holds nothing.
+    if matches!(arg, Arg::Null) {
+        return (Kind::Reads, Some(Place::Null));
+    }
     let Some(text) = arg.known() else {
         return (Kind::Unknown, None);
     };
-    let from = path::within(dir, arg, shell);
     // PowerShell expands a variable inside a bare token (`--contents=$p`),
     // which its parse reads as written (`2>$null` is the null device).
     if (shell == Shell::PowerShell
@@ -80,7 +83,7 @@ pub(super) fn place_kind(
     {
         return (Kind::Unknown, None);
     }
-    let place = resolver.place(&from, shell, hidden);
+    let place = resolver.place(dir, arg, shell, hidden, Access::Item);
     if matches!(place, Place::Unknown) {
         (Kind::Unknown, Some(place))
     } else {
@@ -1192,7 +1195,7 @@ pub(super) fn shape(arg: &Arg) -> Option<(&str, bool)> {
             let at = text.find(crate::posix::OPAQUE).unwrap_or(text.len());
             Some((&text[..at], true))
         }
-        Arg::Unknown(_) | Arg::Input => None,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => None,
     }
 }
 
@@ -1356,7 +1359,7 @@ pub(super) fn inert(arg: &Arg) -> bool {
     match arg {
         Arg::Known(_) => true,
         Arg::Template { source, .. } => expansions(source).iter().all(|found| found.quoted),
-        Arg::Unknown(_) | Arg::Input => false,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => false,
     }
 }
 
@@ -1543,6 +1546,6 @@ fn substitute(arg: &Arg, pairs: &[(&str, &str)]) -> Option<Arg> {
             value.push_str(pieces.last()?);
             Some(Arg::Known(value))
         }
-        Arg::Known(_) | Arg::Input => None,
+        Arg::Known(_) | Arg::Input | Arg::Null => None,
     }
 }
