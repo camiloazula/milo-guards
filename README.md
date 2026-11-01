@@ -21,7 +21,9 @@ verdict back in microseconds.
   text. `rm -rf ~` is risky ("deletes your home directory"); `ls src` is safe.
   Beside that verdict, `effect` says whether a line only reads, changes
   something or cannot be told: `git status` only reads, `mkdir build` is safe
-  and changes the disk, `./script.sh` cannot be told.
+  and changes the disk, `./script.sh` cannot be told. A line that only reads
+  also says whether the reads stay in the workspace: `git status` does, `cat
+  ~/.ssh/id_ed25519` does not.
 
 More guards will sit beside it.
 

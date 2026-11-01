@@ -429,12 +429,12 @@ safe but changes the disk. Safe and reads-only are different answers, so
 nothing to `Rule`, and what a caller does with it is its policy.
 
 ```rust
-effect(line, shell, &paths) -> Effect   // ReadsOnly, Changes or Unknown
+effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 ```
 
 | Answer | When |
 | --- | --- |
-| `ReadsOnly` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation. |
+| `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation. The [`Reach`](#reach) says where it reads. |
 | `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
@@ -446,11 +446,11 @@ A line with a known writer is `Changes` whatever else it holds: `mkdir build &&
 judged once, and both answers are read from that split and its findings, never
 from the raw text, so they cannot disagree about what the units are. The
 answers are independent, and a caller reads both. **Safe is not reads-only and
-reads-only is not Safe**: `cat ~/.ssh/id_ed25519` reads only (and is
-`ReadSecret` after #46), and `mkdir build` is safe and changes the disk. One
+reads-only is not Safe**: `cat ~/.ssh/id_ed25519` reads only, beyond the
+workspace (and is `ReadSecret` after #46), and `mkdir build` is safe and changes the disk. One
 direction does hold, and `tests/` checks it on every row of every table and on
 random noise: a line `classify` finds risky for anything but an elevation is
-never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly` and `Elevated`.
+never `ReadsOnly`. `sudo cat /etc/hosts` is `ReadsOnly(Beyond)` and `Elevated`.
 
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
@@ -458,13 +458,104 @@ let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
 `time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, and the `find` a
 `-exec` makes), and only with options the guard knows: any other option
 makes the line `Unknown`, since it could do anything (`sudo -e` edits a file,
-`sudo -s` and `-i` start a shell, `env -P` changes where programs are found).
+`sudo -s` and `-i` start a shell, `env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. A shell started with a
 script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
 table does not know, so it is `Unknown` even when the script it holds only
 reads.
+
+### Reach
+
+A caller that runs reads-only lines without asking, in its most careful mode,
+needs one more answer: do the reads stay in the project? `ls src` and `cat
+src/main.rs` do; `cat /etc/passwd`, `grep -r password ~` and `cat
+~/.ssh/id_ed25519` do not. So `ReadsOnly` carries a `Reach`:
+
+```rust
+Effect::ReadsOnly(Reach)   // Reach::Workspace or Reach::Beyond
+```
+
+`Reach` is exhaustive on purpose, like `Effect`: a third answer would change
+what a caller's careful mode means by "stays in the workspace".
+
+- **`Workspace`**: every place the line reads is harmless, which is core's
+  `Place::harmless()`: inside a workspace folder, a temporary file, or the null
+  device. The workspace folder itself counts too, since that is what `ls` lists
+  at the project's root.
+- **`Beyond`**: at least one read lands anywhere else: the home folder, a
+  system folder, a sensitive place (`~/.ssh`, `.git`), a protected path (the
+  caller's own settings, even inside the workspace), a folder that holds the
+  workspace (`..`), a temporary folder itself (`ls /tmp`; a file inside it is
+  `Workspace`), a disk, the registry, or anywhere outside the workspace.
+- A line that is `Changes` or `Unknown` has no `Reach`. A path known only when
+  it runs is already `Unknown`, so it never gets one.
+
+**What a line reads** is the places the answer already judges, each placed by
+core the way a path is for `classify` (so `..`, `.`, doubled separators, `~`,
+`$HOME`, case, 8.3 names and UNC paths come out as they do there):
+
+- every file operand of a reader and the source of every `<` redirect;
+- the folder of every lister (`ls ~`, `find /`, `Get-ChildItem C:\`);
+- the value of an option that names a file, such as `grep -f ~/words`;
+- the folder a `cd`, `pushd` or `Set-Location` goes into: going in is a read, so
+  `cd ~` is `Beyond` even as a line of its own, for a caller that keeps the
+  shell between lines;
+- **the working directory, when a reader with no file operand reads it
+  without being told.** `ls`, `du`, `fd`, `find` with no start, `rg PATTERN`,
+  `grep -r PATTERN`, `Get-ChildItem` and `dir` with no path read the folder the
+  line runs in: the caller's `cwd`, moved by every `cd` the guard follows, the
+  way `classify` follows it. `git` reads the repository at the working
+  directory, or at the folder `-C` names (chained: `-C a -C b` is `a/b`, and an
+  absolute one starts over). A line run from outside the workspace, or after
+  `cd ~` or a `cd ..` past the workspace's root, is `Beyond`;
+- the shell's own expansion of a wildcard in an operand of a program that
+  opens nothing (`echo ~/.ssh/*` lists a folder), and in PowerShell and cmd the
+  folder a wildcard starts in (their wildcards can go below it);
+- for `git`, the revisions and pathspecs after the subcommand, read as paths in
+  the work tree, and the path in `REV:path` (`git show HEAD:.agent/config.yaml`);
+  for `find`, the file `-newer`, `-anewer`, `-cnewer` and `-samefile` name.
+
+Lines that read nothing (`echo hi`, `pwd`, `true`, `which cargo`, `basename x`,
+`printf`) are `Workspace` from anywhere. So are readers of their input (`cat`,
+`head`, `tail`, `wc`, `sort`, `grep PATTERN` with no file) given no operand.
+
+Whitelist, not blacklist: only the readers known to read just their operands or
+their input are left out of the working-directory rule (`cat`, `head`, `tail`,
+`wc`, `stat`, `realpath`, `diff`, `sort`, `file`, `less`, `df`; in PowerShell
+`Get-Content`, `Select-String`, `Get-Item`, `Test-Path`, `Resolve-Path`; in cmd
+`type`, `findstr`). Any other reader, and any reader added to the table later,
+is taken to read the working directory when it has no operand, and a reader
+whose implicit input cannot be placed is `Beyond`: `df` with no operand reports
+every mounted disk. A `grep` is recursive when it has `-r`, `-R`, `-d`,
+`--recursive`, `--directories`, or an argument known only when it runs that
+could be one.
+
+**Protected paths inside the workspace.** A protected file or folder is not
+harmless, so `cat .agent/config.yaml` and `ls .agent` are `Beyond`, and so is a
+folder that holds one (`cat src` when `src/secret` is protected), as for a
+delete. Core does not say the workspace folder itself holds it: `ls` at the
+project's root only names the entries, and stays `Workspace`. A line that reads
+everything below that folder does reach it, and is `Beyond` when a protected
+path sits inside a workspace folder: `rg PATTERN` and `grep -r PATTERN` (from
+the root, or given `.` or the root's path), `find -exec`, `findstr /s`, and any
+reader handed names a lister produced (`find . | xargs cat`, `Get-ChildItem
+-Recurse | Get-Content`). A reader handed what `ls` printed at the root counts
+as one, though `ls` does not show hidden names: a false alarm accepted for a
+rule that needs no list of names. A line that goes below a subfolder is judged
+by the subfolder, which core already treats as protected when it holds the
+path.
+
+What stays open: `git diff`, `git log -p` and `git blame` read the content of
+every tracked file, and a protected file that is committed is among them (`git
+show HEAD:.agent/x` and a pathspec that names it are read as paths and are
+`Beyond`; the bare `git diff` is not). The repository git finds above the
+working directory is read too, and the guard cannot see where it is: a
+workspace that is not itself a repository, inside one that is, reads beyond it.
+`test`, `[` and `[[ ... ]]` check that a file exists and read nothing. A `-C`
+or `cd` target through a symlink is placed by its spelling, as everywhere in
+the guard.
 
 ### The readers
 
@@ -661,7 +752,7 @@ when it runs, is `Unknown`.
 It is exhaustive, as `Rule` is and for the same reason: the three answers are
 the whole question, and a fourth would change what a caller's gate means by
 "reads only", so it must break every caller's `match` at compile time. (A
-caller that only asks `effect(..) == Effect::ReadsOnly` is unaffected by one.)
+caller that only asks whether `effect(..)` is `ReadsOnly(_)` is unaffected by one.)
 
 ## Tests
 

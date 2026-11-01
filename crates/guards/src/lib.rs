@@ -33,11 +33,11 @@
 //!
 //! | Feature | Module | Judges |
 //! | --- | --- | --- |
-//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads |
+//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace |
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
-//! use milo_local_guards::shell::{classify, effect, Effect, Rule, Shell};
+//! use milo_local_guards::shell::{classify, effect, Effect, Reach, Rule, Shell};
 //! use milo_local_guards::Paths;
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
@@ -53,7 +53,9 @@
 //! assert_eq!(finding.target.as_deref(), Some("~"));
 //!
 //! // Whether a line only reads is a second answer, from the same split.
-//! assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly);
+//! assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Workspace));
+//! // A read can still leave the project: the answer says where it lands.
+//! assert_eq!(effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Beyond));
 //! assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
 //! assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
 //! # }

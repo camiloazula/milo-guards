@@ -2,6 +2,7 @@
 //! grammar split it; and the helpers that read a unit's arguments.
 
 use crate::dotglob;
+use crate::effect::Kind;
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -644,11 +645,11 @@ impl Split {
     }
 
     /// Record what a wrapper's own options do, for `effect`.
-    pub(crate) fn wrapped(&mut self, effect: crate::Effect) {
+    pub(crate) fn wrapped(&mut self, effect: Kind) {
         match effect {
-            crate::Effect::ReadsOnly => {}
-            crate::Effect::Changes => self.kept.changes |= self.kept.on,
-            crate::Effect::Unknown => self.opaque(),
+            Kind::Reads => {}
+            Kind::Changes => self.kept.changes |= self.kept.on,
+            Kind::Unknown => self.opaque(),
         }
     }
 
