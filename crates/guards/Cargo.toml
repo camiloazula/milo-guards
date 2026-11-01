@@ -13,10 +13,21 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["shell"]
+default = ["shell", "file", "url"]
 # Judges a shell line: POSIX shell, PowerShell or cmd.
 shell = ["dep:milo-guards-shell"]
+# Judges one read or write of a path through a file API.
+file = ["dep:milo-guards-file"]
+# Judges a URL an agent is about to fetch.
+url = ["dep:milo-guards-url"]
+# Reads a text for credentials and personal data. Not on by default: most
+# callers want the shell, file and URL guards and not a table of patterns in
+# their binary.
+secrets = ["dep:milo-guards-secrets"]
 
 [dependencies]
 milo-guards-core.workspace = true
 milo-guards-shell = { workspace = true, optional = true }
+milo-guards-file = { workspace = true, optional = true }
+milo-guards-url = { workspace = true, optional = true }
+milo-guards-secrets = { workspace = true, optional = true }
