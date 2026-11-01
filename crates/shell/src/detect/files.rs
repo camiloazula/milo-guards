@@ -6,6 +6,8 @@ use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
 use crate::{Rule, Shell};
+use milo_guards_core::spelling::{glob, verbatim};
+use milo_guards_core::Flavour;
 
 impl Checker<'_> {
     /// Deleting, moving, copying and writing files.
@@ -39,6 +41,9 @@ impl Checker<'_> {
             "del" | "erase" if shell == Shell::Cmd => {
                 let targets = builtin(&plain(args));
                 self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
+                if has_switch(args, "s") {
+                    self.search_deletes(unit, &targets);
+                }
             }
             "rd" | "rmdir" if shell == Shell::Cmd && has_switch(args, "s") => {
                 let targets = builtin(&plain(args));
@@ -59,7 +64,7 @@ impl Checker<'_> {
             // Moving and copying: what is moved away, and where it lands.
             "mv" if shell != Shell::PowerShell => {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
-                self.move_away(unit, &sources);
+                self.move_away(unit, &sources, "moves");
                 if let Some(destination) = destination {
                     self.copy_to(
                         shell,
@@ -102,7 +107,7 @@ impl Checker<'_> {
                 let operands = builtin(&plain(args));
                 let operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
-                    self.move_away(unit, &operands[..operands.len() - 1]);
+                    self.move_away(unit, &operands[..operands.len() - 1], "moves");
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
@@ -185,6 +190,20 @@ impl Checker<'_> {
                         readings.push((sources, operands[at]));
                     }
                 }
+                // A splat (`@p`) with no `-Destination` named may bind it:
+                // it is judged as a place too, beside a destination that is
+                // known (`Copy-Item @p src\a`, where `@p` may be the
+                // `-Destination` and `src\a` the `-Path`).
+                if params.values(&["destination"]).is_empty() && splatted(args) {
+                    for splat in params
+                        .positional
+                        .iter()
+                        .copied()
+                        .filter(|arg| is_splat(arg))
+                    {
+                        self.write_as(shell, unit.scope(), splat, "writes to", Access::Item);
+                    }
+                }
                 if key == "move-item" {
                     let mut moved: Vec<&Arg> = Vec::new();
                     for source in readings.iter().flat_map(|(sources, _)| sources) {
@@ -193,7 +212,14 @@ impl Checker<'_> {
                         }
                     }
                     moved.retain(|source| **source != Arg::Input);
-                    self.move_away(unit, &moved);
+                    // With no path, what the stage before lists is moved.
+                    let piped = if moved.is_empty() {
+                        self.items(unit, &params)
+                    } else {
+                        Vec::new()
+                    };
+                    moved.extend(piped.iter());
+                    self.move_away(unit, &moved, "moves");
                 }
                 for (sources, destination) in readings {
                     let leaves = leaves(unit, &sources);
@@ -229,8 +255,34 @@ impl Checker<'_> {
                     })
                     .collect();
                 let params = Params::read(&renamed_args);
+                // Every path and positional is the item or the new name; a
+                // new name made at run time (`$name`, `($a + 'x')`) after
+                // the first positional is not a place of the item, unless the
+                // guard cannot tell which is which: a bare `-n` (read as a
+                // switch, it leaves its value among the positionals), a
+                // `--`, or a splat (`@p` may bind `-Path` or `-NewName`).
+                let doubtful =
+                    params.named.iter().any(|(name, value)| {
+                        value.is_none() && "newname".starts_with(name.as_str())
+                    }) || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"))
+                        || splatted(args);
+                // What is renamed away is judged as the items the cmdlet
+                // works on: a path, else what the stage before lists.
+                let mut paths = params.values(&["path", "literalpath"]);
+                paths.extend(
+                    without_dashes(&params)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| arg),
+                );
+                let items = self.listed_paths(unit, paths);
+                self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
                 let mut sources = params.values(&["path", "literalpath"]);
-                let mut positional = params.positional.iter().copied();
+                let mut positional = without_dashes(&params).into_iter();
                 if sources.is_empty() {
                     sources.extend(positional.next());
                 }
@@ -242,7 +294,15 @@ impl Checker<'_> {
                     .first()
                     .copied()
                     .or_else(|| positional.next());
-                self.rename(unit, &sources, name);
+                self.renamed_to(unit, &sources, name);
+                // The new name is a name, not a path; one that holds a
+                // separator is also a place the item is moved to.
+                if let Some(name) = name.filter(|name| {
+                    name.known()
+                        .is_some_and(|name| name.contains(['\\', '/', ':']))
+                }) {
+                    self.write_as(shell, unit.scope(), name, "renames to", Access::Item);
+                }
             }
             "ren" | "rename" if shell == Shell::Cmd => {
                 let operands = builtin(&plain(args));
@@ -262,6 +322,28 @@ impl Checker<'_> {
                     self.links_to(shell, unit.scope(), target);
                 }
             }
+            // A registry key or an item of another provider: judged by where
+            // its path lands, as `Remove-Item` is.
+            "clear-item" | "set-item" => {
+                let verb = if key == "clear-item" {
+                    "clears"
+                } else {
+                    "changes"
+                };
+                for target in self.list_items(unit, &Params::read(args)) {
+                    self.write_as(shell, unit.scope(), &target, verb, Access::Item);
+                }
+            }
+
+            // Unpacking an archive writes into the folder it unpacks to;
+            // packing one with `--remove-files`, `-m` or `-sdel` deletes
+            // what it packs.
+            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "unzip" | "expand-archive" => self.unpack(unit, key),
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {
@@ -327,7 +409,14 @@ impl Checker<'_> {
                     .into_iter()
                     .cloned()
                     .collect();
-                if targets.is_empty() {
+                if targets.is_empty() && key == "new-item" {
+                    // Only `-Path` is positional, so with no `-Path` named
+                    // every positional is judged (an extra one only makes
+                    // the command fail), and a bare `-n` (`-Name`), a `--`
+                    // or a `-Type` cannot hide the path behind another
+                    // argument.
+                    targets.extend(without_dashes(&params).into_iter().cloned());
+                } else if targets.is_empty() {
                     targets.extend(params.positional.first().copied().cloned());
                 }
                 let verb = if key == "clear-content" {
@@ -385,12 +474,41 @@ impl Checker<'_> {
                     }
                 }
             }
-            "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" => {
-                let params = Params::read(args);
+            "set-itemproperty"
+            | "new-itemproperty"
+            | "remove-itemproperty"
+            | "clear-itemproperty"
+            | "rename-itemproperty" => {
+                let params = Params::read_property(args);
                 let mut targets = params.values(&["path", "literalpath"]);
-                if targets.is_empty() {
-                    targets.extend(params.positional.first().copied());
+                // The first positional and every known one are judged; every
+                // positional when the guard cannot tell which is the path: a
+                // bare named parameter that may take a value (`-n`, read as
+                // a switch, leaves its value among the positionals), a `--`
+                // or a splat (`@p` may bind `-Path`).
+                let doubtful = params.unclear()
+                    || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"))
+                    || splatted(args);
+                targets.extend(
+                    without_dashes(&params)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| arg),
+                );
+                for target in targets {
+                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
+            }
+            // A value moved or copied between keys: the path, the destination and
+            // any argument that may stand for either are judged.
+            "copy-itemproperty" | "move-itemproperty" => {
+                let params = Params::read(args);
+                let mut targets = params.values(&["path", "literalpath", "destination"]);
+                targets.extend(params.positional.iter().copied());
                 for target in targets {
                     self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
@@ -421,6 +539,67 @@ impl Checker<'_> {
             _ => {}
         }
     }
+
+    /// `del /s` from the workspace folder: it deletes the files of every folder
+    /// below it that its name pattern matches, and takes `.git`'s own files
+    /// (`HEAD`, `config`, `index`, ...) when the pattern can match one. cmd
+    /// is taken to search hidden folders too: not checked on Windows, and a
+    /// false safe is the worse mistake. A pattern deeper in the workspace is
+    /// the agent's, as `.git` there is not the model's to protect.
+    fn search_deletes(&mut self, unit: &Unit, targets: &[Arg]) {
+        for target in targets {
+            let Arg::Known(text) = target else {
+                continue;
+            };
+            let at = text.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
+            // cmd reads no wildcard in a folder part (`*\x`): the resolver
+            // judges the whole path. The `?` of a long-path prefix
+            // (`\\?\C:\...`) is not a wildcard.
+            let folder_text = &text[..at];
+            if glob::has_wildcard(verbatim(folder_text).unwrap_or(folder_text)) {
+                continue;
+            }
+            let reaches = glob::can_match_git_entry(&text[at..], Flavour::Windows);
+            let folder = Arg::Known(folder_of(&text[..at]));
+            if reaches
+                && matches!(
+                    self.place(unit.shell, unit.scope(), &folder, Access::Item),
+                    Place::Workspace { exact: true }
+                )
+            {
+                self.add(
+                    Rule::Delete,
+                    "deletes files in every folder below the workspace, the repository's history among them",
+                    Some(target),
+                );
+            }
+        }
+    }
+}
+
+/// Whether an argument is a splat (`@p`, `@args`): a hashtable of parameters
+/// only known when it runs, which may bind any parameter, a path among them.
+/// `@(...)`, `@{...}`, `@'...'` and `@"..."` are arrays, hashtables and
+/// strings, not splats.
+fn is_splat(arg: &Arg) -> bool {
+    matches!(arg, Arg::Unknown(text)
+        if text.strip_prefix('@')
+            .is_some_and(|name| name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')))
+}
+
+/// Whether any argument is a splat.
+fn splatted(args: &[Arg]) -> bool {
+    args.iter().any(is_splat)
+}
+
+/// The positionals, without a `--` (the end of the parameters, not a path).
+fn without_dashes<'a>(params: &Params<'a>) -> Vec<&'a Arg> {
+    params
+        .positional
+        .iter()
+        .copied()
+        .filter(|arg| arg.known() != Some("--"))
+        .collect()
 }
 
 /// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
@@ -460,7 +639,12 @@ impl Checker<'_> {
             .copied()
             .filter(|source| **source != Arg::Input)
             .collect();
-        self.move_away(unit, &moved);
+        self.move_away(unit, &moved, "moves");
+        self.renamed_to(unit, sources, name);
+    }
+
+    /// The new name of a rename, in each source's folder: written.
+    fn renamed_to(&mut self, unit: &Unit, sources: &[&Arg], name: Option<&Arg>) {
         let Some(name) = name else { return };
         let none = Arg::Known(String::new());
         let sources = if sources.is_empty() {
@@ -468,11 +652,15 @@ impl Checker<'_> {
         } else {
             sources.to_vec()
         };
+        // Many items of one folder land on the same name: each is judged once.
+        let mut seen = std::collections::HashSet::new();
         for source in sources {
             let (found, _) = self.expand(unit, source);
             for from in found {
                 let to = renamed(&from, name);
-                self.write_as(unit.shell, unit.scope(), &to, "writes to", Access::Item);
+                if seen.insert((to.known().is_some(), to.text().to_string())) {
+                    self.write_as(unit.shell, unit.scope(), &to, "writes to", Access::Item);
+                }
             }
         }
     }
@@ -547,7 +735,7 @@ impl Checker<'_> {
             } else {
                 &operands[..]
             };
-            self.move_away(unit, named);
+            self.move_away(unit, named, "moves");
             for operand in named {
                 let to = Arg::Unknown(operand.text().to_string());
                 self.write(unit.shell, unit.scope(), &to, "writes to");
@@ -564,7 +752,7 @@ impl Checker<'_> {
             if file.known() == new.known() && new.known().is_some() {
                 continue;
             }
-            self.move_away(unit, &[file]);
+            self.move_away(unit, &[file], "moves");
             self.write(unit.shell, unit.scope(), &new, "writes to");
         }
     }
@@ -657,6 +845,24 @@ pub(super) fn remote(arg: &Arg) -> bool {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
     })
+}
+
+/// The folder a `del` pattern is searched from, given what comes before the
+/// pattern's name: `.` for none, the text without its last separator, and the
+/// root of a drive (`C:\`) or a drive's own folder (`C:`) as written.
+fn folder_of(before: &str) -> String {
+    match before {
+        "" => ".".to_string(),
+        text if text.ends_with(':') => text.to_string(),
+        text => {
+            let trimmed = &text[..text.len() - 1];
+            if trimmed.is_empty() || trimmed.ends_with(':') {
+                text.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
 }
 
 /// The name each source lands as inside a folder it is copied into: its last

