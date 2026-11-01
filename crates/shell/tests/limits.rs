@@ -440,7 +440,10 @@ fn finds_in_finds_cost_what_the_line_is_long_not_what_it_multiplies_to() {
     for line in [wide, deep] {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
         assert!(unreadable(&line, Shell::Posix));
-        assert_ne!(effect(&line, Shell::Posix, &posix()), Effect::ReadsOnly);
+        assert!(!matches!(
+            effect(&line, Shell::Posix, &posix()),
+            Effect::ReadsOnly(_)
+        ));
     }
 }
 
