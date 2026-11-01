@@ -65,8 +65,19 @@ const GIT_ENTRIES: [&str; 18] = [
 #[must_use]
 pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
     let fold = flavour == Flavour::Windows;
-    let tokens = tokens(pattern, flavour);
+    // `[.x.]` and `[=x=]` are elements in bash and plain members in zsh, and
+    // a pattern on POSIX may be read by either: it matches when either
+    // reading of it does.
     let name: Vec<char> = name.chars().collect();
+    let readings: &[bool] = if fold { &[false] } else { &[false, true] };
+    readings.iter().any(|&zsh| {
+        let tokens = tokens(pattern, flavour, zsh);
+        matches_tokens(&tokens, &name, fold, hidden)
+    })
+}
+
+/// Whether the `tokens` of a pattern match the file name `name`.
+fn matches_tokens(tokens: &[Token], name: &[char], fold: bool, hidden: bool) -> bool {
     if !hidden && name.first() == Some(&'.') && tokens.first() != Some(&Token::Literal('.')) {
         return false;
     }
@@ -201,7 +212,7 @@ fn bits(of: Takes, holds: impl Fn(char) -> bool) -> Takes {
 /// risky, since PowerShell does not match short names and `cmd` skips a
 /// folder a wildcard matches.
 fn matches_short_git(part: &str, flavour: Flavour) -> bool {
-    let tokens = tokens(part, flavour);
+    let tokens = tokens(part, flavour, false);
     if !tokens.contains(&Token::Literal('~')) {
         return false;
     }
@@ -379,7 +390,9 @@ impl Token {
     }
 }
 
-fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
+/// The tokens of `pattern`. `zsh` says a POSIX bracket is read as zsh reads
+/// it, where `[.` and `[=` are plain members; otherwise as bash reads it.
+fn tokens(pattern: &str, flavour: Flavour, zsh: bool) -> Vec<Token> {
     let windows = flavour == Flavour::Windows;
     let chars: Vec<char> = pattern.chars().collect();
     // A `[` after the last `]` has nothing to close it: it is a plain `[`.
@@ -408,7 +421,7 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
             }
             '?' => out.push(Token::Any),
             '[' if last_close.is_some_and(|close| at <= close) => {
-                match class(&chars[at..], windows, &mut dead[at..]) {
+                match class(&chars[at..], windows, zsh, &mut dead[at..]) {
                     Some((token, used)) => {
                         out.push(token);
                         at += used;
@@ -430,13 +443,15 @@ fn tokens(pattern: &str, flavour: Flavour) -> Vec<Token> {
 /// `[=a=]` and `[.a.]` are an equivalence class and a collating symbol. The
 /// first is read; the others, an unknown class name, and a range that starts
 /// or ends on one are not read exactly, so the bracket takes any character.
+/// zsh has no `[=a=]` or `[.a.]`: with `zsh` set they are not elements, `[`
+/// and `.` or `=` are plain members, and the first `]` closes the bracket.
 ///
 /// `dead` is as long as `chars`. A place past the first that a scan stepped
 /// on is marked in it: what follows such a place does not depend on where the
 /// scan began, so a scan that comes to a marked place is one that failed, and
 /// fails at once. A scan that closes leaves marks only before the next
 /// bracket starts. This keeps a run of brackets that never close linear.
-fn class(chars: &[char], windows: bool, dead: &mut [bool]) -> Option<(Token, usize)> {
+fn class(chars: &[char], windows: bool, zsh: bool, dead: &mut [bool]) -> Option<(Token, usize)> {
     let negated = !windows && matches!(chars.first(), Some('!' | '^'));
     let mut at = usize::from(negated);
     let mut ranges = Vec::new();
@@ -473,7 +488,7 @@ fn class(chars: &[char], windows: bool, dead: &mut [bool]) -> Option<(Token, usi
         }
         first = false;
         if !windows {
-            if let Some((kind, inner, end)) = element(chars, here) {
+            if let Some((kind, inner, end)) = element(chars, here, zsh) {
                 let name: String = inner.iter().collect();
                 match (kind, Named::from_name(&name)) {
                     (':', Some(class)) => named.push(class),
@@ -490,7 +505,7 @@ fn class(chars: &[char], windows: bool, dead: &mut [bool]) -> Option<(Token, usi
         if chars.get(at) == Some(&'-') && chars.get(at + 1).is_some_and(|next| *next != ']') {
             // A range that ends on one is not read either.
             if !windows {
-                if let Some((_, _, end)) = element(chars, at + 1) {
+                if let Some((_, _, end)) = element(chars, at + 1, zsh) {
                     any = true;
                     at = end;
                     continue;
@@ -507,12 +522,15 @@ fn class(chars: &[char], windows: bool, dead: &mut [bool]) -> Option<(Token, usi
 /// The POSIX bracket element that starts at `at`, if one does: `[:alpha:]`,
 /// `[=a=]` or `[.a.]`. Its kind (`:`, `=` or `.`), what it holds, and where
 /// it ends, just after its `]`. What it holds has no bracket in it, so `[:[:]`
-/// is no element and its `]` stays the class's own.
-fn element(chars: &[char], at: usize) -> Option<(char, &[char], usize)> {
+/// is no element and its `]` stays the class's own. With `zsh` only `[:a:]`
+/// is one.
+fn element(chars: &[char], at: usize, zsh: bool) -> Option<(char, &[char], usize)> {
     if chars.get(at) != Some(&'[') {
         return None;
     }
-    let kind = *chars.get(at + 1).filter(|c| matches!(c, ':' | '=' | '.'))?;
+    let kind = *chars
+        .get(at + 1)
+        .filter(|c| **c == ':' || (!zsh && matches!(c, '=' | '.')))?;
     let start = at + 2;
     // A name is short; looking only that far keeps a long run of `[:` linear.
     let limit = (start + 16).min(chars.len().saturating_sub(1));
@@ -751,6 +769,36 @@ mod tests {
     }
 
     #[test]
+    fn a_bracket_with_a_collating_element_is_read_as_bash_and_as_zsh_do() {
+        let posix = Flavour::Posix;
+        // zsh has no `[.x.]` or `[=x=]`: `[` and `.` are members and the first
+        // `]` closes the bracket. Bash has no `]` left to close the first `[`,
+        // so it is a plain `[`. A pattern matches when either reading does.
+        for pattern in [
+            "[[.x.]*git",
+            "[[.x.]git",
+            "[a[.x.]git",
+            "[[=.=]*git",
+            "[[=.=]git",
+        ] {
+            assert!(matches(pattern, ".git", posix, true), "{pattern}");
+            assert!(!matches(pattern, ".git", posix, false), "{pattern}");
+        }
+        // Neither reading has a member that takes the dot.
+        assert!(!matches("[[=x=]git", ".git", posix, true));
+        assert!(!matches("[a[.x.]git", "git", posix, true));
+        // Bash's reading still holds: the `[` is plain and `[.x]` a class.
+        assert!(matches("[[.x.]*git", "[.git", posix, true));
+        assert!(matches("[[.x.]*git", "[xgit", posix, true));
+        // With a `]` after the element, bash reads an element and a class.
+        assert!(matches("[[.x.]]git", "xgit", posix, true));
+        assert!(matches("[[=x=]]git", "qgit", posix, true));
+        // PowerShell reads it as zsh does, with its one reading.
+        assert!(matches("[[.x.]*git", ".git", Flavour::Windows, true));
+        assert!(!matches("[[.x.]]git", "xgit", Flavour::Windows, true));
+    }
+
+    #[test]
     fn a_long_run_of_posix_class_openers_is_read() {
         let pattern = "[:".repeat(40_000);
         let closed = format!("[{pattern}]");
@@ -778,7 +826,12 @@ mod tests {
     /// What each `[` of `pattern` that can be closed reads, the way [`tokens`]
     /// asks `class`; `shared` keeps the marks of failed scans from one `[` to
     /// the next, as `tokens` does, and otherwise each scan starts clean.
-    fn brackets(pattern: &str, windows: bool, shared: bool) -> Vec<Option<(Token, usize)>> {
+    fn brackets(
+        pattern: &str,
+        windows: bool,
+        zsh: bool,
+        shared: bool,
+    ) -> Vec<Option<(Token, usize)>> {
         let chars: Vec<char> = pattern.chars().collect();
         let last_close = chars.iter().rposition(|c| *c == ']');
         let mut dead = vec![false; chars.len()];
@@ -791,7 +844,7 @@ mod tests {
                 '[' if last_close.is_some_and(|close| at <= close) => {
                     let mut clean = vec![false; chars.len()];
                     let marks = if shared { &mut dead } else { &mut clean };
-                    let read = class(&chars[at..], windows, &mut marks[at..]);
+                    let read = class(&chars[at..], windows, zsh, &mut marks[at..]);
                     if let Some((_, used)) = &read {
                         at += used;
                     }
@@ -823,11 +876,11 @@ mod tests {
             from = to;
         }
         for pattern in &patterns {
-            for windows in [false, true] {
+            for (windows, zsh) in [(false, false), (false, true), (true, false)] {
                 assert_eq!(
-                    brackets(pattern, windows, true),
-                    brackets(pattern, windows, false),
-                    "{pattern:?} windows: {windows}"
+                    brackets(pattern, windows, zsh, true),
+                    brackets(pattern, windows, zsh, false),
+                    "{pattern:?} windows: {windows} zsh: {zsh}"
                 );
             }
         }

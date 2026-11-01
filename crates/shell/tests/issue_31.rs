@@ -511,3 +511,39 @@ fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
         }
     }
 }
+
+#[test]
+fn a_bracket_with_a_collating_element_is_also_read_as_zsh_does() {
+    // zsh has no `[.x.]` or `[=x=]`: `[` and `.` are members and the first
+    // `]` closes the bracket, so `[[.x.]*git` is one class and `*git`, and
+    // with `globdots` or `(D)` it matches `.git`. Bash reads a plain `[` for
+    // it. A line that can be read by zsh is judged by zsh's reading too.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The dot is hidden unless an option or the qualifier is on.
+            "rm -rf [[.x.]*git",
+            "rm -rf [[=.=]*git",
+            // Neither reading matches `.git`.
+            "setopt globdots; rm -f [[.x.]*.o",
+            "rm -f [[.x.]*.o(D)",
+            "setopt globdots; rm -f [[=x=]*.o",
+        ],
+        &[
+            ("setopt globdots; rm -rf [[.x.]*git", Rule::Delete),
+            ("setopt globdots; rm -rf [[.x.]git", Rule::Delete),
+            ("setopt globdots; rm -rf [a[.x.]git", Rule::Delete),
+            ("setopt globdots; rm -rf [[=.=]*git", Rule::Delete),
+            ("set -o globdots; rm -rf [[.x.]*git", Rule::Delete),
+            ("zsh -o globdots -c 'rm -rf [[.x.]*git'", Rule::Delete),
+            ("zsh -c 'setopt globdots; rm -rf [[.x.]*git'", Rule::Delete),
+            // The qualifier exists only in zsh.
+            ("rm -rf [[.x.]*git(D)", Rule::Delete),
+            ("rm -rf [[=.=]*git(D)", Rule::Delete),
+            ("rm -rf [[.x.]git(D)", Rule::Delete),
+            ("rm -rf [a[.x.]git(D)", Rule::Delete),
+            ("mv [[.x.]*git(D) /tmp/x", Rule::Delete),
+        ],
+    );
+}

@@ -412,7 +412,12 @@ itself.
   read (`[[:punct:]]git` and `[.[:alpha:]]git` match `.git` with `hidden`).
   An unknown class name, `[=a=]`, `[.a.]`, and a range that starts or ends on
   one are not read exactly, so that bracket takes any character, a leading dot
-  included (a pattern that reads wider is a risk, never a false safe). A
+  included (a pattern that reads wider is a risk, never a false safe). zsh
+  has no `[.x.]` or `[=x=]` elements: there `[` and `.` or `=` are plain
+  members and the first `]` closes the bracket, so `[[.x.]*git` is one class
+  and `*git`, and it matches `.git`; bash, with no `]` left, reads a plain `[`
+  and the class `[.x]`. A `Posix` pattern is read both ways and matches a
+  name when either reading does. A
   `[` that nothing closes is a plain `[`, and a long run of them is read in
   linear time: a `[` after the last `]` is plain without a scan, and a scan
   that fails marks the places it stepped on, so the next `[` stops at the
