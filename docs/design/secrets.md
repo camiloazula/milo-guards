@@ -118,6 +118,19 @@ query that also has `sv=`, `se=`, `sp=`, `sr=` or `srt=`; the `auth` of a
 Docker `config.json` by its value decoding to `user:password`; a `.netrc`
 password by the word `password` after a `machine`, a `login` or `default`.
 
+A Discord bot token is three dotted parts of base64url, and the lengths alone
+are those of a chain of ordinary identifiers (`Controller.handler.processRequest`),
+so its first part must also decode to the 17 to 21 digits of a user's id, as
+every real token's does. A match that fails this check is searched again from
+one character after its start, not after its end, so a decoy that overlaps or
+precedes a real token (`NMTIz…` with a glued letter, a chain of identifiers
+whose last part swallows the id) does not hide it; up to three letters or
+digits may touch the front of the token, as such a decoy leaves, but four or
+more make it the tail of a longer id. Only the run of letters and digits right
+before the token counts: the base64url of an id made of digits never holds `_`
+or `-`, so one of them touching the token (`token_…`, `my-bot-…`) shows it is
+not the tail of a longer id, and the run stops there.
+
 ## A private key
 
 A block is the `-----BEGIN … PRIVATE KEY-----` line (`RSA`, `EC`, `DSA`,
@@ -214,7 +227,21 @@ secret stays in a scrubbed text.
   - **documented by AWS**: twenty or forty characters that end in `EXAMPLE` or
     `EXAMPLEKEY`;
 - a call (`get_token()`, `env::var("X")?;`), an index (`env["X"]`) or a chain
-  of names (`self.token`, `config::TOKEN`).
+  of names (`self.token`, `config::TOKEN`);
+- the value of a name of a cursor of pagination (`next_page_token`,
+  `nextToken`, `prev_page_token`, `continuation_token`, `pagination_token`,
+  `cursor_token`): the text a server gives back to ask for the next page. A
+  bare `page_token` is not on the list: it is also the name of a Facebook page
+  access token, so it stays a secret;
+- a quoted word of a locale file: the name is in quotes too (`"password":
+  "Contraseña"`, `"forgot_password": "Forgot?"`), and the value is one word of
+  letters, the first a capital and the rest lower case, at most 24 letters, with
+  one `?` or `!` at its end allowed. `"password": "Contraseña1"`,
+  `"password": "sunshine"`, `"password": "SunShine"` and `password = "Sunshine"`
+  (a name not in quotes) are values;
+- a quoted value of fewer than eight characters under a name that ends in
+  `token` or `api_key`: `let token = "abc123";` is a test, and no token is that
+  short. A short value under `password`, `secret` and the rest is still found.
 
 The shapes judge a stand-in, not a secret: a value that is none of them is found
 whatever it looks like beside its name (`api_key=F4keApiKey0123456789abcdef`).
@@ -257,7 +284,9 @@ These are Safe, and each has a row in the tests:
   JavaScript, a lockfile's integrity hashes (`sha512-…`) and checksums: no row
   reads a run for its shape alone.
 - A page of source: `password: String`, `let token = self.token`,
-  `max_tokens=100000`, `password_hash`, a call that fetches a password.
+  `max_tokens=100000`, `password_hash`, a call that fetches a password, a chain
+  of identifiers as long as a Discord token, the labels of a locale file
+  (`"password": "Contraseña"`), a pagination cursor, `let token = "abc123";`.
 - Stand-ins for a secret that a document writes on purpose, by the shapes of
   [a name assigned a value](#a-name-assigned-a-value): `ghp_` and `AKIA`
   followed by one repeated character, a value that ends in `EXAMPLE`, a
