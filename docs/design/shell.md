@@ -18,7 +18,8 @@ can show, and the argument it is about. The guard reads the line and never runs
 it. It touches neither the file system nor the environment.
 
 `effect` is a second answer from the same split: does the line only read? See
-[Reads only](#reads-only).
+[Reads only](#reads-only). `explain` shows how a line was read, for a person
+debugging a verdict: see [Explaining a line](#explaining-a-line).
 
 The guard only reports. What to do about a finding is the caller's choice, and
 nothing here knows about asking, refusing or modes. The types are core's; see
@@ -1127,6 +1128,45 @@ the whole question, and a fourth would change what a caller's gate means by
 "reads only", so it must break every caller's `match` at compile time. (A
 caller that only asks whether `effect(..)` is `ReadsOnly(_)` is unaffected by one.)
 
+## Explaining a line
+
+```rust
+explain(line, shell, &paths) -> Explanation
+```
+
+When a line comes out wrong, the reason is in the split, which is private.
+`explain` returns it: every unit as the rules saw it (the program as written, the
+arguments (a known one with its quotes taken off, an unknown or template one as
+written), where each argument would land if read as a path, the
+folder it runs from after a `cd`, the wrappers taken off, the shell and the
+nesting depth it came from, its stage in a pipeline; a part of the line the
+grammar reads again, like what follows the `&&` in cmd's `set X=1 && del y`,
+counts one level, as the depth limit does) with the findings that
+unit produced, each redirect's write the same way, and the findings of the line
+itself (a part that cannot be read, a program known only when it runs, a limit
+hit). Every known argument that is not an option gets a place, whether or not
+the program takes it as a path (`reset` in `git reset` lands inside the
+workspace); which arguments are paths is the rules' business, not the tree's.
+
+`classify` is `explain` without the tree: both take their answer from one
+reading of the line (`effect` too, from the same split), so `Explanation::findings`
+is what `classify` reports, and a test holds them equal for every row of the
+tables. `Explanation` implements `Display` as a short indented tree. It builds
+the string and prints nothing, so the contract test over `src/` still passes.
+
+The example in the shell crate prints that tree. It is the one place that reads
+arguments and prints, and it lives outside `src/`:
+
+```text
+cargo run -p milo-guards-shell --example explain -- \
+    --shell posix --cwd /work/app --home /home/me --workspace /work/app \
+    'sudo rm -rf ~ && bash -c "git reset --hard"'
+```
+
+`--shell` is `posix` (the default), `powershell` or `cmd`; `--workspace` can be
+repeated. A caller gets `explain` as `milo_local_guards::shell::explain`
+through the front door, which has no logic and no example of its own.
+
 ## Tests
 
 The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
@@ -1139,7 +1179,9 @@ line of `posix.rs` and `windows.rs` also goes through `effect`: the shared
 `check` does it for each row of a table, and the tests that name a finding's
 reason judge their lines with the shared `classify` of `tests/common`, which
 does it too. A line `classify` finds risky for anything but an elevation or a
-read of a key must not be `ReadsOnly`.
+read of a key must not be `ReadsOnly`. The same check runs `explain` over each
+row: its findings and assessment must be `classify`'s, and its tree must show
+every finding. `tests/issue_15.rs` holds what `explain` shows.
 
 `tests/secrets.rs` holds the rows of `read_secret`: the everyday lines that
 stay safe, a line for every program the rule knows, a redirect, a listing

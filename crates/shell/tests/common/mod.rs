@@ -6,12 +6,25 @@
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
 use milo_guards_shell::{
-    classify as judge, effect, effect_paths, Effect, Paths, Reach, Rule, Shell,
+    classify as judge, effect, effect_paths, explain, Effect, Paths, Reach, Rule, Shell,
 };
 
-/// `classify`, and the line's `effect` held to agree with it (see
-/// [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge every
-/// line through this, so each line they name goes through `effect` too.
+/// A text as the tree prints it: a control character written as an escape.
+pub fn as_printed(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                c.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+/// `classify`, and the line's `effect` and `explain` held to agree with it
+/// (see [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge
+/// every line through this, so each line they name goes through both too.
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> milo_guards_shell::Assessment {
     let wrong = disagreements(shell, paths, [command]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -42,7 +55,9 @@ pub fn check(shell: Shell, paths: &Paths, safe: &[&str], risky: &[(&str, Rule)])
 /// script it does not read, ...) and that `effect` nevertheless calls
 /// reads-only. There must be none: a line the guard flags is not one that
 /// only reads. (`sudo cat` is `Elevated` and reads only, and `cat ~/.ssh/id_rsa` is
-/// `ReadSecret` and reads only, so neither alone counts.)
+/// `ReadSecret` and reads only, so neither alone counts.) And the lines whose
+/// `explain` does not give `classify`'s findings and assessment, or whose tree
+/// does not show every finding.
 pub fn disagreements<'a>(
     shell: Shell,
     paths: &Paths,
@@ -57,11 +72,22 @@ pub fn disagreements<'a>(
                 .map(|finding| finding.rule)
                 .filter(|rule| !matches!(rule, Rule::Elevated | Rule::ReadSecret))
                 .collect();
-            let wrong = (!flagged.is_empty()
+            let reads = (!flagged.is_empty()
                 && matches!(effect(line, shell, paths), Effect::ReadsOnly(_)))
             .then(|| format!("reads only, but classify finds {flagged:?}: {line}"));
-            wrong
+            let explanation = explain(line, shell, paths);
+            let tree = explanation.to_string();
+            let unshown = assessment
+                .findings()
+                .iter()
+                .any(|finding| !tree.contains(&as_printed(&finding.reason)));
+            let explained = (explanation.assessment() != assessment
+                || explanation.findings() != assessment.findings()
+                || unshown)
+                .then(|| format!("explain and classify disagree: {line}"));
+            reads
                 .into_iter()
+                .chain(explained)
                 .chain(path_disagreement(shell, paths, line))
         })
         .collect()

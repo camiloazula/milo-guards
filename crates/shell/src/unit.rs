@@ -86,6 +86,12 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line the grammar reads again (what follows the
+    /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
+    /// It is what the depth limit counts.
+    pub(crate) depth: usize,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -107,6 +113,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            depth: 0,
         }
     }
 
@@ -966,13 +973,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
+/// Whether `text` is a `/X`-style switch, not a path.
+pub(crate) fn is_switch(text: &str) -> bool {
+    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+}
+
 /// The arguments that are not `/X`-style switches.
 pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
     args.iter()
-        .filter(|arg| {
-            !arg.known().is_some_and(|text| {
-                text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
-            })
-        })
+        .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
 }
