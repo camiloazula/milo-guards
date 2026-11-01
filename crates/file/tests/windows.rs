@@ -230,9 +230,6 @@ fn everyday_writes_are_safe() {
             r"c:src\x.rs",
             r"app\[id]\page.tsx",
             "price$.txt",
-            // Not directly in the workspace folder: no `.git` of its own.
-            r"src\GIT~1\x",
-            r"src\.git\x",
             // A temporary file, and the null device.
             r"C:\Users\me\AppData\Local\Temp\x",
             r"C:\Windows\Temp\x",
@@ -661,5 +658,185 @@ fn a_workspace_that_is_the_home_directory_keeps_its_keys() {
             (r".git\HEAD", &[Rule::WriteSensitive]),
             (r"src\x.rs", &[]),
         ],
+    );
+}
+
+#[test]
+fn only_the_names_ntfs_folds_make_the_workspace_the_workspace() {
+    // The Kelvin sign, the Ångström sign, the Ohm sign and the capital sharp
+    // s are not the letters they look like to NTFS: a folder by those names
+    // is another folder, so a write to it is beyond the workspace.
+    for (workspace, other) in [
+        ("work", "wor\u{212a}"),
+        ("wor\u{e5}", "wor\u{212b}"),
+        ("wor\u{3c9}", "wor\u{2126}"),
+        ("stra\u{df}e", "stra\u{1e9e}e"),
+    ] {
+        let dir = format!(r"C:\Users\me\{workspace}");
+        let paths = Paths::new(dir.as_str(), r"C:\Users\me", [dir.as_str()]);
+        let folded = format!(r"C:\Users\me\{other}\x");
+        let same = format!(r"C:\Users\me\{workspace}\x");
+        exactly(
+            Access::Write,
+            &paths,
+            &[
+                (same.as_str(), &[][..]),
+                (folded.as_str(), &[Rule::WriteOutside][..]),
+            ],
+        );
+    }
+    // Where matching too much fails closed, they still match: the home
+    // directory, a key's folder, a protected path.
+    let kim = Paths::new(r"C:\Users\Kim\dev", r"C:\Users\Kim", [r"C:\Users\Kim\dev"]);
+    exactly(
+        Access::Read,
+        &kim,
+        &[
+            (
+                "C:\\Users\\\u{212a}im\\.ssh\\id_rsa",
+                &[Rule::ReadSecret][..],
+            ),
+            (
+                "C:\\Users\\Kim\\.\u{212a}ube\\config",
+                &[Rule::ReadSecret][..],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_credential_stores_and_startup_places_that_have_twins_are_listed() {
+    risky(
+        Access::Read,
+        &windows(),
+        &[
+            (
+                r"C:\Users\me\AppData\Roaming\GitHub CLI\hosts.yml",
+                Rule::ReadSecret,
+            ),
+            (r"~\AppData\Roaming\GitHub CLI\hosts.yml", Rule::ReadSecret),
+            (
+                r"C:\Users\me\AppData\Roaming\gcloud\credentials.db",
+                Rule::ReadSecret,
+            ),
+            (
+                r"C:\Users\me\AppData\Roaming\gnupg\private-keys-v1.d\x.key",
+                Rule::ReadSecret,
+            ),
+            (
+                r"C:\Users\me\AppData\Local\Microsoft\Vault\x",
+                Rule::ReadSecret,
+            ),
+            (
+                r"C:\Users\me\AppData\Roaming\Microsoft\Vault\x",
+                Rule::ReadSecret,
+            ),
+            (r"C:\ProgramData\Microsoft\Vault\x", Rule::ReadSecret),
+            (
+                r"C:\Users\me\APPDAT~1\Roaming\GITHUB~1\hosts.yml",
+                Rule::ReadSecret,
+            ),
+            // Another user's, whatever this user's home is.
+            (
+                r"C:\Users\alice\AppData\Roaming\GitHub CLI\hosts.yml",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+    risky(
+        Access::Write,
+        &windows(),
+        &[
+            (r"C:\Users\me\.config\git\config", Rule::WriteSensitive),
+            (
+                r"~\.config\powershell\Microsoft.PowerShell_profile.ps1",
+                Rule::WriteSensitive,
+            ),
+            (
+                r"C:\Users\me\OneDrive\Documents\PowerShell\profile.ps1",
+                Rule::WriteSensitive,
+            ),
+            (
+                r"C:\Users\me\OneDrive\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1",
+                Rule::WriteSensitive,
+            ),
+            (
+                r"C:\Users\me\onedrive\documents\powershell\profile.ps1",
+                Rule::WriteSensitive,
+            ),
+            (
+                r"C:\Users\me\.config\systemd\user\x.service",
+                Rule::WriteSensitive,
+            ),
+        ],
+    );
+    safe(
+        Access::Read,
+        &windows(),
+        &[
+            r"C:\Users\me\OneDrive\Documents\PowerShell\profile.ps1",
+            r"C:\Users\me\.config\git\config",
+        ],
+    );
+}
+
+#[test]
+fn another_users_home_is_one_whatever_this_users_home_is() {
+    let paths = Paths::new(
+        r"D:\profiles\me\repo",
+        r"D:\profiles\me",
+        [r"D:\profiles\me\repo"],
+    );
+    risky(
+        Access::Read,
+        &paths,
+        &[
+            (r"C:\Users\alice\.ssh\id_rsa", Rule::ReadSecret),
+            (r"c:\users\ALICE\.SSH\id_rsa", Rule::ReadSecret),
+            (r"D:\Users\alice\.ssh\id_rsa", Rule::ReadSecret),
+            (r"D:\profiles\alice\.ssh\id_rsa", Rule::ReadSecret),
+        ],
+    );
+    safe(Access::Read, &paths, &[r"C:\Users\alice\notes.txt"]);
+}
+
+#[test]
+fn a_git_folder_at_any_depth_is_history_and_its_hooks_run_code() {
+    risky(
+        Access::Write,
+        &windows(),
+        &[
+            (r"src\.git\x", Rule::WriteSensitive),
+            (r"src\GIT~1\x", Rule::WriteSensitive),
+            (r"vendor\x\.git\hooks\pre-commit", Rule::WriteSensitive),
+            (r"vendor\x\GIT~1\hooks\pre-commit", Rule::WriteSensitive),
+            (r"vendor\x\.git.\hooks\pre-commit", Rule::WriteSensitive),
+            (r"vendor\x\.GIT\HOOKS\pre-commit", Rule::WriteSensitive),
+            (r"..\other\.git\hooks\x", Rule::WriteSensitive),
+        ],
+    );
+    safe(
+        Access::Read,
+        &windows(),
+        &[r"vendor\x\.git\hooks\pre-commit", r"vendor\x\.git\config"],
+    );
+    for (path, reason) in [
+        (
+            r"vendor\x\.git\hooks\pre-commit",
+            "writes to a git hook, which runs code",
+        ),
+        (
+            r"vendor\x\.git\config",
+            "writes to the repository's history",
+        ),
+    ] {
+        let found = milo_guards_file::judge(Access::Write, path, &windows());
+        assert_eq!(found.findings().len(), 1, "{path}");
+        assert_eq!(found.findings()[0].reason, reason, "{path}");
+    }
+    safe(
+        Access::Write,
+        &windows(),
+        &[r"src\GITHUB~1\x", r"src\.github\x", r"hooks\x"],
     );
 }

@@ -39,6 +39,7 @@ nothing.
 milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
         │                                              ▲
         ├──►  milo-guards-file  ────────────────────────┤
+        ├──►  milo-guards-url  ─────────────────────────┤
         └───────────────────────────────────────────────┘
 ```
 

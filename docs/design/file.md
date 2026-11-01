@@ -62,6 +62,7 @@ name more than one file`, `is a path only known when it runs`.
 | --- | --- |
 | `Sensitive(_, Secret)` | `read_secret`. |
 | `Disk` | `read_secret`: the bytes of a disk hold every key on it, and `\\.\C:\x` and `\\?\GLOBALROOT\...` name a file by another route. |
+| A device or a kernel file (core's `Resolver::kernel`) | `read_secret`, whatever it holds: anything under `/dev` except `null`, `zero`, `random`, `urandom`, `tty`, `stdin`, `stdout`, `stderr` and descriptors 0 to 2, and anything under `/proc` except the machine's own facts (`cpuinfo`, `meminfo`, `version`, `loadavg`, `uptime`, `filesystems`). `/proc/self/environ` holds the agent's own API keys, `/dev/mem` and `/dev/loop0` hold every file, and `/proc/self/root` and `cwd` lead anywhere. They are `read_secret` and not `unreadable`: the guard can read the path (it knows what it is) and what it leads to is as risky as the secrets it can reach, so the caller's policy for secrets is the one that applies. |
 | `Sensitive(_, Startup)`, `Sensitive(_, History)` | Safe: a startup file is read for what it says, the history is everyday work. |
 | `Protected` | Safe: reading the caller's own settings is not what it gates. |
 | `Unknown` | `unreadable`. |
@@ -77,6 +78,13 @@ purpose.
 A write to a path that is not harmless is `write_protected` for a protected
 path, `write_sensitive` for a sensitive one, `unreadable` for an unknown one,
 and `write_outside` for every other place (an unknown new place included).
+
+A write to a git repository's own folder, at any depth, is `write_sensitive`
+too, not only the workspace's `.git` (`vendor/x/.git/hooks/pre-commit`). A hook
+is a program git runs later, so its reason says what it is: `writes to a git
+hook, which runs code`; the rest of `.git` is `writes to the repository's
+history`. A write to a device that is not safe (`/dev/fd/3` is any file the
+process has open) is `write_outside`.
 
 A file API names the file itself, so the path is judged by core's full rule,
 the holding rule included: a write to `conf` is a finding when `conf/app/x.yaml`
@@ -147,7 +155,16 @@ Every spelling a review could try is a permanent row in the tests (`posix.rs`,
   `.ssh/id_rsa` stays a secret.
 - **Another user's home directory and the root user's**, and the system's own
   secrets (`/etc/shadow`, `/etc/ssh/ssh_host_*`, `C:\Windows\System32\config\SAM`).
-- **macOS's data volume** (`/System/Volumes/Data/Users/me/...`).
+  The folders under `/home`, `/Users` and `C:\Users` are always homes, whatever
+  the user's own home directory is.
+- **macOS's links to the root** (`/System/Volumes/Data/Users/me/...`,
+  `/Volumes/Macintosh HD/...`), spelled absolute, relative (`../../..`) or from
+  `~`: every path is made absolute first.
+- **The kernel's files**: `/proc/self/environ`, `/dev/mem`, `/proc/self/root/...`.
+- **A letter that looks like another** (`K` the Kelvin sign for `k`): NTFS does
+  not fold it, so it is not the workspace's letter; the home directory, the
+  sensitive places and protected paths fold it, where matching too much fails
+  closed.
 
 ### The network share rule
 
@@ -189,9 +206,15 @@ each with its test row:
 Not covered, on purpose, and what to do:
 
 - **Symlinks.** A symlink is judged by its own name, so a link in the
-  workspace to `~/.ssh`, `/proc/self/root`, `/dev/stdin`, a Mac's
-  `/Volumes/Macintosh HD` and a Windows junction are the caller's to refuse
+  workspace to `~/.ssh` and a Windows junction are the caller's to refuse
   (the caller who can read the disk can resolve first, and hand the result in).
+  The links the system itself makes are read by name: a Mac's links to the
+  root and the kernel's `/proc/self/root`.
+- **A workspace of `/`** makes a write anywhere Safe, since the caller said the
+  agent may write there; keys, startup files and `.git` stay findings. That is
+  the caller's choice to make.
+- **A Windows folder moved by a company's OneDrive** (`OneDrive - Org\Documents`)
+  is not `OneDrive\Documents`.
 - **What is not in the table.** Core lists places known to hold secrets. A
   `.env` file, a token in a project's own files, a browser's cookie store, a
   password manager's vault are not in it: a read of them is safe. Nor is a

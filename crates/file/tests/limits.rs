@@ -10,17 +10,12 @@ use milo_guards_file::{Access, Paths, Protected, Rule};
 
 #[test]
 fn a_symlink_is_judged_by_its_own_name() {
-    // A link in the workspace to `~/.ssh`, and the kernel's own links to a
-    // root and a working directory, look like any file in the workspace.
+    // A link in the workspace to `~/.ssh` looks like any file in it. (The
+    // kernel's own links, `/proc/self/root` and `cwd`, are refused by name.)
     safe(
         Access::Read,
         &posix(),
-        &[
-            "link-to-ssh/id_rsa",
-            "/proc/self/root/home/me/.ssh/id_rsa",
-            "/proc/self/cwd/../../.ssh/id_rsa",
-            "/dev/stdin",
-        ],
+        &["link-to-ssh/id_rsa", "/dev/stdin"],
     );
 }
 
@@ -73,4 +68,39 @@ fn a_path_as_another_system_spells_it_is_read_as_this_one_does() {
 #[test]
 fn a_windows_reserved_device_name_is_a_file_here() {
     safe(Access::Write, &windows(), &["COM1", "PRN", "AUX", "LPT1"]);
+}
+
+#[test]
+fn a_workspace_of_the_root_makes_a_system_write_safe() {
+    // The caller chose it: a workspace is where the agent may write, and the
+    // root holds everything. Keys and the repository's history stay what
+    // they are.
+    let paths = Paths::new("/", "/home/me", ["/"]);
+    exactly(
+        Access::Write,
+        &paths,
+        &[
+            ("/etc/hosts", &[][..]),
+            ("/usr/local/bin/x", &[][..]),
+            ("/home/me/notes.txt", &[][..]),
+            ("/home/me/.ssh/authorized_keys", &[Rule::WriteSensitive][..]),
+            ("/home/me/.zshrc", &[Rule::WriteSensitive][..]),
+            ("/etc/shadow", &[Rule::WriteSensitive][..]),
+            (".git/config", &[Rule::WriteSensitive][..]),
+        ],
+    );
+}
+
+#[test]
+fn a_company_onedrive_folder_is_not_the_onedrive_folder() {
+    // The profile moved by `OneDrive - Org` is beyond the workspace, but not
+    // named a startup file.
+    exactly(
+        Access::Write,
+        &windows(),
+        &[(
+            r"C:\Users\me\OneDrive - Org\Documents\PowerShell\profile.ps1",
+            &[Rule::WriteOutside][..],
+        )],
+    );
 }

@@ -151,13 +151,20 @@ itself.
     (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.netrc`,
     `.git-credentials`, `.npmrc`, `.pypirc`, `.vault-token`, `.oci`,
     `.password-store`, `.config/gh`, `.config/gcloud`, `.cargo/credentials*`,
-    keyrings, macOS keychains, Windows saved logins and encryption keys) are
-    `Secret`; shell startup files, `.gitconfig`, fish's config, the
-    PowerShell profile, `Library/LaunchAgents`, `.config/autostart` and the
-    Windows Startup folder are `Startup`;
-  - the same places in any other user's home directory (the folders beside
-    this one: `/home/other`, `/Users/other`, `C:\Users\other`) and in the root
-    user's (`/root`, `/var/root`);
+    `.pgpass`, `.my.cnf`, `.s3cfg`, `.gem/credentials`, `.m2/settings.xml`,
+    `.terraform.d/credentials.tfrc.json`, `.config/rclone`, `.config/op`,
+    `.config/sops/age`, `.config/hub`, keyrings, macOS keychains, GitHub CLI,
+    gcloud and GnuPG under `AppData\Roaming`, Windows saved logins, vaults and
+    encryption keys) are `Secret`; shell startup files, `.gitconfig`,
+    `.config/git/config`, fish's config, the PowerShell profile (also under
+    `.config/powershell` and `OneDrive\Documents`), `Library/LaunchAgents`,
+    `.config/autostart`, `.config/systemd/user` and the Windows Startup folder
+    are `Startup`;
+  - the same places in any other user's home directory and in the root
+    user's (`/root`, `/var/root`). The folders under `/home`, `/Users` and
+    `C:\Users` are always homes, and so are the entries of the folder that
+    holds this home directory, whatever this user's own home is (`/root`,
+    `/var/lib/ci`);
   - the system's own secrets, as `Secret`: `/etc/shadow` and its kin, the
     host SSH keys, private TLS keys, WireGuard and Kerberos keys, saved
     network passwords, the macOS keychains and password database (under
@@ -174,16 +181,26 @@ itself.
 - Windows paths compare without case. POSIX paths compare with it, except
   the home directory, the sensitive places and protected paths, which compare
   without case on every host: a macOS file system ignores it, and a name that
-  differs only by case is the same folder there. Case is the Unicode simple
-  fold of each character, as NTFS and APFS read it, so the long s `ſ` is an
-  `s` and the Kelvin sign `K` a `k` (`.ſsh` is `.ssh`). The workspace and the
-  temporary folders still compare as spelled on POSIX, so a path in them by
-  another case is judged outside, never inside.
+  differs only by case is the same folder there. Case is the widest fold
+  there is, the Unicode simple fold of each character, as APFS reads it: the
+  long s `ſ` is an `s`, the Kelvin sign `K` a `k`, the Ångström sign `Å` an
+  `å`, the Ohm sign `Ω` an `ω` and the capital sharp s `ẞ` a `ß` (`.ſsh` is
+  `.ssh`). NTFS does not fold the signs. So the wide fold is used only where
+  matching too much fails closed: the home directory, the sensitive places,
+  protected paths and `.git`. The workspace and the temporary folders compare
+  as spelled on POSIX and by ASCII case on Windows, where matching too much
+  would make another folder the agent's own: `C:\Users\me\worK` is not the
+  workspace `C:\Users\me\work`.
 - A name is also its Windows 8.3 short name, in the home directory and the
   sensitive places as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
   is `C:\Users\Camilo Azula\.ssh\id_rsa`. A POSIX name has no short form.
-- On POSIX `/System/Volumes/Data/...` is `/...`: macOS mounts its data volume
-  there as well, so the three parts are dropped when something follows them.
+- On POSIX macOS's links to the root are read: `/System/Volumes/Data/...`,
+  `/Volumes/Macintosh HD/...` and `/Volumes/Macintosh HD - Data/...` are
+  `/...`, as often as they come. Every path is made absolute first (`~`
+  and `..` applied, the working directory prepended), and then the links are
+  dropped, so `../../../../System/Volumes/Data/Users/me/.ssh` and `~/../..`
+  spellings are read as `/Users/me/.ssh`. Their names compare by ASCII case
+  only.
 - A protected path, and anything under it, is `Protected`. **Protected wins over
   the workspace**, and over a temporary folder: a protected file inside a
   workspace folder is `Protected`, not `Inside`, because the caller named it on
@@ -402,6 +419,25 @@ is `#[non_exhaustive]`), `network` (whether a text names a place on another
 machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
+
+Two questions are `Resolver` methods, since a guard needs them resolved: the
+path made absolute, with the working directory and `~` applied.
+
+- `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
+  is a file only by name: anything under `/dev` that is not `null`, `zero`,
+  `random`, `urandom`, `tty`, `stdin`, `stdout`, `stderr` or descriptors 0 to
+  2, and anything under `/proc` that is not one of the machine's own facts
+  (`cpuinfo`, `meminfo`, `version`, `loadavg`, `uptime`, `filesystems`): a
+  process's environment, memory, command line and maps, and `root` and `cwd`,
+  which lead to any file. It is a whitelist of what is safe, never a list of
+  what is not. It answers `None` on Windows, where the device namespace is a
+  `Disk`. It does not change `place`, so the shell guard's verdicts stay
+  what they were.
+- `git(path, flavour)` is `Some(words)` for a path in a git repository's own
+  folder at any depth, `vendor/x/.git/hooks/pre-commit` and not only the
+  workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the
+  repository's history` for the rest. `place` still reads only the
+  workspace's own `.git`, so the shell guard's verdicts are unchanged.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 

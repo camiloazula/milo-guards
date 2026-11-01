@@ -192,8 +192,24 @@ pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
             );
             continue;
         }
+        // A git folder at any depth, a hook named for what it does.
+        if let Some(words) = resolver
+            .git(*reading, flavour)
+            .filter(|_| access == Access::Write)
+        {
+            add(Rule::WriteSensitive, format!("writes to {words}"));
+        }
         if let Some((rule, reason)) = of_place(access, place) {
             add(rule, reason);
+        }
+        // What the kernel serves is a file only by name: to read it is to
+        // read what it holds, and to write it is to write whatever it is
+        // (`/dev/fd/3` is any file the process has open).
+        if let Some(words) = resolver.kernel(*reading, flavour) {
+            match access {
+                Access::Read => add(Rule::ReadSecret, format!("reads {words}")),
+                Access::Write => add(Rule::WriteOutside, format!("writes to {words}")),
+            }
         }
     }
     if share && !inside {

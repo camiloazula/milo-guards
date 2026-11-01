@@ -249,7 +249,7 @@ fn everyday_writes_are_safe() {
             "/private/tmp/x",
             "/dev/null",
             "/dev/stderr",
-            "/dev/fd/3",
+            "/dev/fd/1",
             // Beside a sensitive place is not it.
             "/home/me/work/repo/.sshx",
             "src/.ssh.rs",
@@ -806,4 +806,392 @@ fn a_relative_working_directory_puts_every_path_outside() {
     let paths = Paths::new("repo", "/home/me", ["/home/me/repo"]);
     risky(Access::Write, &paths, &[("x", Rule::WriteOutside)]);
     risky(Access::Read, &paths, &[("~/.ssh/id_rsa", Rule::ReadSecret)]);
+}
+
+#[test]
+fn the_data_volume_and_the_boot_volume_are_the_root_however_the_path_is_spelled() {
+    let rows = |path: &'static str| (path, Rule::ReadSecret);
+    risky(
+        Access::Read,
+        &macos(),
+        &[
+            rows("/System/Volumes/Data/Users/me/.ssh/id_ed25519"),
+            rows("/system/volumes/data/Users/me/.ssh/id_ed25519"),
+            rows("../../../../System/Volumes/Data/Users/me/.ssh/id_ed25519"),
+            rows("../../../../system/volumes/data/users/me/.ssh/id_ed25519"),
+            rows("~/../../System/Volumes/Data/Users/me/.ssh/id_ed25519"),
+            rows("~/../../Volumes/Macintosh HD/Users/me/.ssh/id_ed25519"),
+            rows("/Volumes/Macintosh HD/Users/me/.ssh/id_ed25519"),
+            rows("/volumes/macintosh hd/Users/me/.ssh/id_ed25519"),
+            rows("/Volumes/Macintosh HD - Data/Users/me/.ssh/id_ed25519"),
+            rows("../../../../Volumes/Macintosh HD/Users/me/.ssh/id_ed25519"),
+            rows("/Volumes/Macintosh HD/System/Volumes/Data/Users/me/.ssh/id"),
+            rows("/System/Volumes/Data/private/etc/master.passwd"),
+            rows("/Volumes/Macintosh HD/private/etc/master.passwd"),
+            rows("/Volumes/Macintosh HD/dev/mem"),
+            rows("/System/Volumes/Data/proc/self/environ"),
+        ],
+    );
+    // A working directory at the root, with the workspace elsewhere.
+    let at_root = Paths::new("/", "/Users/me", ["/Users/me/dev/repo"]);
+    risky(
+        Access::Read,
+        &at_root,
+        &[
+            rows("System/Volumes/Data/Users/me/.ssh/id_rsa"),
+            rows("Volumes/Macintosh HD/Users/me/.ssh/id_rsa"),
+            rows("Users/me/.ssh/id_rsa"),
+            rows("proc/self/environ"),
+            rows("dev/mem"),
+        ],
+    );
+    // The same links reach the workspace, and a temporary folder.
+    safe(
+        Access::Write,
+        &macos(),
+        &[
+            "/System/Volumes/Data/Users/me/dev/repo/x",
+            "/Volumes/Macintosh HD/Users/me/dev/repo/x",
+            "../../../../Volumes/Macintosh HD/Users/me/dev/repo/x",
+            "../../../../System/Volumes/Data/tmp/x",
+        ],
+    );
+    risky(
+        Access::Write,
+        &macos(),
+        &[
+            (
+                "../../../../System/Volumes/Data/Users/me/notes.txt",
+                Rule::WriteOutside,
+            ),
+            ("/Volumes/Backup/Users/me/dev/repo/x", Rule::WriteOutside),
+            (
+                "../../../../System/Volumes/Data/Users/me/.zshrc",
+                Rule::WriteSensitive,
+            ),
+            (
+                "~/../../Volumes/Macintosh HD/Users/me/.zshrc",
+                Rule::WriteSensitive,
+            ),
+            // Only ASCII case counts for a link, so this is not the root.
+            (
+                "/\u{17f}ystem/Volumes/Data/Users/me/dev/repo/x",
+                Rule::WriteOutside,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_device_or_a_kernel_file_is_not_a_file_to_read() {
+    let mut rows: Vec<(&str, Rule)> = [
+        "/dev/mem",
+        "/dev/kmem",
+        "/dev/port",
+        "/dev/loop0",
+        "/dev/root",
+        "/dev/nbd0",
+        "/dev/zd0",
+        "/dev/vda1",
+        "/dev/pts/0",
+        "/dev/ptmx",
+        "/dev/console",
+        "/dev/shm/x",
+        "/dev/fd/3",
+        "/dev/fd/10",
+        "/dev/fd/00",
+        "/dev/null/x",
+        "/dev/stdin/x",
+        "/dev",
+        "/DEV/MEM",
+        "/dev/../dev/mem",
+        "/dev/./mem",
+        "../../../../../dev/mem",
+        "~/../../../dev/mem",
+        "/proc/self/environ",
+        "/proc/1/environ",
+        "/proc/thread-self/environ",
+        "/proc/self/task/1/environ",
+        "/proc/self/mem",
+        "/proc/self/cmdline",
+        "/proc/self/maps",
+        "/proc/self/status",
+        "/proc/self/fd/3",
+        "/proc/self/root/home/me/.ssh/id_rsa",
+        "/proc/1234/root/etc/hosts",
+        "/proc/self/cwd/x",
+        "/proc/self/cwd/../../.ssh/id_rsa",
+        "/proc/kcore",
+        "/proc/kallsyms",
+        "/proc/sys/kernel/hostname",
+        "/proc",
+        "/PROC/SELF/ENVIRON",
+        "/proc/./self/environ",
+        "src/../../../../../../proc/self/environ",
+    ]
+    .iter()
+    .map(|path| (*path, Rule::ReadSecret))
+    .collect();
+    // Reads that are not a secret on a Mac, too (a Mac has no `/proc`, but
+    // the path is read the same way).
+    rows.push(("/dev/disk2s1", Rule::ReadSecret));
+    risky(Access::Read, &posix(), &rows);
+    risky(Access::Read, &macos(), &rows);
+    // What is readable: what discards, what is random or zero, the terminal
+    // and the standard streams, and the machine's own facts.
+    safe(
+        Access::Read,
+        &posix(),
+        &[
+            "/dev/null",
+            "/dev/zero",
+            "/dev/random",
+            "/dev/urandom",
+            "/dev/tty",
+            "/dev/stdin",
+            "/dev/stdout",
+            "/dev/stderr",
+            "/dev/fd/0",
+            "/dev/fd/1",
+            "/dev/fd/2",
+            "/DEV/NULL",
+            "/dev/./null",
+            "/proc/cpuinfo",
+            "/proc/meminfo",
+            "/proc/version",
+            "/proc/loadavg",
+            "/proc/uptime",
+            "/proc/filesystems",
+            "/home/me/dev/mem",
+            "/home/me/proc/self/environ",
+            "src/dev/mem",
+            "dev/mem",
+            "proc/self/environ",
+            "/devx/mem",
+            "/processes/x",
+        ],
+    );
+    exactly(
+        Access::Read,
+        &posix(),
+        &[
+            ("/dev/mem", &[Rule::ReadSecret][..]),
+            ("/proc/self/environ", &[Rule::ReadSecret][..]),
+            // A disk keeps its own words.
+            ("/dev/sda", &[Rule::ReadSecret][..]),
+        ],
+    );
+    for (path, reason) in [
+        ("/dev/mem", "reads a device file"),
+        ("/dev/loop0", "reads a device file"),
+        ("/proc/self/environ", "reads the kernel's process files"),
+        (
+            "/proc/self/root/etc/hosts",
+            "reads the kernel's process files",
+        ),
+        ("/dev/sda", "reads a disk, and every key on it"),
+    ] {
+        let found = judge(Access::Read, path, &posix());
+        assert_eq!(found.findings().len(), 1, "{path}");
+        assert_eq!(found.findings()[0].reason, reason, "{path}");
+    }
+    // A write to a device is judged by its place: `/dev/null` takes it, any
+    // other is beyond the workspace.
+    exactly(
+        Access::Write,
+        &posix(),
+        &[
+            ("/dev/null", &[][..]),
+            ("/dev/mem", &[Rule::WriteOutside][..]),
+            ("/proc/self/mem", &[Rule::WriteOutside][..]),
+            ("/proc/self/environ", &[Rule::WriteOutside][..]),
+        ],
+    );
+}
+
+#[test]
+fn another_users_home_is_one_whatever_this_users_home_is() {
+    for paths in [
+        Paths::new("/root/repo", "/root", ["/root/repo"]),
+        Paths::new("/var/lib/ci/repo", "/var/lib/ci", ["/var/lib/ci/repo"]),
+        Paths::new("/srv/x", "/srv/x", ["/srv/x"]),
+    ] {
+        risky(
+            Access::Read,
+            &paths,
+            &[
+                ("/home/alice/.ssh/id_rsa", Rule::ReadSecret),
+                ("/HOME/ALICE/.SSH/id_rsa", Rule::ReadSecret),
+                ("/Users/alice/.aws/credentials", Rule::ReadSecret),
+                ("/home/alice/.config/gh/hosts.yml", Rule::ReadSecret),
+            ],
+        );
+        risky(
+            Access::Write,
+            &paths,
+            &[
+                ("/home/alice/.ssh/authorized_keys", Rule::WriteSensitive),
+                ("/home/alice/.zshrc", Rule::WriteSensitive),
+                ("/home/alice/notes.txt", Rule::WriteOutside),
+            ],
+        );
+        safe(Access::Read, &paths, &["/home/alice/notes.txt"]);
+    }
+}
+
+#[test]
+fn the_credential_stores_and_startup_places_that_have_twins_are_listed() {
+    risky(
+        Access::Write,
+        &posix(),
+        &[
+            ("~/.config/git/config", Rule::WriteSensitive),
+            (
+                "~/.config/powershell/Microsoft.PowerShell_profile.ps1",
+                Rule::WriteSensitive,
+            ),
+            ("~/.config/powershell/", Rule::WriteSensitive),
+            ("~/.config/systemd/user/x.service", Rule::WriteSensitive),
+            (
+                "~/.config/systemd/user/default.target.wants/x",
+                Rule::WriteSensitive,
+            ),
+            ("~/.CONFIG/Git/Config", Rule::WriteSensitive),
+        ],
+    );
+    safe(
+        Access::Read,
+        &posix(),
+        &[
+            "~/.config/git/config",
+            "~/.config/powershell/profile.ps1",
+            "~/.config/systemd/user/x.service",
+            "~/.config/git/ignore",
+        ],
+    );
+    risky(
+        Access::Write,
+        &posix(),
+        &[("~/.config/systemd/system/x", Rule::WriteOutside)],
+    );
+}
+
+#[test]
+fn a_git_folder_at_any_depth_is_history_and_its_hooks_run_code() {
+    let rules = |access, path| common::rules(access, &posix(), path);
+    for path in [
+        ".git/hooks/pre-commit",
+        ".GIT/Hooks/pre-commit",
+        "vendor/x/.git/hooks/pre-commit",
+        "vendor/x/.git/hooks/",
+        "vendor/x/.git/../.git/hooks/pre-commit",
+        "../other/.git/hooks/post-merge",
+        "~/work/other/.git/hooks/x",
+        "/tmp/clone/.git/hooks/pre-push",
+        "a/b/c/d/e/.git/hooks/pre-commit",
+        ".git/modules/m/hooks/pre-commit",
+    ] {
+        assert!(
+            rules(Access::Write, path).contains(&Rule::WriteSensitive),
+            "{path}"
+        );
+        assert_eq!(rules(Access::Read, path), [], "{path}");
+    }
+    for path in [
+        "vendor/x/.git/config",
+        "vendor/x/.git/HEAD",
+        "packages/app/.git",
+        "packages/app/.git/",
+        "packages/app/.GIT/objects/ab/cd",
+        "a/b/c/d/e/.git/index",
+        "/tmp/clone/.git/config",
+        "~/work/other/.git/config",
+    ] {
+        assert!(
+            rules(Access::Write, path).contains(&Rule::WriteSensitive),
+            "{path}"
+        );
+        assert_eq!(rules(Access::Read, path), [], "{path}");
+    }
+    // Reasons: a hook says it runs code; the rest is the history.
+    for (path, reason) in [
+        (
+            ".git/hooks/pre-commit",
+            "writes to a git hook, which runs code",
+        ),
+        (
+            "vendor/x/.git/hooks/pre-commit",
+            "writes to a git hook, which runs code",
+        ),
+        (".git/config", "writes to the repository's history"),
+        ("vendor/x/.git/config", "writes to the repository's history"),
+        (".git", "writes to the repository's history"),
+    ] {
+        let found = judge(Access::Write, path, &posix());
+        assert_eq!(found.findings().len(), 1, "{path}: {found:?}");
+        assert_eq!(found.findings()[0].reason, reason, "{path}");
+    }
+    // Not a git folder.
+    safe(
+        Access::Write,
+        &posix(),
+        &[
+            "src/main.rs",
+            ".gitignore",
+            ".github/hooks/x",
+            ".husky/pre-commit",
+            "hooks/pre-commit",
+            "scripts/hooks/pre-commit",
+            "x.git/hooks/x",
+            "src/.gitx/hooks/x",
+            "git/hooks/x",
+        ],
+    );
+}
+
+#[test]
+fn more_credential_stores_are_listed() {
+    let rows: Vec<(&str, Rule)> = [
+        "~/.pgpass",
+        "~/.my.cnf",
+        "~/.s3cfg",
+        "~/.gem/credentials",
+        "~/.m2/settings.xml",
+        "~/.terraform.d/credentials.tfrc.json",
+        "~/.config/rclone/rclone.conf",
+        "~/.config/op/config",
+        "~/.config/sops/age/keys.txt",
+        "~/.config/hub",
+    ]
+    .iter()
+    .map(|path| (*path, Rule::ReadSecret))
+    .collect();
+    risky(Access::Read, &posix(), &rows);
+    safe(
+        Access::Read,
+        &posix(),
+        &[
+            "~/.gem/specs",
+            "~/.m2/repository/x.jar",
+            "~/.terraform.d/plugins/x",
+        ],
+    );
+}
+
+#[test]
+fn a_write_to_a_device_is_beyond_the_workspace_unless_it_discards() {
+    exactly(
+        Access::Write,
+        &posix(),
+        &[
+            ("/dev/fd/3", &[Rule::WriteOutside][..]),
+            ("/dev/fd/10", &[Rule::WriteOutside][..]),
+            ("/dev/shm/x", &[Rule::WriteOutside][..]),
+            ("/dev/null", &[][..]),
+            ("/dev/stdout", &[][..]),
+            ("/dev/stderr", &[][..]),
+            ("/dev/fd/1", &[][..]),
+            ("/dev/tty", &[][..]),
+        ],
+    );
 }

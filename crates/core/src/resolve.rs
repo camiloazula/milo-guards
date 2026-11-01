@@ -102,7 +102,7 @@ impl Loc {
             && self.parts.len() <= other.parts.len()
             && self.parts.iter().zip(&other.parts).all(|(a, b)| {
                 if windows {
-                    same_fold(a, b)
+                    a.eq_ignore_ascii_case(b)
                 } else {
                     a == b
                 }
@@ -169,20 +169,36 @@ impl Loc {
         Self::at(Root::Unix).walk(text, Flavour::Posix).firm()
     }
 
-    /// On macOS the data volume is also mounted at `/System/Volumes/Data`,
-    /// so `/System/Volumes/Data/Users/me` is `/Users/me`: the three parts
-    /// are dropped when something follows them.
+    /// What macOS names the root and the data volume by. The data volume is
+    /// also mounted at `/System/Volumes/Data`, the boot volume is linked at
+    /// `/Volumes/<its name>`, and the data volume at `/Volumes/<its name> -
+    /// Data`, so `/System/Volumes/Data/Users/me` and
+    /// `/Volumes/Macintosh HD/Users/me` are `/Users/me`. The leading parts
+    /// are dropped, as often as they come, however the path was spelled:
+    /// every path is made absolute first (`~` and `..` applied, the working
+    /// directory prepended). Names compare without case, in ASCII only, since
+    /// matching too much here would make a path look like the workspace's.
     fn firm(mut self) -> Self {
-        let firm = ["System", "Volumes", "Data"];
-        while matches!(self.root, Root::Unix)
-            && self.parts.len() > firm.len()
-            && self
-                .parts
-                .iter()
-                .zip(firm)
-                .all(|(part, name)| same_fold(part, name))
-        {
-            self.parts.drain(..firm.len());
+        const LINKS: [&[&str]; 3] = [
+            &["System", "Volumes", "Data"],
+            &["Volumes", "Macintosh HD"],
+            &["Volumes", "Macintosh HD - Data"],
+        ];
+        while matches!(self.root, Root::Unix) {
+            let link = LINKS.iter().find(|link| {
+                link.len() <= self.parts.len()
+                    && self
+                        .parts
+                        .iter()
+                        .zip(**link)
+                        .all(|(part, name)| part.eq_ignore_ascii_case(name))
+            });
+            match link {
+                Some(link) => {
+                    self.parts.drain(..link.len());
+                }
+                None => break,
+            }
         }
         self
     }
@@ -392,7 +408,7 @@ const DISK_DEVICES: [&str; 11] = [
 ///
 /// This lists the places known to hold secrets; it is not a proof that
 /// nowhere else does.
-const SENSITIVE: [(&[&str], &str, Sensitivity); 40] = [
+const SENSITIVE: [(&[&str], &str, Sensitivity); 60] = [
     (&[".ssh"], "your SSH keys", Sensitivity::Secret),
     (&[".gnupg"], "your GPG keys", Sensitivity::Secret),
     (&[".aws"], "your AWS credentials", Sensitivity::Secret),
@@ -468,7 +484,103 @@ const SENSITIVE: [(&[&str], &str, Sensitivity); 40] = [
         "your Windows encryption keys",
         Sensitivity::Secret,
     ),
+    (
+        &["AppData", "Roaming", "GitHub CLI"],
+        "your GitHub login",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "gcloud"],
+        "your Google Cloud credentials",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "gnupg"],
+        "your GPG keys",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Roaming", "Microsoft", "Vault"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &["AppData", "Local", "Microsoft", "Vault"],
+        "your saved Windows logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".pgpass"],
+        "your saved database logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".my.cnf"],
+        "your saved database logins",
+        Sensitivity::Secret,
+    ),
+    (&[".s3cfg"], "your S3 credentials", Sensitivity::Secret),
+    (
+        &[".gem", "credentials"],
+        "your RubyGems login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".m2", "settings.xml"],
+        "your Maven logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".terraform.d", "credentials.tfrc.json"],
+        "your Terraform login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "rclone"],
+        "your rclone logins",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "op"],
+        "your 1Password login",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "sops", "age"],
+        "your encryption keys",
+        Sensitivity::Secret,
+    ),
+    (
+        &[".config", "hub"],
+        "your GitHub login",
+        Sensitivity::Secret,
+    ),
     (&[".gitconfig"], "your git settings", Sensitivity::Startup),
+    (
+        &[".config", "git", "config"],
+        "your git settings",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".config", "powershell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+    (
+        &[".config", "systemd", "user"],
+        "the services your system starts at login",
+        Sensitivity::Startup,
+    ),
+    (
+        &["OneDrive", "Documents", "PowerShell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
+    (
+        &["OneDrive", "Documents", "WindowsPowerShell"],
+        "your PowerShell profile",
+        Sensitivity::Startup,
+    ),
     (&[".bashrc"], "a shell startup file", Sensitivity::Startup),
     (
         &[".bash_profile"],
@@ -563,7 +675,7 @@ const POSIX_SECRETS: [(&[&str], &str); 14] = [
 const ROOT_HOMES: [&[&str]; 3] = [&["root"], &["var", "root"], &["private", "var", "root"]];
 
 /// Keys and credentials the system itself keeps, under a Windows drive.
-const WINDOWS_SECRETS: [(&[&str], &str); 5] = [
+const WINDOWS_SECRETS: [(&[&str], &str); 6] = [
     (
         &["Windows", "System32", "config"],
         "the Windows account database",
@@ -574,6 +686,10 @@ const WINDOWS_SECRETS: [(&[&str], &str); 5] = [
         "the Windows encryption keys",
     ),
     (&["ProgramData", "ssh"], "the system's SSH keys"),
+    (
+        &["ProgramData", "Microsoft", "Vault"],
+        "the system's saved logins",
+    ),
     (
         &["ProgramData", "Microsoft", "Crypto"],
         "the system's private keys",
@@ -633,9 +749,10 @@ pub struct Resolver {
     /// What is sensitive under this home directory, and the system's own
     /// secrets by their full place.
     sensitive: Vec<(Loc, &'static str, Sensitivity)>,
-    /// The folder holding the home directory (`/home`, `C:\Users`), whose
-    /// other entries are other users' homes; `None` when it is the root.
-    neighbours: Option<Loc>,
+    /// The folders whose entries are users' home directories: the one holding
+    /// this home directory, and the places systems keep them (`/home`,
+    /// `/Users`, `C:\Users`), whatever this user's own home is.
+    neighbours: Vec<Loc>,
     /// The root user's home directory.
     root_homes: Vec<Loc>,
     /// Each protected path, its words, and whether it is a folder.
@@ -715,10 +832,20 @@ impl Resolver {
         } else {
             ROOT_HOMES.iter().map(|parts| root.join(parts)).collect()
         };
-        let neighbours = (home.parts.len() > 1).then(|| Loc {
-            root: home.root.clone(),
-            parts: home.parts[..home.parts.len() - 1].to_vec(),
-        });
+        let mut neighbours: Vec<Loc> = Vec::new();
+        if home.parts.len() > 1 {
+            neighbours.push(Loc {
+                root: home.root.clone(),
+                parts: home.parts[..home.parts.len() - 1].to_vec(),
+            });
+        }
+        if home.windows() {
+            neighbours.push(root.join(&["Users"]));
+            neighbours.push(Loc::at(Root::Drive('C')).join(&["Users"]));
+        } else {
+            neighbours.push(root.join(&["home"]));
+            neighbours.push(root.join(&["Users"]));
+        }
         let mut resolver = Self {
             cwd,
             home: home.clone(),
@@ -936,7 +1063,12 @@ impl Resolver {
             })
     }
 
+    /// The location a path names, made absolute however it was spelled.
     fn locate(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
+        self.locate_raw(path, flavour).firm()
+    }
+
+    fn locate_raw(&self, path: Spelling<'_>, flavour: Flavour) -> Loc {
         let separators = flavour.separators();
         let text = match path {
             Spelling::Home(rest) => return self.home.clone().walk(rest, flavour),
@@ -962,7 +1094,7 @@ impl Resolver {
             } else {
                 Root::Unix
             };
-            return Loc::at(root).walk(text, flavour).firm();
+            return Loc::at(root).walk(text, flavour);
         }
         self.cwd.clone().walk(text, flavour)
     }
@@ -1040,7 +1172,103 @@ impl Resolver {
     }
 }
 
+/// What a POSIX system keeps readable in `/dev`: what discards, what is
+/// random or zero, and the terminal and standard streams. Every other device
+/// is a way to the disk or the memory.
+const DEV_READABLE: [&str; 8] = [
+    "null", "zero", "random", "urandom", "tty", "stdin", "stdout", "stderr",
+];
+
+/// What is readable in `/proc` without being one process's secrets: the
+/// machine's own facts. Everything else, and every process's folder (`self`
+/// and a number: its environment, memory, command line, maps, and `root` and
+/// `cwd`, which lead to any file), is not.
+const PROC_READABLE: [&str; 6] = [
+    "cpuinfo",
+    "meminfo",
+    "version",
+    "loadavg",
+    "uptime",
+    "filesystems",
+];
+
 impl Resolver {
+    /// The location `path` names, or `None` when it is known only when it
+    /// runs (see [`place`](Self::place)).
+    fn resolved(&self, path: Spelling<'_>, flavour: Flavour) -> Option<Loc> {
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return None;
+        }
+        Some(self.locate(path, flavour))
+    }
+
+    /// The words of what the kernel serves that `path` is, on a POSIX
+    /// machine: a device under `/dev` that is not one of the few safe to read
+    /// (`null`, `zero`, `random`, `urandom`, `tty`, the standard streams
+    /// `stdin`, `stdout`, `stderr` and descriptors 0 to 2), or anything under
+    /// `/proc` that is not one of the machine's own facts (`cpuinfo`,
+    /// `meminfo`, ...): a process's environment, memory and command line, and
+    /// its `root` and `cwd`, which lead to any file. Names compare without
+    /// case, since a Mac does not; `None` for any other path and on Windows.
+    ///
+    /// A guard that lets reads through uses it to refuse these: they are
+    /// files only by name, and what they hold is the agent's own keys.
+    #[must_use]
+    pub fn kernel(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if flavour != Flavour::Posix {
+            return None;
+        }
+        let loc = self.resolved(path, flavour)?;
+        if !matches!(loc.root, Root::Unix) {
+            return None;
+        }
+        let names: Vec<&str> = loc.parts.iter().map(String::as_str).collect();
+        let is = |name: &str, other: &str| name.eq_ignore_ascii_case(other);
+        match names.as_slice() {
+            [dev, rest @ ..] if is(dev, "dev") => {
+                let readable = match rest {
+                    [name] => DEV_READABLE.iter().any(|ok| is(name, ok)),
+                    [fd, number] => is(fd, "fd") && matches!(*number, "0" | "1" | "2"),
+                    _ => false,
+                };
+                (!readable).then_some("a device file")
+            }
+            [proc, rest @ ..] if is(proc, "proc") => {
+                let readable =
+                    matches!(rest, [name] if PROC_READABLE.iter().any(|ok| is(name, ok)));
+                (!readable).then_some("the kernel's process files")
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `path` is in a git repository's own folder, at any depth
+    /// (`vendor/x/.git/hooks/pre-commit`, not only the workspace's `.git`):
+    /// `Some(words)` with what a reason calls it. A hook is a program git
+    /// runs later, so it is named for that, and anything else in `.git` is
+    /// the repository's history. Names read as for the workspace's own
+    /// `.git`, without case and, on Windows, by short name.
+    #[must_use]
+    pub fn git(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        let loc = self.resolved(path, flavour)?;
+        let windows = flavour == Flavour::Windows;
+        let at = loc
+            .parts
+            .iter()
+            .position(|part| same_fold(part, ".git") || (windows && short_git(part)))?;
+        let hooks = loc
+            .parts
+            .get(at + 1)
+            .is_some_and(|part| same_fold(part, "hooks"));
+        Some(if hooks {
+            "a git hook, which runs code"
+        } else {
+            "the repository's history"
+        })
+    }
+
     /// How `path`s are spelled on the machine these directories describe:
     /// `Windows` when the home directory is a Windows path, `Posix`
     /// otherwise, the way [`new`](Self::new) tells the two apart.
@@ -1061,7 +1289,7 @@ impl Resolver {
             .iter()
             .any(|(entry, ..)| above(folder, entry))
             || self.root_homes.iter().any(|home| above(folder, home))
-            || self.neighbours.as_ref().is_some_and(|homes| {
+            || self.neighbours.iter().any(|homes| {
                 let shorter = folder.parts.len().min(homes.parts.len());
                 folder.parts.len() <= homes.parts.len() + 1
                     && folder.root.same(&homes.root)
@@ -1167,10 +1395,16 @@ fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
     same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
 }
 
-/// `c` as a file system that ignores case reads it: the one character its
-/// upper case is, then the one its lower case is (so the long s `ſ` and the
-/// Kelvin sign `K` are an `s` and a `k`, as on NTFS and APFS); a character
-/// whose case is more than one stays itself.
+/// `c` as the widest reading of "the same without case" has it: the one
+/// character its upper case is, then the one its lower case is, so the long
+/// s `ſ`, the Kelvin sign `K`, the Ångström sign `Å`, the Ohm sign `Ω` and the
+/// capital sharp s `ẞ` are an `s`, a `k`, an `å`, an `ω` and a `ß`; a
+/// character whose case is more than one stays itself. APFS folds this far;
+/// NTFS does not (its table maps `ſ` up and leaves the signs alone), so this
+/// is used only where matching too much fails closed (the home directory,
+/// the sensitive places, protected paths and `.git`), and never for the
+/// workspace or a temporary folder, where it would make another folder the
+/// agent's own.
 fn fold(c: char) -> char {
     let upper = single(c.to_uppercase()).unwrap_or(c);
     single(upper.to_lowercase()).unwrap_or(upper)

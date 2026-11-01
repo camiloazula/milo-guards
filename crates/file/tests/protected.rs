@@ -285,3 +285,40 @@ fn what_the_caller_gates_with_may_also_hold_a_secret() {
         ],
     );
 }
+
+#[test]
+fn a_protected_path_by_the_data_volume_or_a_wide_fold_is_still_protected() {
+    let paths = macos().with_protected([Protected::folder("/Users/me/.agent", W)]);
+    risky(
+        Access::Write,
+        &paths,
+        &[
+            // Relative, from `~`, and by the links to the root: all the same
+            // folder once the path is absolute.
+            (
+                "../../../../System/Volumes/Data/Users/me/.agent/x",
+                Rule::WriteProtected,
+            ),
+            (
+                "../../../../Volumes/Macintosh HD/Users/me/.agent/x",
+                Rule::WriteProtected,
+            ),
+            (
+                "/System/Volumes/Data/Users/me/.agent/x",
+                Rule::WriteProtected,
+            ),
+        ],
+    );
+    let kelvin = posix().with_protected([Protected::folder("/home/me/.k", W)]);
+    risky(
+        Access::Write,
+        &kelvin,
+        &[("/home/me/.\u{212a}/x", Rule::WriteProtected)],
+    );
+    let win = windows().with_protected([Protected::folder(r"C:\Users\me\.agent\k", W)]);
+    risky(
+        Access::Write,
+        &win,
+        &[("C:\\Users\\me\\.agent\\\u{212a}\\x", Rule::WriteProtected)],
+    );
+}
