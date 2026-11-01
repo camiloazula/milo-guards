@@ -8,7 +8,7 @@
 //! lists, and a `cd` that moved the line.
 
 use milo_guards_core::spelling::glob;
-use milo_guards_core::{Flavour, Paths, Spelling};
+use milo_guards_core::{Flavour, Paths, Sensitivity, Spelling};
 
 pub(crate) use milo_guards_core::Place;
 
@@ -187,6 +187,113 @@ impl Resolver {
         milo_guards_core::spelling::network(text, flavour(shell))
     }
 
+    /// What reading `arg`, written from `dir`, exposes when it is a key or a
+    /// credential: the words for it (`your SSH keys`). A place core marks as
+    /// holding one, a disk (its bytes hold every key on it) and, in a POSIX
+    /// shell, what the kernel serves (`/proc/self/environ`, `/dev/mem`): the
+    /// answers the file guard gives a read of the same path. `None` for
+    /// anything else, a path known only when it runs included.
+    pub(crate) fn secret(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        let owned;
+        let arg = if dir.is_some() {
+            owned = within(dir, arg, shell);
+            &owned
+        } else {
+            arg
+        };
+        let text = arg.known()?;
+        let mut place = self.place_of(text, shell, hidden, true);
+        // A Windows name the spelling does not settle (a stream, a part with
+        // a trailing space) is read for the file it is a name of; PowerShell
+        // takes `id_rsa::$DATA` for a provider's path, which is outside.
+        if matches!(place, Place::Unknown | Place::Outside) && shell != Shell::Posix {
+            if let Some(file) = without_streams(text) {
+                place = self.place_of(&file, shell, hidden, true);
+            }
+        }
+        match place {
+            Place::Sensitive(words, Sensitivity::Secret) => return Some(words),
+            Place::Disk => return Some("a disk, and every key on it"),
+            _ => {}
+        }
+        self.picks(text, shell, hidden).or_else(|| {
+            // What the kernel serves is not in the workspace, a temporary
+            // folder or the home directory, so it is only looked for in the
+            // places that are none of them (`/dev/fd/3` is the null device
+            // to core, a path in another case is outside).
+            if matches!(place, Place::Top(_) | Place::Outside | Place::Null) {
+                self.kernel(text, shell)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The key or credential a pattern can pick (`~/.s*/id_rsa`): see
+    /// [`milo_guards_core::Resolver::picks_secret`].
+    fn picks(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        if !glob::has_wildcard(text) || brace_list(text) {
+            return None;
+        }
+        let flavour = flavour(shell);
+        // `FileSystem::C:\x*` is the provider's own path.
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.picks(rest, shell, hidden))
+                    .flatten();
+            }
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            Start::DriveRelative(letter, rest) => Spelling::Plain(self.on_cwd_drive(letter, rest)?),
+            Start::Provider(..) | Start::Unknown => return None,
+        };
+        self.core.picks_secret(spelling, flavour, hidden)
+    }
+
+    /// The words for a place that holds keys without being one: the home
+    /// directory, a folder holding it, the root of the disk. Reading a
+    /// folder all the way down reads what is in it.
+    pub(crate) fn holder(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        let arg = within(dir, arg, shell);
+        match self.place_of(arg.known()?, shell, hidden, true) {
+            place @ (Place::Home { .. } | Place::Top("the root of the disk")) => {
+                Some(place.words())
+            }
+            _ => None,
+        }
+    }
+
+    /// What the kernel serves that `text` names, in a POSIX shell: see
+    /// [`milo_guards_core::Resolver::kernel`].
+    fn kernel(&self, text: &str, shell: Shell) -> Option<&'static str> {
+        if shell != Shell::Posix || brace_list(text) {
+            return None;
+        }
+        let spelling = match start(text, shell) {
+            Start::Plain => Spelling::Plain(text),
+            Start::Home(rest) => Spelling::Home(rest),
+            _ => return None,
+        };
+        self.core.kernel(spelling, Flavour::Posix)
+    }
+
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
     /// it may match a leading dot (`dotglob`).
     pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
@@ -251,6 +358,34 @@ impl Resolver {
             Start::Unknown => Place::Unknown,
         }
     }
+}
+
+/// A Windows path with what makes its name unreadable taken off each part: a
+/// stream (`id_rsa::$DATA`, `id_rsa:x`, `.ssh::$INDEX_ALLOCATION`), and the
+/// dots and spaces Windows drops from the end of a name. A drive's own colon
+/// stays. `None` when nothing is taken off.
+fn without_streams(text: &str) -> Option<String> {
+    let mut changed = false;
+    let parts: Vec<&str> = text
+        .split(['/', '\\'])
+        .map(|part| {
+            let drive = part.len() == 2 && part.ends_with(':');
+            let name = if drive {
+                part
+            } else {
+                part.split(':').next().unwrap_or(part)
+            };
+            let name = if matches!(name, "." | "..") {
+                name
+            } else {
+                name.trim_end_matches([' ', '.'])
+            };
+            changed |= name.len() != part.len();
+            name
+        })
+        .collect();
+    // The separators are put back as `\`, which Windows reads as it reads `/`.
+    changed.then(|| parts.join("\\"))
 }
 
 /// A device a path names: the core's, and PowerShell's and cmd's `$null`.

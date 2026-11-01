@@ -9,6 +9,7 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
+    let text = &*variable_paths(text);
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
@@ -697,4 +698,184 @@ fn parameter(arg: &Arg) -> Option<&str> {
     let name = text.strip_prefix('-')?;
     name.starts_with(|c: char| c.is_ascii_alphabetic())
         .then_some(name)
+}
+
+/// `text` with each bare word that is a variable followed by a path
+/// (`$HOME\.ssh\id_rsa`, `$env:USERPROFILE/.aws`) put in double quotes, which
+/// is what PowerShell reads it as: an expandable string. The grammar reads
+/// such a word as a member access and loses the path, so without this a
+/// line that names a key through a variable cannot be read.
+///
+/// Only a word of plain path characters after a name is wrapped, and only
+/// where a word can begin (after white space, `(`, `,` or the `:` of
+/// `-Path:`). Text the scan cannot follow with certainty (a here-string, a
+/// subexpression in a string) leaves the whole line as written.
+fn variable_paths(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(['\\', '/']) || !text.contains('$') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut changed = false;
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        let previous = at.checked_sub(1).and_then(|before| chars.get(before));
+        match c {
+            // A here-string: its end is not one this scan reads.
+            '@' if matches!(chars.get(at + 1), Some('\'' | '"')) => {
+                return std::borrow::Cow::Borrowed(text);
+            }
+            '\'' => {
+                let Some(end) = single_quoted(&chars, at) else {
+                    return std::borrow::Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '"' => {
+                let Some(end) = double_quoted(&chars, at) else {
+                    return std::borrow::Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '`' => {
+                out.push(c);
+                out.extend(chars.get(at + 1));
+                at += 2;
+            }
+            '<' if chars.get(at + 1) == Some(&'#') => {
+                // A block comment runs to `#>`.
+                let Some(end) = (at + 2..chars.len().saturating_sub(1))
+                    .find(|&i| chars[i] == '#' && chars[i + 1] == '>')
+                else {
+                    return std::borrow::Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end + 2]);
+                at = end + 2;
+            }
+            '#' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, ';' | '(' | '{')) => {
+                // A line comment runs to the end of the line.
+                let end = (at..chars.len())
+                    .find(|&i| chars[i] == '\n')
+                    .unwrap_or(chars.len());
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '$' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, '(' | ',' | ':')) => {
+                if let Some(end) = variable_word(&chars, at) {
+                    out.push('"');
+                    out.extend(&chars[at..end]);
+                    out.push('"');
+                    changed = true;
+                    at = end;
+                } else {
+                    out.push(c);
+                    at += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                at += 1;
+            }
+        }
+    }
+    if changed {
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// Where the single-quoted string that opens at `at` ends (after its closing
+/// quote); `''` inside is a quote.
+fn single_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        if c == '\'' {
+            if chars.get(i + 1) == Some(&'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Where the double-quoted string that opens at `at` ends. A backtick
+/// escapes, `""` is a quote; a `$(` inside is a subexpression with quotes of
+/// its own, which is not followed, so the scan gives up on it.
+fn double_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        match c {
+            '`' => i += 2,
+            '$' if chars.get(i + 1) == Some(&'(') => return None,
+            '"' => {
+                if chars.get(i + 1) == Some(&'"') {
+                    i += 2;
+                } else {
+                    return Some(i + 1);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where a word of the form `$name\path` that begins at `at` ends, when it is
+/// one: a variable name (`$HOME`, `$env:USERPROFILE`, `${HOME}`), a `\` or
+/// `/` right after it, and plain path characters up to a character that ends
+/// a word. `None` for anything else: a variable alone, a member access, a
+/// word with another expansion, a quote or a backtick in it.
+fn variable_word(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    if chars.get(i) == Some(&'{') {
+        let close = (i + 1..chars.len()).find(|&j| chars[j] == '}')?;
+        if chars[i + 1..close]
+            .iter()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':')))
+        {
+            return None;
+        }
+        i = close + 1;
+    } else {
+        let start = i;
+        while chars
+            .get(i)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':'))
+        {
+            i += 1;
+        }
+        if i == start || chars[start..i].ends_with(&[':']) {
+            return None;
+        }
+    }
+    if !matches!(chars.get(i), Some('\\' | '/')) {
+        return None;
+    }
+    while let Some(&c) = chars.get(i) {
+        if c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '}' | ',') {
+            break;
+        }
+        // A backtick escapes the next character, a space included.
+        if c == '`' {
+            if chars
+                .get(i + 1)
+                .is_some_and(|next| !matches!(next, '\n' | '\r'))
+            {
+                i += 2;
+                continue;
+            }
+            return None;
+        }
+        if matches!(c, '$' | '\'' | '"' | '(' | '{' | '<' | '>' | '@') {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
 }

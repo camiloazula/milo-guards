@@ -203,6 +203,11 @@ impl Hidden {
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The files redirected from (`< file`), where the line was.
+    pub(crate) reads: Vec<Read>,
+    /// The `for` loops over words written out, whose variable the body does
+    /// not set: a rule reads the body with each word in place.
+    pub(crate) bindings: Vec<Binding>,
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
@@ -237,6 +242,7 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
+    read_in_body: Vec<usize>,
     /// How many `cd`s this shell has run so far: a later one means an action
     /// that runs later may run from somewhere else. A subshell or a script
     /// in a process of its own gives the count back as it was, as it does
@@ -272,11 +278,6 @@ pub(crate) struct Kept {
     pub(crate) opaque: bool,
     /// Whether a wrapper the line uses writes (`time -o FILE`).
     pub(crate) changes: bool,
-    /// The files redirected from (`< file`), where the line was.
-    pub(crate) reads: Vec<Read>,
-    /// The `for` loops over words written out, whose variable the body does
-    /// not set: `effect` reads the body with each word in place.
-    pub(crate) bindings: Vec<Binding>,
 }
 
 /// A `for` variable and the words it takes, over the units of the body.
@@ -286,6 +287,8 @@ pub(crate) struct Binding {
     pub(crate) words: Vec<String>,
     /// The units added while the loop was read, by index in the split.
     pub(crate) units: std::ops::Range<usize>,
+    /// The redirects from a file added while it was read.
+    pub(crate) reads: std::ops::Range<usize>,
 }
 
 /// A read a redirect makes: `< file`.
@@ -295,6 +298,8 @@ pub(crate) struct Read {
     pub(crate) target: Arg,
     /// As [`Unit::dir`].
     pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -302,6 +307,7 @@ pub(crate) struct Read {
 pub(crate) struct Began {
     units: usize,
     writes: usize,
+    reads: usize,
     findings: usize,
     moved: usize,
 }
@@ -323,6 +329,7 @@ pub(crate) struct Place {
 struct Later {
     units: std::ops::Range<usize>,
     writes: std::ops::Range<usize>,
+    reads: std::ops::Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -390,24 +397,30 @@ impl Split {
         });
     }
 
-    /// Record a `for` loop over `words` whose body, the units from `start` on,
-    /// does not set `variable`, for `effect`.
-    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: usize) {
-        if self.kept.on {
-            self.kept.bindings.push(Binding {
-                variable: variable.to_string(),
-                words,
-                units: start..self.units.len(),
-            });
-        }
+    /// Record a `for` loop over `words` whose body, the units and the
+    /// redirects from `start` on, does not set `variable`.
+    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: (usize, usize)) {
+        self.bindings.push(Binding {
+            variable: variable.to_string(),
+            words,
+            units: start.0..self.units.len(),
+            reads: start.1..self.reads.len(),
+        });
     }
 
-    /// Add a redirect's read, made where the line has moved to, for `effect`.
+    /// Add a redirect's read, made where the line has moved to.
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
-        if self.kept.on {
-            let dir = self.dir.clone();
-            self.kept.reads.push(Read { shell, target, dir });
+        let dir = self.dir.clone();
+        let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.read_in_body.push(self.reads.len());
         }
+        self.reads.push(Read {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
     }
 
     /// Whether a wildcard in what comes next may match a leading dot.
@@ -511,6 +524,11 @@ impl Split {
                 write.hidden = true;
             }
         }
+        for &at in &self.read_in_body {
+            if let Some(read) = self.reads.get_mut(at) {
+                read.hidden = true;
+            }
+        }
     }
 
     /// Note where an action that runs later begins, which the walk is about
@@ -519,6 +537,7 @@ impl Split {
         Began {
             units: self.units.len(),
             writes: self.writes.len(),
+            reads: self.reads.len(),
             findings: self.findings.len(),
             moved: self.moved,
         }
@@ -537,6 +556,7 @@ impl Split {
         self.later.push(Later {
             units: began.units..self.units.len(),
             writes: began.writes..self.writes.len(),
+            reads: began.reads..self.reads.len(),
             moves: self.moves,
             moved: self.moved,
             inherited,
@@ -570,6 +590,9 @@ impl Split {
         for write in self.writes.get_mut(began.writes..).unwrap_or_default() {
             shown(&mut write.target);
         }
+        for read in self.reads.get_mut(began.reads..).unwrap_or_default() {
+            shown(&mut read.target);
+        }
         for finding in self.findings.get_mut(began.findings..).unwrap_or_default() {
             if finding
                 .target
@@ -593,6 +616,9 @@ impl Split {
             .unwrap_or_default()
         {
             write.dir = Some(moved.clone());
+        }
+        for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
+            read.dir = Some(moved.clone());
         }
     }
 

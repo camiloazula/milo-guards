@@ -118,6 +118,14 @@ pub enum Rule {
     /// Changes how the system runs: the registry, boot settings, restore
     /// points, accounts, the firewall, antivirus, script policy.
     SystemSettings,
+    /// Reads a key or a credential: a file a program the guard knows opens,
+    /// or a `<` redirect, that lands on a place core marks as holding one,
+    /// as the file guard's rule of the same name does for the same file; also
+    /// a disk, and what the kernel serves. Not the repository's history, not
+    /// a shell startup file, and not a file named only when the line runs.
+    /// `effect` still calls such a line reads-only, as it does for
+    /// [`Elevated`](Rule::Elevated): the line only reads.
+    ReadSecret,
     /// Runs as root or administrator.
     Elevated,
     /// Runs a script it downloads.
@@ -135,7 +143,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -144,6 +152,7 @@ impl Rule {
         Self::GitHistory,
         Self::Permissions,
         Self::SystemSettings,
+        Self::ReadSecret,
         Self::Elevated,
         Self::RunDownloaded,
         Self::RunInput,
@@ -166,6 +175,7 @@ impl Rule {
             Self::GitHistory => "git_history",
             Self::Permissions => "permissions",
             Self::SystemSettings => "system_settings",
+            Self::ReadSecret => "read_secret",
             Self::Elevated => "elevated",
             Self::RunDownloaded => "run_downloaded",
             Self::RunInput => "run_input",

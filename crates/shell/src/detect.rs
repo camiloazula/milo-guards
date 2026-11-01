@@ -12,6 +12,7 @@ use crate::{Finding, Rule, Shell};
 
 mod code;
 mod files;
+mod secrets;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -77,9 +78,10 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
-    for unit in &split.units {
-        checker.unit(unit);
+    for (at, unit) in split.units.iter().enumerate() {
+        checker.unit(at, unit);
     }
+    checker.redirected_reads();
     for write in &split.writes {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
     }
@@ -123,12 +125,13 @@ impl Checker<'_> {
         });
     }
 
-    fn unit(&mut self, unit: &Unit) {
+    fn unit(&mut self, at: usize, unit: &Unit) {
         let Some(key) = unit.key() else {
             return;
         };
         self.elevated(unit, &key);
         self.reads(unit);
+        self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
         self.files(unit, &key);
         self.system(unit, &key);
@@ -440,6 +443,12 @@ fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
         .collect()
 }
 
+/// The options of `cp`, `install`, `mv` and `ln` that take a value, which is
+/// not an operand.
+const COPY_VALUED: [&str; 8] = [
+    "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
+];
+
 /// `mv`/`cp`-style operands: the sources and the destination, with `-t
 /// DIR` (`-tDIR`, `--target-directory[=]DIR`) naming the destination when
 /// given.
@@ -505,12 +514,7 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .cloned()
             .collect(),
         "cp" | "install" | "mv" | "ln" if unit.shell != Shell::PowerShell => {
-            let (sources, destination) = sources_and_destination(
-                args,
-                &[
-                    "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
-                ],
-            );
+            let (sources, destination) = sources_and_destination(args, &COPY_VALUED);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
         "copy-item" | "move-item" => {
