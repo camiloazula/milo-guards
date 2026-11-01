@@ -97,9 +97,18 @@ drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
 `HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
 system only when the folder before it is (a disk, or no earlier `cd` at all).
 When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
-so is the rooted path. Once the line makes a drive (`New-PSDrive`, `ndr`,
-`mount`), a single letter in a later `cd` (`cd X:`) may be that drive and not a
-disk, so the place is only known when it runs. Without one, a letter is a disk.
+so is the rooted path. `~` is the home of the provider the folder is in, and
+only the file system has one: after a `cd` to the registry, `Function:`, a
+provider path, or a place only known when it runs, `cd ~` fails and the line
+stays where it was, so a path starting with `~` is only known when it runs, and
+so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
+first stage of its pipeline gets its path from the pipeline, not from home. A
+drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+name before a colon, other than one letter, is a drive that is not a disk. Once
+the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
+even after the `cd` (a function body, a loop), a single letter in a `cd`
+(`cd X:`) may be that drive and not a disk, so the place is only known when it
+runs. Without one, a letter is a disk.
 After a `cd` to a known place on the file system, the device is read as
 written for every command. cmd and POSIX have no other provider.
 

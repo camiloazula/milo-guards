@@ -46,17 +46,27 @@ enum Start<'a> {
 }
 
 /// The `name:` a path starts with, and what follows it: a disk's drive
-/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`). Read before
-/// anything else, since a wildcard after it (`HKCU:*`) does not change what
-/// it names.
+/// letter (`C:`), or in PowerShell any drive (`HKLM:`, `Env:`, `my_reg:`). A
+/// PowerShell drive's name may hold any character but `: / \ . ~`. Read
+/// before anything else, since a wildcard after it (`HKCU:*`) does not change
+/// what it names.
 fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
     if shell == Shell::Posix {
         return None;
     }
     let (name, rest) = text.split_once(':')?;
-    let named = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric());
-    let drive = name.len() == 1 && name.chars().all(|c| c.is_ascii_alphabetic());
-    (named && (drive || (shell == Shell::PowerShell && name.len() > 1))).then_some((name, rest))
+    let named = if shell == Shell::PowerShell {
+        !name.is_empty() && !name.contains(['/', '\\', '.', '~'])
+    } else {
+        is_letter(name)
+    };
+    named.then_some((name, rest))
+}
+
+/// Whether `name` is one ASCII letter: a disk's drive letter.
+fn is_letter(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next().is_none()
 }
 
 /// Read what `text` starts from. The drive is read first; then a first part
@@ -64,7 +74,7 @@ fn qualifier(text: &str, shell: Shell) -> Option<(&str, &str)> {
 fn start(text: &str, shell: Shell) -> Start<'_> {
     let separators = flavour(shell).separators();
     if let Some((name, rest)) = qualifier(text, shell) {
-        if name.len() > 1 {
+        if !is_letter(name) {
             return Start::Provider(name.to_ascii_lowercase(), rest);
         }
         let letter = name.chars().next().unwrap_or_default();
@@ -327,13 +337,18 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
             Root::Unknown => Arg::Unknown(text.clone()),
         };
     }
+    // `~` is the home of the provider the folder is in, and only the file
+    // system has one: elsewhere the `cd ~` fails and stays where it was, so
+    // the place is only known when it runs.
+    if shell == Shell::PowerShell && home(text) && !file_system_folder(dir) {
+        return Arg::Unknown(text.clone());
+    }
     let drive =
         text.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && text[1..].starts_with(':');
     let absolute = text.starts_with(['/', '~'])
         || (shell != Shell::Posix && text.starts_with('\\'))
         || (shell != Shell::Posix && drive)
-        || (shell == Shell::PowerShell
-            && text.split_once(':').is_some_and(|(name, _)| name.len() > 1));
+        || (shell == Shell::PowerShell && qualifier(text, shell).is_some());
     if absolute {
         // A path on a drive's own working directory (`C:x`) is not where a
         // `cd` on another drive, or this one, left it.
@@ -350,6 +365,23 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         }
         Arg::Known(dir) => Arg::Known(format!("{dir}/{text}")),
         _ => Arg::Unknown(text.clone()),
+    }
+}
+
+/// Whether `text` is `~` or a path below it (`~\x`, `~/x`).
+fn home(text: &str) -> bool {
+    text.strip_prefix('~')
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
+}
+
+/// Whether the PowerShell folder `dir` is on the file system: a disk, or no
+/// drive at all. A provider drive, a provider path, and a place only known
+/// when it runs are not.
+fn file_system_folder(dir: &Arg) -> bool {
+    match root_of(dir) {
+        Root::Plain => true,
+        Root::Drive(drive) => is_letter(drive.trim_end_matches(':')),
+        Root::Unknown => false,
     }
 }
 

@@ -200,8 +200,8 @@ pub(crate) struct Split {
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
     /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
-    /// `mount`): a single letter in a later `cd` may be one of another
-    /// provider, not a disk.
+    /// `mount`) anywhere, before or after a `cd` in its text: a single letter
+    /// in a `cd` may be one of another provider, not a disk.
     psdrive: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
@@ -499,7 +499,15 @@ fn moves_to(unit: &Unit) -> Option<Arg> {
                 .first()
                 .or(params.positional.first())
                 .map(|target| (*target).clone());
-            Some(target.unwrap_or_else(|| Arg::Known("~".to_string())))
+            Some(target.unwrap_or_else(|| {
+                // With no path, a stage after the first takes it from the
+                // pipeline; the first goes home.
+                if unit.stage.is_some_and(|stage| stage.index > 0) {
+                    Arg::Unknown(key)
+                } else {
+                    Arg::Known("~".to_string())
+                }
+            }))
         }
         _ => None,
     }
@@ -519,6 +527,15 @@ const MAX_LEN: usize = 64 * 1024;
 pub(crate) fn split(command: &str, shell: Shell) -> Split {
     let mut split = Split::default();
     script(&mut split, command, shell, 0);
+    if split.psdrive {
+        // A drive the line makes may be entered before the text that makes
+        // it (a function body, a loop), so read the line again knowing it.
+        split = Split {
+            psdrive: true,
+            ..Split::default()
+        };
+        script(&mut split, command, shell, 0);
+    }
     split.hide_bodies();
     split
 }
