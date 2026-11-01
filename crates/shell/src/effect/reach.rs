@@ -31,25 +31,51 @@ use crate::unit::{moves_to, Arg, Unit};
 use crate::Shell;
 
 /// How a unit reads the places it names: whether its wildcards match a
-/// leading dot, and whether it goes below the folders it names.
+/// leading dot, whether it goes below the folders it names, and how it walks
+/// them.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Manner {
     pub(super) hidden: bool,
     pub(super) deep: bool,
-    /// Whether a deep read opens what it finds through symbolic links.
-    pub(super) follows: bool,
-    /// Whether the unit walks what it names: deep, and not a `cd`, which goes
-    /// into a folder and reads nothing below it.
-    pub(super) walks: bool,
+    pub(super) walk: Walk,
+}
+
+impl Manner {
+    /// The same unit, reading only what a place names and nothing below it.
+    pub(super) fn shallow(self) -> Self {
+        Self {
+            deep: false,
+            walk: Walk::No,
+            ..self
+        }
+    }
+}
+
+/// How a unit walks the folders it names, for the paths a line reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Walk {
+    /// It does not walk them: it opens only what it names, or goes into a
+    /// folder (`cd`) and reads nothing below it.
+    #[default]
+    No,
+    /// It walks them and does not open what it finds through symbolic links.
+    Stays,
+    /// It walks them and opens what it finds through symbolic links.
+    Follows,
 }
 
 /// How `unit`, a reader known as `key`, reads.
 pub(super) fn how(unit: &Unit, key: &str) -> Manner {
+    let deep = deep(unit, key);
+    let walk = match () {
+        () if !deep || moves_to(unit).is_some() => Walk::No,
+        () if follows_links(unit, key) => Walk::Follows,
+        () => Walk::Stays,
+    };
     Manner {
         hidden: unit.hidden,
-        deep: deep(unit, key),
-        follows: follows_links(unit, key),
-        walks: moves_to(unit).is_none(),
+        deep,
+        walk,
     }
 }
 
@@ -74,8 +100,7 @@ impl Context<'_> {
             landed.borrow_mut().push(Landed {
                 text,
                 glob,
-                deep: how.deep && how.walks,
-                follows: how.follows,
+                walk: how.walk,
                 shell,
                 stage: self.stage.get(),
             });
@@ -123,7 +148,7 @@ impl Context<'_> {
         // A part like `.*` picks `..` too, in the shells whose patterns match
         // it: the folder above is read.
         if let Some(above) = from.known().and_then(|text| path::climb(text, shell)) {
-            self.land_arg(shell, &Arg::Known(above), Manner { deep: false, ..how });
+            self.land_arg(shell, &Arg::Known(above), how.shallow());
         }
     }
 
@@ -233,7 +258,7 @@ pub(super) fn reads(
     if unit.shell == Shell::Posix && key == "df" && opened.operands == 0 {
         context.beyond.set(true);
     }
-    let shallow = Manner { deep: false, ..how };
+    let shallow = how.shallow();
     // `echo ~/.ssh/*` opens nothing, but the shell lists the folder.
     if unit.shell == Shell::Posix && takes_no_paths(unit.shell, key) {
         for text in unit.args.iter().filter_map(Arg::known) {
@@ -262,7 +287,7 @@ pub(super) fn reads(
 /// root is: they are judged from the working directory and from each
 /// workspace folder, and a read beyond either wins.
 fn git_paths(unit: &Unit, opened: &Opened<'_>, how: Manner, context: &Context<'_>) {
-    let shallow = Manner { deep: false, ..how };
+    let shallow = how.shallow();
     let operands = opened.pathspecs.iter().copied();
     let places = opened.places.iter().map(AsRef::<Arg>::as_ref);
     for spec in operands.chain(places) {

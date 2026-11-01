@@ -183,7 +183,7 @@ fn values(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The PowerShell cmdlets whose path parameters take pipeline input.
-fn binds_pipeline(key: &str) -> bool {
+pub(crate) fn binds_pipeline(key: &str) -> bool {
     matches!(
         key,
         "get-childitem"
@@ -236,7 +236,7 @@ pub(super) fn takes_no_paths(shell: Shell, key: &str) -> bool {
 /// Whether the unit's output is the names of what is in known places: `ls`,
 /// `fd`, `dir`, `Get-ChildItem`, `git ls-files`, and a `find` that prints only
 /// what it finds (`-printf` and `-exec` print any text).
-fn lists(unit: &Unit) -> bool {
+pub(crate) fn lists(unit: &Unit) -> bool {
     let Some(key) = unit.key() else {
         return false;
     };
@@ -256,7 +256,7 @@ fn lists(unit: &Unit) -> bool {
 /// Whether the unit only selects, orders or shows part of what it is handed
 /// (so what it hands on is still what the stage before it listed): it reads
 /// no file of its own.
-fn passes(unit: &Unit) -> bool {
+pub(crate) fn passes(unit: &Unit) -> bool {
     let Some(key) = unit.key() else {
         return false;
     };
@@ -569,6 +569,298 @@ const fn none() -> Spec {
     }
 }
 
+/// A spec with nothing set.
+const NONE: Spec = none();
+
+// Programs that are not reads-only (they may write, or `effect` has not been
+// taught them) but show or pass on what is in the files they open, for the
+// rule that reports a read of a secret. Each entry says what the program's
+// own options take, so a value is not mistaken for a file.
+
+const NL: Spec = Spec {
+    valued: "bfhdilnsvw",
+    valued_longs: &[
+        "body-numbering",
+        "footer-numbering",
+        "header-numbering",
+        "section-delimiter",
+        "line-increment",
+        "join-blank-lines",
+        "number-format",
+        "number-separator",
+        "starting-line-number",
+        "number-width",
+    ],
+    ..none()
+};
+const TAC: Spec = Spec {
+    valued: "s",
+    valued_longs: &["separator"],
+    ..none()
+};
+const FOLD: Spec = Spec {
+    valued: "w",
+    valued_longs: &["width"],
+    ..none()
+};
+const PASTE: Spec = Spec {
+    valued: "d",
+    valued_longs: &["delimiters"],
+    ..none()
+};
+const CUT: Spec = Spec {
+    valued: "bcdf",
+    valued_longs: &[
+        "bytes",
+        "characters",
+        "delimiter",
+        "fields",
+        "output-delimiter",
+    ],
+    ..none()
+};
+const EXPAND: Spec = Spec {
+    valued: "t",
+    valued_longs: &["tabs"],
+    ..none()
+};
+const UNIQ: Spec = Spec {
+    valued: "fsw",
+    valued_longs: &[
+        "skip-fields",
+        "skip-chars",
+        "check-chars",
+        "group",
+        "all-repeated",
+    ],
+    ..none()
+};
+const CMP: Spec = Spec {
+    valued: "ni",
+    valued_longs: &["bytes", "ignore-initial"],
+    ..none()
+};
+const OD: Spec = Spec {
+    valued: "AjNtSwv",
+    valued_longs: &[
+        "address-radix",
+        "skip-bytes",
+        "read-bytes",
+        "format",
+        "strings",
+        "width",
+    ],
+    ..none()
+};
+const XXD: Spec = Spec {
+    valued: "cglosn",
+    ..none()
+};
+const HEXDUMP: Spec = Spec {
+    valued: "nseL",
+    files: "f",
+    valued_longs: &["length", "skip", "format", "color"],
+    file_longs: &["format-file"],
+    ..none()
+};
+const STRINGS: Spec = Spec {
+    valued: "nTte",
+    valued_longs: &["bytes", "target", "encoding", "radix"],
+    ..none()
+};
+const BASE64: Spec = Spec {
+    valued: "w",
+    valued_longs: &["wrap"],
+    ..none()
+};
+const BAT: Spec = Spec {
+    valued: "lLHrm",
+    valued_longs: &[
+        "language",
+        "theme",
+        "style",
+        "paging",
+        "pager",
+        "wrap",
+        "tabs",
+        "color",
+        "decorations",
+        "line-range",
+        "highlight-line",
+        "map-syntax",
+        "terminal-width",
+        "file-name",
+        "diff-context",
+    ],
+    ..none()
+};
+// The first operand is the program, unless `-e` or `-f` gives it; `-f FILE`
+// is a program file.
+const AWK: Spec = Spec {
+    valued: "Fv",
+    valued_longs: &["field-separator", "assign"],
+    files: "f",
+    file_longs: &["file"],
+    pattern: true,
+    given: "f",
+    given_longs: &["file"],
+    ..none()
+};
+const SED: Spec = Spec {
+    valued: "el",
+    valued_longs: &["expression", "line-length"],
+    files: "f",
+    file_longs: &["file"],
+    pattern: true,
+    given: "ef",
+    given_longs: &["expression", "file"],
+    ..none()
+};
+// `tar -cf out.tar dir`, `-C dir`, `-T list`: every other operand is read.
+const TAR: Spec = Spec {
+    valued: "CILbNVgHKs",
+    valued_longs: &[
+        "directory",
+        "use-compress-program",
+        "blocking-factor",
+        "transform",
+        "strip-components",
+        "owner",
+        "group",
+        "label",
+        "exclude",
+        "level",
+        "newer",
+    ],
+    files: "fTX",
+    file_longs: &["file", "files-from", "exclude-from"],
+    ..none()
+};
+const ARCHIVE: Spec = Spec {
+    valued: "STMbBo",
+    valued_longs: &["suffix", "threads", "memlimit", "output"],
+    files: "D",
+    file_longs: &["dictionary"],
+    ..none()
+};
+const ZIP: Spec = Spec {
+    valued: "bnPtTOsF",
+    ..none()
+};
+const GPG: Spec = Spec {
+    valued: "ruRoz",
+    valued_longs: &[
+        "recipient",
+        "local-user",
+        "output",
+        "homedir",
+        "passphrase",
+        "cipher-algo",
+        "digest-algo",
+        "compress-algo",
+        "default-key",
+        "keyring",
+        "status-fd",
+        "logger-fd",
+    ],
+    file_longs: &["passphrase-file"],
+    ..none()
+};
+
+/// The places a program opens to show or pass on what is in them, for the
+/// programs that [`path_args`] does not know because `effect` does not call
+/// them reads-only: `None` for any other program. `more` and the
+/// compressors only read what they are given; `awk`, `sed` and `tar` take
+/// their program or their archive first.
+pub(crate) fn extra_paths<'a>(unit: &'a Unit, key: &str) -> Option<Vec<Cow<'a, Arg>>> {
+    let args = unit.args.as_slice();
+    let spec: &Spec = match (unit.shell, key) {
+        (Shell::Posix, "tac") => &TAC,
+        (Shell::Posix, "rev" | "more" | "most" | "comm") => &NONE,
+        (Shell::Posix, "nl") => &NL,
+        (Shell::Posix, "fold") => &FOLD,
+        (Shell::Posix, "paste") => &PASTE,
+        (Shell::Posix, "cut") => &CUT,
+        (Shell::Posix, "expand" | "unexpand") => &EXPAND,
+        (Shell::Posix, "uniq") => &UNIQ,
+        (Shell::Posix, "cmp") => &CMP,
+        (Shell::Posix, "od") => &OD,
+        (Shell::Posix, "xxd") => &XXD,
+        (Shell::Posix, "hexdump" | "hd") => &HEXDUMP,
+        (Shell::Posix, "strings") => &STRINGS,
+        (Shell::Posix, "base64" | "base32" | "basenc") => &BASE64,
+        (Shell::Posix, "bat" | "batcat") => &BAT,
+        (Shell::Posix, "awk" | "gawk" | "mawk" | "nawk") => &AWK,
+        (Shell::Posix, "sed") => &SED,
+        (Shell::Posix, "tar") => {
+            // Old style: `tar cf out.tar dir` has its options in the first
+            // word, with no dash.
+            let old = args
+                .first()
+                .and_then(Arg::known)
+                .is_some_and(|first| !first.starts_with('-'));
+            return Some(paths_of(args.get(usize::from(old)..)?, &TAR).places);
+        }
+        (
+            Shell::Posix,
+            "gzip" | "gunzip" | "zcat" | "gzcat" | "bzip2" | "bunzip2" | "bzcat" | "xz" | "unxz"
+            | "xzcat" | "zstd" | "unzstd" | "zstdcat" | "lz4" | "brotli",
+        ) => &ARCHIVE,
+        (Shell::Posix, "zip") => &ZIP,
+        (Shell::Posix, "7z" | "7za" | "7zz") => &NONE,
+        (Shell::Posix, "gpg" | "gpg2") => &GPG,
+        _ => return None,
+    };
+    Some(paths_of(args, spec).places)
+}
+
+/// The places `openssl` reads: the file after `-in`, `-inkey`, `-key`,
+/// `-keyfile`, `-cert`, `-certfile`, `-CAfile` and `-passin file:`; its
+/// options have one dash.
+pub(crate) fn openssl_paths(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
+    let mut paths = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("-in" | "-inkey" | "-key" | "-keyfile" | "-cert" | "-certfile" | "-CAfile") => {
+                paths.extend(iter.next().map(Cow::Borrowed));
+            }
+            Some("-passin" | "-passout") => {
+                if let Some(next) = iter.next() {
+                    match next.known().map(|text| text.strip_prefix("file:")) {
+                        Some(Some(file)) => paths.push(Cow::Owned(Arg::Known(file.to_string()))),
+                        Some(None) => {}
+                        None => paths.push(Cow::Borrowed(next)),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+/// What the operands of a `git` command name that it reads: the same as
+/// [`path_args`] gives, without the folder `-C` names, which git only looks in.
+pub(crate) fn git_reads(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("-C") => at += 2,
+            Some("--no-pager" | "-P" | "--no-optional-locks") => at += 1,
+            _ => break,
+        }
+    }
+    let Some(subcommand) = args.get(at).and_then(Arg::known) else {
+        return Vec::new();
+    };
+    let rest = args.get(at + 1..).unwrap_or_default();
+    git::read(subcommand, rest)
+        .into_iter()
+        .flat_map(|reading| reading.paths)
+        .collect()
+}
+
 /// What a unit opens: the places its program names, and what [`reach`] needs
 /// to know about how it was given them.
 #[derive(Default)]
@@ -621,6 +913,12 @@ fn path_args<'a>(unit: &'a Unit, key: &str) -> Opened<'a> {
         _ => borrowed(args.iter().collect()),
     };
     paths
+}
+
+/// The places a program opens as the table says, for the rule about reading
+/// a key: the same table [`operands`] judges and `reach` reads.
+pub(crate) fn path_places<'a>(unit: &'a Unit, key: &str) -> Vec<Cow<'a, Arg>> {
+    path_args(unit, key).places
 }
 
 fn borrowed(args: Vec<&Arg>) -> Opened<'_> {
@@ -1147,7 +1445,7 @@ fn expansions(source: &str) -> Vec<Expansion> {
 /// a copy of the unit for each one, as if the body were written out. `None`
 /// when nothing the unit has refers to a variable, or there are too many
 /// combinations to read.
-pub(super) fn substituted(unit: &Unit, enclosing: &[&Binding]) -> Option<Vec<Unit>> {
+pub(crate) fn substituted(unit: &Unit, enclosing: &[&Binding]) -> Option<Vec<Unit>> {
     /// The most combinations of words read for one unit.
     const LIMIT: usize = 64;
     if enclosing.is_empty() || enclosing.len() > 3 {

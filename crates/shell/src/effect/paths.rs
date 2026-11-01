@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use super::reach::Walk;
 use crate::path::Resolver;
 use crate::unit::Stage;
 use crate::Shell;
@@ -67,10 +68,8 @@ pub(super) struct Landed {
     pub(super) text: String,
     /// What follows the folder of a pattern.
     pub(super) glob: Option<String>,
-    /// Whether the reader goes below it.
-    pub(super) deep: bool,
-    /// Whether the reader opens what it finds through links.
-    pub(super) follows: bool,
+    /// How the reader walks it.
+    pub(super) walk: Walk,
     pub(super) shell: Shell,
     /// The pipeline stage that read it.
     pub(super) stage: Option<Stage>,
@@ -94,7 +93,7 @@ pub(super) fn resolve(
         let handed = read
             .stage
             .is_some_and(|stage| followed.contains(&(stage.pipeline, stage.index)));
-        if handed || (read.deep && read.follows) {
+        if handed || read.walk == Walk::Follows {
             // A walk that opens what it finds through links, or a listing
             // whose names a later stage opens.
             trees.insert(path, true);
@@ -103,7 +102,7 @@ pub(super) fn resolve(
                 path,
                 how: How::Glob(rest.clone()),
             });
-        } else if read.deep {
+        } else if read.walk == Walk::Stays {
             trees.entry(path).or_insert(false);
         } else {
             exact.insert(path);

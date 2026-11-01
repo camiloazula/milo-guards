@@ -6,7 +6,7 @@
 mod common;
 
 use common::{check_effect, posix, windows};
-use milo_guards_shell::{classify, effect, Effect, Paths, Protected, Reach, Shell};
+use milo_guards_shell::{classify, effect, Effect, Paths, Protected, Reach, Rule, Shell};
 
 #[test]
 fn readers_only_read() {
@@ -655,9 +655,12 @@ fn safe_is_not_reads_only_and_reads_only_is_not_safe() {
         effect("sudo cat /etc/hosts", Shell::Posix, &paths),
         Effect::ReadsOnly(Reach::Beyond)
     );
-    // Only reads, and safe: a key is read without a finding for now, and the
-    // read is beyond the workspace.
-    assert!(classify("cat ~/.ssh/id_ed25519", Shell::Posix, &paths).is_safe());
+    // Only reads, and not safe: reading a key is its own finding (`read_secret`),
+    // which says the file and not that the line changes anything, and the read
+    // is beyond the workspace.
+    let assessment = classify("cat ~/.ssh/id_ed25519", Shell::Posix, &paths);
+    assert_eq!(assessment.findings().len(), 1);
+    assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
     assert_eq!(
         effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths),
         Effect::ReadsOnly(Reach::Beyond)
@@ -1025,7 +1028,7 @@ fn wrappers_come_off_as_classify_takes_them_off() {
     assert!(classify("sudo cat /etc/hosts", Shell::Posix, &paths)
         .findings()
         .iter()
-        .any(|finding| finding.rule == milo_guards_shell::Rule::Elevated));
+        .any(|finding| finding.rule == Rule::Elevated));
     // What a wrapper runs decides.
     for (line, expected) in [
         ("sudo ls", Effect::ReadsOnly(Reach::Workspace)),

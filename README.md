@@ -19,6 +19,8 @@ verdict back in microseconds.
 - **shell** judges a shell line: POSIX shells, PowerShell and cmd. It parses the
   line and judges the programs, flags, operands and redirects, never the raw
   text. `rm -rf ~` is risky ("deletes your home directory"); `ls src` is safe.
+  `cat ~/.ssh/id_ed25519` is risky too ("reads your SSH keys"), as it is for
+  the file guard below: one file, one answer, whichever way it is read.
   Beside that verdict, `effect` says whether a line only reads, changes
   something or cannot be told: `git status` only reads, `mkdir build` is safe
   and changes the disk, `./script.sh` cannot be told. A line that only reads
