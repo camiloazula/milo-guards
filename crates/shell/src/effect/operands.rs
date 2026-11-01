@@ -8,7 +8,7 @@
 //! places.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use super::reach::{self, How};
@@ -26,6 +26,9 @@ pub(super) struct Context<'a> {
     /// Whether a read of the line landed beyond the workspace so far, for
     /// [`super::Reach`].
     pub(super) beyond: Cell<bool>,
+    /// Where each read landed, as written, when the caller asks for the
+    /// paths (`None` otherwise, so that `effect` pays nothing for them).
+    pub(super) landed: Option<RefCell<Vec<(String, Shell)>>>,
 }
 
 /// Whether reading from `arg`, written from `dir`, is a read of a place the

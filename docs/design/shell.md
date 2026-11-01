@@ -592,6 +592,62 @@ What stays open, and a caller should know:
   the folder of a login (`cat *` in a folder holding `gh`) is `Beyond` too, as
   `cat` would open it.
 
+### The paths a line reads
+
+`Reach` is judged by spelling, because the guard never touches the disk. So a
+link inside the workspace that points out of it reads as `Workspace`: with
+`link -> ~/.ssh`, the line `cat link/id_rsa` is `ReadsOnly(Reach::Workspace)`.
+A caller that can look at the disk, and runs `Workspace` reads without asking,
+needs the places the line reads to check them itself. The guard has already
+placed each one, so `effect_paths` returns them, from the same reading as
+`effect` (one pass, not a second walk):
+
+```rust
+effect_paths(line, shell, &paths) -> Option<Vec<PathBuf>>   // Some only for ReadsOnly(_)
+```
+
+It is `Some` exactly when `effect` is `ReadsOnly(_)`, the reach either way, and
+`None` for `Changes` and `Unknown`. A test holds every row of every table to
+that, and holds the paths of every `ReadsOnly(Workspace)` row to be inside a
+workspace folder or a temporary folder by spelling.
+
+- **What it holds** is what [What a line reads](#reach) lists: every operand
+  and `<` source, a lister's folder, a `cd` target, the working directory
+  when a reader reads it without being told, the root of a deep read (`rg TODO
+  src` is `src`), the repository at the working directory or the folder `-C`
+  chains, and a `git` revision or pathspec as `effect` places it (`git show
+  HEAD:a.rs` also lists `a.rs`, from the working directory and from every
+  workspace folder).
+- **A pattern** is the fixed folder it expands in: `cat *.rs` is the working
+  directory, `cat src/*.rs` is `src`, `C:\*` is `C:\`. The names it picks are the
+  disk's to say, and the caller checks the folder.
+- **Absolute, by spelling.** Each path is resolved as the guard resolves it:
+  the working directory after the `cd`s it follows, `~`, `.` and `..`, a Windows
+  long path as the plain path it names. The case, the macOS names of the root
+  volume (`/System/Volumes/Data`) and the links are left alone: the path is as
+  written, made absolute. It comes from core's `Resolver::absolute`.
+- **Sorted, each once**, so the answer is the same every time.
+- **No path, not listed.** A read that is not a place on a disk has no path:
+  the null device and other devices, a registry hive or another PowerShell
+  drive, and a path on another drive's own working directory (`D:x` from `C:`).
+  Each is judged by its place already (the null device is `Workspace`, the rest
+  `Beyond`). `cat /dev/null` is `Some([])`, as `echo hi` is.
+- **A temporary path is listed** like any other. `cat /tmp/x` is `Workspace` by
+  the rule for temporary files, not because it is inside the workspace, so a
+  caller that holds every path to the workspace's folders should hold a
+  temporary one to the temporary folders.
+- **`Beyond` lines are listed too**, with every read, not only the one that
+  made it `Beyond`.
+
+**What a caller does with the list.** Resolve each path on disk: canonicalize
+it, and when it does not exist, canonicalize its nearest existing ancestor and
+put the rest of the names back. Then treat the line as reading beyond the
+workspace when any resolved path leaves it. The check belongs to the caller,
+which can touch the disk; the guard answers by spelling.
+
+`effect` costs what it did: the paths are collected only when `effect_paths`
+asks, and `classify` is untouched.
+
 ### The readers
 
 The table is short on purpose. A program not in it is `Unknown`. A reader that
@@ -809,6 +865,11 @@ with nothing protected, one with a protected `.agent`, one that is the home
 folder and one that holds a folder of logins, in POSIX, PowerShell and cmd; the
 rest of `Reach`'s rows are in `tests/effect.rs`, and core's `reaches_secret`
 has its own in `crates/core/tests/reaches_secret.rs`.
+`tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
+one that reads a real symbolic link the way the docs tell a caller to; and
+every row of every table is also held to agree with `effect` on whether it has
+a list (`common::path_disagreement`). Core's `absolute` has its own in
+`crates/core/tests/absolute.rs`.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile

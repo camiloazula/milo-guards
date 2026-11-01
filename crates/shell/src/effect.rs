@@ -9,8 +9,9 @@
 //! [`Effect::Unknown`], never reading. Where the reads land is [`Reach`]:
 //! the `reach` module says what a unit reads.
 
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use crate::path::{self, Place, Resolver};
 
@@ -96,6 +97,37 @@ pub(crate) enum Kind {
 /// uses the same `split` and `findings`, so the two answers cannot disagree
 /// about what the units are.
 pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Effect {
+    read(split, findings, resolver, false).0
+}
+
+/// The absolute paths a line that only reads reads, from the same reading as
+/// [`of`]: `None` for any other line. Sorted, without repeats. A read that is
+/// not a place on a disk (a device, a path on another drive's own working
+/// directory) has no path and is left out; it is judged by its place already.
+pub(crate) fn paths(
+    split: &Split,
+    findings: &[Finding],
+    resolver: &Resolver,
+) -> Option<Vec<PathBuf>> {
+    let (effect, landed) = read(split, findings, resolver, true);
+    if !matches!(effect, Effect::ReadsOnly(_)) {
+        return None;
+    }
+    let landed: BTreeSet<PathBuf> = landed
+        .iter()
+        .filter_map(|(text, shell)| resolver.absolute(text, *shell))
+        .collect();
+    Some(landed.into_iter().collect())
+}
+
+/// Read the line once: its effect, and where each of its reads landed as
+/// written when `collect` asks for them.
+fn read(
+    split: &Split,
+    findings: &[Finding],
+    resolver: &Resolver,
+    collect: bool,
+) -> (Effect, Vec<(String, Shell)>) {
     let mut seen = Seen::default();
     for finding in findings {
         seen.add(rule_effect(finding.rule));
@@ -123,6 +155,7 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         resolver,
         producers,
         beyond: Cell::new(false),
+        landed: collect.then(|| RefCell::new(Vec::new())),
     };
     for read in &split.kept.reads {
         seen.add(place_effect(
@@ -151,7 +184,9 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
             None => seen.add(unit_effect(unit, &context)),
         }
     }
-    seen.effect(context.beyond.get())
+    let effect = seen.effect(context.beyond.get());
+    let landed = context.landed.map(RefCell::into_inner).unwrap_or_default();
+    (effect, landed)
 }
 
 /// What has been seen so far: a change beats not knowing, which beats

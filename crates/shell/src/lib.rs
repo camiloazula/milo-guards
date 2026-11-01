@@ -41,6 +41,8 @@ mod posix;
 mod powershell;
 mod unit;
 
+use std::path::PathBuf;
+
 pub use effect::{Effect, Reach};
 pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
@@ -253,4 +255,66 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
     let reading = Reading::new(command, shell, paths, true);
     effect::of(&reading.split, &reading.findings, &reading.resolver)
+}
+
+/// The paths `command`, run by `shell` with the directories in `paths`,
+/// reads, when [`effect`] says it only reads; `None` for any other line.
+///
+/// A guard never touches the disk, so [`effect`] places each read by how it
+/// is spelled, and a symbolic link in the workspace that points out of it
+/// (`link -> ~/.ssh`, then `cat link/id_rsa`) is [`Reach::Workspace`]. A caller
+/// that can check the disk needs the paths the line reads; this is the list
+/// [`effect`] judged, from the same reading, not a second one.
+///
+/// What it holds, as [`effect`] reads the line:
+///
+/// - Every file operand and the source of every `<` redirect, the folder a
+///   lister lists, the target of a `cd`, and the working directory when a
+///   reader with no file operand reads it without being told (`ls`,
+///   `rg TODO`, `git status`). A line that is run after a `cd` reads from
+///   where the `cd` went.
+/// - The root of a deep read (`grep -r x src` is `src`) and, for `git`, the
+///   repository at the working directory or at the folders `-C` chains. A
+///   git revision or pathspec is listed as a path too, as `effect` places
+///   it, so `git show HEAD:a.rs` also lists `a.rs` from the working
+///   directory and from every workspace folder.
+/// - A pattern as the fixed folder it expands in: `cat *.rs` is the working
+///   directory and `cat src/*.rs` is `src`. The names it picks are the
+///   disk's to say.
+///
+/// Every path is absolute, spelled as the guard resolves it (`~` is the home
+/// directory, `.` and `..` are applied, a relative path starts at the working
+/// directory or at where a `cd` went), and nothing is read from the disk, so
+/// a link is not followed. The list is sorted and holds each path once, so
+/// the answer is the same every time. A read that is not a place on a disk (the
+/// null device, a registry hive, a path on another drive's own working
+/// directory) has no path and is not listed; [`effect`] has judged it by its
+/// place. A path in a temporary folder is listed like any other: it is
+/// [`Reach::Workspace`] by that rule, not because it is inside the workspace.
+///
+/// What a caller does with it: resolve each path on disk (canonicalize it;
+/// a path that does not exist is resolved by its nearest existing ancestor,
+/// with the rest of the names put back), and treat the line as reading beyond
+/// the workspace when any resolved path leaves it. That is where the check
+/// that only the disk can make belongs: this crate answers by spelling.
+///
+/// ```
+/// use std::path::PathBuf;
+/// use milo_guards_shell::{effect_paths, Paths, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let read = |line| effect_paths(line, Shell::Posix, &paths);
+/// assert_eq!(read("cat link/id_rsa"), Some(vec![PathBuf::from("/work/app/link/id_rsa")]));
+/// assert_eq!(read("rg TODO src"), Some(vec![PathBuf::from("/work/app/src")]));
+/// assert_eq!(read("cat *.rs"), Some(vec![PathBuf::from("/work/app")]));
+/// assert_eq!(read("git status"), Some(vec![PathBuf::from("/work/app")]));
+/// assert_eq!(read("cat ~/.ssh/config"), Some(vec![PathBuf::from("/home/me/.ssh/config")]));
+/// // A line that changes something, or cannot be read, has no list.
+/// assert_eq!(read("mkdir x"), None);
+/// assert_eq!(read("$CMD"), None);
+/// ```
+#[must_use = "the paths are the answer: they are what the line reads"]
+pub fn effect_paths(command: &str, shell: Shell, paths: &Paths) -> Option<Vec<PathBuf>> {
+    let reading = Reading::new(command, shell, paths, true);
+    effect::paths(&reading.split, &reading.findings, &reading.resolver)
 }

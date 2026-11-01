@@ -20,7 +20,7 @@
 //! only when its table entry says so for the flags it is given; anything
 //! recursive or unknown is deep. A wildcard is judged by what it can pick.
 
-use milo_guards_core::spelling::glob;
+use milo_guards_core::spelling::{glob, verbatim};
 use milo_guards_core::Sensitivity;
 
 use super::operands::{shape, takes_no_paths, Context, Opened};
@@ -48,10 +48,15 @@ pub(super) fn how(unit: &Unit, key: &str) -> How {
 impl Context<'_> {
     /// Record a read of `arg`, written from `dir`, that lands at `place`.
     pub(super) fn land(&self, shell: Shell, dir: Option<&Arg>, arg: &Arg, place: Place, how: How) {
-        if self.beyond.get() {
+        // Once a read is beyond the workspace the answer is settled, unless
+        // the paths are asked for: those are every read, so each is kept.
+        if self.beyond.get() && self.landed.is_none() {
             return;
         }
         let from = path::within(dir, arg, shell);
+        if let (Some(landed), Some(text)) = (&self.landed, from.known()) {
+            landed.borrow_mut().push((folder_read(text, shell), shell));
+        }
         let beyond = match place {
             Place::Inside
             | Place::Temp { exact: false }
@@ -88,7 +93,9 @@ impl Context<'_> {
                 ));
         if beyond {
             self.beyond.set(true);
-            return;
+            if self.landed.is_none() {
+                return;
+            }
         }
         // A part like `.*` picks `..` too, in the shells whose patterns match
         // it: the folder above is read.
@@ -114,6 +121,42 @@ impl Context<'_> {
             Kind::Reads
         }
     }
+}
+
+/// The place a read of `text` opens on disk: the path itself, or for a
+/// pattern the folder it expands in (`src` for `src/*.rs`, `.` when no folder
+/// is written), since the names it picks are the disk's.
+fn folder_read(text: &str, shell: Shell) -> String {
+    // What comes before the path proper is not part of the pattern: a long
+    // path's `\\?\` holds a `?`, and PowerShell's `FileSystem::` a colon.
+    let skip = verbatim(text)
+        .map(|rest| text.len() - rest.len())
+        .or_else(|| {
+            let (provider, _) = text
+                .split_once("::")
+                .filter(|_| shell == Shell::PowerShell)?;
+            Some(provider.len() + 2)
+        })
+        .unwrap_or(0);
+    let (prefix, body) = text.split_at(skip);
+    if !glob::has_wildcard(body) {
+        return text.to_string();
+    }
+    let folder = path::pattern_folder(body);
+    let drive = shell != Shell::Posix
+        && body.len() > 2
+        && body.as_bytes()[0].is_ascii_alphabetic()
+        && body.as_bytes()[1] == b':';
+    let folder = match body[if drive { 2 } else { 0 }..].chars().next() {
+        // `C:\*` expands in `C:\`, not in the drive's own working directory.
+        Some(separator @ ('/' | '\\')) if drive && folder.len() == 2 => {
+            format!("{folder}{separator}")
+        }
+        // `C:*` is the working directory of the drive.
+        _ if drive && folder == "." => body[..2].to_string(),
+        _ => folder,
+    };
+    format!("{prefix}{folder}")
 }
 
 /// What `unit`, a reader of its operands, also reads: the working directory
