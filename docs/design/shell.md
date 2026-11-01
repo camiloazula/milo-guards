@@ -504,9 +504,9 @@ is part of that text. The text starts at `-wd`, so its first statement is `-wd
 Set-Location X; ...` does not change the folder), and what follows its first
 `;` runs in the line's own folder. The guard reads the text from `-wd` itself,
 so such a line is unreadable and risky, and a delete after the `;` is found.
-A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) is the
-folder a `cd` without `/d` set on that drive, and somewhere unknown when none
-did; a folder only known when it runs is somewhere unknown too. So after `cd
+A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) is
+somewhere unknown for `start /d` and `pwsh -wd`, whatever a `cd` without `/d`
+set on that drive; a folder only known when it runs is somewhere unknown too. So after `cd
 C:\Windows` from `D:` (which sets the working directory of `C:` and leaves the
 line on `D:`), `start /d C: cmd /c rd /s /q System32` deletes under
 `C:\Windows`, and is risky. A drive the started program is on is only a guess.

@@ -1696,15 +1696,26 @@ fn moves_from(unit: &Unit) -> Option<(Arg, Origin)> {
         // A target that starts `//` looks like a switch (`/x`), but it can be
         // a network or device path (`//host/share`, `//?/C:/`): it is read
         // as the target, whose place is then not known.
-        (Shell::Cmd, "cd" | "chdir" | "pushd") => plain(&unit.args)
-            .first()
-            .copied()
-            .or_else(|| {
-                unit.args
-                    .iter()
-                    .find(|arg| arg.known().is_some_and(|text| text.starts_with("//")))
-            })
-            .map(|target| (target.clone(), unit.origin_of(target))),
+        //
+        // With command extensions on, cmd's `cd` does not split on spaces:
+        // `cd D:\ws\a \..\..` goes to the one folder `D:\ws\a \..\..`. With
+        // more than one plain word the target is not read: it is unknown.
+        (Shell::Cmd, "cd" | "chdir" | "pushd") => {
+            let words = plain(&unit.args);
+            match words.first().copied() {
+                Some(first) if words.len() > 1 => Some((
+                    Arg::Unknown(first.text().to_string()),
+                    unit.origin_of(first),
+                )),
+                found => found
+                    .or_else(|| {
+                        unit.args
+                            .iter()
+                            .find(|arg| arg.known().is_some_and(|text| text.starts_with("//")))
+                    })
+                    .map(|target| (target.clone(), unit.origin_of(target))),
+            }
+        }
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
             // `--` ends the parameters, so it is not the path: `cd -- -` is

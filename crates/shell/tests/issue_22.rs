@@ -1127,3 +1127,43 @@ fn a_wildcard_in_a_command_name_may_find_a_batch_file() {
         &[],
     );
 }
+
+#[test]
+fn a_cmd_cd_with_more_than_one_word_goes_to_a_folder_not_read() {
+    // With command extensions on, cmd's `cd` does not split on spaces:
+    // `cd D:\ws\a \..\..` goes to `D:\ws\a \..\..`, which is `D:\`. The
+    // target is then unknown, and so is the folder it sets.
+    let mut risky = deletes(&[
+        r"cd D:\ws\a \..\.. & rd /s /q D:c",
+        r"cd D:\ws\a x\..\..\.. & rd /s /q D:c",
+        r"chdir D:\ws\a \..\.. & rd /s /q D:c",
+        r#"cd "D:\ws\a" \..\.. & rd /s /q D:c"#,
+        r#"cd D:\ws\a "\..\.." & rd /s /q D:c"#,
+        "cd D:\\ws\\a\t\\..\\.. & rd /s /q D:c",
+        r"cd D:\ws\a \..\.. & del /q D:*.obj",
+        r"cd D:\ws\a \..\.. & cmd /c rd /s /q D:c",
+        r"cd D:\ws\a & cd D:b \..\..\.. & rd /s /q D:d",
+        r"cd C:\Users\me\repo\a \..\..\.. & del C:*.obj",
+        r"cd sub \..\..\.. & del C:*.obj",
+        r"cd /d C:\Users\me\repo\a \..\..\.. & del C:*.obj",
+        r"cd C:\Users\me\repo\a \..\..\.. & rd /s /q C:b",
+        r"cd /d D:\ws\a \..\.. & rd /s /q c",
+    ]);
+    risky.push((r"cd D:\ws\a \..\.. & ver > D:x.txt", Rule::Overwrite));
+    check(
+        Shell::Cmd,
+        &two_drives(),
+        &[
+            r"cd D:\ws\a & del D:a.txt",
+            r"cd sub & del x.obj",
+            r"cd /d D:\ws\a & del a.txt",
+        ],
+        &risky,
+    );
+    check(
+        Shell::PowerShell,
+        &two_drives(),
+        &[],
+        &[(r#"cmd /c "cd D:\ws\a \..\.. & rd /s /q D:b""#, Rule::Delete)],
+    );
+}
