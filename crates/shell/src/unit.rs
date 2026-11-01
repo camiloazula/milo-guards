@@ -1,7 +1,10 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::rc::Rc;
+
 use crate::dotglob;
+use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -87,7 +90,7 @@ pub(crate) struct Unit {
     pub(crate) hidden: bool,
     /// The files `BASH_ENV` names where the unit starts: a bash it starts
     /// runs each before its own script (see [`crate::startup`]).
-    pub(crate) startup: Vec<Arg>,
+    pub(crate) startup: Rc<Vec<Startup>>,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -109,7 +112,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
-            startup: Vec::new(),
+            startup: Rc::default(),
         }
     }
 
@@ -234,7 +237,9 @@ pub(crate) struct Split {
     pub(crate) bodies: usize,
     /// The files `BASH_ENV` has been set to so far, for each shell the line
     /// starts after.
-    pub(crate) startup: Vec<Arg>,
+    pub(crate) startup: Rc<Vec<Startup>>,
+    /// Whether the line has set more `BASH_ENV` files than it reads.
+    startup_over: bool,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
@@ -359,6 +364,31 @@ impl Split {
     pub(crate) fn fork(&mut self, most: usize) -> bool {
         self.forks += 1;
         self.forks <= most
+    }
+
+    /// The folder the `cd`s read so far moved the line to.
+    pub(crate) fn directory(&self) -> Option<Arg> {
+        self.dir.clone()
+    }
+
+    /// Note a `BASH_ENV` file the line sets, for each shell it starts after.
+    pub(crate) fn add_startup(&mut self, entry: Startup) {
+        if !startup::push(&mut self.startup, entry) {
+            self.startup_overflow();
+        }
+    }
+
+    /// The line sets more `BASH_ENV` files than are read: any shell it
+    /// starts may run one of those left out.
+    pub(crate) fn startup_overflow(&mut self) {
+        if !self.startup_over {
+            self.startup_over = true;
+            self.problem(
+                Rule::Unknown,
+                "sets BASH_ENV to more files than the guard reads",
+                None,
+            );
+        }
     }
 
     /// Add a unit, run where the line has moved to; a `cd` moves the line.

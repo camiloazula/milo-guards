@@ -2,6 +2,8 @@
 //! `rsync -e`, `tmux`, `cmd /c`, `powershell -Command`, `Start-Process`,
 //! cmd's `start` and the package runners (`npx`, `uvx`, `bunx`, ...).
 
+use std::rc::Rc;
+
 use super::interpreters::{reads_input, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
@@ -328,7 +330,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
-        startup: Vec::new(),
+        startup: Rc::default(),
     }))
 }
 
@@ -902,7 +904,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
-        startup: Vec::new(),
+        startup: Rc::default(),
     }
 }
 

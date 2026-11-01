@@ -1,5 +1,7 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
+use std::rc::Rc;
+
 use tree_sitter::Node;
 
 use crate::dotglob;
@@ -376,10 +378,8 @@ impl Walker<'_> {
                         self.split.hide();
                     }
                     if child.kind() != "variable_assignment" {
-                        if let Some((name, value)) = startup::word(&self.arg(child)) {
-                            let file = startup::read(self.split, &name, &value, self.depth);
-                            self.split.startup.extend(file);
-                        }
+                        let expanded = unit::text(&child, self.source).contains(['$', '`']);
+                        self.startup_words(&[self.arg(child)], expanded);
                     }
                 }
                 self.children(node, stage, level);
@@ -604,10 +604,15 @@ impl Walker<'_> {
             .children(&mut cursor)
             .filter(|child| child.kind() == "variable_assignment")
             .collect();
-        let mut startup = self.split.startup.clone();
+        let mut startup = Rc::clone(&self.split.startup);
         for assignment in &assignments {
-            startup.extend(self.startup(*assignment));
+            if let Some(file) = self.startup(*assignment) {
+                if !startup::push(&mut startup, file) {
+                    self.split.startup_overflow();
+                }
+            }
         }
+        self.declared(program.known(), &args);
         // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
         let mut cursor = node.walk();
         let prefixed = node
@@ -664,20 +669,63 @@ impl Walker<'_> {
         // `BASH_ENV=f` on a line of its own, or after `export`, is the
         // file every shell started from here on runs.
         if let Some(file) = self.startup(node) {
-            self.split.startup.push(file);
+            self.split.add_startup(file);
+        }
+    }
+
+    /// `builtin export PS4=…`, `command declare PS4=…`: the same
+    /// assignments as `export` itself makes, behind the builtins that
+    /// run it.
+    fn declared(&mut self, program: Option<&str>, args: &[Arg]) {
+        let mut at = 0;
+        let mut name = program;
+        while matches!(name, Some("builtin" | "command")) {
+            if name == Some("command") {
+                while args
+                    .get(at)
+                    .and_then(Arg::known)
+                    .is_some_and(|word| word.starts_with('-'))
+                {
+                    at += 1;
+                }
+            }
+            name = args.get(at).and_then(Arg::known);
+            at += 1;
+        }
+        if program != name
+            && matches!(
+                name,
+                Some("export" | "declare" | "typeset" | "local" | "readonly")
+            )
+        {
+            self.startup_words(&args[at..], true);
+        }
+    }
+
+    /// The `NAME=value` words of `words`, read as assignments that set a
+    /// variable the shell runs later.
+    fn startup_words(&mut self, words: &[Arg], expanded: bool) {
+        for word in words {
+            if let Some((name, value)) = startup::word(word) {
+                if let Some(file) = startup::read(self.split, &name, &value, self.depth, expanded) {
+                    self.split.add_startup(file);
+                }
+            }
         }
     }
 
     /// Read the assignment `node` for a variable the shell runs later (see
     /// [`startup`]): the file it names when it is `BASH_ENV`.
-    fn startup(&mut self, node: Node<'_>) -> Option<Arg> {
+    fn startup(&mut self, node: Node<'_>) -> Option<startup::Startup> {
         let source = self.source;
-        let name = unit::text(&node.child_by_field_name("name")?, source);
+        let name = startup::variable(unit::text(&node.child_by_field_name("name")?, source));
         if !startup::VARIABLES.contains(&name) {
             return None;
         }
-        let value = self.arg(node.child_by_field_name("value")?);
-        startup::read(self.split, name, &value, self.depth)
+        let written = node.child_by_field_name("value")?;
+        let expanded = unit::text(&written, source).contains(['$', '`']);
+        let value = self.arg(written);
+        startup::read(self.split, name, &value, self.depth, expanded)
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a

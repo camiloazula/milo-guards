@@ -141,7 +141,11 @@ fn add_launched(
                     Vec::new()
                 };
                 unit = inner(unit, key, start, &Hands::Nothing);
-                unit.startup.extend(files);
+                for file in files {
+                    if !startup::push(&mut unit.startup, file) {
+                        split.startup_overflow();
+                    }
+                }
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);

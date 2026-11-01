@@ -207,14 +207,21 @@ and its findings are the line's, since the shell runs it as the same user.
   line, and the value of `BASH_ENV` once when a non-interactive bash starts,
   then runs the file it names; other shells differ, but every shell is
   judged as bash. An assignment counts as a statement
-  (`PS4=…`, also `+=`), after `export`, `declare`, `typeset` and the like
-  (also quoted, `export "PS4=…"`), in front of a command (`PS4=… bash -x
-  s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
+  (`PS4=…`, also `+=`, and `PS4[0]=…`: a subscript other than a number
+  above zero may be the first element, which is the value), after `export`,
+  `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
+  behind `builtin` and `command`: `builtin export PS4=…`), in front of a
+  command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
   other wrappers). A value with code in it, `$(` or a backtick, is read as the
   script it is, as an action that runs later (see below), so `PS4='$(rm -rf
   ~)'; set -x; true` is the `delete` of `~`: the text around the code is
-  not run, only what is in it. A value only known when it runs
-  (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
+  not run, only what is in it. A funsub, `${ cmd; }` or `${| cmd; }`
+  (`${` and a blank, a newline or `|`), is code too, and comes out
+  `unreadable` as it does anywhere else. bash decodes the prompt's escapes
+  before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
+  ~\140'` are the `$(` and the backticks they spell, and a `PS4` is read
+  with each `\NNN` of three octal digits decoded (`\033[1m` colours stay
+  text). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
   reason `sets a variable the shell runs later to a value only known when it
   runs`: the shell expands it again and runs whatever it finds. Text and the
   variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
@@ -231,8 +238,13 @@ and its findings are the line's, since the shell runs it as the same user.
   file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
   download, a copy) is `unknown`, with the reason `runs a script the same line
   writes`. A file the line does not write is not read, as for `bash
-  e.sh`. Not read: `${PS4:=…}`, a `for PS4 in …` loop and a nameref to either
-  variable.
+  e.sh`. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
+  after a `cd` it is read from the folder the shell runs in; one an
+  expansion made (`BASH_ENV=$PWD/e.sh`) was resolved where the assignment
+  ran, so it is checked from there too. A line sets at most 16 different
+  files (the same one again counts once); one more makes the line `unknown`,
+  with the reason `sets BASH_ENV to more files than the guard reads`. Not
+  read: `${PS4:=…}`, a `for PS4 in …` loop and a nameref to either variable.
 
 The action runs in this shell, later: after the line's last command, or
 between its commands (`DEBUG`, `ERR`, `RETURN`, a signal). It is judged as the

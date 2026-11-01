@@ -7,7 +7,7 @@ use crate::launch::{
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::unit::{operands, plain, Arg, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -48,7 +48,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         split,
         resolver,
         found: split.findings.clone(),
-        written: Vec::new(),
+        written: HashSet::new(),
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
@@ -85,7 +85,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
     for write in &split.writes {
         checker.write(write.shell, write.scope(), &write.target, "writes to");
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     checker.found.retain(|finding| seen.insert(finding.clone()));
     checker.found
 }
@@ -96,7 +96,7 @@ struct Checker<'a> {
     found: Vec<Finding>,
     /// Every file the line writes, by [`Resolver::file_key`]: redirects,
     /// downloads, copies, `tee`, `dd`.
-    written: Vec<String>,
+    written: HashSet<String>,
     /// Whether the line writes a file it cannot place (a target known only
     /// when it runs, or after a `cd` to such a place): it has no key, but
     /// may be a script the line runs.
@@ -111,7 +111,7 @@ impl Checker<'_> {
     /// Note a file the line writes, from `dir`.
     fn written(&mut self, dir: Option<&Arg>, target: &Arg, shell: Shell) {
         if let Some(key) = self.resolver.file_key(dir, target, shell) {
-            self.written.push(key);
+            self.written.insert(key);
         } else if self.resolver.unplaced(dir, target, shell) {
             self.unplaced_write = true;
         }
@@ -370,7 +370,7 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args) else {
             return;
         };
-        self.runs_written(unit, script);
+        self.runs_written(unit, script, unit.dir.as_ref());
     }
 
     /// A shell that runs the file `BASH_ENV` names before its own script,
@@ -379,18 +379,24 @@ impl Checker<'_> {
         if unit.shell != Shell::Posix || !SHELLS.contains(&key) {
             return;
         }
-        for file in &unit.startup {
-            self.runs_written(unit, file);
+        for entry in unit.startup.iter() {
+            self.runs_written(unit, &entry.file, unit.dir.as_ref());
+            // A name an expansion made (`$PWD/e.sh`) is the file where the
+            // line assigned it, whatever folder the shell runs from.
+            if entry.expanded && entry.assigned.as_ref() != unit.dir.as_ref() {
+                self.runs_written(unit, &entry.file, entry.assigned.as_ref());
+            }
         }
     }
 
-    /// `unit` runs `script`: say so when the line writes it, or may.
-    fn runs_written(&mut self, unit: &Unit, script: &Arg) {
+    /// `unit` runs `script`, from `dir`: say so when the line writes it, or
+    /// may.
+    fn runs_written(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
         // A script path the guard cannot place (after a `cd` to somewhere
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.
         if (!self.written.is_empty() || self.unplaced_write)
-            && path::within(unit.dir.as_ref(), script, unit.shell).is_unknown()
+            && path::within(dir, script, unit.shell).is_unknown()
         {
             self.add(
                 Rule::Unknown,
@@ -399,10 +405,7 @@ impl Checker<'_> {
             );
             return;
         }
-        let Some(wanted) = self
-            .resolver
-            .file_key(unit.dir.as_ref(), script, unit.shell)
-        else {
+        let Some(wanted) = self.resolver.file_key(dir, script, unit.shell) else {
             return;
         };
         if self.written.contains(&wanted) {

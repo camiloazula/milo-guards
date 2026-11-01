@@ -224,3 +224,247 @@ fn an_ordinary_ps4_or_bash_env_stays_safe() {
         &[],
     );
 }
+
+/// `count` words, `before`, a number, `after`.
+fn names(before: &str, after: &str, count: usize) -> String {
+    use std::fmt::Write;
+    (0..count).fold(String::new(), |mut line, at| {
+        let _ = write!(line, "{before}{at}{after}");
+        line
+    })
+}
+
+#[test]
+fn octal_escapes_in_ps4_are_decoded_before_the_shell_expands_it() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4='\\033[1;34m+ \\033[0m'; set -x; make",
+            "PS4='\\\\044(rm -rf ~)'; set -x; true",
+            "PS4='\\44(rm -rf ~)'; set -x; true",
+            "PS4='\\0440(x)'; set -x; true",
+        ],
+        &[
+            ("PS4='\\044(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='\\140rm -rf ~\\140'; set -x; true", Rule::Delete),
+            ("PS4=\"\\044(rm -rf ~)\"; set -x; true", Rule::Delete),
+            ("PS4='+ \\044\\050rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\044{ rm -rf ~; }'; set -x; true", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_funsub_in_a_value_the_shell_expands_is_code() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4='+ ${x} '; set -x; make",
+            "PS4='+ ${x:-y} '; set -x; make",
+            "PS4='+ ${#x} '; set -x; make",
+        ],
+        &[
+            ("PS4='${ rm -rf ~; }'; set -x; true", Rule::Unreadable),
+            ("PS4='${| rm -rf ~; }'; set -x; true", Rule::Unreadable),
+            ("PS4='${\trm -rf ~; }'; set -x; true", Rule::Unreadable),
+            ("PS4='${\nrm -rf ~; }'; set -x; true", Rule::Unreadable),
+            ("PS4='+ ${ rm -rf ~; } '; set -x; true", Rule::Unreadable),
+            ("export PS4='${ rm -rf ~; }'", Rule::Unreadable),
+            ("BASH_ENV='${ rm -rf ~; }' bash -c true", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_subscripted_assignment_sets_the_variable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4[1]='$(rm -rf ~)'; set -x; true",
+            "PS4[12]='$(rm -rf ~)'",
+            "PS4[0]='+ '; set -x; make",
+            "BASH_ENV[1]=e.sh; echo x > e.sh; bash -c true",
+            "echo x > e.sh; BASH_ENV[1]=e.sh bash -c true",
+            "export 'PS4[1]=$(rm -rf ~)'",
+        ],
+        &[
+            ("PS4[0]='$(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4[00]='$(rm -rf ~)'", Rule::Delete),
+            ("PS4[i]='$(rm -rf ~)'", Rule::Delete),
+            ("PS4[$n]='$(rm -rf ~)'", Rule::Delete),
+            ("PS4[a=1]='$(rm -rf ~)'", Rule::Delete),
+            ("PS4[0]+='$(rm -rf ~)'", Rule::Delete),
+            ("export PS4[0]='$(rm -rf ~)'", Rule::Delete),
+            ("declare -x PS4[0]='$(rm -rf ~)'", Rule::Delete),
+            ("export 'PS4[0]=$(rm -rf ~)'", Rule::Delete),
+            ("export PS4+='$(rm -rf ~)'", Rule::Delete),
+            ("env 'PS4[0]=$(rm -rf ~)' bash -xc true", Rule::Delete),
+            ("PS4[0]='$(rm -rf ~)' bash -xc true", Rule::Delete),
+            ("read 'PS4[0]'", Rule::Unknown),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV[0]=e.sh bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV[i]=e.sh bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV[0]=e.sh; export BASH_ENV; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV[0]=e.sh; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export 'BASH_ENV[0]=e.sh'; bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn builtin_and_command_run_the_declaration_that_follows() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "builtin export PS4='+ '; set -x; make",
+            "command export PS4='+ '",
+            "builtin echo PS4='$(rm -rf ~)'",
+            "command -v export PS4='$(date)'",
+            "builtin export PS4",
+            "echo x > e.sh; builtin export BASH_ENV=other.sh; bash -c true",
+        ],
+        &[
+            (
+                "builtin export PS4='$(rm -rf ~)'; set -x; true",
+                Rule::Delete,
+            ),
+            (
+                "command export PS4='$(rm -rf ~)'; set -x; true",
+                Rule::Delete,
+            ),
+            ("builtin declare PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin typeset PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin local PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin readonly PS4='$(rm -rf ~)'", Rule::Delete),
+            ("command -p export PS4='$(rm -rf ~)'", Rule::Delete),
+            ("command -- export PS4='$(rm -rf ~)'", Rule::Delete),
+            ("command builtin export PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin command declare -x PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin export -n PS4='$(rm -rf ~)'", Rule::Delete),
+            ("builtin export \"PS4=\\$(rm -rf ~)\"", Rule::Delete),
+            ("builtin export PS4='${ rm -rf ~; }'", Rule::Unreadable),
+            ("builtin export PS4=$x", Rule::Unknown),
+            (
+                "echo 'rm -rf ~' > e.sh; builtin export BASH_ENV=e.sh; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; command export BASH_ENV=e.sh; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; builtin declare -x BASH_ENV=e.sh; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; builtin export BASH_ENV[0]=e.sh; bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_expanded_bash_env_name_is_the_file_where_it_was_assigned() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo x > e.sh; export BASH_ENV=e.sh; cd sub; bash -c true",
+            "echo x > e.sh; cd sub; export BASH_ENV=e.sh; bash -c true",
+            "echo x > e.sh; cd sub; export BASH_ENV=$PWD/e.sh; bash -c true",
+            "echo x > other.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true",
+        ],
+        &[
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > e.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > e.sh; export BASH_ENV=\"$PWD/e.sh\"; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > e.sh; export BASH_ENV=${PWD}/e.sh; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > e.sh; BASH_ENV=$PWD/e.sh; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > e.sh; export \"BASH_ENV=$PWD/e.sh\"; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo x > sub/e.sh; export BASH_ENV=e.sh; cd sub; bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+fn a_line_that_sets_bash_env_over_and_over_is_judged_within_a_bound() {
+    let distinct = names("BASH_ENV=e", ";", 2500);
+    let lines = [
+        format!(
+            "echo x>e;{}{}",
+            "BASH_ENV=e;".repeat(3000),
+            "bash;".repeat(6000)
+        ),
+        format!("{distinct}{}", "bash;".repeat(5000)),
+        format!("{}{}", "BASH_ENV=e;".repeat(3000), ":;".repeat(15000)),
+    ];
+    for line in lines {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let assessment = milo_guards_shell::classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "took {took:?}"
+        );
+        drop(assessment);
+    }
+}
+
+#[test]
+fn more_bash_env_files_than_are_read_is_unknown() {
+    let many = names("BASH_ENV=e", ".sh; ", 40);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; bash -c true",
+            "echo x > e; BASH_ENV=e2; BASH_ENV=e2; BASH_ENV=e2; bash -c true",
+        ],
+        &[(&format!("{many}bash -c true"), Rule::Unknown)],
+    );
+}
