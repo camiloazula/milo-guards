@@ -8,6 +8,8 @@
 //! in a short table; a program the table does not know is
 //! [`Effect::Unknown`], never reading.
 
+use std::collections::HashMap;
+
 use crate::path::{self, Place, Resolver};
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -58,10 +60,58 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         let place = resolver.place(&target, write.shell, write.hidden);
         seen.changes |= !matches!(place, Place::Null);
     }
+    for read in &split.kept.reads {
+        seen.add(place_effect(
+            resolver,
+            read.shell,
+            read.dir.as_ref(),
+            &read.target,
+        ));
+    }
+    // The first unit at each pipeline stage, for what a stage is handed.
+    let mut producers = HashMap::new();
     for unit in &split.units {
-        seen.add(unit_effect(unit, resolver));
+        if let Some(stage) = unit.stage {
+            producers
+                .entry((stage.pipeline, stage.index))
+                .or_insert(unit);
+        }
+    }
+    let context = Context {
+        resolver,
+        producers,
+    };
+    for unit in &split.units {
+        seen.add(unit_effect(unit, &context));
     }
     seen.effect()
+}
+
+/// What `unit_effect` needs besides the unit.
+struct Context<'a> {
+    resolver: &'a Resolver,
+    producers: HashMap<(usize, usize), &'a Unit>,
+}
+
+/// Whether reading from `arg`, written from `dir`, is a read of a place the
+/// guard can name and that is on this machine. Not when it is known only
+/// when it runs, nor bash's `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, nor
+/// on Windows a UNC path (`\\server\share`, `//server/share`,
+/// `\\?\UNC\server\share`): reading those contacts the network, and a
+/// share is offered the user's credentials.
+fn place_effect(resolver: &Resolver, shell: Shell, dir: Option<&Arg>, arg: &Arg) -> Effect {
+    let Some(text) = arg.known() else {
+        return Effect::Unknown;
+    };
+    let from = path::within(dir, arg, shell);
+    if (shell == Shell::Posix && names_network_device(text))
+        || resolver.network(dir, arg, shell)
+        || matches!(resolver.place(&from, shell, false), Place::Unknown)
+    {
+        Effect::Unknown
+    } else {
+        Effect::ReadsOnly
+    }
 }
 
 /// What has been seen so far: a change beats not knowing, which beats
@@ -174,13 +224,11 @@ const WRAPPERS: [&str; 15] = [
 const SYSTEM_FOLDERS: [&str; 4] = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
 
 /// What one unit does.
-fn unit_effect(unit: &Unit, resolver: &Resolver) -> Effect {
+fn unit_effect(unit: &Unit, context: &Context<'_>) -> Effect {
+    let resolver = context.resolver;
     let Some(key) = program(unit) else {
         return Effect::Unknown;
     };
-    if reaches_network(unit, resolver) {
-        return Effect::Unknown;
-    }
     // A `cd` the guard follows only moves the line.
     let own = if let Some(target) = moves_to(unit) {
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
@@ -202,23 +250,87 @@ fn unit_effect(unit: &Unit, resolver: &Resolver) -> Effect {
         .all(|wrapper| WRAPPERS.contains(&wrapper.as_str()));
     match own {
         Effect::ReadsOnly if !known_wrappers => Effect::Unknown,
+        Effect::ReadsOnly => operands(unit, &key, context),
         other => other,
     }
 }
 
-/// Whether a unit's arguments name somewhere on the network, which reading
-/// contacts: bash's `/dev/tcp/HOST/PORT` and `/dev/udp/HOST/PORT`, and on
-/// Windows a UNC path (`\\server\share`, `//server/share`,
-/// `\\?\UNC\server\share`), which offers the user's credentials to the
-/// server.
-fn reaches_network(unit: &Unit, resolver: &Resolver) -> bool {
-    unit.args.iter().any(|arg| {
-        if unit.shell == Shell::Posix {
-            names_network_device(arg.text())
-        } else {
-            resolver.network(unit.dir.as_ref(), arg, unit.shell)
+/// Programs that read nothing from the places their arguments name: they
+/// print them, test them or look them up.
+fn takes_no_paths(shell: Shell, key: &str) -> bool {
+    match shell {
+        Shell::Posix => matches!(
+            key,
+            "echo"
+                | "printf"
+                | "true"
+                | "false"
+                | "test"
+                | "["
+                | "basename"
+                | "dirname"
+                | "which"
+                | "pwd"
+        ),
+        Shell::PowerShell => matches!(
+            key,
+            "write-output"
+                | "write-host"
+                | "echo"
+                | "where-object"
+                | "select-object"
+                | "sort-object"
+                | "measure-object"
+                | "get-location"
+                | "pwd"
+        ),
+        Shell::Cmd => matches!(key, "echo" | "cd" | "chdir"),
+    }
+}
+
+/// The programs whose output is the names of what is in known places: what
+/// a pipeline hands on from one is not a path from the environment.
+const LISTERS: [&str; 5] = ["ls", "find", "fd", "dir", "get-childitem"];
+
+/// A reader read the files its operands name, so each must be a place the
+/// guard can name on this machine: a glob is a pattern over known folders
+/// and stays known, a path known only when it runs (`cat $f`) does not. What
+/// a pipeline hands the unit counts when the stage before it lists.
+fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Effect {
+    let paths = !takes_no_paths(unit.shell, key);
+    let mut effect = Effect::ReadsOnly;
+    for arg in &unit.args {
+        let listed = || {
+            unit.stage
+                .filter(|stage| stage.index > 0)
+                .and_then(|stage| context.producers.get(&(stage.pipeline, stage.index - 1)))
+                .and_then(|producer| producer.key())
+                .is_some_and(|name| LISTERS.contains(&name.as_str()))
+        };
+        let own = match arg {
+            Arg::Input if paths && !listed() => Effect::Unknown,
+            Arg::Input => Effect::ReadsOnly,
+            known if paths => place_effect(context.resolver, unit.shell, unit.dir.as_ref(), known),
+            // Not a path, but a name that is one of the network's.
+            known if known.known().is_some() => {
+                let network = unit.shell == Shell::Posix
+                    && known.known().is_some_and(names_network_device)
+                    || context
+                        .resolver
+                        .network(unit.dir.as_ref(), known, unit.shell);
+                if network {
+                    Effect::Unknown
+                } else {
+                    Effect::ReadsOnly
+                }
+            }
+            _ => Effect::ReadsOnly,
+        };
+        if own == Effect::Unknown {
+            effect = Effect::Unknown;
         }
-    })
+    }
+    effect
 }
 
 /// Whether `text` names one of bash's network devices.
@@ -554,12 +666,15 @@ fn posix(key: &str, unit: &Unit) -> Effect {
             ],
             &["compile"],
         ),
-        // `-o` and `-O` log what is read to a file, and an argument that
-        // starts with `+` is a command (`+!rm x`).
+        // `-o` and `-O` log what is read to a file, an argument that starts
+        // with `+` is a command (`+!rm x`), and `-k` reads a lesskey file.
         "less" => {
             let command = args
                 .iter()
                 .any(|arg| arg.known().is_some_and(|text| text.starts_with('+')));
+            // `-k` names a lesskey file, whose `#env` section can set
+            // `LESSOPEN`.
+            let command = command || has_flag(args, Some('k'), None);
             match gnu(
                 args,
                 &['o', 'O'],

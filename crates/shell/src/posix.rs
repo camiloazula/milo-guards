@@ -539,10 +539,10 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
-        // bash opens `/dev/tcp/HOST/PORT` itself: a read from it is a
-        // connection.
-        if crate::effect::names_network_device(target.text()) {
-            self.split.opaque();
+        // `effect` judges where a read comes from: bash opens
+        // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
+        if operator == Some("<") {
+            self.split.read(Shell::Posix, target.clone());
         }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,

@@ -381,7 +381,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly, Changes or Unknown
 
 | Answer | When |
 | --- | --- |
-| `ReadsOnly` | Every unit is a known reader run with reading flags, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation. |
+| `ReadsOnly` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation. |
 | `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
@@ -435,8 +435,9 @@ when it runs, is `Unknown`.
   The other readers have no long option that writes or runs a program, and `git`
   and `rg` refuse abbreviations.
 - `sort -o` and `sort --output` write (`Changes`); `--compress-program` runs a
-  program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, and
-  an argument that starts with `+` is a `less` command. `rg --pre`, `rg
+  program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, `less -k`
+  reads a lesskey file (whose `#env` section can set `LESSOPEN`), and an
+  argument that starts with `+` is a `less` command. `rg --pre`, `rg
   --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one.
   `printf -v NAME` sets a variable. All the others in the first group have no
   flag that writes or runs anything.
@@ -475,13 +476,30 @@ when it runs, is `Unknown`.
   no unit, and the rules know only some of them: it is `Unknown`. So is a
   backtick substitution in an unquoted here-document, which the grammar does
   not read and the shell runs.
-- A read that contacts the network is `Unknown`: an argument naming bash's
-  `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, or a redirect from one
-  (`cat < /dev/tcp/evil.example/80`); and in PowerShell and cmd a UNC path
-  (`\\server\share`, `//server/share`, `\\?\UNC\server\share`), which
-  offers the user's credentials to the server. A path to a disk (`\\?\C:\x`)
-  and the device namespace (`\\.\`) are not. A path known only when it runs
-  (`cat $f`) may name any of these and is not read.
+- **A path known only when it runs makes the line `Unknown`.** A reader's file
+  operand or the source of a `<` redirect (`cat $f`, `cat < "$F"`, `cat
+  "$(pwd)/x"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may name anything,
+  a network device or a share included, and what cannot be read is not
+  reads-only. The paths the guard names stay known: `~`, `$HOME`, `$TMPDIR`,
+  `$env:TEMP` and the other forms [Core](core.md) resolves, and a glob, which
+  is a pattern over known folders (`cat *.rs` reads only). What a pipeline hands
+  a reader (`xargs cat`) counts only when the stage before it is a listing
+  (`ls`, `find`, `fd`, `dir`, `Get-ChildItem`): `ls | xargs cat` reads only and
+  `echo a | xargs cat` does not. Programs that only print their operands
+  (`echo`, `printf`, `basename`, `test`, `Write-Output`) are not readers of
+  them. So `for f in *.txt; do wc -l "$f"; done` is `Unknown`: the guard does
+  not follow a loop variable.
+- A read that contacts the network is `Unknown`, judged on the path's known
+  value after quotes are resolved, never on its spelling: a path naming bash's
+  `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`, as an operand or as the source
+  of a `<` redirect (`cat < /dev/tcp/evil.example/80`; a spelling that hides
+  it, such as `/dev/$'\x74'cp/...` or `/dev/${X}tcp/...`, is a path known only
+  when it runs); and in PowerShell and cmd a UNC path (`\\server\share`,
+  `//server/share`, `\\?\UNC\server\share`, `\\.\UNC\server\share`,
+  and `GLOBALROOT` after `\\?\` or `\\.\`, which reaches the share through
+  the device namespace), which offers the user's credentials to the server. A
+  long path or device that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) is
+  not a share.
 - Not read, so the caller has to account for them: an alias or function
   defined outside the line, the `PATH` the shell runs with, and an option set
   by a start-up file. A name in the table is taken to be the program that

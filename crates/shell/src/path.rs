@@ -168,8 +168,8 @@ impl Resolver {
     ///
     /// Core reads a share's root only when it holds no wildcard, and takes
     /// the `?` of a `\\?\` long path for one, so the root is read here: two
-    /// separators start it, and what is not a share is the device namespace
-    /// (`\\.\`, core's) and a long path to a disk (`\\?\C:\x`).
+    /// separators start it, and what is not a share is a long path or a device
+    /// that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`).
     pub(crate) fn network(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
         if shell == Shell::Posix {
             return false;
@@ -191,16 +191,17 @@ impl Resolver {
         let mut chars = text.chars();
         if !(chars.next().is_some_and(|c| separators.contains(&c))
             && chars.next().is_some_and(|c| separators.contains(&c)))
-            || device(text, shell).is_some()
         {
             return false;
         }
         let mut parts = text[2..].split(separators);
         match parts.next() {
-            // `\\?\UNC\server\share` is a share; `\\?\C:\x` is a disk.
-            Some("?") => parts
-                .next()
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("unc")),
+            // The long-path and device prefixes (`\\?\`, `\\.\`) name a
+            // disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) unless a share
+            // follows: `UNC\server\share`, or `GLOBALROOT\Device\Mup\server\share`.
+            Some("?" | ".") => parts.next().is_some_and(|kind| {
+                kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
+            }),
             _ => true,
         }
     }

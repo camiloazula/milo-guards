@@ -272,6 +272,17 @@ pub(crate) struct Kept {
     pub(crate) opaque: bool,
     /// Whether a wrapper the line uses writes (`time -o FILE`).
     pub(crate) changes: bool,
+    /// The files redirected from (`< file`), where the line was.
+    pub(crate) reads: Vec<Read>,
+}
+
+/// A read a redirect makes: `< file`.
+#[derive(Debug, Clone)]
+pub(crate) struct Read {
+    pub(crate) shell: Shell,
+    pub(crate) target: Arg,
+    /// As [`Unit::dir`].
+    pub(crate) dir: Option<Arg>,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -365,6 +376,14 @@ impl Split {
             dir,
             hidden,
         });
+    }
+
+    /// Add a redirect's read, made where the line has moved to, for `effect`.
+    pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
+        if self.kept.on {
+            let dir = self.dir.clone();
+            self.kept.reads.push(Read { shell, target, dir });
+        }
     }
 
     /// Whether a wildcard in what comes next may match a leading dot.

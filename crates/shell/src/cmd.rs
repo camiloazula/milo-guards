@@ -214,6 +214,9 @@ impl Walker<'_> {
         };
         let writes = operator.is_some_and(|op| op.contains('>') && !op.ends_with('&'));
         let target_text = unit::text(target, self.source);
+        if operator == Some("<") {
+            self.split.read(Shell::Cmd, self.value(&[*target]));
+        }
         if writes && !target_text.starts_with('&') {
             self.split.write(Shell::Cmd, self.value(&[*target]));
         }
