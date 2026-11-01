@@ -16,7 +16,8 @@ There are three kinds of crate.
 Package names start with `milo-guards-`. Folder names drop the prefix.
 
 The front door has no logic of its own. It re-exports the types every guard
-shares: `Paths`, `Assessment`, `Finding` and the trait `RuleName`. It does not
+shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
+`RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
 `shell` is `milo_local_guards::shell`, and it is on by default. A caller who

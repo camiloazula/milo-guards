@@ -240,13 +240,13 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive file, or a path known only when it runs. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive one. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one. |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
-| `permissions` | Changes permissions or ownership beyond the workspace, or opens files to everyone. |
+| `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads. |
@@ -309,7 +309,60 @@ a path.
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
-itself, its `.git`, keys and shell startup files.
+itself, its `.git`, keys and shell startup files, and the paths the caller
+protects.
+
+### Protected paths
+
+A caller names what it gates with (its settings, its rules, the folder it keeps
+state in) in `Paths::protected` (see [Core](core.md)), and core answers
+`Place::Protected` with the caller's words for it, even inside a workspace.
+The guard needs no rule of its own: wherever a rule reads a place it takes
+anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
+the caller's words in the reason. Reading is not a finding; what a read of a
+protected file means is not decided here.
+
+With `Protected::folder("/home/me/.agent", "the agent's settings")`:
+
+| Line | Rule | Reason |
+| --- | --- | --- |
+| `rm ~/.agent/config.yaml`, `rm -rf ~/.agent` | `delete` | deletes the agent's settings |
+| `mv ~/.agent/rules /tmp/x` | `delete` | moves the agent's settings |
+| `echo x > ~/.agent/config.yaml`, `cp x ~/.agent/rules` | `overwrite` | writes to the agent's settings |
+| `sed -i s/a/b/ ~/.agent/rules` | `overwrite` | edits the agent's settings |
+| `chmod 777 ~/.agent/rules` | `permissions` | changes permissions of the agent's settings |
+| `cat ~/.agent/config.yaml`, `ls ~/.agent` | safe | |
+
+With the same path inside the workspace (`/home/me/work/repo/.agent`), `rm
+.agent/rules` from the repository is a `delete`, `rm src/main.rs` stays safe,
+and `rm -rf *` is still a delete of the whole workspace. A PowerShell or cmd
+line on `C:\Users\me\.agent` is judged the same way, without regard to case
+(on every host: `rm -rf .AGENT` is a delete on macOS too), and `AGENT~1` is the
+protected name too.
+
+A folder that holds a protected path is protected as well, so the whole folder
+cannot be deleted or moved. With `Protected::file("/home/me/work/repo/conf/app/x.yaml", ..)`:
+
+| Line | Verdict |
+| --- | --- |
+| `rm -rf conf`, `cd conf && rm -rf app`, `mv conf /tmp/x`, `rm -rf c*`, `rm -rf **/x.yaml` | `delete`, in the caller's words |
+| `Remove-Item -Recurse conf`, `rd /s /q conf` | `delete`, in the caller's words |
+| `touch conf/new.txt`, `rm conf/other.txt`, `rm -rf src`, `cp a.txt conf/`, `cp a.txt conf/app`, `mkdir -p conf/app` | safe: a write into a folder is not a write of it |
+| `cp x.yaml conf/app/`, `cp -t conf/app x.yaml`, `mv x.yaml conf/app`, `install x.yaml conf/app/`, `ln -sf other/x.yaml conf/app/`, `cp *.yaml conf/app/`, `Copy-Item x.yaml conf\app`, `Copy-Item y.yaml,x.yaml conf\app`, `copy /y x.yaml conf\app`, `copy y.yaml+x.yaml conf\app` | `overwrite`: the file lands at its own name, which is the protected one |
+| `cp -r other/. conf`, `cp -a app conf`, `rsync -a src/ conf/`, `Copy-Item -Recurse src conf`, `robocopy src conf /E`, `xcopy /s /y src conf` | `overwrite`: a recursive copy can replace anything below the folder |
+| `rm -rf **/y.yaml`, `rm -rf **/*.rs` | safe: a protected file has nothing below its name (with a protected folder `cfg` they are `delete`) |
+| `rm -rf .`, `rm -rf ~` | the workspace, the home directory: a risky place keeps its own words |
+
+How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
+position 0 and `-Destination` at position 1, and a comma list of sources is
+flattened into the arguments, so with no `-Destination` each operand after the
+first is read as the destination in turn, the rest as sources, and a risky
+reading wins. The value of a parameter, a common one included (`-ErrorAction
+Stop`, `-ea 0`, `-OutVariable o`), is never an operand. A source that comes
+only from a pipeline (`gci src | cpi -Destination conf\app`), is unknown, or
+is what `find -exec`, `-execdir` or `-ok` found (`{}`) lands as a name that
+could be anything, which a protected name in the folder can be. The rows are
+all kept in `tests/protected.rs`.
 
 A wildcard part stands for one entry, so a `..` after it still climbs:
 `src/*/../../../x`. A part that starts with `.` can match `.git`; in PowerShell

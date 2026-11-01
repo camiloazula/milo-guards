@@ -591,7 +591,7 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 25] = [
+const VALUES: [&str; 45] = [
     "path",
     "literalpath",
     "destination",
@@ -617,6 +617,27 @@ const VALUES: [&str; 25] = [
     "itemtype",
     "stream",
     "width",
+    // The common parameters and their aliases: a value is never an operand.
+    "erroraction",
+    "ea",
+    "warningaction",
+    "wa",
+    "informationaction",
+    "infa",
+    "errorvariable",
+    "ev",
+    "warningvariable",
+    "wv",
+    "informationvariable",
+    "iv",
+    "outvariable",
+    "ov",
+    "outbuffer",
+    "ob",
+    "pipelinevariable",
+    "pv",
+    "progressaction",
+    "proga",
 ];
 
 /// A cmdlet's arguments read as PowerShell reads them.

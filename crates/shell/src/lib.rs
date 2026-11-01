@@ -41,7 +41,7 @@ mod powershell;
 mod unit;
 
 pub use effect::Effect;
-pub use milo_guards_core::Paths;
+pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
 ///
