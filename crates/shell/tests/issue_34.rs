@@ -681,3 +681,24 @@ fn zip_a_value_attached_to_its_option_ends_the_bundle() {
         ],
     );
 }
+
+#[test]
+fn zip_unicode_option_takes_a_value() {
+    // `-UN` (`--unicode`) takes `q`, `w`, `i`, `n` or a word; its last
+    // letter must not be read as `-n`, which would take the archive's name.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "zip -m -UN warn x.zip src",
+            "zip -m --unicode warn x.zip src",
+        ],
+        &[
+            ("zip -m -UN=warn x.zip ~", Rule::Delete),
+            ("zip -m -UN=n x.zip ~", Rule::Delete),
+            ("zip -UNwarn -m x.zip ~", Rule::Delete),
+            ("zip -mUNn x.zip ~", Rule::Delete),
+            ("zip -m --unicode warn x.zip ~", Rule::Delete),
+        ],
+    );
+}

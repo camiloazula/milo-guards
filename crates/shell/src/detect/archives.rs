@@ -447,6 +447,7 @@ const ZIP_LONG_VALUES: &[&str] = &[
     "unzip-command",
     "dot-size",
     "logfile-path",
+    "unicode",
 ];
 
 /// The files `zip` deletes after adding them, which `-m` (or `--move`) asks
@@ -555,6 +556,15 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                 'n' => {
                     separate = rest.is_empty();
                     inside = !rest.is_empty() && !rest.starts_with('w');
+                }
+                // `-UN warn`, `-UN=warn` and `-UNwarn`: the Unicode option,
+                // whose value is a word that ends in a letter that is an
+                // option of its own.
+                'U' => {
+                    if let Some(after) = rest.strip_prefix('N') {
+                        separate = after.is_empty();
+                        inside = !after.is_empty();
+                    }
                 }
                 // `-ds size` and `-ds10m`, `-lf file` and `-lfout`.
                 'd' | 'l' => {
