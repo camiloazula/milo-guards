@@ -54,6 +54,11 @@
 //! assert_eq!(finding.rule.name(), "delete");
 //! assert_eq!(finding.target.as_deref(), Some("~"));
 //!
+//! // So is reading a key, with the file guard's answer for the same file.
+//! let assessment = classify("cat ~/.ssh/id_ed25519", Shell::Posix, &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
+//! assert_eq!(assessment.findings()[0].reason, "reads your SSH keys");
+//!
 //! // Whether a line only reads is a second answer, from the same split.
 //! assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Workspace));
 //! // A read can still leave the project: the answer says where it lands.

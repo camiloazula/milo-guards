@@ -73,6 +73,11 @@ What counts as a secret is core's table of places known to hold one, with its
 Reading the repository's history and the caller's own settings stays safe on
 purpose.
 
+The shell guard gives the same answer for the same file: `cat <path>` is its
+`read_secret` exactly when a read of `<path>` is this guard's. A test in the
+front door (`crates/guards/tests/agree.rs`) holds them to it on every path of
+this guard's tables; see [Shell](shell.md#reading-a-key).
+
 ### Writing
 
 A write to a path that is not harmless is `write_protected` for a protected

@@ -52,7 +52,9 @@ milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
 
 A guard that needs another guard's answer is not a guard. The caller asks both
 and combines the answers, because deciding what to do with them is the
-caller's job.
+caller's job. Where two guards must give one answer, the front door tests it:
+`crates/guards/tests/agree.rs` runs every path of the file guard's tables
+through the shell guard, and neither guard knows of the other.
 
 `crates/guards/tests/contract.rs` reads every `Cargo.toml` and fails when a
 guard depends on another guard, or when core depends on anything. It reads

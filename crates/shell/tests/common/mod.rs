@@ -36,11 +36,11 @@ pub fn check(shell: Shell, paths: &Paths, safe: &[&str], risky: &[(&str, Rule)])
 }
 
 /// The lines of `rows` that `classify` finds risky for anything but running
-/// as root (a delete, an overwrite, a disk wipe, a discard of git work, a
+/// as root or reading a key (a delete, an overwrite, a disk wipe, a discard of git work, a
 /// script it does not read, ...) and that `effect` nevertheless calls
 /// reads-only. There must be none: a line the guard flags is not one that
-/// only reads. (`sudo cat` is `Elevated` and reads only, so an elevation
-/// alone does not count.)
+/// only reads. (`sudo cat` is `Elevated` and reads only, and `cat ~/.ssh/id_rsa` is
+/// `ReadSecret` and reads only, so neither alone counts.)
 pub fn disagreements<'a>(
     shell: Shell,
     paths: &Paths,
@@ -53,7 +53,7 @@ pub fn disagreements<'a>(
                 .findings()
                 .iter()
                 .map(|finding| finding.rule)
-                .filter(|rule| *rule != Rule::Elevated)
+                .filter(|rule| !matches!(rule, Rule::Elevated | Rule::ReadSecret))
                 .collect();
             (!flagged.is_empty() && matches!(effect(line, shell, paths), Effect::ReadsOnly(_)))
                 .then(|| format!("reads only, but classify finds {flagged:?}: {line}"))

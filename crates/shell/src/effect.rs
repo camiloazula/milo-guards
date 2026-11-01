@@ -4,18 +4,20 @@
 //! A line is [`Effect::ReadsOnly`] only when everything in it is understood
 //! and none of it changes anything: every unit is a known reader run with
 //! reading flags, no redirect writes a file, nothing is known only when it
-//! runs, and the rules found nothing but an elevation. A reader is a program
-//! in a short table; a program the table does not know is
-//! [`Effect::Unknown`], never reading. Where the reads land is [`Reach`]:
-//! the `reach` module says what a unit reads.
+//! runs, and the rules found nothing but an elevation or a read of a key. A
+//! reader is a program in a short table; a program the table does not know
+//! is [`Effect::Unknown`], never reading. The same table says which files a
+//! reader opens, which is what the rule about reading a key judges. Where the
+//! reads land is [`Reach`]: the `reach` module says what a unit reads.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::path::{self, Place, Resolver};
 
 mod git;
-mod operands;
+pub(crate) mod operands;
 mod reach;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
@@ -124,7 +126,7 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         producers,
         beyond: Cell::new(false),
     };
-    for read in &split.kept.reads {
+    for read in &split.reads {
         seen.add(place_effect(
             &context,
             read.shell,
@@ -137,7 +139,6 @@ pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Ef
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.
         let enclosing: Vec<_> = split
-            .kept
             .bindings
             .iter()
             .filter(|binding| binding.units.contains(&at))
@@ -203,7 +204,10 @@ fn rule_effect(rule: Rule) -> Kind {
         | Rule::StopSystem => Kind::Changes,
         Rule::RunDownloaded | Rule::RunInput | Rule::Unknown | Rule::Unreadable => Kind::Unknown,
         // Running as root changes nothing by itself: `sudo cat` reads only.
-        Rule::Elevated => Kind::Reads,
+        // Nor does reading a key: `cat ~/.ssh/id_ed25519` reads only, and the
+        // finding says which file (the line's `Reach` is `Beyond`); what to
+        // do about it is the caller's.
+        Rule::Elevated | Rule::ReadSecret => Kind::Reads,
     }
 }
 
@@ -268,8 +272,13 @@ const SYSTEM_FOLDERS: [&str; 4] = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/h
 
 /// What one unit does.
 fn unit_effect(unit: &Unit, context: &Context<'_>) -> Kind {
-    // A PowerShell word with quotes in it (`--contents="\\evil\s"`) is judged
-    // as the program receives it.
+    judge_unit(&received(unit), context)
+}
+
+/// The unit with its arguments as the program receives them: a PowerShell
+/// word with quotes in it (`--contents="\\evil\s"`) reaches the program with
+/// the quotes taken off, and is judged so.
+pub(crate) fn received(unit: &Unit) -> Cow<'_, Unit> {
     if unit.shell == Shell::PowerShell
         && unit
             .args
@@ -282,9 +291,9 @@ fn unit_effect(unit: &Unit, context: &Context<'_>) -> Kind {
                 *text = unquoted(text);
             }
         }
-        return judge_unit(&copy, context);
+        return Cow::Owned(copy);
     }
-    judge_unit(unit, context)
+    Cow::Borrowed(unit)
 }
 
 /// What one unit does, its arguments as the program receives them.
