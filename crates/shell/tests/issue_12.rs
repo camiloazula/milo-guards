@@ -756,6 +756,23 @@ fn a_backtick_u_that_makes_a_space_is_not_read_as_a_word() {
     }
 }
 
+/// A script that `cmd /c` or `bash -c` hands to PowerShell is only part of
+/// the string that holds the escape, and still splits on it.
+#[test]
+fn a_backtick_u_reaches_a_script_through_another_shell() {
+    let lines = [
+        "cmd /c \"pwsh -c Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse\"",
+        "cmd /c \"powershell -c Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse\"",
+        "cmd /c \"pwsh -Command Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse\"",
+        "bash -c \"pwsh -c 'Remove-Item`u{a0}C:\\Windows`u{a0}-Recurse'\"",
+        "cmd /c \"pwsh -c Get-Content`u{a0}~\\.ssh\\id_rsa\"",
+    ];
+    for line in &lines {
+        let assessment = classify(line, Shell::PowerShell, &windows());
+        assert!(!assessment.findings().is_empty(), "safe: {line}");
+    }
+}
+
 /// The same `` `u{…} `` in a string that is a path or an argument, not a
 /// script, is the text it holds: the place it names is still known, so a key
 /// it reaches is read and sent as it is without the escape.

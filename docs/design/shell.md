@@ -833,7 +833,10 @@ than a character when the text runs as code (a space that is not an ASCII one,
 such as U+00A0 or U+3000, which splits words; a dash from U+2013 to U+2015; a
 typographic quote from U+2018 to U+201E) leaves a script read from the string
 known only when it runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"`
-is `unknown`. As a path or any other argument the string is the text it holds:
+is `unknown`. So is a script that holds such a character wherever it is read
+from: `cmd /c "pwsh -c Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"` hands
+PowerShell only part of the string, and the guard asks about the character, not
+the whole string. As a path or any other argument the string is the text it holds:
 `Get-Content "~\x`u{a0}\..\.ssh\id_rsa"` reads the key.
 Several arguments to `Write-Output` or `echo` are one line
 each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;

@@ -472,14 +472,14 @@ impl Walker<'_> {
                 let end = literal.end_byte().saturating_sub(quotes).max(start);
                 let mut value = String::new();
                 let mut nulls = false;
-                let mut splits = false;
+                let mut splits = Vec::new();
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
                     let (before, made) = unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
                     );
-                    splits |= made;
+                    splits.extend(made);
                     value.push_str(&before);
                     if child.kind() != "variable" {
                         return Arg::Unknown(source.to_string());
@@ -497,7 +497,7 @@ impl Walker<'_> {
                 }
                 let (rest, made) =
                     unescape_expandable(self.source.get(at..end).unwrap_or_default());
-                splits |= made;
+                splits.extend(made);
                 value.push_str(&rest);
                 // A string of nothing but `$null` is still the device.
                 if nulls && value.is_empty() {
@@ -511,9 +511,7 @@ impl Walker<'_> {
                 };
                 // The value is the string as an argument; only a script read
                 // from it is not what it says (see `Split::note_splitting`).
-                if splits {
-                    self.split.note_splitting(&value);
-                }
+                self.split.note_splitting(&splits);
                 Arg::Known(value)
             }
             "verbatim_here_string_characters" => Arg::Known(
@@ -660,13 +658,13 @@ fn unescape(text: &str) -> String {
 /// What a backtick makes of the text in an expandable string or here-string:
 /// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
 /// other character after it is itself (`` `$ ``, `` `" ``). The second value
-/// says a `` `u{…} `` made a character that PowerShell reads as more than a
-/// character once the text is run as code (a space that is not an ASCII one,
+/// holds each character a `` `u{…} `` made that PowerShell reads as more than
+/// a character once the text is run as code (a space that is not an ASCII one,
 /// a dash or a quote that looks like another): as an argument the string is
 /// the text it holds, but read again as a script it is not the words it runs
 /// as.
-fn unescape_expandable(text: &str) -> (String, bool) {
-    let mut splits = false;
+fn unescape_expandable(text: &str) -> (String, Vec<char>) {
+    let mut splits = Vec::new();
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -697,7 +695,9 @@ fn unescape_expandable(text: &str) -> (String, bool) {
                     .filter(|_| closed)
                     .and_then(char::from_u32);
                 if let Some(decoded) = decoded {
-                    splits |= splits_words(decoded);
+                    if splits_words(decoded) {
+                        splits.push(decoded);
+                    }
                     value.push(decoded);
                 } else {
                     // Not a character: PowerShell does not run the line.
