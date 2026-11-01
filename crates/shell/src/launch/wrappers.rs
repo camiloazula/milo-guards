@@ -281,9 +281,11 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
                 // first one it does not know, so it starts the command text,
                 // and every argument after it is part of that text, whatever
                 // it looks like (`-wd -File x; ...` runs the `;` statement).
-                // Reading the rest as the script, from the argument after
-                // `-wd`, keeps `-wd C: -c ...` as the statements `C: -c ...`.
-                return Launch::Script(Shell::PowerShell, join(&args[at + 1..]));
+                // The text starts at `-wd` itself, so its first statement is
+                // `-wd ...`: a command that is not found, which runs nothing
+                // and moves nothing (`-wd Set-Location X; ...` does not
+                // change the folder, and the `;` statement after it runs).
+                return Launch::Script(Shell::PowerShell, join(&args[at..]));
             }
             *folder = args.get(at + 1).cloned();
             at += 2;

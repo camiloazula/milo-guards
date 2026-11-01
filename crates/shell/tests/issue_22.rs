@@ -531,14 +531,19 @@ fn a_started_powershell_runs_in_the_folder_its_working_directory_names() {
         r#"cd C:\Windows & pwsh -NoProfile -wd C: -c "Remove-Item System32 -Recurse""#,
         r#"pwsh -wd %X% -c "Remove-Item System32 -Recurse""#,
     ]);
-    // Windows PowerShell has no `-wd`: `-wd` itself starts the command text
-    // and `C: -c ...` follows it as statements, the line stays in
-    // `D:\ws\repo`, and nothing is deleted outside it.
+    // Windows PowerShell has no `-wd`: `-wd` itself starts the command text,
+    // so its first statement is `-wd C: -c ...`, a command that is not found,
+    // which runs nothing. The text is not a statement the guard reads, so
+    // the line is risky as unreadable, though nothing is deleted.
+    check(Shell::Cmd, &d_repo(), &[], &risky);
     check(
         Shell::Cmd,
         &d_repo(),
-        &[r#"cd C:\Windows & powershell -wd C: -c "Remove-Item System32 -Recurse""#],
-        &risky,
+        &[],
+        &[(
+            r#"cd C:\Windows & powershell -wd C: -c "Remove-Item System32 -Recurse""#,
+            Rule::Unreadable,
+        )],
     );
     check(
         Shell::PowerShell,
@@ -608,5 +613,196 @@ fn windows_powershell_reads_everything_after_working_directory_as_command_text()
             r#"powershell -wd -WindowStyle "x; Remove-Item -Recurse /etc;" -c Get-Date"#,
             r#"powershell -wd -Help "x; Remove-Item -Recurse /etc""#,
         ]),
+    );
+}
+
+/// Windows PowerShell's command text starts with `-wd` itself, so its first
+/// statement is `-wd ...`: a command that is not found, which runs nothing and
+/// moves nothing. A `Set-Location` after it is an argument of that statement,
+/// never run, so the statements after the first `;` run in the line's own
+/// folder (`C:\Windows` here), and each of these really deletes
+/// `C:\Windows\System32`.
+#[test]
+fn windows_powershell_does_not_run_the_statement_that_starts_at_working_directory() {
+    let moves = [
+        "Set-Location",
+        "cd",
+        "sl",
+        "chdir",
+        "Push-Location",
+        "pushd",
+    ];
+    let mut risky: Vec<String> = Vec::new();
+    for mover in moves {
+        risky.push(format!(
+            r"cd /d C:\Windows & powershell -wd {mover} C:\Users\me\dev\repo; Remove-Item -Recurse System32"
+        ));
+    }
+    risky.extend(
+        [
+            r#"cd /d C:\Windows & powershell -wd "Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32""#,
+            r"cd /d C:\Windows & powershell -WorkingDirectory cd C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell -NoProfile -wd Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell /wd Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell -wo Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell -work Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell -WorkingDir Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"cd /d C:\Windows & powershell.exe -wd Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+        ]
+        .map(str::to_string),
+    );
+    let risky: Vec<_> = risky
+        .iter()
+        .map(|line| (line.as_str(), Rule::Delete))
+        .collect();
+    check(Shell::Cmd, &windows(), &[], &risky);
+    check(Shell::PowerShell, &windows(), &[], &risky);
+    // Read from PowerShell, the same text.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &deletes(&[
+            r"Set-Location C:\Windows; powershell -wd 'Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32'",
+            r"Set-Location C:\Windows; powershell.exe -wd 'Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32'",
+            r"Set-Location C:\Windows; & powershell -wd 'Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32'",
+            r"Set-Location C:\Windows; powershell -wd Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+            r"Set-Location C:\Windows; powershell -wo Set-Location C:\Users\me\dev\repo; Remove-Item -Recurse System32",
+        ]),
+    );
+    // Two drives: the folder it names is not moved to either.
+    let two = deletes(&[
+        r"cd /d C:\Windows & powershell -wd Set-Location D:\ws\repo; Remove-Item -Recurse System32",
+        r"cd /d C:\Windows & powershell -wd Set-Location -Path C:\Users\me\repo; Remove-Item -Recurse System32",
+        r"cd /d C:\Windows & powershell -wd Set-Location -LiteralPath C:\Users\me\repo; Remove-Item -Recurse System32",
+    ]);
+    check(Shell::Cmd, &two_drives(), &[], &two);
+    check(Shell::PowerShell, &two_drives(), &[], &two);
+    // The text starting at `-wd` is not one the guard reads, so it is risky as
+    // unreadable and not guessed to be safe.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            (
+                r"powershell -wd Set-Location C:\Windows; Get-Date",
+                Rule::Unreadable,
+            ),
+            (
+                r"cd /d C:\Users\me\dev\repo\a & powershell -wd x; Remove-Item -Recurse b",
+                Rule::Unreadable,
+            ),
+        ],
+    );
+}
+
+/// A path on a drive's own working directory (`C:name`) is under the folder a
+/// `cd` without `/d` set on that drive, which is not the folder the line is
+/// in: `cd C:\Users\me\.ssh` from `D:` leaves the line where it was and makes
+/// `C:id_rsa` the key.
+#[test]
+fn a_path_on_a_drive_a_cd_set_is_read_under_the_folder_it_set() {
+    // The line starts on `D:`, home is on `C:`.
+    let z = d_repo();
+    let reads: Vec<_> = [
+        r"cd C:\Users\me\.ssh & copy C:id_rsa x.txt",
+        r"cd C:\Users\me\.ssh & type C:id_rsa",
+        r"cd C:\Users\me & copy C:.ssh\id_rsa x.txt",
+        r"cd C:\Users\me & type C:.ssh\id_rsa",
+        r"cd c:\Users\me\.ssh & type C:id_ed25519",
+        r"cd C:\Users\me\.ssh & type C:id_rsa & cd C:\Users\me\repo",
+        r"cd C:\Users\me\.ssh & more < C:id_rsa",
+        // A later `cd` on the drive moves from the folder it set.
+        r"cd C:\Users\me & cd C:.ssh & type C:id_rsa",
+        r"cd C:\Users\me & cd C:.ssh & copy C:id_rsa x.txt",
+    ]
+    .into_iter()
+    .map(|line| (line, Rule::ReadSecret))
+    .collect();
+    check(Shell::Cmd, &z, &[], &reads);
+    // A line that starts on `C:` and moves to `D:` with `cd /d`.
+    let x = Paths::new(
+        r"C:\Users\me\repo",
+        r"C:\Users\me",
+        [r"C:\Users\me\repo", r"D:\ws"],
+    );
+    // `cd D:\x` sets `D:`'s folder and the line stays on `C:`, so `y.txt` is
+    // in the workspace, and `D:id_rsa` is `D:\x\id_rsa`: a file of that name
+    // outside a key folder is not a place the guard calls a key (as
+    // `type D:\x\id_rsa` is not), so it reads safe.
+    check(
+        Shell::Cmd,
+        &x,
+        &[
+            r"cd D:\x & copy D:id_rsa y.txt",
+            r"cd D:\x & type D:id_rsa",
+            r"type D:\x\id_rsa",
+        ],
+        &[],
+    );
+    // A key folder on `D:` is one (home on `D:`).
+    check(
+        Shell::Cmd,
+        &Paths::new(
+            r"C:\Users\me\repo",
+            r"D:\Users\me",
+            [r"C:\Users\me\repo", r"D:\ws"],
+        ),
+        &[],
+        &[
+            (
+                r"cd D:\Users\me\.ssh & copy D:id_rsa y.txt",
+                Rule::ReadSecret,
+            ),
+            (r"cd D:\Users\me & type D:.ssh\id_rsa", Rule::ReadSecret),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &x,
+        &[],
+        &[
+            // On the drive the line is on, from the folder it moved to.
+            (r"cd C:\Users\me\.ssh & type C:id_rsa", Rule::ReadSecret),
+            (r"cd /d C:\Users\me\.ssh & type C:id_rsa", Rule::ReadSecret),
+            (
+                r"cd /d C:\Users\me\.ssh & copy C:id_rsa x.txt",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+    // A folder that is not a secret, and a name that is not one.
+    check(
+        Shell::Cmd,
+        &z,
+        &[
+            r"cd C:\Users\me\repo & type C:notes.txt",
+            r"cd C:\Users\me\.ssh & type D:notes.txt",
+            r"cd C:\Users\me\.ssh & cd C:\Users\me\repo & type C:notes.txt",
+            r"cd C:\Users\me\.ssh & copy x.txt y.txt",
+        ],
+        &[],
+    );
+    check(
+        Shell::Cmd,
+        &x,
+        &[
+            r"cd /d C:\Users\me\repo\a & type C:notes.txt",
+            r"cd /d C:\Users\me\repo\a & del C:*.obj",
+            r"cd D:\ws & type D:notes.txt",
+        ],
+        &[],
+    );
+    // A delete there is judged under the folder too.
+    check(
+        Shell::Cmd,
+        &z,
+        &[r"cd C:\Users\me\repo & rd /s /q C:build"],
+        &[
+            (r"cd C:\Windows & rd /s /q C:System32", Rule::Delete),
+            (r"cd C:\Windows & del /q C:System32\x.dll", Rule::Delete),
+            (r"cd C:\Windows & del /s /q C:*.dll", Rule::Delete),
+        ],
     );
 }

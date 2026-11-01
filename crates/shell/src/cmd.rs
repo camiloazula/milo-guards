@@ -82,6 +82,7 @@ impl Walker<'_> {
                 }
                 if let Some(own) = own {
                     for target in inputs {
+                        let target = self.split.on_drive(Shell::Cmd, target);
                         self.split.redirect(own.clone(), target, true);
                     }
                 }

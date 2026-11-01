@@ -394,11 +394,17 @@ read from that folder, and the line is put back where it was after. Windows
 PowerShell (`powershell`) has no `-WorkingDirectory`: it reads the first
 parameter it does not know (`-wd` itself) as the start of the command text, and
 every argument after it, whatever it looks like (`-File`, `-WindowStyle`),
-is part of that text, so what follows runs in the line's own folder. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
-is only known when it runs is somewhere unknown, so after `cd C:\Windows` from
-`D:` (which sets the working directory of `C:` and leaves the line on `D:`),
-`start /d C: cmd /c rd /s /q System32` deletes under `C:\Windows`, and is
-risky. A drive the started program is on is only a guess.
+is part of that text. The text starts at `-wd`, so its first statement is `-wd
+...`, a command that is not found: it runs nothing and moves nothing (`-wd
+Set-Location X; ...` does not change the folder), and what follows its first
+`;` runs in the line's own folder. The guard reads the text from `-wd` itself,
+so such a line is unreadable and risky, and a delete after the `;` is found.
+A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) is the
+folder a `cd` without `/d` set on that drive, and somewhere unknown when none
+did; a folder only known when it runs is somewhere unknown too. So after `cd
+C:\Windows` from `D:` (which sets the working directory of `C:` and leaves the
+line on `D:`), `start /d C: cmd /c rd /s /q System32` deletes under
+`C:\Windows`, and is risky. A drive the started program is on is only a guess.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
@@ -844,8 +850,17 @@ a path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. On the drive
   the working directory is on, it is relative to it; on any other drive it is
-  outside the workspace. After a `cd` it is unknown, except that after `cd C:`
-  a relative path is `C:x`, a path on that drive.
+  outside the workspace. In cmd, while the drive the line is on is certain,
+  after a `cd` on that drive `C:x` is `x` from the folder the line is in, and
+  after a `cd` without `/d` to another drive (`cd C:\Users\me\.ssh` from `D:`,
+  which sets that drive's working directory and leaves the line on `D:`) it is
+  under the folder that `cd` set, so `copy C:id_rsa x.txt` reads
+  `C:\Users\me\.ssh\id_rsa` and is judged as that key, and `x.txt` is in the
+  line's own folder. A later `cd C:sub` goes on from that folder. When the
+  folder is not known (the drive is only a guess, or the `cd` named a path from
+  the drive's own working directory that nothing set), `C:x` is unknown after a
+  `cd`, except that after `cd C:` a relative path is `C:x`, a path on that
+  drive.
 - A listing hands its pattern on as written, so it is read the same way: the
   drive is not part of the pattern (`Get-ChildItem C:* | Remove-Item` takes the
   whole working directory), and a provider-qualified one

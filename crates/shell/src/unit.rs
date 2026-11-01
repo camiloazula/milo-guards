@@ -395,6 +395,12 @@ pub(crate) struct Split {
     /// as it may sit in a branch, in a pipe stage or behind `start`, or fail,
     /// and then the line never left its drive.
     drive: (Option<char>, bool),
+    /// The working directory each drive other than the line's own has, when
+    /// a `cd` without `/d` set it (`cd C:\x` from `D:`), by drive letter: a
+    /// path on that drive's own working directory (`C:name`) is under it.
+    /// `Arg::Unknown` when the `cd` named a place that is not whole. Only
+    /// read while the line's drive is certain (see [`Split::on_drive`]).
+    drive_dirs: Vec<(char, Arg)>,
     /// The drive the home directory is on (upper case), `None` when it is
     /// on no drive: where a path that starts at home (`~`, which cmd's
     /// `%TEMP%` and `%USERPROFILE%` become) is.
@@ -518,6 +524,7 @@ pub(crate) struct Began {
 pub(crate) struct Place {
     dir: Option<Arg>,
     drive: (Option<char>, bool),
+    drive_dirs: Vec<(char, Arg)>,
     moves: usize,
     later: usize,
 }
@@ -562,6 +569,12 @@ impl Split {
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
+        if unit.shell == Shell::Cmd {
+            unit.args = std::mem::take(&mut unit.args)
+                .into_iter()
+                .map(|arg| self.on_drive(Shell::Cmd, arg))
+                .collect();
+        }
         unit.hidden = self.hidden();
         if let Some(change) = unit
             .key()
@@ -594,7 +607,7 @@ impl Split {
                 Shell::Posix => Effect::Moves(None, false),
             };
             match effect {
-                Effect::Stays => {}
+                Effect::Stays => self.set_drive_dir(&target, origin),
                 Effect::Unsure(drive) => {
                     self.moves += 1;
                     self.moved += 1;
@@ -620,6 +633,65 @@ impl Split {
             }
         }
         self.units.push(unit);
+    }
+
+    /// A `cd` without `/d` to `target` on a drive other than the line's own
+    /// sets that drive's working directory and leaves the line where it was:
+    /// note the folder, so a path on the drive's own working directory
+    /// (`C:name`) is read under it. A folder that is not a whole path (a
+    /// path from the drive's own working directory, which was not set before)
+    /// is only known when it runs.
+    fn set_drive_dir(&mut self, target: &Arg, origin: Origin) {
+        let Arg::Known(text) = target else { return };
+        let Named::On(letter) = named_drive(text, Shell::Cmd, origin, self.home_drive) else {
+            return;
+        };
+        let whole = text
+            .get(2..)
+            .is_some_and(|rest| rest.starts_with(['\\', '/']))
+            || at_home(text);
+        let dir = if whole {
+            target.clone()
+        } else {
+            Arg::Unknown(text.clone())
+        };
+        self.drive_dirs.retain(|(held, _)| *held != letter);
+        self.drive_dirs.push((letter, dir));
+    }
+
+    /// `arg`, a cmd argument, with a path on a drive's own working directory
+    /// (`C:name`, `C:`) put under the folder that is the working directory
+    /// of that drive, when the line knows it: the folder a `cd` without `/d`
+    /// set on a drive the line is not on, or the folder the line is in when
+    /// that is the drive it is certainly on. Left as written when the
+    /// working directory of that drive is the one the caller gave (no `cd`
+    /// has moved the line, and no other drive's folder was set) or when
+    /// which drive the line is on is not certain.
+    pub(crate) fn on_drive(&self, shell: Shell, arg: Arg) -> Arg {
+        let (Shell::Cmd, (Some(on), true), Arg::Known(text)) = (shell, self.drive, &arg) else {
+            return arg;
+        };
+        let Some(letter) = crate::path::drive_of(text) else {
+            return arg;
+        };
+        let rest = &text[2..];
+        if rest.starts_with(['\\', '/']) {
+            return arg;
+        }
+        let rest = if rest.is_empty() { "." } else { rest };
+        if letter == on {
+            // The line's own folder: what the resolver joins a relative path
+            // to. Without a `cd`, that is the caller's working directory.
+            return match self.dir {
+                Some(_) => Arg::Known(format!("./{rest}")),
+                None => arg,
+            };
+        }
+        match self.drive_dirs.iter().find(|(held, _)| *held == letter) {
+            Some((_, Arg::Known(dir))) => Arg::Known(format!("{dir}/{rest}")),
+            Some((_, Arg::Unknown(_))) => Arg::Unknown(text.clone()),
+            _ => arg,
+        }
     }
 
     /// Note that `inside`, a run of units, ran for the command whose own units
@@ -667,6 +739,7 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to.
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
+        let target = self.on_drive(shell, target);
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.write_in_body.push(self.writes.len());
@@ -693,6 +766,7 @@ impl Split {
     /// Add a redirect's read, made where the line has moved to.
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
+        let target = self.on_drive(shell, target);
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.read_in_body.push(self.reads.len());
@@ -910,6 +984,7 @@ impl Split {
         Place {
             dir: self.dir.clone(),
             drive: self.drive,
+            drive_dirs: self.drive_dirs.clone(),
             moves: self.moves,
             later: self.later.len(),
         }
@@ -969,6 +1044,7 @@ impl Split {
         }
         self.dir = place.dir;
         self.drive = place.drive;
+        self.drive_dirs = place.drive_dirs;
         self.moves = place.moves;
     }
 
