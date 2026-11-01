@@ -3,6 +3,8 @@
 //! whatever the host. Windows paths compare without case, as Windows does.
 //! Nothing reads the file system, so a symlink is judged by its own name.
 
+use std::path::PathBuf;
+
 use crate::spelling::glob::{self, Shape, WILDCARDS};
 use crate::{Paths, Place, ProtectedKind, Sensitivity};
 
@@ -131,6 +133,23 @@ impl Loc {
             self.parts.join("/")
         };
         format!("{root}|{parts}")
+    }
+
+    /// The path as text, as the system it is on writes it: `/a/b`, `C:\a\b`,
+    /// `\\server\share\a`.
+    fn render(&self) -> String {
+        let (root, separator) = match &self.root {
+            Root::Unix => ("/".to_string(), "/"),
+            Root::Drive(letter) => (format!("{letter}:\\"), "\\"),
+            Root::Unc(share) => (format!("\\\\{}\\", share.replace('/', "\\")), "\\"),
+        };
+        let text = format!("{root}{}", self.parts.join(separator));
+        // A share with nothing below it is written without a closing
+        // separator; a drive and the root keep theirs.
+        match (&self.root, self.parts.is_empty()) {
+            (Root::Unc(_), true) => text.trim_end_matches('\\').to_string(),
+            _ => text,
+        }
     }
 
     fn join(&self, parts: &[&str]) -> Self {
@@ -1073,6 +1092,25 @@ impl Resolver {
             return None;
         }
         Some(self.locate(path, flavour).key())
+    }
+
+    /// The absolute path `path` names, as it is spelled: `~` and `..` applied
+    /// and the working directory put in front of a relative one, and nothing
+    /// else read, so a symbolic link is not followed and a name is not folded
+    /// to the case the disk keeps. A Windows long path is written as the plain
+    /// path it names (`\\?\C:\x` is `C:\x`). `None` when the path is not one
+    /// definite place on a disk: a device, or a path on another drive's own
+    /// working directory (`D:x` from `C:`). A wildcard is not read: it is a
+    /// part of the name, so the caller says the folder it expands in.
+    #[must_use]
+    pub fn absolute(&self, path: Spelling<'_>, flavour: Flavour) -> Option<PathBuf> {
+        let device = matches!(path, Spelling::Plain(text) if device(text, flavour).is_some());
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if device || self.elsewhere(path, flavour) {
+            return None;
+        }
+        Some(PathBuf::from(self.locate_raw(path, flavour).render()))
     }
 
     /// The plain path a Windows long path names (`\\?\C:\x` is `C:\x`,

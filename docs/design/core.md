@@ -456,6 +456,12 @@ path made absolute, with the working directory and `~` applied.
   pattern is read as the shell reads it, `hidden` being a shell whose wildcards
   match a leading dot (Windows ones always do). A path known only when it runs
   may reach any, so it does. It does not change `place`.
+- `absolute(path, flavour)` is the absolute path a spelling names, as spelled:
+  `~` and `..` applied and the working directory put in front of a relative
+  path, the links and the case left alone, a Windows long path written as the
+  plain path it names. It is `None` for what is not one place on a disk: a
+  device, or a path on another drive's own working directory. A wildcard is not
+  read; the caller says the folder a pattern expands in.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 
