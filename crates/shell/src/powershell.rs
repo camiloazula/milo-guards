@@ -675,9 +675,8 @@ fn unescape(text: &str) -> String {
 }
 
 /// Switch parameters (they take no value) that the rules meet.
-const SWITCHES: [&str; 18] = [
+const SWITCHES: [&str; 17] = [
     "recurse",
-    "file",
     "force",
     "whatif",
     "confirm",
@@ -770,12 +769,15 @@ impl<'a> Params<'a> {
     /// value parameter would swallow the folder for (`-s`, the alias of
     /// `-Recurse`, reads as a prefix of `-Scope`; `-ar`, the alias of
     /// `-ReadOnly`, of `-ArgumentList`; `-Name` and its prefixes are
-    /// `Get-ChildItem`'s switch, not the item's `-Name`) are read as switches,
+    /// `Get-ChildItem`'s switch, not the item's `-Name`; `-File` is its
+    /// switch, while for `Tee-Object`, `Out-File` or `Start-Process` its
+    /// prefixes are the value parameters `-FilePath` and `-Filter`) are read
+    /// as switches,
     /// and `-Attributes` and `-Depth` take a value.
     pub(crate) fn read_listing(args: &'a [Arg]) -> Self {
         Self::read_with(
             args,
-            &["s", "ar", "n", "na", "nam", "name"],
+            &["s", "ar", "n", "na", "nam", "name", "file"],
             &LISTING_VALUES,
         )
     }

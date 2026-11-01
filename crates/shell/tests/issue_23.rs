@@ -1075,6 +1075,75 @@ fn item_property_cmdlets_judge_the_path_when_a_parameter_hides_it() {
     );
 }
 
+/// `-File`, `-Fil` and `-Fi` are a switch only for a listing; for every other
+/// cmdlet they abbreviate `-FilePath` (or `-Filter`), which takes a value, so
+/// the path or program that follows is still judged when a value parameter the
+/// guard does not know comes before it.
+#[test]
+fn a_shortened_filepath_is_not_read_as_the_file_switch() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            ("Tee-Object -InputObject a -File ~\\.bashrc", Rule::Overwrite),
+            ("Tee-Object -InputObject a -Fil ~\\.bashrc", Rule::Overwrite),
+            (
+                "Tee-Object -InputObject a -File ~\\.bashrc -Append",
+                Rule::Overwrite,
+            ),
+            (
+                "Tee-Object -InputObject a -Append -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "'x' | Tee-Object -InputObject a -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "Tee-Object -InputObject a -File C:\\Windows\\System32\\drivers\\etc\\hosts",
+                Rule::Overwrite,
+            ),
+            ("Out-File -InputObject a -File ~\\.bashrc", Rule::Overwrite),
+            ("Out-File -InputObject a -Fil ~\\.bashrc", Rule::Overwrite),
+            ("Out-File -InputObject a -Fi ~\\.bashrc", Rule::Overwrite),
+            (
+                "Out-File -Encoding utf8 -InputObject a -File ~\\.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -Fi cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "saps -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "start -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -WindowStyle Hidden -File cmd.exe '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            (
+                "Start-Process -RedirectStandardOutput o.txt -File cmd.exe -ArgumentList '/c rd /s /q C:\\'",
+                Rule::Delete,
+            ),
+            ("Set-Acl -Fil x ~\\.ssh $a", Rule::Permissions),
+        ],
+    );
+}
+
 #[test]
 fn an_array_or_hashtable_is_not_a_splat() {
     check(
