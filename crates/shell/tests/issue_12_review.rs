@@ -247,6 +247,8 @@ fn each_client_reads_its_own_quoting() {
         &[
             // PostgreSQL's `$tag$` and `E'…'` strings, and nested comments.
             "psql -c 'SELECT $a$; DROP TABLE t; $a$'",
+            // DuckDB's parser is PostgreSQL's, so it has `$tag$` strings too.
+            "duckdb ~/x.db 'SELECT $a$; DROP TABLE t; SELECT $a$'",
             r#"psql -c "SELECT E'a\\'; DROP TABLE t; --'""#,
             r#"psql -c "/* /* ; DROP TABLE t */ */ SELECT 1""#,
             // Comments do not nest in MySQL and SQLite: the string after the
@@ -271,10 +273,6 @@ fn each_client_reads_its_own_quoting() {
             // SQLite has no `$tag$` string.
             (
                 "sqlite3 ~/x.db 'SELECT $a$; DROP TABLE t; SELECT $a$'",
-                Rule::DropData,
-            ),
-            (
-                "duckdb ~/x.db 'SELECT $a$; DROP TABLE t; SELECT $a$'",
                 Rule::DropData,
             ),
             // MySQL and MariaDB read `$$` as an identifier.

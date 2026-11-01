@@ -25,6 +25,10 @@ struct Client {
     short_optional: &'static str,
     /// Long options that take a value.
     long_values: &'static [&'static str],
+    /// Long options that take none. With `long_values` they are every long
+    /// option the client has: a name that is the start of only one of them
+    /// is that option.
+    long_flags: &'static [&'static str],
     /// Long options whose value is a statement.
     long_statement: &'static [&'static str],
     /// Whether short options bundle (`-Atc`), or each is a word (`-Q`).
@@ -61,6 +65,30 @@ const PSQL: Client = Client {
         "set",
         "variable",
     ],
+    long_flags: &[
+        "echo-all",
+        "no-align",
+        "echo-queries",
+        "echo-errors",
+        "echo-hidden",
+        "html",
+        "list",
+        "no-readline",
+        "single-transaction",
+        "quiet",
+        "single-step",
+        "single-line",
+        "tuples-only",
+        "version",
+        "no-password",
+        "password",
+        "expanded",
+        "no-psqlrc",
+        "help",
+        "csv",
+        "field-separator-zero",
+        "record-separator-zero",
+    ],
     long_statement: &["command"],
     bundles: true,
     slash: false,
@@ -93,6 +121,52 @@ const MYSQL: Client = Client {
         "plugin-dir",
         "login-path",
     ],
+    long_flags: &[
+        "auto-rehash",
+        "no-auto-rehash",
+        "auto-vertical-output",
+        "batch",
+        "binary-as-hex",
+        "binary-mode",
+        "column-names",
+        "skip-column-names",
+        "column-type-info",
+        "comments",
+        "skip-comments",
+        "compress",
+        "connect-expired-password",
+        "debug-check",
+        "debug-info",
+        "enable-cleartext-plugin",
+        "force",
+        "help",
+        "html",
+        "ignore-spaces",
+        "line-numbers",
+        "skip-line-numbers",
+        "named-commands",
+        "no-beep",
+        "no-defaults",
+        "one-database",
+        "pipe",
+        "print-defaults",
+        "quick",
+        "raw",
+        "reconnect",
+        "safe-updates",
+        "i-am-a-dummy",
+        "show-warnings",
+        "sigint-ignore",
+        "silent",
+        "ssl",
+        "tee",
+        "unbuffered",
+        "verbose",
+        "version",
+        "vertical",
+        "wait",
+        "xml",
+    ],
     long_statement: &["execute", "init-command"],
     bundles: true,
     slash: false,
@@ -116,6 +190,23 @@ const CLICKHOUSE: Client = Client {
         "query_id",
         "secure-port",
     ],
+    long_flags: &[
+        "help",
+        "version",
+        "verbose",
+        "multiline",
+        "multiquery",
+        "time",
+        "stacktrace",
+        "progress",
+        "echo",
+        "secure",
+        "vertical",
+        "ask-password",
+        "no-warnings",
+        "disable_suggestion",
+        "highlight",
+    ],
     long_statement: &["query"],
     bundles: true,
     slash: false,
@@ -127,6 +218,7 @@ const SQLCMD: Client = Client {
     short_statement: "Qq",
     short_optional: "",
     long_values: &["query", "initial-query", "server", "user-name", "password"],
+    long_flags: &["help", "version", "trust-server-certificate"],
     long_statement: &["query", "initial-query"],
     bundles: false,
     slash: true,
@@ -150,6 +242,17 @@ const CQLSH: Client = Client {
         "cqlshrc",
         "protocol-version",
         "browser",
+    ],
+    long_flags: &[
+        "help",
+        "version",
+        "color",
+        "no-color",
+        "debug",
+        "ssl",
+        "no-file-io",
+        "tty",
+        "secure-connect-bundle",
     ],
     long_statement: &["execute"],
     bundles: true,
@@ -180,6 +283,26 @@ const MONGO: Client = Client {
         "sslPEMKeyFile",
         "sslPEMKeyPassword",
         "setName",
+    ],
+    long_flags: &[
+        "shell",
+        "nodb",
+        "norc",
+        "ipv6",
+        "quiet",
+        "json",
+        "verbose",
+        "help",
+        "version",
+        "tls",
+        "tlsAllowInvalidCertificates",
+        "tlsAllowInvalidHostnames",
+        "tlsUseSystemCA",
+        "ssl",
+        "apiStrict",
+        "apiDeprecationErrors",
+        "retryWrites",
+        "redactInfo",
     ],
     long_statement: &["eval"],
     bundles: true,
@@ -230,13 +353,53 @@ fn carry(rest: &str, holes: bool, unknown: bool) -> Arg {
     }
 }
 
-/// Whether `name` is the long option `long`, or a prefix of it long enough to
-/// be one (clients read unique abbreviations).
-fn long_is(name: &str, long: &str) -> bool {
-    name == long || (name.len() >= 3 && long.starts_with(name))
+/// What a long option of a client does with what follows it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Long {
+    /// Its value is a statement.
+    Statement,
+    /// It takes a value.
+    Value,
+    /// It takes none, or is not an option of the client.
+    Flag,
 }
 
 impl Client {
+    /// The long option `name` is: the option of that name, or else the only
+    /// one that starts with it (`getopt_long` and the clients' own parsers
+    /// read any unique abbreviation: `psql --co` is `--command`, `--c` is
+    /// ambiguous with `--csv` and runs nothing), with `_` read as `-` where
+    /// no option has the name as it is written.
+    fn long_option(&self, name: &str) -> Long {
+        let long = self.long_option_spelled(name);
+        // `mysql --init_command` is `--init-command`.
+        if long == Long::Flag && name.contains('_') {
+            return self.long_option_spelled(&name.replace('_', "-"));
+        }
+        long
+    }
+
+    fn long_option_spelled(&self, name: &str) -> Long {
+        let all = || self.long_values.iter().chain(self.long_flags);
+        let kind = |option: &str| {
+            if self.long_statement.contains(&option) {
+                Long::Statement
+            } else if self.long_values.contains(&option) {
+                Long::Value
+            } else {
+                Long::Flag
+            }
+        };
+        if all().any(|option| *option == name) {
+            return kind(name);
+        }
+        let mut starts = all().filter(|option| option.starts_with(name));
+        match (starts.next(), starts.next()) {
+            (Some(option), None) if !name.is_empty() => kind(option),
+            _ => Long::Flag,
+        }
+    }
+
     /// The statements the command line gives, from the options that carry
     /// one.
     fn statements(&self, args: &[Arg]) -> Vec<Arg> {
@@ -255,15 +418,14 @@ impl Client {
                     Some((name, value)) => (name, Some(value)),
                     None => (name, None),
                 };
-                let statement = self.long_statement.iter().any(|long| long_is(name, long));
-                let takes = statement || self.long_values.contains(&name);
+                let long = self.long_option(name);
                 if let Some(value) = value {
-                    if statement {
+                    if long == Long::Statement {
                         found.push(carry(value, holes, unknown));
                     }
-                } else if takes {
+                } else if long != Long::Flag {
                     let next = iter.next();
-                    if statement {
+                    if long == Long::Statement {
                         found.extend(next.cloned());
                     }
                 }
@@ -522,6 +684,11 @@ const REDIS_VALUES: &[&str] = &[
     "--lru-test",
     "--memkeys-samples",
     "--keystats-samples",
+    "--cacertdir",
+    "--show-pushes",
+    "-X",
+    "--quoted-pattern",
+    "--intrinsic-latency",
 ];
 
 /// `redis-cli [options] COMMAND [ARGUMENT…]`: the operands. `--cluster call
@@ -548,14 +715,52 @@ fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
     operands
 }
 
+/// How many readings of what a program says are kept: as written, and as
+/// each of the shells that differ in what they decode prints it.
+const READINGS: usize = 4;
+
 /// What a piped `echo`, `printf` or `Write-Output` says: the text of its
-/// words as they are written, and as it prints them.
+/// words as they are written (the first), and as each shell prints it (the
+/// others, see [`SHELLS`]).
 struct Said {
-    written: Arg,
-    printed: Arg,
+    texts: [Arg; READINGS],
     /// Whether it ends the text with a newline.
     newline: bool,
 }
+
+/// What a shell decodes where shells differ. A line is read as every one of
+/// them says it: it is not known which shell runs the line.
+#[derive(Clone, Copy)]
+struct Quirks {
+    /// `\xHH`: dash leaves it as written.
+    hex: bool,
+    /// `\NNN` with no 0 in front, in `echo -e` and `%b`: bash's `echo` and
+    /// zsh's leave it as written.
+    bare: bool,
+    /// `\"`, `\'` and `\?` in a `printf` format: bash decodes them, zsh and
+    /// dash leave them as written.
+    quotes: bool,
+}
+
+/// Bash (`printf`, `%b`), zsh (`printf`, `%b`, `echo`, and bash's `echo -e`)
+/// and dash (`printf`, `%b`, `echo`).
+const SHELLS: [Quirks; 3] = [
+    Quirks {
+        hex: true,
+        bare: true,
+        quotes: true,
+    },
+    Quirks {
+        hex: true,
+        bare: false,
+        quotes: false,
+    },
+    Quirks {
+        hex: false,
+        bare: true,
+        quotes: false,
+    },
+];
 
 const NOTHING_KNOWN: Arg = Arg::Unknown(String::new());
 
@@ -567,13 +772,47 @@ const MAX_PRODUCERS: usize = 256;
 /// is `unknown`.
 const TEXT_LIMIT: usize = 1 << 18;
 
+/// What an escape is, as a program reads it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reads {
+    /// A `printf` format: `\NNN` is one to three octal digits, the 0 in front
+    /// counting as one, and an escape it does not know is not read.
+    Format,
+    /// `echo -e` and `printf`'s `%b`: `\0NNN` is a 0 and up to three octal
+    /// digits, `\c` ends the output, and what is not an escape stays as
+    /// written.
+    Echo,
+}
+
+/// What the escape at the front of the text is.
+enum Escape {
+    /// Decoded, and put on the output.
+    Decoded,
+    /// `\c`: the output ends.
+    Ends,
+    /// Not decoded here: the backslash stays as written.
+    Literal,
+    /// Not read the same way by every shell: the text is not known.
+    Unknown,
+}
+
 /// The one escape that starts at the front of `chars` (the backslash already
-/// read), and what it stands for, put on `out`. `Some(true)` is `\c`, which
-/// ends the output; `None` is an escape that is not decoded here, with
-/// `chars` left where it was.
-fn escape(chars: &mut std::str::Chars<'_>, out: &mut String) -> Option<bool> {
+/// read), and what it stands for, put on `out`. The text is left where it was
+/// unless the escape was decoded.
+fn escape(
+    chars: &mut std::str::Chars<'_>,
+    out: &mut String,
+    reads: Reads,
+    shell: Quirks,
+) -> Escape {
+    let not_read = match reads {
+        Reads::Format => Escape::Unknown,
+        Reads::Echo => Escape::Literal,
+    };
     let mut ahead = chars.clone();
-    let c = ahead.next()?;
+    let Some(c) = ahead.next() else {
+        return not_read;
+    };
     let digits = |ahead: &mut std::str::Chars<'_>, radix: u32, most: usize, mut value: u32| {
         let mut count = 0;
         while count < most {
@@ -587,7 +826,14 @@ fn escape(chars: &mut std::str::Chars<'_>, out: &mut String) -> Option<bool> {
         (value, count)
     };
     let value = match c {
-        '\\' | '"' | '\'' => u32::from(c),
+        '\\' => u32::from(c),
+        '"' | '\'' | '?' if reads == Reads::Format => {
+            if shell.quotes {
+                u32::from(c)
+            } else {
+                return Escape::Literal;
+            }
+        }
         'n' => 10,
         't' => 9,
         'r' => 13,
@@ -595,54 +841,65 @@ fn escape(chars: &mut std::str::Chars<'_>, out: &mut String) -> Option<bool> {
         'b' => 8,
         'f' => 12,
         'v' => 11,
-        'c' => {
+        'c' if reads == Reads::Echo => {
             *chars = ahead;
-            return Some(true);
+            return Escape::Ends;
         }
-        'x' => match digits(&mut ahead, 16, 2, 0) {
-            (_, 0) => return None,
+        'x' if shell.hex => match digits(&mut ahead, 16, 2, 0) {
+            (_, 0) => return not_read,
             (value, _) => value,
         },
+        'x' => return Escape::Literal,
         '0'..='7' => {
-            let first = c.to_digit(8)?;
-            digits(&mut ahead, 8, if c == '0' { 3 } else { 2 }, first).0
+            let Some(first) = c.to_digit(8) else {
+                return not_read;
+            };
+            match reads {
+                Reads::Format => digits(&mut ahead, 8, 2, first).0,
+                Reads::Echo if c == '0' => digits(&mut ahead, 8, 3, first).0,
+                Reads::Echo if shell.bare => digits(&mut ahead, 8, 2, first).0,
+                Reads::Echo => return Escape::Literal,
+            }
         }
-        _ => return None,
+        _ => return not_read,
     };
     // Only ASCII: a byte of a longer character is not text here.
-    out.push(char::from_u32(value).filter(|c| c.is_ascii() && *c != '\0')?);
+    let Some(decoded) = char::from_u32(value).filter(|c| c.is_ascii() && *c != '\0') else {
+        return not_read;
+    };
+    out.push(decoded);
     *chars = ahead;
-    Some(false)
+    Escape::Decoded
 }
 
-/// What `echo -e` prints for `text`: its escapes decoded, and one that is not
-/// an escape left as written.
-fn echoed(text: &str) -> String {
+/// What `echo -e` prints for `text` in `shell`: its escapes decoded, and one
+/// that is not an escape left as written. Also whether a `\c` ended it.
+fn echoed(text: &str, shell: Quirks) -> (String, bool) {
     let mut out = String::new();
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            match escape(&mut chars, &mut out) {
-                Some(true) => break,
-                Some(false) => {}
-                None => out.push('\\'),
+            match escape(&mut chars, &mut out, Reads::Echo, shell) {
+                Escape::Ends => return (out, true),
+                Escape::Decoded => {}
+                Escape::Literal | Escape::Unknown => out.push('\\'),
             }
         } else {
             out.push(c);
         }
     }
-    out
+    (out, false)
 }
 
 /// The longest text `printf` is read to print: a line is no longer than that,
 /// so more is a format blown up on purpose, and is not read.
 const PRINTED_LIMIT: usize = 1 << 16;
 
-/// What `printf FORMAT ARGUMENT…` prints, as `printf` reads it: the format's
-/// escapes and `%s`, `%b`, `%d` and `%%` filled from the arguments, and the
-/// format used again while arguments are left. `None` for any other
-/// directive or escape.
-fn printed(format: &str, args: &[&str]) -> Option<String> {
+/// What `printf FORMAT ARGUMENT…` prints in `shell`, as `printf` reads it:
+/// the format's escapes and `%s`, `%b`, `%d` and `%%` filled from the
+/// arguments, the format used again while arguments are left. `None` for any
+/// other directive or escape.
+fn printed(format: &str, args: &[&str], shell: Quirks) -> Option<String> {
     let mut out = String::new();
     let mut used = 0;
     loop {
@@ -650,11 +907,11 @@ fn printed(format: &str, args: &[&str]) -> Option<String> {
         let mut chars = format.chars();
         while let Some(c) = chars.next() {
             match c {
-                '\\' => {
-                    if escape(&mut chars, &mut out)? {
-                        return Some(out);
-                    }
-                }
+                '\\' => match escape(&mut chars, &mut out, Reads::Format, shell) {
+                    Escape::Decoded => {}
+                    Escape::Literal => out.push('\\'),
+                    Escape::Ends | Escape::Unknown => return None,
+                },
                 '%' => {
                     let arg = args.get(used).copied();
                     match chars.next()? {
@@ -665,7 +922,11 @@ fn printed(format: &str, args: &[&str]) -> Option<String> {
                         }
                         'b' => {
                             used += 1;
-                            out.push_str(&echoed(arg.unwrap_or_default()));
+                            let (text, ended) = echoed(arg.unwrap_or_default(), shell);
+                            out.push_str(&text);
+                            if ended {
+                                return Some(out);
+                            }
                         }
                         'd' | 'i' => {
                             used += 1;
@@ -712,7 +973,7 @@ fn echo_option(text: &str) -> bool {
 }
 
 /// What a piped `echo` says. A POSIX `echo` may decode escapes (`sh`, `zsh`,
-/// `echo -e`), so the text is read as written and as decoded.
+/// `echo -e`), so the text is read as written and as each shell decodes it.
 fn echo_said(unit: &Unit) -> Said {
     let mut newline = true;
     let mut rest = unit.args.as_slice();
@@ -728,20 +989,22 @@ fn echo_said(unit: &Unit) -> Said {
     let words: Vec<&Arg> = rest.iter().collect();
     let Some((text, holes)) = joined(&words) else {
         return Said {
-            written: NOTHING_KNOWN,
-            printed: NOTHING_KNOWN,
+            texts: [NOTHING_KNOWN; READINGS],
             newline,
         };
     };
     let written = attached(&text, holes);
-    let printed = if unit.shell == Shell::Posix {
-        attached(&echoed(&text), holes)
-    } else {
-        written.clone()
+    let decoded = |shell: Option<&Quirks>| match shell {
+        Some(shell) if unit.shell == Shell::Posix => attached(&echoed(&text, *shell).0, holes),
+        _ => written.clone(),
     };
     Said {
-        written,
-        printed,
+        texts: [
+            written.clone(),
+            decoded(SHELLS.first()),
+            decoded(SHELLS.get(1)),
+            decoded(SHELLS.get(2)),
+        ],
         newline,
     }
 }
@@ -776,16 +1039,21 @@ fn printf_said(unit: &Unit) -> Said {
             holey |= hole;
             args.push(word);
         }
-        Some(attached(&printed(format, &args)?, holey))
+        // Every shell's reading of it, or none when one cannot be read.
+        let mut texts = Vec::new();
+        for shell in &SHELLS {
+            texts.push(attached(&printed(format, &args, *shell)?, holey));
+        }
+        Some(texts)
     });
     let said = match (said, format) {
-        (None, Some(_)) => NOTHING_KNOWN,
-        (None, None) => attached("", false),
+        (None, Some(_)) => vec![NOTHING_KNOWN; SHELLS.len()],
+        (None, None) => vec![attached("", false); SHELLS.len()],
         (Some(said), _) => said,
     };
+    let text = |at: usize| said.get(at).cloned().unwrap_or(NOTHING_KNOWN);
     Said {
-        written: said.clone(),
-        printed: said,
+        texts: [text(0), text(0), text(1), text(2)],
         newline: false,
     }
 }
@@ -795,8 +1063,7 @@ fn output_said(unit: &Unit) -> Said {
     let words: Vec<&Arg> = unit.args.iter().collect();
     let said = joined(&words).map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes));
     Said {
-        written: said.clone(),
-        printed: said,
+        texts: [said.clone(), said.clone(), said.clone(), said],
         newline: true,
     }
 }
@@ -817,6 +1084,17 @@ fn together<'a>(said: impl Iterator<Item = (&'a Arg, bool)>) -> Arg {
         }
     }
     attached(&text, holes)
+}
+
+/// `texts` without one that is the same as an earlier one.
+fn unique<'a>(texts: impl Iterator<Item = &'a Arg>) -> Vec<&'a Arg> {
+    let mut found: Vec<&Arg> = Vec::new();
+    for text in texts {
+        if !found.contains(&text) {
+            found.push(text);
+        }
+    }
+    found
 }
 
 impl Checker<'_> {
@@ -857,27 +1135,31 @@ impl Checker<'_> {
         }
         let size: usize = said
             .iter()
-            .map(|each| each.written.text().len() + each.printed.text().len())
+            .map(|each| {
+                unique(each.texts.iter())
+                    .iter()
+                    .map(|text| text.text().len())
+                    .sum::<usize>()
+            })
             .sum();
         if size > TEXT_LIMIT {
             found.push(NOTHING_KNOWN);
             return found;
         }
         for each in &said {
-            found.push(each.written.clone());
-            if each.printed != each.written {
-                found.push(each.printed.clone());
-            }
+            found.extend(unique(each.texts.iter()).into_iter().cloned());
         }
         // What they say one after the other can be a statement that none says
-        // alone.
+        // alone, in each reading the same way.
         if said.len() > 1 {
-            found.push(together(
-                said.iter().map(|each| (&each.written, each.newline)),
-            ));
-            found.push(together(
-                said.iter().map(|each| (&each.printed, each.newline)),
-            ));
+            let whole: Vec<Arg> = (0..READINGS)
+                .map(|reading| {
+                    together(said.iter().filter_map(|each| {
+                        each.texts.get(reading).map(|text| (text, each.newline))
+                    }))
+                })
+                .collect();
+            found.extend(unique(whole.iter()).into_iter().cloned());
         }
         found
     }
@@ -1020,7 +1302,7 @@ impl Checker<'_> {
                         .iter()
                         .skip(1)
                         .any(|arg| matches!(arg, Arg::Input) || arg.is_unknown());
-                    if deletes && found && self.scans_keys() {
+                    if deletes && found && self.line_scans_keys() {
                         reading.destroys = true;
                     }
                 }
@@ -1034,6 +1316,16 @@ impl Checker<'_> {
             }
         }
         self.judge(reading, target, false);
+    }
+
+    /// Whether the line lists keys in Redis, worked out once for the line.
+    fn line_scans_keys(&mut self) -> bool {
+        if let Some(scans) = self.scans_keys {
+            return scans;
+        }
+        let scans = self.scans_keys();
+        self.scans_keys = Some(scans);
+        scans
     }
 
     /// Whether the line lists keys in Redis: `redis-cli --scan`, `keys` or

@@ -702,17 +702,46 @@ impl Walker<'_> {
         match node.kind() {
             "herestring_redirect" => Some(self.arg(node.named_children(&mut cursor).next()?)),
             "heredoc_redirect" => {
-                let Some(body) = node
-                    .named_children(&mut cursor)
-                    .find(|child| child.kind() == "heredoc_body")
-                else {
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let kind = |kind: &str| children.iter().find(|child| child.kind() == kind);
+                let body = kind("heredoc_body");
+                let opened = kind("heredoc_start").map(|start| start.end_position().row);
+                // A first line that starts with a backslash is read as
+                // arguments of the redirect, not as the start of the body;
+                // the body is what is on the lines after the one that
+                // opens it.
+                let mut arguments = node.walk();
+                let lost: Vec<Node<'_>> = node
+                    .children_by_field_name("argument", &mut arguments)
+                    .filter(|argument| {
+                        opened.is_some_and(|row| argument.start_position().row > row)
+                    })
+                    .collect();
+                let from = lost
+                    .iter()
+                    .map(Node::start_byte)
+                    .chain(body.map(Node::start_byte))
+                    .min();
+                let end = kind("heredoc_end")
+                    .map(Node::start_byte)
+                    .or_else(|| body.map(Node::end_byte));
+                let (Some(from), Some(end)) = (from, end) else {
                     return Some(Arg::Known(String::new()));
                 };
-                let text = unit::text(&body, self.source).to_string();
-                let mut cursor = body.walk();
-                let expands = body
-                    .named_children(&mut cursor)
-                    .any(|part| part.kind() != "heredoc_content");
+                // From the start of its line.
+                let from = self
+                    .source
+                    .get(..from)
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |newline| newline + 1);
+                let text = self.source.get(from..end).unwrap_or_default().to_string();
+                let mut expands = lost.iter().any(|argument| argument.kind() != "word");
+                if let Some(body) = body {
+                    let mut parts = body.walk();
+                    expands |= body
+                        .named_children(&mut parts)
+                        .any(|part| part.kind() != "heredoc_content");
+                }
                 Some(if expands {
                     Arg::Template {
                         source: text.clone(),

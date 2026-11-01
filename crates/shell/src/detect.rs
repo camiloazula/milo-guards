@@ -53,6 +53,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         downloaders: HashMap::new(),
         producers: HashMap::new(),
         stages: HashMap::new(),
+        scans_keys: None,
         flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
@@ -116,6 +117,9 @@ struct Checker<'a> {
     /// Every unit at each pipeline stage, by its index in the split: a stage
     /// can be a group of several.
     stages: HashMap<(usize, usize), Vec<usize>>,
+    /// Whether the line lists keys in Redis, once worked out: every
+    /// `redis-cli del` that is given keys asks, and the answer is the line's.
+    scans_keys: Option<bool>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,

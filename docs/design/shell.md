@@ -470,11 +470,18 @@ piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
 says. A stage that is a group (`{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } |
 psql`) is read program by program, and as the one text they say in turn
 (`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
-format: `\n \t \\ \xHH \NNN` and the other single-character escapes, and `%s`,
-`%b`, `%d` and `%%` filled from the arguments, the format used again while
-arguments are left; any other directive or escape makes the text `unknown`.
-`echo` is read as written and as decoded, since `sh`, `zsh` and `echo -e`
-turn `\n` into a newline. A file of statements (`psql -f
+format: `\n \t \\ \xHH` and the other single-character escapes, `\NNN` as one
+to three octal digits with the 0 in front counting as one (`\0121` is a newline
+and a `1`), and `%s`, `%b`, `%d` and `%%` filled from the arguments, the format
+used again while arguments are left; any other directive or escape (and `\c`,
+which shells read differently in a format) makes the text `unknown`. `%b` and
+`echo -e` take `\0NNN`, and `\c` ends their output. `echo` is read as written
+and as decoded, since `sh`, `zsh` and `echo -e` turn `\n` into a newline.
+Where shells differ in what they decode, the text is read as each of bash, zsh
+and dash prints it, and a statement any of them shows counts: dash leaves
+`\xHH` as written (and decodes `\n` next to it), bash's `echo -e` and zsh's
+leave `\NNN` with no 0 in front, and zsh and dash leave `\"`, `\'` and `\?` in a
+format. A file of statements (`psql -f
 migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
 the workspace's own code and is safe, as `python3 scripts/gen.py` is.
 
@@ -491,8 +498,11 @@ the workspace's own code and is safe, as `python3 scripts/gen.py` is.
 | `cqlsh` | `-e`, `--execute` |
 
 Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
-`--command=SQL`), and a long option may be shortened as far as three letters
-(`--comm`).
+`--command=SQL`), and a long option may be any unique start of one of the
+client's long options, as `getopt_long` reads it: `psql --co` is `--command`,
+while `--c` starts both `--command` and `--csv`, is ambiguous, and psql
+refuses to run it, so it is no statement option. `mysql` reads `_` as `-`
+(`--init_command`).
 
 **What destroys.**
 
@@ -502,15 +512,33 @@ Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
   none. A `WHERE` belongs to its own statement: in a batch with no `;`, the
   `WHERE` of a later `SELECT`, `EXEC` or `PRINT` is not the `UPDATE`'s
   (`UPDATE t SET a = 1 SELECT 1 WHERE b = 2` updates every row).
-  `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT
-  UPDATE` and `THEN DELETE` after a `WHEN [NOT] MATCHED` of a `MERGE` are
-  parts of other statements, and `TRUNCATE(x)` is a function; a `THEN DELETE`
-  anywhere else (`IF x THEN DELETE FROM t`, `EXCEPTION WHEN OTHERS THEN
-  DELETE FROM t`) is a statement. A `DROP` that takes away no data is none:
-  `DROP NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP EXPRESSION`, `DROP
-  CONSTRAINT` and `ON COMMIT DROP`; `DROP COLUMN`, `DROP PARTITION` and a bare
-  `DROP` are. `DELETE` and `UPDATE` inside a `WITH` or after `EXPLAIN ANALYZE`
-  count. `DO $$ … $$` is read as the statements it holds.
+  `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT UPDATE` and `THEN
+  DELETE` after a `WHEN [NOT] MATCHED` of a `MERGE` are parts of other
+  statements, and `TRUNCATE(x)` is a function; a `THEN DELETE` anywhere else
+  (`IF x THEN DELETE FROM t`, `EXCEPTION WHEN OTHERS THEN DELETE FROM t`) is
+  a statement. `ON DELETE` and `ON UPDATE` are a rule, not a statement, only
+  when the word after the verb is a referential action or rule word
+  (`CASCADE`, `SET`, `RESTRICT`, `NO`, `TO`, `CURRENT_TIMESTAMP`, `NOW`,
+  `LOCALTIME`, `LOCALTIMESTAMP`): `ON DELETE CASCADE`, `ON UPDATE SET NULL`,
+  `CREATE RULE r AS ON DELETE TO t`. `SET NOCOUNT ON DELETE FROM t` is a
+  statement: in a T-SQL batch with no `;` the `ON` ends a `SET`, and `DELETE
+  FROM` or `UPDATE t SET` after it are the next statement. `ON COMMIT DELETE
+  ROWS` empties a temporary table at the end of a transaction, and is none.
+  A `DROP` that takes away no data is none: `DROP NOT NULL`, `DROP DEFAULT`,
+  `DROP IDENTITY`, `DROP EXPRESSION`, `DROP CONSTRAINT`, `ON COMMIT DROP`
+  and ClickHouse's `SYSTEM DROP DNS CACHE`; `DROP COLUMN`, `DROP PARTITION`
+  and a bare `DROP` are. `DELETE` and `UPDATE` inside a `WITH` or after
+  `EXPLAIN ANALYZE` count. `DO $$ … $$` and `DO '…'` (any string) are read as
+  the statements they hold, and PL/pgSQL's `EXECUTE` in the body (not
+  `EXECUTE FUNCTION`) runs text only known when it runs, so it is `unknown`.
+  Text given to something that runs it is read as SQL where it is a literal:
+  `EXEC('…')` and `EXECUTE('…')`, `sp_executesql`, `sp_MSforeachtable` and
+  `sp_MSforeachdb` (the literal text of every argument) in T-SQL, and
+  `PREPARE s FROM '…'` in MySQL; text that is not a literal (`EXEC('DROP ' +
+  @t)`, `sp_executesql @sql`, `PREPARE s FROM @q`) is `unknown`. A string
+  inside a string is read up to eight levels deep, and deeper is `unknown`.
+  In SQLite and DuckDB, `.restore` replaces the whole database with a file,
+  so it destroys.
 - **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one, and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
@@ -528,17 +556,20 @@ one dialect hides is not hidden in another:
 | Dialect | Quoting and comments |
 | --- | --- |
 | PostgreSQL (`psql`) | `$tag$ … $tag$` and `E'…'` strings, block comments that nest, backslash commands; no backtick |
-| SQLite (`sqlite3`) | backtick and `[…]` identifiers, dot commands; no `$tag$`, no `E'…'` |
-| DuckDB | dot commands; a block comment that holds `/*` is `unknown`, since it is not known whether it nests |
+| SQLite (`sqlite3`) | backtick and `[…]` identifiers, dot commands, a line that starts with `#` when no statement is pending is skipped; no `$tag$`, no `E'…'` |
+| DuckDB | PostgreSQL's parser: `$tag$ … $tag$` and `E'…'` strings, dot commands, `#` lines as SQLite's; a block comment that holds `/*` is `unknown`, since it is not known whether it nests |
 | SQL Server (`sqlcmd`) | `[…]` identifiers, block comments that nest |
 | MySQL, MariaDB | `#` comments, backslash escapes, backticks, `/*! … */` comments that run, `--` needing a space, `\g` and `\G` ending a statement, `\!` |
-| ClickHouse | `#` comments, backslash escapes, backticks, `$tag$` strings, `\G` |
+| ClickHouse | `#` comments, block comments that nest, backslash escapes, backticks, `$tag$` strings, `\G` |
 | CQL (`cqlsh`) | `//` comments, `$$` strings |
 
 A construct a dialect is not known to have is not read as hiding anything, so
 what it holds is read as code. In `psql` a backslash outside a string starts a
-command that ends at the end of its line or at a `\\`, and the SQL goes on
-after it: `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table. `\gexec` and
+command that ends at the end of its line or at the next backslash outside a
+quote, which starts the next command (or is `\\`, and the SQL goes on after
+it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
+touch f` runs `touch`. A here-document whose first line starts with a
+backslash is read from that line. `\gexec` and
 `\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
 a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
 followed by `|` run a program. A statement the reader has to guess at is
@@ -547,12 +578,19 @@ closed.
 
 A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
 q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
-a database statement only known when it runs`. In a double-quoted statement
-the expansions stand as words, so `psql -c "DELETE FROM users WHERE id = $id"`
-is read and is safe, `psql -c "DROP TABLE $t"` is `drop_data`, and
-`psql -c "$verb FROM users"` is `unknown`. A client command that runs a
+a database statement only known when it runs`. In a double-quoted
+POSIX statement the expansions stand as words, so `psql -c "DELETE FROM users
+WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
+`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. On PowerShell and
+cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
+`%id%`) is not read as a word, so any statement with one is `unknown`
+(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
+(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
+PowerShell word has none. A client command that runs a
 program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
-`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`.
+`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
+and `system` in `mysql` (it is no command of another client: ClickHouse's
+`SYSTEM FLUSH LOGS` is a statement).
 A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
 when it runs is `unknown` too.
 
@@ -579,7 +617,9 @@ the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
 -c …`); a statement handed over by a file, a process substitution
 (`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
 `cat` (`echo … | sed … | psql`); a PowerShell string piped on (`'DROP TABLE t'
-| psql`); stored procedures and `EXECUTE` of text built at run time; a `WHERE`
+| psql`); stored procedures (`CALL p()`, `EXEC p`), whatever they run; the
+text of a prepared statement that is not on the line (`EXECUTE s` after a
+`PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
 `psql` variables (`\set q …` then `:q`, `-v q=…`); `sqlcmd`'s `!!` and `GO`
 and `$(var)`; a stage between `echo` and the client (`echo … | tee | psql`);

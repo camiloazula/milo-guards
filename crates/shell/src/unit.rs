@@ -214,15 +214,6 @@ pub(crate) struct Redirect {
     pub(crate) text: bool,
 }
 
-/// Text on the line that a here-string or a here-document feeds to units, as
-/// written: the statements a database client reads from its input.
-#[derive(Debug, Clone)]
-pub(crate) struct Fed {
-    /// The units it feeds, by index in [`Split::units`].
-    pub(crate) units: Range<usize>,
-    pub(crate) text: Arg,
-}
-
 /// Units a command is handed the result of: what runs in its `$(…)` and
 /// `<(…)`, in its here-document, in the value of an argument.
 #[derive(Debug, Clone)]
@@ -266,8 +257,11 @@ pub(crate) struct Split {
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
-    /// The text fed to units by a here-string or a here-document.
-    pub(crate) texts: Vec<Fed>,
+    /// The text fed to units by a here-string or a here-document, as
+    /// written: the statements a database client reads from its input.
+    texts: Vec<Arg>,
+    /// For each unit that is fed text, which of `texts` feed it, in order.
+    fed: HashMap<usize, Vec<usize>>,
     /// What runs for a command inside its own arguments.
     pub(crate) nested: Vec<Nested>,
     /// The variables set from a substitution.
@@ -435,15 +429,20 @@ impl Split {
     /// Note that the text `text`, a here-string or a here-document, is fed to
     /// `units`, as written.
     pub(crate) fn text_fed(&mut self, units: Range<usize>, text: Arg) {
-        self.texts.push(Fed { units, text });
+        let index = self.texts.len();
+        for unit in units {
+            self.fed.entry(unit).or_default().push(index);
+        }
+        self.texts.push(text);
     }
 
     /// The text fed to the unit at `at` by a here-string or a here-document.
     pub(crate) fn fed_to(&self, at: usize) -> impl Iterator<Item = &Arg> {
-        self.texts
-            .iter()
-            .filter(move |fed| fed.units.contains(&at))
-            .map(|fed| &fed.text)
+        self.fed
+            .get(&at)
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| self.texts.get(index))
     }
 
     /// Note that the variable `name` is set from what runs in `inside` and

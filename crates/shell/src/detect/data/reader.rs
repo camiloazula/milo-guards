@@ -14,16 +14,17 @@ pub(super) enum Dialect {
     Postgres,
     /// `sqlite3`: backtick and `[…]` identifiers, dot commands.
     Sqlite,
-    /// `duckdb`: dot commands. Block comments may nest, so a comment that
-    /// holds `/*` is not read.
+    /// `duckdb`: PostgreSQL's parser, so `$tag$` and `E'…'` strings, and
+    /// dot commands. Block comments may nest, so a comment that holds `/*` is
+    /// not read.
     DuckDb,
     /// `sqlcmd`: `[…]` identifiers and block comments that nest.
     SqlServer,
     /// `mysql`, `mariadb`: `#` comments, backslash escapes, backticks,
     /// `/*! … */` comments that run, `\g` and `\G`, `--` needing a space.
     MySql,
-    /// `clickhouse-client`: `#` comments, backslash escapes, backticks,
-    /// `$tag$` strings, `\G`.
+    /// `clickhouse-client`: `#` comments, block comments that nest, backslash
+    /// escapes, backticks, `$tag$` strings, `\G`.
     ClickHouse,
     /// Cassandra's CQL: `//` comments and `$$` strings.
     Cql,
@@ -62,7 +63,7 @@ impl Dialect {
     }
 
     fn escape_strings(self) -> bool {
-        self == Self::Postgres
+        matches!(self, Self::Postgres | Self::DuckDb)
     }
 
     fn backticks(self) -> bool {
@@ -75,7 +76,7 @@ impl Dialect {
 
     fn dollar(self) -> Dollar {
         match self {
-            Self::Postgres | Self::ClickHouse => Dollar::Tagged,
+            Self::Postgres | Self::ClickHouse | Self::DuckDb => Dollar::Tagged,
             Self::Cql => Dollar::Plain,
             _ => Dollar::None,
         }
@@ -83,13 +84,20 @@ impl Dialect {
 
     fn nesting(self) -> Nesting {
         match self {
-            Self::Postgres | Self::SqlServer => Nesting::Yes,
+            Self::Postgres | Self::SqlServer | Self::ClickHouse => Nesting::Yes,
             Self::DuckDb => Nesting::Unsure,
             _ => Nesting::No,
         }
     }
 
     fn dot_commands(self) -> bool {
+        matches!(self, Self::Sqlite | Self::DuckDb)
+    }
+
+    /// Whether the shell skips an input line that starts with `#` when no
+    /// statement is pending: `sqlite3`'s, and `duckdb`'s, which is derived
+    /// from it.
+    fn hash_lines(self) -> bool {
         matches!(self, Self::Sqlite | Self::DuckDb)
     }
 }
@@ -128,12 +136,24 @@ impl Reading {
     }
 }
 
+/// What a quoted string or identifier holds, for the few places where the
+/// text of a string is read as more SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Quote {
+    /// The text inside the quotes, a doubled quote made one.
+    body: String,
+    /// Whether it is a `'…'` string, and not an identifier.
+    string: bool,
+    /// Whether a backslash in it escapes, so that `body` is not what it says.
+    escapes: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     /// A bare word or number, in upper case.
     Word(String),
     /// A quoted string or identifier.
-    Quoted,
+    Quoted(Quote),
     /// A `$$` string, with what is inside it.
     Dollar(String),
     /// An expansion of the shell, in text that came from a double-quoted
@@ -145,10 +165,29 @@ enum Token {
 }
 
 /// Words that, before `DELETE` or `UPDATE`, show it is not a statement but
-/// part of one: `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`,
-/// `AFTER UPDATE`, `GRANT UPDATE`. A `THEN` is one only in a `MERGE`.
-const NOT_A_VERB_AFTER: [&str; 11] = [
-    "ON", "DO", "KEY", "FOR", "OR", "AFTER", "BEFORE", "OF", "GRANT", "REVOKE", "DENY",
+/// part of one: `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT UPDATE`.
+/// A `THEN` is one only in a `MERGE`, and an `ON` only when what follows the
+/// verb is a referential action (see [`REFERENTIAL`]): `SET NOCOUNT ON DELETE
+/// FROM t` is a statement.
+const NOT_A_VERB_AFTER: [&str; 10] = [
+    "DO", "KEY", "FOR", "OR", "AFTER", "BEFORE", "OF", "GRANT", "REVOKE", "DENY",
+];
+
+/// The words that follow `ON DELETE` or `ON UPDATE` when it is a rule of a
+/// foreign key, a column or a rewrite rule, and not a statement: `ON DELETE
+/// CASCADE`, `ON DELETE SET NULL`, `ON DELETE NO ACTION`, `ON UPDATE
+/// RESTRICT`, `ON UPDATE CURRENT_TIMESTAMP`, `CREATE RULE r AS ON DELETE TO
+/// t`.
+const REFERENTIAL: [&str; 9] = [
+    "CASCADE",
+    "SET",
+    "RESTRICT",
+    "NO",
+    "TO",
+    "CURRENT_TIMESTAMP",
+    "NOW",
+    "LOCALTIME",
+    "LOCALTIMESTAMP",
 ];
 
 /// Words that end the part of a statement that can hold its `WHERE`: the
@@ -281,6 +320,23 @@ fn block_comment(chars: &[char], at: usize, nesting: Nesting) -> Option<usize> {
     }
 }
 
+/// The quoted text that runs from `at` (its opening quote) to `end`, the
+/// index after its closing one.
+fn quote_of(chars: &[char], at: usize, end: usize, escapes: bool) -> Quote {
+    let open = chars.get(at).copied().unwrap_or('\'');
+    let close = if open == '[' { ']' } else { open };
+    let inner: String = chars
+        .get(at + 1..end.saturating_sub(1))
+        .unwrap_or_default()
+        .iter()
+        .collect();
+    Quote {
+        body: inner.replace(&format!("{close}{close}"), &close.to_string()),
+        string: open == '\'',
+        escapes,
+    }
+}
+
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -295,8 +351,8 @@ fn line(chars: &[char], at: usize) -> (String, usize) {
 }
 
 /// The `psql` backslash command that starts at `at`, and the index after it.
-/// It ends at the end of its line, or at a `\\` outside a quote, and the SQL
-/// goes on after that.
+/// It ends at the end of its line, or at the next backslash outside a quote,
+/// which starts the next command (or is `\\`, and the SQL goes on).
 fn psql_command(chars: &[char], at: usize) -> (String, usize) {
     let mut i = at + 1;
     let mut quote: Option<char> = None;
@@ -318,7 +374,7 @@ fn psql_command(chars: &[char], at: usize) -> (String, usize) {
             }
             Some(q) if c == q => quote = None,
             Some(_) => {}
-            None if c == '\\' && chars.get(i + 1) == Some(&'\\') => break (i, i + 2),
+            None if c == '\\' => break (i, i),
             None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
             None => {}
         }
@@ -357,6 +413,14 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                 at = line(&chars, at).1;
             }
             '#' if dialect.hash_comments() => at = line(&chars, at).1,
+            // With nothing pending, the shell skips a line that starts with
+            // `#`, so a quote in it opens nothing.
+            '#' if dialect.hash_lines()
+                && starts_statement
+                && (at == 0 || chars.get(at - 1) == Some(&'\n')) =>
+            {
+                at = line(&chars, at).1;
+            }
             '/' if next == Some('/') && dialect == Dialect::Cql => at = line(&chars, at).1,
             '/' if next == Some('*') => {
                 let marker = match (dialect, chars.get(at + 2), chars.get(at + 3)) {
@@ -394,16 +458,20 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                         .checked_sub(2)
                         .and_then(|i| chars.get(i))
                         .is_none_or(|c| !is_word_char(*c));
-                at = quoted(&chars, at, escaped || dialect.backslash_escapes())?;
-                tokens.push(Token::Quoted);
+                let escapes = escaped || dialect.backslash_escapes();
+                let end = quoted(&chars, at, escapes)?;
+                tokens.push(Token::Quoted(quote_of(&chars, at, end, escapes)));
+                at = end;
             }
             '`' if dialect.backticks() => {
-                at = quoted(&chars, at, false)?;
-                tokens.push(Token::Quoted);
+                let end = quoted(&chars, at, false)?;
+                tokens.push(Token::Quoted(quote_of(&chars, at, end, false)));
+                at = end;
             }
             '[' if dialect.brackets() => {
-                at = bracketed(&chars, at)?;
-                tokens.push(Token::Quoted);
+                let end = bracketed(&chars, at)?;
+                tokens.push(Token::Quoted(quote_of(&chars, at, end, false)));
+                at = end;
             }
             '%' if holes => {
                 if let Some(end) = hole_end(&chars, at) {
@@ -593,16 +661,148 @@ fn in_matched_clause(tokens: &[Token], verb: usize) -> bool {
 
 /// Whether the `DROP` at `at` takes away something other than data: `DROP
 /// NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP EXPRESSION`, `DROP
-/// CONSTRAINT`, and `ON COMMIT DROP`, which ends a temporary table.
-fn drops_no_data(tokens: &[Token], at: usize) -> bool {
+/// CONSTRAINT`, `ON COMMIT DROP`, which ends a temporary table, and
+/// `ClickHouse`'s `SYSTEM DROP … CACHE`.
+fn drops_no_data(tokens: &[Token], at: usize, dialect: Dialect) -> bool {
     let on_commit =
         at >= 2 && is_word(tokens.get(at - 2), "ON") && is_word(tokens.get(at - 1), "COMMIT");
+    let system = dialect == Dialect::ClickHouse && at == 1 && is_word(tokens.first(), "SYSTEM");
     on_commit
+        || system
         || matches!(tokens.get(at + 1), Some(Token::Word(word)) if DROPS_NO_DATA.contains(&word.as_str()))
 }
 
+/// Whether the `DELETE` or `UPDATE` at `at` is part of another statement
+/// and not one: a foreign key's `ON DELETE CASCADE`, a temporary table's
+/// `ON COMMIT DELETE ROWS`.
+fn is_clause(tokens: &[Token], at: usize) -> bool {
+    let before = at.checked_sub(1).and_then(|i| tokens.get(i));
+    let after = tokens.get(at + 1);
+    let rule = is_word(before, "ON")
+        && matches!(after, Some(Token::Word(word)) if REFERENTIAL.contains(&word.as_str()));
+    let on_commit = is_word(before, "COMMIT")
+        && at >= 2
+        && is_word(tokens.get(at - 2), "ON")
+        && is_word(after, "ROWS");
+    rule || on_commit
+}
+
+/// How a read of SQL is placed: the client's dialect, whether the text came
+/// from a double-quoted shell word, and how it came to be read.
+#[derive(Debug, Clone, Copy)]
+struct Scope {
+    dialect: Dialect,
+    holes: bool,
+    /// The body of a `DO`: PL/pgSQL, where `EXECUTE` runs text built at run
+    /// time.
+    in_do: bool,
+    /// How many strings deep it is: SQL in the text of SQL.
+    depth: usize,
+}
+
+/// The most strings of SQL inside strings of SQL that are read.
+const MAX_DEPTH: usize = 8;
+
+impl Scope {
+    /// The scope of SQL found in a string of this one.
+    fn within(self, in_do: bool) -> Self {
+        Self {
+            in_do,
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+}
+
+/// What the text of a string, read as SQL, does. A string whose backslashes
+/// escape is not read as its text says, so it is unknown.
+fn read_string(quote: &Quote, scope: Scope) -> Reading {
+    if quote.escapes && quote.body.contains('\\') {
+        return Reading::UNREADABLE;
+    }
+    read_sql(&quote.body, scope)
+}
+
+/// The string literals that are the arguments of a call from `from` on, as
+/// `[@name =] [N]'text'` separated by commas, and the index after them. Only
+/// the first one when `every` is false; the others are its parameters.
+/// `None` when an argument is anything but a literal (`@sql`, `'a' + @b`).
+fn literal_args(tokens: &[Token], from: usize, every: bool) -> Option<(Vec<&Quote>, usize)> {
+    let mut found = Vec::new();
+    let mut i = from;
+    loop {
+        if tokens.get(i) == Some(&Token::Symbol('@'))
+            && matches!(tokens.get(i + 1), Some(Token::Word(_)))
+            && tokens.get(i + 2) == Some(&Token::Symbol('='))
+        {
+            i += 3;
+        }
+        if is_word(tokens.get(i), "N")
+            && matches!(tokens.get(i + 1), Some(Token::Quoted(q)) if q.string)
+        {
+            i += 1;
+        }
+        let Some(Token::Quoted(quote)) = tokens.get(i) else {
+            return None;
+        };
+        if !quote.string {
+            return None;
+        }
+        found.push(quote);
+        i += 1;
+        match tokens.get(i) {
+            Some(Token::Symbol(',')) if every => i += 1,
+            Some(Token::Symbol(',')) | None => break,
+            Some(Token::Symbol(')')) => break,
+            Some(Token::Word(word)) if STARTS_A_STATEMENT.contains(&word.as_str()) => break,
+            Some(_) => return None,
+        }
+    }
+    Some((found, i))
+}
+
+/// The name of the T-SQL procedures that run the text they are given.
+fn runs_text(name: &str) -> Option<bool> {
+    match name {
+        "SP_EXECUTESQL" => Some(false),
+        "SP_MSFOREACHTABLE" | "SP_MSFOREACHDB" => Some(true),
+        _ => None,
+    }
+}
+
+/// What text that is run as SQL by the token at `at` does: `EXEC('…')`,
+/// `sp_executesql`, `sp_MSforeachtable`, MySQL's `PREPARE s FROM '…'`; `None`
+/// when the token runs nothing. Text that is not a literal is unknown.
+fn dynamic_sql(tokens: &[Token], at: usize, scope: Scope) -> Option<Reading> {
+    let found = match tokens.get(at)? {
+        Token::Word(word) if matches!(word.as_str(), "EXEC" | "EXECUTE") => {
+            if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
+                return None;
+            }
+            literal_args(tokens, at + 2, false)
+                .filter(|(_, end)| tokens.get(*end) == Some(&Token::Symbol(')')))
+        }
+        Token::Word(word) if word == "PREPARE" && is_word(tokens.get(at + 2), "FROM") => {
+            literal_args(tokens, at + 3, false)
+        }
+        Token::Word(word) => literal_args(tokens, at + 1, runs_text(word)?),
+        Token::Quoted(quote) if !quote.string => {
+            literal_args(tokens, at + 1, runs_text(&quote.body.to_uppercase())?)
+        }
+        _ => return None,
+    };
+    let Some((strings, _)) = found else {
+        return Some(Reading::UNREADABLE);
+    };
+    let mut reading = Reading::default();
+    for quote in strings {
+        reading.merge(read_string(quote, scope.within(false)));
+    }
+    Some(reading)
+}
+
 /// What one statement of SQL does.
-fn statement(tokens: &[Token]) -> Reading {
+fn statement(tokens: &[Token], scope: Scope) -> Reading {
     let mut reading = Reading::default();
     let Some(first) = tokens.first() else {
         return reading;
@@ -612,16 +812,20 @@ fn statement(tokens: &[Token]) -> Reading {
     }
     let merge = is_merge(tokens);
     for (at, token) in tokens.iter().enumerate() {
+        if let Some(found) = dynamic_sql(tokens, at, scope) {
+            reading.merge(found);
+        }
         let Token::Word(word) = token else { continue };
         let before = at.checked_sub(1).and_then(|i| tokens.get(i));
         match word.as_str() {
-            "DROP" if !drops_no_data(tokens, at) => reading.destroys = true,
+            "DROP" if !drops_no_data(tokens, at, scope.dialect) => reading.destroys = true,
             "TRUNCATE" if tokens.get(at + 1) != Some(&Token::Symbol('(')) => {
                 reading.destroys = true;
             }
             "DELETE" | "UPDATE" => {
                 let part = matches!(before, Some(Token::Symbol(',')))
                     || matches!(before, Some(Token::Word(w)) if NOT_A_VERB_AFTER.contains(&w.as_str()))
+                    || is_clause(tokens, at)
                     || (merge && is_word(before, "THEN") && in_matched_clause(tokens, at));
                 if !part && !has_where(tokens, at) {
                     reading.destroys = true;
@@ -630,15 +834,36 @@ fn statement(tokens: &[Token]) -> Reading {
             "ATTACH" if at == 0 => reading.moves = true,
             "XP_CMDSHELL" => reading.program = true,
             "PROGRAM" if is_word(tokens.first(), "COPY") => reading.program = true,
-            "SYSTEM" if at == 0 => reading.program = true,
+            "SYSTEM" if at == 0 && scope.dialect == Dialect::MySql => reading.program = true,
+            // PL/pgSQL's `EXECUTE` runs text that is only known when it
+            // runs; a trigger's `EXECUTE FUNCTION` does not.
+            "EXECUTE"
+                if scope.in_do
+                    && !matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "FUNCTION" | "PROCEDURE")) =>
+            {
+                reading.unreadable = true;
+            }
             _ => {}
         }
     }
-    // `DO $$ … $$` runs the statements in the string.
+    // `DO $$ … $$` and `DO '…'` run the statements in the string.
     if is_word(Some(first), "DO") {
         for token in tokens {
-            if let Token::Dollar(body) = token {
-                reading.merge(sql(body, Dialect::Postgres, false));
+            match token {
+                Token::Dollar(body) => {
+                    reading.merge(read_sql(
+                        body,
+                        Scope {
+                            dialect: Dialect::Postgres,
+                            holes: false,
+                            ..scope.within(true)
+                        },
+                    ));
+                }
+                Token::Quoted(quote) if quote.string && scope.dialect == Dialect::Postgres => {
+                    reading.merge(read_string(quote, scope.within(true)));
+                }
+                _ => {}
             }
         }
     }
@@ -745,13 +970,34 @@ fn meta(text: &str, holes: bool) -> Reading {
     if matches!(name.as_str(), ".open" | ".attach") {
         reading.moves = true;
     }
+    // `.restore` replaces the whole database with a file.
+    if name == ".restore" {
+        reading.destroys = true;
+    }
     reading
 }
 
 /// What the SQL in `text` does. `holes` says `text` came from a
 /// double-quoted shell word, whose expansions are only known when it runs.
 pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
-    let Some(tokens) = tokenize(text, dialect, holes) else {
+    read_sql(
+        text,
+        Scope {
+            dialect,
+            holes,
+            in_do: false,
+            depth: 0,
+        },
+    )
+}
+
+/// What the SQL in `text` does, read in `scope`.
+fn read_sql(text: &str, scope: Scope) -> Reading {
+    // SQL in a string in SQL, so deep that it is not read.
+    if scope.depth > MAX_DEPTH {
+        return Reading::UNREADABLE;
+    }
+    let Some(tokens) = tokenize(text, scope.dialect, scope.holes) else {
         return Reading::UNREADABLE;
     };
     let mut reading = Reading::default();
@@ -760,12 +1006,12 @@ pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
         let token = tokens.get(at);
         match token {
             None | Some(Token::Symbol(';')) => {
-                reading.merge(statement(tokens.get(start..at).unwrap_or_default()));
+                reading.merge(statement(tokens.get(start..at).unwrap_or_default(), scope));
                 start = at + 1;
             }
             Some(Token::Meta(text)) => {
-                reading.merge(statement(tokens.get(start..at).unwrap_or_default()));
-                reading.merge(meta(text, holes));
+                reading.merge(statement(tokens.get(start..at).unwrap_or_default(), scope));
+                reading.merge(meta(text, scope.holes));
                 start = at + 1;
             }
             Some(_) => {}
@@ -1109,7 +1355,7 @@ mod tests {
         ] {
             assert!(sql(text, client(text), false).program, "{text}");
         }
-        assert!(sql("system ls", Dialect::Postgres, false).program);
+        assert!(sql("system ls", Dialect::MySql, false).program);
         for text in ["\\c prod", ".dump", ".read seed.sql", "COPY t FROM 'f.csv'"] {
             assert!(!sql(text, client(text), false).program, "{text}");
         }
