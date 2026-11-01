@@ -290,7 +290,7 @@ impl Checker<'_> {
                     "changes"
                 };
                 for target in self.list_items(unit, &Params::read(args), key == "set-item") {
-                    self.write(shell, unit.scope(), &target, verb);
+                    self.write_as(shell, unit.scope(), &target, verb, Access::Item);
                 }
             }
 
@@ -437,7 +437,7 @@ impl Checker<'_> {
                 let mut targets = params.values(&["path", "literalpath", "destination"]);
                 targets.extend(params.positional.iter().copied());
                 for target in targets {
-                    self.write(shell, unit.scope(), target, "changes");
+                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
             }
             "dd" => {

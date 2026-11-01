@@ -529,3 +529,79 @@ fn what_follows_a_member_name_is_its_arguments() {
         ],
     );
 }
+
+/// Inside a provider a bare `NUL` or `CON` is an item there, not the device,
+/// so the item cmdlets judge it as the provider's item.
+#[test]
+fn an_item_named_like_a_device_in_a_provider_is_an_item() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["cd C:\\x; Set-Content NUL x", "python x.py > $null"],
+        &[
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Clear-Item NUL",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Clear-Item CON",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Set-Item NUL -Value 1",
+                Rule::SystemSettings,
+            ),
+            ("cd HKLM:\\SOFTWARE\\Foo; si NUL 1", Rule::SystemSettings),
+            ("cd HKLM:\\SOFTWARE\\Foo; cli NUL", Rule::SystemSettings),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Clear-Item -Path NUL",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Clear-Item -LiteralPath NUL",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Get-Item NUL | Clear-Item",
+                Rule::SystemSettings,
+            ),
+            ("cd HKCU:\\Software; Clear-Item NUL", Rule::SystemSettings),
+            (
+                "cd Registry::HKEY_LOCAL_MACHINE\\SOFTWARE; Clear-Item NUL",
+                Rule::SystemSettings,
+            ),
+            ("cd $key; Clear-Item NUL", Rule::Overwrite),
+            ("cd Env:; Set-Item NUL -Value x", Rule::Overwrite),
+            ("cd Variable:; Set-Item NUL -Value x", Rule::Overwrite),
+            ("cd 1:; Set-Item NUL -Value 1", Rule::Overwrite),
+            (
+                "cd Function:; Set-Item NUL -Value 'Remove-Item ~ -Recurse'; NUL",
+                Rule::Overwrite,
+            ),
+            (
+                "cd Alias:; Set-Item NUL -Value Remove-Item",
+                Rule::Overwrite,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Move-ItemProperty NUL CON -Name x",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Copy-ItemProperty NUL CON -Name x",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Move-ItemProperty -Path NUL -Destination CON -Name x",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd HKLM:\\SOFTWARE\\Foo; Copy-ItemProperty -Path NUL -Destination CON -Name x",
+                Rule::SystemSettings,
+            ),
+            (
+                "cd $key; Move-ItemProperty NUL CON -Name x",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}

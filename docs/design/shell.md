@@ -329,7 +329,7 @@ provider path, or a place only known when it runs, `cd ~` fails and the line
 stays where it was, so a path starting with `~` is only known when it runs, and
 so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
 first stage of its pipeline gets its path from the pipeline, not from home. A
-drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+drive's name may hold any character but `/ \ . ~`, a separator and a wildcard (`my_reg:`), so any such
 name before a colon, other than one letter, is a drive that is not a disk. Once
 the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
 even after the `cd` (a function body, a loop), a single letter in a `cd`
@@ -497,7 +497,7 @@ a path.
   `Env:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
   A drive's name is whatever comes before the first `:` when that holds no
-  separator, no wildcard and no `.`, so a drive made with `New-PSDrive`
+  `/`, `\`, `.` or `~`, no separator and no wildcard, so a drive made with `New-PSDrive`
   (`my_drive:*`, `my-drive:\*`) is a drive, outside the workspace, and
   `x.txt:stream` is a file's stream, not a drive.
 - The item cmdlets are judged by where their path lands, as `Remove-Item` is:
