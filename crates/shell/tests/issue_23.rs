@@ -480,6 +480,13 @@ fn set_item_judges_every_positional_of_a_list() {
             ),
             ("Set-Item src\\a, HKLM:\\x 1", Rule::SystemSettings),
             ("Set-Item HKLM:\\x", Rule::SystemSettings),
+            ("Set-Item src\\a, C:\\Users\\other\\x", Rule::Overwrite),
+            ("Set-Item src\\a, D:\\data\\x", Rule::Overwrite),
+            ("Set-Item src\\a, $p", Rule::Overwrite),
+            ("si src\\a, $p", Rule::Overwrite),
+            ("Set-Item src\\a, ..", Rule::Overwrite),
+            ("Set-Item src\\a, Env:PATH", Rule::Overwrite),
+            ("Set-Item src\\a C:\\Users\\other\\x", Rule::Overwrite),
         ],
     );
 }

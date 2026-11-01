@@ -353,41 +353,12 @@ impl Checker<'_> {
     /// `ForEach-Object` block). A positional may be the
     /// rest of a list (`-Path a,b`, `a, b`) or an item that a parameter the
     /// guard reads as a switch (`-n`) or `--` pushed out of the first place,
-    /// so each is judged. With no path named and no `-Value`, `Set-Item`
-    /// takes its value as the last positional (`value_last`), which is not
-    /// a path unless it is the only one or it names a place whose change
-    /// matters (it may be the end of a list).
-    fn list_items(&self, unit: &Unit, params: &Params<'_>, value_last: bool) -> Vec<Arg> {
+    /// so each is judged; a value or a new name that is a place of its own
+    /// (`Set-Item src\a HKLM:\x`) makes the cmdlet fail,
+    /// so judging it costs only commands that do nothing.
+    fn list_items(&self, unit: &Unit, params: &Params<'_>) -> Vec<Arg> {
         let mut paths = params.values(&["path", "literalpath"]);
-        let positional = &params.positional;
-        let value_named = params
-            .named
-            .iter()
-            .any(|(name, _)| "value".starts_with(name.as_str()));
-        let count = if value_last && !value_named && paths.is_empty() && positional.len() > 1 {
-            positional.len() - 1
-        } else {
-            positional.len()
-        };
-        paths.extend(positional.iter().take(count).copied());
-        // The last positional may be the end of a list (`Set-Item a, HKLM:\x`)
-        // as well as the value, so it is judged when it names a place whose
-        // change matters (the registry, a disk, a home, a sensitive file).
-        if count < positional.len() {
-            let last = positional[positional.len() - 1];
-            let place = self.place(unit.shell, unit.scope(), last, Access::Item);
-            if !matches!(
-                place,
-                Place::Inside
-                    | Place::Temp { .. }
-                    | Place::Null
-                    | Place::Workspace { .. }
-                    | Place::Unknown
-                    | Place::Outside
-            ) {
-                paths.push(last);
-            }
-        }
+        paths.extend(params.positional.iter().copied());
         self.listed_paths(unit, paths)
     }
 
