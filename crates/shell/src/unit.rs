@@ -1,7 +1,11 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use crate::dotglob;
+use crate::effect::Kind;
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -11,6 +15,16 @@ pub(crate) enum Arg {
     Known(String),
     /// Only known when it runs (`$VAR`, `$(…)`, `%X%`): its source text.
     Unknown(String),
+    /// A string known except for the expansions in it, which stand as they
+    /// are written: `"rm -rf $d"` is the text `rm -rf $d` and `"$x"` is
+    /// `$x`. Not a value, but its text can be read as a script, whose own
+    /// grammar then finds what it expands.
+    Template {
+        /// The text, with each expansion as written.
+        text: String,
+        /// The argument as written, quotes and all.
+        source: String,
+    },
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
@@ -25,14 +39,20 @@ impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
-            Self::Unknown(_) | Self::Input | Self::Null => None,
+            Self::Unknown(_) | Self::Template { .. } | Self::Input | Self::Null => None,
         }
+    }
+
+    /// Whether the value is only known when it runs, however much of its
+    /// text is readable.
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown(_) | Self::Template { .. })
     }
 
     /// The value, or the source text of what is only known when it runs.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::Known(text) | Self::Unknown(text) => text,
+            Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
             Self::Input => "<input>",
             Self::Null => "$null",
         }
@@ -75,6 +95,12 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line the grammar reads again (what follows the
+    /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
+    /// It is what the depth limit counts.
+    pub(crate) depth: usize,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -96,6 +122,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            depth: 0,
         }
     }
 
@@ -188,15 +215,78 @@ impl Hidden {
     }
 }
 
+/// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
+#[derive(Debug, Clone)]
+pub(crate) struct Redirect {
+    /// The units it applies to, by index in [`Split::units`].
+    pub(crate) units: Range<usize>,
+    pub(crate) target: Arg,
+    /// Whether it feeds the units' input (`<`), and not their output.
+    pub(crate) input: bool,
+    /// Whether the target is the text fed, a here-string or a
+    /// here-document, and not a file.
+    pub(crate) text: bool,
+}
+
+/// Units a command is handed the result of: what runs in its `$(…)` and
+/// `<(…)`, in its here-document, in the value of an argument.
+#[derive(Debug, Clone)]
+pub(crate) struct Nested {
+    /// The command's own units, by index in [`Split::units`].
+    pub(crate) command: Range<usize>,
+    /// The units that run for it.
+    pub(crate) inside: Range<usize>,
+}
+
+/// A variable set from what a substitution prints: `k=$(cat f)`.
+#[derive(Debug, Clone)]
+pub(crate) struct Assigned {
+    pub(crate) name: String,
+    pub(crate) inside: Range<usize>,
+    /// The variables the value names itself: `j=$k`, `j="$k-x"`.
+    pub(crate) uses: Vec<String>,
+}
+
+/// The variables `text` names, as `$k`, `${k}` and `${k:-x}` do (`$key` is
+/// not `k`).
+pub(crate) fn referenced(text: &str) -> Vec<String> {
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let end = piece
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(piece.len());
+            piece.get(..end).filter(|name| !name.is_empty())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The redirects of files onto units, for the rules that follow a
+    /// secret from a file to where it is sent.
+    pub(crate) redirects: Vec<Redirect>,
+    /// What runs for a command inside its own arguments.
+    pub(crate) nested: Vec<Nested>,
+    /// The variables set from a substitution.
+    pub(crate) assigned: Vec<Assigned>,
+    /// The files redirected from (`< file`), where the line was.
+    pub(crate) reads: Vec<Read>,
+    /// The `for` loops over words written out, whose variable the body does
+    /// not set: a rule reads the body with each word in place.
+    pub(crate) bindings: Vec<Binding>,
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
     pipelines: usize,
+    /// The stage of an outer pipeline that a pipeline runs in, when it runs
+    /// in a stage of another: `(a | b) | c` runs `a | b` in the first stage.
+    pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
     /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
@@ -231,6 +321,120 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
+    read_in_body: Vec<usize>,
+    /// How many `cd`s this shell has run so far: a later one means an action
+    /// that runs later may run from somewhere else. A subshell or a script
+    /// in a process of its own gives the count back as it was, as it does
+    /// the directory.
+    moves: usize,
+    /// How many `cd`s the walk has read in all, in a subshell or not, which
+    /// nothing gives back: how an action that runs later tells it holds one.
+    moved: usize,
+    /// The actions that run later in this shell (a `trap`'s script).
+    later: Vec<Later>,
+    /// How much nested script text has been read, in bytes (and one for
+    /// each script): a line that makes the same script be read again and
+    /// again must come back unreadable, not take forever.
+    nested_read: usize,
+    /// How deep the line is inside `find … -exec find … -exec …`: each
+    /// level is read once for every place the one outside it searches.
+    pub(crate) find_depth: usize,
+    /// How much work `find -exec` has been read to do, in all, counted in
+    /// bytes built (each `{}` replaced by the place it stands for) and
+    /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
+    /// a line must not make this grow without bound.
+    pub(crate) find_work: usize,
+    /// What only `effect` needs of the line, kept only when it is read for
+    /// `effect`, so `classify` costs what it did.
+    pub(crate) kept: Kept,
+}
+
+/// What a line holds that only [`crate::effect`] reads.
+#[derive(Debug, Default)]
+pub(crate) struct Kept {
+    /// Whether the line is read for `effect`: nothing below is kept if not.
+    pub(crate) on: bool,
+    /// The variables the line sets or unsets, as written (`PATH`,
+    /// `env:TEMP`): one can change which program runs or what it does.
+    pub(crate) sets: Vec<String>,
+    /// The variables of `for` loops that could be one of those: a loop's
+    /// own variable is only a name for each of its words.
+    pub(crate) loops: Vec<String>,
+    /// Whether the line holds something that runs or changes without being
+    /// a unit (a method call in PowerShell), or that cannot be told.
+    pub(crate) opaque: bool,
+    /// Whether a wrapper the line uses writes (`time -o FILE`).
+    pub(crate) changes: bool,
+}
+
+/// A `for` variable and the words it takes, over the units of the body.
+#[derive(Debug, Clone)]
+pub(crate) struct Binding {
+    pub(crate) variable: String,
+    pub(crate) words: Vec<String>,
+    /// The units added while the loop was read, by index in the split.
+    pub(crate) units: Range<usize>,
+    /// The redirects from a file added while it was read.
+    pub(crate) reads: Range<usize>,
+}
+
+/// A read a redirect makes: `< file`.
+#[derive(Debug, Clone)]
+pub(crate) struct Read {
+    pub(crate) shell: Shell,
+    pub(crate) target: Arg,
+    /// As [`Unit::dir`].
+    pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
+}
+
+/// Where the walk was when an action that runs later began.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Began {
+    units: usize,
+    writes: usize,
+    reads: usize,
+    findings: usize,
+    moved: usize,
+}
+
+/// Where the line was, to put back after a subshell or a nested script
+/// whose `cd` must not reach the rest of the line.
+#[derive(Debug, Clone)]
+pub(crate) struct Place {
+    dir: Option<Arg>,
+    moves: usize,
+    later: usize,
+}
+
+/// An action that runs later, in this shell, from wherever the line has
+/// moved to by then (a `trap`'s script, a PowerShell event's block): the
+/// units and writes it added, and how many `cd`s the line had read when it
+/// ended.
+#[derive(Debug)]
+struct Later {
+    units: Range<usize>,
+    writes: Range<usize>,
+    reads: Range<usize>,
+    /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
+    moves: usize,
+    moved: usize,
+    /// Whether a subshell copies it (`ERR`, `DEBUG`, `RETURN`): then it also
+    /// runs from where a subshell moved to, so any `cd` counts.
+    inherited: bool,
+}
+
+impl Later {
+    /// Whether a `cd` has come since, given how many the shell has run and
+    /// how many the walk has read.
+    fn moved_since(&self, moves: usize, moved: usize) -> bool {
+        if self.inherited {
+            self.moved != moved
+        } else {
+            self.moves != moves
+        }
+    }
 }
 
 impl Split {
@@ -261,6 +465,8 @@ impl Split {
             self.psdrive = true;
         }
         if let Some(target) = moves_to(&unit) {
+            self.moves += 1;
+            self.moved += 1;
             let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
             // Once the line makes a drive, a drive letter may name it: the
             // place is only known when it runs.
@@ -274,6 +480,48 @@ impl Split {
         self.units.push(unit);
     }
 
+    /// Note that `inside`, a run of units, ran for the command whose own units
+    /// are `command`.
+    pub(crate) fn nest(&mut self, command: Range<usize>, inside: Range<usize>) {
+        if !inside.is_empty() && !command.is_empty() {
+            self.nested.push(Nested { command, inside });
+        }
+    }
+
+    /// Note that the file `target` is redirected onto `units`.
+    pub(crate) fn redirect(&mut self, units: Range<usize>, target: Arg, input: bool) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input,
+            text: false,
+        });
+    }
+
+    /// Note that the text `target` (a here-string, a here-document) is fed
+    /// to `units`.
+    pub(crate) fn feed(&mut self, units: Range<usize>, target: Arg) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input: true,
+            text: true,
+        });
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `value` names.
+    pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
+        let uses = referenced(value);
+        if !inside.is_empty() || !uses.is_empty() {
+            self.assigned.push(Assigned {
+                name: name.to_string(),
+                inside,
+                uses,
+            });
+        }
+    }
+
     /// Add a redirect's write, made where the line has moved to.
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
@@ -282,6 +530,32 @@ impl Split {
             self.write_in_body.push(self.writes.len());
         }
         self.writes.push(Write {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
+    }
+
+    /// Record a `for` loop over `words` whose body, the units and the
+    /// redirects from `start` on, does not set `variable`.
+    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: (usize, usize)) {
+        self.bindings.push(Binding {
+            variable: variable.to_string(),
+            words,
+            units: start.0..self.units.len(),
+            reads: start.1..self.reads.len(),
+        });
+    }
+
+    /// Add a redirect's read, made where the line has moved to.
+    pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
+        let dir = self.dir.clone();
+        let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.read_in_body.push(self.reads.len());
+        }
+        self.reads.push(Read {
             shell,
             target,
             dir,
@@ -390,16 +664,158 @@ impl Split {
                 write.hidden = true;
             }
         }
+        for &at in &self.read_in_body {
+            if let Some(read) = self.reads.get_mut(at) {
+                read.hidden = true;
+            }
+        }
+    }
+
+    /// Note where an action that runs later begins, which the walk is about
+    /// to read in place.
+    pub(crate) fn begin_later(&self) -> Began {
+        Began {
+            units: self.units.len(),
+            writes: self.writes.len(),
+            reads: self.reads.len(),
+            findings: self.findings.len(),
+            moved: self.moved,
+        }
+    }
+
+    /// Note that the action which began at `began` has been read. It runs
+    /// after the rest of the line, or between its commands, in this shell: if
+    /// the line moves with a `cd` after it, where its relative paths land is
+    /// not known, which [`Split::settle_later`] says once the line is read.
+    /// A `cd` in the action itself may run before any of the line, so the
+    /// rest of the line is read from somewhere unknown.
+    pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
+        if self.moved != began.moved {
+            self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
+        }
+        self.later.push(Later {
+            units: began.units..self.units.len(),
+            writes: began.writes..self.writes.len(),
+            reads: began.reads..self.reads.len(),
+            moves: self.moves,
+            moved: self.moved,
+            inherited,
+        });
+    }
+
+    /// After the whole line is read: an action that runs later is read from
+    /// where the line ends up, so when a `cd` came after it, its relative
+    /// paths are known only when it runs.
+    fn settle_later(&mut self) {
+        for later in std::mem::take(&mut self.later) {
+            if later.moved_since(self.moves, self.moved) {
+                self.move_later(&later);
+            }
+        }
+    }
+
+    /// An action read from text with its expansions replaced by a
+    /// placeholder shows `source`, as written, wherever the placeholder
+    /// would be the name of what a finding is about.
+    pub(crate) fn show_source(&mut self, began: Began, source: &str) {
+        let shown = |arg: &mut Arg| {
+            if arg.text().contains(crate::posix::OPAQUE) {
+                *arg = Arg::Unknown(source.to_string());
+            }
+        };
+        for unit in self.units.get_mut(began.units..).unwrap_or_default() {
+            shown(&mut unit.program);
+            unit.args.iter_mut().for_each(shown);
+        }
+        for write in self.writes.get_mut(began.writes..).unwrap_or_default() {
+            shown(&mut write.target);
+        }
+        for read in self.reads.get_mut(began.reads..).unwrap_or_default() {
+            shown(&mut read.target);
+        }
+        for finding in self.findings.get_mut(began.findings..).unwrap_or_default() {
+            if finding
+                .target
+                .as_deref()
+                .is_some_and(|target| target.contains(crate::posix::OPAQUE))
+            {
+                finding.target = Some(source.to_string());
+            }
+        }
+    }
+
+    /// Read an action that runs later from somewhere unknown.
+    fn move_later(&mut self, later: &Later) {
+        let moved = Arg::Unknown("where the line moves to".to_string());
+        for unit in self.units.get_mut(later.units.clone()).unwrap_or_default() {
+            unit.dir = Some(moved.clone());
+        }
+        for write in self
+            .writes
+            .get_mut(later.writes.clone())
+            .unwrap_or_default()
+        {
+            write.dir = Some(moved.clone());
+        }
+        for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
+            read.dir = Some(moved.clone());
+        }
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested
     /// script whose `cd` must not reach the rest of the line.
-    pub(crate) fn dir_snapshot(&self) -> Option<Arg> {
-        self.dir.clone()
+    pub(crate) fn dir_snapshot(&self) -> Place {
+        Place {
+            dir: self.dir.clone(),
+            moves: self.moves,
+            later: self.later.len(),
+        }
     }
 
-    pub(crate) fn restore_dir(&mut self, dir: Option<Arg>) {
-        self.dir = dir;
+    /// Put the line back where it was. An action that runs later, set inside
+    /// what ended, is settled by the `cd`s inside it, and the rest of the
+    /// line counts against it as it would against one set before.
+    pub(crate) fn restore_dir(&mut self, place: Place) {
+        let inside = self.later.split_off(place.later);
+        for mut later in inside {
+            if later.moved_since(self.moves, self.moved) {
+                self.move_later(&later);
+            } else {
+                later.moves = place.moves;
+                self.later.push(later);
+            }
+        }
+        self.dir = place.dir;
+        self.moves = place.moves;
+    }
+
+    /// Record that the line sets or unsets the variable `name`, for `effect`.
+    pub(crate) fn set(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.sets.push(name.to_string());
+        }
+    }
+
+    /// Record the variable of a `for` loop, for `effect`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.loops.push(name.to_string());
+        }
+    }
+
+    /// Record that the line runs or changes something that is not a unit,
+    /// for `effect`.
+    pub(crate) fn opaque(&mut self) {
+        self.kept.opaque |= self.kept.on;
+    }
+
+    /// Record what a wrapper's own options do, for `effect`.
+    pub(crate) fn wrapped(&mut self, effect: Kind) {
+        match effect {
+            Kind::Reads => {}
+            Kind::Changes => self.kept.changes |= self.kept.on,
+            Kind::Unknown => self.opaque(),
+        }
     }
 
     /// Record that the line sets the variable `name`.
@@ -417,9 +833,13 @@ impl Split {
             .any(|known| known.eq_ignore_ascii_case(name))
     }
 
-    /// A new pipeline's number.
-    pub(crate) fn pipeline(&mut self) -> usize {
+    /// A new pipeline's number; `parent` is the stage of another pipeline it
+    /// runs in.
+    pub(crate) fn pipeline(&mut self, parent: Option<Stage>) -> usize {
         self.pipelines += 1;
+        if let Some(parent) = parent {
+            self.parents.insert(self.pipelines, parent);
+        }
         self.pipelines
     }
 
@@ -433,7 +853,7 @@ impl Split {
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
-fn moves_to(unit: &Unit) -> Option<Arg> {
+pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -541,8 +961,101 @@ pub(crate) const MAX_TREE_DEPTH: usize = 400;
 /// The longest line read: past it, the line is not read at all.
 const MAX_LEN: usize = 64 * 1024;
 
-pub(crate) fn split(command: &str, shell: Shell) -> Split {
+/// The most nested script text read for one line, in bytes: past it, the
+/// line is unreadable. A nested script is read once for each time the line
+/// starts it, so this bounds the work whatever the nesting does. It is a
+/// few times the longest line, which a plain line never nears.
+const MAX_NESTED_READ: usize = 4 * MAX_LEN;
+
+/// The most here-documents a POSIX script may start on one line before it is
+/// not read: the bash grammar holds each until the line ends and takes time
+/// that grows with the square of how many are waiting (a second, at the
+/// length limit), and no real script starts this many on a line. Here-
+/// documents on lines of their own that follow a command (`cat <<A` and a
+/// line break, repeated) cost no more than the text does, and here-strings
+/// (`<<<`) are not here-documents. Here-documents with no command before the
+/// `<<` are slow without being counted (`<<A` and a line break, repeated to
+/// the length limit, takes seconds in a release build) and are listed with
+/// the other slow noise in `docs/design/shell.md`.
+const MAX_HEREDOCS: usize = 256;
+
+/// The most `&`, and the most `|`, a cmd line may hold before it is not
+/// read: cmd's grammar nests a chain one level for each, so a line past
+/// the depth the walk goes is unreadable whatever else it holds, and its
+/// grammar takes time that grows with the square of the chain to find that
+/// out (seconds, at the length limit).
+const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+
+/// Whether the grammar of `shell` would take too long over `text`, and why,
+/// found by counting bytes without parsing:
+///
+/// - more `(` opened (`{` and `[` are not counted), with none closed in
+///   between, than a parse tree is walked deep (the line is unreadable whatever the grammar makes of it,
+///   and cmd's takes seconds to find that out at the length limit);
+/// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
+///   `||` count once);
+/// - in a POSIX shell, more here-documents started on one line (a `\` before
+///   the line break continues it) than [`MAX_HEREDOCS`].
+///
+/// The count ignores quoting, so it can only err towards unreadable.
+fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
+    let bytes = text.as_bytes();
+    let (mut open, mut heredocs) = (0_usize, 0_usize);
+    let (mut ands, mut pipes) = (0_usize, 0_usize);
+    // How many `<` in a row end just before `at`, and whether the `&` or `|`
+    // just before it was the second of a pair.
+    let (mut run, mut paired) = (0_usize, false);
+    // A line break after the text settles a run of `<` at its end.
+    for (at, byte) in bytes
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'\n'))
+        .enumerate()
+    {
+        if byte == b'<' {
+            run += 1;
+            continue;
+        }
+        // `<<EOF` starts a here-document, `<<<` a here-string; more than
+        // three in a row is noise, which counts.
+        if shell == Shell::Posix && (run == 2 || run >= 4) {
+            heredocs += 1;
+            if heredocs > MAX_HEREDOCS {
+                return Some("starts too many here-documents to read");
+            }
+        }
+        run = 0;
+        match byte {
+            b'(' => {
+                open += 1;
+                if open > MAX_TREE_DEPTH {
+                    return Some("nests too deeply to read");
+                }
+            }
+            b')' => open = open.saturating_sub(1),
+            b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
+            b'&' | b'|' if shell == Shell::Cmd => {
+                // The second of two the same is part of `&&` or `||`.
+                let second = !paired && at >= 1 && bytes[at - 1] == byte;
+                paired = second;
+                if !second {
+                    let count = if byte == b'&' { &mut ands } else { &mut pipes };
+                    *count += 1;
+                    if *count > MAX_CMD_SEPARATORS {
+                        return Some("chains too many commands to read");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split `command`; `effect` says it is also read for [`crate::effect`].
+pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
+    split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
@@ -554,11 +1067,18 @@ pub(crate) fn split(command: &str, shell: Shell) -> Split {
         script(&mut split, command, shell, 0);
     }
     split.hide_bodies();
+    split.settle_later();
     split
 }
 
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
+    script_in(split, text, shell, depth, false);
+}
+
+/// As [`script`]; `here` says the script runs in this shell, as `eval`'s
+/// does, so what it does to the working directory stays.
+pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
     if depth > MAX_DEPTH {
         split.problem(
             Rule::Unreadable,
@@ -571,15 +1091,28 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
         split.problem(Rule::Unreadable, "is too long to read", None);
         return;
     }
+    if let Some(why) = too_tangled(text, shell) {
+        split.problem(Rule::Unreadable, why, None);
+        return;
+    }
+    if depth > 0 {
+        split.nested_read += text.len() + 1;
+        if split.nested_read > MAX_NESTED_READ {
+            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
+            return;
+        }
+    }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
-    // does not move the line that started it.
+    // does not move the line that started it. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
     }
-    split.restore_dir(outer);
+    if !here {
+        split.restore_dir(outer);
+    }
 }
 
 /// Parse `text` with `language`; `None` (and a finding) when the parser
@@ -699,13 +1232,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
+/// Whether `text` is a `/X`-style switch, not a path.
+pub(crate) fn is_switch(text: &str) -> bool {
+    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+}
+
 /// The arguments that are not `/X`-style switches.
 pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
     args.iter()
-        .filter(|arg| {
-            !arg.known().is_some_and(|text| {
-                text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
-            })
-        })
+        .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
 }

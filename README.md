@@ -19,16 +19,50 @@ verdict back in microseconds.
 - **shell** judges a shell line: POSIX shells, PowerShell and cmd. It parses the
   line and judges the programs, flags, operands and redirects, never the raw
   text. `rm -rf ~` is risky ("deletes your home directory"); `ls src` is safe.
+  `cat ~/.ssh/id_ed25519` is risky too ("reads your SSH keys"), as it is for
+  the file guard below: one file, one answer, whichever way it is read.
+  Beside that verdict, `effect` says whether a line only reads, changes
+  something or cannot be told: `git status` only reads, `mkdir build` is safe
+  and changes the disk, `./script.sh` cannot be told. A line that only reads
+  also says whether the reads stay in the workspace: `git status` does, `cat
+  ~/.ssh/id_ed25519` does not. `effect_paths` lists the places
+  such a line reads, and how each is read (exactly, as a pattern, or as a walk), for a caller that checks them on the disk.
+- **file** judges one read or write of a path through a file API, which no shell
+  line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
+  drives, shares, long paths, short names, any case): a read of
+  `~/.ssh/id_ed25519` is risky ("reads your SSH keys"), a read of `src/main.rs`
+  is safe, a write beyond the workspace, to a startup file, to a file a tool
+  runs on its own (`.envrc`, `.github/workflows/ci.yml`) or to the
+  repository's history is risky, and a path that is not one literal path (a
+  wildcard, a variable) is unreadable.
+- **url** judges a URL an agent is about to fetch, by the host a URL parser reads
+  and never by how it is spelled. `http://2130706433/` is `127.0.0.1`, so it is
+  risky ("fetches your own machine"), like `http://192.168.1.1/` and
+  `http://169.254.169.254/` (a cloud metadata service); a URL with a password
+  in it (shown without the password), a `file:` URL and a scheme that is not the
+  web are risky too. `https://docs.rs/url` is safe.
+- **secrets** reads a text for what it must not carry: private keys, the keys and
+  tokens of cloud and API providers, JWTs, `Basic` and `Bearer` credentials,
+  passwords in connection strings and URLs, passwords written as `name=value`,
+  card numbers, id numbers, emails, phone numbers and public IP addresses. A
+  finding never holds the secret (`AKIA… (20 chars)`), and `find_spans` gives
+  the byte ranges so a caller can scrub them. It is not in the default
+  features. A commit SHA, a UUID and a lockfile hash are safe; a
+  `postgres://app:fakePass0word1@db/app` string is risky.
 
-More guards will sit beside it.
+More guards will sit beside them.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell` feature is on by default.
+Depend on `milo-local-guards` by git. The `shell`, `file` and `url` features are on by
+default; `secrets` is opt in, because most callers want the others and not a table of
+patterns in their binary.
 
 ```toml
 [dependencies]
 milo-local-guards = { git = "https://github.com/camiloazula/milo-local-guards", rev = "<commit>" }
+# With the secrets guard as well:
+# milo-local-guards = { git = "…", rev = "<commit>", features = ["secrets"] }
 ```
 
 ```rust
@@ -45,6 +79,15 @@ assert!(!assessment.is_safe());
 for finding in assessment.findings() {
     // Ask, refuse or let it through: that is your call.
     println!("{}: {}", finding.rule.name(), finding.reason); // delete: deletes your home directory
+}
+
+// The same places judge a read or a write of one path through a file API.
+use milo_local_guards::file::{judge, Access};
+
+assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
+
+for finding in judge(Access::Read, "~/.ssh/id_ed25519", &paths).findings() {
+    println!("{}: {}", finding.rule.name(), finding.reason); // read_secret: reads your SSH keys
 }
 ```
 

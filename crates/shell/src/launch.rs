@@ -1,6 +1,6 @@
 //! Adding a unit to a split: the wrappers in front of a program come off
 //! (`sudo rm` is `rm`, run as root), and a program started with a script
-//! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`,
+//! (`bash -c`, `cmd /c`, `powershell -Command`, `eval`, `trap`,
 //! `Invoke-Expression`) has that script split in its own grammar.
 
 use crate::dotglob;
@@ -14,9 +14,9 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
-use interpreters::{interpreter, shell};
+use interpreters::{interpreter, shell, trap, trap_inherited};
 pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
-use wrappers::{cmd, env, powershell, rsh, start, start_process, tmux, xargs};
+use wrappers::{cmd, env, env_sets, powershell, rsh, start, start_process, tmux, xargs};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -51,6 +51,7 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 }
 
 fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
+    unit.depth = depth;
     for _ in 0..MAX_WRAPPERS {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
@@ -65,16 +66,31 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             split.push(unit);
             return;
         };
+        // `env X=1 cmd` and `env -u X cmd` change the program's environment.
+        if split.kept.on && key == "env" && unit.shell != Shell::Cmd {
+            for name in env_sets(&unit.args) {
+                split.set(&name);
+            }
+        }
         match launch(&key, &unit) {
             Launch::Itself => {
+                // What `find` picks is handed to the programs its `-exec` runs.
+                let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
                     find_exec(split, &unit, depth);
                 }
+                let execs = first..split.units.len();
+                let at = split.units.len();
                 split.push(unit);
+                split.nest(execs, at..at + 1);
                 return;
             }
-            Launch::Runs(start) => unit = inner(unit, key, start, &Hands::Nothing),
+            Launch::Runs(start) => {
+                note_wrapper(split, &key, &unit, start);
+                unit = inner(unit, key, start, &Hands::Nothing);
+            }
             Launch::Input { start, replace } => {
+                note_wrapper(split, &key, &unit, start);
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -86,21 +102,67 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     && shell == Shell::Posix
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
+                let inherited = key == "trap" && trap_inherited(&unit.args);
+                let shell_at = split.units.len();
                 split.push(unit);
+                // A `trap` action in double quotes is expanded when the trap
+                // is set and its result read as code when it runs, as
+                // `eval "…"` does: whatever an expansion holds becomes code.
+                // The text around the expansions is still read.
+                let mut source = None;
+                let script = match script {
+                    Arg::Template {
+                        text,
+                        source: written,
+                    } if key == "trap" => {
+                        split.problem(
+                            Rule::Unknown,
+                            "runs a script only known when it runs",
+                            Some(&written),
+                        );
+                        source = Some(written);
+                        Arg::Known(text)
+                    }
+                    other => other,
+                };
                 match script {
                     Arg::Known(text) => {
                         // A script in a process of its own sets its options
-                        // for itself; `eval` runs in this shell, or in a
-                        // subshell when it is a stage of a pipeline, which
-                        // can turn the option on but not off. A
-                        // `GLOBIGNORE` in front of any is in its
+                        // for itself; `eval` and `trap` run in this shell,
+                        // or in a subshell when they are a stage of a
+                        // pipeline, which can turn the option on but not
+                        // off. A `GLOBIGNORE` in front of any is in its
                         // environment.
                         let outer = split.hidden_snapshot();
                         if starts_hidden || split.scoped_hidden() {
                             split.hide_for_script();
                         }
-                        unit::script(split, &text, shell, depth + 1);
-                        if key != "eval" {
+                        // A `trap`'s script runs later: when the line ends,
+                        // or between its commands. It is a body, judged with
+                        // the option on if the line ever turns it on, and
+                        // nothing in it is certain to run before the line's
+                        // next unit.
+                        let later = (key == "trap").then(|| {
+                            split.branches += 1;
+                            split.bodies += 1;
+                            split.begin_later()
+                        });
+                        // `eval` runs in this shell: a `cd` in it moves the rest
+                        // of the line. In a pipeline only zsh's last stage
+                        // does, but as for a `cd` the guard counts any stage.
+                        let here = key == "eval";
+                        unit::script_in(split, &text, shell, depth + 1, here);
+                        // What the script runs, it runs for the shell that started it.
+                        split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
+                        if let Some(began) = later {
+                            split.branches -= 1;
+                            split.bodies -= 1;
+                            if let Some(source) = &source {
+                                split.show_source(began, source);
+                            }
+                            split.end_later(began, inherited);
+                        }
+                        if !matches!(key.as_str(), "eval" | "trap") {
                             split.restore_hidden(outer);
                         } else if stage.is_some() {
                             split.restore_hidden(outer.or(split.hidden_snapshot()));
@@ -138,6 +200,16 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
     split.push(unit);
 }
 
+/// Say what the options of the wrapper `key`, the arguments before the
+/// program at `start`, do: `time -o FILE` writes, an option the guard does
+/// not know is not read. For `effect` only.
+fn note_wrapper(split: &mut Split, key: &str, unit: &Unit, start: usize) {
+    if split.kept.on {
+        let own = unit.args.get(..start).unwrap_or_default();
+        split.wrapped(crate::effect::wrapper(key, own));
+    }
+}
+
 /// What a wrapper hands the program it runs, besides its arguments.
 enum Hands {
     Nothing,
@@ -155,6 +227,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        depth,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -184,6 +257,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        depth,
     }
 }
 
@@ -387,6 +461,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "eval" if unit.shell == Shell::Posix => Launch::Script(Shell::Posix, join(args)),
+        "trap" if unit.shell == Shell::Posix => trap(args),
         "source" | "." if unit.shell == Shell::Posix => match args.first() {
             Some(Arg::Known(script)) if is_stdin(script) => Launch::Reads(Reads::Shell),
             Some(Arg::Known(_)) | None => Launch::Itself,
