@@ -487,10 +487,10 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             Some(script) => Launch::Script(Shell::Posix, script.clone()),
         },
         key if SHELLS.contains(&key) && posix => shell(args),
-        "bun" | "deno" if posix => inline::runner(key, args),
-        key if posix && (INTERPRETERS.contains(&key) || key.starts_with("python3.")) => {
-            interpreter(key, args)
-        }
+        // Also under cmd and PowerShell: the code they are given is not
+        // read there, which comes back as `unknown`.
+        "bun" | "deno" => inline::runner(key, args),
+        key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => interpreter(key, args),
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell => {

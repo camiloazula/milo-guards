@@ -60,6 +60,8 @@ enum Kind {
     Chmod,
     Chown,
     Chdir,
+    /// `os.fchdir(fd)`: a directory only known when it runs.
+    Fchdir,
     /// `open(path, mode)` and the calls that open a file the same way.
     Open,
     /// `os.open(path, flags)`.
@@ -74,6 +76,11 @@ enum Kind {
     Unread,
     /// `eval` and `exec`.
     Eval,
+    /// A library call that runs the code it is given as a string
+    /// (`timeit.timeit`, `cProfile.run`, `pdb.run`): a literal is read as
+    /// Python, a callable is walked where it is written, and anything else
+    /// is code only known when it runs.
+    Code,
     /// `__import__` and `importlib.import_module`.
     Import,
     Getattr,
@@ -184,9 +191,10 @@ fn kind(name: &str) -> Option<Kind> {
         | "sqlite3.connect" => Kind::Write,
         "os.chmod" | "os.lchmod" => Kind::Chmod,
         "os.chown" | "os.lchown" | "shutil.chown" => Kind::Chown,
-        "os.chdir" => Kind::Chdir,
-        "open" | "builtins.open" | "io.open" | "codecs.open" | "gzip.open" | "bz2.open"
-        | "lzma.open" | "tarfile.open" | "zipfile.ZipFile" => Kind::Open,
+        "os.chdir" | "contextlib.chdir" => Kind::Chdir,
+        "os.fchdir" => Kind::Fchdir,
+        "open" | "builtins.open" | "io.open" | "io.FileIO" | "codecs.open" | "gzip.open"
+        | "bz2.open" | "lzma.open" | "tarfile.open" | "zipfile.ZipFile" => Kind::Open,
         "os.open" => Kind::OsOpen,
         "os.system"
         | "os.popen"
@@ -213,7 +221,24 @@ fn kind(name: &str) -> Option<Kind> {
         | "__builtins__"
         | "code.interact"
         | "code.InteractiveInterpreter"
-        | "code.InteractiveConsole" => Kind::Unread,
+        | "code.InteractiveConsole"
+        | "cProfile.Profile"
+        | "profile.Profile"
+        | "pdb.Pdb"
+        | "pdb.runcall"
+        | "pickle.loads"
+        | "pickle.load"
+        | "pickle.Unpickler"
+        | "marshal.loads"
+        | "marshal.load"
+        | "pkgutil.resolve_name"
+        | "importlib.util.module_from_spec"
+        | "imp.load_source"
+        | "imp.load_module"
+        | "imp.load_compiled"
+        | "imp.load_dynamic" => Kind::Unread,
+        "timeit.timeit" | "timeit.repeat" | "timeit.Timer" | "cProfile.run" | "cProfile.runctx"
+        | "profile.run" | "profile.runctx" | "pdb.run" | "pdb.runeval" => Kind::Code,
         "eval" | "exec" => Kind::Eval,
         "__import__" | "importlib.import_module" | "importlib.__import__" => Kind::Import,
         "getattr" => Kind::Getattr,
@@ -285,6 +310,9 @@ struct Args<'t> {
     keywords: Vec<(String, Node<'t>)>,
     /// Whether `*args` or `**kwargs` may stand for any argument.
     splat: bool,
+    /// Whether a `dir_fd`, `src_dir_fd` or `dst_dir_fd` makes a relative path
+    /// count from a directory only known when it runs.
+    dir_fd: bool,
 }
 
 impl<'t> Args<'t> {
@@ -293,6 +321,7 @@ impl<'t> Args<'t> {
             positional: Vec::new(),
             keywords: Vec::new(),
             splat: false,
+            dir_fd: false,
         };
         let Some(list) = call.child_by_field_name("arguments") else {
             return args;
@@ -309,8 +338,10 @@ impl<'t> Args<'t> {
                         child.child_by_field_name("name"),
                         child.child_by_field_name("value"),
                     ) {
-                        args.keywords
-                            .push((unit::text(&name, src).to_string(), value));
+                        let name = unit::text(&name, src).to_string();
+                        args.dir_fd |=
+                            matches!(name.as_str(), "dir_fd" | "src_dir_fd" | "dst_dir_fd");
+                        args.keywords.push((name, value));
                     }
                 }
                 "list_splat" | "dictionary_splat" => args.splat = true,
@@ -627,10 +658,12 @@ impl<'s> Reader<'s> {
             match part.kind() {
                 "string_content" => {
                     let content = self.text(part);
+                    // An escape the reader does not decode makes the string
+                    // one only known when it runs, never a guess.
                     let content = if raw {
                         content.to_string()
                     } else {
-                        unescape(content)
+                        unescape(content)?
                     };
                     text.push_str(&if format {
                         content.replace("{{", "{").replace("}}", "}")
@@ -738,6 +771,9 @@ impl<'s> Reader<'s> {
     /// may hold it, and `None` when the call has none.
     fn target(&mut self, args: &Args<'_>, at: usize, names: &[&str]) -> Option<Arg> {
         match args.get(at, names) {
+            // A path counted from a directory handle is only known when it
+            // runs.
+            Some(node) if args.dir_fd => Some(Arg::Unknown(super::shorten(self.text(node)))),
             Some(node) => Some(self.arg(node)),
             None if args.splat => Some(Arg::Unknown("*args".to_string())),
             None => None,
@@ -797,6 +833,17 @@ impl<'s> Reader<'s> {
             Some(Kind::Chdir) => {
                 let target = self.target(&args, 0, &["path"]);
                 self.act(target.map(Act::Chdir));
+            }
+            Some(Kind::Fchdir) => {
+                self.act(Some(Act::Chdir(Arg::Unknown(super::shorten(
+                    self.text(call),
+                )))));
+            }
+            Some(Kind::Code) => {
+                let setup = name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("timeit."));
+                self.runs_code(&args, call, setup);
             }
             Some(Kind::Open) => {
                 // No mode reads; a mode only known when it runs may write.
@@ -887,6 +934,34 @@ impl<'s> Reader<'s> {
         }) {
             Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
             None => self.reading.unread(self.text(call)),
+        }
+    }
+
+    /// `timeit.timeit(stmt, setup)`, `cProfile.run(statement)`, `pdb.run(…)`:
+    /// the code they run is read as Python when it is a literal, a callable
+    /// (`lambda`) is walked where it is written, and anything else (a name, a
+    /// computed string, `*args`) is code only known when it runs.
+    fn runs_code(&mut self, args: &Args<'_>, call: Node<'_>, setup: bool) {
+        const CODE: [&str; 4] = ["stmt", "statement", "command", "expression"];
+        let mut pieces = Vec::new();
+        pieces.extend(args.get(0, &CODE));
+        // `timeit`'s second argument is code too.
+        if setup {
+            pieces.extend(args.get(1, &["setup"]));
+        }
+        let mut unread = args.splat;
+        for node in pieces {
+            match node.kind() {
+                "lambda" => {}
+                "string" | "concatenated_string" => match self.value(node, 0) {
+                    Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
+                    None => unread = true,
+                },
+                _ => unread = true,
+            }
+        }
+        if unread {
+            self.reading.unread(self.text(call));
         }
     }
 
@@ -1000,6 +1075,11 @@ impl<'s> Reader<'s> {
             return;
         };
         match self.text(attribute) {
+            // Loads a module and runs its code, or runs the code of a string
+            // handed to a profiler or a debugger.
+            "exec_module" | "load_module" | "runctx" | "runeval" | "runcall" => {
+                self.reading.unread(self.text(function));
+            }
             "unlink" | "rmdir" => {
                 let target = self.arg(receiver);
                 self.reading.acts.push(Act::Remove(target));
@@ -1203,8 +1283,10 @@ impl<'s> Reader<'s> {
 
 /// A string literal's text with its escapes read, as Python reads a string
 /// that is not raw: `\n`, `\x41`, `é`, octal, and a backslash before
-/// anything else stays.
-fn unescape(text: &str) -> String {
+/// anything else stays. `None` when an escape is not decoded (`\N{NAME}`, a
+/// `\x` or `\u` without its digits, a number that is no character): the
+/// string is then only known when it runs.
+fn unescape(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1234,8 +1316,7 @@ fn unescape(text: &str) -> String {
                 out.push(
                     u32::from_str_radix(&digits, 8)
                         .ok()
-                        .and_then(char::from_u32)
-                        .unwrap_or('?'),
+                        .and_then(char::from_u32)?,
                 );
             }
             'x' | 'u' | 'U' => {
@@ -1247,35 +1328,21 @@ fn unescape(text: &str) -> String {
                 let digits: String = (0..count)
                     .map_while(|_| chars.next_if(char::is_ascii_hexdigit))
                     .collect();
-                let read = u32::from_str_radix(&digits, 16)
-                    .ok()
-                    .filter(|_| digits.len() == count)
-                    .and_then(char::from_u32);
-                if let Some(c) = read {
-                    out.push(c);
-                } else {
-                    out.push('\\');
-                    out.push(next);
-                    out.push_str(&digits);
-                }
+                out.push(
+                    u32::from_str_radix(&digits, 16)
+                        .ok()
+                        .filter(|_| digits.len() == count)
+                        .and_then(char::from_u32)?,
+                );
             }
-            'N' => {
-                // `\N{NAME}`: a character the name stands for, which no path
-                // here depends on.
-                if chars.peek() == Some(&'{') {
-                    for c in chars.by_ref() {
-                        if c == '}' {
-                            break;
-                        }
-                    }
-                }
-                out.push('?');
-            }
+            // `\N{NAME}` is a character the name stands for, which the reader
+            // does not look up.
+            'N' => return None,
             other => {
                 out.push('\\');
                 out.push(other);
             }
         }
     }
-    out
+    Some(out)
 }

@@ -202,7 +202,7 @@ fn whole(name: &str) -> Option<Kind> {
         | "worker_threads.Worker"
         | "Deno.dlopen"
         | "Deno.core" => Kind::Unread,
-        "require" => Kind::Require,
+        "require" | "process.getBuiltinModule" | "import.meta.require" => Kind::Require,
         _ => return None,
     })
 }
@@ -222,8 +222,103 @@ const ROOTS: [&str; 11] = [
     "os",
 ];
 
+/// What `globalThis`, `global` and `window` are named, once the reader
+/// has put them back: a member of it is the name alone (`globalThis.require`
+/// is `require`).
+const GLOBAL: &str = "globalThis";
+
+/// `this`, which is the global object in `node -e` and is taken for it
+/// where a member of it is named; it is not one of [`ROOTS`], so a `this[key]`
+/// of a class is not a lookup the reader cannot follow.
+const THIS: &str = "this";
+
+/// The names the global object holds itself under.
+const GLOBALS: [&str; 3] = ["globalThis", "global", "window"];
+
+/// `object.property` as a name: a member of the global object is the name
+/// alone (and the global object's own names are the global object again,
+/// `global.global.require`), and a `default` is the object it is the default
+/// of: the default export of a module is the module (`import * as ns from
+/// 'fs'; ns.default.rmSync`).
+fn member(object: &str, property: &str) -> String {
+    if object == GLOBAL || object == THIS {
+        if GLOBALS.contains(&property) {
+            return GLOBAL.to_string();
+        }
+        return property.to_string();
+    }
+    if property == "default" {
+        return object.to_string();
+    }
+    format!("{object}.{property}")
+}
+
+/// The methods only the file system, `child_process` and their kin have: a
+/// call to one that the reader could not tell is such a call is a delete, a
+/// write or a command it cannot follow.
+const DISTINCT: [&str; 28] = [
+    "rmSync",
+    "rmdirSync",
+    "unlinkSync",
+    "writeFileSync",
+    "appendFileSync",
+    "truncateSync",
+    "mkdirSync",
+    "mkdtempSync",
+    "copyFileSync",
+    "cpSync",
+    "renameSync",
+    "symlinkSync",
+    "linkSync",
+    "chmodSync",
+    "lchmodSync",
+    "chownSync",
+    "lchownSync",
+    "openSync",
+    "createWriteStream",
+    "execSync",
+    "execFileSync",
+    "spawnSync",
+    "execaCommandSync",
+    "rimrafSync",
+    "removeSync",
+    "outputFileSync",
+    "emptyDirSync",
+    "writeJsonSync",
+];
+
 /// The properties of an options object whose truth means a file is written.
 const WRITE_OPTIONS: [&str; 5] = ["write", "append", "create", "createNew", "truncate"];
+
+/// The argument a `require` call names its module in, when there is one.
+struct Source<'t>(Option<Node<'t>>);
+
+/// The argument that names the module when a call to `name` is a `require`
+/// (also `process.getBuiltinModule`, Bun's `import.meta.require`, and
+/// `require.call(this, 'fs')`, `require.apply(this, ['fs'])`): `None` when it
+/// is not one, and a [`Source`] with no node when the module is not an
+/// argument the reader can find.
+fn require_source<'t>(name: Option<&str>, args: &Args<'t>) -> Option<Source<'t>> {
+    let name = name?;
+    if kind(name) == Some(Kind::Require) {
+        return Some(Source(args.get(0)));
+    }
+    if let Some(base) = name.strip_suffix(".call") {
+        if kind(base) == Some(Kind::Require) {
+            return Some(Source(args.get(1)));
+        }
+    }
+    if let Some(base) = name.strip_suffix(".apply") {
+        if kind(base) == Some(Kind::Require) {
+            return Some(Source(
+                args.get(1)
+                    .filter(|list| list.kind() == "array")
+                    .and_then(|list| list.named_child(0)),
+            ));
+        }
+    }
+    None
+}
 
 struct Reader<'s> {
     src: &'s str,
@@ -358,10 +453,8 @@ impl<'s> Reader<'s> {
                             let real = specifier.child_by_field_name("name");
                             let alias = specifier.child_by_field_name("alias").or(real);
                             if let (Some(real), Some(alias)) = (real, alias) {
-                                self.aliases.insert(
-                                    self.text(alias).to_string(),
-                                    format!("{module}.{}", self.text(real)),
-                                );
+                                let member = member(&module, self.text(real));
+                                self.aliases.insert(self.text(alias).to_string(), member);
                             }
                         }
                     }
@@ -402,16 +495,16 @@ impl<'s> Reader<'s> {
                     match part.kind() {
                         "shorthand_property_identifier_pattern" => {
                             let property = self.text(part);
-                            self.aliases
-                                .insert(property.to_string(), format!("{from}.{property}"));
+                            let member = member(from, property);
+                            self.aliases.insert(property.to_string(), member);
                         }
                         // `{ rmSync = null }`: the member, with a default for
                         // when it is not there.
                         "object_assignment_pattern" => {
                             if let Some(left) = part.child_by_field_name("left") {
                                 let property = self.text(left);
-                                self.aliases
-                                    .insert(property.to_string(), format!("{from}.{property}"));
+                                let member = member(from, property);
+                                self.aliases.insert(property.to_string(), member);
                             }
                         }
                         "pair_pattern" => {
@@ -419,7 +512,7 @@ impl<'s> Reader<'s> {
                                 part.child_by_field_name("key"),
                                 part.child_by_field_name("value"),
                             ) {
-                                let inner = format!("{from}.{}", self.text(key));
+                                let inner = member(from, self.text(key));
                                 self.bind_pattern(value, &inner, level + 1);
                             }
                         }
@@ -458,36 +551,43 @@ impl<'s> Reader<'s> {
 
     /// Whether `name` is an object that holds calls the reader looks for.
     fn is_module(&self, name: &str) -> bool {
-        ROOTS.contains(&name) || name == "require" || self.modules.contains(name)
+        ROOTS.contains(&name)
+            || matches!(
+                name,
+                "require" | "process.getBuiltinModule" | "import.meta.require"
+            )
+            || self.modules.contains(name)
     }
 
     fn name(&mut self, node: Node<'_>, level: usize) -> Option<String> {
         match node.kind() {
             "identifier" | "shorthand_property_identifier" => {
                 let name = self.text(node);
-                Some(
-                    self.aliases
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| name.to_string()),
-                )
+                Some(self.aliases.get(name).cloned().unwrap_or_else(|| {
+                    if matches!(name, "global" | "window") {
+                        GLOBAL.to_string()
+                    } else {
+                        name.to_string()
+                    }
+                }))
             }
+            // `this` is the global object in `node -e`.
+            "this" => Some(THIS.to_string()),
+            // Bun's `import.meta.require`.
+            "meta_property" => Some("import.meta".to_string()),
             "member_expression" => {
                 let object = node.child_by_field_name("object")?;
                 let property = node.child_by_field_name("property")?;
-                let property = self.text(property);
-                if matches!(self.text(object), "globalThis" | "global" | "window") {
-                    return Some(property.to_string());
-                }
+                let property = self.text(property).to_string();
                 let object = self.qualified(object, level + 1)?;
-                Some(format!("{object}.{property}"))
+                Some(member(&object, &property))
             }
             "subscript_expression" => {
                 let object = node.child_by_field_name("object")?;
                 let index = node.child_by_field_name("index")?;
                 let index = self.literal(index)?;
                 let object = self.qualified(object, level + 1)?;
-                Some(format!("{object}.{index}"))
+                Some(member(&object, &index))
             }
             "parenthesized_expression" | "await_expression" => {
                 let inner = node.named_child(0)?;
@@ -500,16 +600,26 @@ impl<'s> Reader<'s> {
             }
             "call_expression" => {
                 let function = node.child_by_field_name("function")?;
-                // `require('fs')` and `import('fs')` are the module.
-                let required = self.qualified(function, level + 1).as_deref() == Some("require");
-                if required || self.text(function) == "import" {
-                    let args = Args::read(node);
-                    let source = self.literal(args.get(0)?)?;
-                    let module = module(&source);
-                    self.modules.insert(module.clone());
-                    return Some(module);
+                let called = self.qualified(function, level + 1);
+                // `require.bind(null)` is `require` again.
+                if let Some(bound) = called
+                    .as_deref()
+                    .and_then(|name| name.strip_suffix(".bind"))
+                {
+                    return (kind(bound) == Some(Kind::Require)).then(|| bound.to_string());
                 }
-                None
+                // `require('fs')`, `require.call(null, 'fs')`, `import('fs')`,
+                // `process.getBuiltinModule('fs')` are the module.
+                let args = Args::read(node);
+                let source = if self.text(function) == "import" {
+                    args.get(0)
+                } else {
+                    require_source(called.as_deref(), &args)?.0
+                };
+                let source = self.literal(source?)?;
+                let module = module(&source);
+                self.modules.insert(module.clone());
+                Some(module)
             }
             _ => None,
         }
@@ -537,7 +647,7 @@ impl<'s> Reader<'s> {
                 for part in node.named_children(&mut cursor) {
                     match part.kind() {
                         "string_fragment" => text.push_str(self.text(part)),
-                        "escape_sequence" => text.push_str(&unescape(self.text(part))),
+                        "escape_sequence" => text.push_str(&unescape(self.text(part))?),
                         _ => {}
                     }
                 }
@@ -550,7 +660,7 @@ impl<'s> Reader<'s> {
                 for part in parts {
                     match part.kind() {
                         "string_fragment" => text.push_str(self.text(part)),
-                        "escape_sequence" => text.push_str(&unescape(self.text(part))),
+                        "escape_sequence" => text.push_str(&unescape(self.text(part))?),
                         "template_substitution" => {
                             let expression = part.named_child(0)?;
                             text.push_str(&self.value(expression, level + 1)?);
@@ -684,7 +794,15 @@ impl<'s> Reader<'s> {
         // What starts a program is run from where `cwd` says.
         let before = self.reading.acts.len();
         let mut cwd = None;
-        match name.as_deref().and_then(kind) {
+        // `require.call(null, 'fs')` and `process.getBuiltinModule('fs')` are
+        // calls of `require` too.
+        let requires = require_source(name.as_deref(), &args);
+        let kind = if requires.is_some() {
+            Some(Kind::Require)
+        } else {
+            name.as_deref().and_then(kind)
+        };
+        match kind {
             Some(Kind::Remove) => {
                 let target = self.target(&args, 0);
                 self.act(target.map(Act::Remove));
@@ -827,14 +945,15 @@ impl<'s> Reader<'s> {
                 None => self.reading.unread(self.text(call)),
             },
             Some(Kind::Require) => {
-                if args.get(0).is_none_or(|node| self.literal(node).is_none()) {
+                let source = requires.and_then(|found| found.0).or_else(|| args.get(0));
+                if source.is_none_or(|node| self.literal(node).is_none()) {
                     self.reading.unread(self.text(call));
                 } else if self.escapes(call, field, above) {
                     // The module, handed on as a value.
                     self.reading.unread(self.text(call));
                 }
             }
-            None => self.method(function),
+            None => self.method(function, name.as_deref(), call),
         }
         self.within(cwd, before);
         // `import(x)`: a module loaded where the reader cannot follow it,
@@ -1108,8 +1227,32 @@ impl<'s> Reader<'s> {
         }
     }
 
-    /// A method called on a file made by `Bun.file(path)`.
-    fn method(&mut self, function: Node<'_>) {
+    /// A call the reader does not know. A method with a name only the file
+    /// system, `child_process` and the like have (`rmSync`, `execSync`), on
+    /// an object the reader cannot name, is a delete, a write or a command
+    /// it cannot follow: `unknown`. Else a method called on a file made by
+    /// `Bun.file(path)`.
+    fn method(&mut self, function: Node<'_>, name: Option<&str>, call: Node<'_>) {
+        let property = match function.kind() {
+            "member_expression" => function
+                .child_by_field_name("property")
+                .map(|property| self.text(property).to_string()),
+            "subscript_expression" => function
+                .child_by_field_name("index")
+                .and_then(|index| self.literal(index)),
+            _ => None,
+        };
+        // The name an alias stands for counts too (`const r = x.rmSync`).
+        let last = name.and_then(|name| name.rsplit('.').next());
+        if property
+            .as_deref()
+            .into_iter()
+            .chain(last)
+            .any(|name| DISTINCT.contains(&name))
+        {
+            self.reading.unread(self.text(call));
+            return;
+        }
         if function.kind() != "member_expression" {
             return;
         }
@@ -1120,7 +1263,7 @@ impl<'s> Reader<'s> {
             return;
         };
         let method = self.text(property);
-        if !matches!(method, "delete" | "write" | "writer") {
+        if !matches!(method, "delete" | "unlink" | "write" | "writer") {
             return;
         }
         let Some(file) = self.constructed(receiver, "Bun.file") else {
@@ -1128,7 +1271,7 @@ impl<'s> Reader<'s> {
         };
         let target = self.target(&file, 0);
         self.act(target.map(|target| {
-            if method == "delete" {
+            if matches!(method, "delete" | "unlink") {
                 Act::Remove(target)
             } else {
                 Act::Write(target)
@@ -1202,29 +1345,43 @@ impl<'s> Reader<'s> {
 }
 
 /// A JavaScript escape sequence's character: `\n`, `\x41`, `é`,
-/// `\u{1F600}`; a backslash before anything else is that character.
-fn unescape(escape: &str) -> String {
+/// `\u{1F600}`, a legacy octal escape (`\57`, `\176`, `\0`: sloppy mode,
+/// which `node -e` is, reads them); a backslash before anything else is that
+/// character. `None` when it is not decoded (a surrogate, a number that is no
+/// character): the string is then only known when it runs.
+fn unescape(escape: &str) -> Option<String> {
     let Some(rest) = escape.strip_prefix('\\') else {
-        return escape.to_string();
+        return Some(escape.to_string());
     };
     let mut chars = rest.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
+    let first = chars.next()?;
     let hex = |digits: &str| {
         u32::from_str_radix(digits, 16)
             .ok()
             .and_then(char::from_u32)
-            .map_or_else(|| escape.to_string(), String::from)
+            .map(String::from)
     };
     match first {
-        'n' => "\n".to_string(),
-        't' => "\t".to_string(),
-        'r' => "\r".to_string(),
-        'b' => "\u{8}".to_string(),
-        'f' => "\u{c}".to_string(),
-        'v' => "\u{b}".to_string(),
-        '0' if chars.as_str().is_empty() => "\0".to_string(),
+        'n' => Some("\n".to_string()),
+        't' => Some("\t".to_string()),
+        'r' => Some("\r".to_string()),
+        'b' => Some("\u{8}".to_string()),
+        'f' => Some("\u{c}".to_string()),
+        'v' => Some("\u{b}".to_string()),
+        // One to three octal digits: up to `\377`, so a third digit that
+        // would go past it is the character after the escape (`\400` is `\40`
+        // and `0`).
+        '0'..='7' => {
+            let digits = rest;
+            let (octal, after) = match digits.len() {
+                3 if first > '3' => digits.split_at(2),
+                _ => (digits, ""),
+            };
+            let value = u32::from_str_radix(octal, 8).ok()?;
+            let mut text = char::from_u32(value)?.to_string();
+            text.push_str(after);
+            Some(text)
+        }
         'x' | 'u' => {
             let digits = chars.as_str();
             let digits = digits
@@ -1233,7 +1390,7 @@ fn unescape(escape: &str) -> String {
                 .unwrap_or(digits);
             hex(digits)
         }
-        '\n' | '\r' => String::new(),
-        other => other.to_string(),
+        '\n' | '\r' => Some(String::new()),
+        other => Some(other.to_string()),
     }
 }

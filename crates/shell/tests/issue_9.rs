@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{check, check_effect, posix};
+use common::{check, check_effect, posix, windows};
 use milo_guards_shell::{Effect, Rule, Shell};
 
 #[test]
@@ -724,4 +724,570 @@ fn inline_code_is_never_reads_only() {
             "bun - <<'JS'\nconsole.log(1)\nJS",
         ],
     );
+}
+
+// The review of the second pass: each line below was `unknown` before the
+// second pass's reader and read as safe after it.
+
+#[test]
+fn javascript_follows_every_way_to_a_module() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The same ways, for modules that do nothing harmful.
+            r#"node -e 'this.require("path").join("a", "b")'"#,
+            r#"node -e 'require.call(null, "path").join("a", "b")'"#,
+            r#"node -e 'process.getBuiltinModule("fs").readFileSync("x")'"#,
+            r#"node -e 'import * as ns from "fs"; ns.default.readFileSync("x")'"#,
+            r#"node -e 'globalThis["require"]("fs").readFileSync("x")'"#,
+            r#"node -e 'this.require("fs").rmSync("dist", {recursive: true})'"#,
+            r#"node -e 'require.call(null, "fs").rmSync("dist")'"#,
+            r#"node -e 'process.getBuiltinModule("fs").rmSync("dist")'"#,
+            r#"bun -e 'import.meta.require("fs").rmSync("dist")'"#,
+            r#"node -e 'import * as ns from "fs"; ns.default.rmSync("dist")'"#,
+            // `this` of a class and the names of a program are not the global
+            // object's lookups.
+            r"node -e 'class A { set(k, v) { this[k] = v; return this.x; } }'",
+            r"node -e 'console.log(typeof window, this.x)'",
+        ],
+        &[
+            // `this` is the global object in `node -e`.
+            (
+                r#"node -e 'this.require("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'this.eval("require(\"fs\").rmSync(\"/home/me\",{recursive:true})")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'this["eval"]("require(\"fs\").rmSync(\"/home/me\",{recursive:true})")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'globalThis["require"]("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'globalThis["eval"]("require(\"fs\").rmSync(\"/home/me\",{recursive:true})")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'global.global.require("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'globalThis.globalThis.require("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const g = globalThis; g.require("fs").rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            // `require` through `call`, `apply` and `bind`.
+            (
+                r#"node -e 'require.call(null, "fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'require.apply(null, ["fs"]).rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'require.bind(null)("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const r = require.bind(null); r("fs").rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'require.call(null, "child_process").execSync("rm -rf ~")'"#,
+                Rule::Delete,
+            ),
+            ("node -e 'require.call(null, name)'", Rule::Unknown),
+            ("node -e 'require.apply(null, args)'", Rule::Unknown),
+            ("node -e 'require.call(null, ...args)'", Rule::Unknown),
+            // `process.getBuiltinModule`.
+            (
+                r#"node -e 'process.getBuiltinModule("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'require("process").getBuiltinModule("fs").rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const { getBuiltinModule } = process; getBuiltinModule("fs").rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const { rmSync } = process.getBuiltinModule("fs"); rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'const get = process.getBuiltinModule; get("child_process").execSync("rm -rf ~")'"#,
+                Rule::Delete,
+            ),
+            ("node -e 'process.getBuiltinModule(name)'", Rule::Unknown),
+            ("node -e 'f(process.getBuiltinModule)'", Rule::Unknown),
+            // Bun's `import.meta.require`.
+            (
+                r#"bun -e 'import.meta.require("fs").rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            ("bun -e 'import.meta.require(name)'", Rule::Unknown),
+            ("bun -e 'f(import.meta.require)'", Rule::Unknown),
+            // The default export of a namespace is the module.
+            (
+                r#"node -e 'import * as ns from "fs"; ns.default.rmSync("/home/me", {recursive: true})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'import { default as f } from "node:fs"; f.rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'import * as ns from "fs"; const { default: f } = ns; f.rmSync("/home/me")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"node -e 'import * as ns from "child_process"; ns.default.execSync("rm -rf ~")'"#,
+                Rule::Delete,
+            ),
+            // A method only the file system has, on an object the reader cannot
+            // name, is a call it cannot follow.
+            ("node -e 'make().rmSync(\"/home/me\")'", Rule::Unknown),
+            ("node -e 'x.rmdirSync(\"/home/me\")'", Rule::Unknown),
+            ("node -e 'x.unlinkSync(\"/home/me/.zshrc\")'", Rule::Unknown),
+            (
+                "node -e 'x.writeFileSync(\"/home/me/.zshrc\", \"\")'",
+                Rule::Unknown,
+            ),
+            (
+                "node -e 'x.appendFileSync(\"/home/me/.zshrc\", \"\")'",
+                Rule::Unknown,
+            ),
+            ("node -e 'x.execSync(\"rm -rf ~\")'", Rule::Unknown),
+            (
+                "node -e 'x.execFileSync(\"rm\", [\"-rf\", \"~\"])'",
+                Rule::Unknown,
+            ),
+            (
+                "node -e 'x.spawnSync(\"rm\", [\"-rf\", \"~\"])'",
+                Rule::Unknown,
+            ),
+            ("node -e 'x[\"rmSync\"](\"/home/me\")'", Rule::Unknown),
+            ("node -e 'this.rmSync(\"/home/me\")'", Rule::Unknown),
+            (
+                "node -e 'const r = x.rmSync; r(\"/home/me\")'",
+                Rule::Unknown,
+            ),
+            (
+                "node -e 'const { rmSync } = x; rmSync(\"/home/me\")'",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn python_library_calls_that_run_code_are_read_or_unknown() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A callable is walked where it is written, a literal is read.
+            r"python3 -c 'import timeit; timeit.timeit(lambda: sum(range(10)), number=1)'",
+            r#"python3 -c 'import timeit; timeit.timeit("sum(range(10))", number=1)'"#,
+            r#"python3 -c 'import timeit; timeit.timeit("x = 1", setup="import os")'"#,
+            r#"python3 -c 'import timeit; timeit.repeat("x = 1", repeat=2)'"#,
+            r#"python3 -c 'import timeit; timeit.Timer("x = 1")'"#,
+            r#"python3 -c 'import cProfile; cProfile.run("sum(range(10))")'"#,
+            r#"python3 -c 'import profile; profile.run("sum(range(10))")'"#,
+            r#"python3 -c 'import pdb; pdb.run("x = 1")'"#,
+            r#"python3 -c 'import pdb; pdb.runeval("1 + 1")'"#,
+            r#"python3 -c 'import json; json.loads("{}")'"#,
+        ],
+        &[
+            (
+                r#"python3 -c 'import timeit; timeit.timeit("import shutil; shutil.rmtree(\"/home/me\")", number=1)'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import timeit; timeit.timeit(stmt="import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import timeit; timeit.timeit("pass", setup="import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import timeit; timeit.repeat("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import timeit; timeit.Timer("import shutil; shutil.rmtree(\"/home/me\")").timeit()'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'from timeit import timeit as t; t("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import cProfile; cProfile.run("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import cProfile; cProfile.runctx("import shutil; shutil.rmtree(\"/home/me\")", {}, {})'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import profile; profile.run("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import pdb; pdb.run("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            (
+                r#"python3 -c 'import pdb; pdb.runeval("__import__(\"shutil\").rmtree(\"/home/me\")")'"#,
+                Rule::Delete,
+            ),
+            // Code only known when it runs, a profiler's or a debugger's own
+            // object, and a call handed on.
+            ("python3 -c 'import timeit; timeit.timeit(s)'", Rule::Unknown),
+            ("python3 -c 'import timeit; timeit.timeit(stmt=s)'", Rule::Unknown),
+            ("python3 -c 'import timeit; timeit.timeit(\"x\", setup=s)'", Rule::Unknown),
+            ("python3 -c 'import timeit; timeit.timeit(*a)'", Rule::Unknown),
+            ("python3 -c 'import cProfile; cProfile.run(s)'", Rule::Unknown),
+            ("python3 -c 'import profile; profile.runctx(s, g, l)'", Rule::Unknown),
+            ("python3 -c 'import pdb; pdb.run(s)'", Rule::Unknown),
+            ("python3 -c 'import pdb; pdb.runcall(f)'", Rule::Unknown),
+            (
+                r#"python3 -c 'import cProfile; cProfile.Profile().run("import shutil; shutil.rmtree(\"/home/me\")")'"#,
+                Rule::Unknown,
+            ),
+            (
+                r"python3 -c 'import cProfile; p = cProfile.Profile(); p.runctx(s, g, l)'",
+                Rule::Unknown,
+            ),
+            ("python3 -c 'import timeit; f = timeit.timeit; f(s)'", Rule::Unknown),
+            // Loading code that runs.
+            (
+                r#"python3 -c 'import pickle; pickle.loads(b"cposix\nsystem\n(S\"rm -rf ~\"\ntR.")'"#,
+                Rule::Unknown,
+            ),
+            ("python3 -c 'import pickle; pickle.load(f)'", Rule::Unknown),
+            ("python3 -c 'from pickle import loads; loads(data)'", Rule::Unknown),
+            ("python3 -c 'import marshal; marshal.loads(data)'", Rule::Unknown),
+            ("python3 -c 'import marshal; marshal.load(f)'", Rule::Unknown),
+            (
+                r#"python3 -c 'import pkgutil; pkgutil.resolve_name("shutil:rmtree")("/home/me")'"#,
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c 'import importlib.util as u; s = u.spec_from_file_location(\"m\", \"m.py\"); m = u.module_from_spec(s); s.loader.exec_module(m); m.rmtree(\"/home/me\")'",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c 'import importlib.util; m = importlib.util.module_from_spec(spec)'",
+                Rule::Unknown,
+            ),
+            ("python3 -c 'spec.loader.exec_module(m)'", Rule::Unknown),
+            ("python3 -c 'loader.load_module(\"m\")'", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn file_calls_that_were_not_listed() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "python3 -c \"import io; io.FileIO('/home/me/.zshrc')\"",
+            "python3 -c \"import io; io.FileIO('/home/me/.zshrc', 'r')\"",
+            "python3 -c \"import io; io.FileIO('out.txt', 'w')\"",
+            "bun -e \"Bun.file('dist/x').unlink()\"",
+            "bun -e \"Bun.file('/home/me/.zshrc').text()\"",
+        ],
+        &[
+            (
+                "python3 -c \"import io; io.FileIO('/home/me/.zshrc', 'w')\"",
+                Rule::Overwrite,
+            ),
+            (
+                "python3 -c \"import io; io.FileIO('/home/me/.zshrc', mode='a')\"",
+                Rule::Overwrite,
+            ),
+            (
+                "python3 -c \"from io import FileIO; FileIO('/home/me/.zshrc', 'w')\"",
+                Rule::Overwrite,
+            ),
+            (
+                "python3 -c \"import _io; _io.FileIO('/home/me/.zshrc', 'wb')\"",
+                Rule::Overwrite,
+            ),
+            (
+                "bun -e \"Bun.file('/home/me/.zshrc').unlink()\"",
+                Rule::Delete,
+            ),
+            (
+                "bun -e \"await Bun.file('/home/me/.zshrc').unlink()\"",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn python_changes_directory_in_other_ways() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "python3 -c \"import os, shutil; os.chdir('/tmp'); shutil.rmtree('x')\"",
+            "python3 -c \"import os; os.unlink('x.log')\"",
+            "python3 -c \"import os; os.open('x.txt', os.O_RDONLY, dir_fd=3)\"",
+            "python3 -c \"import os; os.scandir('.')\"",
+        ],
+        &[
+            // `os.fchdir` goes to a directory only known when it runs.
+            (
+                "python3 -c \"import os, shutil; os.fchdir(os.open('/home/me', os.O_RDONLY)); shutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os, shutil; os.fchdir(fd); shutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.chdir(os.open('/home/me', os.O_RDONLY)); os.remove('.zshrc')\"",
+                Rule::Delete,
+            ),
+            // `contextlib.chdir(D)` is a `chdir` to `D`.
+            (
+                "python3 -c \"import contextlib, os, shutil\nwith contextlib.chdir(os.path.expanduser('~')): shutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import contextlib, shutil\nwith contextlib.chdir('/home/me'): shutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"from contextlib import chdir; import os\nwith chdir('/home/me'):\n    os.remove('.zshrc')\"",
+                Rule::Delete,
+            ),
+            // A path counted from a directory handle is only known when it runs.
+            (
+                "python3 -c \"import os; os.unlink('.zshrc', dir_fd=os.open('/home/me', os.O_RDONLY))\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.remove('.zshrc', dir_fd=fd)\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.rmdir('.ssh', dir_fd=os.open('/home/me', os.O_RDONLY))\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.open('.zshrc', os.O_WRONLY | os.O_TRUNC, dir_fd=os.open('/home/me', os.O_RDONLY))\"",
+                Rule::Overwrite,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.rmtree('.ssh', dir_fd=fd)\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.rename('a', 'b', src_dir_fd=fd)\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.rename('a', 'b', dst_dir_fd=fd)\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.mkdir('.ssh', dir_fd=fd)\"",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_chdir_is_not_where_the_code_sits() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // An absolute folder that is no harm, a folder below the start, or
+            // a path that is the same in both.
+            "python3 -c \"import os, shutil; os.chdir('/tmp'); shutil.rmtree('x')\"",
+            "python3 -c \"import os, shutil; os.chdir('sub'); shutil.rmtree('x')\"",
+            "python3 -c \"import os, shutil; os.chdir('sub'); os.chdir('deeper'); shutil.rmtree('x')\"",
+            "python3 -c \"import os, shutil\ndef g(): shutil.rmtree('x')\nos.chdir('/tmp')\ng()\"",
+            "python3 -c \"import os, shutil; shutil.rmtree('/tmp/x'); os.chdir('/home/me')\"",
+            "node -e \"process.chdir('/tmp'); require('fs').rmSync('x')\"",
+            "node -e \"const fs = require('fs'); function g() { fs.rmSync('x'); } process.chdir('sub'); g()\"",
+        ],
+        &[
+            // A function defined before the `chdir` and called after it.
+            (
+                "python3 -c \"import os, shutil\ndef g(): shutil.rmtree('.ssh')\nos.chdir('/home/me')\ng()\"",
+                Rule::Delete,
+            ),
+            // A later pass of a loop, after the first pass's `chdir`.
+            (
+                "python3 -c \"import os, shutil\nfor i in range(2):\n    shutil.rmtree('.ssh')\n    os.chdir('/home/me')\"",
+                Rule::Delete,
+            ),
+            // Something registered to run when the code ends.
+            (
+                "python3 -c \"import atexit, os, shutil; atexit.register(lambda: shutil.rmtree('.ssh')); os.chdir('/home/me')\"",
+                Rule::Delete,
+            ),
+            // The `chdir` first, as before.
+            (
+                "python3 -c \"import os, shutil; os.chdir('/home/me'); shutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            // Where it goes when it is `..`, mixed, or only known when it runs.
+            (
+                "python3 -c \"import os, shutil\ndef g(): shutil.rmtree('.ssh')\nos.chdir('..')\ng()\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os, shutil\ndef g(): shutil.rmtree('.ssh')\nos.chdir('/home')\nos.chdir('me')\ng()\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os, shutil\ndef g(): shutil.rmtree('.ssh')\nos.chdir(d)\ng()\"",
+                Rule::Delete,
+            ),
+            // Code that is run from a string has its own `chdir`.
+            (
+                "python3 -c \"import os, shutil\nexec('import os; os.chdir(\\\"/home/me\\\")')\nshutil.rmtree('.ssh')\"",
+                Rule::Delete,
+            ),
+            // The same for JavaScript.
+            (
+                "node -e \"const fs = require('fs'); function g() { fs.rmSync('.ssh', {recursive: true}); } process.chdir('/home/me'); g()\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"const fs = require('fs'); setTimeout(() => fs.rmSync('.ssh', {recursive: true}), 0); process.chdir('/home/me')\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"const fs = require('fs'); for (const i of [1, 2]) { fs.rmSync('.ssh', {recursive: true}); process.chdir('/home/me'); }\"",
+                Rule::Delete,
+            ),
+            (
+                "bun -e \"const fs = require('fs'); function g() { fs.rmSync('.ssh', {recursive: true}); } process.chdir('/home/me'); g()\"",
+                Rule::Delete,
+            ),
+            (
+                "deno eval \"function g() { Deno.removeSync('.ssh', {recursive: true}); } Deno.chdir('/home/me'); g()\"",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn escapes_the_reader_does_not_decode_are_only_known_when_the_code_runs() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // What is decoded is the character it stands for.
+            "python3 -c \"import shutil; shutil.rmtree('dist\\x2fx')\"",
+            "python3 -c \"print('\\N{BULLET}')\"",
+            "node -e \"require('fs').rmSync('dist\\57x')\"",
+            "node -e \"require('fs').rmSync('\\144ist')\"",
+            "node -e \"require('fs').rmSync('\\400')\"",
+            "node -e \"console.log('\\57', '\\0')\"",
+            "node -e \"require('fs').rmSync('\\x64ist')\"",
+        ],
+        &[
+            // Python's `\N{NAME}`.
+            (
+                "python3 -c \"import shutil; shutil.rmtree('\\N{SOLIDUS}home\\N{SOLIDUS}me')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os; os.system('rm -rf \\N{TILDE}')\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.rmtree('\\N{LATIN SMALL LETTER E}')\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import shutil; shutil.rmtree('\\x')\"",
+                Rule::Delete,
+            ),
+            // JavaScript's legacy octal escapes, which `node -e` reads.
+            (
+                "node -e \"require('fs').rmSync('\\57home\\57me', {recursive: true})\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('fs').rmSync('\\176', {recursive: true})\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('fs').rmSync('\\176/.ssh', {recursive: true})\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('child_process').execSync('rm -rf \\176')\"",
+                Rule::Delete,
+            ),
+            (
+                "node -e \"require('fs').rmSync('\\057home\\057me')\"",
+                Rule::Delete,
+            ),
+            // One it does not decode.
+            ("node -e \"require('fs').rmSync('\\ud83d')\"", Rule::Delete),
+            (
+                "node -e \"require('child_process').execSync('rm -rf \\u{110000}')\"",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn code_handed_to_an_interpreter_on_windows_is_unknown() {
+    // Its paths and commands are not POSIX ones, so it is not read: under
+    // cmd as under PowerShell.
+    for shell in [Shell::Cmd, Shell::PowerShell] {
+        check(
+            shell,
+            &windows(),
+            &[
+                "python build.py",
+                "node build.js",
+                "bun run build.ts",
+                "deno test",
+            ],
+            &[
+                (
+                    r#"python -c "import shutil; shutil.rmtree('C:/Users/me')""#,
+                    Rule::Unknown,
+                ),
+                (r#"python3 -c "print(1)""#, Rule::Unknown),
+                (
+                    r#"node -e "require('fs').rmSync('C:/Users/me', {recursive: true})""#,
+                    Rule::Unknown,
+                ),
+                (r#"bun -e "console.log(1)""#, Rule::Unknown),
+                (r#"deno eval "console.log(1)""#, Rule::Unknown),
+            ],
+        );
+    }
 }

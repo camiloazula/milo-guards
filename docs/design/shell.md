@@ -403,8 +403,8 @@ would expand. `<<-` takes the leading tabs off. A script file
 (`python3 scripts/gen.py`, `node build.js`) is the workspace's own code and is
 not read. Neither is code from a pipe or another redirect (`cat x.py |
 python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
-download. Code on Windows (PowerShell, cmd) stays `unknown`: its paths and
-commands are not POSIX ones.
+download. Code that PowerShell or cmd hands to an interpreter stays `unknown`:
+its paths and commands are not POSIX ones.
 
 `effect` never answers `ReadsOnly` for a line with inline code: the interpreter
 is not one of its readers (`Unknown`), and a delete, write or command the code
@@ -417,12 +417,19 @@ this to `classify`.
 and destructuring bound is put back (`from os import remove as rm`,
 `const { rm } = require('fs/promises')`, `import * as fs from 'node:fs'`,
 `o = os`, `getattr(os, 'remove')`, `__import__('os')`), whatever the nesting,
-every branch counting whether or not it runs.
+every branch counting whether or not it runs. In JavaScript a module also comes
+from `require.call(null, 'fs')`, `require.apply(null, ['fs'])` and
+`require.bind(null)('fs')`, from `process.getBuiltinModule('fs')` and Bun's
+`import.meta.require('fs')`, and a namespace's `default` is the module
+(`import * as ns from 'fs'; ns.default.rmSync(…)`). A member of the global
+object is the name alone, however it is reached: `globalThis.require`,
+`globalThis['eval']`, `global.global.require`, `this.require` (`this` is the
+global object in `node -e`).
 
 | Does | Python | JavaScript (Node, Bun, Deno) |
 | --- | --- | --- |
-| Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()`, `rimraf` |
-| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
+| Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()` and `.unlink()`, `rimraf` |
+| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
 | Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
 | Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
 | Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` `` |
@@ -431,6 +438,20 @@ A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
 '~'])`) is judged as the unit it is, `shell=True` or `{ shell: true }` making
 it a command line. A `chdir` moves the code's own paths, not the line's.
+
+A `chdir` is applied where the code runs it, which is not where it is written
+(a function defined before it and called after, a later pass of a loop, an
+action registered for when the code ends). So in code that changes directory
+anywhere (`os.chdir`, `contextlib.chdir(D)`, `process.chdir`, `Deno.chdir`), each
+relative path is judged from every directory the code may be in: where it
+started, each `chdir` target, and the places the `chdir`s lead to one after
+another. When every target is an absolute folder, or every one is a folder below
+the one before (`sub`), those are all the places there are. When they mix, one
+goes up with `..` or is only known when it runs, `os.fchdir(fd)` is a directory
+only known when it runs, or a nested piece of code (`exec("…")`) has a `chdir`
+of its own, a relative path is only known when it runs. In Python a `dir_fd`,
+`src_dir_fd` or `dst_dir_fd` makes a path count from a directory handle only
+known when it runs, so the path is too.
 
 **Paths.** A literal string; `os.path.expanduser('~…')`, `Path.home()`,
 `os.environ['HOME']`, `process.env.HOME`, `os.homedir()` and the like for the
@@ -445,7 +466,13 @@ computed value, is a path only known when it runs, as `rm -rf "$DIR"` is.
 **What stays `unknown`**, with the reason `runs code the guard does not read`
 and the code that is the reason as the target: code that does not parse;
 `eval`, `exec`, `compile`, `Function`, `vm.*` of anything but a literal string
-(a literal is read as code of its language); `__import__`, `getattr`,
+(a literal is read as code of its language); a library call that runs the code
+it is given, `timeit.timeit`/`repeat`/`Timer`, `cProfile.run`/`runctx`,
+`profile.run`/`runctx`, `pdb.run`/`runeval` (a literal is read as Python, a
+`lambda` is read where it is written, anything else is code only known when it
+runs), and the ones that load code, `pickle` and `marshal` (`load`, `loads`),
+`pkgutil.resolve_name`, `importlib.util.module_from_spec`, `exec_module`,
+`load_module`, `cProfile.Profile`, `pdb.runcall`; `__import__`, `getattr`,
 `import()` and `require` of a computed name, a computed member of `fs` or
 `os`; `globals`, `locals`, `vars`, `__dict__`, `__builtins__`, `.constructor`;
 a call to a name above used as a value (`r = os.remove`,
@@ -485,6 +512,18 @@ Python 2's `exec "code"` (also `exec "code" in globals`) is read like
 `Path.rename` and `Path.replace` take their target as the one argument or as
 `target=`; given `*args` or `**kwargs` they are `unknown`, unless on a string
 literal, whose `replace` takes two.
+
+A JavaScript call to `rmSync`, `unlinkSync`, `writeFileSync`, `execSync`,
+`spawnSync` and the like (the methods only the file system and `child_process`
+have, with `Sync`) that is not a call the reader can tell, because the object
+it is called on cannot be named (`make().rmSync(p)`, `x['unlinkSync'](p)`,
+`const r = x.rmSync`), is `unknown`: an alias the reader cannot follow is.
+
+A string's escapes are read as the language reads them: Python's `\n`, `\x41`,
+octal and `\u`, JavaScript's, which also takes the legacy octal escapes
+(`'\57home\57me'` is `/home/me`, as `node -e` reads it). An escape the reader
+does not decode (Python's `\N{NAME}`, a JavaScript surrogate) makes the string
+a value only known when it runs, never a guess.
 
 Calls that are not listed are not read, so code whose only way to touch a file
 is one of them (a logging file handler, a library's own writer) is safe.

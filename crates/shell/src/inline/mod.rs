@@ -38,7 +38,7 @@ pub(crate) fn language(key: &str) -> Option<Language> {
 }
 
 /// What reading code found, in the order the code gives it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum Act {
     /// `rm -rf PATH`: a file or a whole tree goes.
     Remove(Arg),
@@ -424,10 +424,81 @@ pub(crate) fn apply(split: &mut Split, language: Language, code: &str, depth: us
     }
     // A `chdir` in the code moves its own process, not the line.
     let outer = split.dir_snapshot();
-    for act in reading.acts {
-        perform(split, act, depth);
+    let places = places(&reading.acts);
+    if places.len() == 1 {
+        for act in reading.acts {
+            perform(split, act, depth);
+        }
+    } else {
+        // The code can be in any of these places when it runs an act: a
+        // function is defined before the `chdir` and called after it, a loop's
+        // second pass follows the first pass's `chdir`, an action registered
+        // for later runs when the code ends. So each act is judged from
+        // each place, and from nowhere known where that cannot be told.
+        for act in reading.acts {
+            if matches!(act, Act::Chdir(_)) {
+                // Only where it goes is read here; the places hold the rest.
+                perform(split, act, depth);
+                split.restore_dir(outer.clone());
+                continue;
+            }
+            for place in &places {
+                for dir in place {
+                    run(split, "cd", vec![flag("--"), dir.clone()], depth);
+                }
+                perform(split, act.clone(), depth);
+                split.restore_dir(outer.clone());
+            }
+        }
     }
     split.restore_dir(outer);
+}
+
+/// The most places code is judged from: past it, from none known.
+const MAX_PLACES: usize = 12;
+
+/// Where the code may be when it runs an act: each is the `cd`s that lead
+/// there from where the code starts. Just the start (one place, no `cd`s)
+/// when the code never changes directory. Else the start, each `chdir`'s
+/// target and the places the `chdir`s lead to one after another as they are
+/// written: a target that is an absolute folder is where the code is, and one
+/// below where it was (`sub`) is another folder below the start, so those
+/// places hold wherever the code can be. When the targets mix the two, one
+/// goes up (`..`) or is only known when it runs, or a nested piece of code
+/// has a `chdir` the reader does not follow, the code may be anywhere, and
+/// a relative path is only known when it runs.
+fn places(acts: &[Act]) -> Vec<Vec<Arg>> {
+    let mut targets = Vec::new();
+    let mut hidden = false;
+    for act in acts {
+        match act {
+            Act::Chdir(target) => targets.push(target.clone()),
+            Act::Code(_, text) => hidden |= text.contains("chdir"),
+            _ => {}
+        }
+    }
+    if targets.is_empty() && !hidden {
+        return vec![Vec::new()];
+    }
+    let (mut absolute, mut below, mut unknown) = (false, false, hidden);
+    for target in &targets {
+        match target.known() {
+            Some(dir) if dir.starts_with(['/', '~']) => absolute = true,
+            Some(dir) if !dir.split('/').any(|part| part == "..") => below = true,
+            _ => unknown = true,
+        }
+    }
+    let mut places = vec![Vec::new()];
+    for (at, target) in targets.iter().enumerate() {
+        places.push(vec![target.clone()]);
+        if at > 0 {
+            places.push(targets[..=at].to_vec());
+        }
+    }
+    if unknown || (absolute && below) || places.len() > MAX_PLACES {
+        places = vec![Vec::new(), vec![Arg::Unknown("a directory".to_string())]];
+    }
+    places
 }
 
 /// Add what one act does to the split, as the shell command that does the
