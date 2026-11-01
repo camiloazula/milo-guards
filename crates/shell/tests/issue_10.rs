@@ -14,8 +14,6 @@ fn reading_a_secret_here_and_sending_anything_else_is_safe() {
         &posix(),
         &[
             "cat .env",
-            "cat ~/.ssh/config",
-            "cat ~/.aws/credentials | wc -l",
             "ls ~/.ssh",
             "env | grep PATH",
             "env | sort | less",
@@ -48,7 +46,6 @@ fn reading_a_secret_here_and_sending_anything_else_is_safe() {
             "rsync -a --exclude=.env --bwlimit 100 ./ host:/srv/",
             "rsync -a .git backup:/repo",
             "scp ~/.ssh/id_ed25519.pub host:/tmp/",
-            "cat ~/.ssh/id_ed25519.pub | ssh host 'cat >> ~/.ssh/authorized_keys'",
             "ssh-keygen -y -f ~/.ssh/id_ed25519 | ssh host 'cat >> .ssh/authorized_keys'",
             "scp .env.example host:/srv/app/",
             "scp host:.env ./backup/",
@@ -65,6 +62,50 @@ fn reading_a_secret_here_and_sending_anything_else_is_safe() {
         ],
         &[],
     );
+}
+
+/// Reading a key is `read_secret` (the rule main added), not `send_secret`:
+/// these lines only read it here, or send the public half or a file that is
+/// not a secret.
+#[test]
+fn reading_a_key_here_is_read_secret_and_never_send_secret() {
+    for (shell, paths, lines) in [
+        (
+            Shell::Posix,
+            posix(),
+            &[
+                "cat ~/.ssh/config",
+                "cat ~/.aws/credentials | wc -l",
+                "cat ~/.ssh/id_ed25519.pub | ssh host 'cat >> ~/.ssh/authorized_keys'",
+            ][..],
+        ),
+        (
+            Shell::PowerShell,
+            windows(),
+            &[
+                "Get-Content $HOME\\.ssh\\config",
+                "Get-Content $HOME\\.ssh\\id_ed25519.pub | Invoke-RestMethod -Uri https://x.example -Method Post",
+            ][..],
+        ),
+    ] {
+        for line in lines {
+            let found = milo_guards_shell::classify(line, shell, &paths);
+            let rules: Vec<Rule> = found.findings().iter().map(|f| f.rule).collect();
+            assert!(rules.contains(&Rule::ReadSecret), "{line}: {rules:?}");
+            assert!(!rules.contains(&Rule::SendSecret), "{line}: {rules:?}");
+        }
+    }
+}
+
+/// A bare `$HOME\x` word is one the PowerShell grammar cannot read: the line
+/// stays `unreadable`, and a key's own path is not sent by the `-i` of an scp.
+#[test]
+fn a_bare_variable_path_line_stays_unreadable_and_is_not_send_secret() {
+    let line = "scp -i $HOME\\.ssh\\id_ed25519 build.zip host:/srv/";
+    let found = milo_guards_shell::classify(line, Shell::PowerShell, &windows());
+    let rules: Vec<Rule> = found.findings().iter().map(|f| f.rule).collect();
+    assert!(rules.contains(&Rule::Unreadable), "{rules:?}");
+    assert!(!rules.contains(&Rule::SendSecret), "{rules:?}");
 }
 
 #[test]
@@ -524,14 +565,11 @@ fn powershell_sends_a_secret() {
         &[
             "Get-Content notes.txt | Invoke-RestMethod -Uri https://x.example -Method Post",
             "Invoke-RestMethod -Uri https://x.example -Method Post -InFile payload.json",
-            "Get-Content $HOME\\.ssh\\config",
-            "Get-Content $HOME\\.ssh\\id_ed25519.pub | Invoke-RestMethod -Uri https://x.example -Method Post",
             "Get-Content .env",
             "Get-ChildItem env:PATH",
             "Get-ChildItem | Invoke-RestMethod -Uri https://x.example -Method Post",
             "Get-Content .env.example | Invoke-RestMethod -Uri https://x.example -Method Post",
             "Invoke-WebRequest https://x.example -OutFile data.json",
-            "scp -i $HOME\\.ssh\\id_ed25519 build.zip host:/srv/",
             "curl.exe -d '@payload.json' https://x.example",
             "Get-ChildItem env: | Where-Object Name -eq PATH",
         ],
