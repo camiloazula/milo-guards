@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::dotglob;
+use crate::effect::Kind;
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -88,6 +89,12 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// How many levels deep the script it came from is nested: `0` for the
+    /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
+    /// more for a part of the line the grammar reads again (what follows the
+    /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
+    /// It is what the depth limit counts.
+    pub(crate) depth: usize,
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -109,6 +116,7 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            depth: 0,
         }
     }
 
@@ -266,6 +274,11 @@ pub(crate) struct Split {
     pub(crate) nested: Vec<Nested>,
     /// The variables set from a substitution.
     pub(crate) assigned: Vec<Assigned>,
+    /// The files redirected from (`< file`), where the line was.
+    pub(crate) reads: Vec<Read>,
+    /// The `for` loops over words written out, whose variable the body does
+    /// not set: a rule reads the body with each word in place.
+    pub(crate) bindings: Vec<Binding>,
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
@@ -303,6 +316,7 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
+    read_in_body: Vec<usize>,
     /// How many `cd`s this shell has run so far: a later one means an action
     /// that runs later may run from somewhere else. A subshell or a script
     /// in a process of its own gives the count back as it was, as it does
@@ -317,6 +331,57 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How deep the line is inside `find … -exec find … -exec …`: each
+    /// level is read once for every place the one outside it searches.
+    pub(crate) find_depth: usize,
+    /// How much work `find -exec` has been read to do, in all, counted in
+    /// bytes built (each `{}` replaced by the place it stands for) and
+    /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
+    /// a line must not make this grow without bound.
+    pub(crate) find_work: usize,
+    /// What only `effect` needs of the line, kept only when it is read for
+    /// `effect`, so `classify` costs what it did.
+    pub(crate) kept: Kept,
+}
+
+/// What a line holds that only [`crate::effect`] reads.
+#[derive(Debug, Default)]
+pub(crate) struct Kept {
+    /// Whether the line is read for `effect`: nothing below is kept if not.
+    pub(crate) on: bool,
+    /// The variables the line sets or unsets, as written (`PATH`,
+    /// `env:TEMP`): one can change which program runs or what it does.
+    pub(crate) sets: Vec<String>,
+    /// The variables of `for` loops that could be one of those: a loop's
+    /// own variable is only a name for each of its words.
+    pub(crate) loops: Vec<String>,
+    /// Whether the line holds something that runs or changes without being
+    /// a unit (a method call in PowerShell), or that cannot be told.
+    pub(crate) opaque: bool,
+    /// Whether a wrapper the line uses writes (`time -o FILE`).
+    pub(crate) changes: bool,
+}
+
+/// A `for` variable and the words it takes, over the units of the body.
+#[derive(Debug, Clone)]
+pub(crate) struct Binding {
+    pub(crate) variable: String,
+    pub(crate) words: Vec<String>,
+    /// The units added while the loop was read, by index in the split.
+    pub(crate) units: Range<usize>,
+    /// The redirects from a file added while it was read.
+    pub(crate) reads: Range<usize>,
+}
+
+/// A read a redirect makes: `< file`.
+#[derive(Debug, Clone)]
+pub(crate) struct Read {
+    pub(crate) shell: Shell,
+    pub(crate) target: Arg,
+    /// As [`Unit::dir`].
+    pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -324,6 +389,7 @@ pub(crate) struct Split {
 pub(crate) struct Began {
     units: usize,
     writes: usize,
+    reads: usize,
     findings: usize,
     moved: usize,
 }
@@ -345,6 +411,7 @@ pub(crate) struct Place {
 struct Later {
     units: Range<usize>,
     writes: Range<usize>,
+    reads: Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -473,6 +540,32 @@ impl Split {
         });
     }
 
+    /// Record a `for` loop over `words` whose body, the units and the
+    /// redirects from `start` on, does not set `variable`.
+    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: (usize, usize)) {
+        self.bindings.push(Binding {
+            variable: variable.to_string(),
+            words,
+            units: start.0..self.units.len(),
+            reads: start.1..self.reads.len(),
+        });
+    }
+
+    /// Add a redirect's read, made where the line has moved to.
+    pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
+        let dir = self.dir.clone();
+        let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.read_in_body.push(self.reads.len());
+        }
+        self.reads.push(Read {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
+    }
+
     /// Whether a wildcard in what comes next may match a leading dot.
     pub(crate) fn hidden(&self) -> bool {
         self.dotglob.any()
@@ -574,6 +667,11 @@ impl Split {
                 write.hidden = true;
             }
         }
+        for &at in &self.read_in_body {
+            if let Some(read) = self.reads.get_mut(at) {
+                read.hidden = true;
+            }
+        }
     }
 
     /// Note where an action that runs later begins, which the walk is about
@@ -582,6 +680,7 @@ impl Split {
         Began {
             units: self.units.len(),
             writes: self.writes.len(),
+            reads: self.reads.len(),
             findings: self.findings.len(),
             moved: self.moved,
         }
@@ -600,6 +699,7 @@ impl Split {
         self.later.push(Later {
             units: began.units..self.units.len(),
             writes: began.writes..self.writes.len(),
+            reads: began.reads..self.reads.len(),
             moves: self.moves,
             moved: self.moved,
             inherited,
@@ -633,6 +733,9 @@ impl Split {
         for write in self.writes.get_mut(began.writes..).unwrap_or_default() {
             shown(&mut write.target);
         }
+        for read in self.reads.get_mut(began.reads..).unwrap_or_default() {
+            shown(&mut read.target);
+        }
         for finding in self.findings.get_mut(began.findings..).unwrap_or_default() {
             if finding
                 .target
@@ -656,6 +759,9 @@ impl Split {
             .unwrap_or_default()
         {
             write.dir = Some(moved.clone());
+        }
+        for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
+            read.dir = Some(moved.clone());
         }
     }
 
@@ -684,6 +790,35 @@ impl Split {
         }
         self.dir = place.dir;
         self.moves = place.moves;
+    }
+
+    /// Record that the line sets or unsets the variable `name`, for `effect`.
+    pub(crate) fn set(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.sets.push(name.to_string());
+        }
+    }
+
+    /// Record the variable of a `for` loop, for `effect`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.loops.push(name.to_string());
+        }
+    }
+
+    /// Record that the line runs or changes something that is not a unit,
+    /// for `effect`.
+    pub(crate) fn opaque(&mut self) {
+        self.kept.opaque |= self.kept.on;
+    }
+
+    /// Record what a wrapper's own options do, for `effect`.
+    pub(crate) fn wrapped(&mut self, effect: Kind) {
+        match effect {
+            Kind::Reads => {}
+            Kind::Changes => self.kept.changes |= self.kept.on,
+            Kind::Unknown => self.opaque(),
+        }
     }
 
     /// Record that the line sets the variable `name`.
@@ -721,7 +856,7 @@ impl Split {
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
-fn moves_to(unit: &Unit) -> Option<Arg> {
+pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -810,8 +945,95 @@ const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-pub(crate) fn split(command: &str, shell: Shell) -> Split {
+/// The most here-documents a POSIX script may start on one line before it is
+/// not read: the bash grammar holds each until the line ends and takes time
+/// that grows with the square of how many are waiting (a second, at the
+/// length limit), and no real script starts this many on a line. Here-
+/// documents on lines of their own that follow a command (`cat <<A` and a
+/// line break, repeated) cost no more than the text does, and here-strings
+/// (`<<<`) are not here-documents. Here-documents with no command before the
+/// `<<` are slow without being counted (`<<A` and a line break, repeated to
+/// the length limit, takes seconds in a release build) and are listed with
+/// the other slow noise in `docs/design/shell.md`.
+const MAX_HEREDOCS: usize = 256;
+
+/// The most `&`, and the most `|`, a cmd line may hold before it is not
+/// read: cmd's grammar nests a chain one level for each, so a line past
+/// the depth the walk goes is unreadable whatever else it holds, and its
+/// grammar takes time that grows with the square of the chain to find that
+/// out (seconds, at the length limit).
+const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+
+/// Whether the grammar of `shell` would take too long over `text`, and why,
+/// found by counting bytes without parsing:
+///
+/// - more `(` opened (`{` and `[` are not counted), with none closed in
+///   between, than a parse tree is walked deep (the line is unreadable whatever the grammar makes of it,
+///   and cmd's takes seconds to find that out at the length limit);
+/// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
+///   `||` count once);
+/// - in a POSIX shell, more here-documents started on one line (a `\` before
+///   the line break continues it) than [`MAX_HEREDOCS`].
+///
+/// The count ignores quoting, so it can only err towards unreadable.
+fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
+    let bytes = text.as_bytes();
+    let (mut open, mut heredocs) = (0_usize, 0_usize);
+    let (mut ands, mut pipes) = (0_usize, 0_usize);
+    // How many `<` in a row end just before `at`, and whether the `&` or `|`
+    // just before it was the second of a pair.
+    let (mut run, mut paired) = (0_usize, false);
+    // A line break after the text settles a run of `<` at its end.
+    for (at, byte) in bytes
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'\n'))
+        .enumerate()
+    {
+        if byte == b'<' {
+            run += 1;
+            continue;
+        }
+        // `<<EOF` starts a here-document, `<<<` a here-string; more than
+        // three in a row is noise, which counts.
+        if shell == Shell::Posix && (run == 2 || run >= 4) {
+            heredocs += 1;
+            if heredocs > MAX_HEREDOCS {
+                return Some("starts too many here-documents to read");
+            }
+        }
+        run = 0;
+        match byte {
+            b'(' => {
+                open += 1;
+                if open > MAX_TREE_DEPTH {
+                    return Some("nests too deeply to read");
+                }
+            }
+            b')' => open = open.saturating_sub(1),
+            b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
+            b'&' | b'|' if shell == Shell::Cmd => {
+                // The second of two the same is part of `&&` or `||`.
+                let second = !paired && at >= 1 && bytes[at - 1] == byte;
+                paired = second;
+                if !second {
+                    let count = if byte == b'&' { &mut ands } else { &mut pipes };
+                    *count += 1;
+                    if *count > MAX_CMD_SEPARATORS {
+                        return Some("chains too many commands to read");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split `command`; `effect` says it is also read for [`crate::effect`].
+pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
+    split.kept.on = effect;
     script(&mut split, command, shell, 0);
     split.hide_bodies();
     split.settle_later();
@@ -836,6 +1058,10 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if text.len() > MAX_LEN {
         split.problem(Rule::Unreadable, "is too long to read", None);
+        return;
+    }
+    if let Some(why) = too_tangled(text, shell) {
+        split.problem(Rule::Unreadable, why, None);
         return;
     }
     if depth > 0 {
@@ -975,13 +1201,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
+/// Whether `text` is a `/X`-style switch, not a path.
+pub(crate) fn is_switch(text: &str) -> bool {
+    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+}
+
 /// The arguments that are not `/X`-style switches.
 pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
     args.iter()
-        .filter(|arg| {
-            !arg.known().is_some_and(|text| {
-                text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
-            })
-        })
+        .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
 }

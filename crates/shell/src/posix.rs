@@ -17,6 +17,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in assigned(tree.root_node(), text) {
         split.reassign(&name);
     }
+    if split.kept.on {
+        environment(split, tree.root_node(), text);
+    }
     Walker {
         source: text,
         depth,
@@ -208,6 +211,88 @@ fn assigned(root: Node<'_>, source: &str) -> Vec<String> {
     names
 }
 
+/// The variables the line sets or unsets, for `effect`: assignments (also
+/// in front of a command, and after `export` or `local`, quoted or not),
+/// `unset`, and the variable of a `for` loop, which is kept apart.
+fn environment(split: &mut Split, root: Node<'_>, source: &str) {
+    unit::for_each_node(root, |node| match node.kind() {
+        "variable_assignment" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                split.set(unit::text(&name, source));
+            }
+        }
+        // `export "PATH=."`: a quoted assignment is a string, not an
+        // assignment node.
+        "declaration_command" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_assignment" {
+                    let text = unit::text(&child, source).trim_matches(['"', '\'']);
+                    if let Some((name, _)) = text.split_once('=') {
+                        split.set(name);
+                    }
+                }
+            }
+        }
+        "unset_command" => {
+            let mut cursor = node.walk();
+            for name in node.named_children(&mut cursor) {
+                let name = unit::text(&name, source);
+                if !name.starts_with('-') {
+                    split.set(name);
+                }
+            }
+        }
+        "for_statement" => {
+            if let Some(name) = node.child_by_field_name("variable") {
+                split.loop_variable(unit::text(&name, source));
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Whether `body` may set `name`, or define a function, which runs later: an
+/// assignment, `unset`, a loop of the same name, an arithmetic assignment or
+/// increment, `${name:=…}`, or a declaration that mentions it.
+fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
+    let mut found = false;
+    let set = format!("${{{name}");
+    unit::for_each_node(body, |node| {
+        let text = unit::text(&node, source);
+        found |= match node.kind() {
+            "function_definition" => true,
+            "variable_assignment" => node
+                .child_by_field_name("name")
+                .is_some_and(|assigned| unit::text(&assigned, source) == name),
+            "unset_command" => text.split_whitespace().any(|word| word == name),
+            "for_statement" => node
+                .child_by_field_name("variable")
+                .is_some_and(|inner| unit::text(&inner, source) == name),
+            "binary_expression" => {
+                node.child_by_field_name("left")
+                    .is_some_and(|left| unit::text(&left, source) == name)
+                    && node.children(&mut node.walk()).any(|part| {
+                        !part.is_named() && {
+                            let operator = unit::text(&part, source);
+                            operator.ends_with('=')
+                                && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                        }
+                    })
+            }
+            "postfix_expression" | "unary_expression" => {
+                text.contains(name) && (text.contains("++") || text.contains("--"))
+            }
+            "expansion" => text
+                .strip_prefix(set.as_str())
+                .is_some_and(|rest| rest.starts_with(":=") || rest.starts_with('=')),
+            "declaration_command" => text.contains(name),
+            _ => false,
+        };
+    });
+    found
+}
+
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
@@ -332,7 +417,11 @@ impl Walker<'_> {
                 }
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
+                let start = (self.split.units.len(), self.split.reads.len());
                 self.children(node, stage, level);
+                if node.kind() == "for_statement" {
+                    self.bind_loop(node, start);
+                }
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
             }
@@ -343,6 +432,24 @@ impl Walker<'_> {
             "file_redirect" => {
                 self.redirect(node);
                 self.children(node, None, level);
+            }
+            // The grammar reads `$(…)` in a here-document's body but not a
+            // backtick substitution, which the shell runs when the delimiter
+            // is not quoted: `effect` cannot say what the line does then.
+            "heredoc_redirect" => {
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+                let quoted = children.iter().any(|child| {
+                    child.kind() == "heredoc_start"
+                        && unit::text(child, self.source).contains(['\'', '"', '\\'])
+                });
+                let backtick = children.iter().any(|child| {
+                    child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
+                });
+                if backtick && !quoted && self.split.kept.on {
+                    self.split.opaque();
+                }
+                self.children(node, stage, level);
             }
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
@@ -407,6 +514,37 @@ impl Walker<'_> {
             }
         }
         next
+    }
+
+    /// A `for` over words written out (no expansion in the list), whose body
+    /// does not set the variable and defines no function: `effect` and the
+    /// rule about reading a key read each body unit and each `<` redirect in
+    /// it with every word in place of the variable.
+    fn bind_loop(&mut self, node: Node<'_>, start: (usize, usize)) {
+        let (Some(variable), Some(body)) = (
+            node.child_by_field_name("variable"),
+            node.child_by_field_name("body"),
+        ) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let words: Vec<Arg> = node
+            .children_by_field_name("value", &mut cursor)
+            .map(|word| self.arg(word))
+            .collect();
+        if words.is_empty() || words.iter().any(|word| word.known().is_none()) {
+            return;
+        }
+        let name = unit::text(&variable, self.source);
+        if reassigns(body, name, self.source) {
+            return;
+        }
+        let words = words
+            .iter()
+            .filter_map(Arg::known)
+            .map(str::to_string)
+            .collect();
+        self.split.bind(name, words, start);
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -787,6 +925,11 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        // `effect` judges where a read comes from: bash opens
+        // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
+        if operator == Some("<") {
+            self.split.read(Shell::Posix, target.clone());
+        }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
             Some(">&" | "&>&") => !target

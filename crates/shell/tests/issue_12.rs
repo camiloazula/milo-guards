@@ -673,3 +673,18 @@ fn a_word_that_only_looks_like_a_client_is_safe() {
     assert!(rules("git log --grep='DROP TABLE'", Shell::Posix, &posix()).is_empty());
     assert!(rules("psqlx -c 'DROP TABLE t'", Shell::Posix, &posix()).is_empty());
 }
+
+#[test]
+fn a_line_that_drops_data_changes_something() {
+    // `effect` places every rule; dropping data is a change, not a read.
+    common::check_effect(
+        Shell::Posix,
+        &posix(),
+        milo_guards_shell::Effect::Changes,
+        &[
+            "psql -c 'DROP TABLE users'",
+            "redis-cli FLUSHALL",
+            "dropdb prod",
+        ],
+    );
+}

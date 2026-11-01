@@ -32,6 +32,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     });
     for name in names {
         split.reassign(&name);
+        split.set(&name);
     }
     Walker {
         source: &text,
@@ -243,8 +244,26 @@ impl Walker<'_> {
         Arg::Known(value)
     }
 
+    /// A redirect's target with its quotes taken off, as cmd takes them off
+    /// before it opens the file: `< "C:\Users\me\.ssh\id_rsa"` reads the
+    /// file the unquoted word names.
+    fn quoted_value(&self, target: Node<'_>) -> Arg {
+        // The grammar ends the target at a space inside the quotes; cmd ends it
+        // at the closing quote.
+        let rest = self.source.get(target.start_byte()..).unwrap_or_default();
+        let source = match rest.strip_prefix('"').and_then(|inner| inner.find('"')) {
+            Some(close) => &rest[..close + 2],
+            None => unit::text(&target, self.source),
+        };
+        let unquoted = source.replace('"', "");
+        match expand(&unquoted, self.split) {
+            Some(text) => Arg::Known(text),
+            None => Arg::Unknown(source.to_string()),
+        }
+    }
+
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
-    /// (`2>&1`) writes nothing. Returns the files it reads (`<`).
+    /// (`2>&1`) writes nothing. Returns the files it reads (`<`), and notes each read.
     fn redirect(&mut self, node: Node<'_>) -> Vec<Arg> {
         let mut cursor = node.walk();
         let mut operator = None;
@@ -258,6 +277,12 @@ impl Walker<'_> {
                     let writes = operator.is_some_and(|op| op.contains('>') && !duplicates);
                     if writes && !target_text.starts_with('&') {
                         self.split.write(Shell::Cmd, self.value(&[child]));
+                    }
+                    // `<` and `0<`.
+                    if operator.is_some_and(|op| {
+                        op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<"
+                    }) {
+                        self.split.read(Shell::Cmd, self.quoted_value(child));
                     }
                     if !duplicates && operator.is_some_and(|op| op.contains('<')) {
                         inputs.push(self.value(&[child]));

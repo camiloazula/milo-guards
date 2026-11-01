@@ -1,10 +1,13 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
-//! a line it could not read safe.
+//! a line it could not read safe; and the same for `effect`, which never
+//! calls such a line reads-only.
 
 mod common;
+mod noise;
 
-use common::{posix, windows};
-use milo_guards_shell::{classify, Rule, Shell};
+use common::{disagreements, posix, windows};
+use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
+use noise::Lcg;
 
 /// Pieces of shell syntax, joined at random into lines no grammar expects.
 const PIECES: [&str; 40] = [
@@ -50,19 +53,6 @@ const PIECES: [&str; 40] = [
     "é",
 ];
 
-/// A small deterministic generator, so a failure names its seed.
-struct Lcg(u64);
-
-impl Lcg {
-    fn next(&mut self) -> usize {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (self.0 >> 33) as usize
-    }
-}
-
 #[test]
 fn random_lines_never_panic() {
     let mut random = Lcg(7);
@@ -83,6 +73,11 @@ fn random_lines_never_panic() {
                 windows()
             };
             let _ = classify(&line, shell, &paths);
+            // The same noise through `effect`, which must also agree with
+            // `classify` on every line: one it flags does not only read.
+            let _ = effect(&line, shell, &paths);
+            let wrong = disagreements(shell, &paths, [line.as_str()]);
+            assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
         }
     }
 }
@@ -94,7 +89,10 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
-    // Deep enough to overflow the stack if the walk had no limit.
+    assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
+    // Every `(` row is stopped before it is parsed, by the count of open
+    // `(`; the walk's own depth limit is tested on lines without one, in
+    // `issue_16.rs`.
     for (open, close, shell) in [
         ("(", ")", Shell::Posix),
         ("$(", ")", Shell::Posix),
@@ -112,6 +110,15 @@ fn a_line_too_long_or_too_nested_is_not_read() {
                 .findings()
                 .iter()
                 .any(|finding| finding.rule == Rule::Unreadable),
+            "{shell:?} {open}"
+        );
+        // `effect` reads the same tree. Past the depth limit (400) is
+        // enough for it, and quicker than 30,000 levels: cmd's grammar alone
+        // takes seconds to parse those in a debug build.
+        let shallow = open.repeat(2_000) + "echo" + &close.repeat(2_000);
+        assert_eq!(
+            effect(&shallow, shell, &paths),
+            Effect::Unknown,
             "{shell:?} {open}"
         );
     }
@@ -214,6 +221,36 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
+)]
+fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
+    // A word of many brace lists would make the product of their sizes in
+    // words; a redirect in a loop is read with each word in place.
+    let lists = "{a,b}".repeat(12_000);
+    let loops = "for a in 1 2 3; do cat < ~/x$a; done; ".repeat(800);
+    let wide = format!("for a in 1 2 3; do {}; done", "cat < ~/x$a; ".repeat(2_000));
+    for line in [
+        format!("cat ~/.ssh/{lists}"),
+        format!("cat {lists}"),
+        format!("cp ~/{lists} /tmp"),
+        loops,
+        wide,
+    ] {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let _ = classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "took {took:?} for {}",
+            &line[..40]
+        );
+    }
+}
+
+#[test]
 fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
     // Each `eval` reads everything after it as a script, so each of the
     // seven reads the whole payload: more than the line may have read.
@@ -223,6 +260,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
+    assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
     // A few reads of a short script are fine.
     assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
 }
