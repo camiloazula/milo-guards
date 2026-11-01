@@ -240,11 +240,12 @@ fn octal_escapes_in_ps4_are_decoded_before_the_shell_expands_it() {
         &[
             "PS4='\\033[1;34m+ \\033[0m'; set -x; make",
             "PS4='\\\\044(rm -rf ~)'; set -x; true",
-            "PS4='\\44(rm -rf ~)'; set -x; true",
             "PS4='\\0440(x)'; set -x; true",
         ],
         &[
             ("PS4='\\044(rm -rf ~)'; set -x; true", Rule::Delete),
+            // `\44` is the `$` as `\044` is: bash takes one to three digits.
+            ("PS4='\\44(rm -rf ~)'; set -x; true", Rule::Delete),
             ("PS4='\\140rm -rf ~\\140'; set -x; true", Rule::Delete),
             ("PS4=\"\\044(rm -rf ~)\"; set -x; true", Rule::Delete),
             ("PS4='+ \\044\\050rm -rf ~) '; set -x; true", Rule::Delete),
@@ -912,6 +913,79 @@ fn an_env_command_reads_its_bash_env_from_the_folder_the_line_is_in() {
                 "echo x > sub/e.sh; cd sub; env BASH_ENV=e.sh bash -c true",
                 Rule::Unknown,
             ),
+        ],
+    );
+}
+
+#[test]
+fn a_prompt_escape_of_fewer_than_three_digits_is_decoded_as_bash_does() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // `\4` is the character 4, and `\004` then `4`: no `$`.
+            "PS4='\\4(rm -rf ~)'; set -x; true",
+            "PS4='\\04(rm -rf ~)'; set -x; true",
+            "PS4='\\004(rm -rf ~)'; set -x; true",
+            "PS4='\\0044(rm -rf ~)'; set -x; true",
+            "PS4='\\\\44(rm -rf ~)'; set -x; true",
+            "PS4='\\60+ '; set -x; make",
+            "PS4='\\1+ '; set -x; make",
+        ],
+        &[
+            ("PS4='\\44(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4=\"\\44(rm -rf ~)\"; set -x; true", Rule::Delete),
+            ("PS4='+ \\44(rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\44\\50rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\044\\50rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\44\\050rm -rf ~) '; set -x; true", Rule::Delete),
+            ("PS4='\\44{ rm -rf ~; }'; set -x; true", Rule::Unreadable),
+            ("export PS4='\\44(rm -rf ~)'", Rule::Delete),
+            ("env PS4='\\44(rm -rf ~)' bash -xc true", Rule::Delete),
+            ("PS4='\\44(sudo true)'; set -x", Rule::Elevated),
+            // `\0` is nothing, as are the markers `\[` and `\]`.
+            ("PS4='$\\0(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\00(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\000(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\[\\](rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\[(rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\](rm -rf ~)'; set -x; true", Rule::Delete),
+            ("PS4='$\\[\\]\\[\\](rm -rf ~)'; set -x; true", Rule::Delete),
+            // `\$` is `$`.
+            ("PS4='\\$(rm -rf ~)'; set -x; true", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_prompt_escape_the_guard_cannot_decode_beside_code_characters_is_unknown() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4='\\e[33m+\\e[0m '; set -x; make",
+            "PS4='\\[\\e[33m\\]+\\[\\e[0m\\] '; set -x; make",
+            "PS4='+ \\D{%T} '; set -x; make",
+            "PS4='\\D{%H:%M:%S} + '; set -x; make",
+            "PS4='\\D{}+ '; set -x; make",
+            "PS4='+ \\u@\\h:\\w '; set -x; make",
+            "PS4='\\$ '; set -x; make",
+            "PS4='\\D+ '; set -x; make",
+            "PS4='+ \\D$ '; set -x; make",
+            "PS4='\\\\D{$}(x)'; set -x; make",
+        ],
+        &[
+            ("PS4='\\D{$}(rm -rf ~)'; set -x; true", Rule::Unknown),
+            ("PS4='$\\D{}(rm -rf ~)'; set -x; true", Rule::Unknown),
+            ("PS4='\\D{$(}rm -rf ~)'; set -x; true", Rule::Unknown),
+            ("PS4='\\D{%T}$ '; set -x; true", Rule::Unknown),
+            ("PS4='$\\D{%T}'; set -x; true", Rule::Unknown),
+            ("PS4='\\D{%T}('; set -x; true", Rule::Unknown),
+            ("PS4='\\D{%T}`'; set -x; true", Rule::Unknown),
+            ("PS4=\"\\D{\\$}(rm -rf ~)\"; set -x; true", Rule::Unknown),
+            ("export PS4='\\D{$}(rm -rf ~)'", Rule::Unknown),
+            ("env PS4='\\D{$}(rm -rf ~)' bash -xc true", Rule::Unknown),
+            ("PS4='\\D{$}(rm -rf ~)' bash -xc true", Rule::Unknown),
         ],
     );
 }

@@ -103,38 +103,74 @@ fn runs(text: &str) -> bool {
             .any(|(at, _)| matches!(text[at + 2..].chars().next(), Some(' ' | '\t' | '\n' | '|')))
 }
 
-/// `text` as bash prints a prompt from it: a `\NNN` escape, three octal
-/// digits, is the character with that code, decoded before the expansion
-/// that finds `$(` in it. `\\` is a backslash, which ends no escape.
-fn prompt(text: &str) -> Cow<'_, str> {
+/// A prompt as bash prints it: the text, and whether it holds an escape the
+/// guard cannot decode.
+struct Prompt<'a> {
+    text: Cow<'a, str>,
+    /// An escape whose output is only known when it prints (`\D{fmt}` is
+    /// `strftime`'s output), left as written.
+    undecoded: bool,
+}
+
+/// `text` as bash prints a prompt from it, before the expansion that finds
+/// `$(` in it: `\N`, `\NN` and `\NNN`, one to three octal digits, are the
+/// character with that code (`\0` is nothing), `\[` and `\]` are nothing
+/// (bash prints them as readline's markers, or as nothing without line
+/// editing: nothing is the reading that finds code), and `\$` is `$` (`#`
+/// for root, which holds no code). `\\` is a backslash, which ends no
+/// escape. `\D{fmt}` is the output of `strftime`, which may be any text: it
+/// is left as written and reported. Any other escape prints a name or a
+/// number, never a `$`, `(` or backtick, and is left as written.
+fn prompt(text: &str) -> Prompt<'_> {
     if !text.contains('\\') {
-        return Cow::Borrowed(text);
+        return Prompt {
+            text: Cow::Borrowed(text),
+            undecoded: false,
+        };
     }
     let mut decoded = String::with_capacity(text.len());
+    let mut undecoded = false;
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c != '\\' {
             decoded.push(c);
             continue;
         }
-        let mut ahead = chars.clone();
-        let digits: Vec<u32> = ahead
-            .by_ref()
+        let digits: Vec<u32> = chars
+            .clone()
             .take(3)
             .map_while(|digit| digit.to_digit(8))
             .collect();
-        if digits.len() == 3 {
+        if !digits.is_empty() {
             let code = digits.iter().fold(0, |code, digit| code * 8 + digit);
-            decoded.push(char::from(u8::try_from(code & 0xff).unwrap_or(b'?')));
-            chars = ahead;
-        } else {
-            decoded.push(c);
-            if let Some(next) = chars.next() {
-                decoded.push(next);
+            // `\0` is the NUL character, which a prompt drops.
+            if code & 0xff != 0 {
+                decoded.push(char::from(u8::try_from(code & 0xff).unwrap_or(b'?')));
             }
+            chars.nth(digits.len() - 1);
+            continue;
+        }
+        match chars.clone().next() {
+            Some('[' | ']') => {
+                chars.next();
+            }
+            Some('$') => {
+                chars.next();
+                decoded.push('$');
+            }
+            Some(next) => {
+                undecoded |= next == 'D' && chars.as_str().starts_with("D{");
+                decoded.push(c);
+                decoded.push(next);
+                chars.next();
+            }
+            None => decoded.push(c),
         }
     }
-    Cow::Owned(decoded)
+    Prompt {
+        text: Cow::Owned(decoded),
+        undecoded,
+    }
 }
 
 /// How an assignment was written.
@@ -171,8 +207,11 @@ pub(crate) fn read(
         Arg::Unknown(_) | Arg::Input => "",
     };
     // `PS4='\044(cmd)'`: the prompt's escapes are decoded first.
-    let text = if bash_env {
-        Cow::Borrowed(text)
+    let Prompt { text, undecoded } = if bash_env {
+        Prompt {
+            text: Cow::Borrowed(text),
+            undecoded: false,
+        }
     } else {
         prompt(text)
     };
@@ -182,7 +221,10 @@ pub(crate) fn read(
     }
     // A `PS4` of text and the shell's own numbers is a prompt; any other
     // expansion can hold code, which the shell runs each time.
-    let unknown = value.is_unknown() && (bash_env || !plain(value, split));
+    // An escape the guard cannot decode may print the `$` of a `$(`, or the
+    // `(` that follows one, so beside those characters it is not read.
+    let unknown = value.is_unknown() && (bash_env || !plain(value, split))
+        || undecoded && text.contains(['$', '(', '`']);
     // The file `BASH_ENV` names goes through the same expansion.
     let named_by_expansion = bash_env && text.contains(['$', '`']);
     if unknown || named_by_expansion {

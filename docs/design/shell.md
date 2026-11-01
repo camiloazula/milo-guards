@@ -229,8 +229,13 @@ and its findings are the line's, since the shell runs it as the same user.
   `unreadable` as it does anywhere else. bash decodes the prompt's escapes
   before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
   ~\140'` are the `$(` and the backticks they spell, and a `PS4` is read
-  with each `\NNN` of three octal digits decoded (`\033[1m` colours stay
-  text). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
+  with each `\N`, `\NN` and `\NNN` of one to three octal digits decoded, as
+  bash does (`PS4='\44(rm -rf ~)'` is the `$(` too; `\033[1m` colours stay
+  text, and `\0` is nothing). `\[` and `\]` are read as nothing, and `\$`
+  as `$`, so `PS4='$\[\](rm -rf ~)'` is the `delete` of `~`. `\D{fmt}` is
+  `strftime`'s output, which may be any text, so a `PS4` with one that also
+  holds `$`, `(` or a backtick is `unknown` (`PS4='\D{$}(rm -rf ~)'`;
+  `PS4='+ \D{%T} '` stays safe). A value only known when it runs (`PS4=$x`, `PS4="+ $(date) "`, `BASH_ENV=$f`, `$'…'`) is `unknown`, with the
   reason `sets a variable the shell runs later to a value only known when it
   runs`: the shell expands it again and runs whatever it finds. Text and the
   variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
