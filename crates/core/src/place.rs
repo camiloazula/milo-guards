@@ -28,6 +28,10 @@ pub enum Place {
     /// A file or folder whose loss or change hurts: keys, credentials, shell
     /// startup files, the repository's history.
     Sensitive(&'static str),
+    /// A file or folder the caller named as its own (`Paths::protected`),
+    /// such as the agent's settings, with the caller's words for a reason.
+    /// It wins over the workspace it may sit in.
+    Protected(&'static str),
     /// The Windows registry. The resolver never answers it, since a registry
     /// path is no file path; a guard that reads such paths names it.
     Registry,
@@ -62,7 +66,7 @@ impl Place {
             Self::Workspace { exact: false } => "a folder holding the workspace",
             Self::Home { exact: true } => "your home directory",
             Self::Home { exact: false } => "a folder holding your home directory",
-            Self::Top(words) | Self::Sensitive(words) => words,
+            Self::Top(words) | Self::Sensitive(words) | Self::Protected(words) => words,
             Self::Registry => "the registry",
             Self::Disk => "a disk",
             Self::Outside => "a path outside the workspace",
@@ -88,6 +92,7 @@ mod tests {
             Place::Home { exact: false },
             Place::Top("a system folder"),
             Place::Sensitive("your SSH keys"),
+            Place::Protected("the agent's settings"),
             Place::Registry,
             Place::Disk,
             Place::Outside,
@@ -116,6 +121,10 @@ mod tests {
             ),
             (Place::Top("a system folder"), "a system folder"),
             (Place::Sensitive("your SSH keys"), "your SSH keys"),
+            (
+                Place::Protected("the agent's settings"),
+                "the agent's settings",
+            ),
             (Place::Registry, "the registry"),
             (Place::Disk, "a disk"),
             (Place::Outside, "a path outside the workspace"),

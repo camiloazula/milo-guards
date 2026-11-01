@@ -161,16 +161,87 @@ impl Resolver {
         within(dir, arg, shell).is_unknown()
     }
 
+    /// Whether `arg`, written from `dir`, names a place on another machine:
+    /// a UNC path (`\\server\share`, `//server/share`,
+    /// `\\?\UNC\server\share`) in PowerShell or cmd. Reading it contacts
+    /// the server, which is offered the user's credentials.
+    ///
+    /// Core reads a share's root only when it holds no wildcard, and takes
+    /// the `?` of a `\\?\` long path for one, so the root is read here: two
+    /// separators start it, and what is not a share is a long path or a device
+    /// that is a disk (`\\?\C:\x`, `\\.\PhysicalDrive0`).
+    pub(crate) fn network(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
+        if shell == Shell::Posix {
+            return false;
+        }
+        let arg = within(dir, arg, shell);
+        let Some(mut text) = arg.known() else {
+            return false;
+        };
+        // `FileSystem::\\server\share`
+        if shell == Shell::PowerShell {
+            if let Some((provider, rest)) = text.split_once("::") {
+                let provider = provider.rsplit('\\').next().unwrap_or(provider);
+                if provider.eq_ignore_ascii_case("filesystem") {
+                    text = rest;
+                }
+            }
+        }
+        let separators = flavour(shell).separators();
+        let mut chars = text.chars();
+        if !(chars.next().is_some_and(|c| separators.contains(&c))
+            && chars.next().is_some_and(|c| separators.contains(&c)))
+        {
+            return false;
+        }
+        // Windows folds repeated separators and drops `.` parts, so
+        // `\\.\\UNC\host\share` and `\\.\.\UNC\host\share` are the same share; a
+        // `..` could undo any of it, so a path with one counts.
+        let mut raw = text[2..].split(separators);
+        let first = raw.next().unwrap_or_default();
+        let rest: Vec<&str> = raw
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        if first == ".." || rest.contains(&"..") {
+            return true;
+        }
+        match first {
+            // The long-path and device prefixes (`\\?\`, `\\.\`) name a
+            // disk (`\\?\C:\x`, `\\.\PhysicalDrive0`) unless a share
+            // follows: `UNC\server\share`, or `GLOBALROOT\Device\Mup\server\share`.
+            "?" | "." => rest.first().is_some_and(|kind| {
+                kind.eq_ignore_ascii_case("unc") || kind.eq_ignore_ascii_case("globalroot")
+            }),
+            _ => true,
+        }
+    }
+
     /// Where `arg` lands when `shell` runs it; `hidden` says a wildcard in
     /// it may match a leading dot (`dotglob`).
     pub(crate) fn place(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
         match arg.known() {
-            Some(text) => self.place_of(text, shell, hidden),
+            Some(text) => self.place_of(text, shell, hidden, true),
             None => Place::Unknown,
         }
     }
 
-    fn place_of(&self, text: &str, shell: Shell, hidden: bool) -> Place {
+    /// As [`place`](Self::place), for a path something is written into: a
+    /// folder that only holds a protected path is not a write of it.
+    pub(crate) fn place_into(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
+        match arg.known() {
+            Some(text) => self.place_of(text, shell, hidden, false),
+            None => Place::Unknown,
+        }
+    }
+
+    fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        let place_core = |spelling, flavour| {
+            if holding {
+                self.core.place_hidden(spelling, flavour, hidden)
+            } else {
+                self.core.place_into(spelling, flavour, hidden)
+            }
+        };
         // A brace list (`{~,x}`, `x{,/../..}`) expands to paths its spelling
         // does not show, so it is checked before the text is taken for a
         // device.
@@ -190,7 +261,7 @@ impl Resolver {
                     .unwrap_or(qualifier)
                     .to_ascii_lowercase();
                 return match provider.as_str() {
-                    "filesystem" => self.place_of(rest, shell, hidden),
+                    "filesystem" => self.place_of(rest, shell, hidden, holding),
                     "registry" => Place::Registry,
                     _ => Place::Outside,
                 };
@@ -198,18 +269,12 @@ impl Resolver {
         }
         let flavour = flavour(shell);
         match start(text, shell) {
-            Start::Plain => self
-                .core
-                .place_hidden(Spelling::Plain(text), flavour, hidden),
-            Start::Home(rest) => self
-                .core
-                .place_hidden(Spelling::Home(rest), flavour, hidden),
+            Start::Plain => place_core(Spelling::Plain(text), flavour),
+            Start::Home(rest) => place_core(Spelling::Home(rest), flavour),
             Start::Provider(name, _) if REGISTRY.contains(&name.as_str()) => Place::Registry,
             Start::Provider(..) => Place::Outside,
             Start::DriveRelative(letter, rest) => match self.on_cwd_drive(letter, rest) {
-                Some(rest) => self
-                    .core
-                    .place_hidden(Spelling::Plain(rest), flavour, hidden),
+                Some(rest) => place_core(Spelling::Plain(rest), flavour),
                 None => Place::Outside,
             },
             Start::Unknown => Place::Unknown,

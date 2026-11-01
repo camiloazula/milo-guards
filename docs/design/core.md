@@ -13,10 +13,25 @@ field added later does not break a caller. The fields stay public to read.
 - `cwd`: where the work happens. Relative paths resolve from here.
 - `home`: the user's home directory.
 - `workspaces`: the folders the agent may change.
+- `protected`: what the caller gates with, such as its own settings and rules.
+  Empty from `Paths::new`; add to it with `Paths::with_protected`, which
+  takes `Protected` values and can be called again to add more.
+
+**`Protected`** is a path, the words a reason calls it by, and whether it is a
+file or a folder (`kind`, a `ProtectedKind`): a plain struct
+`{ path, words, kind }`, built with `Protected::file(path, words)` or
+`Protected::folder(path, words)`. The caller knows which it protects, and that
+costs the guard no I/O; only a folder has something below its name, which is
+what a pattern is read by (below). `words` is
+`&'static str`, as in `Place::Sensitive`, and follows the verb of a reason
+(`the agent's settings`: "deletes the agent's settings"). A guard never names
+its caller, so the caller passes in the files it gates with, and neither core
+nor any guard knows what they are.
 
 Paths are judged by how they are spelled, so these must be spelled the way the
 paths being judged will be. Give them absolute, and either all canonical or
-all as the user wrote them. A relative `cwd` puts every relative path outside
+all as the user wrote them. A protected path is spelled the same way as the
+workspace. A relative `cwd` puts every relative path outside
 the workspace. So does a `cwd` read through a symlink (`/private/tmp/...`) when
 the workspace is spelled without it (`/tmp/...`). With no workspace at all,
 every path is outside.
@@ -69,13 +84,15 @@ does touching it mean? The answer is a **`Place`**.
 | `Home { exact }` | The home directory itself, or a folder holding it. |
 | `Top(words)` | The root of a disk, a system folder, or a top-level folder. |
 | `Sensitive(words)` | Keys, credentials, shell startup files, the repository's history. |
+| `Protected(words)` | A path the caller named in `Paths::protected`, in the caller's words. |
 | `Disk` | A disk device. |
 | `Registry` | The Windows registry. |
 | `Outside` | Anywhere else beyond the workspace. |
 | `Unknown` | Known only when the input runs. |
 
 `harmless()` says whether touching a place is the agent's own business: inside
-a workspace, a temporary file, or the null device. `words()` gives the place in
+a workspace, a temporary file, or the null device. `Protected` is never
+harmless. `words()` gives the place in
 the words of a reason, so a rule can say `deletes {words}`.
 
 `Place` is `#[non_exhaustive]`: a place may be added, so a `match` on it needs
@@ -116,7 +133,78 @@ itself.
   sensitive places under the home directory (SSH keys, cloud credentials,
   shell startup files, keychains, the PowerShell profile). A workspace's own
   `.git` is sensitive.
-- Windows paths compare without case. POSIX paths compare with it.
+- Windows paths compare without case. POSIX paths compare with it, except
+  protected paths, which compare without case on every host.
+- A protected path, and anything under it, is `Protected`. **Protected wins over
+  the workspace**, and over a temporary folder: a protected file inside a
+  workspace folder is `Protected`, not `Inside`, because the caller named it on
+  purpose. Only a device and the home directory itself (or a folder holding it)
+  are judged before it. It is its own place, not `Sensitive`, so a guard can
+  tell a caller's own files from keys and a caller can decide differently for
+  each. Like everything here it is spelling alone: the caller spells a
+  protected path the way it spells the workspace, and a symlink to one is
+  judged by its own name.
+  - **A verdict that would otherwise be harmless is checked again against the
+    protected paths**, and a protected path wins when the path holds one (is
+    an ancestor folder of it) as well as when it is one or under one: a
+    delete of `conf` is a delete of the protected `conf/app/x.yaml`. A verdict
+    that is already risky keeps its own place and words, so `rm -rf ~` still
+    says it deletes the home directory and `rm -rf .` at the workspace root
+    says the workspace; a path that is a protected one, or under it, is the
+    exception, since it is the caller's file whatever else it is (a protected
+    file in the home directory is `Protected`, not `Outside`). This
+    replaces an earlier choice not to cover a folder holding a protected path.
+  - **A write into a folder is not a write of what it holds.**
+    `Resolver::place_into` is `place_hidden` without the holding rule, for a
+    path something is written into (a copy's destination, a redirect's
+    target): `cp a.txt conf/` and `touch conf/new.txt` stay the agent's own
+    beside a protected `conf/app/x.yaml`, while a write to the protected path
+    or a pattern that picks it is still protected. The shell guard asks it for
+    writes and `place_hidden` for everything else. A copy, move or link into a
+    folder puts each file at its own name there, so the shell guard also
+    judges that landing path (the destination plus the source's last part,
+    a pattern for a wildcard or unknown source, both readings of a
+    destination that may be a file or a folder): `cp x.yaml conf/app/` writes
+    the protected `conf/app/x.yaml`, and `cp *.yaml conf/app/` can. A
+    recursive copy or mirror (`cp -r`, `-R`, `-a`, `rsync -a`, `Copy-Item
+    -Recurse`, `robocopy /E`, `xcopy /s`) can replace anything below its
+    destination, so there the full `place` is used, holding rule included.
+    What other rules own stays theirs: `rsync --delete` and `robocopy /MIR`
+    delete through the delete rule, and unpacking an archive is not read.
+  - **Names compare without case on every host**, not only Windows: a macOS
+    or Windows file system ignores it, and the caller names a path as it
+    knows it. A protected name is also matched, on Windows, by its 8.3 short
+    name (`AGENT~1` for `.agent`, `SETTIN~1.YAM` for `settings.yaml`, or two
+    characters, four hex digits and `~1`), the way a workspace's `.git` is,
+    from one rule for both. A POSIX name has no short form.
+  - **A pattern that can pick a protected path or a folder holding it is
+    protected.** The pattern's parts, from its first wildcard part, are matched
+    against the path's names below the folder the pattern starts in, one for
+    one, without case (`set*` and `*.yaml` pick `repo/settings.yaml`, `.a*`
+    picks `repo/.agent` where wildcards match hidden names, `AGENT~*` picks
+    `.agent` on Windows). A pattern that reaches the path, or goes below a
+    protected folder (`cfg*/x`), picks it, and wins over any place
+    but the workspace or a temporary folder itself. One that stops at a folder
+    holding it picks that folder (`c*` for `repo/conf/app/x.yaml`), which
+    counts only where the verdict would be harmless. A part of two or more
+    stars alone may stand for any number of names a `*` could match, the
+    protected name itself included, and all the rest when it is the last part
+    (`**/x.yaml`, `conf/**`). **Only a folder lets a pattern go below the
+    protected name**: the stars can take a protected folder `cfg` and what
+    follows goes into it, so `**/*.rs` and `**/rules` are protected, and so is
+    `*/x` for a protected folder `conf`; a protected file is matched only as
+    the last part, so with a protected file `conf/app/x.yaml`, `**/x.yaml` and
+    `conf` are protected but `**/y.yaml`, `**/*.rs` and `**/*.pyc` are not.
+    The holding rule (ancestor folders) and the landing rule for a copy apply
+    to both kinds. **The two mistakes fail differently.** A folder marked as a
+    file opens patterns below its name: with `cfg` a folder marked as a file,
+    `c*/rules` and `**/rules` come back safe. A file marked as a folder only
+    adds noise: `**/*.rs` is a finding. So when the caller is unsure, it
+    should say `folder`. This is why the caller says which it protects, and why
+    there is no constructor that does not: without it every `**/<name>` would
+    be a finding wherever a protected file exists. A catch-all at the workspace root is
+    still the workspace. Without this a glob inside a workspace would reach a
+    protected file that its spelling does not name.
 - Windows names are normalised before they are compared, so a spelling that
   Windows resolves to a protected name is judged as that name. Core does this
   in the `Windows` flavour only; a POSIX name keeps every character. `.` and

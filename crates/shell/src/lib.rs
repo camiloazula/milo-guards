@@ -1,5 +1,6 @@
 //! Reads a shell command line and says whether it is safe to run without
-//! asking, or risky and why: [`classify`].
+//! asking, or risky and why: [`classify`]; and whether it only reads,
+//! changes something or cannot be told: [`effect`].
 //!
 //! It works in three steps:
 //!
@@ -20,6 +21,11 @@
 //! 3. **Combine**: the line is safe only when no unit is risky, and a risky
 //!    line carries every finding.
 //!
+//! [`effect`] answers a second question from the same split and findings:
+//! does the line only read? It is [`Effect::ReadsOnly`] when every unit is a
+//! known reader, [`Effect::Changes`] when one writes, and
+//! [`Effect::Unknown`] when anything is not understood.
+//!
 //! What cannot be read is risky: a program or a script known only when it
 //! runs, a line the grammar cannot parse, shells nested past a limit.
 //! Nothing here touches the file system or the environment: paths are
@@ -30,6 +36,7 @@
 mod cmd;
 mod detect;
 mod dotglob;
+mod effect;
 mod inline;
 mod launch;
 mod path;
@@ -37,7 +44,8 @@ mod posix;
 mod powershell;
 mod unit;
 
-pub use milo_guards_core::Paths;
+pub use effect::Effect;
+pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
 ///
@@ -178,14 +186,63 @@ impl milo_guards_core::RuleName for Rule {
     }
 }
 
+/// A line read once: split into units and judged by the rules. `effect`
+/// says the split also keeps what only [`effect`] reads. [`classify`]
+/// and [`effect`] each take their answer from it, so they cannot disagree
+/// about what the units are.
+struct Reading {
+    split: unit::Split,
+    findings: Vec<Finding>,
+    resolver: path::Resolver,
+}
+
+impl Reading {
+    fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
+        let split = unit::split(command, shell, effect);
+        let resolver = path::Resolver::new(paths);
+        let findings = detect::findings(&split, &resolver);
+        Self {
+            split,
+            findings,
+            resolver,
+        }
+    }
+}
+
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let split = unit::split(command, shell);
-    let findings = detect::findings(&split, &path::Resolver::new(paths));
+    let findings = Reading::new(command, shell, paths, false).findings;
     if findings.is_empty() {
         Assessment::Safe
     } else {
         Assessment::Risky(findings)
     }
+}
+
+/// Say whether `command`, run by `shell` with the directories in `paths`,
+/// only reads, changes something, or cannot be told.
+///
+/// It is a second answer beside [`classify`], not a rule: safe and reads
+/// only are different things (`mkdir build` is safe and [`Effect::Changes`];
+/// `cat ~/.ssh/id_ed25519` is [`Effect::ReadsOnly`]). It comes from the same
+/// split as `classify`, so what is a unit, a wrapper or a nested script is
+/// the same in both, and a caller reads both answers. What cannot be read
+/// is [`Effect::Unknown`], never reads-only.
+///
+/// ```
+/// use milo_guards_shell::{classify, effect, Effect, Paths, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// assert_eq!(effect("git status && git diff", Shell::Posix, &paths), Effect::ReadsOnly);
+/// // Safe, and it changes the disk.
+/// assert!(classify("mkdir build", Shell::Posix, &paths).is_safe());
+/// assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
+/// // A program only known when it runs is not reads-only.
+/// assert_eq!(effect("$CMD", Shell::Posix, &paths), Effect::Unknown);
+/// ```
+#[must_use = "the effect is the answer: it says whether the line only reads"]
+pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
+    let reading = Reading::new(command, shell, paths, true);
+    effect::of(&reading.split, &reading.findings, &reading.resolver)
 }

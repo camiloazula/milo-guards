@@ -17,7 +17,7 @@ use find::find_exec;
 pub(crate) use find::find_targets;
 use interpreters::{interpreter, shell, trap, trap_inherited};
 pub(crate) use interpreters::{perl_edits, INTERPRETERS, SHELLS};
-use wrappers::{cmd, env, powershell, rsh, start, start_process, tmux, xargs};
+use wrappers::{cmd, env, env_sets, powershell, rsh, start, start_process, tmux, xargs};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -68,6 +68,12 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             split.push(unit);
             return;
         };
+        // `env X=1 cmd` and `env -u X cmd` change the program's environment.
+        if split.kept.on && key == "env" && unit.shell != Shell::Cmd {
+            for name in env_sets(&unit.args) {
+                split.set(&name);
+            }
+        }
         match launch(&key, &unit) {
             Launch::Itself => {
                 if key == "find" && unit.shell == Shell::Posix {
@@ -76,8 +82,12 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 split.push(unit);
                 return;
             }
-            Launch::Runs(start) => unit = inner(unit, key, start, &Hands::Nothing),
+            Launch::Runs(start) => {
+                note_wrapper(split, &key, &unit, start);
+                unit = inner(unit, key, start, &Hands::Nothing);
+            }
             Launch::Input { start, replace } => {
+                note_wrapper(split, &key, &unit, start);
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -214,6 +224,16 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
         None,
     );
     split.push(unit);
+}
+
+/// Say what the options of the wrapper `key`, the arguments before the
+/// program at `start`, do: `time -o FILE` writes, an option the guard does
+/// not know is not read. For `effect` only.
+fn note_wrapper(split: &mut Split, key: &str, unit: &Unit, start: usize) {
+    if split.kept.on {
+        let own = unit.args.get(..start).unwrap_or_default();
+        split.wrapped(crate::effect::wrapper(key, own));
+    }
 }
 
 /// What a wrapper hands the program it runs, besides its arguments.

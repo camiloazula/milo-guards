@@ -4,7 +4,7 @@
 //! Nothing reads the file system, so a symlink is judged by its own name.
 
 use crate::spelling::glob::{self, Shape, WILDCARDS};
-use crate::{Paths, Place};
+use crate::{Paths, Place, ProtectedKind};
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -207,20 +207,72 @@ fn unreadable_name(part: &str, last: bool) -> bool {
         || (!last && part.strip_suffix('.').unwrap_or(part).ends_with([' ', '.']))
 }
 
-/// Whether `part` could be the 8.3 short name of `.git`, which drops the dot:
-/// `GIT~1`, or `GI`, four hex digits and `~1` once names collide. Any other
+/// Whether `part` could be the 8.3 short name of `name`, which drops its
+/// dots and keeps its first six characters in capitals, then `~` and a number
+/// (`AGENT~1` for `.agent`, `SETTIN~1.YAM` for `settings.yaml`), or two
+/// characters, four hex digits and `~1` once names collide. Any other
 /// `NAME~N` is a plain name.
-fn short_git(part: &str) -> bool {
-    let Some((name, number)) = part.split_once('~') else {
+fn short_name(part: &str, name: &str) -> bool {
+    let Some((stem, ext)) = short_stem(name) else {
         return false;
     };
-    let hashed = name.len() == 6
-        && name.is_char_boundary(2)
-        && name[..2].eq_ignore_ascii_case("gi")
-        && name[2..].bytes().all(|b| b.is_ascii_hexdigit());
-    (name.eq_ignore_ascii_case("git") || hashed)
+    let Some((head, rest)) = part.split_once('~') else {
+        return false;
+    };
+    let (number, extension) = match rest.split_once('.') {
+        Some((number, extension)) => (number, Some(extension)),
+        None => (rest, None),
+    };
+    let hashed = head.len() == 6
+        && head.is_char_boundary(2)
+        && stem.is_char_boundary(2)
+        && head[..2].eq_ignore_ascii_case(&stem[..2])
+        && head[2..].bytes().all(|b| b.is_ascii_hexdigit());
+    (head.eq_ignore_ascii_case(&stem) || hashed)
         && !number.is_empty()
         && number.bytes().all(|b| b.is_ascii_digit())
+        && match (extension, &ext) {
+            (None, None) => true,
+            (Some(extension), Some(ext)) => extension.eq_ignore_ascii_case(ext),
+            _ => false,
+        }
+}
+
+/// The short name `name` would get, with the number `1`: what a pattern is
+/// matched against as well as the name.
+fn short_form(name: &str) -> Option<String> {
+    let (stem, ext) = short_stem(name)?;
+    Some(match ext {
+        Some(ext) => format!(
+            "{}~1.{}",
+            stem.to_ascii_uppercase(),
+            ext.to_ascii_uppercase()
+        ),
+        None => format!("{}~1", stem.to_ascii_uppercase()),
+    })
+}
+
+/// The first six characters of a name's base without dots, spaces and what a
+/// short name leaves out, and its extension cut to three; `None` when
+/// nothing is left of the base.
+fn short_stem(name: &str) -> Option<(String, Option<String>)> {
+    let keep = |text: &str, most: usize| -> String {
+        text.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '$' | '!' | '#'))
+            .take(most)
+            .collect()
+    };
+    let (base, ext) = match name.trim_start_matches('.').rsplit_once('.') {
+        Some((base, ext)) => (base, Some(keep(ext, 3)).filter(|ext| !ext.is_empty())),
+        None => (name.trim_start_matches('.'), None),
+    };
+    let stem = keep(&base.replace('.', ""), 6);
+    (!stem.is_empty()).then_some((stem, ext))
+}
+
+/// Whether `part` could be the 8.3 short name of `.git`.
+fn short_git(part: &str) -> bool {
+    short_name(part, ".git")
 }
 
 /// Whether a Windows path is known only when it runs, because the spelling
@@ -355,6 +407,8 @@ pub struct Resolver {
     workspaces: Vec<Loc>,
     temps: Vec<Loc>,
     sensitive: Vec<(Loc, &'static str)>,
+    /// Each protected path, its words, and whether it is a folder.
+    protected: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
 }
 
@@ -406,12 +460,24 @@ impl Resolver {
             .iter()
             .map(|(parts, words)| (home.join(parts), *words))
             .collect();
+        let protected = paths
+            .protected
+            .iter()
+            .map(|entry| {
+                (
+                    Loc::absolute(&entry.path.to_string_lossy()),
+                    entry.words,
+                    entry.kind == ProtectedKind::Folder,
+                )
+            })
+            .collect();
         Self {
             cwd,
             home,
             workspaces,
             temps,
             sensitive,
+            protected,
             system,
         }
     }
@@ -433,6 +499,22 @@ impl Resolver {
     /// wildcards always do, and nothing for a path without a wildcard.
     #[must_use]
     pub fn place_hidden(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
+        self.place_as(path, flavour, hidden, true)
+    }
+
+    /// As [`place_hidden`](Self::place_hidden), for a path something is
+    /// written *into* (a copy's destination, a redirect's target): a folder
+    /// that merely holds a protected path is not a write of that path, so it
+    /// is not `Protected`, where `place_hidden` answers `Protected` for it.
+    /// Everything else is the same.
+    #[must_use]
+    pub fn place_into(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
+        self.place_as(path, flavour, hidden, false)
+    }
+
+    /// `holding` says whether a harmless folder that holds a protected path
+    /// is judged as that path.
+    fn place_as(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool, holding: bool) -> Place {
         let text = path.text();
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
@@ -477,8 +559,29 @@ impl Resolver {
             }
             None => false,
         };
-        let place = self.judge(&loc, flavour);
-        if pattern && matches!(place, Place::Inside | Place::Workspace { .. }) {
+        // A pattern is judged by the folder before its first wildcard part,
+        // and what it can pick is read from its parts below.
+        let place = self.judge(&loc, flavour, holding && !pattern);
+        if !pattern {
+            return place;
+        }
+        let place = Self::pattern_place(place, text, tail.as_deref(), flavour, hidden);
+        match self.picks_protected(&loc, tail.as_deref(), flavour, hidden, place, holding) {
+            Some(words) => Place::Protected(words),
+            None => place,
+        }
+    }
+
+    /// Where a pattern lands, from the place of the folder before its first
+    /// wildcard part and what the pattern can pick in it.
+    fn pattern_place(
+        place: Place,
+        text: &str,
+        tail: Option<&[String]>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Place {
+        if matches!(place, Place::Inside | Place::Workspace { .. }) {
             match glob::shape(text, flavour) {
                 // `.g*`, `*/.git`: can match hidden entries such as `.git`.
                 Shape::Hidden => {
@@ -505,10 +608,7 @@ impl Resolver {
         }
         // `/tmp/*.log`, `/tmp/build-*`: picks files inside a temporary
         // folder, which are temporary files; `/tmp/*` is still the folder.
-        if pattern
-            && place == (Place::Temp { exact: true })
-            && glob::shape(text, flavour) == Shape::Entries
-        {
+        if place == (Place::Temp { exact: true }) && glob::shape(text, flavour) == Shape::Entries {
             return Place::Temp { exact: false };
         }
         place
@@ -552,7 +652,12 @@ impl Resolver {
         self.cwd.clone().walk(text, flavour)
     }
 
-    fn judge(&self, loc: &Loc, flavour: Flavour) -> Place {
+    /// Where a path lands. A protected path, or one under it, is `Protected`
+    /// before anything else but the home directory itself. A verdict that
+    /// would otherwise be harmless is `Protected` too when the path holds a
+    /// protected one (`holding`), so a delete of the folder is a delete of
+    /// it; a verdict that is already risky keeps its own place and words.
+    fn judge(&self, loc: &Loc, flavour: Flavour, holding: bool) -> Place {
         if loc.parts.is_empty() {
             return Place::Top("the root of the disk");
         }
@@ -561,6 +666,19 @@ impl Resolver {
                 exact: loc.is(&self.home),
             };
         }
+        if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(loc, file)) {
+            return Place::Protected(words);
+        }
+        let place = self.judge_plain(loc, flavour);
+        if holding && place.harmless() {
+            if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| above(loc, file)) {
+                return Place::Protected(words);
+            }
+        }
+        place
+    }
+
+    fn judge_plain(&self, loc: &Loc, flavour: Flavour) -> Place {
         for workspace in &self.workspaces {
             if loc.holds(workspace) {
                 return Place::Workspace {
@@ -594,6 +712,142 @@ impl Resolver {
         }
         Place::Outside
     }
+}
+
+impl Resolver {
+    /// The words of a protected path that a pattern can pick, by name.
+    /// `folder` is where the pattern starts (the folder before its first
+    /// wildcard part), `tail` the pattern's parts from there, and `place`
+    /// what the pattern would be without the protected paths.
+    ///
+    /// The pattern's parts are matched against the path's names below
+    /// `folder`, one for one. A pattern that reaches the path itself, or goes
+    /// below it, picks it, and wins over any place but the workspace or a
+    /// temporary folder itself. One that stops at a folder holding the path
+    /// picks that folder, which counts only where the place is harmless and
+    /// the path is not only being written into (`holding`).
+    fn picks_protected(
+        &self,
+        folder: &Loc,
+        tail: Option<&[String]>,
+        flavour: Flavour,
+        hidden: bool,
+        place: Place,
+        holding: bool,
+    ) -> Option<&'static str> {
+        let tail = tail?;
+        if matches!(
+            place,
+            Place::Workspace { exact: true }
+                | Place::Temp { exact: true }
+                | Place::Protected(_)
+                | Place::Disk
+                | Place::Registry
+                | Place::Unknown
+        ) {
+            return None;
+        }
+        let hidden = hidden || flavour == Flavour::Windows;
+        let folders = holding && place.harmless();
+        self.protected.iter().find_map(|(path, words, is_folder)| {
+            if !above(folder, path) {
+                return None;
+            }
+            let names = &path.parts[folder.parts.len()..];
+            let windows = path.windows();
+            let reach = |whole: bool| {
+                let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+                picks(&tail, names, whole, *is_folder, &|part, name| {
+                    pattern_matches(part, name, flavour, hidden, windows)
+                })
+            };
+            (reach(true) || (folders && reach(false))).then_some(*words)
+        })
+    }
+}
+
+/// Whether a spelled name is the protected `name`: the same without case on
+/// every host (some file systems on POSIX hosts ignore it, and what a
+/// protected path is spelled as is the caller's to say), or, on Windows, its
+/// 8.3 short name.
+fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
+    spelled.eq_ignore_ascii_case(name) || (windows && short_name(spelled, name))
+}
+
+/// Whether `spelled` is a protected path or under it.
+fn below(spelled: &Loc, protected: &Loc) -> bool {
+    protected.parts.len() <= spelled.parts.len() && lead(spelled, protected)
+}
+
+/// Whether `spelled` is a protected path or a folder holding it.
+fn above(spelled: &Loc, protected: &Loc) -> bool {
+    spelled.parts.len() <= protected.parts.len() && lead(spelled, protected)
+}
+
+/// Whether the parts of the shorter of the two name the same as the other's.
+fn lead(spelled: &Loc, protected: &Loc) -> bool {
+    let windows = spelled.windows();
+    spelled.root.same(&protected.root)
+        && spelled
+            .parts
+            .iter()
+            .zip(&protected.parts)
+            .all(|(spelled, name)| same_name(spelled, name, windows))
+}
+
+/// Whether a pattern part can pick `name`, or on Windows its short name,
+/// without case.
+fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windows: bool) -> bool {
+    let fold = |part: &str, name: &str| {
+        glob::matches(part, name, flavour, hidden)
+            || glob::matches(&part.to_lowercase(), &name.to_lowercase(), flavour, hidden)
+    };
+    fold(part, name) || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
+}
+
+/// Whether a pattern part is nothing but two or more stars.
+fn is_globstar(part: &str) -> bool {
+    part.len() >= 2 && part.bytes().all(|b| b == b'*')
+}
+
+/// Whether the pattern parts `tail` pick the names `names` in order. A part
+/// that is nothing but two or more stars may stand for any number of names
+/// (a shell with `globstar`) that a `*` could match, all the rest of them
+/// when it is the last, and the last name itself too. `whole` asks that every name be reached; when
+/// it is not, a pattern that ends first picks the folder holding the rest.
+/// The pattern going on past the last name is below it, which counts only
+/// when `below` says the last name is a folder.
+fn picks(
+    tail: &[&str],
+    names: &[String],
+    whole: bool,
+    below: bool,
+    matches: &dyn Fn(&str, &str) -> bool,
+) -> bool {
+    // `reach[j]`: parts `i..` pick names `j..`, built from the end.
+    let mut reach = vec![false; names.len() + 1];
+    for i in (0..=tail.len()).rev() {
+        let mut row = vec![false; names.len() + 1];
+        for j in (0..=names.len()).rev() {
+            row[j] = if j == names.len() {
+                // Every name reached: more of the pattern goes below the
+                // last one, which only a folder has.
+                below || tail[i..].iter().all(|part| is_globstar(part))
+            } else if i == tail.len() {
+                !whole
+            } else if is_globstar(tail[i]) {
+                // As many names as it takes, the last one included: a name
+                // the stars take is what a part after them goes below.
+                i + 1 == tail.len()
+                    || reach[j]
+                    || (matches("*", &names[j]) && row.get(j + 1).copied().unwrap_or(false))
+            } else {
+                matches(tail[i], &names[j]) && reach.get(j + 1).copied().unwrap_or(false)
+            };
+        }
+        reach = row;
+    }
+    reach[0]
 }
 
 /// The parts of a relative path, with `.` and `..` applied (a `..` with
@@ -698,7 +952,7 @@ fn mark_wildcards(text: &str, flavour: Flavour) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing;
+    use crate::{testing, Protected, ProtectedKind};
 
     const POSIX: Flavour = Flavour::Posix;
     const WINDOWS: Flavour = Flavour::Windows;
@@ -1304,6 +1558,381 @@ mod tests {
         let posix = testing::posix();
         for path in ["x /y", "x../y", ".../y", "x /.. ", "x:y/z"] {
             assert_eq!(at(&posix, path, POSIX), Place::Inside, "{path:?}");
+        }
+    }
+
+    const SETTINGS: &str = "the agent's settings";
+
+    /// `paths` with protected folders.
+    fn gated(paths: Paths, protected: &[&str]) -> Paths {
+        kinds(paths, &[], protected)
+    }
+
+    /// `paths` with protected files and folders.
+    fn kinds(paths: Paths, files: &[&str], folders: &[&str]) -> Paths {
+        paths.with_protected(
+            files
+                .iter()
+                .map(|path| Protected::file(*path, SETTINGS))
+                .chain(
+                    folders
+                        .iter()
+                        .map(|path| Protected::folder(*path, SETTINGS)),
+                ),
+        )
+    }
+
+    #[test]
+    fn a_protected_path_and_everything_under_it_is_protected() {
+        let paths = gated(testing::posix(), &["/home/me/.agent"]);
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("/home/me/.agent", protected),
+            ("/home/me/.agent/config.yaml", protected),
+            ("/home/me/.agent/a/../rules", protected),
+            ("/home/me/.agent/*", protected),
+            ("/home/me/.agent/*.yaml", protected),
+            ("/home/me/.agent/", protected),
+            ("/home/me/.agent/.", protected),
+            ("/home/me/x/../.agent", protected),
+            // Names compare without case on every host.
+            ("/home/me/.AGENT", protected),
+            ("/home/me/.Agent/Rules", protected),
+            // The home directory is a home directory, and keeps its words.
+            ("/home/me", Place::Home { exact: true }),
+            ("/home", Place::Home { exact: false }),
+            // A sibling is not it.
+            ("/home/me/.agents", Place::Outside),
+            ("/home/me/other", Place::Outside),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        let resolver = Resolver::new(&paths);
+        assert_eq!(
+            resolver.place(Spelling::Home(".agent/config.yaml"), POSIX),
+            protected
+        );
+        assert!(!protected.harmless());
+        assert_eq!(protected.words(), SETTINGS);
+    }
+
+    #[test]
+    fn a_protected_path_wins_over_the_workspace_and_a_temporary_folder() {
+        let paths = gated(
+            testing::posix(),
+            &["/home/me/work/repo/.agent", "/tmp/state"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            (".agent", protected),
+            (".agent/rules", protected),
+            (".AGENT/rules", protected),
+            ("/home/me/work/repo/.agent/rules", protected),
+            ("src/main.rs", Place::Inside),
+            (".agentrc", Place::Inside),
+            ("/tmp/state/x", protected),
+            ("/tmp/other", Place::Temp { exact: false }),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        // A workspace that is itself protected is protected throughout, and
+        // is still the workspace as a whole.
+        let whole = gated(testing::posix(), &["/home/me/work/repo"]);
+        assert_eq!(at(&whole, "src/x", POSIX), protected);
+        assert_eq!(at(&whole, ".", POSIX), protected);
+        assert_eq!(at(&whole, "/home/me", POSIX), Place::Home { exact: true });
+    }
+
+    #[test]
+    fn a_folder_holding_a_protected_path_is_protected_when_it_would_be_harmless() {
+        let paths = kinds(
+            testing::posix(),
+            &["/home/me/work/repo/conf/app/x.yaml"],
+            &[],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("conf", protected),
+            ("conf/app", protected),
+            ("conf/app/x.yaml", protected),
+            ("./conf/../conf/app", protected),
+            ("CONF", protected),
+            // Not holding it.
+            ("conf/other.txt", Place::Inside),
+            ("conf/app/y.yaml", Place::Inside),
+            ("src", Place::Inside),
+            ("confs", Place::Inside),
+            // Already risky: keeps its own place and words.
+            (".", Place::Workspace { exact: true }),
+            ("/home/me/work/repo", Place::Workspace { exact: true }),
+            ("/home/me/work", Place::Workspace { exact: false }),
+            ("/home/me", Place::Home { exact: true }),
+            ("/", Place::Top("the root of the disk")),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        // A temporary folder holding one, too.
+        let temp = gated(testing::posix(), &["/tmp/state/x"]);
+        assert_eq!(at(&temp, "/tmp/state", POSIX), protected);
+        assert_eq!(at(&temp, "/tmp", POSIX), Place::Temp { exact: true });
+        // A path written into is not a write of the folder's contents.
+        let resolver = Resolver::new(&paths);
+        let into = |path| resolver.place_into(Spelling::Plain(path), POSIX, false);
+        assert_eq!(into("conf"), Place::Inside);
+        assert_eq!(into("conf/app"), Place::Inside);
+        assert_eq!(into("conf/app/x.yaml"), protected);
+        assert_eq!(into("conf/app/x.yaml/y"), protected);
+        assert_eq!(into("conf/new.txt"), Place::Inside);
+        assert_eq!(into("conf/*"), Place::Inside);
+        assert_eq!(into("conf/app/*"), protected);
+        assert_eq!(into("conf/app/x*"), protected);
+    }
+
+    #[test]
+    fn a_pattern_that_picks_a_protected_path_or_its_folder_is_protected() {
+        let paths = kinds(
+            testing::posix(),
+            &[
+                "/home/me/work/repo/settings.yaml",
+                "/home/me/work/repo/conf/app/x.yaml",
+            ],
+            &["/home/me/work/repo/.agent"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("set*", protected),
+            ("S*", protected),
+            ("*.yaml", protected),
+            ("settings.y?ml", protected),
+            ("[s]ettings.yaml", protected),
+            ("/home/me/work/repo/s*", protected),
+            ("src/*/../../set*", protected),
+            (".a*", protected),
+            (".agent/*", protected),
+            // A protected file has nothing below it.
+            ("set*/x", Place::Inside),
+            ("**/y.yaml", Place::Inside),
+            ("**/*.rs", Place::Inside),
+            ("**/conf/*/y*", Place::Inside),
+            // A pattern that picks the folder holding one.
+            ("c*", protected),
+            ("conf/a*", protected),
+            ("conf/a*/x.yaml", protected),
+            ("*/*/*.yaml", protected),
+            ("*/*/x.y*", protected),
+            ("**/x.yaml", protected),
+            ("conf/**", protected),
+            ("conf/**/x.yaml", protected),
+            ("**/**/x.yaml", protected),
+            // What the pattern cannot pick stays the agent's own.
+            ("*.log", Place::Inside),
+            ("src/*.rs", Place::Inside),
+            ("src/set*", Place::Inside),
+            ("sr*/x", Place::Inside),
+            ("conf/o*", Place::Inside),
+            ("conf/*/y.yaml", Place::Inside),
+            // The whole workspace is still the workspace.
+            ("*", Place::Workspace { exact: true }),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        // A pattern does not match a leading dot on POSIX unless hidden
+        // names match.
+        let only_hidden = gated(testing::posix(), &["/home/me/work/repo/.agent"]);
+        let resolver = Resolver::new(&only_hidden);
+        let hidden = |path, hidden| resolver.place_hidden(Spelling::Plain(path), POSIX, hidden);
+        assert_eq!(hidden("*gent", false), Place::Inside);
+        assert_eq!(hidden("*gent", true), protected);
+        // A pattern in a temporary folder.
+        let temp = gated(testing::posix(), &["/tmp/state/x"]);
+        for (path, place) in [
+            ("/tmp/state/*", protected),
+            ("/tmp/state/x*", protected),
+            ("/tmp/*/x", protected),
+            ("/tmp/s*", protected),
+            ("/tmp/state/y*", Place::Temp { exact: false }),
+            ("/tmp/*.log", Place::Temp { exact: false }),
+            ("/tmp/*", Place::Temp { exact: true }),
+        ] {
+            assert_eq!(at(&temp, path, POSIX), place, "{path}");
+        }
+        // A pattern that picks the protected path in the home directory says
+        // so, where one that picks the home directory itself says the home.
+        let home = gated(testing::posix(), &["/home/me/.agent"]);
+        assert_eq!(at(&home, "/home/me/.agent*", POSIX), protected);
+        assert_eq!(at(&home, "/home/me/.a*", POSIX), protected);
+        assert_eq!(at(&home, "/home/me/*", POSIX), Place::Home { exact: true });
+        assert_eq!(at(&home, "/home/me/x*", POSIX), Place::Home { exact: true });
+    }
+
+    #[test]
+    fn only_a_protected_folder_has_something_below_a_pattern_part() {
+        let protected = Place::Protected(SETTINGS);
+        let file = kinds(
+            testing::posix(),
+            &["/home/me/work/repo/conf/app/x.yaml"],
+            &[],
+        );
+        for (path, place) in [
+            ("**/x.yaml", protected),
+            ("**/x.*", protected),
+            ("conf/**", protected),
+            ("conf/*/x.yaml", protected),
+            ("conf", protected),
+            ("conf/app/x.yaml", protected),
+            ("**/y.yaml", Place::Inside),
+            ("**/*.rs", Place::Inside),
+            ("**/*.pyc", Place::Inside),
+            ("*/*/x.yaml/z", Place::Inside),
+            ("conf/app/x.yaml/*", protected),
+        ] {
+            assert_eq!(at(&file, path, POSIX), place, "{path}");
+        }
+        let folder = gated(testing::posix(), &["/home/me/work/repo/conf/app/x.yaml"]);
+        for path in ["**/y.yaml", "**/*.rs", "conf/*/x.yaml/z", "conf/app/x*/z"] {
+            assert_eq!(at(&folder, path, POSIX), protected, "{path}");
+        }
+        assert_eq!(Protected::file("/a", "x").kind, ProtectedKind::File);
+        assert_eq!(Protected::folder("/a", "x").kind, ProtectedKind::Folder);
+    }
+
+    #[test]
+    fn globstar_stars_can_take_the_protected_name_itself() {
+        let paths = gated(testing::posix(), &["/home/me/work/repo/cfg"]);
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            ("**/rules", protected),
+            ("**/*.yaml", protected),
+            ("**/*.rs", protected),
+            ("**/cfg", protected),
+            ("**/cfg/x", protected),
+            ("src/**/x", Place::Inside),
+            // A star part does not take a hidden name.
+            ("**", Place::Workspace { exact: true }),
+        ] {
+            assert_eq!(at(&paths, path, POSIX), place, "{path}");
+        }
+        let hidden = gated(testing::posix(), &["/home/me/work/repo/.cfg"]);
+        assert_eq!(at(&hidden, "**/rules", POSIX), Place::Inside);
+        let resolver = Resolver::new(&hidden);
+        let on = |path| resolver.place_hidden(Spelling::Plain(path), POSIX, true);
+        assert_eq!(on("**/rules"), protected);
+    }
+
+    #[test]
+    fn a_windows_protected_path_compares_without_case() {
+        let paths = gated(
+            testing::windows(),
+            &[r"C:\Users\me\.agent", r"C:\Users\me\dev\repo\.agent"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            (r"C:\Users\me\.agent", protected),
+            (r"c:\users\ME\.AGENT\config.yaml", protected),
+            (r"C:/Users/me/.agent/config.yaml", protected),
+            (r"C:\Users\me\.agent.\config.yaml", protected),
+            (r"C:\Users\me\.agent\*", protected),
+            (r".agent\rules", protected),
+            (r"src\main.rs", Place::Inside),
+            (r"C:\Users\me\.agents", Place::Outside),
+            (r"C:\Users\me", Place::Home { exact: true }),
+        ] {
+            assert_eq!(at(&paths, path, WINDOWS), place, "{path}");
+        }
+        let resolver = Resolver::new(&paths);
+        assert_eq!(
+            resolver.place(Spelling::Home(r".agent\config.yaml"), WINDOWS),
+            protected
+        );
+        // A name Windows reads as another is judged as that name.
+        assert_eq!(at(&paths, r".agent\x:stream", WINDOWS), Place::Unknown);
+    }
+
+    #[test]
+    fn a_protected_path_compares_without_case_on_a_mac_too() {
+        let paths = gated(testing::macos(), &["/Users/me/dev/repo/.agent"]);
+        for path in [
+            ".AGENT",
+            ".Agent/rules",
+            ".agent/rules",
+            ".AGE*",
+            "/Users/me/dev/repo/.AGENT",
+        ] {
+            assert_eq!(
+                at(&paths, path, POSIX),
+                Place::Protected(SETTINGS),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_windows_short_name_is_the_protected_name() {
+        let paths = kinds(
+            testing::windows(),
+            &[r"C:\Users\me\dev\repo\conf\settings.yaml"],
+            &[r"C:\Users\me\dev\repo\.agent"],
+        );
+        let protected = Place::Protected(SETTINGS);
+        for (path, place) in [
+            (r"AGENT~1\rules", protected),
+            (r"agent~1", protected),
+            (r"AGENT~2\rules", protected),
+            (r"AG1B2C~1\rules", protected),
+            (r"AGENT~*\rules", protected),
+            (r"conf\SETTIN~1.YAM", protected),
+            (r"conf\SETTIN~1.YAML", Place::Inside),
+            (r"conf\SETTIN~1", Place::Inside),
+            (r"conf\settin~1.yam", protected),
+            (r"conf\SETTIN~*", protected),
+            // Another name's short form is another name.
+            (r"AGEN~1\rules", Place::Inside),
+            (r"AGENTS~1\rules", Place::Inside),
+            (r"OTHER~1\rules", Place::Inside),
+        ] {
+            assert_eq!(at(&paths, path, WINDOWS), place, "{path}");
+        }
+        // A short name is a Windows thing.
+        let posix = gated(testing::posix(), &["/home/me/work/repo/.agent"]);
+        assert_eq!(at(&posix, "AGENT~1/rules", POSIX), Place::Inside);
+    }
+
+    #[test]
+    fn a_short_name_is_read_the_way_windows_makes_it() {
+        assert!(short_name("GIT~1", ".git"));
+        assert!(short_name("git~12", ".git"));
+        assert!(short_name("GI1A2B~1", ".git"));
+        assert!(!short_name("GIT", ".git"));
+        assert!(!short_name("GIT~", ".git"));
+        assert!(!short_name("GITHUB~1", ".git"));
+        assert!(!short_name("~1", ""));
+        assert!(!short_name("GIXYZW~1", ".git"));
+        assert!(short_name("SETTIN~1.YAM", "settings.yaml"));
+        assert!(!short_name("SETTIN~1", "settings.yaml"));
+        assert!(!short_name("SETTIN~1.YAM", "settings"));
+        assert_eq!(short_form(".agent").as_deref(), Some("AGENT~1"));
+        assert_eq!(short_form("settings.yaml").as_deref(), Some("SETTIN~1.YAM"));
+        assert_eq!(short_form("..."), None);
+        assert_eq!(short_form("notes.txt").as_deref(), Some("NOTES~1.TXT"));
+    }
+
+    #[test]
+    fn protected_paths_are_added_by_each_call() {
+        let paths = testing::posix();
+        assert!(paths.protected.is_empty());
+        let paths = paths
+            .with_protected([Protected::folder("/home/me/.a", "one")])
+            .with_protected([Protected::folder("/home/me/.b", "two")]);
+        assert_eq!(at(&paths, "/home/me/.a/x", POSIX), Place::Protected("one"));
+        assert_eq!(at(&paths, "/home/me/.b/x", POSIX), Place::Protected("two"));
+    }
+
+    #[test]
+    fn with_no_protected_paths_nothing_changes() {
+        let plain = testing::posix();
+        let empty = testing::posix().with_protected([]);
+        for path in [".agent", "*", "set*", "/home/me/.agent/x", "/tmp/x"] {
+            assert_eq!(at(&plain, path, POSIX), at(&empty, path, POSIX), "{path}");
         }
     }
 }
