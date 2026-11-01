@@ -1,6 +1,8 @@
 //! Splitting a PowerShell line with tree-sitter-powershell, PowerShell's
 //! aliases, and how a cmdlet's parameters are read.
 
+use std::borrow::Cow;
+
 use tree_sitter::Node;
 
 use crate::launch;
@@ -9,8 +11,26 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, text, &language) else {
+    let Some(first) = unit::parse(split, text, &language) else {
         return;
+    };
+    // A line the grammar cannot read stays unreadable, whatever else is found
+    // in it. When it holds a word that is a variable and a path
+    // (`$HOME\.ssh\id_rsa`), which the grammar fails on, it is also read again
+    // with those words quoted, so the rules see the paths.
+    let fixed;
+    let (text, tree) = if first.root_node().has_error() {
+        if let Cow::Owned(rewritten) = variable_paths(text) {
+            fixed = rewritten;
+            let Some(again) = unit::parse(split, &fixed, &language) else {
+                return;
+            };
+            (fixed.as_str(), again)
+        } else {
+            (text, first)
+        }
+    } else {
+        (text, first)
     };
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
@@ -30,6 +50,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     });
     for name in names {
         split.reassign(&name);
+        split.set(&name);
     }
     Walker {
         source: text,
@@ -40,6 +61,50 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     .walk(tree.root_node(), None, 0);
 }
 
+/// The cmdlets that register a script block to run when an event happens:
+/// the block is read where it is written, and runs later.
+const EVENTS: [&str; 4] = [
+    "register-engineevent",
+    "register-objectevent",
+    "register-wmievent",
+    "register-cimindicationevent",
+];
+
+/// Whether `node` is a script block written out, however it is wrapped by
+/// the grammar (`{ … }` is an array of one unary expression of the block).
+fn is_script_block(node: Node<'_>) -> bool {
+    let mut node = node;
+    loop {
+        match node.kind() {
+            "script_block_expression" => return true,
+            "array_literal_expression" | "unary_expression" if node.named_child_count() == 1 => {
+                match node.named_child(0) {
+                    Some(only) => node = only,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Whether `node` is a splat (`@args`), however the grammar wraps it.
+fn is_splat(node: Node<'_>, source: &str) -> bool {
+    let mut node = node;
+    loop {
+        match node.kind() {
+            "variable" => return unit::text(&node, source).starts_with('@'),
+            "array_literal_expression" | "unary_expression" if node.named_child_count() == 1 => {
+                match node.named_child(0) {
+                    Some(only) => node = only,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// The cmdlet an alias stands for, in lower case; any other name as given.
 pub(crate) fn canonical(name: &str) -> &str {
     match name {
@@ -48,6 +113,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
+        "ren" | "rni" => "rename-item",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
         "ac" => "add-content",
@@ -105,14 +171,31 @@ impl Walker<'_> {
                 if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
                     self.item = stage;
                 }
+                // The block of an event runs later, in this session.
+                let later = key
+                    .as_deref()
+                    .is_some_and(|key| EVENTS.contains(&key))
+                    .then(|| self.split.begin_later());
                 self.children(node, None, level);
+                if let Some(began) = later {
+                    self.split.end_later(began, false);
+                }
                 self.item = outer;
+            }
+            // `trap { … }`: its block runs on a terminating error, later.
+            "trap_statement" => {
+                let began = self.split.begin_later();
+                self.children(node, stage, level);
+                self.split.end_later(began, false);
             }
             "redirection" => {
                 self.redirect(node);
                 self.children(node, None, level);
             }
             "invokation_expression" => {
+                // A method call is no unit, and the rules know only some of
+                // them: `effect` cannot say what it does.
+                self.split.opaque();
                 self.dotnet(node);
                 self.children(node, stage, level);
             }
@@ -172,8 +255,102 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        // A block known only when it runs (`-Action $block`, an action given
+        // by position or in a splat) is a script the guard cannot read, run
+        // by the event.
+        if let Some(key) = key.as_deref().filter(|key| EVENTS.contains(key)) {
+            if self.action_unread(node, key) {
+                self.split.problem(
+                    Rule::Unknown,
+                    "runs an event action only known when it runs",
+                    Some(unit::text(&node, self.source)),
+                );
+            }
+        }
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// Whether the action of a `Register-*Event` command is not a script
+    /// block written out, which the walk reads where it stands. The action is
+    /// the `-Action` parameter or, by position, the last of the parameters
+    /// the command's names leave to be given by position (the docs' order:
+    /// `Register-EngineEvent` takes its source then its action;
+    /// `Register-ObjectEvent` the object, its event, the source, then the
+    /// action; the others a class or query, the source, then the action). A
+    /// splat (`@p`) may hold any of them.
+    fn action_unread(&self, node: Node<'_>, key: &str) -> bool {
+        let Some(elements) = node.child_by_field_name("command_elements") else {
+            return false;
+        };
+        let slots: &[&[&str]] = match key {
+            "register-engineevent" => &[&["sourceidentifier"], &["action"]],
+            "register-objectevent" => &[
+                &["inputobject"],
+                &["eventname"],
+                &["sourceidentifier"],
+                &["action"],
+            ],
+            "register-wmievent" => &[&["class", "query"], &["sourceidentifier"], &["action"]],
+            _ => &[&["classname", "query"], &["sourceidentifier"], &["action"]],
+        };
+        let mut bound = vec![false; slots.len()];
+        // Parameters that take a value but are not given by position.
+        let named = [
+            "messagedata",
+            "maxtriggercount",
+            "namespace",
+            "computername",
+            "credential",
+            "timeout",
+            "operationtimeoutsec",
+            "cimsession",
+            "querydialect",
+        ];
+        let mut named_action = None;
+        let mut positional = Vec::new();
+        // What the next value belongs to: `Some(true)` the action,
+        // `Some(false)` another parameter.
+        let mut takes: Option<bool> = None;
+        let mut cursor = elements.walk();
+        for element in elements.named_children(&mut cursor) {
+            match element.kind() {
+                "command_argument_sep" | "comment" | "redirection" => continue,
+                "command_parameter" => {
+                    let name = unit::text(&element, self.source)
+                        .trim_start_matches('-')
+                        .to_ascii_lowercase();
+                    let slot = slots
+                        .iter()
+                        .position(|names| names.iter().any(|full| full.starts_with(&name)));
+                    takes = match slot {
+                        _ if name.is_empty() => None,
+                        Some(slot) if slot + 1 == slots.len() => Some(true),
+                        Some(slot) => {
+                            bound[slot] = true;
+                            Some(false)
+                        }
+                        None if named.iter().any(|full| full.starts_with(&name)) => Some(false),
+                        None => None,
+                    };
+                    continue;
+                }
+                _ => {}
+            }
+            if is_splat(element, self.source) {
+                return true;
+            }
+            match takes.take() {
+                Some(true) => named_action = Some(is_script_block(element)),
+                Some(false) => {}
+                None => positional.push(is_script_block(element)),
+            }
+        }
+        if let Some(block) = named_action {
+            return !block;
+        }
+        let place = bound.iter().filter(|bound| !**bound).count() - 1;
+        positional.get(place).is_some_and(|block| !block)
     }
 
     fn name(&self, node: Node<'_>) -> Arg {
@@ -254,7 +431,9 @@ impl Walker<'_> {
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         Arg::Known(text) => value.push_str(&text),
-                        Arg::Unknown(_) | Arg::Input => return Arg::Unknown(source.to_string()),
+                        Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
+                            return Arg::Unknown(source.to_string())
+                        }
                     }
                     at = child.end_byte();
                 }
@@ -290,17 +469,8 @@ impl Walker<'_> {
         if self.split.reassigned(name) {
             return Arg::Unknown(source.to_string());
         }
-        let value = match name {
-            "home" | "env:userprofile" | "env:home" => "~",
-            "pwd" => ".",
-            "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
-            "env:appdata" => "~\\AppData\\Roaming",
-            "env:localappdata" => "~\\AppData\\Local",
-            "env:systemroot" | "env:windir" => "C:\\Windows",
-            "env:programfiles" => "C:\\Program Files",
-            "env:programdata" => "C:\\ProgramData",
-            "null" => "$null",
-            _ => return Arg::Unknown(source.to_string()),
+        let Some(value) = place_variable(name) else {
+            return Arg::Unknown(source.to_string());
         };
         Arg::Known(value.to_string())
     }
@@ -433,7 +603,7 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 25] = [
+const VALUES: [&str; 45] = [
     "path",
     "literalpath",
     "destination",
@@ -459,6 +629,27 @@ const VALUES: [&str; 25] = [
     "itemtype",
     "stream",
     "width",
+    // The common parameters and their aliases: a value is never an operand.
+    "erroraction",
+    "ea",
+    "warningaction",
+    "wa",
+    "informationaction",
+    "infa",
+    "errorvariable",
+    "ev",
+    "warningvariable",
+    "wv",
+    "informationvariable",
+    "iv",
+    "outvariable",
+    "ov",
+    "outbuffer",
+    "ob",
+    "pipelinevariable",
+    "pv",
+    "progressaction",
+    "proga",
 ];
 
 /// A cmdlet's arguments read as PowerShell reads them.
@@ -518,4 +709,288 @@ fn parameter(arg: &Arg) -> Option<&str> {
     let name = text.strip_prefix('-')?;
     name.starts_with(|c: char| c.is_ascii_alphabetic())
         .then_some(name)
+}
+
+/// `text` with each bare word that is a variable followed by a path
+/// (`$HOME\.ssh\id_rsa`, `$env:USERPROFILE/.aws`) put in double quotes, which
+/// is what PowerShell reads it as: an expandable string. The grammar reads
+/// such a word as a member access and loses the path, so without this a
+/// line that names a key through a variable cannot be read.
+///
+/// Only a word of plain path characters after a name is wrapped, and only
+/// where a word can begin (after white space, `(`, `,` or the `:` of
+/// `-Path:`). Text the scan cannot follow with certainty (a here-string, a
+/// subexpression in a string) leaves the whole line as written.
+fn variable_paths(text: &str) -> Cow<'_, str> {
+    if !text.contains(['\\', '/']) || !text.contains('$') {
+        return Cow::Borrowed(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut changed = false;
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        let previous = at.checked_sub(1).and_then(|before| chars.get(before));
+        match c {
+            // A here-string: its end is not one this scan reads.
+            '@' if matches!(chars.get(at + 1), Some('\'' | '"')) => {
+                return Cow::Borrowed(text);
+            }
+            '\'' => {
+                let Some(end) = single_quoted(&chars, at) else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '"' => {
+                let Some(end) = double_quoted(&chars, at) else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '`' => {
+                out.push(c);
+                out.extend(chars.get(at + 1));
+                at += 2;
+            }
+            '<' if chars.get(at + 1) == Some(&'#') => {
+                // A block comment runs to `#>`.
+                let Some(end) = (at + 2..chars.len().saturating_sub(1))
+                    .find(|&i| chars[i] == '#' && chars[i + 1] == '>')
+                else {
+                    return Cow::Borrowed(text);
+                };
+                out.extend(&chars[at..end + 2]);
+                at = end + 2;
+            }
+            '#' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, ';' | '(' | '{')) => {
+                // A line comment runs to the end of the line.
+                let end = (at..chars.len())
+                    .find(|&i| chars[i] == '\n')
+                    .unwrap_or(chars.len());
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+            '$' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, '(' | ',' | ':')) => {
+                if let Some(end) = variable_word(&chars, at) {
+                    out.push('"');
+                    out.extend(&chars[at..end]);
+                    out.push('"');
+                    changed = true;
+                    at = end;
+                } else {
+                    out.push(c);
+                    at += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                at += 1;
+            }
+        }
+    }
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Where the single-quoted string that opens at `at` ends (after its closing
+/// quote); `''` inside is a quote.
+fn single_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        if c == '\'' {
+            if chars.get(i + 1) == Some(&'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Where the double-quoted string that opens at `at` ends. A backtick
+/// escapes, `""` is a quote; a `$(` inside is a subexpression with quotes of
+/// its own, which is not followed, so the scan gives up on it.
+fn double_quoted(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        match c {
+            '`' => i += 2,
+            '$' if chars.get(i + 1) == Some(&'(') => return None,
+            '"' => {
+                if chars.get(i + 1) == Some(&'"') {
+                    i += 2;
+                } else {
+                    return Some(i + 1);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where a word of the form `$name\path` that begins at `at` ends, when it is
+/// one: a variable name (`$HOME`, `$env:USERPROFILE`, `${HOME}`), a `\` or
+/// `/` right after it, and plain path characters up to a character that ends
+/// a word. `None` for anything else: a variable alone, a member access, a
+/// word with another expansion, a quote or a backtick in it.
+fn variable_word(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    if chars.get(i) == Some(&'{') {
+        let close = (i + 1..chars.len()).find(|&j| chars[j] == '}')?;
+        if chars[i + 1..close]
+            .iter()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':')))
+        {
+            return None;
+        }
+        i = close + 1;
+    } else {
+        let start = i;
+        while chars
+            .get(i)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':'))
+        {
+            i += 1;
+        }
+        if i == start || chars[start..i].ends_with(&[':']) {
+            return None;
+        }
+    }
+    if !matches!(chars.get(i), Some('\\' | '/')) {
+        return None;
+    }
+    while let Some(&c) = chars.get(i) {
+        if c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '}' | ',') {
+            break;
+        }
+        // A backtick escapes the next character, a space included.
+        if c == '`' {
+            if chars
+                .get(i + 1)
+                .is_some_and(|next| !matches!(next, '\n' | '\r'))
+            {
+                i += 2;
+                continue;
+            }
+            return None;
+        }
+        if matches!(c, '$' | '\'' | '"' | '(' | '{' | '<' | '>' | '@') {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
+/// The place a variable names, by its lower-case name without `$`: the home
+/// directory, the working directory, the folders `env:` names.
+fn place_variable(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "home" | "env:userprofile" | "env:home" => "~",
+        "pwd" => ".",
+        "env:temp" | "env:tmp" => "~\\AppData\\Local\\Temp",
+        "env:appdata" => "~\\AppData\\Roaming",
+        "env:localappdata" => "~\\AppData\\Local",
+        "env:systemroot" | "env:windir" => "C:\\Windows",
+        "env:programfiles" => "C:\\Program Files",
+        "env:programdata" => "C:\\ProgramData",
+        "null" => "$null",
+        _ => return None,
+    })
+}
+
+/// The path a bare word that is a variable and a path names (`$HOME\.ssh\x`,
+/// which the grammar reads as something it cannot see into), when the variable
+/// is one the guard names and the line does not set: the place and the rest.
+pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
+    let chars: Vec<char> = source.chars().collect();
+    if variable_word(&chars, 0)? != chars.len() {
+        return None;
+    }
+    let end = source
+        .find(['\\', '/'])
+        .filter(|end| source[..*end].starts_with('$'))?;
+    let lower = source[..end].to_ascii_lowercase();
+    let name = lower
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .or_else(|| lower.strip_prefix('$'))?;
+    if split.reassigned(name) {
+        return None;
+    }
+    Some(format!("{}{}", place_variable(name)?, &source[end..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VALUES;
+
+    /// The parameters `classify` reads a value for, as they were when `Reach`
+    /// landed. A name added to the shared list swallows the argument after it,
+    /// which can be the target of a delete (`Remove-Item -Depth ~ -Recurse`), so
+    /// a cmdlet's own value parameters belong to its reader (`Get-ChildItem
+    /// -Depth` is in `effect`), and this list changes only with a row for each
+    /// name in `tests/windows.rs`.
+    const PINNED: [&str; 45] = [
+        "path",
+        "literalpath",
+        "destination",
+        "filepath",
+        "argumentlist",
+        "verb",
+        "value",
+        "filter",
+        "include",
+        "exclude",
+        "encoding",
+        "name",
+        "id",
+        "command",
+        "scriptblock",
+        "executionpolicy",
+        "scope",
+        "computername",
+        "credential",
+        "uri",
+        "outfile",
+        "workingdirectory",
+        "itemtype",
+        "stream",
+        "width",
+        // The common parameters and their aliases: a value is never an operand.
+        "erroraction",
+        "ea",
+        "warningaction",
+        "wa",
+        "informationaction",
+        "infa",
+        "errorvariable",
+        "ev",
+        "warningvariable",
+        "wv",
+        "informationvariable",
+        "iv",
+        "outvariable",
+        "ov",
+        "outbuffer",
+        "ob",
+        "pipelinevariable",
+        "pv",
+        "progressaction",
+        "proga",
+    ];
+
+    #[test]
+    fn the_shared_value_parameters_are_the_pinned_list() {
+        assert_eq!(VALUES, PINNED);
+    }
 }

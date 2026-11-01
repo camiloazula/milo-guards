@@ -13,4 +13,4 @@
 
 pub mod glob;
 
-pub use crate::resolve::{device, parts};
+pub use crate::resolve::{device, network, parts, verbatim};

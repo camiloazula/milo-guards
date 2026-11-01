@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{check, macos, posix, rules};
-use milo_guards_shell::{classify, Rule, Shell};
+use common::{check, classify, macos, posix, rules};
+use milo_guards_shell::{Paths, Protected, Rule, Shell};
 
 #[test]
 fn everyday_commands_are_safe() {
@@ -53,7 +53,6 @@ fn everyday_commands_are_safe() {
             "python3 -E script.py",
             "ruby -E utf-8 script.rb",
             "perl -pi.bak script.pl",
-            "cp ~/.ssh/id_ed25519.pub keys/",
             "cp -r ~/.config dist/",
             "ln -s src/lib.rs target/link",
             "find . -name '*.pyc' -delete",
@@ -464,6 +463,267 @@ fn nested_shells_are_read_in_their_own_grammar() {
             ),
         ],
     );
+}
+
+#[test]
+fn a_trap_action_is_a_script_that_runs_later() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "trap 'rm -rf build' EXIT",
+            "trap \"rm -rf build\" EXIT",
+            "trap -- 'rm -f target/tmp.lock' INT TERM",
+            "trap 'echo cleaning up' EXIT",
+            "trap 'kill 0' INT",
+            "trap '' INT",
+            "trap \"\" INT TERM",
+            "trap - EXIT",
+            "trap -- - INT",
+            "trap - 0 1 2 15",
+            "trap -p",
+            "trap -p EXIT",
+            "trap -l",
+            "trap",
+            "trap 0",
+            "trap 'rm -rf build' EXIT; cargo build",
+            "trap 'rm -rf *git' EXIT",
+            "trap \"echo $HOME\" EXIT",
+            "trap 'echo $d' EXIT",
+            "trap 'echo \"$d\"' EXIT",
+            "trap 'echo $(date)' EXIT",
+            "builtin trap 'rm -rf build' EXIT",
+            "cd src && trap 'rm -rf ../build' EXIT",
+        ],
+        &[
+            ("trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("trap 'rm -rf /' EXIT", Rule::Delete),
+            ("trap \"rm -rf ~\" EXIT", Rule::Delete),
+            ("trap -- 'rm -rf ~' EXIT", Rule::Delete),
+            ("trap -- \"rm -rf ~\" EXIT", Rule::Delete),
+            ("trap 'rm -rf ~' 0", Rule::Delete),
+            ("trap 'rm -rf ~' INT", Rule::Delete),
+            ("trap 'rm -rf ~' TERM", Rule::Delete),
+            ("trap 'rm -rf ~' ERR", Rule::Delete),
+            ("trap 'rm -rf ~' DEBUG", Rule::Delete),
+            ("trap 'rm -rf ~' RETURN", Rule::Delete),
+            ("trap 'rm -rf ~' HUP", Rule::Delete),
+            ("trap 'rm -rf ~' EXIT INT TERM HUP 1 2", Rule::Delete),
+            ("trap 'rm -rf $HOME' EXIT", Rule::Delete),
+            ("trap 'cd / && rm -rf usr' EXIT", Rule::Delete),
+            ("trap 'rm -rf build; rm -rf ~' EXIT", Rule::Delete),
+            ("trap 'git reset --hard' EXIT", Rule::GitDiscard),
+            ("trap 'echo x > ~/.bashrc' EXIT", Rule::Overwrite),
+            ("trap 'rm -rf ~' EXIT; echo done", Rule::Delete),
+            ("builtin trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("command trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("bash -c \"trap 'rm -rf ~' EXIT\"", Rule::Delete),
+            ("eval \"trap 'rm -rf ~' EXIT\"", Rule::Delete),
+            ("trap 'trap \"rm -rf ~\" EXIT' EXIT", Rule::Delete),
+            ("trap 'sh -c \"rm -rf ~\"' EXIT", Rule::Delete),
+            ("make | trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("echo hi && trap 'rm -rf ~' EXIT", Rule::Delete),
+            ("f() { trap 'rm -rf ~' EXIT; }; f", Rule::Delete),
+            ("trap 'rm -rf '\"$d\" EXIT", Rule::Delete),
+            // Only known when it runs: a path, a variable, a substitution.
+            ("trap \"rm -rf $d\" EXIT", Rule::Delete),
+            ("trap \"rm -rf $d/x\" EXIT", Rule::Delete),
+            ("trap \"rm -rf ${d:-x}\" EXIT", Rule::Delete),
+            ("trap \"rm -rf $(mktemp -d)\" EXIT", Rule::Delete),
+            ("trap 'rm -rf $d' EXIT", Rule::Delete),
+            ("trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
+            ("tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT", Rule::Delete),
+            // Expanded when the trap is set, read as code when it runs, as
+            // `eval "…"` is: what the expansion holds becomes code.
+            ("trap \"echo $d\" EXIT", Rule::Unknown),
+            ("trap \"echo ${d}\" EXIT", Rule::Unknown),
+            ("trap \"echo $(date)\" EXIT", Rule::Unknown),
+            ("trap \"echo `date`\" EXIT", Rule::Unknown),
+            ("trap 'echo '\"$d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d\" EXIT", Rule::Unknown),
+            ("trap \"rm -rf $d/x\" EXIT", Rule::Unknown),
+            ("trap 'rm -rf \"$d\"' EXIT", Rule::Delete),
+            ("trap \"$x\" EXIT", Rule::Unknown),
+            ("trap $x EXIT", Rule::Unknown),
+            ("trap \"$(cat f)\" EXIT", Rule::Unknown),
+            ("trap \"`cat f`\" EXIT", Rule::Unknown),
+            ("trap \"${x:-rm}\" EXIT", Rule::Unknown),
+            ("trap -- \"$x\" EXIT", Rule::Unknown),
+            ("trap $'rm -rf ~' EXIT", Rule::Unknown),
+            ("trap $\"rm -rf ~\" EXIT", Rule::Unknown),
+            ("trap \"$x $y\" EXIT", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_trap_action_reads_the_line_as_it_ends() {
+    // The action runs after the line's last command, or between its
+    // commands, so a `cd` after the `trap` means its relative paths are
+    // known only when it runs; before the `trap` the path is where it was.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd build && trap 'rm -rf out' EXIT",
+            "trap 'rm -rf out' EXIT; (echo hi)",
+            "trap 'cd src && rm -rf out' EXIT; cargo build",
+            "bash -c 'cd build'; trap 'rm -rf out' EXIT",
+            // A `cd` in a subshell or a child shell after the `trap` does not
+            // move this shell, so the action still runs from where it was.
+            "trap 'rm -rf out' EXIT; (cd ~)",
+            "trap 'rm -f lock' EXIT; (cd sub && make)",
+            "trap 'rm -f lock' EXIT; bash -c 'cd sub && make'",
+            "trap 'rm -f lock' EXIT; echo $(cd sub && pwd)",
+            "trap 'rm -rf build' EXIT; (cd /; false)",
+            "trap 'rm -rf build' EXIT; x=$(cd /; true)",
+            // The ordinary signals are reset in a subshell.
+            "trap 'rm -rf build' INT TERM HUP 15; (cd /; sleep 1)",
+            // `eval` in a subshell or a substitution does not move this shell.
+            "x=$(eval 'cd /'); rm -rf build",
+            "(eval 'cd /'); rm -rf build",
+            "eval 'cd src'; rm -rf build",
+            "bash -c 'cd /'; rm -rf build",
+        ],
+        &[
+            ("trap 'rm -rf out' EXIT; cd ~", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd src", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd src; cd ..", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; pushd ~", Rule::Delete),
+            ("trap 'rm -rf out' EXIT; cd /", Rule::Delete),
+            ("trap 'rm -rf out' DEBUG; cd ~", Rule::Delete),
+            // A subshell copies `ERR`, `DEBUG` and `RETURN` traps (zsh also
+            // `ZERR`; bash with `set -E` and `set -T`), so they run from where
+            // the subshell has moved to too.
+            ("trap 'rm -rf build' ZERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' DEBUG; (cd /; true)", Rule::Delete),
+            (
+                "set -E; trap 'rm -rf build' ERR; (cd /; false)",
+                Rule::Delete,
+            ),
+            (
+                "set -T; trap 'rm -rf build' DEBUG; x=$(cd /; true)",
+                Rule::Delete,
+            ),
+            ("trap 'rm -rf build' RETURN; (cd /; true)", Rule::Delete),
+            ("trap 'rm -rf build' SIGERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' err; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' EXIT ERR; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' NOSUCH; (cd /; false)", Rule::Delete),
+            ("trap 'rm -rf build' \"$sig\"; (cd /; false)", Rule::Delete),
+            // `eval` runs in this shell: its `cd` moves the line, and so
+            // the trap's paths, and the paths after it.
+            ("trap 'rm -rf build' EXIT; eval 'cd /'", Rule::Delete),
+            ("trap 'rm -rf build' ERR; eval 'cd ~'", Rule::Delete),
+            ("eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd ..'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' && rm -rf build", Rule::Delete),
+            // zsh runs the last stage of a pipeline in the current shell; as
+            // for a `cd`, any stage counts.
+            ("true | eval 'cd /'; rm -rf build", Rule::Delete),
+            ("eval 'cd /' | cat; rm -rf build", Rule::Delete),
+            ("trap 'rm -rf build' EXIT; true | eval 'cd /'", Rule::Delete),
+            // A trap set in a subshell runs from where the subshell ends up.
+            ("(trap 'rm -rf out' EXIT; cd ~)", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT; cd ~); cd src", Rule::Delete),
+            ("(trap 'rm -rf out' EXIT); cd src", Rule::Delete),
+            ("eval \"trap 'rm -rf out' EXIT\"; cd ~", Rule::Delete),
+            ("trap 'echo x > out' EXIT; cd ~", Rule::Overwrite),
+            // A `cd` the action itself runs may come before the next command.
+            ("trap 'cd ~' DEBUG; rm -rf out", Rule::Delete),
+            ("trap 'cd /' EXIT; rm -rf out", Rule::Delete),
+            // An absolute path is the same wherever the line has moved.
+            ("trap 'rm -rf /' EXIT; cd src", Rule::Delete),
+            ("trap 'rm -rf ~' EXIT; cd src", Rule::Delete),
+        ],
+    );
+    // The action runs with the options the line ends with.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "trap 'rm -rf *git' EXIT",
+            "trap 'shopt -u dotglob; rm -rf *git' EXIT",
+        ],
+        &[
+            ("trap 'rm -rf *git' EXIT; shopt -s dotglob", Rule::Delete),
+            ("shopt -s dotglob; trap 'rm -rf *git' EXIT", Rule::Delete),
+            (
+                "shopt -s dotglob; trap 'shopt -u dotglob' EXIT; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; trap 'shopt -u dotglob; rm -rf *git' EXIT",
+                Rule::Delete,
+            ),
+            ("trap 'shopt -s dotglob' DEBUG; rm -rf *git", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_trap_says_what_its_action_does() {
+    let paths = posix();
+    assert_eq!(
+        rules("trap 'rm -rf ~' EXIT", Shell::Posix, &paths),
+        [Rule::Delete]
+    );
+    // Expanded when set, read as code when it runs: unknown, and the text
+    // around the expansion is still read, so both findings.
+    let both = rules("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
+    assert!(both.contains(&Rule::Delete) && both.contains(&Rule::Unknown));
+    assert_eq!(
+        rules("trap \"echo $d\" EXIT", Shell::Posix, &paths),
+        [Rule::Unknown]
+    );
+    // Single quotes are not expanded when set.
+    assert_eq!(
+        rules("trap 'rm -rf \"$d\"' EXIT", Shell::Posix, &paths),
+        [Rule::Delete]
+    );
+    assert!(classify("trap 'echo $d' EXIT", Shell::Posix, &paths).is_safe());
+    // A locale-translated action is reported as the whole word.
+    let assessment = classify("trap $\"rm -rf ~\" EXIT", Shell::Posix, &paths);
+    let [finding] = assessment.findings() else {
+        panic!("one finding");
+    };
+    assert_eq!(finding.target.as_deref(), Some("$\"rm -rf ~\""));
+    let assessment = classify("trap 'rm -rf ~' EXIT", Shell::Posix, &paths);
+    let [finding] = assessment.findings() else {
+        panic!("one finding");
+    };
+    assert_eq!(finding.reason, "deletes your home directory");
+    assert_eq!(finding.target.as_deref(), Some("~"));
+    let assessment = classify("trap \"rm -rf $d\" EXIT", Shell::Posix, &paths);
+    let reasons: Vec<&str> = assessment
+        .findings()
+        .iter()
+        .map(|finding| finding.reason.as_str())
+        .collect();
+    assert!(reasons.contains(&"deletes a path only known when it runs"));
+    assert!(reasons.contains(&"runs a script only known when it runs"));
+    // An expansion in a double-quoted action is a placeholder in the text
+    // the action is read from, which a finding never shows: it names the
+    // action as written.
+    for line in [
+        "trap \"rm -rf $d\" EXIT",
+        "trap \"rm -rf $d/x\" EXIT",
+        "trap \"$x\" EXIT",
+        "trap \"echo hi > $f\" EXIT",
+        "trap 'a'\"$x\" EXIT",
+    ] {
+        for finding in classify(line, Shell::Posix, &paths).findings() {
+            let target = finding.target.as_deref().unwrap_or_default();
+            assert!(!target.contains("__v"), "{line}: {finding:?}");
+            assert!(line.contains(target), "{line}: {finding:?}");
+        }
+    }
+    // A trap nested past the depth limit is unreadable, not safe.
+    let mut line = "rm -rf ~".to_string();
+    for _ in 0..12 {
+        line = format!("trap '{}' EXIT", line.replace('\'', "'\\''"));
+    }
+    assert!(!classify(&line, Shell::Posix, &paths).is_safe());
 }
 
 #[test]
@@ -1121,6 +1381,475 @@ fn a_pattern_that_picks_names_in_a_temporary_folder_is_temporary_files() {
         &[
             ("rm -rf /tmp/*", Rule::Delete),
             ("ls /tmp | xargs rm -rf", Rule::Delete),
+        ],
+    );
+}
+
+/// A path the caller protects is its own whatever the line does to it: a
+/// delete, a write or a permission change is a finding, a read is not.
+#[test]
+fn a_protected_path_is_a_finding_to_delete_write_or_chmod() {
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cat ~/.agent/config.yaml",
+            "ls -la ~/.agent",
+            "grep -rn model ~/.agent/rules",
+            "cp ~/.agent/config.yaml backup.yaml",
+            "cd ~/.agent && ls",
+            "rm -rf target",
+            "echo x > notes.md",
+            "sed -n s/a/b/p ~/.agent/rules",
+        ],
+        &[
+            ("rm -rf ~/.agent", Rule::Delete),
+            ("rm ~/.agent/config.yaml", Rule::Delete),
+            ("rm -rf $HOME/.agent", Rule::Delete),
+            ("rm -rf /home/me/.agent/rules", Rule::Delete),
+            ("rm ~/.agent/*.yaml", Rule::Delete),
+            ("cd ~/.agent && rm config.yaml", Rule::Delete),
+            ("mv ~/.agent/config.yaml /tmp/x", Rule::Delete),
+            ("find ~/.agent -delete", Rule::Delete),
+            ("ls ~/.agent/*.yaml | xargs rm", Rule::Delete),
+            ("echo x > ~/.agent/config.yaml", Rule::Overwrite),
+            ("echo x >> ~/.agent/rules", Rule::Overwrite),
+            ("sed -i s/a/b/ ~/.agent/rules", Rule::Overwrite),
+            ("cp notes.md ~/.agent/config.yaml", Rule::Overwrite),
+            ("mv notes.md ~/.agent/rules", Rule::Overwrite),
+            ("tee ~/.agent/rules < notes.md", Rule::Overwrite),
+            ("chmod 777 ~/.agent/config.yaml", Rule::Permissions),
+        ],
+    );
+}
+
+/// A protected path inside the workspace is protected, not inside it; the
+/// rest of the workspace stays the agent's own.
+#[test]
+fn a_protected_path_in_the_workspace_wins_over_the_workspace() {
+    let paths = posix().with_protected([
+        Protected::folder("/home/me/work/repo/.agent", "the agent's settings"),
+        Protected::file("/home/me/work/repo/settings.yaml", "the agent's settings"),
+    ]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "rm src/main.rs",
+            "rm -rf target",
+            "rm -f *.log",
+            "rm src/set*",
+            "echo x > src/settings.yaml",
+            "sed -i s/a/b/ src/lib.rs",
+            "cat .agent/rules",
+            "cd src && rm -f ../target/x.o",
+        ],
+        &[
+            ("rm .agent/rules", Rule::Delete),
+            ("rm -rf .agent", Rule::Delete),
+            ("rm -rf ./src/../.agent", Rule::Delete),
+            ("rm settings.yaml", Rule::Delete),
+            ("rm set*", Rule::Delete),
+            ("rm *.yaml", Rule::Delete),
+            ("cd .agent && rm rules", Rule::Delete),
+            ("cd src && rm ../.agent/rules", Rule::Delete),
+            ("echo x > .agent/rules", Rule::Overwrite),
+            ("echo x > settings.yaml", Rule::Overwrite),
+            ("sed -i s/a/b/ .agent/rules", Rule::Overwrite),
+            ("chmod 600 .agent/rules", Rule::Permissions),
+            // The workspace itself is still a finding.
+            ("rm -rf *", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_protected_reason_uses_the_callers_words() {
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+    for (line, rule, reason) in [
+        (
+            "rm ~/.agent/config.yaml",
+            Rule::Delete,
+            "deletes the agent's settings",
+        ),
+        (
+            "rm -rf ~/.agent",
+            Rule::Delete,
+            "deletes the agent's settings",
+        ),
+        (
+            "mv ~/.agent/rules /tmp/x",
+            Rule::Delete,
+            "moves the agent's settings",
+        ),
+        (
+            "echo x > ~/.agent/config.yaml",
+            Rule::Overwrite,
+            "writes to the agent's settings",
+        ),
+        (
+            "sed -i s/a/b/ ~/.agent/rules",
+            Rule::Overwrite,
+            "edits the agent's settings",
+        ),
+        (
+            "chmod 777 ~/.agent/rules",
+            Rule::Permissions,
+            "changes permissions of the agent's settings",
+        ),
+    ] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        let found = assessment
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == rule && finding.reason == reason);
+        assert!(found, "{line}: got {:?}", assessment.findings());
+    }
+    // A sibling of the protected folder is not it.
+    let sibling = classify("rm ~/.agent-old/x", Shell::Posix, &paths);
+    assert_eq!(
+        sibling.findings()[0].reason,
+        "deletes a path outside the workspace"
+    );
+    // Without a protected path the same line is a plain write to the home
+    // directory, with the guard's own words.
+    let bare = classify("rm ~/.agent/config.yaml", Shell::Posix, &posix());
+    assert_eq!(
+        bare.findings()[0].reason,
+        "deletes a path outside the workspace"
+    );
+}
+
+/// A folder that holds a protected path is protected when it would be
+/// harmless, so the whole folder cannot go; a write into it, and work beside
+/// the protected path, stay the agent's own.
+#[test]
+fn a_folder_holding_a_protected_path_cannot_be_deleted_or_moved() {
+    let paths = posix().with_protected([Protected::file(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "touch conf/new.txt",
+            "rm conf/other.txt",
+            "rm -rf src",
+            "rm conf/app/y.yaml",
+            "cp a.txt conf/",
+            "cp a.txt conf/app",
+            "mkdir -p conf/app",
+            "echo x > conf/new.txt",
+            "cat conf/app/x.yaml",
+            "ls conf",
+            "cd conf && ls",
+            "cd conf && touch new.txt",
+            "rm -f *.log conf/*.log",
+            "rm -rf conf/o*",
+            "rm -rf **/y.yaml",
+            "rm -rf **/*.rs",
+            "rm **/*.pyc",
+        ],
+        &[
+            ("rm -rf conf", Rule::Delete),
+            ("rm -rf conf/", Rule::Delete),
+            ("rm -rf ./conf/app", Rule::Delete),
+            ("cd conf && rm -rf app", Rule::Delete),
+            ("cd conf/app && rm x.yaml", Rule::Delete),
+            ("mv conf /tmp/x", Rule::Delete),
+            ("mv conf/app /tmp/x", Rule::Delete),
+            ("rm -rf c*", Rule::Delete),
+            ("rm -rf conf/a*", Rule::Delete),
+            ("rm -rf **/x.yaml", Rule::Delete),
+            ("rm conf/**/x.yaml", Rule::Delete),
+            ("rm -rf conf/**", Rule::Delete),
+            ("rm -rf */*/x.yaml", Rule::Delete),
+            ("find conf -delete", Rule::Delete),
+            ("ls conf | xargs rm -rf", Rule::Delete),
+            ("echo x > conf/app/x.yaml", Rule::Overwrite),
+            ("cp a.txt conf/app/x.yaml", Rule::Overwrite),
+            ("cp a.txt conf/app/x*", Rule::Overwrite),
+            ("chmod -R 777 conf", Rule::Permissions),
+        ],
+    );
+    // The reason is the caller's words.
+    for line in ["rm -rf conf", "rm -rf c*", "mv conf /tmp/x"] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert!(
+            assessment
+                .findings()
+                .iter()
+                .any(|finding| finding.reason.ends_with("the agent's settings")),
+            "{line}: {:?}",
+            assessment.findings()
+        );
+    }
+    // A verdict that is already risky keeps its own words.
+    for (line, reason) in [
+        ("rm -rf .", "deletes the whole workspace"),
+        ("rm -rf *", "deletes the whole workspace"),
+        ("rm -rf ~", "deletes your home directory"),
+        (
+            "rm -rf /home/me/work",
+            "deletes a folder holding the workspace",
+        ),
+    ] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert_eq!(assessment.findings()[0].reason, reason, "{line}");
+    }
+}
+
+/// Names compare without case on every host, a macOS file system included.
+#[test]
+fn a_protected_path_is_the_same_whatever_its_case() {
+    let paths = macos().with_protected([Protected::folder(
+        "/Users/me/dev/repo/.agent",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &["rm -rf .agents", "cat .AGENT/rules", "rm src/main.rs"],
+        &[
+            ("rm -rf .AGENT", Rule::Delete),
+            ("rm .Agent/rules", Rule::Delete),
+            ("rm -rf .agent", Rule::Delete),
+            ("echo x > .AGENT/rules", Rule::Overwrite),
+            ("rm -rf .AGE*", Rule::Delete),
+        ],
+    );
+}
+
+/// A protected path in a temporary folder is not a temporary file, and a
+/// pattern that picks it is not either.
+#[test]
+fn a_protected_path_in_a_temporary_folder_is_protected() {
+    let paths = posix().with_protected([Protected::file("/tmp/state/x", "the agent's settings")]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "rm /tmp/other",
+            "rm /tmp/state/y",
+            "rm /tmp/state/y*",
+            "rm /tmp/*.log",
+        ],
+        &[
+            ("rm /tmp/state/x", Rule::Delete),
+            ("rm /tmp/state/*", Rule::Delete),
+            ("rm /tmp/state/x*", Rule::Delete),
+            ("rm -rf /tmp/state", Rule::Delete),
+            ("rm /tmp/*/x", Rule::Delete),
+            ("echo x > /tmp/state/x", Rule::Overwrite),
+        ],
+    );
+}
+
+/// A pattern that picks the protected path in the home directory says so,
+/// not that it is the home directory.
+#[test]
+fn a_pattern_picking_a_protected_path_in_the_home_directory_says_so() {
+    let paths =
+        posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
+    for line in ["rm -rf ~/.agent*", "rm -rf ~/.a*", "rm -rf ~/.agent/"] {
+        let assessment = classify(line, Shell::Posix, &paths);
+        assert_eq!(
+            assessment.findings()[0].reason,
+            "deletes the agent's settings",
+            "{line}"
+        );
+    }
+    let assessment = classify("rm -rf ~", Shell::Posix, &paths);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "deletes your home directory"
+    );
+}
+
+/// A copy, move or link into the folder of a protected file puts a file at
+/// its name there, and replaces it. A copy elsewhere, or under another name,
+/// does not.
+#[test]
+fn a_copy_into_a_protected_files_folder_by_its_name_replaces_it() {
+    let paths = posix().with_protected([Protected::file(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cp a.txt conf/app",
+            "cp a.txt conf/app/",
+            "cp a.txt conf",
+            "cp a.txt conf/",
+            "cp new/y.yaml conf/app",
+            "cp -t conf/app y.yaml",
+            "cp *.txt conf/app/",
+            "cp *.yaml conf/",
+            "install -m 644 a.txt conf/app/",
+            "mv a.txt conf/app/",
+            "ln -s other/y.yaml conf/app/",
+            "cp -r src/. dist/",
+            "cp -r src dist",
+            "cp -a src dist/",
+            "rsync -a src/ dist/",
+            "cp $f conf/",
+            "cp -r a.txt src/",
+        ],
+        &[
+            ("cp x.yaml conf/app/", Rule::Overwrite),
+            ("cp x.yaml conf/app", Rule::Overwrite),
+            ("cp new/x.yaml conf/app", Rule::Overwrite),
+            ("cp ./new/x.yaml conf/app/", Rule::Overwrite),
+            ("cp -t conf/app x.yaml", Rule::Overwrite),
+            ("cp --target-directory=conf/app x.yaml", Rule::Overwrite),
+            ("install x.yaml conf/app/", Rule::Overwrite),
+            ("install -m 600 x.yaml conf/app", Rule::Overwrite),
+            ("mv x.yaml conf/app/", Rule::Overwrite),
+            ("mv new/x.yaml conf/app", Rule::Overwrite),
+            ("cp *.yaml conf/app/", Rule::Overwrite),
+            ("cp x.* conf/app/", Rule::Overwrite),
+            ("cp * conf/app/", Rule::Overwrite),
+            ("cp $f conf/app/", Rule::Overwrite),
+            ("ln -sf other/x.yaml conf/app/", Rule::Overwrite),
+            ("ln -s other/x.yaml conf/app", Rule::Overwrite),
+            ("cd conf && cp ../x.yaml app/", Rule::Overwrite),
+            ("cp -f a.txt x.yaml conf/app", Rule::Overwrite),
+        ],
+    );
+    let assessment = classify("cp x.yaml conf/app/", Shell::Posix, &paths);
+    assert_eq!(assessment.findings().len(), 1);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "writes to the agent's settings"
+    );
+}
+
+/// A recursive copy or mirror into a folder holding a protected path can
+/// replace anything below it.
+#[test]
+fn a_recursive_copy_into_a_folder_holding_a_protected_path_is_a_finding() {
+    let paths = posix().with_protected([Protected::file(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            "cp -r other/. dist",
+            "cp a.txt conf/app/",
+            "cp -r a.txt conf/other",
+            "rsync -a src/ conf/other/",
+            "rsync src/ conf/",
+            "cp -r conf/other conf/new",
+        ],
+        &[
+            ("cp -r other/. conf", Rule::Overwrite),
+            ("cp -R app conf/", Rule::Overwrite),
+            ("cp -a app conf", Rule::Overwrite),
+            ("cp -R other/ conf/", Rule::Overwrite),
+            ("cp --recursive other conf", Rule::Overwrite),
+            ("cp -r other conf/app", Rule::Overwrite),
+            ("rsync -a src/ conf/", Rule::Overwrite),
+            ("rsync -r src conf", Rule::Overwrite),
+            ("rsync -avz src/ conf/app/", Rule::Overwrite),
+        ],
+    );
+    // Mirroring is the delete rule's own: it keeps its words.
+    let assessment = classify("rsync -a --delete src/ conf/", Shell::Posix, &paths);
+    assert!(assessment
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Delete));
+    // A risky destination keeps its own words.
+    let assessment = classify("cp -r src ~", Shell::Posix, &paths);
+    assert_eq!(
+        assessment.findings()[0].reason,
+        "writes to your home directory"
+    );
+}
+
+/// Whether a protected path is a file or a folder says how far a pattern is
+/// read: only a folder has something below its name.
+#[test]
+fn only_a_protected_folder_lets_a_pattern_go_below_its_name() {
+    let file = posix().with_protected([Protected::file(
+        "/home/me/work/repo/conf/app/x.yaml",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &file,
+        &[
+            "rm -rf **/y.yaml",
+            "rm -rf **/*.rs",
+            "rm **/*.pyc",
+            "rm -rf src/**/z",
+        ],
+        &[
+            ("rm -rf **/x.yaml", Rule::Delete),
+            ("rm -rf conf", Rule::Delete),
+            ("rm -rf conf/app", Rule::Delete),
+            ("rm conf/app/x.yaml", Rule::Delete),
+            ("rm -rf conf/**", Rule::Delete),
+        ],
+    );
+    let folder = posix().with_protected([Protected::folder(
+        "/home/me/work/repo/cfg",
+        "the agent's settings",
+    )]);
+    check(
+        Shell::Posix,
+        &folder,
+        &["rm -rf src/**/z", "rm -rf src"],
+        &[
+            ("rm -rf **/rules", Rule::Delete),
+            ("rm **/*.yaml", Rule::Delete),
+            ("rm -rf **/*.rs", Rule::Delete),
+            ("rm -rf cfg", Rule::Delete),
+            ("rm cfg/rules", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn a_workspace_that_is_the_home_directory_keeps_its_keys_and_startup_files() {
+    let home = Paths::new("/home/me", "/home/me", ["/home/me"]);
+    check(
+        Shell::Posix,
+        &home,
+        &["rm -rf project", "rm -rf src/main.rs", "touch notes.txt"],
+        &[
+            ("rm -rf .ssh", Rule::Delete),
+            ("rm -rf .SSH", Rule::Delete),
+            ("rm -rf ~/.zshrc", Rule::Delete),
+            ("echo x >> .bashrc", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn the_data_volume_is_the_root_on_a_mac() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "rm -rf /System/Volumes/Data/Users/me/dev/repo/x",
+            "rm -rf /System/Volumes/Data/tmp/x",
+        ],
+        &[
+            ("rm -rf /System/Volumes/Data/Users/me/.ssh", Rule::Delete),
+            (
+                "rm -rf ../../../../System/Volumes/Data/Users/me",
+                Rule::Delete,
+            ),
+            ("rm -rf /Volumes/Macintosh\\ HD/Users/me/.ssh", Rule::Delete),
         ],
     );
 }

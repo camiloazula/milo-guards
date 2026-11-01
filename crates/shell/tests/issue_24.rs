@@ -80,3 +80,28 @@ fn a_dot_dot_after_a_descriptor_alias_is_not_a_device() {
         ],
     );
 }
+
+#[test]
+fn a_wildcard_part_before_a_dot_dot_can_match_an_alias_folder() {
+    check(
+        Shell::Posix,
+        &macos(),
+        &[
+            "echo x > /dev/stdout",
+            "echo x > /dev/fd/../null",
+            "cat /dev/stdin",
+        ],
+        &[
+            ("rm -rf /dev/std*/../null", Rule::Delete),
+            ("echo x > /dev/stdou?/../null", Rule::Overwrite),
+            ("echo x > /dev/[s]tdout/../null", Rule::Overwrite),
+            ("rm -rf /dev/*/../null", Rule::Delete),
+            ("rm -rf /dev/*/../stdout", Rule::Delete),
+            ("echo x > /dev/fd/../std*/../null", Rule::Overwrite),
+            ("cd /dev && rm -rf std*/../null", Rule::Delete),
+            ("cd /dev/std* && rm -rf ../null", Rule::Delete),
+            ("cd /dev && echo x > */../null", Rule::Overwrite),
+            ("rm -rf '/dev/std*/../null'", Rule::Delete),
+        ],
+    );
+}
