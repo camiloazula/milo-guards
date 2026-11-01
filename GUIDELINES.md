@@ -21,6 +21,9 @@ The workspace has three kinds of crate:
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
   and redirects. [Its design](docs/design/shell.md).
+- `crates/url` (`milo-guards-url`) - the URL guard, `judge`. It reads a URL with
+  a WHATWG parser and judges the host the parser reads, never the spelling,
+  with its scheme and user-info. [Its design](docs/design/url.md).
 - `crates/guards` (`milo-local-guards`) - the one crate a caller depends on.
   It re-exports each guard behind a feature.
 
@@ -86,7 +89,8 @@ crates depend on each other and how that is enforced is in
 ## Where to look
 
 - Design pages: [docs/design/](docs/design/). [Architecture](docs/design/architecture.md),
-  [core](docs/design/core.md) and [shell](docs/design/shell.md).
+  [core](docs/design/core.md), [shell](docs/design/shell.md) and
+  [url](docs/design/url.md).
 - What belongs here: only what the code and `cargo`/`clippy` cannot tell you.
 - A convention a coding agent gets wrong: add the fix here, as one line, with
   its detail on a design page.

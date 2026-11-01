@@ -22,12 +22,18 @@ verdict back in microseconds.
   Beside that verdict, `effect` says whether a line only reads, changes
   something or cannot be told: `git status` only reads, `mkdir build` is safe
   and changes the disk, `./script.sh` cannot be told.
+- **url** judges a URL an agent is about to fetch, by the host a URL parser reads
+  and never by how it is spelled. `http://2130706433/` is `127.0.0.1`, so it is
+  risky ("fetches your own machine"), like `http://192.168.1.1/` and
+  `http://169.254.169.254/` (a cloud metadata service); a URL with a password
+  in it (shown without the password), a `file:` URL and a scheme that is not the
+  web are risky too. `https://docs.rs/url` is safe.
 
 More guards will sit beside it.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell` feature is on by default.
+Depend on `milo-local-guards` by git. The `shell` and `url` features are on by default.
 
 ```toml
 [dependencies]
