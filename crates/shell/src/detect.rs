@@ -40,6 +40,9 @@ const STARTS_NOTHING: [&str; 21] = [
     "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
 ];
 
+/// The extensions Windows runs a program by when its name has none.
+const WINDOWS_EXTENSIONS: [&str; 4] = [".bat", ".cmd", ".com", ".exe"];
+
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
 const DOWNLOADERS: [&str; 10] = [
@@ -186,6 +189,7 @@ impl Checker<'_> {
         self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
+        self.program_then_run(unit);
         self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
         self.send(at, unit, &key);
@@ -491,6 +495,65 @@ impl Checker<'_> {
         self.runs_written(unit, script, unit.dir.as_ref());
     }
 
+    /// A program started by a path (`./x.sh`, `x/run`, `/tmp/x`) is that
+    /// file run as the program, as `sh x.sh` runs it, so it is checked
+    /// against the files the line writes the same way. A bare name is looked
+    /// up in `PATH`, not in the folder, so it is not a file the line wrote;
+    /// cmd looks in the working folder first, so a bare name there is the
+    /// file when the line writes one of that name (not judged when it cannot
+    /// be placed: `dir` and `echo` are programs of cmd, not files). For a
+    /// Windows shell a name with no extension may be the file with one of
+    /// the executable extensions (`a` runs `a.bat`).
+    fn program_then_run(&mut self, unit: &Unit) {
+        let Some(program) = unit.program.known() else {
+            return;
+        };
+        let separators: &[char] = if unit.shell == Shell::Posix {
+            &['/']
+        } else {
+            &['/', '\\']
+        };
+        let by_path = program.contains(separators);
+        if !by_path && unit.shell != Shell::Cmd {
+            return;
+        }
+        if by_path {
+            let before = self.found.len();
+            self.runs_written(unit, &unit.program, unit.dir.as_ref());
+            if self.found.len() != before {
+                return;
+            }
+        } else if self.names_written(unit, program) {
+            self.add_run_written(&unit.program);
+            return;
+        }
+        let last = program.rsplit(separators).next().unwrap_or(program);
+        if unit.shell == Shell::Posix || last.contains('.') {
+            return;
+        }
+        if WINDOWS_EXTENSIONS
+            .iter()
+            .any(|extension| self.names_written(unit, &format!("{program}{extension}")))
+        {
+            self.add_run_written(&unit.program);
+        }
+    }
+
+    /// Whether the line writes the file `name` names from where `unit` runs.
+    fn names_written(&self, unit: &Unit, name: &str) -> bool {
+        self.resolver
+            .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
+            .is_some_and(|wanted| self.written.contains(&wanted))
+    }
+
+    fn add_run_written(&mut self, script: &Arg) {
+        self.add(
+            Rule::Unknown,
+            "runs a script the same line writes",
+            Some(script),
+        );
+    }
+
     /// A program that starts a bash runs the file `BASH_ENV` names before
     /// that bash's own script, when the same line writes it: a shell, and
     /// any program that may start one (`make` runs its recipes with the
@@ -542,11 +605,7 @@ impl Checker<'_> {
             return;
         };
         if self.written.contains(&wanted) {
-            self.add(
-                Rule::Unknown,
-                "runs a script the same line writes",
-                Some(script),
-            );
+            self.add_run_written(script);
         }
     }
 }
