@@ -274,9 +274,17 @@ fn powershell_in(args: &[Arg], pwsh: bool, folder: &mut Option<Arg>) -> Launch {
                 Some(Arg::Known(_)) | None => Launch::Itself,
                 Some(script) => Launch::Script(Shell::PowerShell, script.clone()),
             };
-        } else if pwsh
-            && (name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name)))
+        } else if name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name))
         {
+            if !pwsh {
+                // Windows PowerShell does not know the parameter: it is the
+                // first one it does not know, so it starts the command text,
+                // and every argument after it is part of that text, whatever
+                // it looks like (`-wd -File x; ...` runs the `;` statement).
+                // Reading the rest as the script, from the argument after
+                // `-wd`, keeps `-wd C: -c ...` as the statements `C: -c ...`.
+                return Launch::Script(Shell::PowerShell, join(&args[at + 1..]));
+            }
             *folder = args.get(at + 1).cloned();
             at += 2;
         } else if matches!(

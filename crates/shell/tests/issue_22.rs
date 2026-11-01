@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{check, windows};
+use common::{check, posix, windows};
 use milo_guards_shell::{Paths, Rule, Shell};
 
 /// A machine whose working directory is on `C:` and whose workspaces are on
@@ -531,8 +531,9 @@ fn a_started_powershell_runs_in_the_folder_its_working_directory_names() {
         r#"cd C:\Windows & pwsh -NoProfile -wd C: -c "Remove-Item System32 -Recurse""#,
         r#"pwsh -wd %X% -c "Remove-Item System32 -Recurse""#,
     ]);
-    // Windows PowerShell has no `-wd`: `C:` starts the command text, the
-    // line stays in `D:\ws\repo`, and nothing is deleted outside it.
+    // Windows PowerShell has no `-wd`: `-wd` itself starts the command text
+    // and `C: -c ...` follows it as statements, the line stays in
+    // `D:\ws\repo`, and nothing is deleted outside it.
     check(
         Shell::Cmd,
         &d_repo(),
@@ -577,4 +578,35 @@ fn windows_powershell_has_no_working_directory_parameter() {
     ];
     check(Shell::PowerShell, &windows(), &safe, &[]);
     check(Shell::Cmd, &windows(), &safe, &[]);
+}
+
+/// Windows PowerShell starts the command text at `-wd` (the first parameter it
+/// does not know), and every argument after it is part of that text, whatever
+/// it looks like: a `-File`, `-WindowStyle` or `-Help` after it is text, so a
+/// `;` inside a quoted value after it separates statements that run.
+#[test]
+fn windows_powershell_reads_everything_after_working_directory_as_command_text() {
+    let risky = deletes(&[
+        r#"powershell -wd -File "x.ps1; Remove-Item -Recurse C:\Windows""#,
+        r"powershell -wd -File x.ps1 ; Remove-Item -Recurse C:\Windows",
+        r#"powershell -wd /File "x.ps1; Remove-Item -Recurse C:\Windows""#,
+        r#"powershell -wd -WindowStyle "x; Remove-Item -Recurse C:\Windows;" -c Get-Date"#,
+        r#"powershell -WorkingDirectory -WindowStyle "x; Remove-Item -Recurse C:\Windows;" -c Get-Date"#,
+        r#"powershell -wd -ExecutionPolicy "Bypass; Remove-Item -Recurse C:\Windows;" -c Get-Date"#,
+        r#"powershell -wd -InputFormat "Text; Remove-Item -Recurse C:\Windows;" -c Get-Date"#,
+        r#"powershell -wd -Help "x; Remove-Item -Recurse C:\Windows""#,
+        r#"powershell -wd -? "x; Remove-Item -Recurse C:\Windows""#,
+    ]);
+    check(Shell::Cmd, &windows(), &[], &risky);
+    check(Shell::PowerShell, &windows(), &[], &risky);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &deletes(&[
+            r#"powershell -wd -File "x.ps1; Remove-Item -Recurse /etc""#,
+            r#"powershell -wd -WindowStyle "x; Remove-Item -Recurse /etc;" -c Get-Date"#,
+            r#"powershell -wd -Help "x; Remove-Item -Recurse /etc""#,
+        ]),
+    );
 }

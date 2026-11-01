@@ -392,8 +392,9 @@ FOLDER` (also `/dFOLDER`), `pwsh` with `-WorkingDirectory` or `-wd`, and
 `Start-Process -WorkingDirectory`. What it starts, and the scripts that run, are
 read from that folder, and the line is put back where it was after. Windows
 PowerShell (`powershell`) has no `-WorkingDirectory`: it reads the first
-parameter it does not know as the start of the command text, so what follows
-runs in the line's own folder. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
+parameter it does not know (`-wd` itself) as the start of the command text, and
+every argument after it, whatever it looks like (`-File`, `-WindowStyle`),
+is part of that text, so what follows runs in the line's own folder. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
 is only known when it runs is somewhere unknown, so after `cd C:\Windows` from
 `D:` (which sets the working directory of `C:` and leaves the line on `D:`),
 `start /d C: cmd /c rd /s /q System32` deletes under `C:\Windows`, and is
