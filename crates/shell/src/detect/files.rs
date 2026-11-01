@@ -167,10 +167,11 @@ impl Checker<'_> {
                 // known (`Copy-Item @p src\a`, where `@p` may be the
                 // `-Destination` and `src\a` the `-Path`).
                 if destination_unnamed && splatted(args) {
-                    for splat in
-                        positional.iter().copied().chain(destination).filter(
-                            |arg| matches!(arg, Arg::Unknown(text) if text.starts_with('@')),
-                        )
+                    for splat in positional
+                        .iter()
+                        .copied()
+                        .chain(destination)
+                        .filter(|arg| is_splat(arg))
                     {
                         self.write(shell, unit.scope(), splat, "writes to");
                     }
@@ -275,8 +276,21 @@ impl Checker<'_> {
                     self.write(shell, unit.scope(), target, "writes to");
                 }
             }
-            "set-content" | "add-content" | "out-file" | "tee-object" | "new-item"
-            | "clear-content" => {
+            // Only `-Path` is positional, so with no `-Path` named every
+            // positional is judged (an extra one only makes the command
+            // fail), and a bare `-n` (`-Name`), a `--` or a `-Type` cannot
+            // hide the path behind another argument.
+            "new-item" => {
+                let params = Params::read(args);
+                let mut targets = params.values(&["path", "literalpath", "filepath"]);
+                if targets.is_empty() {
+                    targets.extend(without_dashes(&params));
+                }
+                for target in targets {
+                    self.write(shell, unit.scope(), target, "writes to");
+                }
+            }
+            "set-content" | "add-content" | "out-file" | "tee-object" | "clear-content" => {
                 let params = Params::read(args);
                 let mut targets = params.values(&["path", "literalpath", "filepath"]);
                 if targets.is_empty() {
@@ -298,14 +312,24 @@ impl Checker<'_> {
             | "rename-itemproperty" => {
                 let params = Params::read(args);
                 let mut targets = params.values(&["path", "literalpath"]);
-                if targets.is_empty() {
-                    targets.extend(params.positional.first().copied());
-                }
-                // A splat may bind `-Path` to any argument's place, so the
-                // first positional is not known to be the path.
-                if splatted(args) {
-                    targets.extend(params.positional.iter().copied());
-                }
+                // The first positional and every known one are judged; every
+                // positional when the guard cannot tell which is the path: a
+                // bare named parameter that may take a value (`-n`, read as
+                // a switch, leaves its value among the positionals), a `--`
+                // or a splat (`@p` may bind `-Path`).
+                let doubtful = params.unclear()
+                    || params
+                        .positional
+                        .iter()
+                        .any(|arg| arg.known() == Some("--"))
+                    || splatted(args);
+                targets.extend(
+                    without_dashes(&params)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
+                        .map(|(_, arg)| arg),
+                );
                 for target in targets {
                     self.write(shell, unit.scope(), target, "changes");
                 }
@@ -348,11 +372,29 @@ impl Checker<'_> {
     }
 }
 
-/// Whether an argument is a splat (`@p`): a hashtable of parameters only
-/// known when it runs, which may bind any parameter, a path among them.
+/// Whether an argument is a splat (`@p`, `@args`): a hashtable of parameters
+/// only known when it runs, which may bind any parameter, a path among them.
+/// `@(...)`, `@{...}`, `@'...'` and `@"..."` are arrays, hashtables and
+/// strings, not splats.
+fn is_splat(arg: &Arg) -> bool {
+    matches!(arg, Arg::Unknown(text)
+        if text.strip_prefix('@')
+            .is_some_and(|name| name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')))
+}
+
+/// Whether any argument is a splat.
 fn splatted(args: &[Arg]) -> bool {
-    args.iter()
-        .any(|arg| matches!(arg, Arg::Unknown(text) if text.starts_with('@')))
+    args.iter().any(is_splat)
+}
+
+/// The positionals, without a `--` (the end of the parameters, not a path).
+fn without_dashes<'a>(params: &Params<'a>) -> Vec<&'a Arg> {
+    params
+        .positional
+        .iter()
+        .copied()
+        .filter(|arg| arg.known() != Some("--"))
+        .collect()
 }
 
 /// Whether a PowerShell cmdlet given no path works on its pipeline input.

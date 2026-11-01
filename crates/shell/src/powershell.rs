@@ -665,7 +665,7 @@ const SWITCHES: [&str; 18] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 28] = [
+const VALUES: [&str; 30] = [
     "path",
     "literalpath",
     "destination",
@@ -690,6 +690,8 @@ const VALUES: [&str; 28] = [
     "outfile",
     "workingdirectory",
     "itemtype",
+    "type",
+    "propertytype",
     "stream",
     "width",
     "attributes",
@@ -766,6 +768,17 @@ impl<'a> Params<'a> {
             params.named.push((name, value));
         }
         params
+    }
+
+    /// Whether a parameter was given with no value that may be a value
+    /// parameter: a bare `-n` (`-Name`, read as a switch as it also starts
+    /// `-NoNewline`) leaves its value among the positionals.
+    pub(crate) fn unclear(&self) -> bool {
+        let names = |fulls: &[&str], name: &str| fulls.iter().any(|full| full.starts_with(name));
+        self.named.iter().any(|(name, value)| {
+            let switch = names(&SWITCHES, name) && !names(&VALUES, name);
+            value.is_none() && !name.is_empty() && !switch
+        })
     }
 
     /// The values of the parameters that abbreviate one of `fulls`.

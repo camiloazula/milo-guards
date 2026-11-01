@@ -940,3 +940,107 @@ fn the_switch_aliases_of_a_listing_do_not_take_the_folder() {
         ],
     );
 }
+
+#[test]
+fn new_item_judges_every_positional_and_reads_its_type() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "New-Item src\\a.txt -ItemType File",
+            "New-Item -Type File -Force src\\a.txt",
+            "New-Item -Path src\\a.txt -Value $x",
+            "ni -Type Directory src\\d -Force",
+            "New-Item -n x -Force src",
+        ],
+        &[
+            (
+                "New-Item -Type File -Force C:\\Windows\\System32\\drivers\\etc\\hosts",
+                Rule::Overwrite,
+            ),
+            (
+                "ni -Type File -Force ~\\.ssh\\authorized_keys",
+                Rule::Overwrite,
+            ),
+            (
+                "New-Item -Force -Type Directory HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            ("New-Item -n x -Force HKCU:\\Software", Rule::SystemSettings),
+            (
+                "New-Item -Force -- HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn item_property_cmdlets_judge_the_path_when_a_parameter_hides_it() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Set-ItemProperty -Path src\\a.txt -Name IsReadOnly -Value $false",
+            "Set-ItemProperty src\\a.txt IsReadOnly $true",
+            "Set-ItemProperty src\\a.txt -Name IsReadOnly -Value $true -Force",
+            "Clear-ItemProperty src\\a.txt -Name x",
+        ],
+        &[
+            (
+                "Clear-ItemProperty -n a HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            ("clp -n a HKCU:\\Software\\x", Rule::SystemSettings),
+            (
+                "Clear-ItemProperty -- HKCU:\\Software\\x a",
+                Rule::SystemSettings,
+            ),
+            (
+                "Clear-ItemProperty -Name a -- HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            (
+                "Rename-ItemProperty -- HKCU:\\Software\\x a b",
+                Rule::SystemSettings,
+            ),
+            (
+                "Set-ItemProperty -n a HKCU:\\Software\\x 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "Remove-ItemProperty -n a HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            (
+                "Set-ItemProperty -- HKCU:\\Software\\x a 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "New-ItemProperty -Name a -PropertyType DWord -Value 1 HKCU:\\Software\\x",
+                Rule::SystemSettings,
+            ),
+            (
+                "New-ItemProperty -PropertyType DWord HKCU:\\Software\\x -Name a -Value 1",
+                Rule::SystemSettings,
+            ),
+            (
+                "Set-ItemProperty -Type DWord HKCU:\\Software\\x -Name a -Value 1",
+                Rule::SystemSettings,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_array_or_hashtable_is_not_a_splat() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Copy-Item @('src\\a','src\\b') dist",
+            "Copy-Item @(Get-ChildItem src\\*.rs) dist",
+        ],
+        &[("Copy-Item @p dist", Rule::Overwrite)],
+    );
+}

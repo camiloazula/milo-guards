@@ -316,7 +316,15 @@ a path.
   `Clear-ItemProperty y -PSPath HKCU:\Software\x` is the registry. `Move-Item` judges every
   source: each `-Path`/`-LiteralPath` value and every positional but the
   destination, which is `-Destination` or else the last positional
-  (`Move-Item -Path src\a,C:\Windows\x -Destination src\d`). `Copy-Item` and
+  (`Move-Item -Path src\a,C:\Windows\x -Destination src\d`). `New-Item` judges
+  every positional when no `-Path` is named (only `-Path` is positional, so an
+  extra one only makes the command fail), and `-Type` and `-PropertyType` take
+  a value. The `-ItemProperty` cmdlets judge their first positional and every
+  known one, and every positional when a bare parameter that may take a value
+  (`-n`), a `--` or a splat leaves the path unclear
+  (`Clear-ItemProperty -n a HKCU:\Software\x`). A `--` is never a path. A
+  splat is `@` and a variable name (`@p`, `@args`); `@(...)` and `@{...}` are
+  not one. `Copy-Item` and
   `Move-Item` judge a splat as a possible destination when no `-Destination` is
   named (`Copy-Item @p`, `Copy-Item @p src\a`). A `Get-ChildItem` listing reads
   `-s` (`-Recurse`), `-ar` (`-ReadOnly`) and `-Name` as switches, so they do
