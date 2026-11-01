@@ -1671,12 +1671,14 @@ fn agent() -> Paths {
     posix().with_protected([Protected::folder("/home/me/work/repo/.agent", AGENT)])
 }
 
+/// A protected path inside the workspace is the project's own for `Reach`: it
+/// protects writes, and reading it is not reading what is not the project's.
 #[test]
-fn a_protected_path_is_beyond() {
+fn a_protected_path_inside_the_workspace_is_the_workspace() {
     check_effect(
         Shell::Posix,
         &agent(),
-        BEYOND,
+        STAYS,
         &[
             "cat .agent/config.yaml",
             "cat ./.agent/config.yaml",
@@ -1703,7 +1705,6 @@ fn a_protected_path_is_beyond() {
             "cat .a*/config.yaml",
             "cat .agen?/config.yaml",
             "cat .[a]gent/config.yaml",
-            "cat .*/config.yaml",
             "cat .agent/*",
             "cat .agent/*.yaml",
             "ls .agent/*",
@@ -1725,7 +1726,8 @@ fn a_protected_path_is_beyond() {
             "for f in .agent/config.yaml; do cat \"$f\"; done",
             "echo $(cat .agent/config.yaml)",
             "echo $(< .agent/config.yaml)",
-            // What reads everything under the workspace's root reaches it.
+            // Everything under the root, a protected path included: protecting it is
+            // about writes, and it is not a secret.
             "rg password",
             "rg -n password .",
             "rg x ./",
@@ -1749,8 +1751,6 @@ fn a_protected_path_is_beyond() {
             "cd src && cd .. && rg x",
             "cd src && cd .. && grep -r x",
             "cd src; rg x ..",
-            // A listing at the root handed to a reader reads all of it: a false
-            // alarm for a protected path the listing would not show.
             "ls | xargs cat",
         ],
     );
@@ -1802,7 +1802,7 @@ fn a_protected_path_is_beyond() {
 }
 
 #[test]
-fn a_protected_file_beside_the_code_is_beyond() {
+fn a_protected_file_beside_the_code_is_the_workspace() {
     let paths = posix().with_protected([
         Protected::file("/home/me/work/repo/rules.yaml", AGENT),
         Protected::folder("/home/me/work/repo/conf/app", AGENT),
@@ -1810,7 +1810,7 @@ fn a_protected_file_beside_the_code_is_beyond() {
     check_effect(
         Shell::Posix,
         &paths,
-        BEYOND,
+        STAYS,
         &[
             "cat rules.yaml",
             "cat ./rules.yaml",
@@ -1877,7 +1877,7 @@ fn a_protected_path_outside_the_workspace_is_beyond_but_does_not_taint_it() {
 }
 
 #[test]
-fn a_protected_path_in_a_second_workspace_folder_is_beyond() {
+fn a_protected_path_in_a_second_workspace_folder_is_the_workspace() {
     let paths = Paths::new(
         "/home/me/work/repo",
         "/home/me",
@@ -1887,7 +1887,7 @@ fn a_protected_path_in_a_second_workspace_folder_is_beyond() {
     check_effect(
         Shell::Posix,
         &paths,
-        BEYOND,
+        STAYS,
         &[
             "cat ../lib/.agent/x",
             "rg x ../lib",
@@ -2252,11 +2252,11 @@ fn agent_windows() -> Paths {
 }
 
 #[test]
-fn a_protected_path_on_windows_is_beyond() {
+fn a_protected_path_on_windows_is_the_workspace() {
     check_effect(
         Shell::PowerShell,
         &agent_windows(),
-        BEYOND,
+        STAYS,
         &[
             "Get-Content .agent\\config.yaml",
             "Get-Content .agent/config.yaml",
@@ -2296,7 +2296,7 @@ fn a_protected_path_on_windows_is_beyond() {
     check_effect(
         Shell::Cmd,
         &agent_windows(),
-        BEYOND,
+        STAYS,
         &[
             "type .agent\\config.yaml",
             "type .agent/config.yaml",
@@ -2376,5 +2376,545 @@ fn spellings_of_a_read_beyond_stay_beyond() {
             "env --chdir=/etc ls",
             "env --chdir /etc cat hosts",
         ],
+    );
+}
+
+// A secret inside the workspace is not the project's: `Beyond`.
+
+/// A POSIX machine whose workspace is the home folder.
+fn posix_home() -> Paths {
+    Paths::new("/home/me", "/home/me", ["/home/me"])
+}
+
+/// A POSIX machine whose workspace is `~/.config`, which holds `gh`'s login.
+fn posix_config() -> Paths {
+    Paths::new("/home/me/.config", "/home/me", ["/home/me/.config"])
+}
+
+#[test]
+fn a_secret_inside_the_workspace_is_beyond() {
+    check_effect(
+        Shell::Posix,
+        &posix_home(),
+        BEYOND,
+        &[
+            "cat .ssh/id_rsa",
+            "cat ./.ssh/id_rsa",
+            "cat .SSH/id_rsa",
+            "cat ~/.ssh/id_rsa",
+            "cat /home/me/.ssh/id_rsa",
+            "cat .ssh/*",
+            "cat .s*/id_rsa",
+            "cat */main.rs",
+            "cat *.md",
+            "cat .[s]sh/id_rsa",
+            "cat .*/id_rsa",
+            "cat .aws/credentials",
+            "cat .gnupg/private-keys-v1.d/x",
+            "cat .netrc",
+            "cat .config/gh/hosts.yml",
+            "ls .ssh",
+            "ls -a .ssh",
+            "head -c 9 .ssh/id_rsa",
+            "cat < .ssh/id_rsa",
+            "grep x .ssh/*",
+            "diff .ssh/id_rsa src/x",
+            "wc -c .ssh/id_rsa",
+            "cd .ssh && cat id_rsa",
+            "cd .ssh && ls",
+            "git show HEAD:.ssh/id_rsa",
+            "git diff -- .ssh/id_rsa",
+            // Everything below the folder that holds it.
+            "rg password",
+            "rg x .",
+            "rg --hidden x",
+            "grep -r x .",
+            "grep -rn x",
+            "grep -R x .",
+            "diff -r . src",
+            "diff -r src .",
+            "diff --recursive . src",
+            "diff -rq . src",
+            "find .",
+            "find . -type f",
+            "find . -exec cat {} +",
+            "find -name x",
+            "ls -R",
+            "ls -aR",
+            "ls --recursive",
+            "du",
+            "du -a",
+            "fd -H",
+            "git status",
+            "git ls-files",
+            "git log -p",
+            "ls",
+            "ls -a",
+            "ls .",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &posix_home(),
+        STAYS,
+        &[
+            "cat README.md",
+            "cat src/main.rs",
+            "cat ./src/main.rs",
+            "ls src",
+            "ls -R src",
+            "rg x src",
+            "grep -r x src",
+            "diff -r src other",
+            "diff a.txt b.txt",
+            "find src -name '*.rs'",
+            "du -sh src",
+            "cat src/*.rs",
+            "wc -l src/*.rs",
+            "git -C src status",
+            "echo hi",
+            "pwd",
+            "cd src && ls",
+            "cd src && rg x",
+            // A startup file and the repository's history are inside it.
+            "cat .bashrc",
+            "cat ~/.bashrc",
+            "cat .zshrc",
+            "cat .gitconfig",
+            "head -n 3 .profile",
+            "cat .git/config",
+            "cat src/.git/config",
+            "cat /tmp/x",
+            "cat /dev/null",
+        ],
+    );
+}
+
+#[test]
+fn a_workspace_holding_a_folder_of_secrets_is_read_deep_beyond() {
+    check_effect(
+        Shell::Posix,
+        &posix_config(),
+        BEYOND,
+        &[
+            "rg x",
+            "rg x .",
+            "grep -r x .",
+            "grep -rn x",
+            "grep -R x",
+            "grep --recursive x",
+            "grep --rec x",
+            "grep -d recurse x",
+            "grep --directories=recurse x",
+            "diff -r . src",
+            "diff -r src .",
+            "diff -r ./ src",
+            "diff --recursive . src",
+            "diff --recurs . src",
+            "diff -rq . src",
+            "diff -ru . src",
+            "diff -R . src",
+            "diff -r .agent/.. src",
+            "find",
+            "find .",
+            "find . -type f",
+            "find . -name x",
+            "find -L . -name x",
+            "find . -follow -name x",
+            "find . -exec cat {} +",
+            "ls -R",
+            "ls -R .",
+            "ls -lR",
+            "ls -aR",
+            "ls --recursive",
+            "ls --rec",
+            "du",
+            "du -a",
+            "du -sh .",
+            "fd",
+            "fd -H",
+            "git status",
+            "git log",
+            "git ls-files",
+            "git diff",
+            "git -C . status",
+            // A path that is a secret, or a pattern that picks one.
+            "cat gh/hosts.yml",
+            "cat ./gh/hosts.yml",
+            "cat GH/hosts.yml",
+            "cat gh/*",
+            "cat g*/hosts.yml",
+            "cat g?/hosts.yml",
+            "echo *",
+            "cat [g]h/hosts.yml",
+            "cat */hosts.yml",
+            "cat */x",
+            "cat gcloud/credentials.db",
+            "ls gh",
+            "ls g*",
+            "cat git/credentials",
+            "cat ../.ssh/id_rsa",
+            "cat ~/.config/gh/hosts.yml",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &posix_config(),
+        STAYS,
+        &[
+            "ls",
+            "ls -a",
+            "ls -l",
+            "ls .",
+            "ls sub",
+            "ls -R sub",
+            "cat README.md",
+            "cat sub/x",
+            "cat s*/x",
+            "cat sub/*",
+            "cat *.md",
+            "rg x sub",
+            "grep -r x sub",
+            "grep x README.md",
+            "diff a.txt b.txt",
+            "diff -r sub other",
+            "find sub -name x",
+            "du -sh sub",
+            "echo hi",
+            "cd sub && ls",
+            "cd sub && rg x",
+            "cd sub && git status",
+            "git -C sub status",
+            "wc -l README.md",
+        ],
+    );
+    // A reader that cannot be known not to go deep is deep.
+    check_effect(
+        Shell::Posix,
+        &posix_config(),
+        Effect::Unknown,
+        &[
+            "diff $flags a b",
+            "ls $flags",
+            "grep $flags x",
+            "rg $flags x",
+        ],
+    );
+}
+
+#[test]
+fn the_history_a_startup_file_and_protected_paths_are_the_workspace_only_inside_it() {
+    let agent = posix().with_protected([
+        Protected::folder("/home/me/work/repo/.agent", AGENT),
+        Protected::file("/home/me/.agent.yaml", AGENT),
+    ]);
+    check_effect(
+        Shell::Posix,
+        &agent,
+        STAYS,
+        &[
+            "cat .git/config",
+            "cat .git/HEAD",
+            "cat .git/hooks/pre-commit",
+            "cat .GIT/config",
+            "ls .git",
+            "ls -R .git",
+            "find .git",
+            "rg x .git",
+            "grep -r x .git",
+            "cat .g*/config",
+            "git log",
+            "git show HEAD",
+            "cat .agent/x",
+            "ls .agent",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &agent,
+        BEYOND,
+        &[
+            "cat ~/.gitconfig",
+            "cat ~/.bashrc",
+            "cat ~/.zshrc",
+            "less ~/.profile",
+            "cat ~/.config/git/config",
+            "cat ~/.agent.yaml",
+            "cat /home/me/.agent.yaml",
+            "cat ~/.ssh/config",
+            "cat ../../../.bashrc",
+            // `.*` picks `..` too.
+            "cat .*/config",
+            "cat .*/x",
+            "ls .*",
+        ],
+    );
+}
+
+#[test]
+fn a_listing_of_names_reaches_a_secret_where_it_goes_below_it() {
+    // Protected paths only: the names are the workspace's.
+    check_effect(
+        Shell::Posix,
+        &agent(),
+        STAYS,
+        &[
+            "ls -R",
+            "ls -aR",
+            "find .",
+            "find . -type f",
+            "git ls-files",
+            "git ls-files -o",
+            "fd -H",
+            "du -a",
+            "ls -a | xargs ls",
+            "find . | head",
+        ],
+    );
+    // A secret under the folder: the listing shows where it is.
+    check_effect(
+        Shell::Posix,
+        &posix_config(),
+        BEYOND,
+        &[
+            "ls -R",
+            "find .",
+            "git ls-files",
+            "fd -H",
+            "du -a",
+            "find . | head",
+        ],
+    );
+}
+
+#[test]
+fn a_path_relative_to_the_repository_root_is_read_from_the_root_too() {
+    // The guard does not know where the repository's root is: a path git
+    // reads from it is judged from the working directory and from each
+    // workspace folder, and a read beyond either wins.
+    let paths = Paths::new("/home/me/proj", "/home/me", ["/home/me"]);
+    check_effect(
+        Shell::Posix,
+        &paths,
+        BEYOND,
+        &[
+            "git show HEAD:.ssh/id_rsa",
+            "git show :/.ssh/id_rsa",
+            "git show ':(top).ssh/id_rsa'",
+            "git show ':(top,glob).ssh/*'",
+            "git show :.ssh/id_rsa",
+            "git show :0:.ssh/id_rsa",
+            "git diff -- :/.ssh/id_rsa",
+            "git diff -- ':(top).ssh/id_rsa'",
+            "git log -p -- :/.aws/credentials",
+            "git diff -- ':!/.ssh/id_rsa'",
+            "git diff -- ':^.ssh/id_rsa'",
+            "git diff -- ':(exclude).ssh/id_rsa'",
+            "git show HEAD:../.ssh/id_rsa",
+            "git show HEAD:./../.ssh/id_rsa",
+            "git log -p -- ../.ssh/id_rsa",
+            "git show HEAD:.s*/id_rsa",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &paths,
+        STAYS,
+        &[
+            "git show HEAD:src/lib.rs",
+            "git show HEAD:./src/lib.rs",
+            "git show :/src/lib.rs",
+            "git show ':(top)src/lib.rs'",
+            "git show :src/lib.rs",
+            "git diff -- :/src",
+            "git diff -- src",
+            "git log -p -- ':(top)src'",
+            "git show HEAD~1:Cargo.toml",
+            "git diff HEAD~1 -- Cargo.toml",
+        ],
+    );
+    // From a working directory below the workspace's root.
+    let sub = Paths::new("/home/me/work/repo/src", "/home/me", ["/home/me/work/repo"]);
+    check_effect(
+        Shell::Posix,
+        &sub,
+        BEYOND,
+        &[
+            "git show :/../x",
+            "git show ':(top)../x'",
+            "git diff -- :/../x",
+            "git show HEAD:../../x",
+            "git log -p -- ../../x",
+        ],
+    );
+    check_effect(
+        Shell::Posix,
+        &sub,
+        STAYS,
+        &[
+            "git show :/Cargo.toml",
+            "git show HEAD:Cargo.toml",
+            "git show HEAD:./lib.rs",
+            "git show HEAD:../Cargo.toml",
+            "git diff -- ../Cargo.toml",
+            "git diff -- :/src",
+        ],
+    );
+    // In PowerShell and cmd too.
+    let windows = Paths::new(r"C:\Users\me\proj", r"C:\Users\me", [r"C:\Users\me"]);
+    check_effect(
+        Shell::PowerShell,
+        &windows,
+        BEYOND,
+        &["git show HEAD:.ssh/id_rsa", "git show :/.ssh/id_rsa"],
+    );
+    check_effect(
+        Shell::PowerShell,
+        &windows,
+        STAYS,
+        &["git show HEAD:src/lib.rs", "git show :/src/lib.rs"],
+    );
+}
+
+// A Windows wildcard matches a hidden name, so `*\*` reaches a hidden folder.
+
+fn windows_home() -> Paths {
+    windows_in_home(r"C:\Users\me")
+}
+
+fn windows_in_home(cwd: &str) -> Paths {
+    Paths::new(cwd, r"C:\Users\me", [r"C:\Users\me"])
+}
+
+/// A Windows machine whose workspace is `AppData\Roaming`, which holds
+/// `gcloud`'s login.
+fn windows_roaming() -> Paths {
+    Paths::new(
+        r"C:\Users\me\AppData\Roaming",
+        r"C:\Users\me",
+        [r"C:\Users\me\AppData\Roaming"],
+    )
+}
+
+#[test]
+fn a_windows_wildcard_reaches_a_hidden_folder_that_holds_a_secret() {
+    for paths in [windows_home(), windows_roaming()] {
+        check_effect(
+            Shell::PowerShell,
+            &paths,
+            BEYOND,
+            &[
+                "Get-Content *\\*",
+                "Get-Content -Path *\\*",
+                "Get-Content .\\*\\*",
+                "gc *\\*",
+                "cat *\\*",
+                "type *\\*",
+                "Select-String -Path *\\* -Pattern x",
+                "Select-String -Pattern x -Path *\\*",
+                "Select-String -Path .\\*\\* -Pattern x",
+                "sls x *\\*",
+                "Get-ChildItem -Recurse",
+                "gci -r",
+                "gci -Rec",
+                "Get-ChildItem -Depth 2",
+                "Get-ChildItem -Recurse | Select-String x",
+                "Get-ChildItem -Recurse -Filter *.yaml | Get-Content",
+            ],
+        );
+        check_effect(
+            Shell::Cmd,
+            &paths,
+            BEYOND,
+            &[
+                "findstr x *\\*",
+                "findstr /s x *",
+                "findstr /s x *.yaml",
+                "findstr /s /i x *",
+                "type *\\x",
+                "type *\\*",
+                "dir /s",
+                "dir /s /b",
+                "dir /s/b",
+                "dir *\\*",
+            ],
+        );
+    }
+    // From the home folder, with the workspace there: a key.
+    check_effect(
+        Shell::PowerShell,
+        &windows_home(),
+        BEYOND,
+        &[
+            "Get-Content .ssh\\id_rsa",
+            "Get-Content .\\.ssh\\id_rsa",
+            "Get-Content ~\\.ssh\\id_rsa",
+            "Get-Content C:\\Users\\me\\.ssh\\id_rsa",
+            "Get-Content .ss*\\id_rsa",
+            "Get-ChildItem .ssh",
+            "Get-ChildItem",
+            "gci",
+            "gci -Force",
+        ],
+    );
+    check_effect(
+        Shell::PowerShell,
+        &windows_home(),
+        STAYS,
+        &[
+            "Get-Content README.md",
+            "Get-Content src\\main.rs",
+            "Get-ChildItem src",
+            "Get-ChildItem -Recurse src",
+            "Get-Content src\\*",
+            "Select-String -Path src\\*.rs -Pattern x",
+            "Get-Content .bashrc",
+            "Get-Content .gitconfig",
+            "Write-Output hi",
+        ],
+    );
+    check_effect(
+        Shell::Cmd,
+        &windows_home(),
+        STAYS,
+        &[
+            "type README.md",
+            "dir src",
+            "dir /s src",
+            "findstr /s x src\\*",
+            "type src\\*.rs",
+            "echo hi",
+        ],
+    );
+    check_effect(
+        Shell::Cmd,
+        &windows_home(),
+        BEYOND,
+        &[
+            "type .ssh\\id_rsa",
+            "dir .ssh",
+            "dir",
+            "dir /a",
+            "type C:\\Users\\me\\.ssh\\id_rsa",
+        ],
+    );
+    // Beneath the workspace's root, with no secret to reach.
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        STAYS,
+        &[
+            "Get-Content *\\*",
+            "Select-String -Path *\\* -Pattern x",
+            "Get-ChildItem -Recurse",
+            "Get-ChildItem -Recurse | Select-String x",
+            "gc *\\x",
+        ],
+    );
+    check_effect(
+        Shell::Cmd,
+        &windows(),
+        STAYS,
+        &["findstr x *\\*", "findstr /s x *", "type *\\x", "dir /s"],
     );
 }

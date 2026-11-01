@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use super::reach::{self, Lands};
+use super::reach::{self, How};
 use super::{git, git_subcommand, Kind};
 use crate::path::{self, Place, Resolver};
 use crate::powershell::Params;
@@ -23,8 +23,9 @@ pub(super) struct Context<'a> {
     pub(super) resolver: &'a Resolver,
     /// The first unit at each pipeline stage, for what a stage is handed.
     pub(super) producers: HashMap<(usize, usize), &'a Unit>,
-    /// Where the reads of the line land so far, for [`super::Reach`].
-    pub(super) lands: Cell<Lands>,
+    /// Whether a read of the line landed beyond the workspace so far, for
+    /// [`super::Reach`].
+    pub(super) beyond: Cell<bool>,
 }
 
 /// Whether reading from `arg`, written from `dir`, is a read of a place the
@@ -38,10 +39,11 @@ pub(super) fn place_effect(
     shell: Shell,
     dir: Option<&Arg>,
     arg: &Arg,
+    how: How,
 ) -> Kind {
-    let (kind, place) = place_kind(context.resolver, shell, dir, arg);
+    let (kind, place) = place_kind(context.resolver, shell, dir, arg, how.hidden);
     if let Some(place) = place {
-        context.land(place);
+        context.land(shell, dir, arg, place, how);
     }
     kind
 }
@@ -53,6 +55,7 @@ pub(super) fn place_kind(
     shell: Shell,
     dir: Option<&Arg>,
     arg: &Arg,
+    hidden: bool,
 ) -> (Kind, Option<Place>) {
     let Some(text) = arg.known() else {
         return (Kind::Unknown, None);
@@ -68,7 +71,7 @@ pub(super) fn place_kind(
     {
         return (Kind::Unknown, None);
     }
-    let place = resolver.place(&from, shell, false);
+    let place = resolver.place(&from, shell, hidden);
     if matches!(place, Place::Unknown) {
         (Kind::Unknown, Some(place))
     } else {
@@ -106,23 +109,29 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
         }
     }
     let opened = path_args(unit, key);
+    let how = reach::how(unit, key);
     // A folder `-C` names is judged like a place; where it lands is the
     // repository's, which the folders chained together make.
     for dir in &opened.dirs {
-        if place_kind(context.resolver, unit.shell, unit.dir.as_ref(), dir).0 == Kind::Unknown {
+        if place_kind(
+            context.resolver,
+            unit.shell,
+            unit.dir.as_ref(),
+            dir,
+            unit.hidden,
+        )
+        .0 == Kind::Unknown
+        {
             effect = Kind::Unknown;
         }
     }
     for arg in &opened.places {
         let own = match arg.as_ref() {
-            // What a listing hands on is read where it was listed, and all
-            // of it, whatever it holds.
-            Arg::Input if fed_by_listing(unit, context, false) => {
-                context.deepen();
-                Kind::Reads
-            }
+            // What a listing hands on is read where it was listed, which is
+            // judged there.
+            Arg::Input if fed_by_listing(unit, context, false) => Kind::Reads,
             Arg::Input => Kind::Unknown,
-            known => place_effect(context, unit.shell, unit.dir.as_ref(), known),
+            known => place_effect(context, unit.shell, unit.dir.as_ref(), known, how),
         };
         if own == Kind::Unknown {
             effect = Kind::Unknown;
@@ -136,13 +145,11 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
         let handed = unit.stage.is_some_and(|stage| stage.index > 0);
         if handed && !fed_by_listing(unit, context, text) {
             effect = Kind::Unknown;
-        } else if handed {
-            context.deepen();
         }
     }
     // Where it reads without being told, and what its operands reach that
     // the table does not call a place.
-    if reach::reads(unit, key, &opened, context) == Kind::Unknown {
+    if reach::reads(unit, key, &opened, how, context) == Kind::Unknown {
         effect = Kind::Unknown;
     }
     effect

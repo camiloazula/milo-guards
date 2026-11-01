@@ -12,8 +12,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use milo_guards_core::Paths;
-
 use crate::path::{self, Place, Resolver};
 
 mod git;
@@ -22,6 +20,7 @@ mod reach;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use operands::{dashed, inert, operands, place_effect, substituted, unquoted, Context};
+use reach::How;
 
 /// What a line does to the machine, as far as the guard can read: the answer
 /// of [`effect`](fn@crate::effect), beside [`classify`](crate::classify)'s.
@@ -54,11 +53,13 @@ pub enum Effect {
 /// Where the reads of a line that only reads land: the second half of
 /// [`Effect::ReadsOnly`].
 ///
-/// [`Workspace`](Self::Workspace) says every place the line reads is
-/// harmless: inside a workspace folder, a temporary file, or the null
-/// device. [`Beyond`](Self::Beyond) says at least one read lands elsewhere:
-/// the home folder, a system folder, a sensitive place, a protected path, or
-/// anything else outside the workspace. A line that reads nothing (`echo hi`,
+/// `Reach` is about reading what is not the project's. [`Workspace`](Self::Workspace)
+/// says every place the line reads is the project's own: inside a workspace
+/// folder (the repository's history, a startup file and a path the caller
+/// protects are inside it too), a temporary file, or the null device.
+/// [`Beyond`](Self::Beyond) says at least one read lands elsewhere: the home
+/// folder, a system folder, anything else outside the workspace, or a secret (a
+/// key, a credential) even inside it. A line that reads nothing (`echo hi`,
 /// `pwd`) is `Workspace`.
 ///
 /// What a line reads is every file operand and the source of every `<`
@@ -66,7 +67,9 @@ pub enum Effect {
 /// reader with no file operand reads it implicitly (`ls`, `git status`,
 /// `rg TODO`, `find`, `grep -r x`): so `ls` run from outside the workspace,
 /// or after `cd ~`, is `Beyond`. A reader whose implicit input the guard
-/// cannot place is `Beyond`, never `Workspace`.
+/// cannot place is `Beyond`, never `Workspace`. A reader that goes below the
+/// folders it names (a recursive search, a listing of every name) reaches what
+/// is below them: a folder that holds a secret read that way is `Beyond`.
 ///
 /// This enum is exhaustive on purpose, for the same reason as [`Effect`]: a
 /// third answer would change what a caller's careful mode means by "stays in
@@ -74,9 +77,9 @@ pub enum Effect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reach {
     /// Every read lands inside a workspace folder, in a temporary file, or on
-    /// the null device.
+    /// the null device, and none is a secret.
     Workspace,
-    /// At least one read lands elsewhere.
+    /// At least one read lands elsewhere, or is a secret.
     Beyond,
 }
 
@@ -92,12 +95,7 @@ pub(crate) enum Kind {
 /// The effect of a line already split and judged by the rules. `classify`
 /// uses the same `split` and `findings`, so the two answers cannot disagree
 /// about what the units are.
-pub(crate) fn of(
-    split: &Split,
-    findings: &[Finding],
-    resolver: &Resolver,
-    paths: &Paths,
-) -> Effect {
+pub(crate) fn of(split: &Split, findings: &[Finding], resolver: &Resolver) -> Effect {
     let mut seen = Seen::default();
     for finding in findings {
         seen.add(rule_effect(finding.rule));
@@ -124,7 +122,7 @@ pub(crate) fn of(
     let context = Context {
         resolver,
         producers,
-        lands: Cell::default(),
+        beyond: Cell::new(false),
     };
     for read in &split.kept.reads {
         seen.add(place_effect(
@@ -132,6 +130,7 @@ pub(crate) fn of(
             read.shell,
             read.dir.as_ref(),
             &read.target,
+            How::default(),
         ));
     }
     for (at, unit) in split.units.iter().enumerate() {
@@ -152,7 +151,7 @@ pub(crate) fn of(
             None => seen.add(unit_effect(unit, &context)),
         }
     }
-    seen.effect(reach::beyond(&context, paths))
+    seen.effect(context.beyond.get())
 }
 
 /// What has been seen so far: a change beats not knowing, which beats
@@ -299,8 +298,8 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
         // Going into a folder is a read of it: `cd ~` leaves the workspace
         // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
-        let place = resolver.place(&at, unit.shell, false);
-        context.land(place);
+        let place = resolver.place(&at, unit.shell, unit.hidden);
+        context.land(unit.shell, None, &at, place, How::default());
         if matches!(place, Place::Unknown) {
             Kind::Unknown
         } else {

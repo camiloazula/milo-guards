@@ -6,114 +6,157 @@
 //! `git status`). `effect` already places each of the first two to judge
 //! them, so saying where they land costs nothing more; the rest is read here.
 //!
-//! Every place is judged by where core says it lands. It is harmless when it
-//! is inside a workspace folder, a temporary file or the null device, and the
-//! workspace folder itself (what `ls` lists at the project's root). Anything
-//! else, a protected path included, is beyond. A reader this module does not
-//! know to read only its operands is taken to read the working directory too:
-//! what cannot be placed is never the workspace.
+//! `Reach` is about reading what is not the project's. A read is `Beyond`
+//! when its place is beyond the workspace (the home folder, a system folder,
+//! another folder of the disk), or when it is a secret ([`Sensitivity::Secret`]:
+//! a key, a credential) even inside the workspace. The repository's own
+//! history, a startup file and the caller's protected paths are inside the
+//! workspace when they are, and stay `Workspace`: protecting them is about
+//! writes. What cannot be placed is `Beyond`, never the workspace.
+//!
+//! A reader that goes below the folders it names (a recursive search, a
+//! listing of every name) reaches whatever is below them: it is deep, and a
+//! deep read of a folder that holds a secret is `Beyond`. A reader is shallow
+//! only when its table entry says so for the flags it is given; anything
+//! recursive or unknown is deep. A wildcard is judged by what it can pick.
 
 use milo_guards_core::spelling::glob;
-use milo_guards_core::Paths;
+use milo_guards_core::Sensitivity;
 
 use super::operands::{shape, takes_no_paths, Context, Opened};
 use super::Kind;
-use crate::path::{self, Place, Resolver};
+use crate::path::{self, Place};
 use crate::unit::{moves_to, Arg, Unit};
 use crate::Shell;
 
-/// Where the reads of a line landed, as the units were judged.
+/// How a unit reads the places it names: whether its wildcards match a
+/// leading dot, and whether it goes below the folders it names.
 #[derive(Debug, Default, Clone, Copy)]
-pub(super) struct Lands {
-    /// A read landed where it is not harmless.
-    beyond: bool,
-    /// A read landed on a workspace folder itself, which is harmless unless
-    /// something in it is protected and the line reads all of it.
-    root: bool,
-    /// A read took every file below the folders it names, whatever they hold
-    /// (`rg TODO`, `grep -r`, what `find` lists handed to `xargs cat`).
-    deep: bool,
+pub(super) struct How {
+    pub(super) hidden: bool,
+    pub(super) deep: bool,
+}
+
+/// How `unit`, a reader known as `key`, reads.
+pub(super) fn how(unit: &Unit, key: &str) -> How {
+    How {
+        hidden: unit.hidden,
+        deep: deep(unit, key),
+    }
 }
 
 impl Context<'_> {
-    /// Record a read that lands at `place`.
-    pub(super) fn land(&self, place: Place) {
-        let mut lands = self.lands.get();
-        match place {
-            Place::Workspace { exact: true } => lands.root = true,
-            place if place.harmless() => {}
-            _ => lands.beyond = true,
+    /// Record a read of `arg`, written from `dir`, that lands at `place`.
+    pub(super) fn land(&self, shell: Shell, dir: Option<&Arg>, arg: &Arg, place: Place, how: How) {
+        if self.beyond.get() {
+            return;
         }
-        self.lands.set(lands);
+        let from = path::within(dir, arg, shell);
+        let beyond = match place {
+            Place::Inside
+            | Place::Temp { exact: false }
+            | Place::Null
+            | Place::Workspace { exact: true } => false,
+            Place::Sensitive(_, Sensitivity::Secret) => true,
+            // The repository's history is inside the workspace.
+            Place::Sensitive(_, Sensitivity::History) => false,
+            // A startup file or a protected path is the workspace's own
+            // only when it is inside it.
+            Place::Sensitive(_, Sensitivity::Startup) | Place::Protected(_) => {
+                !self.resolver.inside_workspace(&from, shell)
+            }
+            _ => true,
+        };
+        // What a pattern can pick, and what a deep read goes below, may be a
+        // secret that the place of the folder does not say.
+        let pattern = from.known().is_some_and(glob::has_wildcard);
+        let beyond = beyond
+            || ((how.deep || pattern)
+                && self
+                    .resolver
+                    .reaches_secret(&from, shell, how.hidden, how.deep))
+            // A PowerShell or cmd wildcard is the program's own: with a recursion it
+            // is a filter on every folder below the one it starts in.
+            || (how.deep
+                && pattern
+                && shell != Shell::Posix
+                && self.resolver.reaches_secret(
+                    &Arg::Known(path::pattern_folder(from.text())),
+                    shell,
+                    how.hidden,
+                    true,
+                ));
+        if beyond {
+            self.beyond.set(true);
+            return;
+        }
+        // A part like `.*` picks `..` too, in the shells whose patterns match
+        // it: the folder above is read.
+        if let Some(above) = from.known().and_then(|text| path::climb(text, shell)) {
+            self.land_arg(shell, &Arg::Known(above), How { deep: false, ..how });
+        }
     }
 
-    /// Record a read that lands somewhere the guard cannot name.
-    fn far(&self) {
-        let mut lands = self.lands.get();
-        lands.beyond = true;
-        self.lands.set(lands);
-    }
-
-    /// Record a read of everything below the folders it names.
-    pub(super) fn deepen(&self) {
-        let mut lands = self.lands.get();
-        lands.deep = true;
-        self.lands.set(lands);
-    }
-
-    /// Record a read of `text`, written from the folder `unit` runs in.
-    fn land_text(&self, unit: &Unit, text: &str) {
+    /// Record a read of the text `text`, written from where `unit` runs.
+    fn land_text(&self, unit: &Unit, text: &str, how: How) -> Kind {
         let from = path::within(unit.dir.as_ref(), &Arg::Known(text.to_string()), unit.shell);
-        self.land(self.resolver.place(&from, unit.shell, unit.hidden));
+        self.land_arg(unit.shell, &from, how)
+    }
+
+    /// Record a read of `from`, a path already joined to where the line
+    /// runs: the place it lands, and `Unknown` when that cannot be said.
+    fn land_arg(&self, shell: Shell, from: &Arg, how: How) -> Kind {
+        let place = self.resolver.place(from, shell, how.hidden);
+        self.land(shell, None, from, place, how);
+        if matches!(place, Place::Unknown) {
+            Kind::Unknown
+        } else {
+            Kind::Reads
+        }
     }
 }
 
 /// What `unit`, a reader of its operands, also reads: the working directory
-/// when nothing tells it where to look, and what its arguments name that the
-/// table does not call a place. `Unknown` when the working directory itself
-/// is not known (after a `cd` the guard cannot follow).
-pub(super) fn reads(unit: &Unit, key: &str, opened: &Opened<'_>, context: &Context<'_>) -> Kind {
+/// when nothing tells it where to look, the repository for `git`, and what
+/// its arguments name that the table does not call a place. `Unknown` when
+/// the working directory itself is not known (after a `cd` the guard cannot
+/// follow).
+pub(super) fn reads(
+    unit: &Unit,
+    key: &str,
+    opened: &Opened<'_>,
+    how: How,
+    context: &Context<'_>,
+) -> Kind {
     // A `cd` reads its target, which `judge_unit` placed.
     if moves_to(unit).is_some() {
         return Kind::Reads;
     }
     let mut kind = Kind::Reads;
-    if implicit(unit, key, opened) {
-        kind = here(unit, context);
-    }
-    // `git -C a -C b` reads the repository at `a/b`: each folder is relative
-    // to the one before it, and an absolute one starts over.
-    if key == "git" && !opened.dirs.is_empty() {
-        let mut dir = unit.dir.clone();
+    if key == "git" {
+        // `git -C a -C b` reads the repository at `a/b`: each folder is
+        // relative to the one before it, and an absolute one starts over.
+        let mut here = path::within(unit.dir.as_ref(), &Arg::Known(".".to_string()), unit.shell);
         for next in &opened.dirs {
-            dir = Some(path::within(dir.as_ref(), next, unit.shell));
+            here = path::within(Some(&here), next, unit.shell);
         }
-        if let Some(dir) = dir {
-            context.land(context.resolver.place(&dir, unit.shell, false));
-        }
-    }
-    // A wildcard in PowerShell or cmd is the program's own, and can go below
-    // the folder it starts in: that folder is read, whatever the pattern
-    // lands on.
-    if unit.shell != Shell::Posix {
-        for text in opened.places.iter().filter_map(|place| place.known()) {
-            if glob::has_wildcard(text) {
-                context.land_text(unit, &folder_of(text));
-            }
-        }
+        kind = context.land_arg(unit.shell, &here, how);
+        git_paths(unit, opened, how, context);
+    } else if implicit(unit, key, opened) {
+        let dot = Arg::Known(".".to_string());
+        let here = path::within(unit.dir.as_ref(), &dot, unit.shell);
+        kind = context.land_arg(unit.shell, &here, how);
     }
     // `df` with no operand reports every disk that is mounted.
     if unit.shell == Shell::Posix && key == "df" && opened.operands == 0 {
-        context.far();
+        context.beyond.set(true);
     }
-    if deepens(unit, key) {
-        context.deepen();
-    }
+    let shallow = How { deep: false, ..how };
     // `echo ~/.ssh/*` opens nothing, but the shell lists the folder.
     if unit.shell == Shell::Posix && takes_no_paths(unit.shell, key) {
         for text in unit.args.iter().filter_map(Arg::known) {
             if glob::has_wildcard(text) {
-                context.land_text(unit, text);
+                context.land_text(unit, text, shallow);
             }
         }
     }
@@ -123,57 +166,87 @@ pub(super) fn reads(unit: &Unit, key: &str, opened: &Opened<'_>, context: &Conte
         while let Some(text) = args.next() {
             if text.starts_with("-newer") || matches!(text, "-anewer" | "-cnewer" | "-samefile") {
                 if let Some(file) = args.next() {
-                    context.land_text(unit, file);
+                    context.land_text(unit, file, shallow);
                 }
-            }
-        }
-    }
-    // A revision or a pathspec is read inside the repository; the part of
-    // `HEAD:path` after the colon is a path in it.
-    for spec in &opened.pathspecs {
-        if let Some(text) = spec.known() {
-            context.land_text(unit, text);
-            if let Some((_, path)) = text.split_once(':') {
-                context.land_text(unit, path);
             }
         }
     }
     kind
 }
 
-/// The folder a pattern starts in: what comes before its first wildcard,
-/// up to the last separator before it.
-fn folder_of(text: &str) -> String {
-    let wild = text.find(['*', '?', '[']).unwrap_or(text.len());
-    match text[..wild].rfind(['/', '\\']) {
-        Some(0) => text[..1].to_string(),
-        Some(at) => text[..at].to_string(),
-        None => ".".to_string(),
+/// What `git` reads in its revisions and pathspecs: paths in the work tree.
+/// Some are relative to the repository's root, not to the working directory
+/// (`:/x`, `:(top)x`, `:x`, `REV:x`), and the guard does not know where the
+/// root is: they are judged from the working directory and from each
+/// workspace folder, and a read beyond either wins.
+fn git_paths(unit: &Unit, opened: &Opened<'_>, how: How, context: &Context<'_>) {
+    let shallow = How { deep: false, ..how };
+    let operands = opened.pathspecs.iter().copied();
+    let places = opened.places.iter().map(AsRef::<Arg>::as_ref);
+    for spec in operands.chain(places) {
+        let Some(text) = spec.known() else {
+            continue;
+        };
+        for (rest, from_root) in git_forms(text) {
+            context.land_text(unit, rest, shallow);
+            if from_root {
+                for folder in context.resolver.workspaces() {
+                    let at = Arg::Known(format!("{folder}/{rest}"));
+                    context.land_arg(unit.shell, &at, shallow);
+                }
+            }
+        }
     }
 }
 
-/// Where the working directory is, as a read: `Unknown` when a `cd` moved
-/// it somewhere the guard cannot name.
-fn here(unit: &Unit, context: &Context<'_>) -> Kind {
-    let dot = Arg::Known(".".to_string());
-    let from = path::within(unit.dir.as_ref(), &dot, unit.shell);
-    let place = context.resolver.place(&from, unit.shell, false);
-    context.land(place);
-    if matches!(place, Place::Unknown) {
-        Kind::Unknown
-    } else {
-        Kind::Reads
+/// The paths a `git` operand names, and whether each is relative to the
+/// repository's root: `:/x`, `:(top)x` and every magic pathspec, `:x` and
+/// `:0:x` (the index), and `REV:x` (unless `x` starts with `./` or `../`).
+fn git_forms(text: &str) -> Vec<(&str, bool)> {
+    let relative = |rest: &str| {
+        ["./", "../", ".\\", "..\\"]
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+    };
+    if let Some(body) = text.strip_prefix(':') {
+        // A pathspec with magic, or from the root (`:/x`), is the root's
+        // whatever follows. `:x` and `:0:x` name a path in the index, from the
+        // root unless it starts `./`.
+        let (rest, from_root) = if let Some(magic) = body.strip_prefix('(') {
+            (magic.split_once(')').map_or(body, |(_, rest)| rest), true)
+        } else if let Some(rest) = body.strip_prefix(['/', '!', '^']) {
+            (rest, true)
+        } else {
+            let rest = match body.split_once(':') {
+                Some((stage, rest))
+                    if !stage.is_empty() && stage.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    rest
+                }
+                _ => body,
+            };
+            (rest, !relative(rest))
+        };
+        return vec![(rest, from_root)];
+    }
+    match text.split_once(':') {
+        // `C:\x` is a path.
+        Some((drive, rest))
+            if drive.len() == 1
+                && drive.bytes().all(|b| b.is_ascii_alphabetic())
+                && rest.starts_with(['/', '\\']) =>
+        {
+            vec![(text, false)]
+        }
+        Some((_, rest)) => vec![(rest, !relative(rest))],
+        None => vec![(text, false)],
     }
 }
 
 /// Whether the reader reads the working directory without being told to:
 /// every reader that is not known to read only its operands or its input
-/// does, when it is given no operand to read. `git` reads the repository at
-/// the working directory, or at `-C`.
+/// does, when it is given no operand to read.
 fn implicit(unit: &Unit, key: &str, opened: &Opened<'_>) -> bool {
-    if key == "git" {
-        return opened.dirs.is_empty();
-    }
     if takes_no_paths(unit.shell, key) {
         return false;
     }
@@ -182,7 +255,7 @@ fn implicit(unit: &Unit, key: &str, opened: &Opened<'_>) -> bool {
         Shell::Posix => match key {
             "cat" | "head" | "tail" | "wc" | "stat" | "realpath" | "diff" | "sort" | "file"
             | "less" | "df" => false,
-            "grep" | "egrep" | "fgrep" => bare && recursive(&unit.args),
+            "grep" | "egrep" | "fgrep" => bare && grep_recursive(&unit.args),
             _ => bare,
         },
         Shell::PowerShell => match key {
@@ -197,77 +270,97 @@ fn implicit(unit: &Unit, key: &str, opened: &Opened<'_>) -> bool {
     }
 }
 
+/// Whether any argument asks for what `letters` (short flags, in a bundle)
+/// or `longs` (a long option, by any prefix of its name, as GNU programs
+/// read it) mean, or could, being known only when it runs.
+fn asks(args: &[Arg], letters: &str, longs: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        let Some((head, tail)) = shape(arg) else {
+            return true;
+        };
+        if let Some(long) = head.strip_prefix("--") {
+            let name = long
+                .split('=')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            return (tail && long.is_empty())
+                || (!name.is_empty() && longs.iter().any(|full| full.starts_with(&name)))
+                || (tail && !long.contains('='));
+        }
+        match head.strip_prefix('-') {
+            Some(bundle) => tail || bundle.chars().any(|letter| letters.contains(letter)),
+            None => head.is_empty() && tail,
+        }
+    })
+}
+
 /// Whether a `grep` is given a flag that makes it search folders (`-r`,
-/// `-R`, `-d`, `--recursive`, `--directories`), or an argument that could be
-/// one because it is known only when it runs.
-fn recursive(args: &[Arg]) -> bool {
-    args.iter().any(|arg| match shape(arg) {
+/// `-R`, `-d`, `--recursive`, `--directories`, by any prefix of the name).
+fn grep_recursive(args: &[Arg]) -> bool {
+    asks(
+        args,
+        "rRd",
+        &["recursive", "dereference-recursive", "directories"],
+    )
+}
+
+/// Whether a PowerShell parameter list asks for `-Recurse` or `-Depth`, by
+/// any prefix of the name (`-r`, `-Rec`), as PowerShell reads it.
+fn powershell_recursive(args: &[Arg]) -> bool {
+    args.iter().any(|arg| match arg.known() {
         None => true,
-        Some((head, tail)) => match head.strip_prefix("--") {
-            Some(long) => {
-                long.starts_with("recursive")
-                    || long.starts_with("dereference-recursive")
-                    || long.starts_with("directories")
-            }
-            None => match head.strip_prefix('-') {
-                Some(bundle) => bundle.contains(['r', 'R', 'd']),
-                None => head.is_empty() && tail,
-            },
-        },
-    })
-}
-
-/// Whether the unit reads every file below the folders it names.
-fn deepens(unit: &Unit, key: &str) -> bool {
-    let known = || unit.args.iter().filter_map(Arg::known);
-    match (unit.shell, key) {
-        (Shell::Posix, "rg") => true,
-        (Shell::Posix, "grep" | "egrep" | "fgrep") => recursive(&unit.args),
-        // What `-exec` runs reads what `find` found, which is everything
-        // below its start.
-        (Shell::Posix, "find") => {
-            known().any(|text| matches!(text, "-exec" | "-execdir" | "-ok" | "-okdir"))
-        }
-        // `findstr /s` goes into every folder below.
-        (Shell::Cmd, "findstr") => known().any(|text| {
-            text.starts_with(['/', '-'])
-                && text[1..]
-                    .split(':')
-                    .next()
-                    .is_some_and(|names| names.to_ascii_lowercase().contains('s'))
+        Some(text) => text.strip_prefix('-').is_some_and(|name| {
+            let name = name
+                .split(':')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            !name.is_empty() && ("recurse".starts_with(&name) || "depth".starts_with(&name))
         }),
-        _ => false,
-    }
-}
-
-/// Whether the line reached beyond the workspace: a read landed where it is
-/// not harmless, or it read everything below a workspace folder that holds a
-/// protected path.
-pub(super) fn beyond(context: &Context<'_>, paths: &Paths) -> bool {
-    let lands = context.lands.get();
-    lands.beyond || (lands.deep && lands.root && holds_protected(context.resolver, paths))
-}
-
-/// Whether a protected path sits inside a workspace folder: some folder
-/// above it is a workspace folder itself. Read by the spelling of both
-/// flavours, since a line is judged by one shell and the paths are the
-/// caller's.
-fn holds_protected(resolver: &Resolver, paths: &Paths) -> bool {
-    paths.protected.iter().any(|entry| {
-        let text = entry.path.to_string_lossy();
-        let mut above: &str = &text;
-        while let Some(at) = above.rfind(['/', '\\']) {
-            above = &above[..at];
-            if above.is_empty() {
-                break;
-            }
-            let folder = Arg::Known(above.to_string());
-            for shell in [Shell::Posix, Shell::Cmd] {
-                if resolver.place(&folder, shell, false) == (Place::Workspace { exact: true }) {
-                    return true;
-                }
-            }
-        }
-        false
     })
+}
+
+/// Whether a cmd switch list asks for `/s`, every folder below.
+fn cmd_recursive(args: &[Arg]) -> bool {
+    args.iter().any(|arg| match arg.known() {
+        None => true,
+        Some(text) => text.strip_prefix(['/', '-']).is_some_and(|body| {
+            body.split(':')
+                .next()
+                .is_some_and(|names| names.to_ascii_lowercase().contains('s'))
+        }),
+    })
+}
+
+/// Whether the reader goes below the folders it names. Shallow only when the
+/// table says so for the flags it is given: `cat` and the readers of files,
+/// `ls` and `diff` and a PowerShell listing without recursion, `grep` with no
+/// recursive flag. Everything else, a reader added later included, is deep.
+fn deep(unit: &Unit, key: &str) -> bool {
+    if takes_no_paths(unit.shell, key) {
+        return false;
+    }
+    let args = unit.args.as_slice();
+    match unit.shell {
+        Shell::Posix => match key {
+            "cat" | "head" | "tail" | "wc" | "stat" | "realpath" | "sort" | "file" | "less"
+            | "df" => false,
+            "ls" => asks(args, "R", &["recursive"]),
+            "diff" => asks(args, "rR", &["recursive"]),
+            "grep" | "egrep" | "fgrep" => grep_recursive(args),
+            _ => true,
+        },
+        Shell::PowerShell => match key {
+            "get-content" | "cat" | "gc" | "type" | "select-string" | "sls" | "get-item"
+            | "test-path" | "resolve-path" => false,
+            "get-childitem" => powershell_recursive(args),
+            _ => true,
+        },
+        Shell::Cmd => match key {
+            "type" => false,
+            "dir" | "findstr" => cmd_recursive(args),
+            _ => true,
+        },
+    }
 }

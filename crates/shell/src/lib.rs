@@ -196,7 +196,10 @@ struct Reading {
 impl Reading {
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
         let split = unit::split(command, shell, effect);
-        let resolver = path::Resolver::new(paths);
+        let mut resolver = path::Resolver::new(paths);
+        if effect {
+            resolver.keep(paths);
+        }
         let findings = detect::findings(&split, &resolver);
         Self {
             split,
@@ -249,5 +252,5 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
     let reading = Reading::new(command, shell, paths, true);
-    effect::of(&reading.split, &reading.findings, &reading.resolver, paths)
+    effect::of(&reading.split, &reading.findings, &reading.resolver)
 }

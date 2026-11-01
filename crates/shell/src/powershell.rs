@@ -591,7 +591,9 @@ const SWITCHES: [&str; 17] = [
 ];
 
 /// Parameters that take a value, which a prefix also names.
-const VALUES: [&str; 45] = [
+const VALUES: [&str; 47] = [
+    "depth",
+    "attributes",
     "path",
     "literalpath",
     "destination",
