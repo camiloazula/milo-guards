@@ -776,14 +776,15 @@ impl Resolver {
         // `/Volumes/Macintosh HD`): on any other system those paths do not
         // exist, and reading them as the root would make a path that
         // creates folders outside the workspace look inside it.
-        let home = Loc::absolute(&paths.home.to_string_lossy());
-        let mac = matches!(home.root, Root::Unix)
-            && home
-                .clone()
-                .firm()
-                .parts
-                .first()
-                .is_some_and(|first| first.eq_ignore_ascii_case("Users"));
+        let mac = {
+            let home = Loc::absolute(&paths.home.to_string_lossy());
+            matches!(home.root, Root::Unix)
+                && home
+                    .firm()
+                    .parts
+                    .first()
+                    .is_some_and(|first| first.eq_ignore_ascii_case("Users"))
+        };
         let absolute = |text: &std::path::Path| {
             let loc = Loc::absolute(&text.to_string_lossy());
             if mac {
