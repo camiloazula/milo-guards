@@ -513,7 +513,10 @@ of their strictest, so each family below was added on that test.
   `delete|destroy table|chain` are risky, and so is a `flush`, `delete` or
   `destroy` of an object not known to be a set, map, rule or the like
   (`nft flush $what`), or a command word only known when it runs; `-d` and
-  `--debug` take a level, as `-f` and `-I` take a value. `ufw disable`,
+  `--debug` take a level, as `-f` and `-I` take a value. Under `-j` or
+  `--json` (or a prefix of it, or inside a bundle such as `-aj`) the operands
+  are JSON, which is not read, so any `{` or `[` in them is risky
+  (`nft -j list ruleset` is safe). `ufw disable`,
   `reset` and `default allow` for `incoming`, `routed`, no direction (which
   means incoming) or an unknown one; `ufw default allow outgoing` is ufw's
   stock default and is safe. `firewall-cmd --panic-on` and

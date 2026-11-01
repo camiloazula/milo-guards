@@ -478,9 +478,21 @@ impl Checker<'_> {
     /// removes a table or chain, or names something not read, is risky.
     fn nft(&mut self, args: &[Arg]) {
         let words = getopt_operands(args, "fIDd", &["file", "includepath", "define", "debug"]);
-        if nft_commands(&words)
+        // Under `-j` the operands are JSON, which is not read: any object or
+        // array in them could hold a flush.
+        let json = short_options(args, "fIDd")
             .iter()
-            .any(|command| nft_empties(command))
+            .any(|(letter, _)| *letter == 'j')
+            || has_long(args, "json", 1);
+        let holds_json = json
+            && words.iter().any(|arg| match arg {
+                Arg::Known(text) | Arg::Template { text, .. } => text.contains(['{', '[']),
+                Arg::Unknown(_) | Arg::Input => false,
+            });
+        if holds_json
+            || nft_commands(&words)
+                .iter()
+                .any(|command| nft_empties(command))
         {
             self.add(Rule::SystemSettings, "changes the firewall", None);
         }

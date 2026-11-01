@@ -973,3 +973,31 @@ fn firewall_cmd_takes_a_unique_prefix_of_a_long_option() {
         "firewall-cmd --set-default=trusted",
     ]);
 }
+
+// What the second review found: `nft -j` reads JSON commands.
+
+#[test]
+fn nft_json_operands_are_not_read() {
+    risky(&[
+        "nft -j '{\"nftables\": [{\"flush\": {\"ruleset\": null}}]}'",
+        "nft --json '{\"nftables\":[{\"flush\":{\"ruleset\":null}}]}'",
+        "nft -aj '{\"nftables\":[{\"flush\":{\"ruleset\":null}}]}'",
+        "nft -ja '[{\"flush\":{\"ruleset\":null}}]'",
+        "nft --js '{\"nftables\":[]}'",
+        "nft --j '{\"nftables\":[]}'",
+        "nft -j add table x '[1]'",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "nft -j list ruleset",
+            "nft -j list table inet filter",
+            "nft --json list ruleset",
+            "nft -aj list tables",
+            "nft -f rules.json -j",
+            "nft -dj list ruleset",
+        ],
+        &[],
+    );
+}
