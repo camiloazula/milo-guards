@@ -82,10 +82,11 @@ judges that host: decimal (`2130706433`), octal (`0177.0.0.1`), hex
 (`0x7f.1`), shortened (`127.1`), mixed, with leading zeros, with a trailing dot,
 percent-escaped (`%31%32%37.0.0.1`), in full-width digits or with the
 ideographic full stop (`127。0。0。1`), and IPv6 with an IPv4 inside. For a name,
-case, a trailing dot, full-width letters and zero-width characters are gone
-before it is judged (`ｌｏｃａｌｈｏｓｔ` is `localhost`), and an international
-name is its `xn--` form. A zone id (`[fe80::1%25en0]`) is not a URL to the
-parser, so it is unreadable.
+case is folded, a trailing dot is dropped, full-width letters are mapped to plain
+ones and a soft hyphen is removed before it is judged (`ｌｏｃａｌｈｏｓｔ` is
+`localhost`), and an international name is its `xn--` form. A zero-width
+joiner (U+200C, U+200D) makes the URL unreadable; see [Spelling](#spelling). A
+zone id (`[fe80::1%25en0]`) is not a URL to the parser, so it is unreadable.
 
 ### Addresses
 
@@ -119,13 +120,14 @@ turned it into ASCII.
   `http://intranet/`), decided as `local_address` and not safe: every public
   host has at least a name under a top-level one.
 - A name ending in `.local`, `.internal`, `.home.arpa`, `.lan`, `.localdomain`,
-  `.intranet`, `.corp`, `.home`, `.private`, `.test` or `.example` is a name
-  only a local network answers. (`.test` and `.example` are reserved for tests,
+  `.intranet`, `.svc` (a Kubernetes service), `.corp`, `.home`, `.private`, `.test` or
+  `.example` is a name only a local network answers. (`.test` and `.example` are reserved for tests,
   and local development servers answer for them.)
 - A name under a **rebinding service** answers with the address written in it,
   or with loopback, so the name says nothing about where the request goes:
   `nip.io`, `sslip.io`, `xip.io`, `traefik.me`, `localtest.me`, `lvh.me`,
-  `vcap.me`, `lacolhost.com`, `local.gd`, `localdev.me`, `fuf.me`. A name under
+  `vcap.me`, `lacolhost.com`, `local.gd`, `localdev.me`, `fuf.me`, `localho.st`,
+  `localhost.direct`, `1u.ms`, `rbndr.us`. A name under
   one is `local_address`, whole: reading the embedded address out of the name
   would be a second parser to get wrong, and nothing a fetch is for needs it.
 - Otherwise the name is public only when its last label is two to 63 letters, or
@@ -190,6 +192,12 @@ to find a form where two clients could read two hosts. Such a URL is
   `127.0.0.1`), or `http:\\host`;
 - no `//` right before the host (`http:/host`, `http:host`, `http:///host`);
 - a percent sign in the host;
+- a name with a character the two IDNA standards read differently: `ß` is
+  `ss` to an IDNA2003 client (Python's `idna` codec, older libraries) and
+  itself to the parser, so `127.0.0.1.ßlip.io` is `127.0.0.1.sslip.io` to one
+  and `xn--lip-4ka.io` to the other. `ß`, `ς` and the joiners U+200C and U+200D
+  are read the older way as well (`ss`, `σ`, dropped), that name is judged
+  too, and the URL is `unreadable` whatever it says;
 - an IPv4 address spelled any way but four plain decimal numbers with no leading
   zero. `010.0.0.1` is `8.0.0.1` to the parser and `10.0.0.1` to a client that
   reads every number as decimal; `0x7f.1` and `2130706433` are one address,
@@ -222,7 +230,9 @@ through its octets and groups.
   from a rebinding service whatever it embeds, an underscore in a host name, a
   public IPv4 address spelled in hex, octal, decimal, with a trailing dot or
   with a leading zero, a percent-encoded host, an address in a documentation
-  range, a URL with no scheme (`example.com`) or longer than 8 192 bytes.
+  range, a name with `ß`, `ς` or a joiner (`https://faß.de/`, which is
+  `unreadable` for the differential alone), a URL with no scheme (`example.com`)
+  or longer than 8 192 bytes.
 - **An odd but public IPv6** (a compatible address with a public IPv4 inside,
   `::1.2.3.4`) is safe, as a client reaches nothing local by it.
 - Ports are not judged: `http://example.com:22/` is safe.

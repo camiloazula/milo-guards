@@ -319,7 +319,6 @@ fn international_names_are_safe_unless_they_decode_to_a_local_one() {
             "https://xn--r8jz45g.jp/",
             "https://XN--R8JZ45G.JP/",
             "https://münchen.de/",
-            "https://straße.de/",
             "https://пример.рф/",
             "https://xn--e1afmkfd.xn--p1ai/",
             "https://ı.com/",
@@ -407,4 +406,63 @@ fn a_metadata_name_in_other_spellings() {
         [Rule::LocalAddress]
     );
     assert!(on_posix("https://metadata.example.com/").is_safe());
+}
+
+#[test]
+fn a_name_the_two_idna_standards_read_differently_is_judged_both_ways() {
+    // `ß` is `ss` to IDNA2003 clients (Python's `idna` codec, older
+    // libraries) and itself to the parser: `127.0.0.1.ßlip.io` is
+    // `127.0.0.1.sslip.io`, a rebinding service, to them.
+    for url in [
+        "http://127.0.0.1.ßlip.io/",
+        "http://ßlip.io/",
+        "http://a.ßlip.io:8080/x",
+        "http://me@127.0.0.1.ßlip.io/",
+        "http://loca\u{3c2}lhost/",
+        "http://localhos\u{3c2}.localhost/",
+    ] {
+        let found = rules(url, on_posix);
+        assert!(found.contains(&Rule::Unreadable), "{url}: {found:?}");
+    }
+    for url in [
+        "http://127.0.0.1.ßlip.io/",
+        "http://ßlip.io/",
+        "http://a.ßlip.io:8080/x",
+    ] {
+        assert!(rules(url, on_posix).contains(&Rule::LocalAddress), "{url}");
+    }
+    // The name the older reading gives is the host judged, too.
+    assert_eq!(
+        rules("http://169.254.169.254.ßlip.io/", on_posix),
+        [Rule::LocalAddress, Rule::Unreadable]
+    );
+    // The differential is a finding even for an ordinary name: an accepted
+    // false alarm.
+    assert_eq!(rules("https://faß.de/", on_posix), [Rule::Unreadable]);
+    assert_eq!(rules("https://straße.de/", on_posix), [Rule::Unreadable]);
+    // The same text in a path, or as a punycode label, is no differential.
+    assert!(on_posix("https://example.com/straße").is_safe());
+    assert!(on_posix("https://xn--fa-hia.de/").is_safe());
+}
+
+#[test]
+fn the_names_of_known_local_services() {
+    all_break(
+        Rule::LocalAddress,
+        &[
+            "http://localho.st/",
+            "http://a.localho.st/",
+            "http://localhost.direct/",
+            "http://a.localhost.direct/",
+            "http://1u.ms/",
+            "http://a.1u.ms/",
+            "http://7f000001.c0a80001.rbndr.us/",
+            "http://rbndr.us/",
+            "http://kubernetes.default.svc/",
+            "http://my-service.my-namespace.svc/",
+            "http://kubernetes.default.svc.cluster.local/",
+            "http://svc/",
+        ],
+    );
+    assert!(on_posix("https://svc.example.com/").is_safe());
 }

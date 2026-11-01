@@ -193,6 +193,18 @@ pub fn judge(url: &str, paths: &Paths) -> Assessment {
         findings.push(finding(Rule::LocalFile, reason, Some(path)));
     }
     let ipv4 = judge_host(&parsed, &mut findings);
+    // A name the parser and an IDNA2003 client read differently is judged as
+    // both, and is unreadable itself.
+    if let Some(older) = shape::written_host(text).and_then(shape::idna2003) {
+        if let Ok(host) = Host::parse(&older) {
+            push_verdict(&host, &mut findings);
+        }
+        findings.push(finding(
+            Rule::Unreadable,
+            "spells a name that older clients read differently",
+            None,
+        ));
+    }
     if matches!(scheme, "http" | "https") {
         if let Some(why) = shape::odd(text, scheme, ipv4) {
             findings.push(finding(Rule::Unreadable, why.to_string(), None));
@@ -252,7 +264,12 @@ fn judge_host(parsed: &Url, findings: &mut Vec<Finding>) -> bool {
         }
         other => other.to_owned(),
     };
-    let (verdict, ipv4) = match &host {
+    push_verdict(&host, findings)
+}
+
+/// Judge `host`, pushing what it finds. Returns whether it is an IPv4 address.
+fn push_verdict(host: &Host<String>, findings: &mut Vec<Finding>) -> bool {
+    let (verdict, ipv4) = match host {
         Host::Domain(name) => (host::name(name), false),
         Host::Ipv4(address) => (host::v4(address.octets()), true),
         Host::Ipv6(address) => (host::v6(address.segments()), false),

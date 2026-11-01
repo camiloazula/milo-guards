@@ -51,8 +51,11 @@ pub(crate) const LOOPBACK_NAME: &str = "localhost";
 /// `home.arpa`, the `internal` ending ICANN set aside for private use, and
 /// the endings routers, Windows domains and local development servers use by
 /// habit. A public name never ends in one of them.
-pub(crate) const NETWORK_SUFFIXES: [&str; 11] = [
+pub(crate) const NETWORK_SUFFIXES: [&str; 12] = [
     "local",
+    // Kubernetes: `kubernetes.default.svc` (and `.svc.cluster.local`, under
+    // `.local`) names a service inside a cluster.
+    "svc",
     "internal",
     "home.arpa",
     "lan",
@@ -76,7 +79,7 @@ pub(crate) const NETWORK_SUFFIXES: [&str; 11] = [
 /// This is a list of what is known; any public name can point at a private
 /// address through its own DNS, and a guard that does no lookup cannot see
 /// that.
-pub(crate) const REBINDING: [&str; 11] = [
+pub(crate) const REBINDING: [&str; 15] = [
     "nip.io",
     "sslip.io",
     "xip.io",
@@ -88,6 +91,10 @@ pub(crate) const REBINDING: [&str; 11] = [
     "local.gd",
     "localdev.me",
     "fuf.me",
+    "localho.st",
+    "localhost.direct",
+    "1u.ms",
+    "rbndr.us",
 ];
 
 /// The longest URL read, in bytes. A URL this long is not one an agent

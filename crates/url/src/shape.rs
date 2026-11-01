@@ -45,6 +45,40 @@ pub(crate) fn odd(text: &str, scheme: &str, ipv4: bool) -> Option<&'static str> 
     None
 }
 
+/// The host of `text` as it is written, between the last `@` of the authority
+/// and its port (an IP literal in brackets is returned whole): `None` when there is no `://` to start an authority at.
+pub(crate) fn written_host(text: &str) -> Option<&str> {
+    let (_, after) = text.split_once("://")?;
+    let end = after.find(['/', '?', '#', '\\']).unwrap_or(after.len());
+    let authority = &after[..end];
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    if host.starts_with('[') {
+        return Some(host);
+    }
+    Some(host.rsplit_once(':').map_or(host, |(name, _port)| name))
+}
+
+/// A host name read the IDNA2003 way, when it holds a character the two
+/// standards read differently: `ß` is `ss`, `ς` is `σ`, and the zero-width
+/// joiners are dropped. The parser keeps them (`ßlip.io` is `xn--lip-4ka.io`),
+/// and a client on the older standard (Python's `idna` codec, older
+/// libraries) reads `sslip.io`: two hosts. `None` when the name holds none.
+pub(crate) fn idna2003(host: &str) -> Option<String> {
+    if !host.contains(['\u{df}', '\u{3c2}', '\u{200c}', '\u{200d}']) {
+        return None;
+    }
+    let mut mapped = String::with_capacity(host.len() + 2);
+    for c in host.chars() {
+        match c {
+            '\u{df}' => mapped.push_str("ss"),
+            '\u{3c2}' => mapped.push('\u{3c3}'),
+            '\u{200c}' | '\u{200d}' => {}
+            c => mapped.push(c),
+        }
+    }
+    Some(mapped)
+}
+
 /// Four decimal numbers from 0 to 255 with no leading zero: the one spelling
 /// of an IPv4 address every client reads the same way. `010.0.0.1` is
 /// `8.0.0.1` to the parser and to `inet_aton`, and `10.0.0.1` to a client
@@ -90,6 +124,30 @@ mod tests {
         ] {
             assert!(!plain_ipv4(text), "{text}");
         }
+    }
+
+    #[test]
+    fn the_host_is_read_from_the_authority_as_written() {
+        for (text, host) in [
+            ("http://example.com/a", "example.com"),
+            ("http://me:pw@example.com:80/", "example.com"),
+            ("http://a@b@faß.de?x", "faß.de"),
+            ("http://[::1]:80/", "[::1]:80"),
+            ("ftp://host#x", "host"),
+        ] {
+            assert_eq!(written_host(text), Some(host), "{text}");
+        }
+        assert_eq!(written_host("file:///x"), Some(""));
+        assert_eq!(written_host("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn a_deviation_character_is_read_the_older_way() {
+        assert_eq!(idna2003("faß.de").as_deref(), Some("fass.de"));
+        assert_eq!(idna2003("loca\u{3c2}").as_deref(), Some("loca\u{3c3}"));
+        assert_eq!(idna2003("a\u{200c}b\u{200d}c").as_deref(), Some("abc"));
+        assert_eq!(idna2003("example.com"), None);
+        assert_eq!(idna2003("例え.jp"), None);
     }
 
     #[test]
