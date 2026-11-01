@@ -115,12 +115,72 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// Whether the script it runs is a download (`Invoke-Expression` given
+    /// `(iwr url)`), which only runs when it does.
+    pub(crate) downloaded: bool,
+    /// The `Get-Process` listings written inside the arguments of a
+    /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
+    pub(crate) listings: Vec<Listing>,
+    /// Whether a value given to a `Stop-Process` in a `ForEach-Object` block
+    /// is built on `$_` into something other than the item or one of its
+    /// own members (`$_.Parent`, `$_ + 1`): not the processes the pipeline
+    /// hands it.
+    pub(crate) unread_item: bool,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+}
+
+/// A `Get-Process` written inside an argument: its own arguments, and what
+/// follows it before the value is used.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Listing {
+    pub(crate) args: Vec<Arg>,
+    pub(crate) between: Vec<Between>,
+}
+
+/// A stage between a `Get-Process` listing and the `Stop-Process` it feeds.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Between {
+    /// `Where-Object`, with its arguments (a block that is a simple
+    /// comparison is read into `Name -eq value`).
+    Where(Vec<Arg>),
+    /// `Sort-Object`, and a `Select-Object` that only picks (see
+    /// [`Between::select`]): some of the same processes.
+    Narrows,
+    /// Anything else, which may hand on processes the listing did not.
+    Other,
+}
+
+impl Between {
+    /// A `Select-Object` stage given `args`: it keeps some of the same
+    /// processes, unless it is given `-ExpandProperty` (any prefix of three
+    /// letters or more, written `-exp` or `-exp:Parent`) or a calculated
+    /// property (a hashtable or a script block), which hand on other
+    /// objects, such as a process's parent.
+    pub(crate) fn select(args: &[Arg]) -> Self {
+        let hands_on = args.iter().any(|arg| {
+            let text = arg.text().trim_start();
+            if matches!(arg, Arg::Known(_)) {
+                let name = text
+                    .strip_prefix('-')
+                    .and_then(|name| name.split(':').next());
+                name.is_some_and(|name| {
+                    name.len() >= 3 && "expandproperty".starts_with(&name.to_ascii_lowercase())
+                })
+            } else {
+                text.starts_with("@{") || text.starts_with('{')
+            }
+        });
+        if hands_on {
+            Self::Other
+        } else {
+            Self::Narrows
+        }
+    }
 }
 
 /// Where and how a unit's paths are read: the folder an earlier `cd` moved
@@ -143,6 +203,9 @@ impl Unit {
             reads: Reads::Nothing,
             dir: None,
             hidden: false,
+            downloaded: false,
+            listings: Vec::new(),
+            unread_item: false,
             depth: 0,
         }
     }
@@ -327,12 +390,11 @@ pub(crate) struct Split {
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
     /// The drive the line is on (upper case), which cmd's `cd` without `/d`
-    /// does not leave; `None` when it is not known.
-    drive: Option<char>,
-    /// Whether `drive` is certain. A `cd /d`, `pushd` or `D:` to another
-    /// drive makes it a guess: it may sit in a branch, in a pipe stage or
-    /// behind `start`, or fail, and then the line never left its drive.
-    drive_sure: bool,
+    /// does not leave; `None` when it is not known. Beside it, whether it is
+    /// certain: a `cd /d`, `pushd` or `D:` to another drive makes it a guess,
+    /// as it may sit in a branch, in a pipe stage or behind `start`, or fail,
+    /// and then the line never left its drive.
+    drive: (Option<char>, bool),
     /// The drive the home directory is on (upper case), `None` when it is
     /// on no drive: where a path that starts at home (`~`, which cmd's
     /// `%TEMP%` and `%USERPROFILE%` become) is.
@@ -455,8 +517,7 @@ pub(crate) struct Began {
 #[derive(Debug, Clone)]
 pub(crate) struct Place {
     dir: Option<Arg>,
-    drive: Option<char>,
-    drive_sure: bool,
+    drive: (Option<char>, bool),
     moves: usize,
     later: usize,
 }
@@ -526,18 +587,10 @@ impl Split {
         }
         if let Some((target, origin)) = moves_from(&unit) {
             let effect = match unit.shell {
-                Shell::Cmd => cmd_effect(
-                    &unit,
-                    (&target, origin),
-                    (self.drive, self.drive_sure),
-                    self.home_drive,
-                ),
-                Shell::PowerShell => ps_effect(
-                    &unit,
-                    (&target, origin),
-                    (self.drive, self.drive_sure),
-                    self.home_drive,
-                ),
+                Shell::Cmd => cmd_effect(&unit, (&target, origin), self.drive, self.home_drive),
+                Shell::PowerShell => {
+                    ps_effect(&unit, (&target, origin), self.drive, self.home_drive)
+                }
                 Shell::Posix => Effect::Moves(None, false),
             };
             match effect {
@@ -546,8 +599,7 @@ impl Split {
                     self.moves += 1;
                     self.moved += 1;
                     self.dir = Some(Arg::Unknown(target.text().to_string()));
-                    self.drive = drive;
-                    self.drive_sure = false;
+                    self.drive = (drive, false);
                 }
                 Effect::Moves(drive, sure) => {
                     self.moves += 1;
@@ -563,8 +615,7 @@ impl Split {
                         }
                         dir => dir,
                     });
-                    self.drive = drive;
-                    self.drive_sure = sure && drive.is_some();
+                    self.drive = (drive, sure && drive.is_some());
                 }
             }
         }
@@ -859,7 +910,6 @@ impl Split {
         Place {
             dir: self.dir.clone(),
             drive: self.drive,
-            drive_sure: self.drive_sure,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -880,7 +930,6 @@ impl Split {
         }
         self.dir = place.dir;
         self.drive = place.drive;
-        self.drive_sure = place.drive_sure;
         self.moves = place.moves;
     }
 
@@ -1361,8 +1410,7 @@ pub(crate) fn split(
 ) -> Split {
     let fresh = |psdrive: bool| {
         let mut split = Split {
-            drive,
-            drive_sure: drive.is_some(),
+            drive: (drive, drive.is_some()),
             home_drive,
             psdrive,
             ..Split::default()

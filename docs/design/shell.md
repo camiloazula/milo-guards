@@ -478,23 +478,223 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy. |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
-| `run_downloaded` | Runs a script it downloads. |
+| `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
-| `stop_system` | Shuts the computer down, restarts it, or stops every process. |
+| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
 
 The wire names never change. A reason is a few plain words that follow from
 the rule: `deletes your home directory`, `runs code the guard does not read`.
+
+### Stopping processes by name
+
+`killall`, `pkill`, `taskkill` and `Stop-Process` (also `kill`, `spps`) are
+judged one way. Stopping a process by a plain name is everyday work (your own
+dev server, `killall Finder`) and is safe: `killall node` and `pkill node` are
+the same line. It is `stop_system` when the line stops more than a name:
+
+- **Every process.** A pattern that matches every process: `pkill -f .`,
+  `pkill ''`, `pkill '.*'`, `killall -r .`, `Stop-Process -Name *`,
+  `taskkill /IM *`. `pkill` and `killall -r` read a regular expression, and the
+  guard asks whether every match must hold a letter or digit the expression
+  spells out; `a*`, `(a|)`, `^` and `\w` do not. An expression it cannot read
+  (an unclosed `(` or `[`) counts as matching everything. `Stop-Process -Name`
+  and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
+  after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
+  process but the ones named) are always `stop_system`.
+- **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
+  `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
+  `taskkill /FI "USERNAME eq me"`, given no name. With a name
+  (`pkill -u me node`) it is the name that is judged. `killall -c name` is a
+  name too, judged as the operands are (`killall -c loginwindow`,
+  `killall -m -c .`).
+- **Every process a selection picks.** `pkill` given no pattern stops whatever
+  its selection picks: `-P`/`--parent`, `-s`/`--session` and `-g`/`--pgroup` of
+  0 or 1, or of a value only known when it runs (`pkill -P 1`, the children of
+  `launchd` or `init`, which is every app and daemon; `pkill -s 0`, the
+  session of the shell that runs the line, which is the terminal's processes;
+  `pkill -P "$(pgrep -x launchd)"`), and `-O`/`--older`, `-r`/`--runstates`,
+  `--cgroup`, `--ns`, `--nslist`, `--env`, `-t`/`--terminal` with any value
+  (`pkill --older 1`, `pkill -t ttys000`). `pkill -P $$` (the shell's own
+  children, read by its source text), `pkill -F pids.txt`, `pkill -s 1234` and
+  `pkill -P 1 node` (the name is judged) are not. A value an option takes is
+  never a pattern (`pkill -q 1 -u me`, `-r R`).
+- **Every process a filter picks.** `taskkill` given a filter and no `/IM` or
+  `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
+  "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
+  `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
+  stops the programs that hang, are read; with `/IM`, `/PID` or an
+  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
+  names are judged.
+- **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
+  `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
+  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `.exe` or a folder in front (`killall /sbin/init` picks the process by its
+  file, so the last part of the name is the name). `pkill` and `killall
+  -r`/`-m` search their regular expression in the name, so it is compared two
+  ways, per alternative: whole, without its anchors and brackets (`^init$`,
+  `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
+  can match a system name at all. A name is searched for in the system name:
+  `pkill login`, `pkill launch` and `pkill Window` stop `loginwindow`,
+  `launchd` and `WindowServer`. A leading `^` wants the name to start with it,
+  a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
+  server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
+  -I`). The expression is read with its syntax, never skipped for having
+  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
+  and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
+  (an escape, a collating element, `\b`, a back reference) it is read as
+  matching more, so `pkill '[l]aunchd'`, `pkill 'log.n'`, `pkill 'login(window)?'`,
+  `pkill 'a+'` and `pkill '[[:alpha:]]x'` are `stop_system` while `pkill
+  '[n]ode'` and `pkill -f 'node.*server'` are not. Without `-f` a `/` ends
+  a folder, so what follows it is the name (`pkill '/sbin/[i]nit'`); `-f`
+  matches the whole command line, so there the pattern is also searched, `/`
+  and all, in the usual command lines of the system processes
+  (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
+  the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
+  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
+  two with (its jobs for them run `loginwindow console` and `WindowServer
+  -daemon`), and a match that is still going at the end of the line and can
+  go on into a space counts, since any further arguments are not known:
+  `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
+  -f -- -daemon`, `pkill -f 'WindowServer -daemon'` and `pkill -f 'systemd
+  --user'` are `stop_system` while `pkill -f 'node server.js'`, `pkill -f
+  vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
+  not. `killall` without
+  `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
+  matches one is the same (`Stop-Process -Name s*`).
+- **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
+  `xargs pkill`.
+- **A listing into `Stop-Process`.** `Stop-Process` is read by its own
+  parameters: `-Name` and its alias `-ProcessName`, `-Id`, `-InputObject`,
+  `-Force`, `-PassThru`, `-WhatIf`, `-Confirm` and the common ones, each
+  written in full or as any prefix that is not another's (`-N`, `-Proc`).
+  With no `-Name`, `-Id` or `-InputObject`, it stops what the first stage
+  lists: `Get-Process node | Stop-Process` is the name `node`, and any other
+  first stage (`$procs | Stop-Process`) is known only when it runs. A
+  `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
+  `Stop-Process -Id` does, and is safe; one given no name lists every
+  process. A stage between the listing and `Stop-Process` is never "every
+  process": `Where-Object` is read when it only compares `Name` or
+  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
+  `-Property Name`) keep some of the same processes; a `Select-Object` given
+  `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
+  or a script block) hands on other objects, such as a process's parent, and
+  is any other stage. Any other filter is "picked by a filter only known when
+  it runs", and any other stage, which may hand on other processes, is known
+  only when it runs. What follows a named listing, when it only picks from it,
+  can only narrow it, so the names are judged.
+  The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
+  `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
+  `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
+  of a pipeline that starts with `Get-Process`. Any other `-Id` or
+  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
+  processes the guard does not read and is safe. Only a member that is the
+  process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
+  any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
+  as `-ExpandProperty` does, and is any other stage: `Stop-Process
+  -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
+  an app's usual parent, and is `stop_system` as `((Get-Process
+  node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. The
+  same holds for `$_` in a `ForEach-Object` block after a `Get-Process`:
+  `.Id`, `.Name` and `.ProcessName` pass the listing on, and any other
+  member (`$_.Parent`, `$_.Parent.Id`, `$_.Threads`) is "stops processes only
+  known when it runs". A wrapped item is read through what only wraps it,
+  parentheses, `$( )`, `@( )`, a cast (`[int]`) and a string that is one
+  expansion (`"$($_.Id)"`): `Stop-Process ($_)` and `-Id ([int]$_.Id)` are
+  judged like the pipeline (every process after a bare `Get-Process`, the
+  name after `Get-Process node`); a value that does anything else with `$_`
+  (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
+  processes only known when it runs". After a first stage that is not a
+  `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
+  `$_` is not a process and the value is read as any other `-Id`. A
+  `Get-Process` anywhere else in the arguments, inside another command or a
+  block, is read as one such listing, once, however many there are: the
+  arguments are read in one pass that never goes below a command, so the time
+  is the line's length however deeply they nest.
+- **A fork bomb.** A function that calls itself in the background or as one
+  side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
+  `stop_system` however it is called, even when the line only defines it, and
+  however the call is written: `\f`, `"f"` and `'f'` call the function `f`, as
+  `\rm` is read as `rm`. A
+  function defined inside another is judged on its own, by its own name, and
+  its commands are not also read as the outer one's. A bomb split over two
+  functions that call each other is not read.
+
+`killall`'s and `pkill`'s options are read as they read them: bundled letters,
+`-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,
+`-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
+and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
+(`--pa 1` is `--parent 1`; a prefix that fits several is read as the
+riskier). Options written after the first name are read both ways, because
+the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
+and `pkill` stop reading options at the first name, so every later word is a
+name too, a `-u` and its user included. Every word after the first name is
+therefore also a name, with the value an option takes, and the options are
+read as well, so the riskier reading counts: `killall node -u loginwindow`,
+`killall node -s WindowServer` and `pkill node -u launchd` are `stop_system`
+(the names `loginwindow`, `WindowServer` and `launchd`), while `killall node -s
+HUP` and `pkill vite -9` are not. `pgrep` stops nothing and is safe.
+
+A caller that used to stop on `killall node` stops seeing it: it was
+`stop_system` ("stops every process with a name") and is now safe.
+
+### Unpacking archives
+
+An archive unpacked into a folder writes into that folder, and the folder is
+judged as the destination of `cp` is, by where it resolves (see Paths). With
+no folder given, it is the working directory, as moved by a `cd`. The paths
+stored inside the archive are not in the line and are not read.
+
+| Program | Folder | Writes nothing |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | `-C dir`, `-Cdir`, `--directory dir`, `--directory=dir`, `--one-top-level=dir` (every one given); an old-style first argument (`tar xf x.tar -C dir`) is read too | no `-x`/`--extract`/`--get`; `-t`, `-c`, `-r`, `-u`, `-A`, `-d`; `-O`/`--to-stdout` |
+| `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
+| `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
+| `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+
+`tar` takes a long option written as a unique prefix, which the guard reads
+for the modes and `--to-stdout` as well as `--directory`: `--ext` and `--extr`
+are `--extract` (at least three letters; `--to-s` is `--to-stdout`). A tar line
+whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
+-C ~`) is judged as if it extracted, unless a mode letter or long mode is
+read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
+
+The reasons say `unpacks into your home directory`, `unpacks into a folder
+outside the workspace`, `unpacks into a folder only known when it runs`. A
+folder that is the workspace, inside it or a temporary file is not risky.
+
+### Git tags and submodules
+
+`git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
+has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
+is `git_discard` too: it throws away the submodule's changes; without `-f`
+git refuses when there are some. Deleting a tag on a remote (`git push
+--delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+### Running a download through `Invoke-Expression`
+
+`iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
+`Invoke-Expression` (`iex`) is given a download when one of its arguments holds
+a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
+`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+(`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
+(`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
+bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
+`unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
+`unknown`.
 
 ### The rule enum is exhaustive on purpose
 

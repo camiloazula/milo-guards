@@ -53,6 +53,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs a script it downloads.
+    Downloaded,
     /// It runs commands the grammar cannot read, said in the reason.
     Opaque(&'static str),
     /// The line reads two ways and each is judged, so the riskier one
@@ -237,6 +239,11 @@ fn add_launched(
                 split.push(unit);
                 return;
             }
+            Launch::Downloaded => {
+                split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.push(unit);
+                return;
+            }
             Launch::Reads(reads) => {
                 unit.reads = reads;
                 split.push(unit);
@@ -317,6 +324,9 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        downloaded: false,
+        listings: Vec::new(),
+        unread_item: false,
         depth,
     }
 }
@@ -551,6 +561,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         }
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
+        "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
+            Launch::Downloaded
+        }
         "invoke-expression" if unit.shell == Shell::PowerShell => {
             let params = Params::read(args);
             match params
