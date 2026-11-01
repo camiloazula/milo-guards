@@ -907,8 +907,11 @@ node's `-i` and `--interactive` anywhere among its options (bun's `-i`
 installs): the code is read, and the line is `unknown`, as a bare `python3` or
 `node` is, whatever a here-document, a pipe or a redirect hands it. `node`,
 `nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`); a `--import`,
-`--loader` or `--experimental-loader` whose value is a `data:` URL (or only known
-when it runs) runs code that is not read, so the line is `unknown`, also when
+`--loader`, `--experimental-loader` or `--require` (`-r`) whose value is a
+`data:` URL, a URL from the network, a file outside the workspace (an absolute
+path, a `file:` URL, one that goes up with `../`), or only known when it runs
+(`--require ./setup.js` and `-r ts-node/register` are the workspace's own and
+its packages) runs code that is not read, so the line is `unknown`, also when
 a here-document or here-string follows it (`node --import=data:… <<'JS'`); node
 reads an underscore in the name of an option as a hyphen
 (`--experimental_loader`). So does `NODE_OPTIONS`, read as node reads it, with
@@ -1014,25 +1017,40 @@ a name set to one, what `/`, `joinpath` and `.parent` make of one) opens the
 file it names, also when its value is not known; the `open` of any other
 object is not known to open a file.
 
-**A call the reader does not know, given a path.** Code that calls something the
-reader has no row for is safe, unless it is given a path: a string that is
-absolute, in the home directory, goes up from where the code runs (`../`) or is
-a `file:` URL, or one built from the home directory, as an argument, a keyword
-argument, or in a list or a dict that is one. Such a call may read, write or
-delete the file (`numpy.fromfile('~/.ssh/id_rsa')`, `pandas.read_csv(…)`,
-`urllib.request.urlopen('file:///…')`, `fetch('file:///…')`,
-`logging.basicConfig(filename='~/.zshrc')`, `foo.rm_rf('~')`), so the line is
-`unknown`, with the reason `gives a path to a call the guard does not read`;
-when the path is a key it is `read_secret`, as for a read. What only looks at a
-name does not count: `os.path.*`, `os.listdir`, `os.scandir`, `os.walk`,
-`os.stat`, `glob.*`, `sys.path.insert`, `re.*`, `json.*`, `console.log`,
-`path.join`, `fs.existsSync`, `fs.readdirSync`, `fs.statSync`, and the methods of
-strings, lists, dictionaries, sets, paths and loggers that cut, compare, hold or
-print a path (`startswith`, `split`, `replace`, `join`, `format`, `get`, `add`,
-`append`, `exists`, `write`). A function the code defines is not one either: its
-own calls are read where they are written, and a read of its parameter is a path
-only known when it runs. The system's stores of secrets (`keyring`, `keytar`)
-are `unknown` whatever they are given.
+**A call the reader does not know.** Code that calls something the reader has
+no row for may read, write or delete a file, or run anything
+(`invoke.run('rm -rf ~')`, `numpy.fromfile('~/.ssh/id_rsa')`, `pandas.read_csv(…)`,
+`fetch('https://…')`, `logging.basicConfig(filename='~/.zshrc')`,
+`foo.rm_rf('~')`, `new (require('sqlite3').Database)('x.db')`, `Path('~').rmtree()`,
+`os.foo()`), so a call (or a `new`, or a decorator that is no call, `@foo.bar`)
+is `unknown` unless it is on an explicit list of calls that touch nothing.
+Those are: a builtin that only computes (`print`, `len`, `str`, `dir`,
+`parseInt`, `String`, `Map`, `Promise`, `setTimeout`); a function or class the
+code defines, whose own calls are read where they are written, and a method it
+defines on a value of its own (`obj.run()` with a `def run`); a function of a
+module that only looks at a name or computes (`os.path.*`, `os.getcwd`,
+`os.listdir`, `os.scandir`, `os.walk`, `os.stat`, `glob.*`, `re.*`, `json.*`,
+`math.*`, `time.*`, `datetime.*`, `sys.*`, `console.*`, `path.*`, `JSON.*`,
+`Object.*`, `Math.*`, `Date.*`, `process.cwd`, `process.argv`, `os.homedir`,
+`fs.existsSync`, `fs.readdirSync`, `fs.statSync`); and a method of a string, a
+list, a dictionary, a set, a file object, a regular expression, a promise or a
+stream on a value the code made (`startswith`, `split`, `replace`, `join`,
+`format`, `get`, `add`, `append`, `items`, `read`, `write`, `then`). A function
+of any other module (`copy` of `numpy`, `move` of `turtle`, `open` of `PIL`
+and of `webbrowser`), one that a name bound from a module stands for
+(`const F = require('foo'); F(…)`, `import x from 'foo'; x(…)`), a method of a
+`pathlib` path or any other value it has no row for (`Path(…).rmtree()`, a
+name nothing bound, `foo.go()`), a method of a call (`Connection(…).run(…)`),
+a function the code is handed (a parameter that is called), and a call of a
+call (`f()()`, `x[0]()`) are not on it. A call that is not on the list and is
+given a path, a string that is absolute, in the home directory, goes up from
+where the code runs (`../`) or is a `file:` URL, or one built from the home
+directory, as an argument, a keyword argument, or in a list or a dict that is
+one, is judged by the path: `unknown`, with the reason `gives a path to a call
+the guard does not read`, or `read_secret` when the path is a key, as for a
+read. One given none is `unknown` with the reason `runs code the guard does not
+read`. The system's stores of secrets (`keyring`, `keytar`) are `unknown`
+whatever they are given.
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -1067,9 +1085,14 @@ tilde cannot be told from it). Anything else, such as a variable or a
 computed value, is a path only known when it runs, as `rm -rf "$DIR"` is: a
 delete or a write to it is judged as a place unknown, and a read of it is
 `unknown`. A read is the one place a name is put back as the string the code
-sets it to (see [Reading a key](#what-is-not-a-finding)): a delete or a write
-to `k` is still a path only known when it runs, since a name set later or by a
-loop may be another.
+sets it to (see [Reading a key](#what-is-not-a-finding)), and only when the
+reader works out every binding of the name whole: a delete or a write to `k` is
+still a path only known when it runs, since a name set later or by a loop may be
+another. A spread (`os.path.join('/home/me', *parts)`, `Path(*parts)`,
+`.joinpath(*parts)`, `path.join(...parts)`, `path.resolve(...parts)`,
+`.concat(...parts)`) may add any parts, so the path is only known up to it: a
+read of it is `unknown`, or `read_secret` when what comes before the spread is a
+folder of keys.
 
 **What stays `unknown`**, with the reason `runs code the guard does not read`
 and the code that is the reason as the target: code that does not parse;
@@ -1113,10 +1136,17 @@ value goes to `print`); `__import__('os.path')` is `os` unless a non-empty
 runs (`child_process.execSync(process.argv[1])`, an f-string with a
 substitution) is `unknown` too. So is a read of a file whose path is not fully
 known (`open(sys.argv[1])`, `open(input())`, `open('src/' + n)`), a call it does
-not know that is given a path, and the system's stores of secrets (`keyring`,
+not know (see above), and the system's stores of secrets (`keyring`,
 `keytar`), each with the reason it gives; a key among them is `read_secret`.
-Code with none of the calls above and nothing it cannot read is safe:
-`python3 -c 'print(1+1)'`.
+So is code loaded from outside the workspace: an `import`, a dynamic `import()`
+or a `require` of a module from the network (an `http:`, `https:`, `jsr:` or
+`npm:` specifier, which is also `run_downloaded`), or of a file outside the
+workspace (an absolute path, a `file:` URL, `../x.js`), a `fork` of one, and a
+`sys.path` entry that is not a workspace folder (`sys.path.insert(0, '/tmp')`,
+`append`, `extend`, `sys.path = […]`, `sys.path += […]`), where an `import`
+looks for code. A relative `./x.js` and a package (`lodash`, `node:fs`) are the
+workspace's own. Code with none of the calls above and nothing it cannot read
+is safe: `python3 -c 'print(1+1)'`.
 
 A spread (`spawn(...args)`, `execa('rm', ...rest)`, `new Deno.Command(...args)`)
 in a call that starts a program may hold the program, its arguments or its
@@ -1145,7 +1175,8 @@ calls after them and are `unknown`.
 
 **`child_process`.** `fork(module, args, options)` runs node on a module, a file of the
 workspace's own as `node worker.js` is, so it is not read. It is `unknown` when
-the module is only known when it runs or starts with `-` (node reads it as an
+the module is outside the workspace (`fork('/tmp/x.js')`, `fork('../x.js')`),
+only known when it runs or starts with `-` (node reads it as an
 option: `fork('-e', ['code'])` runs the code), when the options name the program
 (`execPath`) or the options it runs with (`execArgv: ['-e', 'code']`), or when
 they are not an object literal that shows what it holds (a variable, a spread, a
@@ -1239,8 +1270,9 @@ octal and `\u`, JavaScript's, which also takes the legacy octal escapes
 does not decode (Python's `\N{NAME}`, a JavaScript surrogate) makes the string
 a value only known when it runs, never a guess.
 
-Calls that are not listed are not read, so code whose only way to touch a file
-is one of them (a logging file handler, a library's own writer) is safe.
+Calls that are not listed are not read, and are `unknown` unless they touch
+nothing (see above), so code whose only way to touch a file is one of them (a
+logging file handler, a library's own writer) is not safe.
 Nested code (`os.system('python3
 -c …')`, `exec("…")`) is read to the same depth limit and text budget as
 nested scripts. `bun` and `deno` given a `-` (`deno run -`, `bun -`, `bun run
@@ -1466,8 +1498,24 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   1,024 for a piece of code (there is no count per name: 65 strings with the
   key last are all read). A name that went over one of them is dropped, and a
   read of it is `unknown`, never a read of nothing. So is a name grown in place
-  (`k += '…'`). A name set in any other way (a parameter, an unpacking) is a
-  path only known when the code runs.
+  (`k += '…'`).
+
+  A name is put back as its strings only when the reader works out every
+  binding of it whole. A binding is an assignment, an augmented assignment, a
+  walrus, an unpacking target (`x, y = …`, `[x, *y] = …`, `({x} = …)`), a `for`,
+  `with`, `except`, `match` or `catch` target, a parameter, a `def`, a `class`,
+  a `global` or `nonlocal` write from a function, a `del`, a `var` declared
+  again, an increment, a property of the global object, and a write from code
+  that `exec` or `eval` runs, at any depth. One that is not a string the reader
+  gives whole (`x = sys.argv[1]`, `x = chr(47) + '…'`, `x = '…'[::-1]`,
+  `x = y[0]`, `x = g()`, `x = KEY if c else 'b'`, `x = '%s/…' % h`, any of the
+  forms above) makes a read of the name `unknown` besides the strings it was
+  set to whole, which are read as before: `read_secret` when one is a key, so
+  `x = '/home/me/.ssh/id_rsa'` followed by `x = sys.argv[1]` is a read of the
+  key, and `x = 'a.txt'` followed by it is `unknown`. A path worked out from
+  such a name is `unknown` as well, whatever the order the code writes them in.
+  A name that is only ever set in any other way (a parameter, an unpacking) is
+  a path only known when the code runs.
 - **A program that reads a secret without being given its path**: `gpg
   --export-secret-keys`, `security find-generic-password -w`, `printenv`.
 - **What leaves the machine** is `SendSecret`'s, as above: `curl -d @key` and

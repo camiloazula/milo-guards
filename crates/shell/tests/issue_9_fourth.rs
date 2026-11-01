@@ -534,14 +534,6 @@ fn an_open_call_is_a_write_only_when_its_argument_can_be_a_mode() {
         &posix(),
         &[
             // A file name, a URL, a name with an `a` in it.
-            "python3 -c \"from PIL import Image; print(Image.open('a.png').size)\"",
-            "python3 -c \"import wave; print(wave.open('a.wav').getnframes())\"",
-            "python3 -c \"import fitz; fitz.open('a.pdf')\"",
-            "python3 -c \"import webbrowser; webbrowser.open('http://localhost:8000')\"",
-            "python3 -c \"import webbrowser; webbrowser.open('https://example.com/x', new=2)\"",
-            "python3 -c \"import wave; wave.open('data.wav', 'rb')\"",
-            "python3 -c \"from PIL import Image; Image.open('x.png', 'r')\"",
-            "python3 -c \"import shelve; shelve.open('data.db', 'r')\"",
             // Reads.
             "python3 -c \"from pathlib import Path; Path('a.txt').open().read()\"",
             "python3 -c \"from pathlib import Path; Path('a.txt').open('r')\"",
@@ -615,4 +607,21 @@ fn an_open_call_is_a_write_only_when_its_argument_can_be_a_mode() {
             ),
         ],
     );
+    // A file name, a URL, a name with an `a` in it is no mode, so it is no
+    // write; but the `open` of a module the reader has no row for is a call
+    // it has no row for, so each is `unknown` and none is an overwrite.
+    for line in [
+        "python3 -c \"from PIL import Image; print(Image.open('a.png').size)\"",
+        "python3 -c \"import wave; print(wave.open('a.wav').getnframes())\"",
+        "python3 -c \"import fitz; fitz.open('a.pdf')\"",
+        "python3 -c \"import webbrowser; webbrowser.open('http://localhost:8000')\"",
+        "python3 -c \"import webbrowser; webbrowser.open('https://example.com/x', new=2)\"",
+        "python3 -c \"import wave; wave.open('data.wav', 'rb')\"",
+        "python3 -c \"from PIL import Image; Image.open('x.png', 'r')\"",
+        "python3 -c \"import shelve; shelve.open('data.db', 'r')\"",
+    ] {
+        let rules = common::rules(line, Shell::Posix, &posix());
+        assert!(rules.contains(&Rule::Unknown), "{line}: {rules:?}");
+        assert!(!rules.contains(&Rule::Overwrite), "{line}: {rules:?}");
+    }
 }

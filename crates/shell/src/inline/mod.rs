@@ -80,6 +80,12 @@ pub(super) enum Act {
     Code(Language, String),
     /// Something the reader cannot follow, as a short piece of the code.
     Unread(String),
+    /// Code loaded from the network (`import … from 'https://…'`): it is
+    /// downloaded and run, and not read.
+    Downloaded(String),
+    /// Code loaded from a file outside the workspace (`require('/tmp/x.js')`,
+    /// `fork('../x.js')`), which is not the workspace's own and is not read.
+    Loads(String),
 }
 
 /// Everything one piece of code does.
@@ -310,7 +316,26 @@ pub(super) struct Constants {
     /// Set when what was just worked out used a string that was dropped, or
     /// was cut at [`MAX_STRING`]: a read of it is then not read in full.
     pub(super) lost: bool,
+    /// The names bound in a way the reader does not work out whole (set to a
+    /// value it cannot give, unpacked, looped over, a parameter, `del`eted,
+    /// bound by nested code): whatever strings it noted for one, the name may
+    /// stand for another, so a read of it is a path that is not fully known.
+    unresolved: HashSet<String>,
+    /// The names a value was worked out from in this round: one marked
+    /// unresolved after that makes the round stale.
+    consulted: HashSet<String>,
+    /// Whether a name was marked unresolved after a value was worked out from
+    /// it in this round, which makes that value stale.
+    changed: bool,
+    /// Set when the rounds did not settle, or nested code binds names the
+    /// reader cannot list: every name is then unresolved.
+    everything: bool,
 }
+
+/// The most rounds of noting strings: one more is only needed when a name is
+/// found to be unresolved after a value was worked out from it, and each round
+/// marks one more name, so past this every name is taken as unresolved.
+pub(super) const MAX_ROUNDS: usize = 6;
 
 /// The most times one value is worked out again for a choice of strings, and
 /// the most times in all for a piece of code.
@@ -378,6 +403,13 @@ impl Constants {
     /// `+`, a join, a template). Sets [`Self::lost`] when it is a name that
     /// holds strings the reader does not give.
     pub(super) fn holds(&mut self, name: &str) -> Holds {
+        // A name that may be another string than the ones noted is no value
+        // any path worked out from it is read as.
+        if self.everything || self.unresolved.contains(name) {
+            self.lost = true;
+        } else {
+            self.consulted.insert(name.to_string());
+        }
         let Some(noted) = self.names.get(name) else {
             return Holds::Nothing;
         };
@@ -409,6 +441,38 @@ impl Constants {
                 Holds::Lost
             }
         }
+    }
+
+    /// `name` is bound in a way the reader does not work out whole. When a
+    /// value was already worked out from it in this round, that value is stale
+    /// and the round is made again.
+    pub(super) fn mark(&mut self, name: &str) {
+        if self.unresolved.insert(name.to_string()) && self.consulted.contains(name) {
+            self.changed = true;
+        }
+    }
+
+    /// Every name is unresolved: nested code binds names that cannot be
+    /// listed, or the rounds did not settle.
+    pub(super) fn everything(&mut self) {
+        self.everything = true;
+    }
+
+    /// Whether the round just made worked a value out from a name that was
+    /// marked unresolved after it.
+    pub(super) fn stale(&self) -> bool {
+        self.changed
+    }
+
+    /// Note the strings again from nothing, keeping what is unresolved.
+    pub(super) fn start_round(&mut self) {
+        self.names.clear();
+        self.bytes = 0;
+        self.evaluations = 0;
+        self.consulted.clear();
+        self.changed = false;
+        self.lost = false;
+        self.begin();
     }
 
     /// Start working a value out: no name that holds more than one string is
@@ -494,16 +558,27 @@ impl Constants {
         if count == 0 {
             return Expansion::Nothing;
         }
+        // Bound another way as well: the name may be a path not known at all,
+        // besides the ones noted.
+        let unresolved = self.everything || self.unresolved.contains(name);
+        let count = count + usize::from(unresolved);
         if self.expanded + count > MAX_EXPANDED {
             return Expansion::Lost;
         }
         self.expanded += count;
+        let Some(noted) = self.names.get(name) else {
+            return Expansion::Nothing;
+        };
         let strings = noted.strings.iter().map(|text| Arg::Known(text.clone()));
         let folders = noted
             .folders
             .iter()
             .filter_map(|folder| under(folder, code));
-        Expansion::Paths(strings.chain(folders).collect())
+        let mut paths: Vec<Arg> = strings.chain(folders).collect();
+        if unresolved {
+            paths.push(Arg::Unknown(shorten(code)));
+        }
+        Expansion::Paths(paths)
     }
 }
 
@@ -693,7 +768,7 @@ fn script_code(args: &[Arg], node: bool) -> Option<Code> {
         "input-type",
         "env-file",
     ];
-    if loads_data_url(args) {
+    if loads_foreign_code(args) {
         return None;
     }
     let mut found = Code::default();
@@ -765,11 +840,62 @@ pub(crate) fn data_url(specifier: &str) -> bool {
     cleaned.eq_ignore_ascii_case("data:")
 }
 
-/// Whether node is told to load a module from a `data:` URL before its own
-/// code (`--import`, `--loader`, `--experimental-loader`): code that runs
-/// where it is written and is not read, so the line is unknown. A value only
-/// known when it runs may be one too.
-pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
+/// Where a module a specifier names is loaded from, when it is not the
+/// workspace's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Foreign {
+    /// From the network (`https:`, `http:`) or a registry that downloads it
+    /// (`jsr:`, `npm:`).
+    Downloaded,
+    /// From a file outside the workspace: an absolute path, a `file:` URL, or
+    /// one that goes up from where the code runs (`../x.js`).
+    Outside,
+}
+
+/// Where the module `specifier` is loaded from, when it is not a file of the
+/// workspace's own (a relative `./x.js`) or a package it installed (`fs`,
+/// `node:fs`, `lodash`). As the URL parser reads it, leading control
+/// characters and spaces and any tab or newline are dropped and the scheme has
+/// no case.
+pub(super) fn foreign_module(specifier: &str) -> Option<Foreign> {
+    let cleaned: String = specifier
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let lower = cleaned.to_ascii_lowercase();
+    if ["http:", "https:", "jsr:", "npm:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+    {
+        return Some(Foreign::Downloaded);
+    }
+    let drive = {
+        let mut chars = cleaned.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+    };
+    (lower.starts_with("file:")
+        || cleaned.starts_with(['/', '\\', '~'])
+        || cleaned == ".."
+        || cleaned.starts_with("../")
+        || cleaned.starts_with("..\\")
+        || drive)
+        .then_some(Foreign::Outside)
+}
+
+/// Whether a module specifier is code that node runs where the reader does
+/// not see it: a `data:` URL (whose code runs where it is written), a module
+/// from the network, or one outside the workspace.
+fn foreign(specifier: &str) -> bool {
+    data_url(specifier) || foreign_module(specifier).is_some()
+}
+
+/// Whether node is told to load a module before its own code (`--import`,
+/// `--loader`, `--experimental-loader`, `--require`, `-r`) from a `data:`
+/// URL, the network, or a file outside the workspace: code that runs where it
+/// is written or that the guard does not read, so the line is unknown. A
+/// value only known when it runs may be one too.
+pub(crate) fn loads_foreign_code(args: &[Arg]) -> bool {
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         // The options end at the script, or at a word only known when it runs.
@@ -790,7 +916,15 @@ pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
                 {
                     iter.next();
                 }
-            } else if matches!(text, "-r" | "-C") {
+            } else if text == "-r" {
+                // `-r MODULE` is `--require`.
+                if iter
+                    .next()
+                    .is_some_and(|value| value.known().is_none_or(foreign))
+                {
+                    return true;
+                }
+            } else if text == "-C" {
                 iter.next();
             }
             continue;
@@ -801,16 +935,15 @@ pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
         };
         let name = name.replace('_', "-");
         let found = match (name.as_str(), value) {
-            ("import" | "loader" | "experimental-loader", Some(value)) => data_url(value),
-            ("import" | "loader" | "experimental-loader", None) => iter
+            ("import" | "loader" | "experimental-loader" | "require", Some(value)) => {
+                foreign(value)
+            }
+            ("import" | "loader" | "experimental-loader" | "require", None) => iter
                 .next()
-                .is_some_and(|value| value.known().is_none_or(data_url)),
+                .is_some_and(|value| value.known().is_none_or(foreign)),
             // The options whose value is the next word, which is not an
             // option of its own.
-            (
-                "eval" | "print" | "require" | "cwd" | "conditions" | "input-type" | "env-file",
-                None,
-            ) => {
+            ("eval" | "print" | "cwd" | "conditions" | "input-type" | "env-file", None) => {
                 iter.next();
                 false
             }
@@ -827,7 +960,7 @@ pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
 /// assignment, `env NODE_OPTIONS=…`, an `export` before it) load a module from
 /// a `data:` URL: node reads the variable's words as it does its own
 /// options. A value only known when it runs may.
-pub(crate) fn options_load_data_url(values: &[Arg]) -> bool {
+pub(crate) fn options_load_foreign_code(values: &[Arg]) -> bool {
     values.iter().any(|value| match value.known() {
         Some(text) => {
             // Node splits on spaces and drops the double quotes; every kind of
@@ -838,7 +971,7 @@ pub(crate) fn options_load_data_url(values: &[Arg]) -> bool {
                 .filter(|word| !word.is_empty())
                 .map(Arg::Known)
                 .collect();
-            loads_data_url(&words)
+            loads_foreign_code(&words)
         }
         None => true,
     })
@@ -1171,7 +1304,29 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
             "runs code the guard does not read",
             Some(&code),
         ),
+        Act::Downloaded(code) => {
+            split.problem(Rule::RunDownloaded, "runs code it downloads", Some(&code));
+            split.problem(
+                Rule::Unknown,
+                "runs code the guard does not read",
+                Some(&code),
+            );
+        }
+        Act::Loads(code) => split.problem(
+            Rule::Unknown,
+            "loads code from outside the workspace",
+            Some(&code),
+        ),
     }
+}
+
+/// What loading the module `specifier` does when it is not the workspace's
+/// own: downloaded and run, or a file outside it.
+pub(super) fn loads(specifier: &str, code: &str) -> Option<Act> {
+    Some(match foreign_module(specifier)? {
+        Foreign::Downloaded => Act::Downloaded(shorten(code)),
+        Foreign::Outside => Act::Loads(shorten(code)),
+    })
 }
 
 fn flag(text: &str) -> Arg {

@@ -77,10 +77,10 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 /// Whether node, given code inline or from its input, is told to run code
 /// from a `data:` URL that is not read: by its own options, or by the
 /// `NODE_OPTIONS` it is given.
-fn loads_data(key: &str, unit: &Unit, split: &Split) -> bool {
+fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
     matches!(key, "node" | "nodejs")
-        && (inline::loads_data_url(&unit.args)
-            || inline::options_load_data_url(&split.node_options))
+        && (inline::loads_foreign_code(&unit.args)
+            || inline::options_load_foreign_code(&split.node_options))
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
@@ -260,7 +260,7 @@ fn add_launched(
                     return;
                 }
                 // Code node is told to run from a `data:` URL first is not read.
-                if loads_data(&key, &unit, split) {
+                if loads_foreign(&key, &unit, split) {
                     unit.reads = Reads::Interpreter;
                     split.push(unit);
                     return;
@@ -288,7 +288,7 @@ fn add_launched(
                 // text reads that as its code, unless node is also told to load
                 // code from a `data:` URL first: that code runs and is not read,
                 // so the line stays unknown whatever its input holds.
-                let data = loads_data(&key, &unit, split);
+                let data = loads_foreign(&key, &unit, split);
                 let source = match (reads, inline::language(&key), &unit.stdin) {
                     (Reads::Interpreter, Some(language), Some(Arg::Known(code))) if !data => {
                         Some((language, code.clone()))

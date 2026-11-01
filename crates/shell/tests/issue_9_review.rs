@@ -168,13 +168,18 @@ fn a_javascript_key_that_is_not_a_plain_name_names_its_member() {
         &[
             r#"node -e 'const {"readFileSync": r} = require("fs"); r("/etc/hosts")'"#,
             r#"node -e 'const {["readFileSync"]: r} = require("fs"); r("/etc/hosts")'"#,
-            r#"node -e 'const {1: r} = require("fs"); r(1)'"#,
-            // A key looked up on an object that is not a module.
-            r"node -e 'const {[k]: r} = obj; r(1)'",
             r#"node --input-type=module -e 'import {"readFileSync" as r} from "fs"; r("/etc/hosts")'"#,
             r#"node --input-type=module -e 'import {readFileSync as r} from "fs"; r("/etc/hosts")'"#,
         ],
         &[
+            // A member of a module that is no call the reader has a row for
+            // (`fs.1`), and a key looked up on an object that is not a
+            // module, are functions it does not know when they are called.
+            (
+                r#"node -e 'const {1: r} = require("fs"); r(1)'"#,
+                Rule::Unknown,
+            ),
+            (r"node -e 'const {[k]: r} = obj; r(1)'", Rule::Unknown),
             (
                 r#"node -e 'const {"rmSync": r} = require("fs"); r("/home/me",{recursive:true})'"#,
                 Rule::Delete,

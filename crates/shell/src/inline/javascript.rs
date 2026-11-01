@@ -7,7 +7,7 @@ use tree_sitter::Node;
 
 use super::{
     environment, join, mode, named_path, path, read_path, walk, writes, Act, Ancestor, Constants,
-    Expansion, Holds, Language, Parts, Reading,
+    Expansion, Holds, Language, Parts, Reading, MAX_ROUNDS,
 };
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
@@ -383,11 +383,11 @@ fn readable_member(module: &str, property: &str) -> bool {
     members.contains(&property)
 }
 
-/// The calls, by the start of their name, that are given a path and only look
-/// at its name, give back a string made of it, or look at the metadata of a
-/// file or list a folder: they open nothing, so a path handed to one is no
-/// reason to doubt the line. A call the reader does not know that is not one
-/// of these, and is given a path, may read it, write it or delete it.
+/// The calls of a module, by the start of their name, that touch nothing:
+/// they only look at a name, give back a string made of it, compute, or look
+/// at the metadata of a file or list a folder. A call of a module the reader
+/// has no row for that is not one of these may read, write or delete a file or
+/// run anything, so the line is unknown.
 const NAMES_ONLY: &[&str] = &[
     "console.",
     "path.",
@@ -401,12 +401,55 @@ const NAMES_ONLY: &[&str] = &[
     "Promise.",
     "Buffer.",
     "Symbol.",
-    "process.stdout.",
-    "process.stderr.",
+    "process.stdout",
+    "process.stderr",
+    "process.stdin",
+    "process.versions",
+    "process.arch",
+    "process.title",
+    "process.execPath",
+    "process.release",
+    "process.exitCode",
+    "process.features",
+    "process.config",
+    "process.argv",
     "process.env",
     "process.cwd",
     "process.emitWarning",
-    "os.",
+    "process.exit",
+    "process.hrtime",
+    "process.uptime",
+    "process.memoryUsage",
+    "process.nextTick",
+    "process.on",
+    "process.once",
+    "process.platform",
+    "process.version",
+    "process.pid",
+    "os.homedir",
+    "os.tmpdir",
+    "os.platform",
+    "os.arch",
+    "os.cpus",
+    "os.hostname",
+    "os.type",
+    "os.release",
+    "os.version",
+    "os.machine",
+    "os.totalmem",
+    "os.freemem",
+    "os.uptime",
+    "os.userInfo",
+    "os.endianness",
+    "os.loadavg",
+    "os.availableParallelism",
+    "os.EOL",
+    "Bun.sleep",
+    "Bun.nanoseconds",
+    "Bun.version",
+    "Bun.env",
+    "Bun.argv",
+    "Bun.main",
     "util.",
     "assert.",
     "crypto.",
@@ -494,10 +537,140 @@ const METHODS_OF_TEXT: &[&str] = &[
     "forEach",
     "map",
     "filter",
+    "reduce",
+    "some",
+    "every",
+    "find",
+    "findIndex",
+    "flat",
+    "flatMap",
+    "reverse",
+    "sort",
+    "keys",
+    "values",
+    "entries",
+    "splice",
+    "pop",
+    "shift",
+    "fill",
+    "toFixed",
+    "toISOString",
+    "toJSON",
+    "toLocaleString",
+    "getTime",
+    "hasOwnProperty",
+    "update",
+    "digest",
+    "pipe",
+    "close",
+    "destroy",
+    "unref",
+    "ref",
+    "setEncoding",
+    "pause",
+    "resume",
+    "read",
+    "next",
+    "clear",
+    "text",
+    "json",
+    "arrayBuffer",
+    "blob",
+    "bytes",
+    "stream",
+    "exists",
+];
+
+/// The functions and classes every script has, that only compute: calling
+/// one is not a call of a module the reader has no row for.
+const GLOBAL_FUNCTIONS: &[&str] = &[
+    "String",
+    "Number",
+    "Boolean",
+    "BigInt",
+    "Symbol",
+    "Array",
+    "Object",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "WeakRef",
+    "Promise",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "EvalError",
+    "URIError",
+    "AggregateError",
+    "RegExp",
+    "Date",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "encodeURI",
+    "decodeURI",
+    "atob",
+    "btoa",
+    "structuredClone",
+    "queueMicrotask",
+    "setTimeout",
+    "setInterval",
+    "setImmediate",
+    "clearTimeout",
+    "clearInterval",
+    "clearImmediate",
+    "URL",
+    "URLSearchParams",
+    "TextEncoder",
+    "TextDecoder",
+    "Uint8Array",
+    "Int8Array",
+    "Uint16Array",
+    "Int16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "ArrayBuffer",
+    "DataView",
+    "AbortController",
 ];
 
 /// The properties of an options object whose truth means a file is written.
 const WRITE_OPTIONS: [&str; 5] = ["write", "append", "create", "createNew", "truncate"];
+
+/// Whether a node of this kind is a function or a class, which a name set to
+/// it is something to call.
+fn is_function(kind: &str) -> bool {
+    matches!(
+        kind,
+        "arrow_function" | "function_expression" | "generator_function" | "class"
+    )
+}
+
+/// Note the names one binding sets: all of them are bound, and they are not
+/// worked out as strings (`loose`) unless one plain identifier is set by a
+/// declaration or assignment the reader reads (`read`).
+fn record(
+    names: &mut Vec<String>,
+    all: &mut Vec<String>,
+    loose: &mut Vec<String>,
+    nested: bool,
+    read: bool,
+) {
+    all.extend(names.iter().cloned());
+    if nested || !read {
+        loose.append(names);
+    }
+}
 
 /// The argument a `require` call names its module in, when there is one.
 struct Source<'t>(Option<Node<'t>>);
@@ -567,6 +740,17 @@ struct Reader<'s> {
     /// read: a path the reader cannot name is no more than unknown, and a
     /// delete or a write to it is judged as such.
     constants_on: bool,
+    /// Every name the code binds itself (set, looped over, a parameter, a
+    /// function, a class, a `catch`): a call on one is a method of a value,
+    /// not a function of a module.
+    bound: HashSet<String>,
+    /// The names the code defines as something to call: a function, a class,
+    /// or a name set to an arrow function. Their own calls are read where
+    /// written.
+    callables: HashSet<String>,
+    /// The names of the methods and functions the code defines, which a
+    /// method call on a value of its own may be (`obj.run()` with a `run() {}`).
+    methods: HashSet<String>,
 }
 
 /// The shells whose `-c` reads a command line: another program named by
@@ -578,6 +762,9 @@ struct Args<'t> {
     positional: Vec<Node<'t>>,
     /// Whether a spread (`...args`) may stand for any argument.
     splat: bool,
+    /// How many arguments come before the first spread: a path joined from
+    /// them is only known up to there.
+    splat_at: Option<usize>,
 }
 
 impl<'t> Args<'t> {
@@ -585,6 +772,7 @@ impl<'t> Args<'t> {
         let mut args = Self {
             positional: Vec::new(),
             splat: false,
+            splat_at: None,
         };
         let Some(list) = call.child_by_field_name("arguments") else {
             return args;
@@ -596,7 +784,10 @@ impl<'t> Args<'t> {
         let mut cursor = list.walk();
         for child in list.named_children(&mut cursor) {
             match child.kind() {
-                "spread_element" => args.splat = true,
+                "spread_element" => {
+                    args.splat = true;
+                    args.splat_at.get_or_insert(args.positional.len());
+                }
                 "comment" => {}
                 _ => args.positional.push(child),
             }
@@ -627,6 +818,9 @@ impl<'s> Reader<'s> {
             shared: false,
             constants: Constants::default(),
             constants_on: false,
+            bound: HashSet::new(),
+            callables: HashSet::new(),
+            methods: HashSet::new(),
         }
     }
 
@@ -638,6 +832,17 @@ impl<'s> Reader<'s> {
     /// the reader does not follow. A name grown in place (`k += …`) is
     /// dropped too. Whatever else the name is set to adds none.
     fn collect_constants(&mut self, root: Node<'_>) {
+        // Every way a name is bound other than the ones read below as a
+        // string it is set to: those names are not worked out whole.
+        let mut all = Vec::new();
+        let mut loose = Vec::new();
+        if self.bindings(root, false, &mut all, &mut loose) {
+            self.constants.everything();
+        }
+        self.bound.extend(all);
+        for name in loose {
+            self.constants.mark(&name);
+        }
         let mut found = Vec::new();
         unit::for_each_node(root, |node| match node.kind() {
             "variable_declarator"
@@ -648,8 +853,29 @@ impl<'s> Reader<'s> {
             }
             _ => {}
         });
+        // A name found to be unresolved after a value was worked out from it
+        // makes that value stale: the strings are noted again, with it
+        // unresolved. Each round marks one more name, so they settle; if they
+        // do not within a few, every name is unresolved.
+        let mut round = 0;
+        loop {
+            if round == MAX_ROUNDS {
+                self.constants.everything();
+            }
+            self.constants.start_round();
+            self.note_round(&found);
+            if !self.constants.stale() || round == MAX_ROUNDS {
+                break;
+            }
+            round += 1;
+        }
+    }
+
+    /// One round of noting the strings the names are set to
+    /// ([`Self::collect_constants`]).
+    fn note_round(&mut self, found: &[Node<'_>]) {
         self.constants_on = true;
-        for node in found {
+        for &node in found {
             let looped = node.kind() == "for_in_statement";
             let (name, value) = if node.kind() == "variable_declarator" {
                 (
@@ -662,15 +888,23 @@ impl<'s> Reader<'s> {
                     node.child_by_field_name("right"),
                 )
             };
-            let (Some(name), Some(mut value)) = (name, value) else {
+            let (Some(mut name), Some(mut value)) = (name, value) else {
                 continue;
             };
+            // `(x) = …`
+            while name.kind() == "parenthesized_expression" {
+                let Some(inner) = name.named_child(0) else {
+                    break;
+                };
+                name = inner;
+            }
             if name.kind() != "identifier" {
                 continue;
             }
             let name = self.text(name);
             if node.kind() == "augmented_assignment_expression" {
                 // `k += '/id_rsa'`: a string the reader does not work out.
+                self.constants.mark(name);
                 self.constants.drop_name(name);
                 continue;
             }
@@ -683,25 +917,294 @@ impl<'s> Reader<'s> {
             }
             self.constants.lost = false;
             let mut values = Vec::new();
+            // Whether every value the name is set to is a string the reader
+            // gives whole.
+            let mut whole = true;
             if !looped {
-                values.extend(self.all_parts(value).into_iter().filter_map(Parts::value));
+                for parts in self.all_parts(value) {
+                    whole &= parts.whole;
+                    values.extend(parts.value());
+                }
             } else if value.kind() == "array" {
                 // `for (const f of ['a', 'b'])`: each in turn.
                 let mut cursor = value.walk();
                 let items: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
                 for item in items {
-                    values.extend(self.all_parts(item).into_iter().filter_map(Parts::value));
+                    if item.kind() == "comment" {
+                        continue;
+                    }
+                    for parts in self.all_parts(item) {
+                        whole &= parts.whole;
+                        values.extend(parts.value());
+                    }
                 }
+            } else {
+                whole = false;
             }
             if std::mem::take(&mut self.constants.lost) {
+                self.constants.mark(name);
                 self.constants.drop_name(name);
                 continue;
+            }
+            if !whole {
+                self.constants.mark(name);
             }
             for value in values {
                 self.constants.note(name, value);
             }
         }
         self.constants_on = false;
+    }
+
+    /// The names a binding pattern sets: `x`, `[x, ...y]`, `{ a: x, ...r }`,
+    /// `{ x = 1 }`, the parameters of a function. What is assigned to a
+    /// property or an element binds no name.
+    fn pattern_names(&self, node: Node<'_>, out: &mut Vec<String>) {
+        match node.kind() {
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                out.push(self.text(node).to_string());
+            }
+            "pair_pattern" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    self.pattern_names(value, out);
+                }
+            }
+            "assignment_pattern" | "object_assignment_pattern" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    self.pattern_names(left, out);
+                }
+            }
+            "object_pattern"
+            | "array_pattern"
+            | "rest_pattern"
+            | "parenthesized_expression"
+            | "formal_parameters" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.pattern_names(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every name `root` binds, and, of those, the ones that are not set to
+    /// a string the reader can work out whole (`loose`): an unpacking, a
+    /// parameter, a `catch`, a function or a class, an increment, a property
+    /// of the global object, and everything the literal code that `eval` runs
+    /// binds, at any depth, since it runs in this code's scope. A name set by
+    /// a plain declaration, assignment, `for` or augmented assignment is left
+    /// to [`Self::note_round`], which reads what it is set to. `nested` is
+    /// set for code inside `eval`: there every name is loose. Whether the
+    /// code nests too deeply to list them.
+    fn bindings(
+        &mut self,
+        root: Node<'_>,
+        nested: bool,
+        all: &mut Vec<String>,
+        loose: &mut Vec<String>,
+    ) -> bool {
+        let mut found = Vec::new();
+        unit::for_each_node(root, |node| match node.kind() {
+            "variable_declarator"
+            | "assignment_expression"
+            | "augmented_assignment_expression"
+            | "for_in_statement"
+            | "update_expression"
+            | "formal_parameters"
+            | "arrow_function"
+            | "catch_clause"
+            | "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
+            | "class_declaration"
+            | "class"
+            | "method_definition"
+            | "pair"
+            | "call_expression" => {
+                found.push(node);
+            }
+            _ => {}
+        });
+        let mut deep = false;
+        for node in found {
+            let mut names = Vec::new();
+            // Whether the name is read by `note_round` when it is one
+            // identifier.
+            let mut read = false;
+            let mut callable = false;
+            match node.kind() {
+                "variable_declarator" => {
+                    // `let x;` binds nothing a read can see.
+                    if node.child_by_field_name("value").is_none() {
+                        continue;
+                    }
+                    if let Some(name) = node.child_by_field_name("name") {
+                        self.pattern_names(name, &mut names);
+                        read = name.kind() == "identifier";
+                    }
+                    callable = node
+                        .child_by_field_name("value")
+                        .is_some_and(|value| is_function(value.kind()));
+                }
+                "assignment_expression" | "augmented_assignment_expression" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        let mut plain = left;
+                        while plain.kind() == "parenthesized_expression" {
+                            let Some(inner) = plain.named_child(0) else {
+                                break;
+                            };
+                            plain = inner;
+                        }
+                        self.pattern_names(left, &mut names);
+                        read = plain.kind() == "identifier";
+                        // `globalThis.x = …`, `this.x = …`: the global `x`;
+                        // `globalThis[k] = …` is any name.
+                        if let (Some(object), true) = (
+                            left.child_by_field_name("object"),
+                            matches!(left.kind(), "member_expression" | "subscript_expression"),
+                        ) {
+                            let global = self
+                                .qualified(object, 0)
+                                .is_some_and(|name| name == GLOBAL || name == THIS);
+                            if global && left.kind() == "subscript_expression" {
+                                deep = true;
+                            } else if let (true, Some(property)) =
+                                (global, left.child_by_field_name("property"))
+                            {
+                                names.push(self.text(property).to_string());
+                            }
+                        }
+                    }
+                    callable = node
+                        .child_by_field_name("right")
+                        .is_some_and(|value| is_function(value.kind()));
+                }
+                "for_in_statement" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        self.pattern_names(left, &mut names);
+                        read = left.kind() == "identifier";
+                    }
+                }
+                "update_expression" => {
+                    if let Some(argument) = node.child_by_field_name("argument") {
+                        self.pattern_names(argument, &mut names);
+                    }
+                }
+                "formal_parameters" => self.pattern_names(node, &mut names),
+                "arrow_function" => {
+                    if let Some(parameter) = node.child_by_field_name("parameter") {
+                        self.pattern_names(parameter, &mut names);
+                    }
+                    record(&mut names, all, loose, nested, read);
+                    continue;
+                }
+                "catch_clause" => {
+                    if let Some(parameter) = node.child_by_field_name("parameter") {
+                        self.pattern_names(parameter, &mut names);
+                    }
+                }
+                "function_declaration"
+                | "generator_function_declaration"
+                | "function_expression"
+                | "generator_function"
+                | "class_declaration"
+                | "class" => {
+                    if let Some(name) = node.child_by_field_name("name") {
+                        self.pattern_names(name, &mut names);
+                        self.callables.extend(names.iter().cloned());
+                        if node.kind().contains("function") {
+                            self.methods.extend(names.iter().cloned());
+                        }
+                    }
+                }
+                // `{ run() {} }` and a class's methods, `{ run: () => 1 }`.
+                "method_definition" | "pair" => {
+                    let function = node.kind() == "method_definition"
+                        || node
+                            .child_by_field_name("value")
+                            .is_some_and(|value| is_function(value.kind()));
+                    if let (true, Some(key)) = (
+                        function,
+                        node.child_by_field_name("name")
+                            .or_else(|| node.child_by_field_name("key")),
+                    ) {
+                        self.methods.insert(self.text(key).to_string());
+                    }
+                    continue;
+                }
+                "call_expression" => {
+                    deep |= self.nested_bindings(node, all, loose);
+                    // The global object handed to a call (`Object.assign(
+                    // globalThis, {…})`) may have any name set on it.
+                    let args = Args::read(node);
+                    for argument in args.positional {
+                        deep |= self
+                            .qualified(argument, 0)
+                            .is_some_and(|name| name == GLOBAL);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            if callable {
+                self.callables.extend(names.iter().cloned());
+            }
+            record(&mut names, all, loose, nested, read);
+        }
+        deep
+    }
+
+    /// The names bound by literal code that the call `node` runs in this
+    /// code's scope (`eval('x = 1')`), at any depth. Whether the nesting is
+    /// too deep to list them.
+    fn nested_bindings(
+        &mut self,
+        node: Node<'_>,
+        all: &mut Vec<String>,
+        loose: &mut Vec<String>,
+    ) -> bool {
+        let Some(function) = node.child_by_field_name("function") else {
+            return false;
+        };
+        let name = self.qualified(function, 0);
+        if name.as_deref().and_then(kind) != Some(Kind::Eval) {
+            return false;
+        }
+        let args = Args::read(node);
+        let Some(piece) = args.get(0).filter(|piece| piece.kind() == "string") else {
+            return false;
+        };
+        let Some(text) = self.value(piece, 0) else {
+            return false;
+        };
+        if self.nesting + 1 >= unit::MAX_DEPTH {
+            return true;
+        }
+        let ended = end_hashbang(&text);
+        let Some(tree) = parse(&ended) else {
+            return false;
+        };
+        let inner_root = tree.root_node();
+        if inner_root.has_error() {
+            return false;
+        }
+        let mut inner = Reader::new(
+            &ended,
+            self.aliases.clone(),
+            self.modules.clone(),
+            self.nesting + 1,
+        );
+        let mut inner_all = Vec::new();
+        let mut inner_loose = Vec::new();
+        let deep = inner.bindings(inner_root, true, &mut inner_all, &mut inner_loose);
+        self.callables.extend(inner.callables);
+        self.methods.extend(inner.methods);
+        // Every name the nested code binds is one of this code's.
+        all.extend(inner_all);
+        loose.extend(inner_loose);
+        deep
     }
 
     /// The file the first argument names, written or read.
@@ -1105,11 +1608,16 @@ impl<'s> Reader<'s> {
         let Some(source) = node.child_by_field_name("source") else {
             return;
         };
-        if self
-            .literal(source)
-            .is_none_or(|specifier| super::data_url(&specifier))
-        {
+        let specifier = self.literal(source);
+        if specifier.as_deref().is_none_or(super::data_url) {
             self.reading.unread(self.text(node));
+        }
+        // Code from the network, or from a file outside the workspace.
+        if let Some(act) = specifier
+            .as_deref()
+            .and_then(|specifier| super::loads(specifier, self.text(node)))
+        {
+            self.reading.acts.push(act);
         }
     }
 
@@ -1313,6 +1821,21 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// The positional arguments of a call joined as `path.join` does, up to a
+    /// spread (`...args`), which may add any parts.
+    fn joined_args(&mut self, args: &Args<'_>, level: usize) -> Parts {
+        let known = args.splat_at.unwrap_or(args.positional.len());
+        let parts = self.joined(
+            String::new(),
+            args.positional.get(..known).unwrap_or(&[]),
+            level,
+        );
+        if args.splat_at.is_some() && parts.whole {
+            return Parts::partial(join(&parts.text, ""));
+        }
+        parts
+    }
+
     /// Each of `nodes` joined to `text` as `path.join` does: the start known
     /// when one of them is only known when the code runs.
     fn joined(&mut self, mut text: String, nodes: &[Node<'_>], level: usize) -> Parts {
@@ -1342,7 +1865,7 @@ impl<'s> Reader<'s> {
         let whole = |text: &str| Parts::whole(text.to_string());
         match name.as_deref() {
             Some("path.join" | "path.resolve") => {
-                let parts = self.joined(String::new(), &args.positional, level);
+                let parts = self.joined_args(&args, level);
                 if parts.whole && parts.text.is_empty() {
                     whole(".")
                 } else {
@@ -1372,7 +1895,8 @@ impl<'s> Reader<'s> {
                     // `'/home/me/.ssh/'.concat(name)`.
                     "concat" if matches!(receiver.kind(), "string" | "template_string") => {
                         let mut parts = self.parts(receiver, level + 1);
-                        for node in &args.positional {
+                        let known = args.splat_at.unwrap_or(args.positional.len());
+                        for node in args.positional.iter().take(known) {
                             if !parts.whole {
                                 break;
                             }
@@ -1384,6 +1908,10 @@ impl<'s> Reader<'s> {
                             if self.constants.over(self.constants_on, &parts.text) {
                                 return Parts::unknown();
                             }
+                        }
+                        // A spread may add any parts: the path is known up to it.
+                        if args.splat_at.is_some() && parts.whole {
+                            parts.whole = false;
                         }
                         parts
                     }
@@ -1704,6 +2232,14 @@ impl<'s> Reader<'s> {
             }
             Some(Kind::Require) => {
                 let source = requires.and_then(|found| found.0).or_else(|| args.get(0));
+                // Code from the network, or from a file outside the workspace.
+                let specifier = source.and_then(|node| self.literal(node));
+                if let Some(act) = specifier
+                    .as_deref()
+                    .and_then(|specifier| super::loads(specifier, self.text(call)))
+                {
+                    self.reading.acts.push(act);
+                }
                 if source.is_none_or(|node| self.literal(node).is_none()) {
                     self.reading.unread(self.text(call));
                 } else if self.escapes(call, field, above) {
@@ -1747,7 +2283,7 @@ impl<'s> Reader<'s> {
                 self.method(function, name.as_deref(), call);
                 // A call the reader does not know is given a path.
                 if self.reading.acts.len() == before {
-                    self.unmodeled(function, name.as_deref(), &args);
+                    self.unmodeled(function, name.as_deref(), &args, call);
                 }
             }
         }
@@ -1758,11 +2294,16 @@ impl<'s> Reader<'s> {
             let awaited = above
                 .last()
                 .is_some_and(|parent| parent.node.kind() == "await_expression");
+            let specifier = args.get(0).and_then(|node| self.literal(node));
+            // Code from the network, or from a file outside the workspace.
+            if let Some(act) = specifier
+                .as_deref()
+                .and_then(|specifier| super::loads(specifier, self.text(call)))
+            {
+                self.reading.acts.push(act);
+            }
             // The code in a `data:` URL runs where it is written.
-            let data = args
-                .get(0)
-                .and_then(|node| self.literal(node))
-                .is_some_and(|specifier| super::data_url(&specifier));
+            let data = specifier.as_deref().is_some_and(super::data_url);
             if !awaited || data || self.escapes(call, field, above) {
                 self.reading.unread(self.text(call));
             }
@@ -2044,6 +2585,13 @@ impl<'s> Reader<'s> {
     /// shows what it holds.
     fn fork(&mut self, args: &Args<'_>, call: Node<'_>) {
         let module = args.get(0).and_then(|node| self.value(node, 0));
+        // A module outside the workspace is not the workspace's own code.
+        if let Some(act) = module
+            .as_deref()
+            .and_then(|module| super::loads(module, self.text(call)))
+        {
+            self.reading.acts.push(act);
+        }
         let mut reads = module.is_some_and(|module| !module.starts_with('-')) && !args.splat;
         for node in args.positional.iter().skip(1) {
             match node.kind() {
@@ -2182,31 +2730,21 @@ impl<'s> Reader<'s> {
         }));
     }
 
-    /// A call the reader does not know (not a delete, a write, a read or a
-    /// command it follows) that is given a path, as a string or built from
-    /// the home directory: it may read it, write it or delete it, so the
-    /// line is `unknown`, unless the path is a key (`read_secret`). A call
-    /// that only looks at the name of a path, a method of a string, an array
-    /// or a map, and a function the code defines (whose own calls are read
-    /// where they are written) are not given a path in this sense.
-    fn unmodeled(&mut self, function: Node<'_>, name: Option<&str>, args: &Args<'_>) {
-        match function.kind() {
-            "identifier" => {
-                if !name.is_some_and(|name| name.contains('.') || name == "fetch") {
-                    return;
-                }
-            }
-            "member_expression" => {
-                let Some(method) = function.child_by_field_name("property") else {
-                    return;
-                };
-                if METHODS_OF_TEXT.contains(&self.text(method)) {
-                    return;
-                }
-            }
-            _ => return,
-        }
-        if name.is_some_and(|name| NAMES_ONLY.iter().any(|start| name.starts_with(start))) {
+    /// A call the reader has no row for (not a delete, a write, a read or a
+    /// command it follows), also a `new`: it may read, write or delete a
+    /// file, or run anything, so the line is `unknown`, unless the call is one
+    /// of an explicit list of calls that touch nothing
+    /// ([`Self::touches_nothing`]). When it is given a path, as a string or
+    /// built from the home directory, the path is what is judged: `unknown`,
+    /// or `read_secret` when it is a key.
+    fn unmodeled(
+        &mut self,
+        function: Node<'_>,
+        name: Option<&str>,
+        args: &Args<'_>,
+        call: Node<'_>,
+    ) {
+        if self.touches_nothing(function, name) {
             return;
         }
         let mut given = Vec::new();
@@ -2221,11 +2759,88 @@ impl<'s> Reader<'s> {
                 _ => given.push(*node),
             }
         }
+        let before = self.reading.acts.len();
         for node in given {
             if let Some(path) = self.value(node, 0).as_deref().and_then(named_path) {
                 self.reading.acts.push(Act::Opaque(path));
             }
         }
+        if self.reading.acts.len() == before {
+            self.reading.unread(self.text(call));
+        }
+    }
+
+    /// Whether a call the reader has no row for touches nothing: a global
+    /// function or class that only computes (`String`, `parseInt`, `Map`), a
+    /// function or class the code defines (its own calls are read where they
+    /// are written), a function of a module that only looks at names or
+    /// computes (`path`, `JSON`, `Object`, `console`), or a method of a
+    /// string, an array, a map, a promise or a stream on a value of the
+    /// code's own. Anything else (a function of any other module, one a name
+    /// bound from a module stands for, a method it has no row for, a call of a
+    /// call) is not.
+    fn touches_nothing(&mut self, function: Node<'_>, name: Option<&str>) -> bool {
+        let mut function = function;
+        // `(function () {…})()`, `(x => …)()`.
+        while function.kind() == "parenthesized_expression" {
+            let Some(inner) = function.named_child(0) else {
+                return false;
+            };
+            function = inner;
+        }
+        match function.kind() {
+            // A function written where it is called: its body is read there.
+            // `super(…)` and `import(…)` are read where they are.
+            "arrow_function"
+            | "function_expression"
+            | "generator_function"
+            | "class"
+            | "super"
+            | "import" => true,
+            "identifier" => {
+                let text = self.text(function);
+                match self.aliases.get(text) {
+                    Some(resolved) => Self::names_only(resolved),
+                    None => GLOBAL_FUNCTIONS.contains(&text) || self.callables.contains(text),
+                }
+            }
+            "member_expression" => {
+                let Some(property) = function.child_by_field_name("property") else {
+                    return false;
+                };
+                let method = self.text(property);
+                if let Some(name) = name {
+                    // A chain of names: of a module, an import or a name
+                    // nothing here bound, or of a value of the code's own.
+                    let mut root = function;
+                    while let Some(object) = root
+                        .child_by_field_name("object")
+                        .filter(|_| root.kind() == "member_expression")
+                    {
+                        root = object;
+                    }
+                    let module = match root.kind() {
+                        "identifier" => {
+                            let root = self.text(root);
+                            self.aliases.contains_key(root) || !self.bound.contains(root)
+                        }
+                        "this" => false,
+                        _ => true,
+                    };
+                    if module {
+                        return Self::names_only(name);
+                    }
+                }
+                METHODS_OF_TEXT.contains(&method) || self.methods.contains(method)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the call of the dotted name `name` is one of the functions of
+    /// a module that only look at names or compute.
+    fn names_only(name: &str) -> bool {
+        NAMES_ONLY.iter().any(|start| name.starts_with(start))
     }
 
     /// A name or property used without being called: an alias of a call the
