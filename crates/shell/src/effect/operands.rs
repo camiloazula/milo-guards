@@ -118,7 +118,7 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
         }
     }
     let opened = path_args(unit, key);
-    let how = reach::how(unit, key);
+    let how = reach::how(unit, key, context.landed.is_some());
     // A folder `-C` names is judged like a place; where it lands is the
     // repository's, which the folders chained together make.
     for dir in &opened.dirs {

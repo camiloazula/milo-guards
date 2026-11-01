@@ -311,9 +311,10 @@ pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
 /// - [`How::Tree`]: a folder the program walks, or whose names it hands to a
 ///   program that opens them (`ls src | xargs cat`, `find src -exec cat {} +`).
 ///   Canonicalize the root. When `follows_links` is `false` (`grep -r`, `rg`,
-///   `find`, `ls -R`, `git`) that is the whole check. When it is `true` (`grep
-///   -R`, `rg -L`, `find -L`, a walk whose names are opened, any reader the
-///   guard does not know to stay out of links) a link anywhere below the root
+///   `find`, `ls -R`, `du`, `git`, given only flags known not to follow links)
+///   that is the whole check. When it is `true` (`grep -R`, `rg -L`, `find -L`,
+///   `ls -RL`, `du -L`, a walk whose names are opened, any other flag, any
+///   reader the guard does not know to stay out of links) a link anywhere below the root
 ///   can lead out, and a caller may simply treat the line as reading beyond
 ///   the workspace.
 ///

@@ -65,10 +65,12 @@ pub(super) enum Walk {
 }
 
 /// How `unit`, a reader known as `key`, reads.
-pub(super) fn how(unit: &Unit, key: &str) -> Manner {
+pub(super) fn how(unit: &Unit, key: &str, paths: bool) -> Manner {
     let deep = deep(unit, key);
     let walk = match () {
         () if !deep || moves_to(unit).is_some() => Walk::No,
+        // How a walk treats links is only asked for by the paths.
+        () if !paths => Walk::No,
         () if follows_links(unit, key) => Walk::Follows,
         () => Walk::Stays,
     };
@@ -208,9 +210,22 @@ fn folder_read(text: &str, shell: Shell) -> (String, Option<String>) {
         _ if drive && folder == "." => body[..2].to_string(),
         _ => folder,
     };
-    // The folder is the front of the body, unless none is written (`.`).
-    let rest = body.strip_prefix(folder.as_str()).unwrap_or(body);
-    let rest = rest.trim_start_matches(flavour_separators(shell));
+    // The rest is what is written after the folder, as written. When no
+    // folder is written the folder is `.`, which is not in the text: a
+    // leading dot is part of the pattern (`.a*/x`, `.*`).
+    let separators = flavour_separators(shell);
+    let rest = match body.strip_prefix(folder.as_str()) {
+        Some(rest)
+            if rest.is_empty()
+                || rest.starts_with(separators)
+                || folder.ends_with(separators)
+                || folder.ends_with(':') =>
+        {
+            rest
+        }
+        _ => body,
+    };
+    let rest = rest.trim_start_matches(separators);
     (format!("{prefix}{folder}"), Some(rest.to_string()))
 }
 
@@ -472,28 +487,380 @@ fn deep(unit: &Unit, key: &str) -> bool {
     }
 }
 
+/// The flags of one walker that are known not to make it open what it finds
+/// through symbolic links, for [`follows_links`]. Everything else is not on
+/// the list.
+struct Flags {
+    /// Short flags that take no value, in a bundle (`-rn`).
+    short: &'static str,
+    /// Short flags that take a value, attached or in the next word: the rest
+    /// of the bundle is that value.
+    valued: &'static str,
+    /// Long flags that take no value, spelled out (an abbreviation is not on
+    /// the list: programs read it, so it could be any flag).
+    long: &'static [&'static str],
+    /// Long flags that take a value (`--glob=x` or `--glob x`).
+    long_valued: &'static [&'static str],
+    /// Words with a single dash, for the programs that spell their flags so
+    /// (`find -name`). Empty for the rest, whose single dash is a bundle.
+    words: &'static [&'static str],
+}
+
+const LS: Flags = Flags {
+    short: "aAlhFpdRrtSucUfgGinosCxmqbBk1",
+    valued: "ITw",
+    long: &[
+        "all",
+        "almost-all",
+        "human-readable",
+        "recursive",
+        "reverse",
+        "classify",
+        "directory",
+        "inode",
+        "numeric-uid-gid",
+        "size",
+        "group-directories-first",
+        "literal",
+        "hide-control-chars",
+        "si",
+        "no-group",
+        "author",
+        "escape",
+    ],
+    long_valued: &[
+        "color",
+        "sort",
+        "time",
+        "format",
+        "time-style",
+        "hide",
+        "ignore",
+        "block-size",
+        "width",
+        "tabsize",
+        "indicator-style",
+        "quoting-style",
+    ],
+    words: &[],
+};
+
+const DU: Flags = Flags {
+    short: "ahkmscxbSP0",
+    valued: "dBt",
+    long: &[
+        "all",
+        "human-readable",
+        "summarize",
+        "total",
+        "one-file-system",
+        "apparent-size",
+        "bytes",
+        "separate-dirs",
+        "count-links",
+        "si",
+        "no-dereference",
+        "null",
+        "inodes",
+    ],
+    long_valued: &[
+        "max-depth",
+        "block-size",
+        "threshold",
+        "exclude",
+        "time",
+        "time-style",
+    ],
+    words: &[],
+};
+
+const GREP: Flags = Flags {
+    short: "abcEFGhHiIlLnoOpPqrsTUvVwxyzZ",
+    valued: "efmABCDd",
+    long: &[
+        "recursive",
+        "ignore-case",
+        "no-ignore-case",
+        "line-number",
+        "count",
+        "files-with-matches",
+        "files-without-match",
+        "no-messages",
+        "quiet",
+        "silent",
+        "invert-match",
+        "word-regexp",
+        "line-regexp",
+        "only-matching",
+        "no-filename",
+        "with-filename",
+        "extended-regexp",
+        "fixed-strings",
+        "perl-regexp",
+        "basic-regexp",
+        "text",
+        "null",
+        "null-data",
+        "initial-tab",
+        "no-group-separator",
+        "byte-offset",
+        "unix-byte-offsets",
+    ],
+    long_valued: &[
+        "regexp",
+        "file",
+        "max-count",
+        "after-context",
+        "before-context",
+        "context",
+        "include",
+        "exclude",
+        "exclude-dir",
+        "exclude-from",
+        "color",
+        "colour",
+        "binary-files",
+        "devices",
+        "directories",
+        "label",
+        "group-separator",
+    ],
+    words: &[],
+};
+
+const RG: Flags = Flags {
+    short: "nNiIsSuUvwxlcqoHhzaFP.",
+    valued: "ABCefgjmMrtTE",
+    long: &[
+        "ignore-case",
+        "case-sensitive",
+        "smart-case",
+        "line-number",
+        "no-line-number",
+        "with-filename",
+        "no-filename",
+        "files-with-matches",
+        "files-without-match",
+        "count",
+        "count-matches",
+        "only-matching",
+        "quiet",
+        "invert-match",
+        "word-regexp",
+        "line-regexp",
+        "fixed-strings",
+        "hidden",
+        "no-heading",
+        "heading",
+        "no-ignore",
+        "no-ignore-vcs",
+        "unrestricted",
+        "multiline",
+        "text",
+        "binary",
+        "pcre2",
+        "json",
+        "stats",
+        "files",
+        "vimgrep",
+        "column",
+        "null",
+        "trim",
+        "no-messages",
+        "no-config",
+        "pretty",
+    ],
+    long_valued: &[
+        "regexp",
+        "file",
+        "glob",
+        "iglob",
+        "type",
+        "type-not",
+        "max-count",
+        "after-context",
+        "before-context",
+        "context",
+        "max-depth",
+        "threads",
+        "replace",
+        "color",
+        "colors",
+        "sort",
+        "sortr",
+        "max-columns",
+        "encoding",
+        "max-filesize",
+    ],
+    words: &[],
+};
+
+const FD: Flags = Flags {
+    short: "HIsiaFpg0",
+    valued: "etEdSj",
+    long: &[
+        "hidden",
+        "no-ignore",
+        "no-ignore-vcs",
+        "case-sensitive",
+        "ignore-case",
+        "glob",
+        "fixed-strings",
+        "absolute-path",
+        "full-path",
+        "print0",
+    ],
+    long_valued: &[
+        "extension",
+        "type",
+        "exclude",
+        "max-depth",
+        "min-depth",
+        "size",
+        "color",
+        "threads",
+        "changed-within",
+        "changed-before",
+    ],
+    words: &[],
+};
+
+const FIND: Flags = Flags {
+    short: "",
+    valued: "",
+    long: &[],
+    long_valued: &[],
+    words: &[
+        "-H",
+        "-P",
+        "-name",
+        "-iname",
+        "-path",
+        "-ipath",
+        "-wholename",
+        "-iwholename",
+        "-regex",
+        "-iregex",
+        "-regextype",
+        "-type",
+        "-size",
+        "-mtime",
+        "-atime",
+        "-ctime",
+        "-mmin",
+        "-amin",
+        "-cmin",
+        "-newer",
+        "-empty",
+        "-perm",
+        "-user",
+        "-group",
+        "-uid",
+        "-gid",
+        "-nouser",
+        "-nogroup",
+        "-maxdepth",
+        "-mindepth",
+        "-depth",
+        "-prune",
+        "-print",
+        "-print0",
+        "-printf",
+        "-quit",
+        "-o",
+        "-a",
+        "-and",
+        "-or",
+        "-not",
+        "-readable",
+        "-writable",
+        "-executable",
+        "-links",
+        "-inum",
+        "-true",
+        "-false",
+        "-mount",
+        "-xdev",
+        "-noleaf",
+        "-ls",
+    ],
+};
+
+/// Whether every flag in `args` is one `flags` lists. What is not a flag (an
+/// operand, a pattern, a value) is not judged; a flag that is only partly
+/// known is not on the list.
+fn only_listed(args: &[Arg], flags: &Flags) -> bool {
+    for arg in args {
+        let Some((head, tail)) = shape(arg) else {
+            return false;
+        };
+        if head == "--" && !tail {
+            return true;
+        }
+        // A number is the value of a test (`find -mtime -3`), not a flag.
+        let number = !flags.words.is_empty()
+            && head.len() > 1
+            && head.starts_with('-')
+            && head[1..].chars().all(|c| c.is_ascii_digit());
+        if !head.starts_with('-') || head == "-" || number {
+            continue;
+        }
+        if tail {
+            return false;
+        }
+        let listed = if let Some(long) = head.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or_default();
+            flags.long.contains(&name) || flags.long_valued.contains(&name)
+        } else if !flags.words.is_empty() {
+            flags.words.contains(&head)
+        } else {
+            let mut bundle = head[1..].chars();
+            loop {
+                match bundle.next() {
+                    None => break true,
+                    Some(letter) if flags.valued.contains(letter) => break true,
+                    Some(letter) if flags.short.contains(letter) => {}
+                    Some(_) => break false,
+                }
+            }
+        };
+        if !listed {
+            return false;
+        }
+    }
+    true
+}
+
 /// Whether the reader, when it goes below the folders it names, opens what it
-/// finds through symbolic links. A whitelist of the readers known to stay out
-/// of them: `grep -r` (not `-R`), `rg` and `fd` (not `-L`, `--follow`), `find`
-/// (not `-L`, `-follow`, and no `-exec` or `-ok`, which open the names it
-/// finds), `ls`, `du` and `git`. Any other reader, a reader added later and
-/// everything in PowerShell and cmd included, is taken to follow them.
+/// finds through symbolic links. It does not only when it is on this list of
+/// walkers that stay out of them and every flag it is given is one that
+/// walker's own list says does not change that: `ls -R` and `du` (not `-L`,
+/// `-H`, `--dereference`), `grep -r` (not `-R`, `-S`), `rg` and `fd` (not
+/// `-L`, `--follow`), `find` (not `-L`, `-follow`, `-xtype`, and no `-exec` or
+/// `-ok`, which open the names it finds), and `git`, which reads the index and
+/// the objects and takes a link as a link (not `--no-index`). Any other flag,
+/// an abbreviation of one included, or any other reader, a reader added later
+/// and everything in PowerShell and cmd included, is taken to follow them.
+/// `find -H` and `grep -O` follow only the folder named on the command line,
+/// which is the root, and stay on the list.
 fn follows_links(unit: &Unit, key: &str) -> bool {
     if unit.shell != Shell::Posix {
         return true;
     }
     let args = unit.args.as_slice();
-    match key {
-        "grep" | "egrep" | "fgrep" => asks(args, "R", &["dereference-recursive"]),
-        "rg" | "fd" => asks(args, "L", &["follow"]),
-        "find" => args.iter().any(|arg| match arg.known() {
-            None => true,
-            Some(text) => matches!(
-                text,
-                "-L" | "-follow" | "-exec" | "-execdir" | "-ok" | "-okdir"
-            ),
-        }),
-        "ls" | "du" | "git" => false,
-        _ => true,
-    }
+    let flags = match key {
+        "ls" => &LS,
+        "du" => &DU,
+        "grep" | "egrep" | "fgrep" => &GREP,
+        "rg" => &RG,
+        "fd" => &FD,
+        "find" => &FIND,
+        "git" => {
+            return args
+                .iter()
+                .any(|arg| arg.known().is_none_or(|text| text == "--no-index"));
+        }
+        _ => return true,
+    };
+    !only_listed(args, flags)
 }

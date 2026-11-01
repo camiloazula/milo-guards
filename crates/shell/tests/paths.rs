@@ -704,6 +704,214 @@ fn each_entry_says_how_it_is_read() {
     );
 }
 
+/// The rest of a pattern is what is written after its fixed folder, as
+/// written, so the caller expands the same pattern: a leading dot is part of
+/// it when the pattern starts at the working directory.
+#[test]
+fn a_leading_dot_stays_in_the_rest_of_a_pattern() {
+    let src = "/home/me/work/repo/src";
+    let rows: &[(&str, &[ReadPath])] = &[
+        ("cat .a*/x", &[glob(ROOT, ".a*/x")]),
+        ("cat .??/x", &[glob(ROOT, ".??/x")]),
+        ("cat .*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
+        ("ls .*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
+        ("cat .[a-z]*/x", &[glob(ROOT, ".[a-z]*/x")]),
+        ("cat ./*.rs", &[glob(ROOT, "*.rs")]),
+        ("cat ./.*", &[exact("/home/me/work"), glob(ROOT, ".*")]),
+        ("cat a.*", &[glob(ROOT, "a.*")]),
+        ("cat src/.*rc", &[glob(src, ".*rc")]),
+        ("cat src/.[a-z]*/x", &[glob(src, ".[a-z]*/x")]),
+        (
+            "cat x/.*",
+            &[exact(ROOT), glob("/home/me/work/repo/x", ".*")],
+        ),
+        ("cat ~/.*rc", &[glob("/home/me", ".*rc")]),
+        (
+            "cat ../.*",
+            &[exact("/home/me"), glob("/home/me/work", ".*")],
+        ),
+        ("cat /.*", &[exact("/"), glob("/", ".*")]),
+        (
+            "cat src/*.rs lib/*.rs",
+            &[glob("/home/me/work/repo/lib", "*.rs"), glob(src, "*.rs")],
+        ),
+        ("cat ?x/y", &[glob(ROOT, "?x/y")]),
+        ("cat src/[ab]/x", &[glob(src, "[ab]/x")]),
+    ];
+    let wrong: Vec<String> = rows
+        .iter()
+        .filter_map(|(line, want)| {
+            let got = effect_paths(line, Shell::Posix, &posix());
+            (got.as_deref() != Some(*want))
+                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    // The folder and the rest, put together, are the pattern as written.
+    for line in [
+        "cat .a*/x",
+        "cat .*",
+        "cat src/.*rc",
+        "cat a.*",
+        "cat src/*/x.rs",
+    ] {
+        let pattern = line.strip_prefix("cat ").unwrap();
+        let reads = effect_paths(line, Shell::Posix, &posix()).unwrap();
+        let joined = reads.iter().any(|read| match &read.how {
+            How::Glob(rest) => {
+                let folder = read.path.to_string_lossy();
+                let whole = format!("{folder}/{rest}");
+                whole == format!("{ROOT}/{pattern}")
+            }
+            _ => false,
+        });
+        assert!(joined, "{line}: {reads:?}");
+    }
+    // The same in PowerShell and cmd.
+    let win = windows();
+    let root = r"C:\Users\me\dev\repo";
+    assert_eq!(
+        effect_paths("Get-Content .a*\\x", Shell::PowerShell, &win),
+        Some(vec![glob(root, ".a*\\x")])
+    );
+    assert_eq!(
+        effect_paths("type .*", Shell::Cmd, &win)
+            .unwrap()
+            .into_iter()
+            .filter(|read| matches!(read.how, How::Glob(_)))
+            .collect::<Vec<_>>(),
+        vec![glob(root, ".*")]
+    );
+}
+
+/// A walker stays out of links only when every flag it is given is one its
+/// own list says does not change that: any other flag, an abbreviation
+/// included, and any reader that is not listed, follows them.
+#[test]
+fn a_walk_stays_out_of_links_only_with_flags_known_not_to_follow_them() {
+    let src = "/home/me/work/repo/src";
+    let rows: &[(&str, bool)] = &[
+        // Stays out.
+        ("ls -R src", false),
+        ("ls -laR src", false),
+        ("ls -R -a src", false),
+        ("ls --recursive src", false),
+        ("ls --recursive --all --color=never src", false),
+        ("du -sh src", false),
+        ("du -a src", false),
+        ("du -d 2 src", false),
+        ("du --max-depth=2 src", false),
+        ("du -P src", false),
+        ("grep -r x src", false),
+        ("grep -rn x src", false),
+        ("grep -rniI x src", false),
+        ("grep -rn --include='*.rs' x src", false),
+        ("grep -r -e x -e y src", false),
+        ("grep -rA3 x src", false),
+        ("grep -rO x src", false),
+        ("grep -rp x src", false),
+        ("grep -r -- -L src", false),
+        ("grep --recursive x src", false),
+        ("rg x src", false),
+        ("rg -n --no-heading x src", false),
+        ("rg -g '*.rs' x src", false),
+        ("rg -A3 -i x src", false),
+        ("rg --glob=*.rs --hidden x src", false),
+        ("rg -t rust x src", false),
+        ("fd x src", false),
+        ("fd -e rs -H x src", false),
+        ("fd -t f x src", false),
+        ("find src", false),
+        ("find src -name x -type f", false),
+        ("find src -name x -type f -print0", false),
+        ("find -H src", false),
+        ("find src -maxdepth 2 -mtime -3", false),
+        ("git status", false),
+        ("git log -p --stat", false),
+        // Follows: a flag that opens through links.
+        ("ls -RL src", true),
+        ("ls -LR src", true),
+        ("ls -R -L src", true),
+        ("ls --dereference -R src", true),
+        ("ls -RH src", true),
+        ("ls -R --dereference-command-line src", true),
+        ("du -L src", true),
+        ("du -aL src", true),
+        ("du --dereference src", true),
+        ("du -H src", true),
+        ("grep -R x src", true),
+        ("grep -rS x src", true),
+        ("grep -r -S x src", true),
+        ("grep --dereference-recursive x src", true),
+        ("rg -L x src", true),
+        ("rg -uL x src", true),
+        ("rg --follow x src", true),
+        ("fd -L x src", true),
+        ("fd -HL x src", true),
+        ("fd --follow x src", true),
+        ("find -L src", true),
+        ("find src -follow", true),
+        ("find src -name x -follow", true),
+        ("find src -xtype l", true),
+        ("find src -exec cat {} +", true),
+        (r"find src -execdir cat {} ;", true),
+        (r"find src -ok cat {} ;", true),
+        // Follows: any other flag, and an abbreviation.
+        ("ls -R --recurs src", true),
+        ("ls -R --colo src", true),
+        ("ls -R -Z src", true),
+        ("du --max src", true),
+        ("grep -r --recurs x src", true),
+        ("grep -r --binary x src", true),
+        ("grep -r -X x src", true),
+        ("rg --max-c 3 x src", true),
+        ("rg --no-follow x src", true),
+        ("rg --some-new-flag x src", true),
+        ("fd --max-d 2 x src", true),
+        ("find src -fstype ext4", true),
+        ("find src -newerct x", true),
+        ("git diff --no-index a b", true),
+        // Follows: a reader the guard does not know to stay out of links.
+        ("diff -r a b", true),
+        ("diff -r --no-dereference a b", true),
+    ];
+    let wrong: Vec<String> = rows
+        .iter()
+        .filter_map(|(line, follows)| {
+            let got = effect_paths(line, Shell::Posix, &posix());
+            // The walk is the one root the row names; a row's other reads
+            // do not matter, only whether any walk follows links.
+            let follows_any = got.as_ref().map(|reads| {
+                reads.iter().any(|read| {
+                    read.how
+                        == How::Tree {
+                            follows_links: true,
+                        }
+                })
+            });
+            let walks = got.as_ref().is_some_and(|reads| {
+                reads
+                    .iter()
+                    .any(|read| matches!(read.how, How::Tree { .. }))
+            });
+            (follows_any != Some(*follows) || !walks)
+                .then(|| format!("{line}\n    want follows_links {follows}\n    got  {got:?}"))
+        })
+        .collect();
+    let _ = src;
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 #[test]
 fn powershell_and_cmd_walks_are_taken_to_follow_links() {
     let win = windows();

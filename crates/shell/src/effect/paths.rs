@@ -38,7 +38,8 @@ pub enum How {
     /// folder the pattern expands in, and this is the rest of the pattern, as
     /// written, below it: the whole pattern is the folder, a separator and
     /// this (`src/*/x.rs` is `src` and `*/x.rs`; `*.rs` is the working
-    /// directory and `*.rs`). The caller expands the pattern on disk the way
+    /// directory and `*.rs`; `.a*/x` is the working directory and `.a*/x`, the
+    /// leading dot kept). The caller expands the pattern on disk the way
     /// the shell does (a wildcard may match a leading dot: match it, to be
     /// safe), and canonicalizes the folder and every match. A link the
     /// expansion crosses (`src/a -> ~`) shows in a match.
@@ -47,14 +48,15 @@ pub enum How {
     /// repository `git` reads), or hands the names of to a program that opens
     /// them. The caller canonicalizes the root. `follows_links` says the
     /// program opens what it finds through symbolic links (`grep -R`,
-    /// `rg -L`, `find -L`, `find -exec cat`, `ls | xargs cat`, `diff -r`, any
-    /// walk the guard does not know for sure to stay out of links): then a
+    /// `grep -rS`, `rg -L`, `find -L`, `find -exec cat`, `ls -RL`, `du -L`,
+    /// `ls | xargs cat`, `diff -r`, any walk the guard does not know for sure to
+    /// stay out of links, any flag a walker's own list does not name): then a
     /// link anywhere below the root can lead out of the workspace, which only
     /// walking the folder on disk would show. A caller may simply treat a
     /// walk that follows links as reading beyond the workspace. When it is
     /// `false` the program does not cross links it meets below the root
-    /// (`grep -r`, `rg`, `find`, `ls -R`, `git`), and canonicalizing the root
-    /// is the whole check.
+    /// (`grep -r`, `rg`, `find`, `ls -R`, `du`, `git`, given only flags known not
+    /// to follow them), and canonicalizing the root is the whole check.
     Tree {
         /// Whether the program opens what it finds through links.
         follows_links: bool,
