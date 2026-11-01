@@ -11,7 +11,7 @@ use crate::{Rule, Shell};
 
 /// Units that protect the machine: stopping one turns protection off, as
 /// disabling the firewall does.
-const PROTECTORS: [&str; 9] = [
+const PROTECTORS: [&str; 8] = [
     "firewalld",
     "ufw",
     "nftables",
@@ -20,7 +20,6 @@ const PROTECTORS: [&str; 9] = [
     "apparmor",
     "auditd",
     "fail2ban",
-    "selinux-autorelabel",
 ];
 
 /// The first operand of a command.
@@ -43,28 +42,38 @@ fn first_word(operands: &[&Arg]) -> Word {
     }
 }
 
-/// Options of `systemctl` whose next argument is their value.
-const SYSTEMCTL_VALUES: [&str; 20] = [
-    "-t",
-    "-p",
-    "-s",
-    "-H",
-    "-M",
-    "-n",
-    "-o",
-    "-P",
-    "--type",
-    "--property",
-    "--signal",
-    "--host",
-    "--machine",
-    "--lines",
-    "--output",
-    "--root",
-    "--state",
-    "--job-mode",
-    "--kill-whom",
-    "--kill-value",
+/// Short options of `systemctl` whose value is the rest of the bundle or the
+/// next argument.
+const SYSTEMCTL_SHORT: &str = "tpsHMnoPC";
+
+/// Long options of `systemctl` whose value is the next argument (or after
+/// `=`).
+const SYSTEMCTL_LONG: [&str; 25] = [
+    "type",
+    "property",
+    "signal",
+    "host",
+    "machine",
+    "lines",
+    "output",
+    "root",
+    "state",
+    "job-mode",
+    "kill-whom",
+    "kill-value",
+    "message",
+    "capsule",
+    "what",
+    "timestamp",
+    "preset-mode",
+    "boot-loader-entry",
+    "boot-loader-menu",
+    "reboot-argument",
+    "image",
+    "image-policy",
+    "drop-in",
+    "when",
+    "check-inhibitors",
 ];
 
 /// Files that hold `SELinux`'s mode, where a write turns it off at boot.
@@ -91,6 +100,172 @@ fn is_option(name: &str, full: &str, least: usize) -> bool {
 /// `least` letters.
 fn has_long(args: &[Arg], full: &str, least: usize) -> bool {
     long_names(args).any(|name| is_option(name, full, least))
+}
+
+/// What a short option was given.
+enum Given<'a> {
+    /// Nothing: it is last, or takes no value.
+    Nothing,
+    /// The rest of its bundle (`-Fall`).
+    Attached(&'a str),
+    /// The next argument (`-F all`).
+    Next(&'a Arg),
+}
+
+/// The short options of `args` as `getopt` reads them: each letter of a
+/// bundle in order, and for a letter in `takes_value` the rest of the bundle
+/// or else the next argument as its value, which ends the bundle. Options
+/// end at `--`.
+fn short_options<'a>(args: &'a [Arg], takes_value: &str) -> Vec<(char, Given<'a>)> {
+    let mut found = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        let Some(bundle) = text
+            .strip_prefix('-')
+            .filter(|bundle| !bundle.starts_with('-'))
+        else {
+            continue;
+        };
+        for (at, letter) in bundle.char_indices() {
+            if !takes_value.contains(letter) {
+                found.push((letter, Given::Nothing));
+                continue;
+            }
+            let rest = &bundle[at + letter.len_utf8()..];
+            let given = if rest.is_empty() {
+                iter.next().map_or(Given::Nothing, Given::Next)
+            } else {
+                Given::Attached(rest)
+            };
+            found.push((letter, given));
+            break;
+        }
+    }
+    found
+}
+
+/// The arguments that are not options, for a program that reads them with
+/// `getopt_long`: `shorts` are the short options that take a value, `longs`
+/// the long ones, which may be abbreviated (an abbreviation that fits two
+/// options is an error to the program, so it changes nothing).
+fn getopt_operands<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Vec<&'a Arg> {
+    let mut operands = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("--") => {
+                operands.extend(iter);
+                break;
+            }
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let takes_next = match text.strip_prefix("--") {
+                    Some(name) => {
+                        !name.contains('=') && longs.iter().any(|full| is_option(name, full, 1))
+                    }
+                    None => text[1..]
+                        .char_indices()
+                        .find(|(_, letter)| shorts.contains(*letter))
+                        .is_some_and(|(at, letter)| at + letter.len_utf8() == text.len() - 1),
+                };
+                if takes_next {
+                    iter.next();
+                }
+            }
+            _ => operands.push(arg),
+        }
+    }
+    operands
+}
+
+/// Whether a unit name is a pattern, which `systemctl` matches against the
+/// loaded units.
+fn is_pattern(name: &str) -> bool {
+    name.contains(['*', '?', '['])
+}
+
+/// One word of an `nft` command: its text in lower case, or `None` when it
+/// is only known when the line runs.
+type NftWord = Option<String>;
+
+/// The commands in the operands of `nft`, which joins its arguments with
+/// spaces and reads them as one line: a command ends at `;` or a newline,
+/// whichever argument it is in.
+fn nft_commands(words: &[&Arg]) -> Vec<Vec<NftWord>> {
+    let mut commands = Vec::new();
+    let mut current = Vec::new();
+    for arg in words {
+        let text = match arg {
+            Arg::Known(text) | Arg::Template { text, .. } => text.as_str(),
+            Arg::Unknown(_) | Arg::Input => {
+                current.push(None);
+                continue;
+            }
+        };
+        for (n, part) in text.split([';', '\n']).enumerate() {
+            if n > 0 {
+                commands.push(std::mem::take(&mut current));
+            }
+            for word in part.split_whitespace() {
+                let known = !word.contains(['$', '`']);
+                current.push(known.then(|| word.to_ascii_lowercase()));
+            }
+        }
+    }
+    commands.push(current);
+    commands
+}
+
+/// What `nft flush` empties without losing the ruleset: the rest are
+/// `ruleset`, `table` and `chain`, and a word that is none of these is not
+/// read.
+const NFT_FLUSH_OBJECTS: [&str; 3] = ["set", "map", "meter"];
+
+/// What `nft delete` and `nft destroy` remove that is not a table or chain.
+const NFT_DELETE_OBJECTS: [&str; 12] = [
+    "rule",
+    "set",
+    "map",
+    "element",
+    "flowtable",
+    "counter",
+    "quota",
+    "limit",
+    "ct",
+    "synproxy",
+    "secmark",
+    "meter",
+];
+
+/// Whether one `nft` command empties or removes the firewall's rules, or
+/// is something only known when it runs.
+fn nft_empties(command: &[NftWord]) -> bool {
+    let Some(verb) = command.first() else {
+        return false;
+    };
+    let Some(verb) = verb else { return true };
+    let safe: &[&str] = match verb.as_str() {
+        "flush" => &NFT_FLUSH_OBJECTS,
+        "delete" | "destroy" => &NFT_DELETE_OBJECTS,
+        _ => return false,
+    };
+    match command.get(1) {
+        None => false,
+        Some(None) => true,
+        Some(Some(object)) => !safe.contains(&object.as_str()),
+    }
+}
+
+/// Whether a `pfctl -F` modifier, which may be abbreviated, is `all`,
+/// `rules` or `nat`.
+fn flushes(modifier: &str) -> bool {
+    let modifier = modifier.to_ascii_lowercase();
+    ["all", "rules", "nat"]
+        .iter()
+        .any(|name| name.starts_with(&modifier))
 }
 
 /// The program's name without the suffix of its legacy and nftables builds.
@@ -232,47 +407,61 @@ impl Checker<'_> {
     }
 
     /// Whether `-P chain ACCEPT` (or `--policy`) sets a chain's default to
-    /// let everything in, or to a policy only known when it runs.
+    /// let everything in, or to a policy only known when it runs. The
+    /// chain may be attached (`-PINPUT`, `-nPINPUT`, `--policy=INPUT`), and
+    /// then the policy is the next argument, not the one after. `OUTPUT`
+    /// accepting is the default, so it is not read.
     fn accepts_by_default(&self, args: &[Arg]) -> bool {
-        let at = args
+        let args: Vec<&Arg> = args
             .iter()
             .take_while(|arg| arg.known() != Some("--"))
-            .position(|arg| {
-                arg.known()
-                    .is_some_and(|text| match text.strip_prefix("--") {
-                        Some(name) => is_option(name, "policy", 2),
-                        None => text.len() > 1 && text.starts_with('-') && text[1..].contains('P'),
-                    })
+            .collect();
+        for (at, arg) in args.iter().enumerate() {
+            let Some(text) = arg.known() else { continue };
+            let attached = if let Some(name) = text.strip_prefix("--") {
+                let (name, value) = name
+                    .split_once('=')
+                    .map_or((name, None), |(name, value)| (name, Some(value)));
+                if !is_option(name, "policy", 2) {
+                    continue;
+                }
+                value
+            } else {
+                let Some(bundle) = text.strip_prefix('-') else {
+                    continue;
+                };
+                let Some(p) = bundle.find('P') else { continue };
+                Some(&bundle[p + 1..]).filter(|rest| !rest.is_empty())
+            };
+            let (chain, policy) = match attached {
+                Some(chain) => (Some(chain), args.get(at + 1)),
+                None => (
+                    args.get(at + 1).and_then(|arg| arg.known()),
+                    args.get(at + 2),
+                ),
+            };
+            if chain.is_some_and(|chain| chain.eq_ignore_ascii_case("output")) {
+                return false;
+            }
+            return policy.is_some_and(|policy| {
+                policy
+                    .known()
+                    .is_none_or(|text| text.eq_ignore_ascii_case("accept"))
             });
-        at.is_some_and(|at| match args.get(at + 2) {
-            Some(policy) => policy
-                .known()
-                .is_none_or(|text| text.eq_ignore_ascii_case("accept")),
-            None => false,
-        })
+        }
+        false
     }
 
+    /// `nft` joins its arguments and reads them as one command line, so
+    /// `nft 'flush ruleset'` and `nft flush ruleset` are the same, and
+    /// `;` starts another command. A command that empties the ruleset,
+    /// removes a table or chain, or names something not read, is risky.
     fn nft(&mut self, args: &[Arg]) {
-        let words = operands(
-            args,
-            &["-f", "--file", "-I", "--includepath", "-D", "--define"],
-        );
-        let risky = match first_word(&words) {
-            Word::Missing => false,
-            Word::Unknown => true,
-            Word::Is(verb) => {
-                let what = words
-                    .get(1)
-                    .and_then(|arg| arg.known())
-                    .map(str::to_ascii_lowercase);
-                match verb.as_str() {
-                    "flush" => matches!(what.as_deref(), Some("ruleset" | "table" | "chain")),
-                    "delete" | "destroy" => matches!(what.as_deref(), Some("table" | "chain")),
-                    _ => false,
-                }
-            }
-        };
-        if risky {
+        let words = getopt_operands(args, "fIDd", &["file", "includepath", "define", "debug"]);
+        if nft_commands(&words)
+            .iter()
+            .any(|command| nft_empties(command))
+        {
             self.add(Rule::SystemSettings, "changes the firewall", None);
         }
     }
@@ -285,13 +474,19 @@ impl Checker<'_> {
             Word::Is(sub) => match sub.as_str() {
                 "disable" => Some("turns the firewall off"),
                 "reset" => Some("resets the firewall's rules"),
-                "default" => words
-                    .get(1)
-                    .is_none_or(|arg| {
+                // `default allow` opens incoming traffic unless it names
+                // `outgoing`, which is ufw's own default.
+                "default" => {
+                    let allows = words.get(1).is_none_or(|arg| {
                         arg.known()
                             .is_none_or(|text| text.eq_ignore_ascii_case("allow"))
-                    })
-                    .then_some("lets everything through the firewall"),
+                    });
+                    let outgoing = words.get(2).is_some_and(|arg| {
+                        arg.known()
+                            .is_some_and(|text| text.eq_ignore_ascii_case("outgoing"))
+                    });
+                    (allows && !outgoing).then_some("lets everything through the firewall")
+                }
                 _ => None,
             },
         };
@@ -300,29 +495,20 @@ impl Checker<'_> {
         }
     }
 
+    /// `pfctl -d` turns the firewall off, and `-F` flushes what its
+    /// modifier names: all, the rules or the translation rules. The
+    /// modifier may be abbreviated and attached (`-Fa`, `-qFrules`).
     fn pfctl(&mut self, args: &[Arg]) {
-        let off = has_flag(args, Some('d'), None);
-        // `-F` takes what to flush: the rules, the translation rules, or
-        // all of it.
-        let flushes = args
-            .iter()
-            .position(|arg| {
-                arg.known().is_some_and(|text| {
-                    text.starts_with('-')
-                        && !text.starts_with("--")
-                        && text.len() > 1
-                        && text[1..].contains('F')
-                })
-            })
-            .is_some_and(|at| match args.get(at + 1) {
-                Some(what) => what.known().is_none_or(|text| {
-                    ["all", "rules", "nat"]
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(text))
-                }),
-                None => false,
-            });
-        if off || flushes {
+        let mut risky = false;
+        for (letter, given) in short_options(args, "aDfFikKopsTtxX") {
+            risky |= match (letter, given) {
+                ('d', _) => true,
+                ('F', Given::Attached(modifier)) => flushes(modifier),
+                ('F', Given::Next(modifier)) => modifier.known().is_none_or(flushes),
+                _ => false,
+            };
+        }
+        if risky {
             self.add(Rule::SystemSettings, "changes the firewall", None);
         }
     }
@@ -363,7 +549,7 @@ impl Checker<'_> {
         if user {
             return;
         }
-        let words = operands(args, &SYSTEMCTL_VALUES);
+        let words = getopt_operands(args, SYSTEMCTL_SHORT, &SYSTEMCTL_LONG);
         match first_word(&words) {
             Word::Missing => {}
             Word::Unknown => self.add(
@@ -381,15 +567,21 @@ impl Checker<'_> {
                     },
                     words.get(1).copied(),
                 ),
+                // A pattern (`firewall*`) matches the loaded units, so it may
+                // stop one that protects the machine.
                 "stop" => {
                     for unit in words.iter().skip(1) {
-                        if unit.known().is_none_or(protects) {
-                            self.add(
-                                Rule::SystemSettings,
-                                "stops a service that protects the system",
-                                Some(unit),
-                            );
-                        }
+                        let reason = match unit.known() {
+                            None => "stops a service that protects the system",
+                            Some(name) if protects(name) => {
+                                "stops a service that protects the system"
+                            }
+                            Some(name) if is_pattern(name) => {
+                                "stops services that may protect the system"
+                            }
+                            Some(_) => continue,
+                        };
+                        self.add(Rule::SystemSettings, reason, Some(unit));
                     }
                 }
                 _ => {}
@@ -397,21 +589,23 @@ impl Checker<'_> {
         }
     }
 
-    /// `service name stop` is `systemctl stop`.
+    /// `service name stop` is `systemctl stop`. An action only known when it
+    /// runs may be `stop`; a name only known when it runs may protect the
+    /// machine.
     fn service(&mut self, args: &[Arg]) {
         let words = operands(args, &[]);
-        let stops = words
-            .get(1)
-            .and_then(|arg| arg.known())
-            .is_some_and(|action| action.eq_ignore_ascii_case("stop"));
-        if let (true, Some(name)) = (stops, words.first()) {
-            if name.known().is_none_or(protects) {
-                self.add(
-                    Rule::SystemSettings,
-                    "stops a service that protects the system",
-                    Some(name),
-                );
-            }
+        let (Some(name), Some(action)) = (words.first(), words.get(1)) else {
+            return;
+        };
+        let stops = action
+            .known()
+            .is_none_or(|action| action.eq_ignore_ascii_case("stop"));
+        if stops && name.known().is_none_or(protects) {
+            self.add(
+                Rule::SystemSettings,
+                "stops a service that protects the system",
+                Some(name),
+            );
         }
     }
 
@@ -434,7 +628,21 @@ impl Checker<'_> {
         };
         let rest = &words[1..];
         let paths: &[&Arg] = match sub.as_str() {
-            "unload" => rest,
+            // `-D domain` unloads every plist in that search path.
+            "unload" => {
+                if short_options(&unit.args, "SD")
+                    .iter()
+                    .any(|(letter, _)| *letter == 'D')
+                {
+                    self.add(
+                        Rule::SystemSettings,
+                        "removes a service the system runs",
+                        None,
+                    );
+                    return;
+                }
+                rest
+            }
             // The first operand is the domain: `system`, `gui/501`.
             "bootout" => {
                 let system = rest.first().is_none_or(|domain| {
@@ -516,12 +724,15 @@ impl Checker<'_> {
         let rest = &words[1..];
         // `import` replaces the domain's whole content, and `delete` with no
         // key deletes all of it.
-        let whole =
-            verb == "import" || (verb == "delete" && rest.len() + usize::from(domain_option) <= 1);
-        if whole {
+        let deletes_all = verb == "delete" && rest.len() + usize::from(domain_option) <= 1;
+        if verb == "import" || deletes_all {
             self.add(
                 Rule::SystemSettings,
-                "replaces all of an application's preferences",
+                if deletes_all {
+                    "deletes all of an application's preferences"
+                } else {
+                    "replaces all of an application's preferences"
+                },
                 rest.first().copied(),
             );
             return;
@@ -550,22 +761,26 @@ impl Checker<'_> {
         }
     }
 
+    /// `pmset [-a | -b | -c | -u] [setting value]`: the flag is optional,
+    /// so any first operand sets a power setting, except the actions that
+    /// only act or read. `-g` reads.
     fn pmset(&mut self, args: &[Arg]) {
-        // `-a`, `-b`, `-c` and `-u` pick which power source a setting is for;
-        // `-g` reads.
-        let sets = !has_flag(args, Some('g'), None)
-            && (args
-                .iter()
-                .filter_map(Arg::known)
-                .any(|text| matches!(text, "-a" | "-b" | "-c" | "-u"))
-                || operands(args, &[]).first().is_some_and(|sub| {
-                    sub.known().is_some_and(|text| {
-                        matches!(
-                            text.to_ascii_lowercase().as_str(),
-                            "schedule" | "repeat" | "relative" | "restoredefaults"
-                        )
-                    })
-                }));
+        if has_flag(args, Some('g'), None) {
+            return;
+        }
+        let source = args
+            .iter()
+            .filter_map(Arg::known)
+            .any(|text| matches!(text, "-a" | "-b" | "-c" | "-u"));
+        let sets = source
+            || match first_word(&operands(args, &[])) {
+                Word::Missing => false,
+                Word::Unknown => true,
+                Word::Is(word) => !matches!(
+                    word.as_str(),
+                    "sleepnow" | "displaysleepnow" | "touch" | "noidle" | "boot"
+                ),
+            };
         if sets {
             self.add(Rule::SystemSettings, "changes power settings", None);
         }
@@ -602,13 +817,23 @@ impl Checker<'_> {
     }
 
     /// `hostnamectl set-hostname` and `timedatectl set-timezone`: the
-    /// commands that start `set-`.
+    /// commands that start `set-`; and, since systemd 249, the commands of
+    /// `hostnamectl` that set a value when they are given one (`hostname
+    /// NAME`, `chassis vm`) and print it when they are not.
     fn set_commands(&mut self, args: &[Arg], key: &str) {
         let words = operands(args, &["-H", "--host", "-M", "--machine"]);
         let sets = match first_word(&words) {
             Word::Missing => false,
             Word::Unknown => true,
-            Word::Is(sub) => sub.starts_with("set-"),
+            Word::Is(sub) => {
+                sub.starts_with("set-")
+                    || (key == "hostnamectl"
+                        && words.len() > 1
+                        && matches!(
+                            sub.as_str(),
+                            "hostname" | "icon-name" | "chassis" | "deployment" | "location"
+                        ))
+            }
         };
         if sets {
             let reason = if key == "hostnamectl" {

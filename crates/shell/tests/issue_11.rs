@@ -127,7 +127,7 @@ fn the_firewall_is_risky_to_turn_off_or_empty() {
         "iptables --delete-c",
         "iptables -P INPUT ACCEPT",
         "iptables -P FORWARD accept",
-        "iptables -t mangle -P OUTPUT ACCEPT",
+        "iptables -t mangle -P FORWARD ACCEPT",
         "iptables --policy INPUT ACCEPT",
         "iptables --po INPUT ACCEPT",
         "iptables -P INPUT $policy",
@@ -205,6 +205,9 @@ fn everyday_firewall_work_is_safe() {
             "iptables -D INPUT 1",
             "iptables -P INPUT DROP",
             "iptables -P INPUT",
+            "iptables -P OUTPUT ACCEPT",
+            "iptables -t mangle -P OUTPUT ACCEPT",
+            "iptables -PINPUT DROP",
             "iptables-save",
             "ip6tables -L",
             "nft list ruleset",
@@ -452,6 +455,10 @@ fn machine_wide_preferences_are_risky_to_change() {
     assert_reasons(&[
         (
             "defaults delete com.apple.dock",
+            "deletes all of an application's preferences",
+        ),
+        (
+            "defaults import com.apple.dock x.plist",
             "replaces all of an application's preferences",
         ),
         (
@@ -551,4 +558,322 @@ fn the_same_names_in_powershell_and_cmd_stay_as_they_were() {
             &[],
         );
     }
+}
+
+// What the review of the first version found.
+
+#[test]
+fn nft_reads_its_arguments_as_one_command_line() {
+    risky(&[
+        "nft 'flush ruleset'",
+        "nft \"delete table inet filter\"",
+        "nft \"flush ruleset; add table x\"",
+        "nft 'add table x; flush ruleset'",
+        "nft 'add table x\nflush ruleset'",
+        "nft add table x \\; flush ruleset",
+        "nft 'delete chain inet filter input'",
+        "nft flush $what",
+        "nft flush \"$what\"",
+        "nft delete $kind inet filter",
+        "nft flush everything",
+        "nft delete everything x",
+        "nft -d netlink flush ruleset",
+        "nft --debug netlink flush ruleset",
+        "nft --debug=all flush ruleset",
+        "nft --deb all flush ruleset",
+        "nft -nd netlink flush ruleset",
+        "nft -a flush ruleset",
+        "nft --json 'flush ruleset'",
+        "nft -- flush ruleset",
+        "nft add table x ';' $cmd",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "nft 'list ruleset'",
+            "nft 'flush set inet filter blocked'",
+            "nft 'delete rule inet filter input handle 5'",
+            "nft delete element inet filter blocked '{ 1.2.3.4 }'",
+            "nft delete set inet filter blocked",
+            "nft flush map inet filter m",
+            "nft add rule inet filter input $rule",
+            "nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'",
+            "nft -d netlink list ruleset",
+            "nft --debug all list ruleset",
+            "nft -f rules.nft",
+            "nft",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn pfctl_flush_modifiers_may_be_abbreviated_and_attached() {
+    risky(&[
+        "pfctl -F a",
+        "pfctl -F r",
+        "pfctl -F n",
+        "pfctl -F al",
+        "pfctl -F ru",
+        "pfctl -Fa",
+        "pfctl -Fr",
+        "pfctl -Fn",
+        "pfctl -Fall",
+        "pfctl -Frules",
+        "pfctl -Fnat",
+        "pfctl -qFa",
+        "pfctl -eFall",
+        "pfctl -sr -F a",
+        "pfctl -F ''",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pfctl -F states",
+            "pfctl -F s",
+            "pfctl -Fs",
+            "pfctl -Fq",
+            "pfctl -F Tables",
+            "pfctl -FT",
+            "pfctl -F info",
+            "pfctl -F Sources",
+            "pfctl -a anchor -sr",
+            "pfctl -s all",
+            "pfctl -sa",
+            "pfctl -f all",
+            "pfctl -k all",
+            "pfctl -e",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn iptables_policy_may_have_its_chain_attached() {
+    risky(&[
+        "iptables -PINPUT ACCEPT",
+        "iptables -nPINPUT ACCEPT",
+        "iptables --policy=INPUT ACCEPT",
+        "iptables --policy=FORWARD accept",
+        "iptables --pol=INPUT ACCEPT",
+        "iptables -PINPUT $policy",
+        "iptables -P $chain ACCEPT",
+        "iptables -P PREROUTING ACCEPT",
+        "iptables -t nat -P FORWARD ACCEPT",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "iptables -PINPUT DROP",
+            "iptables -nPINPUT DROP",
+            "iptables --policy=INPUT DROP",
+            "iptables -POUTPUT ACCEPT",
+            "iptables --policy=OUTPUT ACCEPT",
+            "iptables -P OUTPUT $policy",
+            "iptables -PINPUT",
+            "iptables -A INPUT -j ACCEPT",
+            "iptables -A INPUT -m policy --dir in --pol ipsec -j ACCEPT",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn pmset_settings_need_no_power_source_flag() {
+    risky(&[
+        "pmset sleep 0",
+        "pmset disablesleep 1",
+        "pmset womp 1",
+        "pmset hibernatemode 0",
+        "pmset autorestart 1 sleep 0",
+        "pmset displaysleep 10",
+        "pmset $setting 0",
+        "pmset -a",
+        "sudo pmset sleep 0",
+    ]);
+    assert_reasons(&[("pmset sleep 0", "changes power settings")]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "pmset sleepnow",
+            "pmset displaysleepnow",
+            "pmset touch",
+            "pmset noidle",
+            "pmset boot",
+            "pmset -g",
+            "pmset -g custom",
+            "pmset --help",
+            "pmset",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn hostnamectl_sets_a_value_with_a_verb_and_an_operand() {
+    risky(&[
+        "hostnamectl hostname newname",
+        "hostnamectl hostname $name",
+        "hostnamectl icon-name computer-vm",
+        "hostnamectl chassis vm",
+        "hostnamectl deployment production",
+        "hostnamectl location 'Room 1'",
+        "hostnamectl --pretty hostname 'My Mac'",
+        "hostnamectl hostname --pretty 'My Mac'",
+        "hostnamectl -H me@host chassis vm",
+        "sudo hostnamectl hostname newname",
+    ]);
+    assert_reasons(&[(
+        "hostnamectl hostname newname",
+        "changes the computer's name",
+    )]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "hostnamectl hostname",
+            "hostnamectl icon-name",
+            "hostnamectl chassis",
+            "hostnamectl deployment",
+            "hostnamectl location",
+            "hostnamectl --json=short hostname",
+            "hostnamectl hostname --transient",
+            "hostnamectl -H me@host hostname",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn launchctl_unload_of_a_search_path_is_risky() {
+    risky(&[
+        "launchctl unload -D system",
+        "launchctl unload -D local",
+        "launchctl unload -D all",
+        "launchctl unload -D user",
+        "launchctl unload -S Aqua -D user",
+        "launchctl unload -Dsystem",
+        "launchctl unload -wD system",
+        "launchctl unload -w -D system",
+        "launchctl unload -D system ./x.plist",
+        "launchctl unload ./x.plist -D system",
+    ]);
+    assert_reasons(&[(
+        "launchctl unload -D system",
+        "removes a service the system runs",
+    )]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "launchctl unload -S Aqua ./x.plist",
+            "launchctl unload -wF ./x.plist",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn stopping_a_unit_by_pattern_or_an_unknown_action_may_stop_a_protector() {
+    risky(&[
+        "systemctl stop 'firewall*'",
+        "systemctl stop fire?alld",
+        "systemctl stop firewalld\\*",
+        "systemctl stop 'fire[w]alld'",
+        "systemctl stop \"uf*\"",
+        "systemctl stop docker 'ufw*'",
+        "service ufw $action",
+        "service ufw \"$a\"",
+        "service $name $action",
+        "service $name stop",
+        "systemctl --message x disable nginx",
+        "systemctl -C cap disable nginx",
+        "systemctl --capsule cap disable nginx",
+        "systemctl --what=x disable nginx",
+        "systemctl --what x disable nginx",
+        "systemctl --timestamp us disable nginx",
+        "systemctl --preset-mode full disable nginx",
+        "systemctl --boot-loader-entry x disable nginx",
+        "systemctl --reboot-argument x disable nginx",
+        "systemctl --image img disable nginx",
+        "systemctl --drop-in d disable nginx",
+        "systemctl --when x disable nginx",
+        "systemctl --mess x disable nginx",
+        "systemctl -lt service disable nginx",
+        "systemctl -tservice disable nginx",
+        "systemctl --message x stop ufw",
+    ]);
+    assert_reasons(&[
+        (
+            "systemctl stop 'firewall*'",
+            "stops services that may protect the system",
+        ),
+        (
+            "service ufw $action",
+            "stops a service that protects the system",
+        ),
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "service nginx $action",
+            "service nginx",
+            "service ufw",
+            "service ufw status",
+            "systemctl stop docker",
+            "systemctl --message x status nginx",
+            "systemctl --message x restart nginx",
+            "systemctl --user --message x disable nginx",
+            "systemctl stop selinux-autorelabel",
+            "systemctl stop nginx.service",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn ufw_default_allow_outgoing_is_its_stock_default() {
+    risky(&[
+        "ufw default allow incoming",
+        "ufw default allow routed",
+        "ufw default allow",
+        "ufw default allow $direction",
+        "ufw default allow forward",
+        "ufw --force default allow incoming",
+    ]);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "ufw default allow outgoing",
+            "ufw default ALLOW Outgoing",
+            "ufw default deny incoming",
+            "ufw default deny outgoing",
+            "ufw default reject routed",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn defaults_say_whether_they_delete_or_replace() {
+    assert_reasons(&[
+        (
+            "defaults delete com.apple.dock",
+            "deletes all of an application's preferences",
+        ),
+        (
+            "defaults delete -g",
+            "deletes all of an application's preferences",
+        ),
+        (
+            "defaults import com.x settings.plist",
+            "replaces all of an application's preferences",
+        ),
+    ]);
 }
