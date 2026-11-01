@@ -2,6 +2,7 @@
 //! grammar split it; and the helpers that read a unit's arguments.
 
 use crate::dotglob;
+use crate::effect::Kind;
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -11,6 +12,16 @@ pub(crate) enum Arg {
     Known(String),
     /// Only known when it runs (`$VAR`, `$(…)`, `%X%`): its source text.
     Unknown(String),
+    /// A string known except for the expansions in it, which stand as they
+    /// are written: `"rm -rf $d"` is the text `rm -rf $d` and `"$x"` is
+    /// `$x`. Not a value, but its text can be read as a script, whose own
+    /// grammar then finds what it expands.
+    Template {
+        /// The text, with each expansion as written.
+        text: String,
+        /// The argument as written, quotes and all.
+        source: String,
+    },
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
     Input,
@@ -20,14 +31,20 @@ impl Arg {
     pub(crate) fn known(&self) -> Option<&str> {
         match self {
             Self::Known(text) => Some(text),
-            Self::Unknown(_) | Self::Input => None,
+            Self::Unknown(_) | Self::Template { .. } | Self::Input => None,
         }
+    }
+
+    /// Whether the value is only known when it runs, however much of its
+    /// text is readable.
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown(_) | Self::Template { .. })
     }
 
     /// The value, or the source text of what is only known when it runs.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::Known(text) | Self::Unknown(text) => text,
+            Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
             Self::Input => "<input>",
         }
     }
@@ -187,6 +204,11 @@ impl Hidden {
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The files redirected from (`< file`), where the line was.
+    pub(crate) reads: Vec<Read>,
+    /// The `for` loops over words written out, whose variable the body does
+    /// not set: a rule reads the body with each word in place.
+    pub(crate) bindings: Vec<Binding>,
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
@@ -221,6 +243,112 @@ pub(crate) struct Split {
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
+    read_in_body: Vec<usize>,
+    /// How many `cd`s this shell has run so far: a later one means an action
+    /// that runs later may run from somewhere else. A subshell or a script
+    /// in a process of its own gives the count back as it was, as it does
+    /// the directory.
+    moves: usize,
+    /// How many `cd`s the walk has read in all, in a subshell or not, which
+    /// nothing gives back: how an action that runs later tells it holds one.
+    moved: usize,
+    /// The actions that run later in this shell (a `trap`'s script).
+    later: Vec<Later>,
+    /// How much nested script text has been read, in bytes (and one for
+    /// each script): a line that makes the same script be read again and
+    /// again must come back unreadable, not take forever.
+    nested_read: usize,
+    /// What only `effect` needs of the line, kept only when it is read for
+    /// `effect`, so `classify` costs what it did.
+    pub(crate) kept: Kept,
+}
+
+/// What a line holds that only [`crate::effect`] reads.
+#[derive(Debug, Default)]
+pub(crate) struct Kept {
+    /// Whether the line is read for `effect`: nothing below is kept if not.
+    pub(crate) on: bool,
+    /// The variables the line sets or unsets, as written (`PATH`,
+    /// `env:TEMP`): one can change which program runs or what it does.
+    pub(crate) sets: Vec<String>,
+    /// The variables of `for` loops that could be one of those: a loop's
+    /// own variable is only a name for each of its words.
+    pub(crate) loops: Vec<String>,
+    /// Whether the line holds something that runs or changes without being
+    /// a unit (a method call in PowerShell), or that cannot be told.
+    pub(crate) opaque: bool,
+    /// Whether a wrapper the line uses writes (`time -o FILE`).
+    pub(crate) changes: bool,
+}
+
+/// A `for` variable and the words it takes, over the units of the body.
+#[derive(Debug, Clone)]
+pub(crate) struct Binding {
+    pub(crate) variable: String,
+    pub(crate) words: Vec<String>,
+    /// The units added while the loop was read, by index in the split.
+    pub(crate) units: std::ops::Range<usize>,
+    /// The redirects from a file added while it was read.
+    pub(crate) reads: std::ops::Range<usize>,
+}
+
+/// A read a redirect makes: `< file`.
+#[derive(Debug, Clone)]
+pub(crate) struct Read {
+    pub(crate) shell: Shell,
+    pub(crate) target: Arg,
+    /// As [`Unit::dir`].
+    pub(crate) dir: Option<Arg>,
+    /// As [`Unit::hidden`].
+    pub(crate) hidden: bool,
+}
+
+/// Where the walk was when an action that runs later began.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Began {
+    units: usize,
+    writes: usize,
+    reads: usize,
+    findings: usize,
+    moved: usize,
+}
+
+/// Where the line was, to put back after a subshell or a nested script
+/// whose `cd` must not reach the rest of the line.
+#[derive(Debug, Clone)]
+pub(crate) struct Place {
+    dir: Option<Arg>,
+    moves: usize,
+    later: usize,
+}
+
+/// An action that runs later, in this shell, from wherever the line has
+/// moved to by then (a `trap`'s script, a PowerShell event's block): the
+/// units and writes it added, and how many `cd`s the line had read when it
+/// ended.
+#[derive(Debug)]
+struct Later {
+    units: std::ops::Range<usize>,
+    writes: std::ops::Range<usize>,
+    reads: std::ops::Range<usize>,
+    /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
+    moves: usize,
+    moved: usize,
+    /// Whether a subshell copies it (`ERR`, `DEBUG`, `RETURN`): then it also
+    /// runs from where a subshell moved to, so any `cd` counts.
+    inherited: bool,
+}
+
+impl Later {
+    /// Whether a `cd` has come since, given how many the shell has run and
+    /// how many the walk has read.
+    fn moved_since(&self, moves: usize, moved: usize) -> bool {
+        if self.inherited {
+            self.moved != moved
+        } else {
+            self.moves != moves
+        }
+    }
 }
 
 impl Split {
@@ -248,6 +376,8 @@ impl Split {
             self.in_body.push(self.units.len());
         }
         if let Some(target) = moves_to(&unit) {
+            self.moves += 1;
+            self.moved += 1;
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
         self.units.push(unit);
@@ -261,6 +391,32 @@ impl Split {
             self.write_in_body.push(self.writes.len());
         }
         self.writes.push(Write {
+            shell,
+            target,
+            dir,
+            hidden,
+        });
+    }
+
+    /// Record a `for` loop over `words` whose body, the units and the
+    /// redirects from `start` on, does not set `variable`.
+    pub(crate) fn bind(&mut self, variable: &str, words: Vec<String>, start: (usize, usize)) {
+        self.bindings.push(Binding {
+            variable: variable.to_string(),
+            words,
+            units: start.0..self.units.len(),
+            reads: start.1..self.reads.len(),
+        });
+    }
+
+    /// Add a redirect's read, made where the line has moved to.
+    pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
+        let dir = self.dir.clone();
+        let hidden = self.hidden();
+        if self.bodies > 0 {
+            self.read_in_body.push(self.reads.len());
+        }
+        self.reads.push(Read {
             shell,
             target,
             dir,
@@ -369,16 +525,158 @@ impl Split {
                 write.hidden = true;
             }
         }
+        for &at in &self.read_in_body {
+            if let Some(read) = self.reads.get_mut(at) {
+                read.hidden = true;
+            }
+        }
+    }
+
+    /// Note where an action that runs later begins, which the walk is about
+    /// to read in place.
+    pub(crate) fn begin_later(&self) -> Began {
+        Began {
+            units: self.units.len(),
+            writes: self.writes.len(),
+            reads: self.reads.len(),
+            findings: self.findings.len(),
+            moved: self.moved,
+        }
+    }
+
+    /// Note that the action which began at `began` has been read. It runs
+    /// after the rest of the line, or between its commands, in this shell: if
+    /// the line moves with a `cd` after it, where its relative paths land is
+    /// not known, which [`Split::settle_later`] says once the line is read.
+    /// A `cd` in the action itself may run before any of the line, so the
+    /// rest of the line is read from somewhere unknown.
+    pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
+        if self.moved != began.moved {
+            self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
+        }
+        self.later.push(Later {
+            units: began.units..self.units.len(),
+            writes: began.writes..self.writes.len(),
+            reads: began.reads..self.reads.len(),
+            moves: self.moves,
+            moved: self.moved,
+            inherited,
+        });
+    }
+
+    /// After the whole line is read: an action that runs later is read from
+    /// where the line ends up, so when a `cd` came after it, its relative
+    /// paths are known only when it runs.
+    fn settle_later(&mut self) {
+        for later in std::mem::take(&mut self.later) {
+            if later.moved_since(self.moves, self.moved) {
+                self.move_later(&later);
+            }
+        }
+    }
+
+    /// An action read from text with its expansions replaced by a
+    /// placeholder shows `source`, as written, wherever the placeholder
+    /// would be the name of what a finding is about.
+    pub(crate) fn show_source(&mut self, began: Began, source: &str) {
+        let shown = |arg: &mut Arg| {
+            if arg.text().contains(crate::posix::OPAQUE) {
+                *arg = Arg::Unknown(source.to_string());
+            }
+        };
+        for unit in self.units.get_mut(began.units..).unwrap_or_default() {
+            shown(&mut unit.program);
+            unit.args.iter_mut().for_each(shown);
+        }
+        for write in self.writes.get_mut(began.writes..).unwrap_or_default() {
+            shown(&mut write.target);
+        }
+        for read in self.reads.get_mut(began.reads..).unwrap_or_default() {
+            shown(&mut read.target);
+        }
+        for finding in self.findings.get_mut(began.findings..).unwrap_or_default() {
+            if finding
+                .target
+                .as_deref()
+                .is_some_and(|target| target.contains(crate::posix::OPAQUE))
+            {
+                finding.target = Some(source.to_string());
+            }
+        }
+    }
+
+    /// Read an action that runs later from somewhere unknown.
+    fn move_later(&mut self, later: &Later) {
+        let moved = Arg::Unknown("where the line moves to".to_string());
+        for unit in self.units.get_mut(later.units.clone()).unwrap_or_default() {
+            unit.dir = Some(moved.clone());
+        }
+        for write in self
+            .writes
+            .get_mut(later.writes.clone())
+            .unwrap_or_default()
+        {
+            write.dir = Some(moved.clone());
+        }
+        for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
+            read.dir = Some(moved.clone());
+        }
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested
     /// script whose `cd` must not reach the rest of the line.
-    pub(crate) fn dir_snapshot(&self) -> Option<Arg> {
-        self.dir.clone()
+    pub(crate) fn dir_snapshot(&self) -> Place {
+        Place {
+            dir: self.dir.clone(),
+            moves: self.moves,
+            later: self.later.len(),
+        }
     }
 
-    pub(crate) fn restore_dir(&mut self, dir: Option<Arg>) {
-        self.dir = dir;
+    /// Put the line back where it was. An action that runs later, set inside
+    /// what ended, is settled by the `cd`s inside it, and the rest of the
+    /// line counts against it as it would against one set before.
+    pub(crate) fn restore_dir(&mut self, place: Place) {
+        let inside = self.later.split_off(place.later);
+        for mut later in inside {
+            if later.moved_since(self.moves, self.moved) {
+                self.move_later(&later);
+            } else {
+                later.moves = place.moves;
+                self.later.push(later);
+            }
+        }
+        self.dir = place.dir;
+        self.moves = place.moves;
+    }
+
+    /// Record that the line sets or unsets the variable `name`, for `effect`.
+    pub(crate) fn set(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.sets.push(name.to_string());
+        }
+    }
+
+    /// Record the variable of a `for` loop, for `effect`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        if self.kept.on {
+            self.kept.loops.push(name.to_string());
+        }
+    }
+
+    /// Record that the line runs or changes something that is not a unit,
+    /// for `effect`.
+    pub(crate) fn opaque(&mut self) {
+        self.kept.opaque |= self.kept.on;
+    }
+
+    /// Record what a wrapper's own options do, for `effect`.
+    pub(crate) fn wrapped(&mut self, effect: Kind) {
+        match effect {
+            Kind::Reads => {}
+            Kind::Changes => self.kept.changes |= self.kept.on,
+            Kind::Unknown => self.opaque(),
+        }
     }
 
     /// Record that the line sets the variable `name`.
@@ -412,7 +710,7 @@ impl Split {
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
-fn moves_to(unit: &Unit) -> Option<Arg> {
+pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -495,15 +793,30 @@ pub(crate) const MAX_TREE_DEPTH: usize = 400;
 /// The longest line read: past it, the line is not read at all.
 const MAX_LEN: usize = 64 * 1024;
 
-pub(crate) fn split(command: &str, shell: Shell) -> Split {
+/// The most nested script text read for one line, in bytes: past it, the
+/// line is unreadable. A nested script is read once for each time the line
+/// starts it, so this bounds the work whatever the nesting does. It is a
+/// few times the longest line, which a plain line never nears.
+const MAX_NESTED_READ: usize = 4 * MAX_LEN;
+
+/// Split `command`; `effect` says it is also read for [`crate::effect`].
+pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     let mut split = Split::default();
+    split.kept.on = effect;
     script(&mut split, command, shell, 0);
     split.hide_bodies();
+    split.settle_later();
     split
 }
 
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
+    script_in(split, text, shell, depth, false);
+}
+
+/// As [`script`]; `here` says the script runs in this shell, as `eval`'s
+/// does, so what it does to the working directory stays.
+pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
     if depth > MAX_DEPTH {
         split.problem(
             Rule::Unreadable,
@@ -516,15 +829,24 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
         split.problem(Rule::Unreadable, "is too long to read", None);
         return;
     }
+    if depth > 0 {
+        split.nested_read += text.len() + 1;
+        if split.nested_read > MAX_NESTED_READ {
+            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
+            return;
+        }
+    }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
-    // does not move the line that started it.
+    // does not move the line that started it. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
     }
-    split.restore_dir(outer);
+    if !here {
+        split.restore_dir(outer);
+    }
 }
 
 /// Parse `text` with `language`; `None` (and a finding) when the parser

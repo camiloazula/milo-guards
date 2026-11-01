@@ -31,6 +31,10 @@ allow = [
     "Apache-2.0",
     "Zlib",
     "Unlicense",
+    # The Unicode data and ICU crates (icu_*, zerovec, yoke, tinystr and the
+    # like) that `url` reads internationalised host names with, through
+    # `idna`. A permissive, OSI-approved licence, in the family of MIT.
+    "Unicode-3.0",
 ]
 # Per-crate exceptions. Keep this list empty unless a line is justified.
 exceptions = []
