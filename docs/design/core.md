@@ -407,7 +407,21 @@ itself.
   `.git`) and a backtick making the next character itself, and compares
   names without case by the Unicode case of each character, class members
   included (a dotless `i`
-  counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts. Its
+  counts as `i`). On `Posix` `[!x]` and `[^x]` negate and case counts, and a
+  class holds POSIX classes: `[[:alpha:]]`, `[[:punct:]]` and the rest are
+  read (`[[:punct:]]git` and `[.[:alpha:]]git` match `.git` with `hidden`).
+  An unknown class name, `[=a=]`, `[.a.]`, and a range that starts or ends on
+  one are not read exactly, so that bracket takes any character, a leading dot
+  included (a pattern that reads wider is a risk, never a false safe). zsh
+  has no `[.x.]` or `[=x=]` elements: there `[` and `.` or `=` are plain
+  members and the first `]` closes the bracket, so `[[.x.]*git` is one class
+  and `*git`, and it matches `.git`; bash, with no `]` left, reads a plain `[`
+  and the class `[.x]`. A `Posix` pattern is read both ways and matches a
+  name when either reading does. A
+  `[` that nothing closes is a plain `[`, and a long run of them is read in
+  linear time: a `[` after the last `]` is plain without a scan, and a scan
+  that fails marks the places it stepped on, so the next `[` stops at the
+  first (a bracket whose only `]`s close `[:a:]` elements is such a run). Its
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
   sets it on `Windows`, and on `Posix` when the caller passes it to
   `place_hidden`.
@@ -482,8 +496,10 @@ Some guards need to take a path's spelling apart before they hand it to the
 resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
-(`has_wildcard`, `matches`, `reaches_git`, and `shape` with its `Shape`, which
-is `#[non_exhaustive]`), `network` (whether a text names a place on another
+(`has_wildcard`, `matches`, `reaches_git`, `can_match_git_entry`,
+`can_match_git_entry_powershell`, `can_match_git_short_name`,
+`can_match_git_folder`, and `shape` with its `Shape`, which is
+`#[non_exhaustive]`), `network` (whether a text names a place on another
 machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).

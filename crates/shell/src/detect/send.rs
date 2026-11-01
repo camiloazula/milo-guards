@@ -511,6 +511,8 @@ impl Checker<'_> {
     /// A secret the unit itself reads: the environment, a file it is given
     /// or has on its input.
     fn secret_read(&self, unit: &Unit, stdin: Option<&Hit>) -> Option<Hit> {
+        let named = super::named(unit);
+        let unit: &Unit = &named;
         let key = unit.key()?;
         // They print or list keys the machine holds, which are public.
         if matches!(key.as_str(), "ssh-keygen" | "ssh-add") {
@@ -533,6 +535,8 @@ impl Checker<'_> {
     /// what copies a folder. `glob` says whether the shell expands a wildcard
     /// in it: it does for a word of its own, not for a part of one (`@f`).
     fn secret(&self, unit: &Unit, arg: &Arg, home: bool, glob: bool) -> Option<Hit> {
+        let name = super::named_in_unknown_folder(arg);
+        let arg = name.as_ref().unwrap_or(arg);
         let text = arg.known().filter(|text| *text != "-")?;
         // A wildcard in the name of a file the shell does not expand is a
         // letter: it names no secret.
@@ -575,6 +579,10 @@ impl Checker<'_> {
         if !self.flow.active {
             return;
         }
+        // A file named under a folder only known when it runs is sent by
+        // its name (`curl -T "$PWD/.env"`).
+        let named = super::named(unit);
+        let unit: &Unit = &named;
         for file in uploads(unit, key) {
             if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
                 self.sent(&hit);

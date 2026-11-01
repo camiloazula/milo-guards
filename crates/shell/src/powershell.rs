@@ -6,6 +6,8 @@ use std::collections::HashSet;
 
 use tree_sitter::Node;
 
+mod blocks;
+
 use crate::detect::DOWNLOADERS;
 use crate::launch;
 use crate::unit::{self, Arg, Between, Listing, Split, Stage, Unit};
@@ -54,6 +56,24 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split.reassign(&name);
         split.set(&name);
     }
+    // `foreach ($c in …)`: the variable holds one item of what it walks.
+    unit::for_each_node(tree.root_node(), |node| {
+        if node.kind() == "foreach_statement" {
+            let mut cursor = node.walk();
+            let variable = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "variable");
+            if let Some(variable) = variable {
+                let name = unit::text(&variable, text).trim();
+                let name = name
+                    .strip_prefix("${")
+                    .and_then(|rest| rest.strip_suffix('}'))
+                    .or_else(|| name.strip_prefix('$'))
+                    .unwrap_or(name);
+                split.loop_variable(name);
+            }
+        }
+    });
     let mut walker = Walker {
         source: text,
         depth,
@@ -114,11 +134,17 @@ pub(crate) fn canonical(name: &str) -> &str {
     match name {
         "rm" | "ri" | "del" | "erase" | "rd" | "rmdir" => "remove-item",
         "cp" | "copy" | "cpi" => "copy-item",
+        "ren" | "rni" => "rename-item",
+        "si" => "set-item",
+        "cli" => "clear-item",
+        "clp" => "clear-itemproperty",
+        "rnp" => "rename-itemproperty",
+        "cpp" => "copy-itemproperty",
+        "mp" => "move-itemproperty",
         "mv" | "move" | "mi" => "move-item",
         "sc" => "set-content",
         "ni" => "new-item",
         "ndr" | "mount" => "new-psdrive",
-        "ren" | "rni" => "rename-item",
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
         "ac" => "add-content",
@@ -129,6 +155,8 @@ pub(crate) fn canonical(name: &str) -> &str {
         "irm" => "invoke-restmethod",
         "iex" => "invoke-expression",
         "icm" => "invoke-command",
+        "sajb" => "start-job",
+        "sbp" => "set-psbreakpoint",
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
         "gps" | "ps" => "get-process",
@@ -194,8 +222,12 @@ impl Walker<'_> {
                 let key = self.command(node, stage);
                 let own = first..self.split.units.len();
                 let outer = self.item;
-                if matches!(key.as_deref(), Some("foreach-object" | "where-object")) {
+                // The block of `ForEach-Object` and `Where-Object` runs once
+                // for each item of its input.
+                let each = matches!(key.as_deref(), Some("foreach-object" | "where-object"));
+                if each {
                     self.item = stage;
+                    self.split.repeats += 1;
                 }
                 // The block of an event runs later, in this session.
                 let later = key
@@ -207,6 +239,9 @@ impl Walker<'_> {
                     self.split.end_later(began, false);
                 }
                 self.item = outer;
+                if each {
+                    self.split.repeats -= 1;
+                }
                 // What a sub-expression in its arguments runs is handed to it.
                 self.split
                     .nest(own.clone(), own.end..self.split.units.len());
@@ -217,6 +252,14 @@ impl Walker<'_> {
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
             }
+            // A loop, or a function that is called more than once, runs
+            // what it holds again with other values.
+            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
+            | "function_statement" => {
+                self.split.repeats += 1;
+                self.children(node, stage, level);
+                self.split.repeats -= 1;
+            }
             "redirection" => {
                 self.redirect(node);
                 self.children(node, None, level);
@@ -226,6 +269,10 @@ impl Walker<'_> {
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
                 self.dotnet(node);
+                self.children(node, stage, level);
+            }
+            "assignment_expression" => {
+                blocks::hook(self.split, node, self.source);
                 self.children(node, stage, level);
             }
             _ => self.children(node, stage, level),
@@ -279,6 +326,7 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
+        let mut shapes = Vec::new();
         // Whether an argument is a download, as `iex (iwr url)` runs one.
         let mut downloads = false;
         let program_key = program
@@ -307,13 +355,36 @@ impl Walker<'_> {
                     "redirection" | "comment" => {}
                     "array_literal_expression" => {
                         let mut items = element.walk();
-                        for item in element.named_children(&mut items) {
-                            args.extend(self.element_args(item, program_key.as_deref()));
+                        for (index, item) in element.named_children(&mut items).enumerate() {
+                            self.push_element(
+                                &mut args,
+                                &mut shapes,
+                                item,
+                                program_key.as_deref(),
+                                index > 0,
+                            );
                         }
                     }
-                    _ => args.extend(self.element_args(element, program_key.as_deref())),
+                    _ => self.push_element(
+                        &mut args,
+                        &mut shapes,
+                        element,
+                        program_key.as_deref(),
+                        false,
+                    ),
                 }
             }
+        }
+        if let Some(program) = program.known() {
+            let key = unit::key(program, Shell::PowerShell);
+            blocks::check(
+                self.split,
+                &key,
+                &args,
+                &shapes,
+                unit::text(&node, self.source),
+                self.depth,
+            );
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
@@ -343,6 +414,29 @@ impl Walker<'_> {
         }
         launch::add(self.split, unit, self.depth);
         key
+    }
+
+    /// Add what an element stands for to `args`, and one shape to `shapes` for
+    /// each argument, so the two stay in step: the element's own shape goes
+    /// with the first argument, and any more it stands for (the three of a
+    /// `Where-Object` name filter) are plain.
+    fn push_element(
+        &self,
+        args: &mut Vec<Arg>,
+        shapes: &mut Vec<blocks::Shape>,
+        element: Node<'_>,
+        program: Option<&str>,
+        joined: bool,
+    ) {
+        let made = self.element_args(element, program);
+        for (at, arg) in made.into_iter().enumerate() {
+            shapes.push(if at == 0 {
+                self.shape(element, joined)
+            } else {
+                blocks::Shape::default()
+            });
+            args.push(arg);
+        }
     }
 
     /// The arguments an element stands for: one, or three when it is the
@@ -851,6 +945,16 @@ impl Walker<'_> {
         positional.get(place).is_some_and(|block| !block)
     }
 
+    /// What the grammar says of an argument: a block written out, a splat,
+    /// and whether it follows a comma.
+    fn shape(&self, node: Node<'_>, joined: bool) -> blocks::Shape {
+        blocks::Shape {
+            block: is_script_block(node),
+            splat: is_splat(node, self.source),
+            joined,
+        }
+    }
+
     fn name(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
@@ -1016,7 +1120,17 @@ impl Walker<'_> {
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
             return;
         };
-        let method = unit::text(member, self.source).to_ascii_lowercase();
+        // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
+        // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
+        // them: the call is risky wherever it points.
+        let Some(method) = blocks::called(*member, self.source) else {
+            self.split.problem(
+                Rule::Unknown,
+                "calls a method only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+            return;
+        };
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
@@ -1035,33 +1149,27 @@ impl Walker<'_> {
         ]
         .iter()
         .any(|kind| object.contains(kind));
-        let (rule, reason) = match method.as_str() {
-            "invoke" | "invokereturnasis" | "invokewithcontext" => {
-                (Rule::Unknown, "invokes code the guard does not read")
-            }
-            "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
-                (Rule::Delete, "calls .NET to delete or move files")
-            }
-            "move" if file_like => (Rule::Delete, "calls .NET to delete or move files"),
-            "writealltext" | "writeallbytes" | "writealllines" | "appendalltext"
-            | "appendalllines" | "createtext" | "appendtext" | "appendallbytes"
-            | "downloadfile" => (Rule::Overwrite, "calls .NET to write files"),
-            "copy" | "open" | "openwrite" | "create" | "createnew" | "opentext" | "replace"
-                if file_like =>
+        blocks::hook_call(self.split, &method, &children, node, self.source);
+        // Code built from text, or run from it: the guard reads the text
+        // when it is written out, and the call is risky wherever it points.
+        if matches!(
+            method.as_str(),
+            "newscriptblock" | "invokescript" | "expandstring"
+        ) || (method == "create" && object.contains("scriptblock"))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "builds or runs code the guard does not read",
+                Some(unit::text(&node, self.source)),
+            );
+            if let Some(Arg::Known(code)) = blocks::first_string(&children).map(|n| self.string(n))
             {
-                (Rule::Overwrite, "calls .NET to write or open files")
+                unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
             }
-            "setaccesscontrol" if file_like => {
-                (Rule::Permissions, "calls .NET to change permissions")
-            }
-            "setenvironmentvariable" => (
-                Rule::SystemSettings,
-                "calls .NET to change environment variables",
-            ),
-            "start" if object.contains("process") => {
-                (Rule::Unknown, "calls .NET to start a program")
-            }
-            _ => return,
+            return;
+        }
+        let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
+            return;
         };
         self.split
             .problem(rule, reason, Some(unit::text(&node, self.source)));
@@ -1094,6 +1202,38 @@ impl Walker<'_> {
             );
         self.split.write(Shell::PowerShell, target);
     }
+}
+
+/// What a .NET method does to files or the system, by its lower-case name:
+/// `object` is the lower-case text it is called on, and `file_like` whether
+/// that is a type that touches the file system, registry or network. Also what
+/// `ForEach-Object` calls when it is given the method's name.
+fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'static str)> {
+    Some(match method {
+        "invoke" | "invokereturnasis" | "invokewithcontext" => {
+            (Rule::Unknown, "invokes code the guard does not read")
+        }
+        "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
+            (Rule::Delete, "calls .NET to delete or move files")
+        }
+        "move" if file_like => (Rule::Delete, "calls .NET to delete or move files"),
+        "writealltext" | "writeallbytes" | "writealllines" | "appendalltext" | "appendalllines"
+        | "createtext" | "appendtext" | "appendallbytes" | "downloadfile" => {
+            (Rule::Overwrite, "calls .NET to write files")
+        }
+        "copy" | "open" | "openwrite" | "create" | "createnew" | "opentext" | "replace"
+            if file_like =>
+        {
+            (Rule::Overwrite, "calls .NET to write or open files")
+        }
+        "setaccesscontrol" if file_like => (Rule::Permissions, "calls .NET to change permissions"),
+        "setenvironmentvariable" => (
+            Rule::SystemSettings,
+            "calls .NET to change environment variables",
+        ),
+        "start" if object.contains("process") => (Rule::Unknown, "calls .NET to start a program"),
+        _ => return None,
+    })
 }
 
 /// The one named child of `node`, when it has just one.
@@ -1271,6 +1411,12 @@ const VALUES: [&str; 46] = [
     "proga",
 ];
 
+/// The value parameters of a listing (`Get-ChildItem`, `Get-Item`) alone.
+const LISTING_VALUES: [&str; 2] = ["attributes", "depth"];
+
+/// The value parameters of the `-ItemProperty` cmdlets alone.
+const PROPERTY_VALUES: [&str; 2] = ["type", "propertytype"];
+
 /// A cmdlet's arguments read as PowerShell reads them.
 #[derive(Debug, Default)]
 pub(crate) struct Params<'a> {
@@ -1282,6 +1428,44 @@ pub(crate) struct Params<'a> {
 
 impl<'a> Params<'a> {
     pub(crate) fn read(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &[])
+    }
+
+    /// `Get-ChildItem`'s arguments: its switch aliases that a prefix of a
+    /// value parameter would swallow the folder for (`-s`, the alias of
+    /// `-Recurse`, reads as a prefix of `-Scope`; `-ar`, the alias of
+    /// `-ReadOnly`, of `-ArgumentList`; `-Name` and its prefixes are
+    /// `Get-ChildItem`'s switch, not the item's `-Name`; `-File` is its
+    /// switch, while for `Tee-Object`, `Out-File` or `Start-Process` its
+    /// prefixes are the value parameters `-FilePath` and `-Filter`) are read
+    /// as switches,
+    /// and `-Attributes` and `-Depth` take a value.
+    pub(crate) fn read_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(
+            args,
+            &["s", "ar", "n", "na", "nam", "name", "file"],
+            &LISTING_VALUES,
+        )
+    }
+
+    /// The arguments of `Get-Item`, which lists with the value parameters of
+    /// a listing but has none of its switch aliases.
+    pub(crate) fn read_item_listing(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &LISTING_VALUES)
+    }
+
+    /// The arguments of an `-ItemProperty` cmdlet, whose `-Type` (an alias of
+    /// `-PropertyType`) and `-PropertyType` take a value.
+    pub(crate) fn read_property(args: &'a [Arg]) -> Self {
+        Self::read_with(args, &[], &PROPERTY_VALUES)
+    }
+
+    /// Reads `args`, with the parameters named in `switches` (lower case,
+    /// exactly) read as switches though a prefix of a value parameter, and
+    /// those in `own` read as taking a value: a cmdlet's own value
+    /// parameters are not added to the shared list, where one would swallow
+    /// the path of every other cmdlet (`Remove-Item -Depth ~ -Recurse`).
+    fn read_with(args: &'a [Arg], switches: &[&str], own: &[&str]) -> Self {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
@@ -1291,13 +1475,30 @@ impl<'a> Params<'a> {
             };
             let colon = name.ends_with(':');
             let name = name.trim_end_matches(':').to_ascii_lowercase();
+            // `-LP` and `-PSPath` (and what abbreviates the second) are
+            // aliases of `-LiteralPath`: the item cmdlets read them so.
+            let name = if name == "lp" || (name.len() > 1 && "pspath".starts_with(&name)) {
+                "literalpath".to_string()
+            } else {
+                name
+            };
             // A value is taken only by a parameter that names a value one
             // and no switch: an unknown or ambiguous one (`-rf` to a native
             // `rm`, `-f`) leaves the next argument where a rule sees it.
+            // The common parameters take one too (`-ErrorAction 0`), or its
+            // value would be read as the path; `-Args` is left out, as it
+            // is a cmdlet's own.
+            let fulls = || {
+                VALUES
+                    .iter()
+                    .chain(own.iter())
+                    .chain(blocks::SHARED_VALUES.iter().filter(|full| **full != "args"))
+            };
             let takes_value = colon
-                || VALUES.contains(&name.as_str())
-                || (VALUES.iter().any(|full| full.starts_with(&name))
-                    && !SWITCHES.iter().any(|full| full.starts_with(&name)));
+                || (!switches.contains(&name.as_str())
+                    && (fulls().any(|full| *full == name)
+                        || (fulls().any(|full| full.starts_with(&name))
+                            && !SWITCHES.iter().any(|full| full.starts_with(&name)))));
             let value = if takes_value
                 && iter
                     .peek()
@@ -1310,6 +1511,17 @@ impl<'a> Params<'a> {
             params.named.push((name, value));
         }
         params
+    }
+
+    /// Whether a parameter was given with no value that may be a value
+    /// parameter: a bare `-n` (`-Name`, read as a switch as it also starts
+    /// `-NoNewline`) leaves its value among the positionals.
+    pub(crate) fn unclear(&self) -> bool {
+        let names = |fulls: &[&str], name: &str| fulls.iter().any(|full| full.starts_with(name));
+        self.named.iter().any(|(name, value)| {
+            let switch = names(&SWITCHES, name) && !names(&VALUES, name);
+            value.is_none() && !name.is_empty() && !switch
+        })
     }
 
     /// One cmdlet's arguments, read by its own parameters: each name given

@@ -643,6 +643,10 @@ fn zip_long_values_are_the_names_zip_has() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_chain_of_dash_c_is_read_quickly() {
     // Each `-C` is joined to the one before it; the chain must stay bounded,
     // not be copied onto every later member.

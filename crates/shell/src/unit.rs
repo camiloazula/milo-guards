@@ -4,9 +4,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::dotglob;
 use crate::effect::Kind;
+use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
@@ -80,6 +82,10 @@ pub(crate) enum Reads {
 
 /// One program the line runs.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the walker learned about the unit; none combine into a state"
+)]
 pub(crate) struct Unit {
     /// The shell whose syntax its arguments are in.
     pub(crate) shell: Shell,
@@ -101,6 +107,15 @@ pub(crate) struct Unit {
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
     pub(crate) hidden: bool,
+    /// The files `BASH_ENV` names for this unit alone (`BASH_ENV=f cmd`,
+    /// `env BASH_ENV=f cmd`): a bash it starts runs each before its own
+    /// script. The files the line sets for every shell it starts are in
+    /// [`Split::startup`] (see [`crate::startup`]).
+    pub(crate) startup: Rc<Vec<Startup>>,
+    /// Whether it sits in a loop or a function body, which runs it again
+    /// with other values: a variable it reads can name a different thing
+    /// each time, so every one of them together.
+    pub(crate) repeated: bool,
     /// Whether the script it runs is a download (`Invoke-Expression` given
     /// `(iwr url)`), which only runs when it does.
     pub(crate) downloaded: bool,
@@ -189,6 +204,8 @@ impl Unit {
             stdin: None,
             dir: None,
             hidden: false,
+            startup: Rc::default(),
+            repeated: false,
             downloaded: false,
             listings: Vec::new(),
             unread_item: false,
@@ -335,6 +352,10 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
 
 /// Everything a line was split into.
 #[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the one walk of the line latches"
+)]
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
@@ -369,6 +390,10 @@ pub(crate) struct Split {
     pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
+    /// Whether `dir` is a place the line moved to that may hold code (see
+    /// [`holds_code`]) or is only known when it runs, kept as the `cd`s are
+    /// read so the folder's whole name is not read again after each one.
+    dir_code: bool,
     /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
     /// `mount`) anywhere, before or after a `cd` in its text: a single letter
     /// in a `cd` may be one of another provider, not a disk.
@@ -376,6 +401,10 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Variables a `for` loop or a `read` sets (lower case): each holds one
+    /// item of what the loop walks, so a rule that counts what a command
+    /// reaches reads `"$c"` as every item, not one.
+    looped: Vec<String>,
     /// The characters a backtick `u{…}` made in a PowerShell string that are
     /// a space that is not an ASCII one, a dash or a typographic quote: as a
     /// path or an argument each is the text it holds, but a script that holds
@@ -400,6 +429,11 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// Whether the command being added has a word with zsh's `(D)` glob
+    /// qualifier, which lets that command's wildcards match a leading dot
+    /// without any option on: `rm -rf *git(D)`. It belongs to the command
+    /// alone, so it is not part of [`Split::dotglob`].
+    qualified: bool,
     /// How deep the line is inside something that may not run, or runs in
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
@@ -407,6 +441,18 @@ pub(crate) struct Split {
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
+    /// The files `BASH_ENV` has been set to anywhere in the line, as a
+    /// statement or after `export`, for each shell the line starts: wherever
+    /// the shell sits, since a trap action, the next pass of a loop or a
+    /// function body may run after the assignment.
+    pub(crate) startup: Rc<Vec<Startup>>,
+    /// Whether the line has set more `BASH_ENV` files than it reads.
+    startup_over: bool,
+    /// What the line does to `PWD` (see [`Pwd`]).
+    pwd: Pwd,
+    /// How deep the line is inside a loop or a function body, whose
+    /// commands run again with other values.
+    pub(crate) repeats: usize,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
@@ -445,6 +491,21 @@ pub(crate) struct Split {
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
+}
+
+/// What the line does to `PWD`, read from the whole line.
+#[derive(Debug, Default)]
+struct Pwd {
+    /// Whether a `cd` or `pushd` of the line, anywhere in it (a loop, a
+    /// function, a trap action, a subshell), ever landed on a name that may
+    /// hold code: `PWD` was that name for as long as the line stayed there.
+    unplain: bool,
+    /// Whether the line makes `PWD` the physical path, which resolves the
+    /// links on the way: `cd -P`, `set -P`, `set -o physical`.
+    physical: bool,
+    /// The first `PS4` or `BASH_ENV` value the line wrote with `$PWD` in it,
+    /// to judge against every `cd` of the line once it is all read.
+    used: Option<String>,
 }
 
 /// What a line holds that only [`crate::effect`] reads.
@@ -502,6 +563,7 @@ pub(crate) struct Began {
 #[derive(Debug, Clone)]
 pub(crate) struct Place {
     dir: Option<Arg>,
+    dir_code: bool,
     moves: usize,
     later: usize,
 }
@@ -543,10 +605,76 @@ impl Split {
         self.forks <= most
     }
 
+    /// The folder the `cd`s read so far moved the line to.
+    pub(crate) fn directory(&self) -> Option<Arg> {
+        self.dir.clone()
+    }
+
+    /// Whether `$PWD` is plain text here: the line has not moved, or moved to
+    /// a name it wrote out that holds no code (`sub`). After a `cd` to one
+    /// that may (`d$(rm -rf ~)`, `d\044(…)`, `"$x"`, a wildcard that matches
+    /// a name the line made: `d*`) it is that name. So it is when the line
+    /// makes `PWD` the physical path (`cd -P`, `set -P`: a link's target is
+    /// the name) or sets `CDPATH` and moves (the folder it finds is the name).
+    pub(crate) fn pwd_is_plain(&self) -> bool {
+        !(self.pwd.physical || self.moves_by_cdpath() || self.dir_code)
+    }
+
+    /// Whether the line sets `CDPATH` and moves: the folder `cd` finds on it
+    /// is the name `PWD` takes.
+    fn moves_by_cdpath(&self) -> bool {
+        self.moved > 0 && self.reassigned("CDPATH")
+    }
+
+    /// Note a `PS4` or `BASH_ENV` value written with `$PWD` in it, which the
+    /// shell expands again where it runs, not where it is written.
+    pub(crate) fn pwd_used(&mut self, value: &str) {
+        if self.pwd.used.is_none() {
+            self.pwd.used = Some(value.to_string());
+        }
+    }
+
+    /// After the whole line is read: a value with `$PWD` in it is expanded
+    /// where it runs, so it is judged against every `cd` of the line, those
+    /// after it and those in loops, functions and trap actions as well, not
+    /// only the ones before it.
+    fn settle_pwd(&mut self) {
+        if self.pwd.unplain || self.pwd.physical || self.moves_by_cdpath() {
+            if let Some(value) = self.pwd.used.take() {
+                self.problem(
+                    Rule::Unknown,
+                    "sets a variable the shell runs later to a value with the working directory in it, and the line moves to a folder whose name may hold code",
+                    Some(&value),
+                );
+            }
+        }
+    }
+
+    /// Note a `BASH_ENV` file the line sets, for each shell it starts after.
+    pub(crate) fn add_startup(&mut self, entry: Startup) {
+        if !startup::push(&mut self.startup, entry) {
+            self.startup_overflow();
+        }
+    }
+
+    /// The line sets more `BASH_ENV` files than are read: any shell it
+    /// starts may run one of those left out.
+    pub(crate) fn startup_overflow(&mut self) {
+        if !self.startup_over {
+            self.startup_over = true;
+            self.problem(
+                Rule::Unknown,
+                "sets BASH_ENV to more files than the guard reads",
+                None,
+            );
+        }
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
         unit.hidden = self.hidden();
+        unit.repeated = self.repeats > 0;
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
@@ -566,6 +694,9 @@ impl Split {
         if self.bodies > 0 {
             self.in_body.push(self.units.len());
         }
+        if unit.shell == Shell::Posix && makes_physical(&unit) {
+            self.pwd.physical = true;
+        }
         if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
             self.psdrive = true;
         }
@@ -575,12 +706,26 @@ impl Split {
             let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
             // Once the line makes a drive, a drive letter may name it: the
             // place is only known when it runs.
-            self.dir = Some(match dir {
+            let dir = match dir {
                 Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
                     Arg::Unknown(text)
                 }
                 dir => dir,
-            });
+            };
+            // The folder holds code when the target does (it replaced the
+            // folder, or was put after it), or when the folder did and the
+            // target was put after it: a join is longer than its target.
+            // Only the target is read, never the whole folder again.
+            let target_text = target.known();
+            self.dir_code = match &dir {
+                Arg::Known(text) => {
+                    target_text.is_none_or(holds_code)
+                        || (self.dir_code && target_text != Some(text.as_str()))
+                }
+                _ => true,
+            };
+            self.pwd.unplain |= self.dir_code;
+            self.dir = Some(dir);
         }
         self.units.push(unit);
     }
@@ -689,7 +834,26 @@ impl Split {
 
     /// Whether a wildcard in what comes next may match a leading dot.
     pub(crate) fn hidden(&self) -> bool {
-        self.dotglob.any()
+        self.dotglob.any() || self.qualified
+    }
+
+    /// Say the command being added has a word with a `(D)` glob qualifier,
+    /// and say what it was, for the caller to put back after the command.
+    ///
+    /// A command that is read while another is being added (the words of
+    /// `eval`, `watch` or `trap` turned into a script) keeps the outer one's
+    /// qualifier: the shell expands the pattern, with the qualifier, before
+    /// it hands what it matched on, so a script that is made of those names
+    /// reads them as hidden ones too.
+    pub(crate) fn qualify(&mut self, on: bool) -> bool {
+        let before = self.qualified;
+        self.qualified = on || before;
+        before
+    }
+
+    /// Put back what [`Self::qualify`] said, once the command is added.
+    pub(crate) fn restore_qualified(&mut self, before: bool) {
+        self.qualified = before;
     }
 
     /// Whether the command being added hands the option to a shell it
@@ -816,6 +980,7 @@ impl Split {
     pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
         if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
+            self.dir_code = true;
         }
         self.later.push(Later {
             units: began.units..self.units.len(),
@@ -891,6 +1056,7 @@ impl Split {
     pub(crate) fn dir_snapshot(&self) -> Place {
         Place {
             dir: self.dir.clone(),
+            dir_code: self.dir_code,
             moves: self.moves,
             later: self.later.len(),
         }
@@ -910,6 +1076,7 @@ impl Split {
             }
         }
         self.dir = place.dir;
+        self.dir_code = place.dir_code;
         self.moves = place.moves;
     }
 
@@ -921,7 +1088,7 @@ impl Split {
     }
 
     /// Record the variable of a `for` loop, for `effect`.
-    pub(crate) fn loop_variable(&mut self, name: &str) {
+    pub(crate) fn kept_loop(&mut self, name: &str) {
         if self.kept.on {
             self.kept.loops.push(name.to_string());
         }
@@ -948,6 +1115,21 @@ impl Split {
         if !self.reassigned.contains(&name) {
             self.reassigned.push(name);
         }
+    }
+
+    /// Record that a loop or a `read` sets the variable `name`.
+    pub(crate) fn loop_variable(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        if !self.looped.contains(&name) {
+            self.looped.push(name);
+        }
+    }
+
+    /// Whether a loop or a `read` in the line sets the variable `name`.
+    pub(crate) fn looped(&self, name: &str) -> bool {
+        self.looped
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
     }
 
     /// Whether the line sets the variable `name` anywhere.
@@ -994,6 +1176,34 @@ impl Split {
             target: target.map(str::to_string),
         });
     }
+}
+
+/// Whether a name may hold code or stand for other names once the shell has
+/// it as the working directory: `$(…)`, a backtick, a backslash (`\044(…)`),
+/// or a wildcard, which matches a name the line made but did not write out
+/// (`*`, `?`, `[`, and an extglob's `+(`, `@(`, `!(`).
+fn holds_code(name: &str) -> bool {
+    name.contains(['$', '`', '\\', '*', '?', '['])
+        || ["+(", "@(", "!("].iter().any(|glob| name.contains(glob))
+}
+
+/// Whether `unit` makes the shell keep the physical path as its working
+/// directory: `cd -P` and `pushd -P`, `set -P`, `set -o physical`, `shopt -so
+/// physical`, and a bash that starts with the same option. Read loosely: an
+/// option turned off again still counts.
+fn makes_physical(unit: &Unit) -> bool {
+    let Some(key) = unit.key() else {
+        return false;
+    };
+    if !matches!(
+        key.as_str(),
+        "cd" | "chdir" | "pushd" | "set" | "shopt" | "bash" | "sh"
+    ) {
+        return false;
+    }
+    has_flag(&unit.args, Some('P'), None)
+        || (!matches!(key.as_str(), "cd" | "chdir" | "pushd")
+            && unit.args.iter().any(|arg| arg.known() == Some("physical")))
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
@@ -1221,6 +1431,7 @@ pub(crate) fn split(command: &str, shell: Shell, effect: bool) -> Split {
     }
     split.hide_bodies();
     split.settle_later();
+    split.settle_pwd();
     split
 }
 
@@ -1403,9 +1614,14 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
-/// Whether `text` is a `/X`-style switch, not a path.
+/// Whether `text` is a `/X`-style switch, not a path. A long path spelt with
+/// forward slashes (`//?/C:/x`) is a path: read as one, it can only be judged
+/// more strictly.
 pub(crate) fn is_switch(text: &str) -> bool {
-    text.starts_with('/') && text.len() > 1 && !text[1..].contains(['\\', '.'])
+    text.starts_with('/')
+        && text.len() > 1
+        && !text[1..].contains(['\\', '.'])
+        && milo_guards_core::spelling::verbatim(text).is_none()
 }
 
 /// The arguments that are not `/X`-style switches.

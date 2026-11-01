@@ -35,6 +35,10 @@ fn took(line: &str) -> std::time::Duration {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn many_clients_on_one_line_are_read_in_linear_time() {
     // Each `redis-cli del` that is given keys asks whether the line lists
     // keys; each client asks for the text fed to it. Neither may walk every
@@ -206,6 +210,10 @@ fn dynamic_sql_in_text_on_the_line_is_read() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn sql_in_sql_is_read_a_few_levels_deep() {
     let mut text = "DROP TABLE t".to_string();
     for _ in 0..5 {

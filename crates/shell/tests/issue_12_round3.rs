@@ -29,6 +29,10 @@ fn took(line: &str) -> std::time::Duration {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn many_clients_on_one_line_are_read_in_linear_time() {
     let args = "a ".repeat(1000);
     let printf = format!("printf '%s{}' {args}; ", "x".repeat(60));
@@ -74,6 +78,10 @@ fn many_clients_on_one_line_are_read_in_linear_time() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_stage_that_says_too_much_is_not_read_and_stays_quick() {
     // Five printfs of 63 KB each are more than a stage may say: unknown, and
     // not printed in full for each client.

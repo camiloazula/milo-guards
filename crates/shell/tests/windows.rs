@@ -38,7 +38,6 @@ fn everyday_powershell_is_safe() {
             "$sw = [Diagnostics.Stopwatch]::StartNew(); $sw.Start()",
             "$name.Replace('a', 'b')",
             "ni -ItemType File notes.txt",
-            "[ScriptBlock]::Create($safe)",
         ],
         &[],
     );
