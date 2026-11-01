@@ -209,6 +209,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "milo-guards-secrets"
+version = "0.1.0"
+dependencies = [
+ "milo-guards-core",
+ "regex",
+]
+
+[[package]]
 name = "milo-guards-shell"
 version = "0.1.0"
 dependencies = [
@@ -234,6 +242,7 @@ version = "0.1.0"
 dependencies = [
  "milo-guards-core",
  "milo-guards-file",
+ "milo-guards-secrets",
  "milo-guards-shell",
  "milo-guards-url",
 ]

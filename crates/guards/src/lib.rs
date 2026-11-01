@@ -36,6 +36,7 @@
 //! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
 //! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
+//! | `secrets` | `secrets` | a text: the keys, tokens, passwords and personal data in it, and where; `secrets::find_spans` gives the ranges to scrub |
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
@@ -112,6 +113,28 @@
 //! # }
 //! ```
 //!
+//! A text is read for what it must not carry, with the `secrets` feature (off
+//! by default). A finding never holds the secret, and its span says where it
+//! is, so a caller can scrub it:
+//!
+//! ```
+//! # #[cfg(feature = "secrets")] {
+//! use milo_local_guards::secrets::{find, find_spans, Rule};
+//!
+//! assert!(find("let sha = \"3f786850e387550fdab836ed7e6dc881de23001b\";").is_safe());
+//!
+//! let text = "DATABASE_URL=postgres://app:fakePass0word1@db.internal/app";
+//! let assessment = find(text);
+//! let finding = &assessment.findings()[0];
+//! assert_eq!(finding.rule, Rule::ConnectionString);
+//! assert_eq!(finding.rule.name(), "connection_string");
+//! assert_eq!(finding.target.as_deref(), Some("… (14 chars)"));
+//!
+//! let span = find_spans(text)[0];
+//! assert_eq!(&text[span.start..span.end], "fakePass0word1");
+//! # }
+//! ```
+//!
 //! What the caller gates with is named in the same `Paths`. It is judged as a
 //! protected path even inside the workspace, and a reason uses the caller's
 //! words:
@@ -160,6 +183,9 @@ pub use milo_guards_file as file;
 
 #[cfg(feature = "url")]
 pub use milo_guards_url as url;
+
+#[cfg(feature = "secrets")]
+pub use milo_guards_secrets as secrets;
 
 /// The README's example, compiled and run with the doctests so it cannot
 /// drift from the code. Only rustdoc's doctest pass reads the file, so

@@ -26,8 +26,12 @@ The workspace has three kinds of crate:
 - `crates/url` (`milo-guards-url`) - the URL guard, `judge`. It reads a URL with
   a WHATWG parser and judges the host the parser reads, never the spelling,
   with its scheme and user-info. [Its design](docs/design/url.md).
+- `crates/secrets` (`milo-guards-secrets`) - the secrets guard, `find`. It reads
+  a text with a table of credential shapes and returns what it holds and where,
+  masked, never the secret. [Its design](docs/design/secrets.md).
 - `crates/guards` (`milo-local-guards`) - the one crate a caller depends on.
-  It re-exports each guard behind a feature.
+  It re-exports each guard behind a feature; `secrets` is the one that is off by
+  default.
 
 A caller hands a guard what the agent wants to do and the places it may work
 in, and gets an assessment back. What to do with it is the caller's. How the
@@ -54,8 +58,12 @@ crates depend on each other and how that is enforced is in
 - **A guard depends on `core` and its own parsers only**, never on another
   guard. A caller gets them together through `crates/guards`.
   [Architecture](docs/design/architecture.md)
-- **Every rule reads structure, never raw text**: the program, its flags,
+- **Every shell rule reads structure, never raw text**: the program, its flags,
   operands and redirects, and where each path lands. [Shell](docs/design/shell.md)
+- **The secrets guard judges the value, never the spelling, and never shows
+  it.** Escapes are read before the table runs, a shape that is common never
+  decides alone, and a finding carries a masked target and offsets, not the
+  text. [Secrets](docs/design/secrets.md)
 - **A rule's wire name never changes once a caller uses it.** Add a new rule
   rather than renaming one. [Core](docs/design/core.md)
 - **A guard's `Rule` enum is exhaustive**, never `#[non_exhaustive]`: a new
@@ -94,7 +102,7 @@ crates depend on each other and how that is enforced is in
 - Design pages: [docs/design/](docs/design/). [Architecture](docs/design/architecture.md),
   [core](docs/design/core.md), [shell](docs/design/shell.md) and
   [file](docs/design/file.md).
-  [url](docs/design/url.md).
+  [url](docs/design/url.md) and [secrets](docs/design/secrets.md).
 - What belongs here: only what the code and `cargo`/`clippy` cannot tell you.
 - A convention a coding agent gets wrong: add the fix here, as one line, with
   its detail on a design page.
