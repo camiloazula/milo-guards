@@ -625,7 +625,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
 fn readable(arg: &Arg) -> &str {
     match arg {
         Arg::Known(text) | Arg::Unknown(text) | Arg::Template { text, .. } => text,
-        Arg::Input => "",
+        Arg::Input | Arg::Null => "",
     }
 }
 
