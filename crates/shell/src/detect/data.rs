@@ -9,7 +9,7 @@
 
 use super::Checker;
 use crate::unit::{Arg, Unit};
-use crate::Rule;
+use crate::{Rule, Shell};
 
 mod reader;
 
@@ -17,7 +17,6 @@ use reader::{Dialect, Reading};
 
 /// How a client takes its statements on the command line.
 struct Client {
-    dialect: Dialect,
     /// Short options that take a value (`-h host`, `-uroot`).
     short_values: &'static str,
     /// Short options whose value is a statement.
@@ -38,12 +37,11 @@ struct Client {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Language {
-    Sql,
+    Sql(Dialect),
     Mongo,
 }
 
 const PSQL: Client = Client {
-    dialect: Dialect::Standard,
     short_values: "cdfFhLopPRTUv",
     short_statement: "c",
     short_optional: "",
@@ -66,11 +64,10 @@ const PSQL: Client = Client {
     long_statement: &["command"],
     bundles: true,
     slash: false,
-    language: Language::Sql,
+    language: Language::Sql(Dialect::Postgres),
 };
 
 const MYSQL: Client = Client {
-    dialect: Dialect::MySql,
     short_values: "ehPuDSO",
     short_statement: "e",
     short_optional: "p",
@@ -99,11 +96,10 @@ const MYSQL: Client = Client {
     long_statement: &["execute", "init-command"],
     bundles: true,
     slash: false,
-    language: Language::Sql,
+    language: Language::Sql(Dialect::MySql),
 };
 
 const CLICKHOUSE: Client = Client {
-    dialect: Dialect::MySql,
     short_values: "hudqfC",
     short_statement: "q",
     short_optional: "",
@@ -123,11 +119,10 @@ const CLICKHOUSE: Client = Client {
     long_statement: &["query"],
     bundles: true,
     slash: false,
-    language: Language::Sql,
+    language: Language::Sql(Dialect::ClickHouse),
 };
 
 const SQLCMD: Client = Client {
-    dialect: Dialect::Standard,
     short_values: "SUPdiohHwvstlazZVmyYfc",
     short_statement: "Qq",
     short_optional: "",
@@ -135,11 +130,10 @@ const SQLCMD: Client = Client {
     long_statement: &["query", "initial-query"],
     bundles: false,
     slash: true,
-    language: Language::Sql,
+    language: Language::Sql(Dialect::SqlServer),
 };
 
 const CQLSH: Client = Client {
-    dialect: Dialect::Cql,
     short_values: "uepkfb",
     short_statement: "e",
     short_optional: "",
@@ -160,11 +154,10 @@ const CQLSH: Client = Client {
     long_statement: &["execute"],
     bundles: true,
     slash: false,
-    language: Language::Sql,
+    language: Language::Sql(Dialect::Cql),
 };
 
 const MONGO: Client = Client {
-    dialect: Dialect::Standard,
     short_values: "upfh",
     short_statement: "",
     short_optional: "",
@@ -315,7 +308,7 @@ impl Client {
             return Reading::UNREADABLE;
         };
         match self.language {
-            Language::Sql => reader::sql(text, self.dialect, holes),
+            Language::Sql(dialect) => reader::sql(text, dialect, holes),
             Language::Mongo => reader::mongo(text, holes),
         }
     }
@@ -328,28 +321,85 @@ struct Embedded<'a> {
     read_only: bool,
 }
 
+/// How a `SQLite`-style client takes its command line.
+struct Options {
+    /// The options whose value is a statement.
+    statement: &'static [&'static str],
+    /// The options that take one value.
+    values: &'static [&'static str],
+    /// The options that take two values.
+    pairs: &'static [&'static str],
+}
+
+/// Every option of `sqlite3 -help` that takes a value. A missing one would
+/// move the file onto its value.
+const SQLITE: Options = Options {
+    statement: &["cmd"],
+    values: &[
+        "A",
+        "alg",
+        "escape",
+        "heap",
+        "hexkey",
+        "init",
+        "key",
+        "maxsize",
+        "mmap",
+        "newline",
+        "nonce",
+        "nullvalue",
+        "screenwidth",
+        "separator",
+        "sorterref",
+        "textkey",
+        "vfs",
+    ],
+    pairs: &["lookaside", "pagecache", "scratch"],
+};
+
+const DUCKDB: Options = Options {
+    statement: &["c", "s", "cmd"],
+    values: &[
+        "f",
+        "init",
+        "newline",
+        "nullvalue",
+        "separator",
+        "storage-version",
+    ],
+    pairs: &[],
+};
+
 /// `sqlite3 [options] [FILE [STATEMENT…]]` and `duckdb` alike: single-dash
 /// words, the first operand a file and the rest statements.
-fn embedded<'a>(args: &'a [Arg], statement: &[&str], values: &[&str]) -> Embedded<'a> {
+fn embedded<'a>(args: &'a [Arg], options: &Options) -> Embedded<'a> {
     let mut found = Embedded {
         file: None,
         statements: Vec::new(),
         read_only: false,
     };
     let mut iter = args.iter();
+    let mut options_end = false;
     while let Some(arg) = iter.next() {
         let Some((text, _)) = view(arg) else {
             found.statements.push(arg.clone());
             continue;
         };
-        match text.strip_prefix('-').filter(|name| !name.is_empty()) {
+        let name = text
+            .strip_prefix('-')
+            .filter(|name| !name.is_empty() && !options_end);
+        match name {
+            Some("-") => options_end = true,
             Some(name) => {
                 let name = name.trim_start_matches('-');
                 if name.eq_ignore_ascii_case("readonly") {
                     found.read_only = true;
-                } else if statement.contains(&name) {
+                } else if options.statement.contains(&name) {
                     found.statements.extend(iter.next().cloned());
-                } else if values.contains(&name) {
+                } else if options.values.contains(&name) {
+                    iter.next();
+                } else if options.pairs.contains(&name) {
+                    iter.next();
                     iter.next();
                 }
             }
@@ -360,15 +410,88 @@ fn embedded<'a>(args: &'a [Arg], statement: &[&str], values: &[&str]) -> Embedde
     found
 }
 
-/// Whether `file` is a database that lives only in memory.
-fn in_memory(file: &Arg) -> bool {
-    file.known().is_some_and(|text| {
-        text.is_empty() || text == ":memory:" || text.starts_with("file::memory:")
-    })
+/// Where a database name points.
+enum Database {
+    /// A database that lives only in memory.
+    Memory,
+    /// A file, by this path.
+    Path(String),
+    /// Something that is not a file of this machine, or that cannot be told.
+    Elsewhere,
+}
+
+/// Whether `name` starts with a URI scheme (`md:`, `s3://`): a letter, then
+/// letters, digits, `+`, `-` or `.`, then `:`, and more than one letter, so
+/// that a Windows drive (`C:`) is a path.
+fn has_scheme(name: &str) -> bool {
+    let Some((scheme, _)) = name.split_once(':') else {
+        return false;
+    };
+    scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// `%HH` escapes of a URI path, decoded; `None` when one is not valid or the
+/// path holds a NUL.
+fn percent_decoded(path: &str) -> Option<String> {
+    let mut bytes = Vec::new();
+    let mut chars = path.bytes();
+    while let Some(byte) = chars.next() {
+        if byte == b'%' {
+            let high = char::from(chars.next()?).to_digit(16)?;
+            let low = char::from(chars.next()?).to_digit(16)?;
+            bytes.push(u8::try_from(high * 16 + low).ok()?);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    (!text.contains('\0')).then_some(text)
+}
+
+/// The database a name given to `sqlite3` or `duckdb` opens. `sqlite3` reads
+/// `file:` names as URIs, and `duckdb` opens `md:` and the like remotely; a
+/// name with a scheme is read from its path, or else is not the agent's own.
+fn database(name: &str) -> Database {
+    if name.is_empty() || name == ":memory:" {
+        return Database::Memory;
+    }
+    if !has_scheme(name) {
+        return Database::Path(name.to_string());
+    }
+    let Some(uri) = name
+        .get(..5)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file:"))
+        .and_then(|_| name.get(5..))
+    else {
+        return Database::Elsewhere;
+    };
+    let uri = uri.split('#').next().unwrap_or(uri);
+    let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+    if query.split('&').any(|pair| pair == "mode=memory") {
+        return Database::Memory;
+    }
+    // `file://authority/path`: only no authority, or `localhost`, is this
+    // machine.
+    let path = match path.strip_prefix("//") {
+        Some(rest) => match rest.split_once('/') {
+            Some(("" | "localhost", path)) => format!("/{path}"),
+            _ => return Database::Elsewhere,
+        },
+        None => path.to_string(),
+    };
+    match percent_decoded(&path) {
+        Some(path) if path == ":memory:" => Database::Memory,
+        Some(path) if !path.is_empty() => Database::Path(path),
+        _ => Database::Elsewhere,
+    }
 }
 
 /// Redis options that take a value.
-const REDIS_VALUES: [&str; 25] = [
+const REDIS_VALUES: &[&str] = &[
     "-h",
     "-p",
     "-s",
@@ -379,6 +502,7 @@ const REDIS_VALUES: [&str; 25] = [
     "-d",
     "-D",
     "-n",
+    "-t",
     "--user",
     "--pass",
     "--pattern",
@@ -394,66 +518,366 @@ const REDIS_VALUES: [&str; 25] = [
     "--rdb",
     "--functions-rdb",
     "--pipe-timeout",
+    "--eval",
+    "--lru-test",
+    "--memkeys-samples",
+    "--keystats-samples",
 ];
 
-/// `redis-cli [options] COMMAND [ARGUMENT…]`: the operands.
+/// `redis-cli [options] COMMAND [ARGUMENT…]`: the operands. `--cluster call
+/// HOST:PORT COMMAND…` runs the command on every node of a cluster.
 fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
     let mut operands = Vec::new();
+    let mut cluster = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.known() {
             Some(text) if operands.is_empty() && text.starts_with('-') && text.len() > 1 => {
                 if REDIS_VALUES.contains(&text) {
                     iter.next();
+                } else if text == "--cluster" {
+                    cluster = true;
                 }
             }
             _ => operands.push(arg),
         }
     }
+    if cluster && operands.first().and_then(|arg| arg.known()) == Some("call") {
+        operands.drain(..operands.len().min(2));
+    }
     operands
 }
 
-/// The words of `args` that are plain text, for a piped `echo` or `printf`.
-fn said(args: &[Arg]) -> Arg {
-    let mut text = String::new();
-    let mut holes = false;
-    for arg in args {
-        if let Some(word) = arg.known() {
-            if word.starts_with('-') && text.is_empty() {
-                continue;
+/// What a piped `echo`, `printf` or `Write-Output` says: the text of its
+/// words as they are written, and as it prints them.
+struct Said {
+    written: Arg,
+    printed: Arg,
+    /// Whether it ends the text with a newline.
+    newline: bool,
+}
+
+const NOTHING_KNOWN: Arg = Arg::Unknown(String::new());
+
+/// The most programs of one stage that are read as the text fed to the client
+/// after it; a larger group is `unknown`.
+const MAX_PRODUCERS: usize = 256;
+
+/// The most text a stage is read to say, written and printed together; more
+/// is `unknown`.
+const TEXT_LIMIT: usize = 1 << 18;
+
+/// The one escape that starts at the front of `chars` (the backslash already
+/// read), and what it stands for, put on `out`. `Some(true)` is `\c`, which
+/// ends the output; `None` is an escape that is not decoded here, with
+/// `chars` left where it was.
+fn escape(chars: &mut std::str::Chars<'_>, out: &mut String) -> Option<bool> {
+    let mut ahead = chars.clone();
+    let c = ahead.next()?;
+    let digits = |ahead: &mut std::str::Chars<'_>, radix: u32, most: usize, mut value: u32| {
+        let mut count = 0;
+        while count < most {
+            let Some(digit) = ahead.clone().next().and_then(|d| d.to_digit(radix)) else {
+                break;
+            };
+            value = value * radix + digit;
+            ahead.next();
+            count += 1;
+        }
+        (value, count)
+    };
+    let value = match c {
+        '\\' | '"' | '\'' => u32::from(c),
+        'n' => 10,
+        't' => 9,
+        'r' => 13,
+        'a' => 7,
+        'b' => 8,
+        'f' => 12,
+        'v' => 11,
+        'c' => {
+            *chars = ahead;
+            return Some(true);
+        }
+        'x' => match digits(&mut ahead, 16, 2, 0) {
+            (_, 0) => return None,
+            (value, _) => value,
+        },
+        '0'..='7' => {
+            let first = c.to_digit(8)?;
+            digits(&mut ahead, 8, if c == '0' { 3 } else { 2 }, first).0
+        }
+        _ => return None,
+    };
+    // Only ASCII: a byte of a longer character is not text here.
+    out.push(char::from_u32(value).filter(|c| c.is_ascii() && *c != '\0')?);
+    *chars = ahead;
+    Some(false)
+}
+
+/// What `echo -e` prints for `text`: its escapes decoded, and one that is not
+/// an escape left as written.
+fn echoed(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match escape(&mut chars, &mut out) {
+                Some(true) => break,
+                Some(false) => {}
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The longest text `printf` is read to print: a line is no longer than that,
+/// so more is a format blown up on purpose, and is not read.
+const PRINTED_LIMIT: usize = 1 << 16;
+
+/// What `printf FORMAT ARGUMENT…` prints, as `printf` reads it: the format's
+/// escapes and `%s`, `%b`, `%d` and `%%` filled from the arguments, and the
+/// format used again while arguments are left. `None` for any other
+/// directive or escape.
+fn printed(format: &str, args: &[&str]) -> Option<String> {
+    let mut out = String::new();
+    let mut used = 0;
+    loop {
+        let before = used;
+        let mut chars = format.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if escape(&mut chars, &mut out)? {
+                        return Some(out);
+                    }
+                }
+                '%' => {
+                    let arg = args.get(used).copied();
+                    match chars.next()? {
+                        '%' => out.push('%'),
+                        's' => {
+                            used += 1;
+                            out.push_str(arg.unwrap_or_default());
+                        }
+                        'b' => {
+                            used += 1;
+                            out.push_str(&echoed(arg.unwrap_or_default()));
+                        }
+                        'd' | 'i' => {
+                            used += 1;
+                            let number = arg.unwrap_or("0");
+                            let digits = number.strip_prefix(['-', '+']).unwrap_or(number);
+                            if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+                                return None;
+                            }
+                            out.push_str(number);
+                        }
+                        _ => return None,
+                    }
+                }
+                c => out.push(c),
             }
         }
-        let Some((word, hole)) = statement_text(arg) else {
-            return Arg::Unknown(String::new());
-        };
+        if used >= args.len() || used == before || out.len() > PRINTED_LIMIT {
+            break;
+        }
+    }
+    (out.len() <= PRINTED_LIMIT).then_some(out)
+}
+
+/// The text of `args` joined, and whether it has expansions in it; `None`
+/// when a word is only known when it runs.
+fn joined(args: &[&Arg]) -> Option<(String, bool)> {
+    let mut text = String::new();
+    let mut holes = false;
+    for (at, arg) in args.iter().enumerate() {
+        let (word, hole) = statement_text(arg)?;
         holes |= hole;
-        if !text.is_empty() {
+        if at > 0 {
             text.push(' ');
         }
         text.push_str(word);
+    }
+    Some((text, holes))
+}
+
+/// Whether `text` is an option of `echo`: `-n`, `-e`, `-E`, alone or bundled.
+fn echo_option(text: &str) -> bool {
+    text.strip_prefix('-')
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| matches!(c, 'n' | 'e' | 'E')))
+}
+
+/// What a piped `echo` says. A POSIX `echo` may decode escapes (`sh`, `zsh`,
+/// `echo -e`), so the text is read as written and as decoded.
+fn echo_said(unit: &Unit) -> Said {
+    let mut newline = true;
+    let mut rest = unit.args.as_slice();
+    while let Some((first, tail)) = rest.split_first() {
+        match first.known() {
+            Some(text) if echo_option(text) => {
+                newline &= !text.contains('n');
+                rest = tail;
+            }
+            _ => break,
+        }
+    }
+    let words: Vec<&Arg> = rest.iter().collect();
+    let Some((text, holes)) = joined(&words) else {
+        return Said {
+            written: NOTHING_KNOWN,
+            printed: NOTHING_KNOWN,
+            newline,
+        };
+    };
+    let written = attached(&text, holes);
+    let printed = if unit.shell == Shell::Posix {
+        attached(&echoed(&text), holes)
+    } else {
+        written.clone()
+    };
+    Said {
+        written,
+        printed,
+        newline,
+    }
+}
+
+/// What a piped `printf` says: its format filled from its arguments.
+fn printf_said(unit: &Unit) -> Said {
+    let mut rest = unit.args.iter();
+    let mut format = None;
+    while let Some(arg) = rest.next() {
+        match arg.known() {
+            Some("--") => {
+                format = rest.next();
+                break;
+            }
+            Some("-v") => {
+                rest.next();
+            }
+            Some(text) if text.starts_with('-') && text.len() > 1 => {}
+            _ => {
+                format = Some(arg);
+                break;
+            }
+        }
+    }
+    let rest: Vec<&Arg> = rest.collect();
+    let said = format.and_then(|format| {
+        let (format, holes) = statement_text(format)?;
+        let mut args = Vec::new();
+        let mut holey = holes;
+        for arg in &rest {
+            let (word, hole) = statement_text(arg)?;
+            holey |= hole;
+            args.push(word);
+        }
+        Some(attached(&printed(format, &args)?, holey))
+    });
+    let said = match (said, format) {
+        (None, Some(_)) => NOTHING_KNOWN,
+        (None, None) => attached("", false),
+        (Some(said), _) => said,
+    };
+    Said {
+        written: said.clone(),
+        printed: said,
+        newline: false,
+    }
+}
+
+/// What a piped `Write-Output` says: its words, as written.
+fn output_said(unit: &Unit) -> Said {
+    let words: Vec<&Arg> = unit.args.iter().collect();
+    let said = joined(&words).map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes));
+    Said {
+        written: said.clone(),
+        printed: said,
+        newline: true,
+    }
+}
+
+/// The text of what several programs said one after the other, as one
+/// statement text: `echo -n DR; echo -n OP TABLE t` says `DROP TABLE t`.
+fn together<'a>(said: impl Iterator<Item = (&'a Arg, bool)>) -> Arg {
+    let mut text = String::new();
+    let mut holes = false;
+    for (arg, newline) in said {
+        let Some((word, hole)) = statement_text(arg) else {
+            return NOTHING_KNOWN;
+        };
+        holes |= hole;
+        text.push_str(word);
+        if newline {
+            text.push('\n');
+        }
     }
     attached(&text, holes)
 }
 
 impl Checker<'_> {
     /// The text on the line that is fed to the client at `at`: a
-    /// here-string, a here-document, or what a piped `echo` or `printf`
-    /// (or a `cat` fed a here-document) says.
+    /// here-string, a here-document, or what the `echo`, `printf` (or `cat`
+    /// fed a here-document) of the stage before it say, every program of that
+    /// stage: `{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } | psql`.
     fn fed_statements(&self, at: usize, unit: &Unit) -> Vec<Arg> {
         let mut found: Vec<Arg> = self.split.fed_to(at).cloned().collect();
-        let producer = unit
-            .stage
-            .filter(|stage| stage.index > 0)
-            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
-            .and_then(|&producer| Some((producer, self.split.units.get(producer)?)));
-        if let Some((producer, unit)) = producer {
+        let Some(stage) = unit.stage.filter(|stage| stage.index > 0) else {
+            return found;
+        };
+        let producers = self
+            .stages
+            .get(&(stage.pipeline, stage.index - 1))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        // A group too large to read each time a client of the stage after it
+        // asks is not read.
+        if producers.len() > MAX_PRODUCERS {
+            found.push(NOTHING_KNOWN);
+            return found;
+        }
+        let mut said = Vec::new();
+        for &producer in producers {
+            let Some(unit) = self.split.units.get(producer) else {
+                continue;
+            };
             match unit.key().as_deref() {
-                Some("echo" | "printf" | "write-output") => found.push(said(&unit.args)),
+                Some("echo") if unit.shell == Shell::Posix => said.push(echo_said(unit)),
+                Some("echo" | "write-output") => said.push(output_said(unit)),
+                Some("printf") => said.push(printf_said(unit)),
                 Some("cat") if unit.args.is_empty() => {
                     found.extend(self.split.fed_to(producer).cloned());
                 }
                 _ => {}
             }
+        }
+        let size: usize = said
+            .iter()
+            .map(|each| each.written.text().len() + each.printed.text().len())
+            .sum();
+        if size > TEXT_LIMIT {
+            found.push(NOTHING_KNOWN);
+            return found;
+        }
+        for each in &said {
+            found.push(each.written.clone());
+            if each.printed != each.written {
+                found.push(each.printed.clone());
+            }
+        }
+        // What they say one after the other can be a statement that none says
+        // alone.
+        if said.len() > 1 {
+            found.push(together(
+                said.iter().map(|each| (&each.written, each.newline)),
+            ));
+            found.push(together(
+                said.iter().map(|each| (&each.printed, each.newline)),
+            ));
         }
         found
     }
@@ -472,33 +896,12 @@ impl Checker<'_> {
             "cqlsh" => self.sql_client(at, unit, &CQLSH, args),
             "mongosh" | "mongo" => self.sql_client(at, unit, &MONGO, args),
             "sqlite3" => {
-                let found = embedded(
-                    args,
-                    &["cmd"],
-                    &[
-                        "init",
-                        "separator",
-                        "newline",
-                        "nullvalue",
-                        "vfs",
-                        "mmap",
-                        "pagecache",
-                        "lookaside",
-                        "maxsize",
-                        "heap",
-                        "memtrace",
-                        "key",
-                    ],
-                );
-                self.embedded_client(at, unit, &found);
+                let found = embedded(args, &SQLITE);
+                self.embedded_client(at, unit, &found, Dialect::Sqlite);
             }
             "duckdb" => {
-                let found = embedded(
-                    args,
-                    &["c", "s", "cmd"],
-                    &["init", "separator", "nullvalue", "newline"],
-                );
-                self.embedded_client(at, unit, &found);
+                let found = embedded(args, &DUCKDB);
+                self.embedded_client(at, unit, &found, Dialect::DuckDb);
             }
             "redis-cli" => self.redis(at, unit, args),
             "dropdb" | "dropuser" => {
@@ -563,16 +966,31 @@ impl Checker<'_> {
 
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
-    fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>) {
+    fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
         let mut statements = found.statements.clone();
         statements.extend(self.fed_statements(at, unit));
-        let own_file = found.file.is_none_or(|file| {
-            in_memory(file) || self.place(unit.shell, unit.scope(), file).harmless()
-        });
-        let readings: Vec<Reading> = statements.iter().map(embedded_read).collect();
-        // `ATTACH` and `.open` reach another file than the one given.
+        let own_file = match found.file {
+            None => true,
+            Some(file) => match file.known().map(database) {
+                Some(Database::Memory) => true,
+                Some(Database::Path(path)) => self
+                    .place(unit.shell, unit.scope(), &Arg::Known(path))
+                    .harmless(),
+                Some(Database::Elsewhere) => false,
+                None => self.place(unit.shell, unit.scope(), file).harmless(),
+            },
+        };
+        let readings: Vec<Reading> = statements
+            .iter()
+            .map(|statement| match statement_text(statement) {
+                Some((text, holes)) => reader::sql(text, dialect, holes),
+                None => Reading::UNREADABLE,
+            })
+            .collect();
+        // `ATTACH` and `.open` reach another file than the one given, and
+        // `-readonly` does not hold for it.
         let moves = readings.iter().any(|reading| reading.moves);
-        let own = found.read_only || (own_file && !moves);
+        let own = !moves && (found.read_only || own_file);
         for (statement, reading) in statements.iter().zip(readings) {
             self.judge(reading, found.file.or(Some(statement)), own);
         }
@@ -589,6 +1007,14 @@ impl Checker<'_> {
                 Some(name) => {
                     let words: Vec<&str> = operands.iter().filter_map(|arg| arg.known()).collect();
                     reading.merge(reader::redis(&words));
+                    // A script, or a function, only known when it runs.
+                    if reader::runs_script(name)
+                        && operands
+                            .get(1)
+                            .is_some_and(|script| script.known().is_none())
+                    {
+                        reading.merge(Reading::UNREADABLE);
+                    }
                     let deletes = matches!(name.to_ascii_lowercase().as_str(), "del" | "unlink");
                     let found = operands
                         .iter()
@@ -670,13 +1096,5 @@ impl Checker<'_> {
                 name.or(Some(drop)),
             );
         }
-    }
-}
-
-/// What a statement given to `sqlite3` or `duckdb` does.
-fn embedded_read(arg: &Arg) -> Reading {
-    match statement_text(arg) {
-        Some((text, holes)) => reader::sql(text, Dialect::Standard, holes),
-        None => Reading::UNREADABLE,
     }
 }

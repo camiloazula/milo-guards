@@ -467,9 +467,16 @@ Reading, inserting, creating and a statement that picks its rows are safe.
 **Where the statement is.** Only text on the line itself is read: an option, an
 operand, a here-document or here-string fed to the client, or the text a
 piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
-says. A file of statements (`psql -f migrations/001.sql`, `sqlite3 data.db <
-seed.sql`, `cat seed.sql | psql`) is the workspace's own code and is safe, as
-`python3 scripts/gen.py` is.
+says. A stage that is a group (`{ echo 'BEGIN;'; echo 'DELETE FROM t;'; } |
+psql`) is read program by program, and as the one text they say in turn
+(`echo -n DR; echo -n OP TABLE t`). `printf` is decoded as `printf` reads its
+format: `\n \t \\ \xHH \NNN` and the other single-character escapes, and `%s`,
+`%b`, `%d` and `%%` filled from the arguments, the format used again while
+arguments are left; any other directive or escape makes the text `unknown`.
+`echo` is read as written and as decoded, since `sh`, `zsh` and `echo -e`
+turn `\n` into a newline. A file of statements (`psql -f
+migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
+the workspace's own code and is safe, as `python3 scripts/gen.py` is.
 
 | Client | Statement |
 | --- | --- |
@@ -492,27 +499,51 @@ Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
 - **SQL.** `DROP` (a table, database, schema, index, view, anything; also
   `ALTER TABLE … DROP`), `TRUNCATE`, `DELETE` and `UPDATE` with no `WHERE`. A
   `WHERE` that picks every row (`WHERE 1`, `WHERE true`, `WHERE 1 = 1`) is
-  none. `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`,
-  `GRANT UPDATE` and `THEN DELETE` in a `MERGE` are parts of other statements,
-  and `TRUNCATE(x)` is a function. `DELETE` and `UPDATE` inside a `WITH` or
-  after `EXPLAIN ANALYZE` count. `DO $$ … $$` is read as the statements it
-  holds.
+  none. A `WHERE` belongs to its own statement: in a batch with no `;`, the
+  `WHERE` of a later `SELECT`, `EXEC` or `PRINT` is not the `UPDATE`'s
+  (`UPDATE t SET a = 1 SELECT 1 WHERE b = 2` updates every row).
+  `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`, `AFTER UPDATE`, `GRANT
+  UPDATE` and `THEN DELETE` after a `WHEN [NOT] MATCHED` of a `MERGE` are
+  parts of other statements, and `TRUNCATE(x)` is a function; a `THEN DELETE`
+  anywhere else (`IF x THEN DELETE FROM t`, `EXCEPTION WHEN OTHERS THEN
+  DELETE FROM t`) is a statement. A `DROP` that takes away no data is none:
+  `DROP NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP EXPRESSION`, `DROP
+  CONSTRAINT` and `ON COMMIT DROP`; `DROP COLUMN`, `DROP PARTITION` and a bare
+  `DROP` are. `DELETE` and `UPDATE` inside a `WITH` or after `EXPLAIN ANALYZE`
+  count. `DO $$ … $$` is read as the statements it holds.
 - **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one, and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
-  deletes one key and is safe.
+  deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
+  runs the command on every node, and is read as the command.
 - **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
   command key), `deleteMany` and `remove` with no filter or `{}`.
 - **The tools.** `dropdb`, `dropuser`, `mysqladmin drop`.
 
 **How a statement is read.** A keyword reader over the text, with no SQL
 grammar. It skips comments and string literals, splits on `;`, and reads each
-dialect's quoting where the dialects differ in a way that would hide a
-statement: `#` comments and backslash escapes in MySQL and ClickHouse, `--`
-needing a space after it in MySQL, `/*! … */` comments that MySQL runs, `E'…'`
-strings and `$tag$ … $tag$` strings in PostgreSQL, `//` comments in CQL. A
-statement the reader has to guess at is `unknown`, never safe: a string, a
-comment or a `$$` string that is never closed.
+client as its own dialect, with only the quoting that client has, so that what
+one dialect hides is not hidden in another:
+
+| Dialect | Quoting and comments |
+| --- | --- |
+| PostgreSQL (`psql`) | `$tag$ … $tag$` and `E'…'` strings, block comments that nest, backslash commands; no backtick |
+| SQLite (`sqlite3`) | backtick and `[…]` identifiers, dot commands; no `$tag$`, no `E'…'` |
+| DuckDB | dot commands; a block comment that holds `/*` is `unknown`, since it is not known whether it nests |
+| SQL Server (`sqlcmd`) | `[…]` identifiers, block comments that nest |
+| MySQL, MariaDB | `#` comments, backslash escapes, backticks, `/*! … */` comments that run, `--` needing a space, `\g` and `\G` ending a statement, `\!` |
+| ClickHouse | `#` comments, backslash escapes, backticks, `$tag$` strings, `\G` |
+| CQL (`cqlsh`) | `//` comments, `$$` strings |
+
+A construct a dialect is not known to have is not read as hiding anything, so
+what it holds is read as code. In `psql` a backslash outside a string starts a
+command that ends at the end of its line or at a `\\`, and the SQL goes on
+after it: `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table. `\gexec` and
+`\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
+a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
+followed by `|` run a program. A statement the reader has to guess at is
+`unknown`, never safe: a string, a comment or a `$$` string that is never
+closed.
 
 A statement that is only known when it runs (`psql -c "$Q"`, `-c $(cat
 q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
@@ -522,6 +553,8 @@ is read and is safe, `psql -c "DROP TABLE $t"` is `drop_data`, and
 `psql -c "$verb FROM users"` is `unknown`. A client command that runs a
 program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
 `.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`.
+A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
+when it runs is `unknown` too.
 
 **A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
 database file are judged like any file: inside the workspace or a temporary
@@ -529,8 +562,14 @@ directory, in memory (`:memory:`, no file) or opened `-readonly`, a `DROP`
 is safe; anywhere else, or a file only known when it runs, it is `drop_data`.
 `ATTACH`, `.open` and `.attach` reach another file, so they make the file
 given not the only one, and the statements are judged as a file outside the
-workspace. Every server database is risky, because the line cannot tell a
-scratch database from production.
+workspace, `-readonly` or not. A name with a scheme is read from its path when
+it is a `file:` URI (`file:/home/me/x.db`, `file:///home/me/x.db`,
+`file://localhost/…`, `%HH` decoded; `mode=memory` is in memory) and is not
+the agent's own otherwise (`md:`, `motherduck:`, `s3://`); a Windows drive
+(`C:`) is a path. The options that take a value are the ones `sqlite3 -help`
+lists, the two-value `-lookaside` and `-pagecache` included, so none moves the
+file onto its value. Every server database is risky, because the line cannot
+tell a scratch database from production.
 
 Migrations run by the project's own tool (`sqlx migrate run`, `rails
 db:migrate`) are safe: the guard reads no program that is not on its list.
@@ -541,8 +580,10 @@ the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
 (`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
 `cat` (`echo … | sed … | psql`); a PowerShell string piped on (`'DROP TABLE t'
 | psql`); stored procedures and `EXECUTE` of text built at run time; a `WHERE`
-that is true for every row in a way other than `1`, `TRUE` and `1 = 1`; other
-clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
+`psql` variables (`\set q …` then `:q`, `-v q=…`); `sqlcmd`'s `!!` and `GO`
+and `$(var)`; a stage between `echo` and the client (`echo … | tee | psql`);
+other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
 
 ## Tests
 

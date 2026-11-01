@@ -52,6 +52,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        stages: HashMap::new(),
         flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
@@ -72,6 +73,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Vec<Finding> {
                 .producers
                 .entry((stage.pipeline, stage.index))
                 .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
         }
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -107,6 +113,9 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Every unit at each pipeline stage, by its index in the split: a stage
+    /// can be a group of several.
+    stages: HashMap<(usize, usize), Vec<usize>>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,

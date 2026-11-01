@@ -3,18 +3,95 @@
 //! literals and splits SQL on `;`. There is no grammar: it finds the few
 //! words that destroy data and says what it could not read.
 
-/// How a SQL client reads quotes and comments, where the dialects differ in
-/// ways that would hide or show a statement.
+/// The SQL a client reads, with only the quoting that client has: where the
+/// dialects differ in a way that would hide or show a statement, each one is
+/// read as itself. A construct a dialect is not known to have is not read, so
+/// what it would hide is read as code, never skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Dialect {
-    /// `PostgreSQL`, `SQLite`, `DuckDB`, SQL Server: `--` comments, `''`
-    /// strings, `$$` strings, no backslash escapes outside `E'…'`.
-    Standard,
-    /// `MySQL`, `MariaDB`, `ClickHouse`: `#` comments, backslash escapes in
-    /// strings, `/*! … */` comments that run.
+    /// `psql`: `$tag$` and `E'…'` strings, block comments that nest, and
+    /// backslash commands anywhere outside a string.
+    Postgres,
+    /// `sqlite3`: backtick and `[…]` identifiers, dot commands.
+    Sqlite,
+    /// `duckdb`: dot commands. Block comments may nest, so a comment that
+    /// holds `/*` is not read.
+    DuckDb,
+    /// `sqlcmd`: `[…]` identifiers and block comments that nest.
+    SqlServer,
+    /// `mysql`, `mariadb`: `#` comments, backslash escapes, backticks,
+    /// `/*! … */` comments that run, `\g` and `\G`, `--` needing a space.
     MySql,
-    /// Cassandra's CQL: `//` comments.
+    /// `clickhouse-client`: `#` comments, backslash escapes, backticks,
+    /// `$tag$` strings, `\G`.
+    ClickHouse,
+    /// Cassandra's CQL: `//` comments and `$$` strings.
     Cql,
+}
+
+/// The dollar-quoted strings a dialect has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dollar {
+    None,
+    /// `$$ … $$` only.
+    Plain,
+    /// `$tag$ … $tag$`.
+    Tagged,
+}
+
+/// Whether block comments nest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nesting {
+    No,
+    Yes,
+    /// Not known: a comment that holds a second `/*` cannot be read.
+    Unsure,
+}
+
+impl Dialect {
+    fn hash_comments(self) -> bool {
+        matches!(self, Self::MySql | Self::ClickHouse)
+    }
+
+    fn dash_needs_space(self) -> bool {
+        self == Self::MySql
+    }
+
+    fn backslash_escapes(self) -> bool {
+        matches!(self, Self::MySql | Self::ClickHouse)
+    }
+
+    fn escape_strings(self) -> bool {
+        self == Self::Postgres
+    }
+
+    fn backticks(self) -> bool {
+        matches!(self, Self::Sqlite | Self::MySql | Self::ClickHouse)
+    }
+
+    fn brackets(self) -> bool {
+        matches!(self, Self::Sqlite | Self::SqlServer)
+    }
+
+    fn dollar(self) -> Dollar {
+        match self {
+            Self::Postgres | Self::ClickHouse => Dollar::Tagged,
+            Self::Cql => Dollar::Plain,
+            _ => Dollar::None,
+        }
+    }
+
+    fn nesting(self) -> Nesting {
+        match self {
+            Self::Postgres | Self::SqlServer => Nesting::Yes,
+            Self::DuckDb => Nesting::Unsure,
+            _ => Nesting::No,
+        }
+    }
+
+    fn dot_commands(self) -> bool {
+        matches!(self, Self::Sqlite | Self::DuckDb)
+    }
 }
 
 /// What a read of some statement text found.
@@ -62,23 +139,29 @@ enum Token {
     /// An expansion of the shell, in text that came from a double-quoted
     /// word: its value is only known when it runs.
     Hole,
-    /// A client command that runs to the end of its line (`\c db`, `.dump`).
+    /// A client command, as written: `\c db`, `.dump`, `\gexec`.
     Meta(String),
     Symbol(char),
 }
 
 /// Words that, before `DELETE` or `UPDATE`, show it is not a statement but
 /// part of one: `ON DELETE CASCADE`, `DO UPDATE SET`, `FOR UPDATE`,
-/// `AFTER UPDATE`, `GRANT UPDATE`, `WHEN MATCHED THEN DELETE`.
-const NOT_A_VERB_AFTER: [&str; 12] = [
-    "ON", "DO", "KEY", "FOR", "OR", "AFTER", "BEFORE", "OF", "GRANT", "REVOKE", "DENY", "THEN",
+/// `AFTER UPDATE`, `GRANT UPDATE`. A `THEN` is one only in a `MERGE`.
+const NOT_A_VERB_AFTER: [&str; 11] = [
+    "ON", "DO", "KEY", "FOR", "OR", "AFTER", "BEFORE", "OF", "GRANT", "REVOKE", "DENY",
 ];
 
 /// Words that end the part of a statement that can hold its `WHERE`: the
 /// next statement of a batch with no `;` between.
-const STARTS_A_STATEMENT: [&str; 7] = [
-    "DELETE", "UPDATE", "INSERT", "DROP", "TRUNCATE", "ALTER", "CREATE",
+const STARTS_A_STATEMENT: [&str; 11] = [
+    "DELETE", "UPDATE", "INSERT", "DROP", "TRUNCATE", "ALTER", "CREATE", "SELECT", "EXEC",
+    "EXECUTE", "PRINT",
 ];
+
+/// Words after `DROP` that take away something other than data: `ALTER
+/// COLUMN c DROP NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP
+/// EXPRESSION`, `DROP CONSTRAINT`.
+const DROPS_NO_DATA: [&str; 5] = ["NOT", "DEFAULT", "IDENTITY", "EXPRESSION", "CONSTRAINT"];
 
 /// Whether `chars` holds a shell expansion (`$x`, `${x}`, `$(x)`, cmd's `%x%`)
 /// starting at `at`, and where it ends.
@@ -152,6 +235,52 @@ fn quoted(chars: &[char], at: usize, escapes: bool) -> Option<usize> {
     None
 }
 
+/// The index after the `]` that closes the `[` at `at` (`]]` stays inside),
+/// or `None` when it is never closed.
+fn bracketed(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while let Some(&c) = chars.get(i) {
+        if c == ']' {
+            if chars.get(i + 1) == Some(&']') {
+                i += 2;
+            } else {
+                return Some(i + 1);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// The index after the block comment that starts at `at`, or `None` when it
+/// is never closed, or when whether it nests is not known and it holds a
+/// second `/*`.
+fn block_comment(chars: &[char], at: usize, nesting: Nesting) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut i = at + 2;
+    loop {
+        match (chars.get(i), chars.get(i + 1)) {
+            (Some('*'), Some('/')) => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            (Some('/'), Some('*')) if nesting != Nesting::No => {
+                if nesting == Nesting::Unsure {
+                    return None;
+                }
+                depth += 1;
+                i += 2;
+            }
+            (Some(_), _) => i += 1,
+            (None, _) => return None,
+        }
+    }
+}
+
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -163,6 +292,42 @@ fn line(chars: &[char], at: usize) -> (String, usize) {
         .and_then(|rest| rest.iter().position(|c| *c == '\n'))
         .map_or(chars.len(), |offset| at + offset);
     (chars.get(at..end).unwrap_or_default().iter().collect(), end)
+}
+
+/// The `psql` backslash command that starts at `at`, and the index after it.
+/// It ends at the end of its line, or at a `\\` outside a quote, and the SQL
+/// goes on after that.
+fn psql_command(chars: &[char], at: usize) -> (String, usize) {
+    let mut i = at + 1;
+    let mut quote: Option<char> = None;
+    let (stop, end) = loop {
+        let Some(&c) = chars.get(i) else {
+            break (chars.len(), chars.len());
+        };
+        if c == '\n' {
+            break (i, i);
+        }
+        match quote {
+            Some('\'') if c == '\\' => {
+                i += if chars.get(i + 1) == Some(&'\n') {
+                    1
+                } else {
+                    2
+                };
+                continue;
+            }
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\\' && chars.get(i + 1) == Some(&'\\') => break (i, i + 2),
+            None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
+            None => {}
+        }
+        i += 1;
+    };
+    (
+        chars.get(at..stop).unwrap_or_default().iter().collect(),
+        end,
+    )
 }
 
 /// Cut `text` into tokens. `None` when a string, a comment or a `$$` string
@@ -184,14 +349,14 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
         match c {
             c if c.is_whitespace() => at += 1,
             '-' if next == Some('-')
-                && (dialect != Dialect::MySql
+                && (!dialect.dash_needs_space()
                     || chars
                         .get(at + 2)
                         .is_none_or(|c| c.is_whitespace() || c.is_control())) =>
             {
                 at = line(&chars, at).1;
             }
-            '#' if dialect == Dialect::MySql => at = line(&chars, at).1,
+            '#' if dialect.hash_comments() => at = line(&chars, at).1,
             '/' if next == Some('/') && dialect == Dialect::Cql => at = line(&chars, at).1,
             '/' if next == Some('*') => {
                 let marker = match (dialect, chars.get(at + 2), chars.get(at + 3)) {
@@ -206,9 +371,7 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                         at += 1;
                     }
                 } else {
-                    let rest = chars.get(at + 2..)?;
-                    let end = rest.windows(2).position(|pair| pair == ['*', '/'])?;
-                    at += 2 + end + 2;
+                    at = block_comment(&chars, at, dialect.nesting())?;
                 }
             }
             '*' if next == Some('/') && running > 0 => {
@@ -220,18 +383,26 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                 at += 1 + rest.iter().position(|c| *c == '`')? + 1;
                 tokens.push(Token::Hole);
             }
-            '\'' | '"' | '`' => {
-                let escaped = chars
-                    .get(..at)
-                    .and_then(|before| before.last())
-                    .is_some_and(|before| matches!(before, 'e' | 'E'))
+            '\'' | '"' => {
+                let escaped = dialect.escape_strings()
                     && c == '\''
+                    && chars
+                        .get(..at)
+                        .and_then(|before| before.last())
+                        .is_some_and(|before| matches!(before, 'e' | 'E'))
                     && at
                         .checked_sub(2)
                         .and_then(|i| chars.get(i))
                         .is_none_or(|c| !is_word_char(*c));
-                let escapes = escaped || (dialect == Dialect::MySql && c != '`');
-                at = quoted(&chars, at, escapes)?;
+                at = quoted(&chars, at, escaped || dialect.backslash_escapes())?;
+                tokens.push(Token::Quoted);
+            }
+            '`' if dialect.backticks() => {
+                at = quoted(&chars, at, false)?;
+                tokens.push(Token::Quoted);
+            }
+            '[' if dialect.brackets() => {
+                at = bracketed(&chars, at)?;
                 tokens.push(Token::Quoted);
             }
             '%' if holes => {
@@ -251,32 +422,55 @@ fn tokenize(text: &str, dialect: Dialect, holes: bool) -> Option<Vec<Token>> {
                         continue;
                     }
                 }
-                // `$tag$ … $tag$`
+                // `$tag$ … $tag$`, or `$$ … $$` where only that is a string.
                 let mut tag_end = at + 1;
                 while chars.get(tag_end).is_some_and(|c| is_word_char(*c)) {
                     tag_end += 1;
                 }
-                let tag: String = chars.get(at..=tag_end).unwrap_or_default().iter().collect();
                 let named = chars.get(at + 1).is_none_or(|c| !c.is_ascii_digit());
-                if chars.get(tag_end) == Some(&'$') && named {
+                let wanted = match dialect.dollar() {
+                    Dollar::None => false,
+                    Dollar::Plain => tag_end == at + 1,
+                    Dollar::Tagged => true,
+                };
+                if wanted && chars.get(tag_end) == Some(&'$') && named {
+                    let tag: Vec<char> = chars.get(at..=tag_end).unwrap_or_default().to_vec();
                     let body = chars.get(tag_end + 1..)?;
-                    let tag_chars: Vec<char> = tag.chars().collect();
                     let end = body
-                        .windows(tag_chars.len())
-                        .position(|window| window == tag_chars.as_slice())?;
+                        .windows(tag.len())
+                        .position(|window| window == tag.as_slice())?;
                     tokens.push(Token::Dollar(body.get(..end)?.iter().collect()));
-                    at = tag_end + 1 + end + tag_chars.len();
+                    at = tag_end + 1 + end + tag.len();
                 } else {
                     at += 1;
                     tokens.push(Token::Symbol('$'));
                 }
             }
-            '\\' if starts_statement => {
+            '\\' if dialect == Dialect::Postgres => {
+                if next == Some('\\') {
+                    at += 2;
+                } else {
+                    let (meta, end) = psql_command(&chars, at);
+                    tokens.push(Token::Meta(meta));
+                    at = end;
+                }
+            }
+            // `\g` and `\G` end a statement, as `;` does.
+            '\\' if matches!(dialect, Dialect::MySql | Dialect::ClickHouse)
+                && matches!(next, Some('g' | 'G')) =>
+            {
+                tokens.push(Token::Symbol(';'));
+                at += 2;
+            }
+            '\\' if dialect == Dialect::MySql && next == Some('!') => {
                 let (meta, end) = line(&chars, at);
                 tokens.push(Token::Meta(meta));
                 at = end;
             }
-            '.' if starts_statement && next.is_some_and(char::is_alphabetic) => {
+            '.' if dialect.dot_commands()
+                && starts_statement
+                && next.is_some_and(char::is_alphabetic) =>
+            {
                 let (meta, end) = line(&chars, at);
                 tokens.push(Token::Meta(meta));
                 at = end;
@@ -343,8 +537,8 @@ fn picks_all(tokens: &[Token]) -> bool {
             !matches!(token, Token::Symbol(';'))
                 && !matches!(token, Token::Word(word) if matches!(
                     word.as_str(),
-                    "ORDER" | "LIMIT" | "RETURNING" | "OUTPUT" | "DELETE" | "UPDATE" | "INSERT"
-                ))
+                    "ORDER" | "LIMIT" | "RETURNING" | "OUTPUT"
+                ) || STARTS_A_STATEMENT.contains(&word.as_str()))
         })
         .filter_map(|token| match token {
             Token::Word(word) => Some(word.as_str()),
@@ -359,6 +553,54 @@ fn picks_all(tokens: &[Token]) -> bool {
     )
 }
 
+/// Whether the statement is a `MERGE`, possibly after a `WITH`.
+fn is_merge(tokens: &[Token]) -> bool {
+    match tokens.first() {
+        Some(Token::Word(first)) if first == "MERGE" => true,
+        Some(Token::Word(first)) if first == "WITH" => {
+            let mut depth = 0usize;
+            tokens.iter().any(|token| match token {
+                Token::Symbol('(') => {
+                    depth += 1;
+                    false
+                }
+                Token::Symbol(')') => {
+                    depth = depth.saturating_sub(1);
+                    false
+                }
+                Token::Word(word) => depth == 0 && word == "MERGE",
+                _ => false,
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Whether the `THEN` before the verb at `verb` ends a `WHEN [NOT] MATCHED …`
+/// clause: only there is `THEN DELETE` or `THEN UPDATE` part of a `MERGE`,
+/// which picks its rows with its `ON`.
+fn in_matched_clause(tokens: &[Token], verb: usize) -> bool {
+    let Some(when) = tokens.get(..verb).and_then(|before| {
+        before
+            .iter()
+            .rposition(|token| is_word(Some(token), "WHEN"))
+    }) else {
+        return false;
+    };
+    is_word(tokens.get(when + 1), "MATCHED")
+        || (is_word(tokens.get(when + 1), "NOT") && is_word(tokens.get(when + 2), "MATCHED"))
+}
+
+/// Whether the `DROP` at `at` takes away something other than data: `DROP
+/// NOT NULL`, `DROP DEFAULT`, `DROP IDENTITY`, `DROP EXPRESSION`, `DROP
+/// CONSTRAINT`, and `ON COMMIT DROP`, which ends a temporary table.
+fn drops_no_data(tokens: &[Token], at: usize) -> bool {
+    let on_commit =
+        at >= 2 && is_word(tokens.get(at - 2), "ON") && is_word(tokens.get(at - 1), "COMMIT");
+    on_commit
+        || matches!(tokens.get(at + 1), Some(Token::Word(word)) if DROPS_NO_DATA.contains(&word.as_str()))
+}
+
 /// What one statement of SQL does.
 fn statement(tokens: &[Token]) -> Reading {
     let mut reading = Reading::default();
@@ -368,17 +610,19 @@ fn statement(tokens: &[Token]) -> Reading {
     if *first == Token::Hole {
         return Reading::UNREADABLE;
     }
+    let merge = is_merge(tokens);
     for (at, token) in tokens.iter().enumerate() {
         let Token::Word(word) = token else { continue };
         let before = at.checked_sub(1).and_then(|i| tokens.get(i));
         match word.as_str() {
-            "DROP" => reading.destroys = true,
+            "DROP" if !drops_no_data(tokens, at) => reading.destroys = true,
             "TRUNCATE" if tokens.get(at + 1) != Some(&Token::Symbol('(')) => {
                 reading.destroys = true;
             }
             "DELETE" | "UPDATE" => {
                 let part = matches!(before, Some(Token::Symbol(',')))
-                    || matches!(before, Some(Token::Word(w)) if NOT_A_VERB_AFTER.contains(&w.as_str()));
+                    || matches!(before, Some(Token::Word(w)) if NOT_A_VERB_AFTER.contains(&w.as_str()))
+                    || (merge && is_word(before, "THEN") && in_matched_clause(tokens, at));
                 if !part && !has_where(tokens, at) {
                     reading.destroys = true;
                 }
@@ -394,35 +638,111 @@ fn statement(tokens: &[Token]) -> Reading {
     if is_word(Some(first), "DO") {
         for token in tokens {
             if let Token::Dollar(body) = token {
-                reading.merge(sql(body, Dialect::Standard, false));
+                reading.merge(sql(body, Dialect::Postgres, false));
             }
         }
     }
     reading
 }
 
-/// What a client command (`\c db`, `\! ls`, `.shell ls`) does.
-fn meta(text: &str) -> Reading {
-    let lower = text.to_ascii_lowercase();
-    let mut words = lower.split_whitespace();
-    let name = words.next().unwrap_or_default();
-    let rest: Vec<&str> = words.collect();
+/// The words of a client command's arguments, as the client reads them:
+/// spaces separate, `'…'`, `"…"` and `` `…` `` hold spaces and a backslash
+/// quotes inside `'…'`. Also whether a backtick runs a program in them.
+fn meta_words(text: &str) -> (Vec<String>, bool) {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut backtick = false;
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => {
+                if chars.peek() == Some(&q) {
+                    word.push(q);
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            Some('\'') if c == '\\' => word.extend(chars.next()),
+            Some(_) => word.push(c),
+            None => match c {
+                '\'' | '"' | '`' => {
+                    quote = Some(c);
+                    started = true;
+                    backtick |= c == '`';
+                }
+                c if c.is_whitespace() => {
+                    if started {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                c => {
+                    word.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    (words, backtick)
+}
+
+/// A client command's name, lower case, and its arguments: `\gexec`, `\!`,
+/// `\copy`, `.read`.
+fn meta_name(text: &str) -> (String, &str) {
+    let split = if let Some(command) = text.strip_prefix('\\') {
+        let first = command.chars().next();
+        let len = if first.is_some_and(|c| c.is_ascii_alphanumeric()) {
+            command
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(command.len())
+        } else {
+            first.map_or(0, char::len_utf8)
+        };
+        command.split_at_checked(len)
+    } else {
+        text.split_once(char::is_whitespace).or(Some((text, "")))
+    };
+    let (name, rest) = split.unwrap_or((text, ""));
+    let prefix = if text.starts_with('\\') { "\\" } else { "" };
+    (format!("{prefix}{}", name.to_ascii_lowercase()), rest)
+}
+
+/// What a client command (`\c db`, `\! ls`, `.shell ls`, `\gexec`) does.
+/// `holes` says the text came from a double-quoted shell word.
+fn meta(text: &str, holes: bool) -> Reading {
+    let (name, rest) = meta_name(text);
+    let (words, backtick) = meta_words(rest);
     let mut reading = Reading::default();
-    if name.starts_with("\\!") || matches!(name, ".shell" | ".system") {
-        reading.program = true;
-    }
-    // `.read |cmd` and `.output |cmd` run a command.
-    if matches!(name, ".read" | ".output" | ".once" | ".import")
-        && rest
+    // A command that writes to a file or, after a `|`, to a program.
+    let pipes = words.iter().any(|word| word.starts_with('|'));
+    let writes = matches!(
+        name.as_str(),
+        "\\o" | "\\g" | "\\gx" | "\\w" | ".read" | ".output" | ".once" | ".import"
+    );
+    reading.program = match name.as_str() {
+        "\\!" | ".shell" | ".system" => true,
+        "\\copy" => words
             .iter()
-            .any(|word| word.trim_start_matches(['\'', '"']).starts_with('|'))
-    {
-        reading.program = true;
+            .any(|word| word.eq_ignore_ascii_case("program")),
+        _ => writes && pipes,
+    };
+    // A backtick in a `psql` command runs a program.
+    reading.program |= backtick && name.starts_with('\\');
+    // What the result of a query runs, or sets for later, is not on the line.
+    if matches!(name.as_str(), "\\gexec" | "\\gset") {
+        reading.unreadable = true;
     }
-    if name.starts_with("\\copy") && rest.contains(&"program") {
-        reading.program = true;
+    // A target that only the shell knows may be `|program`.
+    if writes && holes && words.iter().any(|word| word.starts_with(['$', '`', '%'])) {
+        reading.unreadable = true;
     }
-    if matches!(name, ".open" | ".attach") {
+    if matches!(name.as_str(), ".open" | ".attach") {
         reading.moves = true;
     }
     reading
@@ -445,7 +765,7 @@ pub(super) fn sql(text: &str, dialect: Dialect, holes: bool) -> Reading {
             }
             Some(Token::Meta(text)) => {
                 reading.merge(statement(tokens.get(start..at).unwrap_or_default()));
-                reading.merge(meta(text));
+                reading.merge(meta(text, holes));
                 start = at + 1;
             }
             Some(_) => {}
@@ -556,16 +876,24 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
     reading
 }
 
+/// Whether the Redis command `command` runs a script: its second word is the
+/// script, a digest of one, or the name of a function.
+pub(super) fn runs_script(command: &str) -> bool {
+    matches!(
+        command.to_ascii_lowercase().as_str(),
+        "eval" | "evalsha" | "eval_ro" | "evalsha_ro" | "fcall" | "fcall_ro"
+    )
+}
+
 /// What one Redis command, as its words, does: empties a database. A script
 /// (`EVAL`) that calls such a command does too.
 pub(super) fn redis(words: &[&str]) -> Reading {
     let Some(command) = words.first() else {
         return Reading::default();
     };
-    let lower = command.to_ascii_lowercase();
-    let destroys = match lower.as_str() {
+    let destroys = match command.to_ascii_lowercase().as_str() {
         "flushall" | "flushdb" => true,
-        "eval" | "evalsha" | "eval_ro" | "fcall" | "fcall_ro" => words.iter().any(|word| {
+        _ if runs_script(command) => words.iter().any(|word| {
             let word = word.to_ascii_lowercase();
             word.contains("flushall") || word.contains("flushdb")
         }),
@@ -589,6 +917,15 @@ pub(super) fn redis_lines(text: &str, holes: bool) -> Reading {
             return Reading::UNREADABLE;
         }
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        // A script only known when it runs.
+        if holes
+            && words.first().is_some_and(|word| runs_script(word))
+            && words
+                .get(1)
+                .is_some_and(|word| word.contains('$') || word.contains('`'))
+        {
+            return Reading::UNREADABLE;
+        }
         reading.merge(redis(&words));
     }
     reading
@@ -632,7 +969,16 @@ mod tests {
     use super::*;
 
     fn destroys(text: &str) -> bool {
-        sql(text, Dialect::Standard, false).destroys
+        sql(text, Dialect::Postgres, false).destroys
+    }
+
+    /// The dialect a client command is written in: dot commands are SQLite's.
+    fn client(text: &str) -> Dialect {
+        if text.starts_with('.') {
+            Dialect::Sqlite
+        } else {
+            Dialect::Postgres
+        }
     }
 
     #[test]
@@ -687,7 +1033,7 @@ mod tests {
             "",
             "   ",
         ] {
-            let reading = sql(text, Dialect::Standard, false);
+            let reading = sql(text, Dialect::Postgres, false);
             assert!(!reading.destroys, "{text}");
             assert!(!reading.unreadable, "{text}");
         }
@@ -727,7 +1073,7 @@ mod tests {
             let dialect = if text.starts_with("/*!") {
                 Dialect::MySql
             } else {
-                Dialect::Standard
+                Dialect::Postgres
             };
             assert!(sql(text, dialect, false).unreadable, "{text}");
         }
@@ -735,7 +1081,7 @@ mod tests {
 
     #[test]
     fn a_shell_expansion_is_a_hole() {
-        let read = |text| sql(text, Dialect::Standard, true);
+        let read = |text| sql(text, Dialect::Postgres, true);
         assert!(read("$Q").unreadable);
         assert!(read("${Q}").unreadable);
         assert!(read("$(cat q.sql)").unreadable);
@@ -747,7 +1093,7 @@ mod tests {
         assert!(read("DROP TABLE $t").destroys);
         assert!(read("DELETE FROM $t").destroys);
         // Outside a double-quoted word, `$1` is a parameter and `$$` a string.
-        assert!(!sql("SELECT $1", Dialect::Standard, false).unreadable);
+        assert!(!sql("SELECT $1", Dialect::Postgres, false).unreadable);
     }
 
     #[test]
@@ -761,21 +1107,21 @@ mod tests {
             ".read |ls",
             "EXEC xp_cmdshell 'dir'",
         ] {
-            assert!(sql(text, Dialect::Standard, false).program, "{text}");
+            assert!(sql(text, client(text), false).program, "{text}");
         }
-        assert!(sql("system ls", Dialect::Standard, false).program);
+        assert!(sql("system ls", Dialect::Postgres, false).program);
         for text in ["\\c prod", ".dump", ".read seed.sql", "COPY t FROM 'f.csv'"] {
-            assert!(!sql(text, Dialect::Standard, false).program, "{text}");
+            assert!(!sql(text, client(text), false).program, "{text}");
         }
-        assert!(sql("ATTACH 'x.db' AS o", Dialect::Standard, false).moves);
-        assert!(sql(".open other.db", Dialect::Standard, false).moves);
+        assert!(sql("ATTACH 'x.db' AS o", Dialect::Sqlite, false).moves);
+        assert!(sql(".open other.db", Dialect::Sqlite, false).moves);
     }
 
     #[test]
     fn a_client_command_ends_at_its_line() {
         assert!(destroys("\\c prod\nDROP TABLE t;"));
         assert!(!destroys("\\c prod\nSELECT 1;"));
-        assert!(destroys(".mode csv\nDROP TABLE t"));
+        assert!(sql(".mode csv\nDROP TABLE t", Dialect::Sqlite, false).destroys);
     }
 
     #[test]
