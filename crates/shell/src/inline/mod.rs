@@ -86,6 +86,75 @@ pub(super) enum Act {
     /// Code loaded from a file outside the workspace (`require('/tmp/x.js')`,
     /// `fork('../x.js')`), which is not the workspace's own and is not read.
     Loads(String),
+    /// A write to the environment of the process itself (`os.environ[...] =`,
+    /// `os.putenv`, `process.env.X =`): a program the code starts after it
+    /// is given the variable.
+    Environment,
+    /// What a call that starts a program does, given an environment the code
+    /// sets: it may hold a variable that loads code (`PYTHONPATH`,
+    /// `NODE_OPTIONS`), so the line is `unknown`.
+    Started(Vec<Act>),
+}
+
+/// Why a program started with an environment the code sets is `unknown`.
+const ENVIRONED: &str = "starts a program with an environment set in the code";
+
+/// Variables, by name, that make a program load code that is not its own or
+/// run other than it says.
+const LOADING: [&str; 17] = [
+    "PYTHONPATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "PATH",
+    "PYTHONSTARTUP",
+    "SHELLOPTS",
+    "PROMPT_COMMAND",
+    "PS4",
+    "IFS",
+    "CDPATH",
+    "HOME",
+];
+
+/// Whether the variable `name` is one the shell side judges: one of
+/// [`LOADING`], or one of a family that loads code (`LD_*`, `DYLD_*`,
+/// `PYTHON*`, `NODE_*`, `BASH_FUNC_*`, `GIT_*`).
+pub(super) fn judged_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    LOADING.contains(&name.as_str())
+        || ["LD_", "DYLD_", "PYTHON", "NODE_", "BASH_FUNC_", "GIT_"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
+/// Mark the programs `acts` start as given an environment, when the code
+/// writes to its own environment anywhere (a function may be called after
+/// the write, a loop's second pass follows the first).
+pub(super) fn mark_environment(acts: Vec<Act>) -> Vec<Act> {
+    fn writes(act: &Act) -> bool {
+        match act {
+            Act::Environment => true,
+            Act::In(_, acts) | Act::Started(acts) => acts.iter().any(writes),
+            _ => false,
+        }
+    }
+    fn mark(act: Act) -> Act {
+        match act {
+            Act::Program(_) | Act::Script(_) => Act::Started(vec![act]),
+            Act::In(dir, acts) => Act::In(dir, acts.into_iter().map(mark).collect()),
+            other => other,
+        }
+    }
+    if acts.iter().any(writes) {
+        acts.into_iter().map(mark).collect()
+    } else {
+        acts
+    }
 }
 
 /// Everything one piece of code does.
@@ -1226,10 +1295,12 @@ pub(crate) fn apply(
 
 /// Read `code` in `language`.
 fn read(language: Language, code: &str) -> Reading {
-    match language {
+    let mut reading = match language {
         Language::Python => python::read(code),
         Language::JavaScript => javascript::read(code),
-    }
+    };
+    reading.acts = mark_environment(std::mem::take(&mut reading.acts));
+    reading
 }
 
 /// Whether nested code (`exec("…")`, `eval("…")`), run `depth` levels deep,
@@ -1409,6 +1480,13 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
             "loads code from outside the workspace",
             Some(&code),
         ),
+        Act::Environment => {}
+        Act::Started(acts) => {
+            split.problem(Rule::Unknown, ENVIRONED, None);
+            for act in acts {
+                perform(split, act, depth, unplaced);
+            }
+        }
     }
 }
 

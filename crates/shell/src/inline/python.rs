@@ -1598,6 +1598,7 @@ impl<'s> Reader<'s> {
             }
             if matches!(node.kind(), "assignment" | "augmented_assignment") {
                 self.sys_path_assignment(node);
+                self.environment_assignment(node);
             }
             if matches!(
                 node.kind(),
@@ -2353,6 +2354,17 @@ impl<'s> Reader<'s> {
         let args = Args::read(call, self.src);
         let name = self.qualified(function, 0);
         let kind = name.as_deref().and_then(kind);
+        if matches!(
+            name.as_deref(),
+            Some(
+                "os.putenv"
+                    | "os.environ.update"
+                    | "os.environ.setdefault"
+                    | "os.environ.__setitem__"
+            )
+        ) {
+            self.reading.acts.push(Act::Environment);
+        }
         // What starts a program is run from where `cwd` says.
         let before = self.reading.acts.len();
         match kind {
@@ -2535,7 +2547,73 @@ impl<'s> Reader<'s> {
             }
         }
         if matches!(kind, Some(Kind::Script | Kind::Subprocess | Kind::Exec)) {
+            self.environed(&args, before);
             self.within(&args, before);
+        }
+    }
+
+    /// A call that starts a program and gives it an `env` the code sets is
+    /// `unknown`, unless the environment is written out whole, with every
+    /// name and value known and no name the shell side judges.
+    fn environed(&mut self, args: &Args<'_>, before: usize) {
+        let Some(node) = args
+            .keywords
+            .iter()
+            .find(|(name, _)| name == "env")
+            .map(|(_, node)| *node)
+        else {
+            return;
+        };
+        if self.sets_judged_environment(node) {
+            let acts = self.reading.acts.split_off(before);
+            self.reading.acts.push(Act::Started(acts));
+        }
+    }
+
+    /// Whether the value of an `env` option holds a variable the shell side
+    /// judges, or is not written out whole.
+    fn sets_judged_environment(&mut self, node: Node<'_>) -> bool {
+        match node.kind() {
+            "none" => false,
+            "dictionary" => {
+                let mut cursor = node.walk();
+                let members: Vec<Node<'_>> = node
+                    .named_children(&mut cursor)
+                    .filter(|member| member.kind() != "comment")
+                    .collect();
+                members.into_iter().any(|member| {
+                    if member.kind() != "pair" {
+                        return true;
+                    }
+                    let name = member
+                        .child_by_field_name("key")
+                        .and_then(|key| self.value(key, 0));
+                    let value = member
+                        .child_by_field_name("value")
+                        .and_then(|value| self.value(value, 0));
+                    match (name, value) {
+                        (Some(name), Some(_)) => super::judged_variable(&name),
+                        _ => true,
+                    }
+                })
+            }
+            _ => true,
+        }
+    }
+
+    /// An assignment to a member of `os.environ` (or to it) changes the
+    /// environment of every program the code starts after.
+    fn environment_assignment(&mut self, node: Node<'_>) {
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let target = if left.kind() == "subscript" {
+            left.child_by_field_name("value")
+        } else {
+            Some(left)
+        };
+        if target.is_some_and(|target| self.qualified(target, 0).as_deref() == Some("os.environ")) {
+            self.reading.acts.push(Act::Environment);
         }
     }
 

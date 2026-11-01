@@ -1146,7 +1146,16 @@ class or its `prototype`, of any `__proto__`, or of `process`, `Deno` or `Bun`
 `String.prototype.concat = f`, `Path.__truediv__ = f`), which changes what the
 calls the reader models do (`process.exitCode`, `process.title`,
 `module.exports` and a variable of `process.env` that names no directory change
-nothing it models);
+nothing it models by themselves; but a program the code starts is given the
+environment the code sets, so a call that starts one with an `env=` or `env:`
+option, or after a write to `os.environ`, `os.putenv`, `os.environ.update` or
+`process.env` anywhere in the same code, is `unknown` with the reason `starts a
+program with an environment set in the code`, because the variable may be
+`PYTHONPATH` or `NODE_OPTIONS`, which the shell side judges; the one exception
+is an `env` written out whole, every name and value known, and no name one the
+shell side judges (`PYTHONPATH`, `NODE_OPTIONS`, `LD_PRELOAD`,
+`DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `ENV`, `PATH`, `PYTHONSTARTUP` and the like),
+and the program is then judged as before, a key it reads still `read_secret`);
 a call to a name above used as a value (`r = os.remove`,
 `map(fs.unlinkSync, files)`, `(0, rm)(p)`, a default value `def f(p,
 r=os.remove)`), since the reader cannot follow the alias; a module

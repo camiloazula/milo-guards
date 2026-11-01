@@ -1340,6 +1340,7 @@ impl<'s> Reader<'s> {
                 }
                 "assignment_expression" | "augmented_assignment_expression" => {
                     self.member_assignment(node);
+                    self.environment_assignment(node);
                 }
                 "member_expression"
                 | "identifier"
@@ -2041,6 +2042,91 @@ impl<'s> Reader<'s> {
         }
     }
 
+    /// Whether `node` is the environment of the process itself.
+    fn is_environment(&mut self, node: Node<'_>) -> bool {
+        matches!(
+            self.qualified(node, 0).as_deref(),
+            Some("process.env" | "Bun.env")
+        )
+    }
+
+    /// An assignment to `process.env`, or to a member of it, changes the
+    /// environment of every program the code starts after.
+    fn environment_assignment(&mut self, node: Node<'_>) {
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let object = match left.kind() {
+            "member_expression" | "subscript_expression" => left.child_by_field_name("object"),
+            _ => None,
+        };
+        if self.is_environment(left) || object.is_some_and(|object| self.is_environment(object)) {
+            self.reading.acts.push(Act::Environment);
+        }
+    }
+
+    /// A call that starts a program and gives it an `env` option the code
+    /// sets is `unknown`, unless the environment is written out whole, with
+    /// every name and value known and no name the shell side judges.
+    fn environed(&mut self, args: &Args<'_>, before: usize) {
+        let mut judged = false;
+        for options in args
+            .positional
+            .iter()
+            .filter(|node| node.kind() == "object")
+        {
+            let mut cursor = options.walk();
+            let members: Vec<Node<'_>> = options.named_children(&mut cursor).collect();
+            if members.iter().any(|member| {
+                member.kind() == "shorthand_property_identifier" && self.text(*member) == "env"
+            }) {
+                judged = true;
+            }
+            if let Some(env) = self.property(*options, "env") {
+                judged |= self.sets_judged_environment(env);
+            }
+        }
+        if judged {
+            let acts = self.reading.acts.split_off(before);
+            self.reading.acts.push(Act::Started(acts));
+        }
+    }
+
+    /// Whether the value of an `env` option holds a variable the shell side
+    /// judges, or is not written out whole.
+    fn sets_judged_environment(&mut self, node: Node<'_>) -> bool {
+        match node.kind() {
+            "null" | "undefined" => false,
+            "object" => {
+                let mut cursor = node.walk();
+                let members: Vec<Node<'_>> = node
+                    .named_children(&mut cursor)
+                    .filter(|member| member.kind() != "comment")
+                    .collect();
+                members.into_iter().any(|member| {
+                    if member.kind() != "pair" {
+                        return true;
+                    }
+                    let name = member
+                        .child_by_field_name("key")
+                        .and_then(|key| match key.kind() {
+                            "property_identifier" => Some(self.text(key).to_string()),
+                            "string" => self.literal(key),
+                            _ => None,
+                        });
+                    let value = member
+                        .child_by_field_name("value")
+                        .and_then(|value| self.literal(value));
+                    match (name, value) {
+                        (Some(name), Some(_)) => super::judged_variable(&name),
+                        _ => true,
+                    }
+                })
+            }
+            _ => true,
+        }
+    }
+
     /// Whether `target` is a member of such an object, other than the few
     /// members of `process` that change nothing the reader models
     /// (`process.exitCode`, `process.title`, a variable of `process.env` that
@@ -2218,6 +2304,15 @@ impl<'s> Reader<'s> {
             if base.is_some_and(timer) || (timer(name) && text) {
                 self.reading.unread(self.text(call));
             }
+        }
+        if name.as_deref() == Some("Deno.env.set")
+            || (name.as_deref() == Some("Object.assign")
+                && args
+                    .positional
+                    .first()
+                    .is_some_and(|first| self.is_environment(*first)))
+        {
+            self.reading.acts.push(Act::Environment);
         }
         // What starts a program is run from where `cwd` says.
         let before = self.reading.acts.len();
@@ -2471,6 +2566,12 @@ impl<'s> Reader<'s> {
                     self.unmodeled(function, name.as_deref(), &args, call);
                 }
             }
+        }
+        if matches!(
+            kind,
+            Some(Kind::Script | Kind::Spawn | Kind::Fork | Kind::DenoCommand | Kind::Argv)
+        ) {
+            self.environed(&args, before);
         }
         self.within(cwd, before);
         // `import(x)`: a module loaded where the reader cannot follow it,

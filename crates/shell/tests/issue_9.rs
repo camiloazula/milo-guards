@@ -4505,3 +4505,49 @@ fn a_program_argument_is_read_the_same_when_the_code_is_in_double_quotes() {
     ]);
     assert_risky_as(&rows, &UNKNOWN_OR_SECRET);
 }
+
+#[test]
+fn inline_code_that_gives_a_started_program_an_environment_is_unknown() {
+    let rows = lines(&[
+        r#"python3 -c "import subprocess; subprocess.run(['python3', '-c', '1'], env={'PYTHONPATH': '/tmp'})""#,
+        r#"python3 -c "import subprocess, os; subprocess.run(['python3', '-c', '1'], env={**os.environ, 'PYTHONPATH': '/tmp'})""#,
+        r#"python3 -c "import subprocess, os; subprocess.run(['python3', '-c', '1'], env=dict(os.environ, PYTHONPATH='/tmp'))""#,
+        r#"python3 -c "import subprocess, os; e = os.environ.copy(); e['PYTHONPATH'] = '/tmp'; subprocess.run(['python3', '-c', '1'], env=e)""#,
+        r#"python3 -c "import subprocess, sys; subprocess.run(['python3', '-c', '1'], env={'PYTHONPATH': sys.argv[1]})" /tmp"#,
+        r#"python3 -c "import os; os.environ['PYTHONPATH'] = '/tmp'; os.system('python3 -c 1')""#,
+        r#"python3 -c "import os; os.putenv('PYTHONPATH', '/tmp'); os.system('python3 -c 1')""#,
+        r#"python3 -c "import os; os.environ.update(PYTHONPATH='/tmp'); os.system('python3 -c 1')""#,
+        r#"python3 -c "import os, subprocess; os.environ['PYTHONPATH'] = '/tmp'; subprocess.run(['python3', '-c', '1'])""#,
+        r#"python3 -c "import subprocess; subprocess.run(['python3', '-c', '1'], env={'LD_PRELOAD': '/tmp/x.so'})""#,
+        r#"python3 -c "import subprocess; subprocess.run(['ls'], env={'PATH': '/tmp'})""#,
+        r#"node -e "require('child_process').spawnSync('node', ['-e', '1'], {env: {NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"node -e "require('child_process').spawnSync('node', ['-e', '1'], {env: {...process.env, NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"node -e "process.env.NODE_OPTIONS = '--require /tmp/x.js'; require('child_process').execSync('node -e 1')""#,
+        r#"node -e "require('child_process').execSync('node -e 1', {env: {NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"node -e "const e = process.env; require('child_process').spawnSync('ls', [], {env: e})""#,
+        r#"node -e "const {execa} = require('execa'); execa('node', ['-e', '1'], {env: {NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"node -e "process.env.NODE_OPTIONS = '--require /tmp/x.js'; require('execa').execa('node', ['-e', '1'])""#,
+        r#"bun -e "Bun.spawn(['bun', '-e', '1'], {env: {NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"bun -e "Bun.spawn(['bun', '-e', '1'], {env: {...process.env, NODE_OPTIONS: '--require /tmp/x.js'}})""#,
+        r#"bun -e "process.env.NODE_OPTIONS = '--require /tmp/x.js'; Bun.spawn(['bun', '-e', '1'])""#,
+        r#"deno eval "new Deno.Command('deno', {args: ['eval', '1'], env: {NODE_OPTIONS: '--require /tmp/x.js'}}).outputSync()""#,
+        r#"deno eval "Deno.env.set('NODE_OPTIONS', '--require /tmp/x.js'); new Deno.Command('deno', {args: ['eval', '1']}).outputSync()""#,
+    ]);
+    assert_risky_as(&rows, &[Rule::Unknown]);
+    // A key it reads still wins.
+    let rows = lines(&[
+        r#"python3 -c "import subprocess; subprocess.run(['cat', '/home/me/.ssh/id_rsa'], env={'PYTHONPATH': '/tmp'})""#,
+    ]);
+    assert_risky_as(&rows, &[Rule::ReadSecret]);
+    // An environment written out whole, with nothing the shell side judges.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            r#"python3 -c "import subprocess; subprocess.run(['ls'], env={'LANG': 'C'})""#,
+            r#"node -e "require('child_process').spawnSync('ls', [], {env: {LANG: 'C'}})""#,
+            r#"python3 -c "import subprocess; subprocess.run(['ls'])""#,
+        ],
+        &[],
+    );
+}
