@@ -472,14 +472,14 @@ impl Walker<'_> {
                 let end = literal.end_byte().saturating_sub(quotes).max(start);
                 let mut value = String::new();
                 let mut nulls = false;
+                let mut splits = false;
                 let mut at = start;
                 let mut cursor = literal.walk();
                 for child in literal.named_children(&mut cursor) {
-                    let Some(before) = unescape_expandable(
+                    let (before, made) = unescape_expandable(
                         self.source.get(at..child.start_byte()).unwrap_or_default(),
-                    ) else {
-                        return Arg::Unknown(source.to_string());
-                    };
+                    );
+                    splits |= made;
                     value.push_str(&before);
                     if child.kind() != "variable" {
                         return Arg::Unknown(source.to_string());
@@ -495,20 +495,26 @@ impl Walker<'_> {
                     }
                     at = child.end_byte();
                 }
-                let Some(rest) = unescape_expandable(self.source.get(at..end).unwrap_or_default())
-                else {
-                    return Arg::Unknown(source.to_string());
-                };
+                let (rest, made) =
+                    unescape_expandable(self.source.get(at..end).unwrap_or_default());
+                splits |= made;
                 value.push_str(&rest);
                 // A string of nothing but `$null` is still the device.
                 if nulls && value.is_empty() {
                     return Arg::Known(NULL.to_string());
                 }
-                if here {
+                let value = if here {
                     // The lines between the two markers.
-                    return Arg::Known(value.trim_matches(['\r', '\n']).to_string());
+                    value.trim_matches(['\r', '\n']).to_string()
+                } else {
+                    value.replace("\"\"", "\"")
+                };
+                // The value is the string as an argument; only a script read
+                // from it is not what it says (see `Split::note_splitting`).
+                if splits {
+                    self.split.note_splitting(&value);
                 }
-                Arg::Known(value.replace("\"\"", "\""))
+                Arg::Known(value)
             }
             "verbatim_here_string_characters" => Arg::Known(
                 text.trim_start_matches("@'")
@@ -653,12 +659,14 @@ fn unescape(text: &str) -> String {
 
 /// What a backtick makes of the text in an expandable string or here-string:
 /// `` `n `` is a line break, `` `t `` a tab, `` `u{1F600} `` a character; any
-/// other character after it is itself (`` `$ ``, `` `" ``). `None` when a
-/// `` `u{…} `` makes a character that PowerShell reads as more than a
+/// other character after it is itself (`` `$ ``, `` `" ``). The second value
+/// says a `` `u{…} `` made a character that PowerShell reads as more than a
 /// character once the text is run as code (a space that is not an ASCII one,
-/// a dash or a quote that looks like another): the text the string holds is
-/// then not the words it runs as, so the string is only known when it runs.
-fn unescape_expandable(text: &str) -> Option<String> {
+/// a dash or a quote that looks like another): as an argument the string is
+/// the text it holds, but read again as a script it is not the words it runs
+/// as.
+fn unescape_expandable(text: &str) -> (String, bool) {
+    let mut splits = false;
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -689,9 +697,7 @@ fn unescape_expandable(text: &str) -> Option<String> {
                     .filter(|_| closed)
                     .and_then(char::from_u32);
                 if let Some(decoded) = decoded {
-                    if splits_words(decoded) {
-                        return None;
-                    }
+                    splits |= splits_words(decoded);
                     value.push(decoded);
                 } else {
                     // Not a character: PowerShell does not run the line.
@@ -705,7 +711,7 @@ fn unescape_expandable(text: &str) -> Option<String> {
             other => value.push(other),
         }
     }
-    Some(value)
+    (value, splits)
 }
 
 /// Whether PowerShell reads `c`, run as code, as something other than the
@@ -713,7 +719,7 @@ fn unescape_expandable(text: &str) -> Option<String> {
 /// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) splits
 /// words, a dash (U+2013 to U+2015) starts a parameter, and a typographic
 /// quote (U+2018 to U+201E) opens or closes a string. The guard's own read of
-/// a nested line does not know them, so the text with one in it is not read.
+/// a nested line does not know them, so a script with one in it is not read.
 fn splits_words(c: char) -> bool {
     (!c.is_ascii() && c.is_whitespace())
         || matches!(c, '\u{2013}'..='\u{2015}' | '\u{2018}'..='\u{201e}')

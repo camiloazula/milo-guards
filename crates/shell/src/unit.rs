@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -291,6 +292,11 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// The PowerShell strings in which a backtick `u{…}` made a space that is
+    /// not an ASCII one, a dash or a typographic quote: as a path or an
+    /// argument each is the text it holds, but a script read from one is not.
+    /// Noted while a string is read, which only borrows the walker.
+    splitting: RefCell<Vec<String>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -836,6 +842,26 @@ impl Split {
             .any(|known| known.eq_ignore_ascii_case(name))
     }
 
+    /// Note that the PowerShell string `value` holds a character made by a
+    /// backtick `u{…}` that PowerShell reads as more than a character when the
+    /// text runs as code.
+    pub(crate) fn note_splitting(&self, value: &str) {
+        let mut splitting = self.splitting.borrow_mut();
+        if !splitting.iter().any(|known| known == value) {
+            splitting.push(value.to_string());
+        }
+    }
+
+    /// Whether `script` holds a string noted by [`Split::note_splitting`]:
+    /// run as code, its words are not the ones the guard's reading of the
+    /// text finds.
+    fn splits_script(&self, script: &str) -> bool {
+        self.splitting
+            .borrow()
+            .iter()
+            .any(|value| script.contains(value.as_str()))
+    }
+
     /// A new pipeline's number; `parent` is the stage of another pipeline it
     /// runs in.
     pub(crate) fn pipeline(&mut self, parent: Option<Stage>) -> usize {
@@ -1062,6 +1088,14 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     if let Some(why) = too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
+        return;
+    }
+    if shell == Shell::PowerShell && split.splits_script(text) {
+        split.problem(
+            Rule::Unknown,
+            "runs a script only known when it runs",
+            Some(text),
+        );
         return;
     }
     if depth > 0 {

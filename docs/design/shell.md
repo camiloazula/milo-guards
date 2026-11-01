@@ -831,8 +831,10 @@ TABLE t"` is two statements and `iex @"` … `"@` runs the lines that a
 backtick breaks. A `` `u{…} `` that makes a character PowerShell reads as more
 than a character when the text runs as code (a space that is not an ASCII one,
 such as U+00A0 or U+3000, which splits words; a dash from U+2013 to U+2015; a
-typographic quote from U+2018 to U+201E) leaves the string known only when it
-runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"` is `unknown`.
+typographic quote from U+2018 to U+201E) leaves a script read from the string
+known only when it runs, so `iex "Remove-Item`u{a0}C:\Windows`u{a0}-Recurse"`
+is `unknown`. As a path or any other argument the string is the text it holds:
+`Get-Content "~\x`u{a0}\..\.ssh\id_rsa"` reads the key.
 Several arguments to `Write-Output` or `echo` are one line
 each, so `Write-Output 'SELECT 1 --' 'DROP TABLE t' | psql` runs the `DROP`;
 `cmd`'s `echo` joins them with a space. A stage that is a group (`{ echo 'BEGIN;';
