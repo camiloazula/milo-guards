@@ -2316,8 +2316,17 @@ pub fn network(text: &str, flavour: Flavour) -> bool {
 /// On POSIX an absolute path is judged where it lands, with `.` and `..`
 /// applied, so `/dev/./null` is the null device and `/dev/fd/../../etc` is
 /// not a device at all: it is `/etc`. A name that is not exactly a device
-/// (`/dev/fd`, `/dev/fd/3/x`), or that ends in `/` or `/.` (descriptor 3
-/// could be a folder), is not one. On Windows `/dev/...` is a real folder on
+/// (`/dev/fd`, `/dev/fd/3/x`) is not one. Nor is a spelling with any part
+/// after a descriptor, which could be a folder, so a `..` after it lands
+/// beside that folder's parent: that is any part after `fd/<name>` (digits,
+/// a wildcard, any name) and any part after `stdin`, `stdout` or `stderr`
+/// (links to the same descriptors), as in `/dev/fd/3*/../1` and
+/// `/dev/stdout/../null`; only `fd/..` climbs out of `fd` itself, so
+/// `/dev/fd/../null` is the null device. A wildcard part with more parts
+/// after it is no device either, since it can match `stdout` and be a
+/// folder: `/dev/std*/../null` and `/dev/*/../null` land beside it, not on
+/// `/dev/null`. A name that ends in `/`, `/.` or `/..` is no device
+/// either, for the same reason. On Windows `/dev/...` is a real folder on
 /// the current drive, so only the plain spellings count there, split at `/`
 /// and never normalised. A text with a `{` can expand to paths its spelling
 /// does not show, so it is never a device.
@@ -2352,6 +2361,38 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
             return None;
         }
+        // Nor is a spelling that goes on past a descriptor: `fd/<name>`
+        // (digits, a wildcard that expands to digits, any name) or
+        // `stdin`, `stdout` and `stderr`, which are links to the same
+        // `/proc/self/fd` entries. The descriptor could be a folder, and a
+        // `..` after it lands beside that folder's parent, not on
+        // `/dev/fd`. The kernel drops `//` and `/.`, so an empty or `.`
+        // part before the descriptor changes nothing. Only `fd/..` climbs
+        // out of `fd` itself, so `/dev/fd/../null` stays the null device.
+        let raw: Vec<&str> = lower
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        if raw.windows(3).any(|w| w[0] == "fd" && w[1] != "..") {
+            return None;
+        }
+        // A wildcard part with more parts after it can expand to a folder
+        // (`std*` and `*` match `stdout`), so a `..` after it lands beside
+        // that folder's parent, whatever the pattern is spelled as.
+        if raw
+            .split_last()
+            .is_some_and(|(_, init)| init.iter().any(|part| glob::has_wildcard(part)))
+        {
+            return None;
+        }
+        if let Some(at) = raw
+            .iter()
+            .position(|part| matches!(*part, "stdin" | "stdout" | "stderr"))
+        {
+            if at + 1 < raw.len() {
+                return None;
+            }
+        }
         parts(&lower, flavour)
     };
     let [dev, name @ ..] = name.as_slice() else {
@@ -2361,7 +2402,7 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         return None;
     }
     if let [fd, number] = name {
-        if fd == "fd" && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+        if fd == "fd" && is_digits(number) {
             return Some(Place::Null);
         }
     }
@@ -2373,6 +2414,11 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         return Some(Place::Disk);
     }
     None
+}
+
+/// Whether `text` is a descriptor number: one or more ASCII digits.
+fn is_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// What a wildcard part becomes while a path is resolved, followed by its
@@ -2803,7 +2849,35 @@ mod tests {
             ("/dev/fd/x", POSIX, None),
             ("/dev/fd/3x", POSIX, None),
             ("/dev/fd/3/x", POSIX, None),
+            // A part after the descriptor makes it a folder, `..` or not.
+            ("/dev/fd/3/../1", POSIX, None),
+            ("/dev/fd//3/../1", POSIX, None),
+            ("/dev/fd/./3/../1", POSIX, None),
+            ("/dev//fd//3//..//1", POSIX, None),
+            ("/dev/fd/0/./../1", POSIX, None),
+            ("/dev/fd/3/../null", POSIX, None),
             ("/dev/fd/*", POSIX, None),
+            ("/dev/fd/3*/../1", POSIX, None),
+            ("/dev/fd/3?/../1", POSIX, None),
+            ("/dev/fd/[0-9]/../1", POSIX, None),
+            ("/dev/fd/x/../1", POSIX, None),
+            ("/dev/fd/./3*/../1", POSIX, None),
+            // A wildcard part followed by more parts can match a folder.
+            ("/dev/std*/../null", POSIX, None),
+            ("/dev/stdou?/../null", POSIX, None),
+            ("/dev/[s]tdout/../null", POSIX, None),
+            ("/dev/*/../null", POSIX, None),
+            ("/dev/*/../stdout", POSIX, None),
+            ("/dev/fd/../std*/../null", POSIX, None),
+            ("/dev//std*//../null", POSIX, None),
+            ("/dev/fd/../std*", POSIX, None),
+            ("/dev/fd/../null", POSIX, Some(Place::Null)),
+            ("/dev/stdout/../null", POSIX, None),
+            ("/dev/stderr/../null", POSIX, None),
+            ("/dev/stdin/../null", POSIX, None),
+            ("/dev/stdout/x/../../null", POSIX, None),
+            ("/dev//stdout//../null", POSIX, None),
+            ("/dev/fd/../stdout", POSIX, Some(Place::Null)),
             ("/dev/nulls", POSIX, None),
             ("dev/null", POSIX, None),
             // Windows spellings: a name is exact, the namespace is a root.
