@@ -72,7 +72,8 @@ pub(super) struct Landed {
     pub(super) text: String,
     /// How many leading bytes of `text` the shell applied the `..` of itself
     /// (a `cd`), so that part is made absolute by spelling and a `..` after it
-    /// is kept.
+    /// is kept. A read is recorded once per way the shell can have gone, `0`
+    /// being the way where it kept every `..`.
     pub(super) folded: usize,
     /// What follows the folder of a pattern.
     pub(super) glob: Option<String>,

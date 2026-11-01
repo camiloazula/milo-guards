@@ -42,7 +42,8 @@ pub(super) struct Context<'a> {
     /// as written.
     pub(super) dir: RefCell<Option<String>>,
     /// Whether the unit being read is a `cd`, whose target the shell applies
-    /// the `..` of itself.
+    /// the `..` of itself (bash and zsh fall back to the physical path when
+    /// the folded folder does not exist, so a target is also listed kept).
     pub(super) cd_target: Cell<bool>,
 }
 

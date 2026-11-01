@@ -346,8 +346,16 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// resolves it on the disk part by part (what `canonicalize` does), and must
 /// not fold the `..` first, nor test the listed path for a prefix: `<cwd>/../x`
 /// starts with the workspace and is not in it. The `..` of a `cd` is the
-/// exception, since the shell applies it itself: `cd link/.. && cat x` lists
-/// `<cwd>` and `<cwd>/x`. [`effect`] keeps judging by spelling. The list is
+/// exception, since the shell applies it by spelling and goes to the folded
+/// folder; but bash and zsh go to the path as written, the physical one, when
+/// the folded folder does not exist, which happens when a part of it came after
+/// a `..` that climbed out of a part. So a `cd` target like that is listed both
+/// ways, folded and kept, and each read from there from each: `cd
+/// link/../etc && cat hosts` lists `<cwd>/etc`, `<cwd>/etc/hosts`,
+/// `<cwd>/link/../etc` and `<cwd>/link/../etc/hosts`; `cd link/.. && cat x`
+/// lists `<cwd>` and `<cwd>/x`. A path the line writes out whole (absolute, or `~`) is
+/// not joined to the folder and keeps its `..` as written, whatever it spells
+/// like the folder. [`effect`] keeps judging by spelling. The list is
 /// sorted and holds each
 /// entry once, so the answer is the same every time. A read that is not a
 /// place on a disk (the null device, a registry hive, a path on another

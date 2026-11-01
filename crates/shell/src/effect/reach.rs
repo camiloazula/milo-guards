@@ -91,23 +91,35 @@ impl Context<'_> {
         place: Place,
         how: Manner,
     ) {
+        let from = path::within(dir, arg, shell);
+        // The text is the operand's own, or the folder it was joined to in
+        // front of a relative one.
+        let joined = from != *arg;
+        self.record(shell, &from, joined, place, how);
+    }
+
+    /// Record a read of `from`, a path already joined to where the line runs,
+    /// that lands at `place`. `joined` says whether `from` is the folder a
+    /// `cd` moved to with a relative operand after it, and not a path the line
+    /// wrote out whole.
+    fn record(&self, shell: Shell, from: &Arg, joined: bool, place: Place, how: Manner) {
         // Once a read is beyond the workspace the answer is settled, unless
         // the paths are asked for: those are every read, so each is kept.
         if self.beyond.get() && self.landed.is_none() {
             return;
         }
-        let from = path::within(dir, arg, shell);
         if let (Some(landed), Some(text)) = (&self.landed, from.known()) {
             let (text, glob) = folder_read(text, shell);
-            let folded = self.folded(&text);
-            landed.borrow_mut().push(Landed {
-                text,
-                folded,
-                glob,
-                walk: how.walk,
-                shell,
-                stage: self.stage.get(),
-            });
+            for folded in self.foldings(&text, joined, shell) {
+                landed.borrow_mut().push(Landed {
+                    text: text.clone(),
+                    folded,
+                    glob: glob.clone(),
+                    walk: how.walk,
+                    shell,
+                    stage: self.stage.get(),
+                });
+            }
         }
         let beyond = match place {
             Place::Inside
@@ -120,7 +132,7 @@ impl Context<'_> {
             // A startup file or a protected path is the workspace's own
             // only when it is inside it.
             Place::Sensitive(_, Sensitivity::Startup) | Place::Protected(_) => {
-                !self.resolver.inside_workspace(&from, shell)
+                !self.resolver.inside_workspace(from, shell)
             }
             _ => true,
         };
@@ -131,7 +143,7 @@ impl Context<'_> {
             || ((how.deep || pattern)
                 && self
                     .resolver
-                    .reaches_secret(&from, shell, how.hidden, how.deep))
+                    .reaches_secret(from, shell, how.hidden, how.deep))
             // A PowerShell or cmd wildcard is the program's own: with a recursion it
             // is a filter on every folder below the one it starts in.
             || (how.deep
@@ -152,49 +164,97 @@ impl Context<'_> {
         // A part like `.*` picks `..` too, in the shells whose patterns match
         // it: the folder above is read.
         if let Some(above) = from.known().and_then(|text| path::climb(text, shell)) {
-            self.land_arg(shell, &Arg::Known(above), how.shallow());
+            self.land_arg(shell, &Arg::Known(above), joined, how.shallow());
         }
     }
 
     /// How many leading bytes of `text`, a path as joined to where the line
-    /// runs, the shell has already applied the `..` of: a `cd` applies its
-    /// own by spelling (`cd link/..` is the folder `link` is in), so the
-    /// folder the line moved to, and a `cd` target as a whole. The rest is
-    /// opened by a program, which gets a `..` after the link before it. A line
-    /// that keeps the physical path (`cd -P`) has no such part.
-    fn folded(&self, text: &str) -> usize {
+    /// runs, the shell has already applied the `..` of, once for each way the
+    /// shell can have gone: a `cd` applies its own by spelling (`cd src/..` is
+    /// the folder `src` is in), so the folder the line moved to, and a `cd`
+    /// target as a whole, are folded. Only a relative operand joined to that
+    /// folder starts with it: a path the line wrote out whole (absolute, or
+    /// `~`) is opened by a program from its first part, whatever it spells
+    /// like the folder. The rest is opened by a program, which gets a `..`
+    /// after the link before it.
+    ///
+    /// A line that keeps the physical path (`cd -P`) has no folded part. And
+    /// bash and zsh fall back to the path as written when the folded folder
+    /// does not exist: with `link -> /etc` and no `etc` beside it, `cd
+    /// link/../etc` goes to `/etc`, not to the folded `<cwd>/etc`. So a part
+    /// after a `..` that follows a part in the folder gives a second way, the
+    /// text with every `..` kept (a `0`), and both are returned for a caller
+    /// to check. A folder that ends at its `..` (`cd link/..`) exists, so it
+    /// has one way.
+    fn foldings(&self, text: &str, joined: bool, shell: Shell) -> Vec<usize> {
         if self.physical {
-            return 0;
+            return vec![0];
         }
-        if self.cd_target.get() {
-            return text.len();
+        let (folded, second_way) = if self.cd_target.get() {
+            (text.len(), dots_before_a_part(text, shell))
+        } else {
+            let dir = self.dir.borrow();
+            match dir.as_deref().filter(|dir| {
+                joined
+                    && text
+                        .strip_prefix(dir)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            }) {
+                Some(dir) => (dir.len(), dots_before_a_part(dir, shell)),
+                None => (0, false),
+            }
+        };
+        if second_way {
+            vec![folded, 0]
+        } else {
+            vec![folded]
         }
-        let dir = self.dir.borrow();
-        dir.as_deref()
-            .filter(|dir| {
-                text.strip_prefix(dir)
-                    .is_some_and(|rest| rest.starts_with('/'))
-            })
-            .map_or(0, str::len)
     }
 
     /// Record a read of the text `text`, written from where `unit` runs.
     fn land_text(&self, unit: &Unit, text: &str, how: Manner) -> Kind {
         let from = path::within(unit.dir.as_ref(), &Arg::Known(text.to_string()), unit.shell);
-        self.land_arg(unit.shell, &from, how)
+        let joined = from.known() != Some(text);
+        self.land_arg(unit.shell, &from, joined, how)
     }
 
     /// Record a read of `from`, a path already joined to where the line
-    /// runs: the place it lands, and `Unknown` when that cannot be said.
-    fn land_arg(&self, shell: Shell, from: &Arg, how: Manner) -> Kind {
+    /// runs (`joined` as in [`record`](Self::record)): the place it lands, and
+    /// `Unknown` when that cannot be said.
+    fn land_arg(&self, shell: Shell, from: &Arg, joined: bool, how: Manner) -> Kind {
         let place = self.resolver.place_joined(from, shell, how.hidden);
-        self.land(shell, None, from, place, how);
+        self.record(shell, from, joined, place, how);
         if matches!(place, Place::Unknown) {
             Kind::Unknown
         } else {
             Kind::Reads
         }
     }
+}
+
+/// Whether the folder a POSIX `text` folds to, by spelling, has a part that
+/// came after a `..` which climbed out of a part (`link/../etc`, `/a/b/../c`;
+/// not `link/..`, `a/../b/..`, `src/../..`, `../x`). The shell applies a `..`
+/// by spelling, but bash and zsh go to the path as written when the folded
+/// folder does not exist, and it can fail to exist only then: a folded folder
+/// made of leading parts of the text exists when the text does, and a `..`
+/// with no part before it climbs from the folder the line is in, which is
+/// known.
+fn dots_before_a_part(text: &str, shell: Shell) -> bool {
+    if shell != Shell::Posix {
+        return false;
+    }
+    // The parts that remain, each as whether it came after such a `..`.
+    let mut kept: Vec<bool> = Vec::new();
+    let mut dotted = false;
+    for name in text.split('/') {
+        match name {
+            "" | "." => {}
+            ".." => dotted |= kept.pop().is_some(),
+            _ => kept.push(dotted),
+        }
+    }
+    kept.contains(&true)
 }
 
 /// The place a read of `text` opens on disk, and for a pattern what follows
@@ -283,15 +343,19 @@ pub(super) fn reads(
         // `git -C a -C b` reads the repository at `a/b`: each folder is
         // relative to the one before it, and an absolute one starts over.
         let mut here = path::within(unit.dir.as_ref(), &Arg::Known(".".to_string()), unit.shell);
+        // Still the folder a `cd` moved to, until an absolute one starts over.
+        let mut joined = unit.dir.is_some();
         for next in &opened.dirs {
-            here = path::within(Some(&here), next, unit.shell);
+            let after = path::within(Some(&here), next, unit.shell);
+            joined &= after != **next;
+            here = after;
         }
-        kind = context.land_arg(unit.shell, &here, how);
+        kind = context.land_arg(unit.shell, &here, joined, how);
         git_paths(unit, opened, how, context);
     } else if implicit(unit, key, opened) {
         let dot = Arg::Known(".".to_string());
         let here = path::within(unit.dir.as_ref(), &dot, unit.shell);
-        kind = context.land_arg(unit.shell, &here, how);
+        kind = context.land_arg(unit.shell, &here, unit.dir.is_some(), how);
     }
     // `df` with no operand reports every disk that is mounted.
     if unit.shell == Shell::Posix && key == "df" && opened.operands == 0 {
@@ -338,7 +402,7 @@ fn git_paths(unit: &Unit, opened: &Opened<'_>, how: Manner, context: &Context<'_
             if from_root {
                 for folder in context.resolver.workspaces() {
                     let at = Arg::Known(format!("{folder}/{rest}"));
-                    context.land_arg(unit.shell, &at, shallow);
+                    context.land_arg(unit.shell, &at, false, shallow);
                 }
             }
         }

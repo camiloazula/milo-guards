@@ -187,7 +187,9 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
             .dir
             .replace(unit.dir.as_ref().and_then(Arg::known).map(str::to_string));
         // The shell applies the `..` of a `cd` target itself (`cd link/..` is
-        // the folder `link` is in), unless it keeps the physical path.
+        // the folder `link` is in), unless it keeps the physical path; bash
+        // and zsh fall back to the physical path when the folded folder does
+        // not exist, so a `..` after a part is listed both ways.
         context.cd_target.set(moves_to(unit).is_some());
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.

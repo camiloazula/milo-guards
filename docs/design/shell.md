@@ -2292,14 +2292,31 @@ the workspace, and `effect_paths` lists it like any other.
   `<cwd>/../x` starts with the workspace and is not in it. `cat
   src/../README.md` still lets a caller confirm it stays inside: resolve it, and
   it is `<cwd>/README.md`. A `..` with nothing above it (`/..`) is dropped, as
-  the kernel does. The `..` that a `cd` applies itself are the exception:
-  bash, zsh and dash take `cd link/..` to the folder `link` is in (they apply it
-  by spelling and `chdir` there), so the folder a `cd` moves to, and the target
-  of a `cd` itself, are listed with theirs applied, and a read from there starts
-  at that folder; only a `..` the program opens (`cd src && cat ../x`) is kept.
-  A line that keeps the physical path (`cd -P`) follows the link first, so
-  its `..` are all kept. On Windows the system folds a `..` before it looks at
-  the disk, which resolving the path as the system does gives too. `effect`
+  the kernel does. The `..` that a `cd` applies itself are the exception, and
+  the shell does not always apply them: it applies a `..` by spelling and
+  `chdir`s to the folded folder, but bash and zsh fall back to the path as
+  written, the physical one, when the folded folder does not exist (dash and
+  `/bin/sh` fail instead). So with `link -> /etc` and no `etc` beside `link`,
+  `cd link/../etc` goes to `/etc`, and `cat hosts` after it reads
+  `/etc/hosts`, while `<cwd>/etc` is where it goes when that exists. The
+  folded folder can fail to exist only when a part of it came after a `..` that
+  climbed out of a part (`link/../etc`, `src/deep/../../x`): a folder that ends
+  at its `..` (`link/..`, `a/../b/..`) is a leading part of the text, which
+  exists when the text does, and a `..` with nothing before it (`../x`) climbs
+  from the folder the line is in, which is known. So a `cd` target of the first
+  kind is listed both ways: folded, as the folder the line moved to, and kept,
+  as the target the system opens, and each read from that folder is listed from
+  each, so a caller checks both (`cd link/../etc && cat hosts` lists
+  `<cwd>/etc`, `<cwd>/etc/hosts`, `<cwd>/link/../etc` and
+  `<cwd>/link/../etc/hosts`). Only a relative operand is joined to the folder: a
+  path the line writes out whole (absolute, or `~`) is opened from its first
+  part, even when it spells the folder, so `cd /w/link/.. && cat
+  /w/link/../etc/hosts` lists only `/w/link/../etc/hosts` for the read. A `..`
+  the program opens (`cd src && cat ../x`) is kept. A chain of such `cd`s lists
+  all of them folded and all of them kept, not each mix. A line that keeps the
+  physical path (`cd -P`) follows the link first, so its `..` are all kept, one
+  way. On Windows the system folds a `..` before it looks at the disk, which
+  resolving the path as the system does gives too. `effect`
   does not change: it judges the place by spelling, as before, so a `..`
   after a link is still a place inside the workspace there. A walk or a
   pattern keeps them too: the folder a pattern expands in is a path the shell
@@ -2590,7 +2607,8 @@ has its own in `crates/core/tests/reaches_secret.rs`.
 one that checks every way of reading against a table of links playing the disk,
 the way the docs tell a caller to;
 `tests/issue_66.rs` has the rows of the `..` the list keeps (a link before a
-`..`, every way of reading, a `cd`, PowerShell and cmd); and
+`..`, every way of reading, a `cd` listed folded and kept, an absolute operand
+after a `cd`, PowerShell and cmd); and
 every row of every table is also held to agree with `effect` on whether it has
 a list (`common::path_disagreement`). Core's `absolute` has its own in
 `crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/issue_66.rs`.

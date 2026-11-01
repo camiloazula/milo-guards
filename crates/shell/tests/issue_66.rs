@@ -410,6 +410,198 @@ fn a_cd_that_keeps_the_physical_path_follows_links_before_its_dotdot() {
     }
 }
 
+/// Where each path of the list is on the table disk (none when the line has
+/// no list).
+fn places(line: &str, paths: &Paths) -> Vec<String> {
+    effect_paths(line, Shell::Posix, paths)
+        .unwrap_or_default()
+        .iter()
+        .map(|read| resolve(&read.path.to_string_lossy()))
+        .collect()
+}
+
+#[test]
+fn an_absolute_operand_does_not_borrow_the_folder_a_cd_moved_to() {
+    // The line of the issue, spelled absolute after a `cd` whose folder is
+    // the first part of the operand's own text. The `cd` does not change what
+    // the operand opens: `link/..` after `link -> /etc` is `/`, and `etc` in
+    // it is `/etc`, never `<cwd>/etc`.
+    let paths = posix();
+    let e = "/home/me/work/repo/link/../etc";
+    for root in ["/home/me/work/repo", "~/work/repo"] {
+        let cd = format!("cd {root}/link/..");
+        let target = format!("{root}/link/../etc");
+        // The `cd` goes to the folder `link` is in, and the operand is
+        // listed once, with its `..` kept.
+        let read = |want: ReadPath| vec![exact(ROOT), want];
+        let rows = [
+            (
+                format!("{cd} && cat {target}/hosts"),
+                read(exact(&format!("{e}/hosts"))),
+                "/etc/hosts",
+            ),
+            (
+                format!("{cd} && cat < {target}/hosts"),
+                read(exact(&format!("{e}/hosts"))),
+                "/etc/hosts",
+            ),
+            (
+                format!("{cd}\ncat {target}/hosts"),
+                read(exact(&format!("{e}/hosts"))),
+                "/etc/hosts",
+            ),
+            (format!("{cd} && ls {target}"), read(exact(e)), "/etc"),
+            (
+                format!("{cd} && grep -r x {target}"),
+                read(tree(e, false)),
+                "/etc",
+            ),
+            (
+                format!("{cd} && cat {target}/*"),
+                read(glob(e, "*")),
+                "/etc",
+            ),
+            (
+                format!("{cd} && git -C {target} status"),
+                read(tree(e, false)),
+                "/etc",
+            ),
+        ];
+        for (line, want, place) in &rows {
+            check(Shell::Posix, &paths, &[(line.as_str(), want.clone())]);
+            assert!(places(line, &paths).contains(&place.to_string()), "{line}");
+        }
+        // A `cd` that itself goes through the `..` is listed both ways (see
+        // below), and the operand after it still once, kept.
+        let line = format!("cd {target} && cat {target}/hosts");
+        check(
+            Shell::Posix,
+            &paths,
+            &[(
+                line.as_str(),
+                vec![
+                    exact("/home/me/work/repo/etc"),
+                    exact(e),
+                    exact(&format!("{e}/hosts")),
+                ],
+            )],
+        );
+    }
+}
+
+#[test]
+fn a_cd_target_with_a_part_after_a_dotdot_is_listed_both_ways() {
+    // bash and zsh go to the path as written when the folded folder does not
+    // exist: with `link -> /etc` and no `etc` beside `link`, `cd link/../etc`
+    // lands in `/etc`, and a read from there opens `/etc/hosts`. The folded
+    // `<cwd>/etc` is where it goes when it exists, so both are listed.
+    let paths = posix();
+    let both = |folder: &str, kept: &str| {
+        vec![
+            exact(folder),
+            exact(&format!("{folder}/hosts")),
+            exact(kept),
+            exact(&format!("{kept}/hosts")),
+        ]
+    };
+    let four = both("/home/me/work/repo/etc", "/home/me/work/repo/link/../etc");
+    for line in [
+        "cd link/../etc && cat hosts",
+        "cd link/../etc; cat ./hosts",
+        "cd link/../etc\ncat hosts",
+        "pushd link/../etc && cat hosts",
+    ] {
+        check(Shell::Posix, &paths, &[(line, four.clone())]);
+        assert!(
+            places(line, &paths).contains(&"/etc/hosts".to_string()),
+            "{line}"
+        );
+    }
+    check(
+        Shell::Posix,
+        &paths,
+        &[
+            (
+                "cd link/../etc && ls",
+                vec![
+                    exact("/home/me/work/repo/etc"),
+                    exact("/home/me/work/repo/link/../etc"),
+                ],
+            ),
+            // A link that leads deeper inside the workspace: the folded
+            // folder is outside it, the physical one inside.
+            (
+                "cd src/deep/../../x && cat y",
+                vec![
+                    exact("/home/me/work/repo/src/deep/../../x"),
+                    exact("/home/me/work/repo/src/deep/../../x/y"),
+                    exact("/home/me/work/repo/x"),
+                    exact("/home/me/work/repo/x/y"),
+                ],
+            ),
+        ],
+    );
+    let places = places("cd src/deep/../../x && cat y", &paths);
+    assert!(places.contains(&"/home/me/work/repo/src/a/x/y".to_string()));
+    // A relative operand after it is joined to the folder, so it has both
+    // ways too, and a `..` in it is the program's own, kept.
+    let line = "cd link/../etc && cat ../x";
+    let listed = effect_paths(line, Shell::Posix, &paths).unwrap();
+    for want in [
+        "/home/me/work/repo/etc/../x",
+        "/home/me/work/repo/link/../etc/../x",
+    ] {
+        assert!(listed.contains(&exact(want)), "{line}: {listed:?}");
+    }
+    // The physical path (`cd -P`) has the one way.
+    let line = "cd -P link/../etc && cat hosts";
+    let list: Vec<ReadPath> = effect_paths(line, Shell::Posix, &paths)
+        .unwrap()
+        .into_iter()
+        .filter(|read| !read.path.ends_with("-P"))
+        .collect();
+    assert_eq!(
+        list,
+        vec![
+            exact("/home/me/work/repo/link/../etc"),
+            exact("/home/me/work/repo/link/../etc/hosts"),
+        ]
+    );
+}
+
+#[test]
+fn a_cd_with_no_part_after_its_dotdot_is_one_way() {
+    // A `..` with no part before it climbs from the folder the line is in,
+    // which the guard knows. A folder that ends at its `..` is a leading part
+    // of the text: it exists when the text does, so the shell goes there.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            (
+                "cd .. && cat x",
+                vec![exact("/home/me/work"), exact("/home/me/work/x")],
+            ),
+            (
+                "cd ../../etc && cat hosts",
+                vec![exact("/home/me/etc"), exact("/home/me/etc/hosts")],
+            ),
+            (
+                "cd ../.. && cat x",
+                vec![exact("/home/me"), exact("/home/me/x")],
+            ),
+            (
+                "cd src/../x/.. && cat y",
+                vec![exact(ROOT), exact("/home/me/work/repo/y")],
+            ),
+            (
+                "cd link/.. && cd .. && ls",
+                vec![exact("/home/me/work"), exact(ROOT)],
+            ),
+        ],
+    );
+}
+
 #[test]
 fn the_list_holds_each_spelling_once_and_is_sorted() {
     let paths = posix();
