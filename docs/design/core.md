@@ -196,7 +196,11 @@ itself.
     the last part, so with a protected file `conf/app/x.yaml`, `**/x.yaml` and
     `conf` are protected but `**/y.yaml`, `**/*.rs` and `**/*.pyc` are not.
     The holding rule (ancestor folders) and the landing rule for a copy apply
-    to both kinds. This is why the caller says which it protects, and why
+    to both kinds. **The two mistakes fail differently.** A folder marked as a
+    file opens patterns below its name: with `cfg` a folder marked as a file,
+    `c*/rules` and `**/rules` come back safe. A file marked as a folder only
+    adds noise: `**/*.rs` is a finding. So when the caller is unsure, it
+    should say `folder`. This is why the caller says which it protects, and why
     there is no constructor that does not: without it every `**/<name>` would
     be a finding wherever a protected file exists. A catch-all at the workspace root is
     still the workspace. Without this a glob inside a workspace would reach a

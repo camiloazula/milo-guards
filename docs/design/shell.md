@@ -349,6 +349,17 @@ cannot be deleted or moved. With `Protected::file("/home/me/work/repo/conf/app/x
 | `rm -rf **/y.yaml`, `rm -rf **/*.rs` | safe: a protected file has nothing below its name (with a protected folder `cfg` they are `delete`) |
 | `rm -rf .`, `rm -rf ~` | the workspace, the home directory: a risky place keeps its own words |
 
+How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
+position 0 and `-Destination` at position 1, and a comma list of sources is
+flattened into the arguments, so with no `-Destination` each operand after the
+first is read as the destination in turn, the rest as sources, and a risky
+reading wins. The value of a parameter, a common one included (`-ErrorAction
+Stop`, `-ea 0`, `-OutVariable o`), is never an operand. A source that comes
+only from a pipeline (`gci src | cpi -Destination conf\app`), is unknown, or
+is what `find -exec`, `-execdir` or `-ok` found (`{}`) lands as a name that
+could be anything, which a protected name in the folder can be. The rows are
+all kept in `tests/protected.rs`.
+
 A wildcard part stands for one entry, so a `..` after it still climbs:
 `src/*/../../../x`. A part that starts with `.` can match `.git`; in PowerShell
 and cmd, whose wildcards also match a leading dot, so can a part directly in

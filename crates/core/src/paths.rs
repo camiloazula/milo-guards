@@ -48,7 +48,9 @@ pub struct Paths {
 /// guard no I/O and lets a pattern be read the right way: only a folder can
 /// have more below it, so `**/*.rs` goes into a protected folder and not past
 /// a protected file. Build one with [`Protected::file`] or
-/// [`Protected::folder`].
+/// [`Protected::folder`], and choose `folder` when unsure: a folder marked as
+/// a file opens patterns below its name, where a file marked as a folder only
+/// adds noise.
 ///
 /// ```
 /// use milo_guards_core::{Paths, Protected};
@@ -83,6 +85,11 @@ pub enum ProtectedKind {
 
 impl Protected {
     /// A protected file and the words a reason calls it by.
+    ///
+    /// Marking a folder as a file opens patterns below its name: `c*/rules`
+    /// is not a finding for a protected folder `cfg` marked as a file. Marking
+    /// a file as a folder only adds noise (`**/*.rs` is a finding). When
+    /// unsure, use [`Protected::folder`].
     #[must_use]
     pub fn file(path: impl Into<PathBuf>, words: &'static str) -> Self {
         Self {
