@@ -834,6 +834,8 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
         // written bare or quoted, and bare is the likelier.
         Arg::Known(text) => shell == Shell::Posix && brace_words(text),
         Arg::Input => true,
+        // The null value is no word, and holds no list.
+        Arg::Null => false,
         Arg::Unknown(_) | Arg::Template { .. } if unit.repeated => true,
         Arg::Unknown(text) | Arg::Template { source: text, .. } => {
             text.contains("$(")
@@ -1162,6 +1164,7 @@ fn written(arg: &Arg) -> &str {
     match arg {
         Arg::Known(text) | Arg::Unknown(text) | Arg::Template { text, .. } => text,
         Arg::Input => "",
+        Arg::Null => "$null",
     }
 }
 

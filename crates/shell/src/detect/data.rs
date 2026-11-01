@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::Checker;
+use crate::path::Access;
 use crate::unit::{Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -348,7 +349,7 @@ fn statement_text(arg: &Arg) -> Option<(&str, bool)> {
         Arg::Known(text) => Some((text, false)),
         Arg::Template { source, .. } if source.contains("\\$") || source.contains("\\`") => None,
         Arg::Template { text, .. } => Some((text, true)),
-        Arg::Unknown(_) | Arg::Input => None,
+        Arg::Unknown(_) | Arg::Input | Arg::Null => None,
     }
 }
 
@@ -363,7 +364,7 @@ fn view(arg: &Arg) -> Option<(&str, bool)> {
         Arg::Known(text) => Some((text, false)),
         Arg::Template { text, .. } => Some((text, true)),
         Arg::Unknown(text) => Some((text, true)),
-        Arg::Input => None,
+        Arg::Input | Arg::Null => None,
     }
 }
 
@@ -1503,7 +1504,7 @@ impl Checker<'_> {
         match database(name) {
             Database::Memory => true,
             Database::Path(path) => self
-                .place(unit.shell, unit.scope(), &Arg::Known(path))
+                .place(unit.shell, unit.scope(), &Arg::Known(path), Access::Content)
                 .harmless(),
             Database::Elsewhere => false,
         }
@@ -1518,7 +1519,9 @@ impl Checker<'_> {
             None => true,
             Some(file) => match file.known() {
                 Some(name) => self.is_own_database(unit, name),
-                None => self.place(unit.shell, unit.scope(), file).harmless(),
+                None => self
+                    .place(unit.shell, unit.scope(), file, Access::Content)
+                    .harmless(),
             },
         };
         let language = Language::Sql(dialect);

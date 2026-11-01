@@ -188,6 +188,55 @@ nested script in a process of its own does not reach the rest of the line;
 `eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
+so it is read as written, before the path is joined to where a `cd` moved:
+`cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
+overwrite of a file only known when it runs. `$null` is the device only in
+PowerShell, and only as the null value itself. In a POSIX shell it is the variable
+`null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
+is a file name like any other, joined to where the `cd` went.
+
+In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
+place is only known when it runs.
+
+In PowerShell a bare `NUL` or `CON` is the device only on the file system.
+After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
+a place only known when it runs (it may be a registry key), it is an ordinary
+item name there, so deleting, moving or changing it (`Remove-Item NUL`,
+`Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
+that name, and a bare name is joined to where the `cd` went like any other.
+Writes by a file system path (`> NUL`, `Out-File NUL`, `Tee-Object NUL`,
+`Invoke-WebRequest -OutFile NUL`) fail in such a provider and stay harmless.
+`Set-Content`, `Add-Content` and `Clear-Content` do not: the `Env:`,
+`Variable:`, `Function:` and `Alias:` providers take content, so
+`cd Function:; Set-Content NUL ...; NUL` defines and runs a function named `NUL`,
+and they are judged as an item of the folder like a delete. So is the
+destination of `Copy-Item` and `Move-Item`, which in the registry is a key.
+A `$null` destination of those is no destination, so the item goes to the
+folder the line is in. So does a `$null` or missing path of `New-Item` (with
+`-Name` the path is optional). With `-Name` the item is `Path\Name`, judged as
+that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
+is never the item itself. `$null` is the null value in any provider.
+
+In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
+drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
+system only when the folder before it is (a disk, or no earlier `cd` at all).
+When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
+so is the rooted path. `~` is the home of the provider the folder is in, and
+only the file system has one: after a `cd` to the registry, `Function:`, a
+provider path, or a place only known when it runs, `cd ~` fails and the line
+stays where it was, so a path starting with `~` is only known when it runs, and
+so is a `cd` with no path. A `Set-Location` or `Push-Location` that is not the
+first stage of its pipeline gets its path from the pipeline, not from home. A
+drive's name may hold any character but `: / \ . ~` (`my_reg:`), so any such
+name before a colon, other than one letter, is a drive that is not a disk. Once
+the line makes a drive (`New-PSDrive`, `ndr`, `mount`), anywhere in its text,
+even after the `cd` (a function body, a loop), a single letter in a `cd`
+(`cd X:`) may be that drive and not a disk, so the place is only known when it
+runs. Without one, a letter is a disk.
+After a `cd` to a known place on the file system, the device is read as
+written for every command. cmd and POSIX have no other provider.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
@@ -354,9 +403,7 @@ a path.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `$null` and `NUL` are the null device. In a longer PowerShell word `$null` is
-  the empty string: `$null\Windows` is `\Windows`, a folder at the top of the
-  disk.
+- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).
