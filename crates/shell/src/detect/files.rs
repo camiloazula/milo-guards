@@ -249,7 +249,11 @@ impl Checker<'_> {
                     self.rename(unit, &[source], Some(name));
                 }
             }
-            "rename" if shell == Shell::Posix => self.rename_files(unit),
+            // `rename` is util-linux's or perl's; the others are only perl's.
+            "rename" | "rename.ul" if shell == Shell::Posix => self.rename_files(unit, false),
+            "perl-rename" | "prename" | "file-rename" if shell == Shell::Posix => {
+                self.rename_files(unit, true);
+            }
             // `mklink [/d|/h|/j] link target` makes `link`.
             "mklink" if shell == Shell::Cmd => {
                 if let [link, target, ..] = plain(args).as_slice() {
@@ -446,14 +450,14 @@ impl Checker<'_> {
         }
     }
 
-    /// The `rename` of util-linux, `rename FROM TO file...`, whose new names
+    /// The `rename` of util-linux (`perl` says it is perl's), `rename FROM TO file...`, whose new names
     /// are plain text: the first `FROM` in each name (every one, with `-a`)
     /// becomes `TO`. Only these options are read: `-v`, `-n`, `-o`, `-s`,
     /// `-i`, `-a` and their long forms; any other changes what the new name
     /// is, and so does an expression, which is perl's `rename` and code the
     /// guard does not read. Both leave the new name of each file, in its own
     /// folder, unknown. What is renamed away is judged as `mv` judges it.
-    fn rename_files(&mut self, unit: &Unit) {
+    fn rename_files(&mut self, unit: &Unit, perl: bool) {
         const KNOWN: [&str; 6] = [
             "--verbose",
             "--no-act",
@@ -485,7 +489,8 @@ impl Checker<'_> {
         }
         // An expression is perl's: it takes the place of `FROM TO`, so there
         // are fewer than three operands, or the first is not plain text.
-        let code = operands.len() < 3
+        let code = perl
+            || operands.len() < 3
             || operands[0].known().is_none_or(|first| {
                 first.contains(|c: char| "$@;(){}=|\\[]*+?^'\"`".contains(c) || c.is_whitespace())
             });

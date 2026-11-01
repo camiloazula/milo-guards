@@ -359,8 +359,9 @@ does not read" or "renames with options the guard does not read", and is never
 worked out to a new name. The new name of each of its files is unknown, so each
 is an `overwrite` of "a file only known when it runs", and what is renamed away
 is a `delete` where it is not harmless (`rename 's/agent/b/' .agent` for a
-protected `.agent`). `rename 's/\.htm$/.html/' *.htm` is an accepted false
-alarm.
+protected `.agent`). `perl-rename`, `prename` and `file-rename` are only ever perl's, so
+any line is read so; `rename.ul` is util-linux's. `rename 's/\.htm$/.html/' *.htm`
+is an accepted false alarm.
 
 What it does not read: unpacking an archive, `git checkout`, `git apply`,
 `git restore`, `git stash pop` and `patch` can write one without naming it;
