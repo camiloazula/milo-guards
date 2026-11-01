@@ -808,14 +808,14 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
                     // is judged as the place it is.
                     Some(_) if tail => paths.push(Cow::Borrowed(arg)),
                     Some(value) => paths.push(known(value)),
-                    None => paths.extend(iter.next().map(Cow::Borrowed)),
+                    None => paths.extend(taken(iter.next(), true)),
                 }
             } else if value.is_some() {
                 if tail && !inert(arg) {
                     paths.push(Cow::Borrowed(arg));
                 }
             } else if spec.valued_longs.contains(&name) {
-                paths.extend(iter.next().filter(|value| !inert(value)).map(Cow::Borrowed));
+                paths.extend(taken(iter.next(), false));
             }
             continue;
         }
@@ -837,7 +837,7 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
                 } else if attached {
                     paths.push(known(rest));
                 } else {
-                    paths.extend(iter.next().map(Cow::Borrowed));
+                    paths.extend(taken(iter.next(), true));
                 }
                 break;
             }
@@ -847,7 +847,7 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
                         paths.push(Cow::Borrowed(arg));
                     }
                 } else {
-                    paths.extend(iter.next().filter(|value| !inert(value)).map(Cow::Borrowed));
+                    paths.extend(taken(iter.next(), false));
                 }
                 break;
             }
@@ -861,6 +861,56 @@ fn paths_of<'a>(args: &'a [Arg], spec: &Spec) -> Vec<Cow<'a, Arg>> {
     }
     paths.extend(operands.into_iter().map(Cow::Borrowed));
     paths
+}
+
+/// A PowerShell bare word with its quotes taken off as PowerShell takes them:
+/// `--contents="\\evil\s"` reaches the program as `--contents=\\evil\s`. A
+/// doubled quote inside quotes of its kind is one; a backtick escapes the next
+/// character. A word whose quotes do not close is left as written.
+pub(super) fn unquoted(text: &str) -> String {
+    let mut value = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None | Some('"'), '`') => value.extend(chars.next()),
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(open), c) if c == open => {
+                if chars.peek() == Some(&open) {
+                    value.push(open);
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            (_, c) => value.push(c),
+        }
+    }
+    if quote.is_some() {
+        text.to_string()
+    } else {
+        value
+    }
+}
+
+/// Whether a word that an option would take as its value starts with `-`, so
+/// that a mislisted option could swallow a real one: such a line is `Unknown`.
+/// A number (`head -n -5`) and a lone `-` are values.
+pub(super) fn dashed(arg: &Arg) -> bool {
+    shape(arg).is_some_and(|(head, _)| {
+        head.starts_with('-') && head != "-" && !head[1..].chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// What an option takes from the next word, as a place to judge: nothing
+/// when the word is data that is known or quoted (unless `file` says it names
+/// one), and an unreadable place when it starts with `-`.
+fn taken(next: Option<&Arg>, file: bool) -> Option<Cow<'_, Arg>> {
+    let value = next?;
+    if dashed(value) {
+        return Some(Cow::Owned(Arg::Unknown(value.text().to_string())));
+    }
+    (file || !inert(value)).then_some(Cow::Borrowed(value))
 }
 
 /// Whether the value of `arg` is only data: known, or with every expansion

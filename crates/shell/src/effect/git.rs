@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use super::operands::inert;
+use super::operands::{dashed, inert};
 use super::Effect;
 use crate::unit::Arg;
 
@@ -29,6 +29,9 @@ struct Opts {
     shorts: &'static str,
     /// Short options whose value is data, attached or the next argument.
     short_valued: &'static str,
+    /// Short options that take a value only attached (`-uno`, `-M90%`), and
+    /// stand alone without one.
+    attached: &'static str,
     /// Short options whose value is a file.
     short_files: &'static str,
 }
@@ -139,7 +142,6 @@ const WALK: &[&str] = &[
     "walk-reflogs",
     "relative-date",
     "source",
-    "show-signature",
     "notes",
     "standard-notes",
     "show-notes",
@@ -162,9 +164,13 @@ const WALK: &[&str] = &[
     "date",
     "stdin",
     "count",
+    "glob",
 ];
 
-/// The values of `log`'s options that are data.
+/// The options of `log` whose value is data, given attached or as the next
+/// word. `--pretty`, `--format`, `--date`, `--encoding` and `--glob` take a
+/// value only after `=` (`--pretty` alone is a format of its own), so they
+/// are with the flags.
 const LOG_VALUED: &[&str] = &[
     "author",
     "committer",
@@ -177,21 +183,16 @@ const LOG_VALUED: &[&str] = &[
     "skip",
     "min-parents",
     "max-parents",
-    "glob",
     "decorate-refs",
     "decorate-refs-exclude",
     "exclude",
     "grep-reflog",
-    "pretty",
-    "format",
-    "date",
-    "encoding",
 ];
 
-/// `-p -u -q -s -R -w -b -z -a -c -m -i -t -E -F -P -g -M -C -B -l -W` and the
-/// digits (`-5`) are alone; `-n`, `-S`, `-G`, `-L` and `-U` take data;
+/// `-p -u -q -s -R -w -b -z -a -c -m -i -t -E -F -P -g -W` and the digits
+/// (`-5`) are alone; `-M`, `-C`, `-B` and `-l` take a number attached; `-n`, `-S`, `-G`, `-L` and `-U` take data;
 /// `-O` takes a file (the order file of a diff).
-const DIFF_SHORTS: &str = "puqsRwbzacmitEFPgMCBlW";
+const DIFF_SHORTS: &str = "puqsRwbzacmitEFPgW";
 
 const STATUS: Opts = Opts {
     flags: &[&[
@@ -212,8 +213,9 @@ const STATUS: Opts = Opts {
     ]],
     valued: &[],
     files: &[],
-    shorts: "sbvzuM",
+    shorts: "sbvz",
     short_valued: "",
+    attached: "u",
     short_files: "",
 };
 
@@ -223,6 +225,7 @@ const LOG: Opts = Opts {
     files: &["orderfile"],
     shorts: DIFF_SHORTS,
     short_valued: "nSGLU",
+    attached: "MCBl",
     short_files: "O",
 };
 
@@ -232,6 +235,7 @@ const SHOW: Opts = Opts {
     files: &["orderfile"],
     shorts: DIFF_SHORTS,
     short_valued: "nSGLU",
+    attached: "MCBl",
     short_files: "O",
 };
 
@@ -252,6 +256,7 @@ const GIT_DIFF: Opts = Opts {
     files: &["orderfile"],
     shorts: DIFF_SHORTS,
     short_valued: "SGLU",
+    attached: "MCBl",
     short_files: "O",
 };
 
@@ -273,11 +278,13 @@ const BLAME: Opts = Opts {
         "abbrev",
         "first-parent",
         "follow",
+        "reverse",
     ]],
-    valued: &["ignore-rev", "date", "reverse", "encoding"],
+    valued: &["ignore-rev", "date", "encoding"],
     files: &["contents", "ignore-revs-file"],
-    shorts: "befnpstwlMC",
+    shorts: "befnpstwl",
     short_valued: "L",
+    attached: "MC",
     short_files: "S",
 };
 
@@ -313,11 +320,16 @@ const REV_PARSE: Opts = Opts {
         "path-format",
         "show-object-format",
         "local-env-vars",
+        "since",
+        "until",
+        "after",
+        "before",
     ]],
-    valued: &["git-path", "since", "until", "after", "before"],
+    valued: &["git-path"],
     files: &[],
     shorts: "q",
     short_valued: "",
+    attached: "",
     short_files: "",
 };
 
@@ -349,6 +361,7 @@ const LS_FILES: Opts = Opts {
     files: &["exclude-from"],
     shorts: "cdmosuktzvf",
     short_valued: "x",
+    attached: "",
     short_files: "X",
 };
 
@@ -419,12 +432,17 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
                 match value {
                     Some(_) if tail => paths.push(Cow::Borrowed(arg)),
                     Some(value) => paths.push(known(value)),
-                    None => paths.extend(iter.next().map(Cow::Borrowed)),
+                    None => match iter.next() {
+                        Some(next) if dashed(next) => unknown = true,
+                        next => paths.extend(next.map(Cow::Borrowed)),
+                    },
                 }
             } else if opts.valued.contains(&name) {
                 match value {
                     Some(_) => unknown |= tail && !inert(arg),
-                    None => unknown |= iter.next().is_some_and(|next| !inert(next)),
+                    None => {
+                        unknown |= iter.next().is_some_and(|next| dashed(next) || !inert(next));
+                    }
                 }
             } else if opts.flag(name) {
                 no_index |= name == "no-index";
@@ -442,7 +460,10 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
                     } else if attached {
                         paths.push(known(rest));
                     } else {
-                        paths.extend(iter.next().map(Cow::Borrowed));
+                        match iter.next() {
+                            Some(next) if dashed(next) => unknown = true,
+                            next => paths.extend(next.map(Cow::Borrowed)),
+                        }
                     }
                     break;
                 }
@@ -450,8 +471,12 @@ pub(super) fn read<'a>(subcommand: &str, args: &'a [Arg]) -> Option<Reading<'a>>
                     if attached {
                         unknown |= tail && !inert(arg);
                     } else {
-                        unknown |= iter.next().is_some_and(|next| !inert(next));
+                        unknown |= iter.next().is_some_and(|next| dashed(next) || !inert(next));
                     }
+                    break;
+                }
+                if opts.attached.contains(letter) {
+                    unknown |= tail && !inert(arg);
                     break;
                 }
                 if !opts.shorts.contains(letter) && !letter.is_ascii_digit() {

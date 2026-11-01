@@ -16,7 +16,7 @@ mod git;
 mod operands;
 use crate::unit::{has_flag, moves_to, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
-use operands::{inert, operands, place_effect, substituted, Context};
+use operands::{dashed, inert, operands, place_effect, substituted, unquoted, Context};
 
 /// What a line does to the machine, as far as the guard can read: the answer
 /// of [`effect`](fn@crate::effect), beside [`classify`](crate::classify)'s.
@@ -217,6 +217,27 @@ const SYSTEM_FOLDERS: [&str; 4] = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/h
 
 /// What one unit does.
 fn unit_effect(unit: &Unit, context: &Context<'_>) -> Effect {
+    // A PowerShell word with quotes in it (`--contents="\\evil\s"`) is judged
+    // as the program receives it.
+    if unit.shell == Shell::PowerShell
+        && unit
+            .args
+            .iter()
+            .any(|arg| arg.known().is_some_and(|text| text.contains(['"', '\''])))
+    {
+        let mut copy = unit.clone();
+        for arg in &mut copy.args {
+            if let Arg::Known(text) = arg {
+                *text = unquoted(text);
+            }
+        }
+        return judge_unit(&copy, context);
+    }
+    judge_unit(unit, context)
+}
+
+/// What one unit does, its arguments as the program receives them.
+fn judge_unit(unit: &Unit, context: &Context<'_>) -> Effect {
     let resolver = context.resolver;
     let Some(key) = program(unit) else {
         return Effect::Unknown;
@@ -396,11 +417,11 @@ fn options(own: &[Arg], spec: &Options) -> Effect {
             if spec.write_longs.contains(&name) {
                 changes = true;
                 if !value {
-                    iter.next();
+                    unknown |= iter.next().is_some_and(dashed);
                 }
             } else if spec.valued_longs.contains(&name) {
                 if !value {
-                    iter.next();
+                    unknown |= iter.next().is_some_and(dashed);
                 }
             } else if !spec.longs.contains(&name) {
                 unknown = true;
@@ -416,7 +437,7 @@ fn options(own: &[Arg], spec: &Options) -> Effect {
                 }
                 if spec.writes.contains(letter) || spec.valued.contains(letter) {
                     if !value {
-                        iter.next();
+                        unknown |= iter.next().is_some_and(dashed);
                     }
                     break;
                 }
@@ -693,7 +714,10 @@ fn find(args: &[Arg]) -> Effect {
     while let Some(arg) = iter.next() {
         match arg.known() {
             Some(text) if VALUED.contains(&text) => {
-                if iter.next().is_some_and(|value| !inert(value)) {
+                if iter
+                    .next()
+                    .is_some_and(|value| dashed(value) || !inert(value))
+                {
                     return Effect::Unknown;
                 }
             }
@@ -908,7 +932,7 @@ fn listing(args: &[Arg], spec: &Listing) -> Effect {
                 changes = true;
             } else if spec.valued.contains(&name.as_str()) {
                 if !value {
-                    iter.next();
+                    unknown |= iter.next().is_some_and(dashed);
                 }
             } else if spec.flags.contains(&name.as_str()) {
                 list |= name == "--list";

@@ -463,7 +463,13 @@ when it runs, is `Unknown`.
   `--exclude-standard`. Of these, the options that take a file are places: `blame
   --contents`, `--ignore-revs-file` and `-S`, `-O` and `--orderfile` on `diff`,
   `log` and `show`, and `ls-files -X` and `--exclude-from`; a value known only
-  when it runs there is `Unknown`. The writing subcommands (`add`, `commit`, `push`, `checkout`, ...) are
+  when it runs there is `Unknown`. An option that git takes with an optional
+  value takes it only after `=` (`--pretty`, `--format`, `--date`, `--color`,
+  `--stat`, `-U3`, `-M90%`, `-uno`): alone it takes nothing, so the next word is
+  not swallowed. `log --show-signature` is not in the list, since it runs the
+  `gpg.program` the repository's config names. `shortlog`, `describe`, `reflog`,
+  `cat-file`, `ls-tree`, `grep`, `merge-base` and `rev-list` are not yet read, and
+  are `Unknown`. The writing subcommands (`add`, `commit`, `push`, `checkout`, ...) are
   `Changes`, the rest `Unknown`. Only `-C`, `--no-pager`, `-P` and
   `--no-optional-locks` may come before the subcommand: `-c` and the others
   can make git run a command. What the repository's own config makes git run
@@ -542,6 +548,14 @@ when it runs, is `Unknown`.
   `-Pattern`, `-PathType` and `-OlderThan` are not. None of the readers in the
   cmd and PowerShell tables has a switch that writes; `sort /O`, `more`,
   `where` and `find` of cmd are not in them and are `Unknown`.
+- **An option never swallows an option.** Whenever a reader's option takes
+  its value from the next word and that word starts with `-` (a number such as
+  `head -n -5` is a value), the line is `Unknown`, in every reader's option
+  parser, so an option listed as taking a value that git or another program
+  also takes bare can never hide a real option behind it.
+- **PowerShell quotes inside a word are taken off as PowerShell takes them**
+  before the word is judged: `--contents="\\evil\s"` reaches the program as
+  `--contents=\\evil\s`, and a doubled quote inside quotes of its kind is one.
 - **A pipeline into a reader** (`xargs cat`, and in PowerShell `Get-Item`,
   `Get-ChildItem`, `Test-Path`, `Resolve-Path`, `Get-Content` and `Select-String`
   with no path of their own) hands it paths, so the stage before it must list
