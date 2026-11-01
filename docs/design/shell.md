@@ -506,10 +506,10 @@ Set-Location X; ...` does not change the folder), and what follows its first
 so such a line is unreadable and risky, and a delete after the `;` is found.
 A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) is
 somewhere unknown for `start /d` and `pwsh -wd`, whatever a `cd` without `/d`
-set on that drive; a folder only known when it runs is somewhere unknown too. So after `cd
-C:\Windows` from `D:` (which sets the working directory of `C:` and leaves the
-line on `D:`), `start /d C: cmd /c rd /s /q System32` deletes under
-`C:\Windows`, and is risky. A drive the started program is on is only a guess.
+set on that drive; a folder only known when it runs is somewhere unknown too.
+So `start /d C: cmd /c rd /s /q System32` is risky whatever came before it:
+the guard does not follow the drive's working directory into the program it
+starts. A drive the started program is on is only a guess.
 
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
