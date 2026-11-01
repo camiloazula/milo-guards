@@ -161,9 +161,13 @@ secret stays in a scrubbed text.
   `''` inside `'…'` is a quote of the value (YAML, SQL). A string written
   `\"…\"` inside another string ends at the closing `\"`. A quote that never
   closes on its line is not one: the value is the word after it.
+- A value in braces, as a connection string quotes one that holds a `;`
+  (`Pwd={a;b}`, `}}` for a brace of the value), ends at the closing brace. The
+  value is what is inside. (`{{` and `{%` begin a template, not a value.)
 - Any other value ends at white space or the end of the line; at the closer of
   the quote or bracket the name sits in (`echo "password=…"`, `login(password=…)`,
-  `{password: …}`); and at the format's own separator: a `&` before another
+  `{password: …}`), where a quote that is escaped (`\"`, or `''` inside `'…'`)
+  does not close the string; and at the format's own separator: a `&` before another
   `name=` (a query), a `;` before another `Name=` (a connection string, whose
   names may have spaces). `|`, `,`, `(` and a backtick do not end it.
 - The scan runs once from front to back and goes on after a value that was read,
@@ -181,22 +185,31 @@ secret stays in a scrubbed text.
 - shorter than six characters;
 - a reference to a variable or a template field (`$TOKEN`, `${TOKEN}`,
   `{{ token }}`, `<password>`, `%s`, `[REDACTED]`);
-- a stand-in, by one of these shapes, each with rows in the tests and none a
-  list of words that grows:
-  - **upper snake case**, the name of a constant: `DEFAULT_TOKEN`, `REPLACE_ME`;
-  - **repeated characters**, or fewer than six different ones in its last
-    sixteen: `xxxxxxxx`, `ghp_` and thirty-six `x`;
-  - **an elision**, `...` or `…` in it: `sk-...`;
-  - **its own name**: the word the name ends in (also `secret` of `secret_key`)
-    is in the value, with no more than three digits: `api_key=api_key`,
-    `dummy_password`, `my-secret-2`. A short word (`pass`, `pwd`) must be all of
-    the value, since it is in too many passwords;
-  - **a stem from a closed list** that begins the value and is a word of its own
-    (`changeme123`, `replace-with-…`, `dummy-…`, `placeholder1`, `example-…`,
-    `sample-…`, `todo-…`, `fixme`), or a literal (`string`, `null`, `none`,
-    `true`, `false`, `undefined`, …); a stem followed by a letter
-    (`Replacement9`) is not one;
-  - **documented by AWS**: ends in `EXAMPLE` or `EXAMPLEKEY`;
+- a stand-in. **A stand-in is recognised by the shape of the whole value, never
+  by a prefix or by what it contains**: anything else is a value, because a
+  password missed costs more than a mask too many. The shapes, each with rows in
+  the tests, none a list of words that grows:
+  - **its own name, all of it**: `api_key=api_key`, `password=PASSWORD`,
+    `token=Token`, with case, `_`, `-` and `.` left out on both sides (and for
+    `secret_key` also `secret`). A value that merely contains the word
+    (`Password1`, `MyPassword!`, `prod_api_key_9Xq`) is a value;
+  - **a literal**: `string`, `null`, `none`, `true`, `false`, `undefined`, …;
+  - **a stem of a closed list, alone or with the name's word, and up to three
+    digits**: `example`, `changeme123`, `dummy_password`, `your_api_key_here`.
+    The stems are `changeme`, `replaceme`, `replace`, `dummy`, `placeholder`,
+    `example`, `sample`, `todo`, `fixme`, `your`. One followed by other
+    characters (`Example#2024`, `Sample1234`, `Replace!Me9x`) is a value;
+  - **a constant**, only when unquoted and not in an address: upper snake case
+    of capital letters (a last word of one or two digits is allowed):
+    `DEFAULT_TOKEN`, `REPLACE_ME`. `K7X_93QZ_M2PL_W8RT` and a quoted
+    `"QZ7W_P3XK_M2LV"` are values;
+  - **a mask, two kinds of character, or an elision**: `****`, `xxxxxxxx`,
+    `abababab`; or a short head that ends in `_` or `-` (or is capitals, as
+    `AKIA`) and then a run of `.`, `…`, `*` (three), or `x`, `0`, `#` (eight) to
+    the end: `sk-...`, `ghp_xxxxxxxx`. A visible head and tail around dots
+    (`ab...cd9X`) is a value;
+  - **documented by AWS**: twenty or forty characters that end in `EXAMPLE` or
+    `EXAMPLEKEY`;
 - a call (`get_token()`, `env::var("X")?;`), an index (`env["X"]`) or a chain
   of names (`self.token`, `config::TOKEN`).
 
@@ -248,9 +261,9 @@ These are Safe, and each has a row in the tests:
   `${TOKEN}`, `<password>`, `YOUR_TOKEN_HERE`, `REPLACE_ME`, `DEFAULT_TOKEN`,
   `changeme`, `dummy_password`, `api_key=api_key`, `sk-...`, `[REDACTED]`,
   helm's `existingSecret: my-secret-2`. Each key row
-  (the JWT and the Slack webhook apart) requires the last sixteen characters
-  to be varied, six different ones at least: a placeholder is not random and
-  a key is.
+  (the JWT and the Slack webhook apart) requires the last 32 characters to
+  have six different ones at least: a placeholder is not random and a key is,
+  and a key that is random in its front and repeats at its end is still one.
 - The pair RFC 7617 writes its `Basic` example with (`Aladdin:open sesame`).
 - A header or a prefix alone: `-----BEGIN PRIVATE KEY-----` with no body, the
   word `Bearer` with nothing after it, the word `Basic` before a word that is
@@ -312,10 +325,17 @@ prompt:
 - **Flags** (`--password hunter22`, `curl -u user:pass`, `mysql -pSecret`) are
   the shell's: the shell guard reads a command line. A name assigned a value
   with `=`, as `--password=hunter22`, is found.
-- **A weak password that is its own name** (`password=Password1`,
-  `secret=mysecret2`) is read as a stand-in and is Safe: the shape cannot tell
-  it from `api_key=api_key`. So is one that begins with a stem as a word of its
-  own (`changeme!`).
+- **A word that holds the name's** (`password=Password1`, `secret=mysecret2`,
+  helm's `existingSecret: my-secret-2`) is a value and is found, even when it
+  is the name of a secret in a cluster and no password. It is Safe only as the
+  whole name: `password=PASSWORD`.
+- **A closing bracket ends the value of a name that is inside brackets**
+  (`[password=F4kePass9]word]`, `f(password=F4kePass9)word)`): a bracket is not
+  escaped by anything, so the part after it is not covered. A quote that closes
+  a string is read as the string reads it: `\"` and `''` are part of the value.
+- **A `&` before something that reads as another pair** ends a value
+  (`SECRET=F4kePa&ss9=word` covers `F4kePa`).
+- **A block of key on one line with spaces** for its line ends is not read.
 - **A password shorter than six characters** after a name is not found, and
   neither is a password of words: `password: correct horse battery staple`.
   An unquoted value of letters alone after `name: ` or `name = ` is read as
