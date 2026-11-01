@@ -489,12 +489,13 @@ members named on the line are judged as the operands of `rm` are (see
 Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
 your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
 and `tar -cf x.tar src` and `tar -cf x.tar src --remove-files` are safe.
-Packing without the option deletes nothing and is safe whatever it packs
-(`tar -cf x.tar ~`).
+Packing without the option is no `delete`: `tar -cf x.tar src` is safe. What
+it packs is still read, so `tar -cf x.tar ~` is `read_secret` (it reads your
+home directory, and the keys in it).
 
 | Program | Option | Members |
 | --- | --- | --- |
-| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) takes no value, though bsdtar's `--include` does; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
+| `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
 | `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
 | `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
 

@@ -163,9 +163,17 @@ const TAR_LONG_VALUES: &[&str] = &[
 /// Long options of `tar` that take none, and that a name could stand for as
 /// well as for one that takes a value (`--sparse`, `--checkpoint[=N]`,
 /// `--xattrs`; `--inc` is `--incremental` in GNU tar and `--include` in
-/// bsdtar). A name that may be one of them is read as the flag, which takes
-/// no argument: the next one is then a member, the riskier reading.
-const TAR_LONG_FLAGS: [&str; 4] = ["sparse", "checkpoint", "xattrs", "incremental"];
+/// bsdtar; `--mod` is `--mode` in GNU tar, which takes a value, and the only
+/// prefix of `--modification-time` in bsdtar, which takes none). A name that
+/// may be one of them is read as the flag, which takes no argument: the next
+/// one is then a member, the riskier reading.
+const TAR_LONG_FLAGS: [&str; 5] = [
+    "sparse",
+    "checkpoint",
+    "xattrs",
+    "incremental",
+    "modification-time",
+];
 
 /// The longest folder, in bytes, that a chain of `-C` is followed to. Each
 /// `-C` is joined to the one before it, so a longer chain is a path only

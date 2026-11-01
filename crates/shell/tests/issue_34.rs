@@ -32,7 +32,6 @@ fn packing_without_removing_stays_safe() {
             "zip -r x.zip *",
             "zip x.zip /etc/hosts",
             "7z a x.7z src",
-            "7z a x.7z ~",
             "7z a x.7z *",
         ],
         &[],
@@ -417,7 +416,7 @@ fn seven_zip_sdel_on_windows() {
     check(
         Shell::PowerShell,
         &windows(),
-        &["7z a x.7z src -sdel", "7z a x.7z ~ ", "7z x a.7z -sdel"],
+        &["7z a x.7z src -sdel", "7z x a.7z -sdel"],
         &[
             ("7z a x.7z ~ -sdel", Rule::Delete),
             ("7z a x.7z $HOME -sdel", Rule::Delete),
@@ -613,6 +612,11 @@ fn tar_long_option_that_may_be_a_flag_takes_no_value() {
             ("tar -cf x.tar --incremental ~ --remove-files", Rule::Delete),
             ("tar -xf x.tar --inc -C /etc", Rule::Overwrite),
             ("gtar -xf x.tar --inc -C /etc", Rule::Overwrite),
+            // `--mod` is `--mode` in GNU tar and the only prefix of
+            // `--modification-time` (`-m`) in bsdtar, which takes no value.
+            ("tar -xf x.tar --mod -C /etc", Rule::Overwrite),
+            ("bsdtar -xf x.tar --mod -C /etc", Rule::Overwrite),
+            ("tar -xpf x.tar --mod -C ~", Rule::Overwrite),
         ],
     );
 }
@@ -744,6 +748,20 @@ fn archiving_the_home_without_removing_it_reads_but_does_not_delete() {
             found.contains(&Rule::ReadSecret),
             "expected ReadSecret: {line}"
         );
+        assert!(!found.contains(&Rule::Delete), "unexpected Delete: {line}");
+    }
+}
+
+#[test]
+fn seven_zip_packing_the_home_without_removing_it_does_not_delete() {
+    // `7z a` adds a named folder with everything under it, so this reads the
+    // keys in the home as well; that read is not judged yet (a followup), so
+    // these rows are held only to "no `delete`", not to Safe.
+    for (shell, paths, line) in [
+        (Shell::Posix, posix(), "7z a x.7z ~"),
+        (Shell::PowerShell, windows(), "7z a x.7z ~ "),
+    ] {
+        let found = common::rules(line, shell, &paths);
         assert!(!found.contains(&Rule::Delete), "unexpected Delete: {line}");
     }
 }
