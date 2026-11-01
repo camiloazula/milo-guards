@@ -964,7 +964,8 @@ Some risks only show when units are read together.
   name (`x.sh`) is looked up in `PATH`, not in the folder, so it is not the
   file; `./gradlew build` with nothing written first stays safe. On Windows
   file names are not case sensitive and a name with no extension runs the file
-  with `.bat`, `.cmd`, `.com` or `.exe` (`a` runs `a.bat`); cmd looks in the
+  with `.bat`, `.cmd`, `.com` or `.exe` (`a` runs `a.bat`), and PowerShell
+  tries `.ps1` first (`.\a` runs `a.ps1`); cmd looks in the
   working folder first, so a bare name there is the file the line writes when
   it names one (it is not judged when it cannot be placed: `dir` and `echo`
   are programs of cmd, not files).

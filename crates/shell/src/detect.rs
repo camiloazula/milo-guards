@@ -503,7 +503,8 @@ impl Checker<'_> {
     /// file when the line writes one of that name (not judged when it cannot
     /// be placed: `dir` and `echo` are programs of cmd, not files). For a
     /// Windows shell a name with no extension may be the file with one of
-    /// the executable extensions (`a` runs `a.bat`).
+    /// the executable extensions (`a` runs `a.bat`), and PowerShell also
+    /// tries `a.ps1` first.
     fn program_then_run(&mut self, unit: &Unit) {
         let Some(program) = unit.program.known() else {
             return;
@@ -531,8 +532,11 @@ impl Checker<'_> {
         if unit.shell == Shell::Posix || last.contains('.') {
             return;
         }
-        if WINDOWS_EXTENSIONS
-            .iter()
+        // PowerShell tries `.ps1` first for a name with no extension.
+        let script = (unit.shell == Shell::PowerShell).then_some(".ps1");
+        if script
+            .into_iter()
+            .chain(WINDOWS_EXTENSIONS)
             .any(|extension| self.names_written(unit, &format!("{program}{extension}")))
         {
             self.add_run_written(&unit.program);
