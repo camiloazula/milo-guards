@@ -19,6 +19,10 @@ pub(crate) const VARIABLES: [&str; 2] = ["PS4", "BASH_ENV"];
 /// judge each shell against: past it the line is `unknown`.
 const MOST: usize = 16;
 
+/// The most digits a subscript may have to be read as the number it spells:
+/// eighteen digits are below 2^63, so they cannot wrap.
+const MOST_DIGITS: usize = 18;
+
 /// A file `BASH_ENV` names, and where it was named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Startup {
@@ -47,7 +51,7 @@ pub(crate) fn push(list: &mut Rc<Vec<Startup>>, entry: Startup) -> bool {
 
 /// Variables whose value is a number, a place or a name the shell sets
 /// itself: in a `PS4` they are text, not code (`"+ $LINENO: "`).
-const PLAIN: [&str; 14] = [
+const PLAIN: [&str; 11] = [
     "LINENO",
     "BASH_SOURCE",
     "BASH_LINENO",
@@ -59,10 +63,12 @@ const PLAIN: [&str; 14] = [
     "SHLVL",
     "PPID",
     "BASHPID",
-    "HOME",
-    "PWD",
-    "TMPDIR",
 ];
+
+/// Places the shell sets, plain text until the line sets them: `HOME` and
+/// `TMPDIR` when the line does not assign them, `PWD` as well while the line
+/// has not moved to a name that may hold code (see [`Split::pwd_is_plain`]).
+const PLACES: [&str; 3] = ["HOME", "PWD", "TMPDIR"];
 
 /// The variable an assignment to `name` sets, when it is one of
 /// [`VARIABLES`]: `PS4[0]` is `PS4`, as is any subscript that may be the
@@ -75,6 +81,7 @@ pub(crate) fn variable(name: &str) -> &str {
     match rest.strip_suffix(']') {
         Some(index)
             if !index.is_empty()
+                && index.len() <= MOST_DIGITS
                 && index.chars().all(|c| c.is_ascii_digit())
                 && index.chars().any(|c| c != '0') =>
         {
@@ -161,7 +168,7 @@ pub(crate) fn read(
     }
     // A `PS4` of text and the shell's own numbers is a prompt; any other
     // expansion can hold code, which the shell runs each time.
-    let unknown = value.is_unknown() && (bash_env || !plain(value));
+    let unknown = value.is_unknown() && (bash_env || !plain(value, split));
     // The file `BASH_ENV` names goes through the same expansion.
     let named_by_expansion = bash_env && text.contains(['$', '`']);
     if unknown || named_by_expansion {
@@ -256,7 +263,7 @@ pub(crate) fn read_into(program: &str, args: &[Arg]) -> bool {
 
 /// Whether the expansions in `value`, as written, are all of variables the
 /// shell sets to plain text.
-fn plain(value: &Arg) -> bool {
+fn plain(value: &Arg, split: &Split) -> bool {
     let Arg::Template { source, .. } = value else {
         return false;
     };
@@ -281,7 +288,10 @@ fn plain(value: &Arg) -> bool {
                 .unwrap_or(after.len());
             after.split_at(end)
         };
-        if !PLAIN.contains(&name) {
+        let place = PLACES.contains(&name)
+            && !split.reassigned(name)
+            && (name != "PWD" || split.pwd_is_plain());
+        if !(PLAIN.contains(&name) || place) {
             return false;
         }
         rest = next;
@@ -309,16 +319,19 @@ fn subscripted(name: &str) -> &str {
 /// script its `$(…)` and backticks are: in double quotes, as the shell
 /// expands it, the text around them harmless. It runs when something
 /// happens, in this shell or a subshell that has moved.
+///
+/// Only the text around the code is quoted. Inside `$(…)` and backticks the
+/// shell reads a script of its own, in which a quote or a backslash means
+/// what it means anywhere (`$(rm -rf "$HOME")`), so it is kept as written.
 fn later(split: &mut Split, text: &str, depth: usize) {
-    let mut quoted = String::with_capacity(text.len() + 4);
-    quoted.push_str(": \"");
-    for c in text.chars() {
-        if matches!(c, '"' | '\\') {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
-    quoted.push('"');
+    let Some(quoted) = quote(text) else {
+        split.problem(
+            Rule::Unreadable,
+            "sets a variable the shell runs later to code the guard cannot read to its end",
+            Some(text),
+        );
+        return;
+    };
     split.branches += 1;
     split.bodies += 1;
     let began = split.begin_later();
@@ -326,4 +339,158 @@ fn later(split: &mut Split, text: &str, depth: usize) {
     split.branches -= 1;
     split.bodies -= 1;
     split.end_later(began, true);
+}
+
+/// How deep `$(…)`, `${…}`, backticks and quotes may nest in a value before
+/// it is not read.
+const NESTING: usize = 32;
+
+/// `text` as a command that quotes the text around its code and keeps the
+/// code, or `None` when where a piece of code ends is not certain: a piece
+/// the guard would cut short could hide the rest of it. The code is read to
+/// its end by the quotes, `${…}` and nested `$(…)` it holds; one it holds a
+/// here-document, a `case`, a comment or a funsub in is not read.
+fn quote(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut quoted = String::with_capacity(text.len() + 4);
+    quoted.push_str(": \"");
+    let mut at = 0;
+    while at < bytes.len() {
+        let end = match bytes[at] {
+            b'$' if bytes.get(at + 1) == Some(&b'(') => {
+                Some(skip(bytes, at + 2, Closer::Paren, 0)?)
+            }
+            b'`' => Some(skip(bytes, at + 1, Closer::Back, 0)?),
+            _ => None,
+        };
+        if let Some(end) = end {
+            quoted.push_str(&text[at..end]);
+            at = end;
+            continue;
+        }
+        // One character, which may be more than one byte.
+        let width = text[at..].chars().next().map_or(1, char::len_utf8);
+        if matches!(bytes[at], b'"' | b'\\') {
+            quoted.push('\\');
+        }
+        quoted.push_str(&text[at..at + width]);
+        at += width;
+    }
+    quoted.push('"');
+    Some(quoted)
+}
+
+/// What closes the construct [`skip`] reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Closer {
+    /// `)` of `$(`.
+    Paren,
+    /// `}` of `${`.
+    Brace,
+    /// `"`.
+    Double,
+    /// The closing backtick.
+    Back,
+}
+
+/// The index after what closes the construct opened just before `at`, which
+/// is read as the shell does: a backslash takes the next character, quotes
+/// and `${…}`, `$(…)` and backticks are read to their ends. `None` when it
+/// does not end, is nested too deep, or holds what the guard does not read
+/// to its end (see [`quote`]).
+fn skip(text: &[u8], start: usize, closer: Closer, depth: usize) -> Option<usize> {
+    if depth > NESTING {
+        return None;
+    }
+    let mut parens = 0_usize;
+    let mut at = start;
+    while at < text.len() {
+        let c = text[at];
+        let before = at.checked_sub(1).map(|prior| text[prior]);
+        match (c, closer) {
+            (b'\\', _) => at += 2,
+            // Backticks end at the next quote of their own kind, as bash
+            // reads them.
+            (b'\'' | b'"', Closer::Back) => at = quoted(text, at)?,
+            (b'\'', Closer::Paren | Closer::Brace) => at = quoted(text, at)?,
+            (b'"', Closer::Double) => return Some(at + 1),
+            (b'"', _) => at = skip(text, at + 1, Closer::Double, depth + 1)?,
+            (b'`', Closer::Back) => return Some(at + 1),
+            (b'`', _) => at = skip(text, at + 1, Closer::Back, depth + 1)?,
+            (b'$', Closer::Back) => at += 1,
+            (b'$', _) => match text.get(at + 1) {
+                Some(b'(') => at = skip(text, at + 2, Closer::Paren, depth + 1)?,
+                // A funsub: code that ends at a `}` the guard cannot place.
+                Some(b'{') if matches!(text.get(at + 2), Some(b' ' | b'\t' | b'\n' | b'|')) => {
+                    return None;
+                }
+                Some(b'{') => at = skip(text, at + 2, Closer::Brace, depth + 1)?,
+                // `$'…'`: a quoted string in which `\'` is a quote.
+                Some(b'\'') if closer != Closer::Double => at = ansi(text, at + 2)?,
+                _ => at += 1,
+            },
+            (b'}', Closer::Brace) | (b')', Closer::Paren) if parens == 0 => return Some(at + 1),
+            (b'(', Closer::Paren) => {
+                parens += 1;
+                at += 1;
+            }
+            (b')', Closer::Paren) => {
+                parens -= 1;
+                at += 1;
+            }
+            // Code with a here-document, a comment or a `case` has a `)`
+            // or a line that is not its own.
+            (b'<', Closer::Paren) if text.get(at + 1) == Some(&b'<') => return None,
+            (b'#', Closer::Paren)
+                if before.is_none_or(|prior| {
+                    prior.is_ascii_whitespace() || matches!(prior, b';' | b'&' | b'|' | b'(')
+                }) =>
+            {
+                return None;
+            }
+            (b'c', Closer::Paren)
+                if text[at..].starts_with(b"case")
+                    && !before.is_some_and(letter)
+                    && !text.get(at + 4).copied().is_some_and(letter) =>
+            {
+                return None;
+            }
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+/// Whether `byte` is part of a word.
+fn letter(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The index after the quote that closes the one opened at `at`: `'` ends at
+/// the next `'`, `"` at the next `"` a backslash does not take.
+fn quoted(text: &[u8], at: usize) -> Option<usize> {
+    let quote = text[at];
+    let mut rest = at + 1;
+    while rest < text.len() {
+        match text[rest] {
+            b'\\' if quote == b'"' => rest += 2,
+            byte if byte == quote => return Some(rest + 1),
+            _ => rest += 1,
+        }
+    }
+    None
+}
+
+/// The index after the `'` that ends the `$'…'` string whose text begins at
+/// `at`: a backslash takes the next character.
+fn ansi(text: &[u8], at: usize) -> Option<usize> {
+    let mut rest = at;
+    while rest < text.len() {
+        match text[rest] {
+            b'\\' => rest += 2,
+            b'\'' => return Some(rest + 1),
+            _ => rest += 1,
+        }
+    }
+    None
 }

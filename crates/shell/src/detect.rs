@@ -28,6 +28,13 @@ const ELEVATORS: [&str; 8] = [
     "systemd-run",
 ];
 
+/// Builtins that start no program: they print, test, move or set a variable,
+/// so a `BASH_ENV` file is not run for them.
+const STARTS_NOTHING: [&str; 21] = [
+    "echo", "printf", "true", "false", ":", "cd", "export", "unset", "set", "pwd", "test", "[",
+    "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
+];
+
 /// Programs that download, whose output piped into a shell is a downloaded
 /// script.
 const DOWNLOADERS: [&str; 10] = [
@@ -127,12 +134,14 @@ impl Checker<'_> {
 
     fn unit(&mut self, unit: &Unit) {
         let Some(key) = unit.key() else {
+            // A program only known when it runs may be a shell, or start one.
+            self.startup_then_run(unit, None);
             return;
         };
         self.elevated(unit, &key);
         self.reads(unit);
         self.write_then_run(unit, &key);
-        self.startup_then_run(unit, &key);
+        self.startup_then_run(unit, Some(&key));
         self.files(unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
@@ -373,10 +382,15 @@ impl Checker<'_> {
         self.runs_written(unit, script, unit.dir.as_ref());
     }
 
-    /// A shell that runs the file `BASH_ENV` names before its own script,
-    /// when the same line writes it.
-    fn startup_then_run(&mut self, unit: &Unit, key: &str) {
-        if unit.shell != Shell::Posix || !SHELLS.contains(&key) {
+    /// A program that starts a bash runs the file `BASH_ENV` names before
+    /// that bash's own script, when the same line writes it: a shell, and
+    /// any program that may start one (`make` runs its recipes with the
+    /// `SHELL` of its makefile, a script with a `#!/bin/bash` line, `git`
+    /// its hooks). What starts nothing is a builtin that only prints, tests
+    /// or sets a variable ([`STARTS_NOTHING`]); `key` is `None` for a
+    /// program only known when it runs.
+    fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
+        if unit.shell != Shell::Posix || key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
             return;
         }
         for entry in unit.startup.iter() {

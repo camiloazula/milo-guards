@@ -681,11 +681,15 @@ impl Walker<'_> {
         let mut name = program;
         while matches!(name, Some("builtin" | "command")) {
             if name == Some("command") {
-                while args
+                while let Some(flags) = args
                     .get(at)
                     .and_then(Arg::known)
-                    .is_some_and(|word| word.starts_with('-'))
+                    .filter(|word| word.starts_with('-'))
                 {
+                    // `command -v export …` only says what `export` is.
+                    if flags.contains(['v', 'V']) {
+                        return;
+                    }
                     at += 1;
                 }
             }
@@ -883,8 +887,8 @@ impl Walker<'_> {
     }
 
     /// `$HOME`, `${HOME}`, `$PWD` and `$TMPDIR` as paths the resolver reads,
-    /// unless the line sets them; any other variable is only known when it
-    /// runs.
+    /// unless the line sets them (or moves, for `$PWD`, to a name that may
+    /// hold code); any other variable is only known when it runs.
     fn variable(&self, source: &str) -> Arg {
         let name = source
             .strip_prefix("${")
@@ -893,7 +897,10 @@ impl Walker<'_> {
             .filter(|name| !self.split.reassigned(name));
         match name {
             Some("HOME") => Arg::Known("~".to_string()),
-            Some("PWD") => Arg::Known(".".to_string()),
+            // After a `cd` to a name the line chose that may hold code
+            // (`d$(rm -rf ~)`, or one only known when it runs), `$PWD` is
+            // that name: text a `PS4` or `BASH_ENV` expands again.
+            Some("PWD") if self.split.pwd_is_plain() => Arg::Known(".".to_string()),
             Some("TMPDIR") => Arg::Known("/tmp".to_string()),
             _ => Arg::Unknown(source.to_string()),
         }

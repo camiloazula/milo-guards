@@ -207,15 +207,24 @@ and its findings are the line's, since the shell runs it as the same user.
   line, and the value of `BASH_ENV` once when a non-interactive bash starts,
   then runs the file it names; other shells differ, but every shell is
   judged as bash. An assignment counts as a statement
-  (`PS4=…`, also `+=`, and `PS4[0]=…`: a subscript other than a number
-  above zero may be the first element, which is the value), after `export`,
+  (`PS4=…`, also `+=`, and `PS4[0]=…`: only a subscript of at most 18
+  digits that is not all zeros is another element; any other may be the
+  first element, which is the value, and a longer number wraps round to it,
+  as bash keeps a subscript in 64 bits: `PS4[18446744073709551616]` is
+  `PS4[0]`), after `export`,
   `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
-  behind `builtin` and `command`: `builtin export PS4=…`), in front of a
+  behind `builtin` and `command`: `builtin export PS4=…`; `command -v
+  export PS4=…` only says what `export` is and sets nothing), in front of a
   command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
   other wrappers). A value with code in it, `$(` or a backtick, is read as the
   script it is, as an action that runs later (see below), so `PS4='$(rm -rf
   ~)'; set -x; true` is the `delete` of `~`: the text around the code is
-  not run, only what is in it. A funsub, `${ cmd; }` or `${| cmd; }`
+  not run, only what is in it. The code is read as written, with its own
+  quotes and backslashes (`PS4='$(rm -rf "$HOME")'`); only the text around
+  it is quoted. Where the code ends is found by reading its quotes, `${…}`,
+  nested `$(…)` and backticks, and a value that does not end, or whose code
+  holds a here-document, a comment, a `case` or a funsub (where a `)` or a
+  line may not be the code's own), is `unreadable`. A funsub, `${ cmd; }` or `${| cmd; }`
   (`${` and a blank, a newline or `|`), is code too, and comes out
   `unreadable` as it does anywhere else. bash decodes the prompt's escapes
   before it expands the value, so `PS4='\044(rm -rf ~)'` and `PS4='\140rm -rf
@@ -226,7 +235,11 @@ and its findings are the line's, since the shell runs it as the same user.
   runs`: the shell expands it again and runs whatever it finds. Text and the
   variables the shell sets to plain text are not code: `PS4='+ '`, `PS4="+
   $LINENO: "` (also `BASH_SOURCE`, `FUNCNAME` with a number as subscript,
-  `SECONDS`, `RANDOM`, `$$`, `HOME`, `PWD`, `TMPDIR`) stay safe. A
+  `SECONDS`, `RANDOM`, `$$`, `HOME`, `PWD`, `TMPDIR`) stay safe, except
+  that a place the line sets (`HOME=…`) and `PWD` after a `cd` to a name
+  that may hold code (`cd 'd$(rm -rf ~)'`, `cd "$x"`: the folder's name is
+  chosen by the line, and the value holds it) are `unknown`; `cd sub` leaves
+  `PWD` plain. A
   `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
   `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
   `printf -v PS4 …` give them a value the line does not show: `unknown`.
@@ -237,7 +250,13 @@ and its findings are the line's, since the shell runs it as the same user.
   `export BASH_ENV=e.sh` before it) is checked as a shell that runs a script
   file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
   download, a copy) is `unknown`, with the reason `runs a script the same line
-  writes`. A file the line does not write is not read, as for `bash
+  writes`. So is any program that may start a bash, not only a shell:
+  `make` (its recipes run with the makefile's `SHELL`), `./build.sh` (a
+  `#!/bin/bash` line), `npm test`, `git commit` (hooks), a program only known
+  when it runs, and a shell reached through `find -exec`, `npx` and the
+  other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
+  `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
+  not run it. A file the line does not write is not read, as for `bash
   e.sh`. A name written out (`BASH_ENV=e.sh`) is the child's to resolve, so
   after a `cd` it is read from the folder the shell runs in; one an
   expansion made (`BASH_ENV=$PWD/e.sh`) was resolved where the assignment
