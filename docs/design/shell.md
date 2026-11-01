@@ -375,6 +375,28 @@ that drive as a guess, as `cd /d` does; a relative one keeps the drive and
 whether it is sure; a provider path (`Env:`), a network path or an unknown one
 leaves the drive unknown. A `cmd /c` the line runs later starts from there.
 
+A cmd program that is a drive letter and its colon whole (`%SystemDrive%`,
+`"C:"`) is a switch to a drive that is not known: the line is on an unknown
+drive, somewhere unknown, and a later `cd` without `/d` does not leave it where
+it was. cmd also reads the name of a command differently from the grammar when
+it holds `^`, `;`, `,`, `=` or a variable: it drops the caret, ends the name at
+`;`, `,` and `=` (`C:;`, `cd;/d C:\`, `cd=/d C:\`), and puts a variable's value
+in. So the drive is not known after a unit whose name holds any of them, and
+when the name, read that way, is `cd`, `chdir`, `pushd`, `popd` or a drive
+(`c^d /d C:\`, `p^ushd C:\`, `c""d /d C:\`, `C:;`), the line is somewhere
+unknown too. Quotes alone leave the drive alone, as a quoted path to a program
+is a plain word; they count only when they make a `cd` or a drive of the name.
+
+A program that starts another in a folder runs it there: cmd's `start /d
+FOLDER` (also `/dFOLDER`), `powershell` and `pwsh` with `-WorkingDirectory` or
+`-wd`, and `Start-Process -WorkingDirectory`. What it starts, and the scripts
+that run, are read from that folder, and the line is put back where it was
+after. A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) or
+is only known when it runs is somewhere unknown, so after `cd C:\Windows` from
+`D:` (which sets the working directory of `C:` and leaves the line on `D:`),
+`start /d C: cmd /c rd /s /q System32` deletes under `C:\Windows`, and is
+risky. A drive the started program is on is only a guess.
+
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 

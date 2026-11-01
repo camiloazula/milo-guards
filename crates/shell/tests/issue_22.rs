@@ -381,3 +381,170 @@ fn a_tilde_typed_in_cmd_is_a_folder_not_home() {
     .collect();
     check(Shell::Cmd, &home_elsewhere(), &[], &risky);
 }
+
+/// The line starts on `D:`; home is on `C:`; the workspaces are `D:\ws\repo`
+/// and a folder under home.
+fn d_repo() -> Paths {
+    Paths::new(
+        r"D:\ws\repo",
+        r"C:\Users\me",
+        [r"D:\ws\repo", r"C:\Users\me\repo"],
+    )
+}
+
+fn deletes(lines: &[&'static str]) -> Vec<(&'static str, Rule)> {
+    lines.iter().map(|line| (*line, Rule::Delete)).collect()
+}
+
+#[test]
+fn a_drive_switch_the_guard_does_not_read_leaves_the_drive_unknown() {
+    // `%SystemDrive%` is `C:` on a default install, and a program that is a
+    // drive letter and a colon switches to that drive. The switch is read as
+    // one to a drive that is not known, so the `cd C:\Windows` after it is
+    // not known to leave the line where it was: each really deletes
+    // `C:\Windows\System32`.
+    let risky = deletes(&[
+        r"%SystemDrive% & cd C:\Windows & rd /s /q System32",
+        r"%systemdrive% & cd C:\Windows & del /q System32\x.dll",
+        r"%SystemDrive%&cd C:\Windows&rd /s /q System32",
+        r#""%SystemDrive%" & cd C:\Windows & rd /s /q System32"#,
+        r"%SystemDrive% & cd C:\x & rd /s /q y",
+        r"%SystemDrive% & cd %USERPROFILE% & rd /s /q Documents",
+        r"cd %USERPROFILE% & %SystemDrive% & rd /s /q Documents",
+        // The folder is the drive's own, which is not known.
+        r"%SystemDrive% & rd /s /q Windows",
+        r#""C:" & cd C:\Windows & rd /s /q System32"#,
+    ]);
+    check(Shell::Cmd, &d_repo(), &[], &risky);
+    check(
+        Shell::PowerShell,
+        &d_repo(),
+        &[],
+        &deletes(&[
+            r#"cmd /c "%SystemDrive% & cd C:\Windows & rd /s /q System32""#,
+            r#"cmd /c "%SystemDrive% & rd /s /q Windows""#,
+        ]),
+    );
+    // The line starts on `C:`: `%SystemDrive%` may still be another drive.
+    check(
+        Shell::Cmd,
+        &Paths::new(
+            r"C:\Users\me\repo",
+            r"C:\Users\me",
+            [r"C:\Users\me\repo", r"D:\ws"],
+        ),
+        &[],
+        &deletes(&[r"%SystemDrive% & cd D:\x & rd /s /q y"]),
+    );
+}
+
+#[test]
+fn a_program_cmd_reads_differently_leaves_the_drive_unknown() {
+    // cmd ends the name of a command at `;`, `,` and `=`, and drops `^` and
+    // `""` from it: each of these is a drive switch or a `cd /d` or a
+    // `pushd` the line does not show.
+    let risky = deletes(&[
+        r"C:;& cd C:\Windows & rd /s /q System32",
+        r"C:,& cd C:\Windows & rd /s /q System32",
+        r"C:= & cd C:\Windows & rd /s /q System32",
+        r"c^d /d C:\ & cd C:\Windows & rd /s /q System32",
+        r"p^ushd C:\ & cd C:\Windows & rd /s /q System32",
+        r"cd;/d C:\ & cd C:\Windows & rd /s /q System32",
+        r"chdir;/d C:\ & cd C:\Windows & rd /s /q System32",
+        r"cd=/d C:\ & cd C:\Windows & rd /s /q System32",
+        r#"c""d /d C:\ & cd C:\Windows & rd /s /q System32"#,
+        // What it moves to is not known either.
+        r"c^d /d C:\Windows & rd /s /q System32",
+        r"C:; & rd /s /q Windows",
+    ]);
+    check(Shell::Cmd, &d_repo(), &[], &risky);
+}
+
+#[test]
+fn a_program_named_the_usual_way_keeps_the_drive() {
+    // A quoted path to a program, a variable that names a place, and a
+    // program that ends where cmd ends it say nothing about the drive.
+    check(
+        Shell::Cmd,
+        &d_repo(),
+        &[
+            r#""C:\Program Files\Git\bin\git.exe" status & cd C:\Windows & rd /s /q build"#,
+            r"cd C:\Windows & rd /s /q build",
+            r"C:\Windows\System32\where.exe git & cd C:\Windows & rd /s /q build",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_started_program_runs_in_the_folder_start_names() {
+    // After `cd` to a folder on another drive without `/d`, that drive's own
+    // working directory is the folder `cd` set: `start /d C:` runs in
+    // `C:\Windows`, and a folder on `C:` there is under it.
+    let risky = deletes(&[
+        r"cd C:\Windows & start /d C: cmd /c rd /s /q System32",
+        r"cd C:\Windows & start /d C: /b rd /s /q System32",
+        r"cd C:\Windows & start /dC: cmd /c rd /s /q System32",
+        r"cd C:\Windows & start /d C:. cmd /c rd /s /q System32",
+        r"cd C:\Windows & start /d C:System32 cmd /c del /q *.dll",
+        r"cd C:\x & start /d C: cmd /c rd /s /q y",
+        r"cd %USERPROFILE% & start /d C: cmd /c rd /s /q Documents",
+        r#"cd C:\Windows & start "t" /d C: cmd /c rd /s /q System32"#,
+        // The folder is only known when it runs.
+        r"start /d %X% cmd /c rd /s /q System32",
+        r"start /d C:\Windows cmd /c rd /s /q System32",
+    ]);
+    check(Shell::Cmd, &d_repo(), &[], &risky);
+    check(
+        Shell::Cmd,
+        &Paths::new(
+            r"C:\Users\me\repo",
+            r"C:\Users\me",
+            [r"C:\Users\me\repo", r"D:\ws"],
+        ),
+        &[],
+        &deletes(&[r"cd D:\x & start /d D: cmd /c rd /s /q y"]),
+    );
+    // A folder that is known is where the program runs: in the workspace,
+    // and out of it.
+    check(
+        Shell::Cmd,
+        &d_repo(),
+        &[
+            r"start /d D:\ws\repo\sub cmd /c rd /s /q build",
+            r"start /d sub cmd /c rd /s /q build",
+            r#"start /d "C:\Users\me\repo\sub" cmd /c rd /s /q build"#,
+            r"start /d C:\Users\me\repo cmd /c rd /s /q build",
+            r"start notepad.exe & rd /s /q build",
+            r"start /d C:\Windows notepad.exe & rd /s /q build",
+        ],
+        &deletes(&[r"start /d C:\Windows\System32 cmd /c rd /s /q ..\..\Windows"]),
+    );
+}
+
+#[test]
+fn a_started_powershell_runs_in_the_folder_its_working_directory_names() {
+    let risky = deletes(&[
+        r#"cd C:\Windows & pwsh -wd C: -c "Remove-Item System32 -Recurse""#,
+        r#"cd C:\Windows & pwsh -WorkingDirectory C: -c "Remove-Item System32 -Recurse""#,
+        r#"cd C:\Windows & powershell -wd C: -c "Remove-Item System32 -Recurse""#,
+        r#"cd C:\Windows & pwsh -wor C: -c "Remove-Item System32 -Recurse""#,
+        r#"cd C:\Windows & pwsh -NoProfile -wd C: -c "Remove-Item System32 -Recurse""#,
+        r#"pwsh -wd %X% -c "Remove-Item System32 -Recurse""#,
+    ]);
+    check(Shell::Cmd, &d_repo(), &[], &risky);
+    check(
+        Shell::PowerShell,
+        &d_repo(),
+        &[
+            r#"pwsh -wd D:\ws\repo\sub -c "Remove-Item build -Recurse""#,
+            r"Start-Process cmd -WorkingDirectory D:\ws\repo\sub -ArgumentList '/c rd /s /q build'",
+        ],
+        &deletes(&[
+            r#"pwsh -wd C:\Windows -c "Remove-Item System32 -Recurse""#,
+            r"Start-Process cmd -WorkingDirectory C:\Windows -ArgumentList '/c rd /s /q System32'",
+            r"Start-Process cmd -WorkingDirectory $x -ArgumentList '/c rd /s /q build'",
+            r"Start-Process cmd -WorkingDirectory C: -ArgumentList '/c rd /s /q System32'",
+        ]),
+    );
+}

@@ -191,6 +191,44 @@ impl Walker<'_> {
             Unit::new(Shell::Cmd, program, args, stage).with_origins(origins),
             self.depth,
         );
+        self.unread_name(name);
+    }
+
+    /// cmd reads the name of a command differently from the grammar when it
+    /// holds `^`, `"`, `;`, `,`, `=` or a variable: it drops the first two,
+    /// ends the name at the next three and puts a variable's value in. Such
+    /// a name may be a drive switch, `cd /d` or `pushd` that the unit does not
+    /// show, so the drive the line is on is not known after it; and when it
+    /// names `cd` or a drive, the place the line is in is not known either.
+    /// Quotes alone are read: a quoted path to a program (`"C:\x\y.exe"`)
+    /// is a plain word, and only quotes that make a `cd` or a drive of the
+    /// word count.
+    fn unread_name(&mut self, name: &Node<'_>) {
+        let rest = self.source.get(name.start_byte()..).unwrap_or_default();
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | '<' | '>' | '(' | ')'))
+            .unwrap_or(rest.len());
+        let word = &rest[..end];
+        let cleaned: String = word
+            .chars()
+            .filter(|c| !matches!(c, '^' | '"'))
+            .take_while(|c| !matches!(c, ';' | ',' | '='))
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let mut chars = cleaned.chars();
+        // Written other than plainly, and then a `cd` or a drive.
+        let moves = word.contains(['^', '"', ';', ',', '='])
+            && ((chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+                && chars.next() == Some(':')
+                && chars.next().is_none())
+                || matches!(cleaned.as_str(), "cd" | "chdir" | "pushd" | "popd"));
+        if !(moves || word.contains(['^', ';', ',', '=', '%', '!'])) {
+            return;
+        }
+        self.split.forget_drive();
+        if moves {
+            self.split.lose_place(word);
+        }
     }
 
     /// The arguments of a list. cmd splits arguments at spaces only, so the

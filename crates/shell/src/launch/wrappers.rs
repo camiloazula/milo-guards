@@ -212,6 +212,19 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
 /// what cannot be read; `-File` runs a script file; with none of them it
 /// reads commands from its input.
 pub(super) fn powershell(args: &[Arg]) -> Launch {
+    powershell_in(args, &mut None)
+}
+
+/// The folder `-WorkingDirectory` (`-wd`) gives `powershell` or `pwsh` to
+/// run in, when it names one.
+pub(super) fn powershell_folder(args: &[Arg]) -> Option<Arg> {
+    let mut folder = None;
+    powershell_in(args, &mut folder);
+    folder
+}
+
+/// [`powershell`], and the folder it is told to run in put in `folder`.
+fn powershell_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
@@ -260,6 +273,10 @@ pub(super) fn powershell(args: &[Arg]) -> Launch {
                 Some(Arg::Known(_)) | None => Launch::Itself,
                 Some(script) => Launch::Script(Shell::PowerShell, script.clone()),
             };
+        } else if name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name))
+        {
+            *folder = args.get(at + 1).cloned();
+            at += 2;
         } else if matches!(
             name.as_str(),
             "windowstyle"
@@ -271,8 +288,6 @@ pub(super) fn powershell(args: &[Arg]) -> Launch {
                 | "o"
                 | "inputformat"
                 | "if"
-                | "workingdirectory"
-                | "wd"
                 | "settingsfile"
                 | "custompipename"
         ) {
@@ -339,6 +354,19 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
 
 /// cmd's `start`: a quoted title first, its `/` options, then the program.
 pub(super) fn start(args: &[Arg]) -> Launch {
+    start_in(args, &mut None)
+}
+
+/// The folder `start /d` gives the program it starts to run in, when it
+/// names one (`/d C:\x`, or joined: `/dC:\x`).
+pub(super) fn start_folder(args: &[Arg]) -> Option<Arg> {
+    let mut folder = None;
+    start_in(args, &mut folder);
+    folder
+}
+
+/// [`start`], and the folder it is told to run in put in `folder`.
+fn start_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
     let mut at = 0;
     if args
         .first()
@@ -349,7 +377,16 @@ pub(super) fn start(args: &[Arg]) -> Launch {
     }
     while let Some(arg) = args.get(at) {
         match arg.known().map(str::to_ascii_lowercase) {
-            Some(text) if matches!(text.as_str(), "/d" | "/affinity" | "/node") => at += 2,
+            Some(text) if text == "/d" => {
+                *folder = args.get(at + 1).cloned();
+                at += 2;
+            }
+            Some(text) if matches!(text.as_str(), "/affinity" | "/node") => at += 2,
+            Some(text) if text.starts_with("/d") => {
+                // `/dC:\x`: the folder is joined to the option.
+                *folder = arg.known().map(|text| Arg::Known(text[2..].to_string()));
+                at += 1;
+            }
             Some(text) if text.starts_with('/') => at += 1,
             _ => return Launch::Runs(at),
         }

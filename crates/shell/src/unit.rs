@@ -915,6 +915,45 @@ impl Split {
         }
     }
 
+    /// A unit cmd reads differently from the way the guard does (a name with
+    /// `^`, `"`, `;`, `,`, `=` or a variable in it) may be a drive switch,
+    /// `cd /d` or `pushd` the guard does not show: the drive the line is on
+    /// is no longer known.
+    pub(crate) fn forget_drive(&mut self) {
+        self.drive = (None, false);
+    }
+
+    /// The line is somewhere that is only known when it runs, on a drive
+    /// that is not known: as after a `cd` whose effect cannot be told.
+    pub(crate) fn lose_place(&mut self, text: &str) {
+        self.moves += 1;
+        self.moved += 1;
+        self.dir = Some(Arg::Unknown(text.to_string()));
+        self.drive = (None, false);
+    }
+
+    /// Run what follows in `folder`, which a program that starts another
+    /// (`start /d`, `pwsh -WorkingDirectory`) names as the one it runs in,
+    /// read by `shell`; the place to put the line back to when it ends. A
+    /// folder on a drive's own working directory (`C:`, `C:x`) is not a
+    /// place the line shows, and a drive the started program is on is a
+    /// guess, as it may not start.
+    pub(crate) fn enter(&mut self, folder: &Arg, shell: Shell) -> Place {
+        let place = self.dir_snapshot();
+        let dir = crate::path::within(self.dir.as_ref(), folder, shell);
+        self.drive = match &dir {
+            Arg::Known(text) if is_network(text) => (None, false),
+            Arg::Known(text) => match crate::path::drive_of(text) {
+                Some(letter) => (Some(letter), false),
+                None if text.starts_with('~') => (None, false),
+                None => self.drive,
+            },
+            _ => (None, false),
+        };
+        self.dir = Some(dir);
+        place
+    }
+
     /// Put the line back where it was. An action that runs later, set inside
     /// what ended, is settled by the `cd`s inside it, and the rest of the
     /// line counts against it as it would against one set before.
@@ -997,10 +1036,12 @@ impl Split {
 }
 
 /// The drive a bare `D:` switches to: cmd reads it as the program `D` given
-/// `:`, PowerShell as a function named `D:`.
+/// `:`, PowerShell as a function named `D:`. A cmd program that is a drive
+/// and its colon (`%SystemDrive%`, `"C:"`) is one too, see [`drive_program`].
 fn drive_switch(unit: &Unit) -> Option<char> {
     let lower = unit.program.known()?.to_ascii_lowercase();
     let letter = match unit.shell {
+        Shell::Cmd if drive_program(unit) => lower.chars().next(),
         Shell::Cmd => (lower.len() == 1 && unit.args.first().and_then(Arg::known) == Some(":"))
             .then(|| lower.chars().next())?,
         Shell::PowerShell => {
@@ -1011,6 +1052,19 @@ fn drive_switch(unit: &Unit) -> Option<char> {
     letter
         .filter(char::is_ascii_alphabetic)
         .map(|letter| letter.to_ascii_uppercase())
+}
+
+/// Whether the cmd program of `unit` is a drive letter and its colon whole
+/// (`C:`): the word a variable (`%SystemDrive%`) or quotes (`"C:"`) leave
+/// where a typed `C:` is the program `C` given `:`. cmd switches to that
+/// drive, which is a guess when a variable names it.
+fn drive_program(unit: &Unit) -> bool {
+    unit.program.known().is_some_and(|program| {
+        let mut chars = program.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.next() == Some(':')
+            && chars.next().is_none()
+    })
 }
 
 /// What a `cd` does to where a cmd line is.
@@ -1090,6 +1144,11 @@ fn cmd_effect(
     // A move onto `there`: certain only when the line was certainly there.
     let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
     if let Some(letter) = drive_switch(unit) {
+        // A program that is the drive whole is named by a variable or in
+        // quotes, and `%SystemDrive%` may not be `C:`: the drive is a guess.
+        if drive_program(unit) {
+            return Effect::Moves(None, false);
+        }
         return onto(Some(letter));
     }
     let key = unit.key().unwrap_or_default();
