@@ -5,7 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language, Reading};
+use super::{
+    environment, join, mode, path, read_path, walk, writes, Act, Ancestor, Constants, Expansion,
+    Holds, Language, Parts, Reading,
+};
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
@@ -123,6 +126,15 @@ enum Kind {
     Open,
     /// `os.open(path, flags)`.
     OsOpen,
+    /// `shutil.make_archive(base_name, format, root_dir, base_dir)`: the
+    /// archive is written, and what it packs (`root_dir` and `base_dir`
+    /// joined) is read, all the way down.
+    Archive,
+    /// `linecache.getline(filename, …)`, `getlines(filename)`: the first
+    /// argument is a file read.
+    ReadFile,
+    /// `netrc.netrc(file)`: reads the file, or `~/.netrc` when none is given.
+    NetRc,
     /// Runs a command line.
     Script,
     /// Runs a program from an argument list or a command line.
@@ -244,8 +256,10 @@ fn kind(name: &str) -> Option<Kind> {
         | "os.mkdir"
         | "os.makedirs"
         | "os.mkfifo"
-        | "shutil.make_archive"
         | "sqlite3.connect" => Kind::Write,
+        "shutil.make_archive" => Kind::Archive,
+        "linecache.getline" | "linecache.getlines" => Kind::ReadFile,
+        "netrc.netrc" => Kind::NetRc,
         "os.chmod" | "os.lchmod" => Kind::Chmod,
         "shutil.copymode" | "shutil.copystat" => Kind::CopyMode,
         "fileinput.input" | "fileinput.FileInput" => Kind::FileInput,
@@ -326,10 +340,6 @@ fn kind(name: &str) -> Option<Kind> {
 /// imported.
 const PATHS: [&str; 4] = ["Path", "PurePath", "PosixPath", "PurePosixPath"];
 
-/// The most strings noted for one name: a name set to more is read as the
-/// first of them.
-const MAX_CONSTANTS: usize = 64;
-
 /// The calls that give a method of a `pathlib.Path` away when named without
 /// being called (`map(Path.unlink, paths)`).
 const METHODS: [&str; 7] = [
@@ -377,12 +387,23 @@ struct Reader<'s> {
     shared: bool,
     /// The strings each name is set to in the code, as the reader knows
     /// them.
-    constants: HashMap<String, Vec<String>>,
+    constants: Constants,
     /// Whether a name is put back as its constant. Only where a file is
     /// read: a path the reader cannot name is no more than unknown, and a
     /// delete or a write to it is judged as such.
     constants_on: bool,
+    /// What the names the code sets to an archive or a config parser stand
+    /// for (`TAR`, `ZIP`, `CONFIG`, or more than one): a method call on one
+    /// of them reads a file.
+    objects: HashMap<String, u8>,
 }
+
+/// `tarfile.open(…)`: `add` reads what it is given.
+const TAR: u8 = 1;
+/// `zipfile.ZipFile(…)`: `write` reads the file it is given.
+const ZIP: u8 = 2;
+/// `configparser.ConfigParser()`: `read` reads the files it is given.
+const CONFIG: u8 = 4;
 
 /// What a name stands for in code that has bound nothing: itself, and the
 /// `pathlib` classes are `pathlib`'s.
@@ -473,24 +494,46 @@ impl<'s> Reader<'s> {
             reading: Reading::default(),
             nesting,
             shared: false,
-            constants: HashMap::new(),
+            constants: Constants::default(),
             constants_on: false,
+            objects: HashMap::new(),
         }
     }
 
     /// Note each string a name is set to anywhere in the code, for the reads
     /// of files ([`Self::read_target`]): by an assignment, or by a loop over
-    /// strings written out. Whatever else the name is set to adds none.
+    /// strings written out, or a folder it is somewhere under (`for p in
+    /// Path(d).glob('*')`). Every string is noted, up to a number of bytes in
+    /// all and a length for each ([`Constants`]): a name set to more, or to
+    /// a string built from one of those, is dropped, and a read of it is
+    /// code the reader does not follow. A name grown in place (`k += …`) is
+    /// dropped too. Whatever else the name is set to adds none. The names
+    /// the code sets to an archive or a config parser are noted here as well.
     fn collect_constants(&mut self, root: Node<'_>) {
         let mut found = Vec::new();
         unit::for_each_node(root, |node| match node.kind() {
-            "assignment" | "named_expression" | "for_statement" | "for_in_clause" => {
+            "assignment"
+            | "named_expression"
+            | "for_statement"
+            | "for_in_clause"
+            | "augmented_assignment"
+            | "as_pattern" => {
                 found.push(node);
             }
             _ => {}
         });
         self.constants_on = true;
         for node in found {
+            if node.kind() == "as_pattern" {
+                // `with tarfile.open(…) as t`.
+                let alias = node
+                    .child_by_field_name("alias")
+                    .and_then(|alias| alias.named_child(0));
+                if let (Some(value), Some(alias)) = (node.named_child(0), alias) {
+                    self.note_object(value, alias);
+                }
+                continue;
+            }
             let looped = matches!(node.kind(), "for_statement" | "for_in_clause");
             let (name, value) = match node.kind() {
                 "named_expression" => (
@@ -502,35 +545,152 @@ impl<'s> Reader<'s> {
                     node.child_by_field_name("right"),
                 ),
             };
-            let (Some(name), Some(value)) = (name, value) else {
+            let (Some(name), Some(mut value)) = (name, value) else {
                 continue;
             };
             if name.kind() != "identifier" {
                 continue;
             }
-            let mut values = Vec::new();
+            let target = name;
+            let name = self.text(name);
+            if node.kind() == "augmented_assignment" {
+                // `k += '/id_rsa'`: a string the reader does not work out.
+                self.constants.drop_name(name);
+                continue;
+            }
+            // `a = b = 'x'` sets `a` to the string too.
+            while value.kind() == "assignment" {
+                let Some(next) = value.child_by_field_name("right") else {
+                    break;
+                };
+                value = next;
+            }
             if !looped {
-                // `a = b = 'x'` is no string to `a` here: `b` is set to it.
-                if value.kind() != "assignment" {
-                    values.extend(self.value(value, 0));
-                }
+                self.note_object(value, target);
+            }
+            self.constants.lost = false;
+            let mut values = Vec::new();
+            let mut folder = None;
+            if !looped {
+                values.extend(
+                    self.all_parts(&[value])
+                        .into_iter()
+                        .filter_map(Parts::value),
+                );
             } else if matches!(value.kind(), "list" | "tuple" | "set") {
                 // `for f in ['a', 'b']`: each in turn.
                 let mut cursor = value.walk();
                 let items: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
-                values.extend(items.into_iter().filter_map(|item| self.value(item, 0)));
-            }
-            let known = self
-                .constants
-                .entry(self.text(name).to_string())
-                .or_default();
-            for value in values {
-                if known.len() < MAX_CONSTANTS && !known.contains(&value) {
-                    known.push(value);
+                for item in items {
+                    values.extend(self.all_parts(&[item]).into_iter().filter_map(Parts::value));
                 }
+            } else {
+                self.constants.begin();
+                folder = self.listed_under(value, 0);
+                // A folder that is one of several is not one.
+                self.constants.lost |= self.constants.pending();
+                self.constants.begin();
+            }
+            if std::mem::take(&mut self.constants.lost) {
+                self.constants.drop_name(name);
+                continue;
+            }
+            for value in values {
+                self.constants.note(name, value);
+            }
+            if let Some(folder) = folder {
+                self.constants.note_folder(name, folder);
             }
         }
         self.constants_on = false;
+    }
+
+    /// `name = tarfile.open(…)`, `with zipfile.ZipFile(…) as name`: `name`
+    /// stands for an archive or a config parser, whose methods read files.
+    fn note_object(&mut self, value: Node<'_>, name: Node<'_>) {
+        if name.kind() != "identifier" || value.kind() != "call" {
+            return;
+        }
+        let Some(function) = value.child_by_field_name("function") else {
+            return;
+        };
+        let class = self.class_of(function);
+        if class != 0 {
+            *self.objects.entry(self.text(name).to_string()).or_default() |= class;
+        }
+    }
+
+    /// What the call of `function` makes: `TAR`, `ZIP`, `CONFIG`, or none.
+    fn class_of(&mut self, function: Node<'_>) -> u8 {
+        match self.qualified(function, 0).as_deref() {
+            Some("tarfile.open") => TAR,
+            Some(name) if name.starts_with("tarfile.TarFile") => TAR,
+            Some("zipfile.ZipFile" | "zipfile.PyZipFile") => ZIP,
+            Some(
+                "configparser.ConfigParser"
+                | "configparser.RawConfigParser"
+                | "configparser.SafeConfigParser"
+                | "ConfigParser.ConfigParser"
+                | "ConfigParser.RawConfigParser"
+                | "ConfigParser.SafeConfigParser",
+            ) => CONFIG,
+            _ => 0,
+        }
+    }
+
+    /// Whether `receiver` is an archive or a config parser of the `class`.
+    fn is_object(&mut self, receiver: Node<'_>, class: u8) -> bool {
+        match receiver.kind() {
+            "identifier" => self
+                .objects
+                .get(self.text(receiver))
+                .is_some_and(|classes| classes & class != 0),
+            "call" => receiver
+                .child_by_field_name("function")
+                .is_some_and(|function| self.class_of(function) & class != 0),
+            _ => false,
+        }
+    }
+
+    /// The folder that what `node` lists is under, when the code gives it:
+    /// `Path(d).glob(…)`, `.rglob(…)`, `.iterdir()` and `glob.glob(d + '/*')`
+    /// list paths that start with it, so a name a loop sets to each is a path
+    /// somewhere below the folder. `sorted(…)`, `list(…)` and the like are
+    /// looked through.
+    fn listed_under(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        if level > 8 || node.kind() != "call" {
+            return None;
+        }
+        let function = node.child_by_field_name("function")?;
+        let args = Args::read(node, self.src);
+        let name = self.qualified(function, 0);
+        match name.as_deref() {
+            Some("sorted" | "list" | "tuple" | "set" | "reversed" | "iter" | "enumerate") => {
+                let inner = args.positional.first().copied()?;
+                return self.listed_under(inner, level + 1);
+            }
+            Some("glob.glob" | "glob.iglob") => {
+                let pattern = args.get(0, &["pathname"])?;
+                let parts = self.parts(pattern, 0);
+                let end = parts.text.rfind('/')? + 1;
+                return Some(parts.text[..end].to_string());
+            }
+            _ => {}
+        }
+        let method = function.child_by_field_name("attribute")?;
+        if !matches!(self.text(method), "glob" | "rglob" | "iterdir") {
+            return None;
+        }
+        let receiver = function.child_by_field_name("object")?;
+        let parts = self.parts(receiver, 0);
+        let end = parts.text.rfind('/').map_or(0, |at| at + 1);
+        match parts.whole {
+            // The folder itself.
+            true if parts.text.ends_with('/') => Some(parts.text),
+            true => Some(format!("{}/", parts.text)),
+            false if end > 0 => Some(parts.text[..end].to_string()),
+            false => None,
+        }
     }
 
     /// The paths the argument at `at` of a call that reads a file may name:
@@ -546,19 +706,92 @@ impl<'s> Reader<'s> {
     /// `node`, the argument or the object a file method is called on, as the
     /// paths to read (see [`Self::read_target`]).
     fn read_arg(&mut self, node: Node<'_>) -> Vec<Arg> {
-        let text = self.text(node);
-        if node.kind() == "identifier" {
-            if let Some(values) = self.constants.get(text).filter(|values| values.len() > 1) {
-                return values
-                    .iter()
-                    .map(|value| path(Some(value.clone()), text))
-                    .collect();
+        self.read_nodes(&[node])
+    }
+
+    /// The paths the join of `nodes` (one, or a root and what is under it)
+    /// may name, as a read takes them: each string a name is set to; the
+    /// start a path is known to have, as the folder it is under, when the
+    /// rest is only known when the code runs; and a path the reader does not
+    /// follow, besides, when it was worked out from a name it dropped.
+    fn read_nodes(&mut self, nodes: &[Node<'_>]) -> Vec<Arg> {
+        let Some(first) = nodes.first().copied() else {
+            return Vec::new();
+        };
+        let text = self.text(first);
+        if let [node] = nodes {
+            if node.kind() == "identifier" {
+                match self.constants.paths(text, text) {
+                    Expansion::Paths(paths) => return paths,
+                    Expansion::Lost => {
+                        self.reading.unread(text);
+                        return Vec::new();
+                    }
+                    Expansion::Nothing => {}
+                }
             }
         }
         self.constants_on = true;
-        let target = self.arg(node);
+        self.constants.lost = false;
+        let all = self.all_parts(nodes);
         self.constants_on = false;
-        vec![target]
+        let mut args: Vec<Arg> = Vec::new();
+        for parts in all {
+            let arg = read_path(parts, text);
+            if !args.contains(&arg) {
+                args.push(arg);
+            }
+        }
+        if !self.constants.spend(args.len()) {
+            self.constants.lost = true;
+            args.clear();
+        }
+        if std::mem::take(&mut self.constants.lost) {
+            self.reading.unread(text);
+        }
+        args
+    }
+
+    /// The join of `nodes` as far as the code gives it, once for each choice
+    /// of one string for each name in it that holds more than one (`for n in
+    /// ['a', 'b']`). Where names are put back as their strings.
+    fn all_parts(&mut self, nodes: &[Node<'_>]) -> Vec<Parts> {
+        self.constants.begin();
+        let mut found: Vec<Parts> = Vec::new();
+        loop {
+            let parts = self.joined(String::new(), nodes, 0);
+            let seen = found
+                .iter()
+                .any(|other| other.text == parts.text && other.whole == parts.whole);
+            if !self.constants.pending() && !seen {
+                found.push(parts);
+            }
+            if !self.constants.advance() {
+                break;
+            }
+        }
+        self.constants.begin();
+        if found.is_empty() {
+            found.push(Parts::unknown());
+        }
+        found
+    }
+
+    /// The files a call reads, given as one path or a list of them
+    /// (`ConfigParser.read`, `fileinput.input`).
+    fn read_files(&mut self, node: Node<'_>) -> Vec<Arg> {
+        if !matches!(node.kind(), "list" | "tuple") {
+            return self.read_arg(node);
+        }
+        let mut cursor = node.walk();
+        let items: Vec<Node<'_>> = node
+            .named_children(&mut cursor)
+            .filter(|item| !matches!(item.kind(), "comment" | "list_splat"))
+            .collect();
+        items
+            .into_iter()
+            .flat_map(|item| self.read_arg(item))
+            .collect()
     }
 
     /// Read every node under `root`, once the names `import` bound are
@@ -961,70 +1194,143 @@ impl<'s> Reader<'s> {
     /// The text of a string, a path, or a join of them, when the code gives
     /// it; `None` when it is only known when it runs.
     fn value(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        self.parts(node, level).value()
+    }
+
+    /// The text of a string, a path, or a join of them, as far as the code
+    /// gives it: all of it, or the start it is known to have (see
+    /// [`Parts`]). Where names are put back as their strings, one longer than
+    /// [`super::MAX_STRING`] is not known.
+    fn parts(&mut self, node: Node<'_>, level: usize) -> Parts {
+        let parts = self.parts_of(node, level);
+        if self.constants_on && parts.text.len() > super::MAX_STRING {
+            self.constants.lost = true;
+            return Parts::unknown();
+        }
+        parts
+    }
+
+    fn parts_of(&mut self, node: Node<'_>, level: usize) -> Parts {
         if level > MAX_TREE_DEPTH {
             self.reading.deep = true;
-            return None;
+            return Parts::unknown();
         }
         match node.kind() {
             "string" => self.string(node, level),
             "concatenated_string" => {
                 let mut cursor = node.walk();
-                let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                let items: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
                 let mut text = String::new();
-                for part in parts {
-                    text.push_str(&self.value(part, level + 1)?);
+                for item in items {
+                    let part = self.parts(item, level + 1);
+                    text.push_str(&part.text);
+                    if !part.whole {
+                        return Parts::partial(text);
+                    }
                 }
-                Some(text)
+                Parts::whole(text)
             }
-            "parenthesized_expression" => {
-                let inner = node.named_child(0)?;
-                self.value(inner, level + 1)
-            }
+            "parenthesized_expression" => match node.named_child(0) {
+                Some(inner) => self.parts(inner, level + 1),
+                None => Parts::unknown(),
+            },
             "binary_operator" => {
-                let left = node.child_by_field_name("left")?;
-                let right = node.child_by_field_name("right")?;
-                let operator = self.text(node.child_by_field_name("operator")?);
-                let left = self.value(left, level + 1)?;
-                let right = self.value(right, level + 1)?;
+                let (Some(left), Some(right), Some(operator)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                    node.child_by_field_name("operator"),
+                ) else {
+                    return Parts::unknown();
+                };
+                let operator = self.text(operator);
+                let left = self.parts(left, level + 1);
+                if !left.whole {
+                    return if matches!(operator, "+" | "/") {
+                        left
+                    } else {
+                        Parts::unknown()
+                    };
+                }
+                let right = self.parts(right, level + 1);
                 match operator {
-                    "+" => Some(format!("{left}{right}")),
-                    "/" => Some(join(&left, &right)),
-                    _ => None,
+                    "+" => Parts {
+                        text: format!("{}{}", left.text, right.text),
+                        whole: right.whole,
+                    },
+                    "/" => Parts {
+                        text: join(&left.text, &right.text),
+                        whole: right.whole,
+                    },
+                    // `'/home/me/.ssh/%s' % name`: the text before the first
+                    // conversion.
+                    "%" => match left.text.find('%') {
+                        Some(at) => Parts::partial(left.text[..at].to_string()),
+                        None => Parts::unknown(),
+                    },
+                    _ => Parts::unknown(),
                 }
             }
-            "call" => self.value_of_call(node, level),
-            "identifier" if self.constants_on => {
-                match self.constants.get(self.text(node)).map(Vec::as_slice) {
-                    Some([constant]) => Some(constant.clone()),
-                    _ => None,
-                }
-            }
+            "call" => self.parts_of_call(node, level),
+            "identifier" if self.constants_on => match self.constants.holds(self.text(node)) {
+                Holds::One(text) => Parts::whole(text),
+                Holds::Below(folder) => Parts::partial(folder),
+                Holds::Nothing | Holds::Lost => Parts::unknown(),
+            },
             "attribute" => {
-                let object = node.child_by_field_name("object")?;
-                let attribute = node.child_by_field_name("attribute")?;
+                let (Some(object), Some(attribute)) = (
+                    node.child_by_field_name("object"),
+                    node.child_by_field_name("attribute"),
+                ) else {
+                    return Parts::unknown();
+                };
                 if self.text(attribute) == "parent" {
-                    let object = self.value(object, level + 1)?;
-                    Some(join(&object, ".."))
+                    match self.value(object, level + 1) {
+                        Some(object) => Parts::whole(join(&object, "..")),
+                        None => Parts::unknown(),
+                    }
                 } else {
-                    None
+                    Parts::unknown()
                 }
             }
             "subscript" => {
-                let object = node.child_by_field_name("value")?;
-                let index = node.child_by_field_name("subscript")?;
+                let (Some(object), Some(index)) = (
+                    node.child_by_field_name("value"),
+                    node.child_by_field_name("subscript"),
+                ) else {
+                    return Parts::unknown();
+                };
                 if self.qualified(object, level + 1).as_deref() == Some("os.environ") {
-                    environment(&self.value(index, level + 1)?)
+                    self.value(index, level + 1)
+                        .and_then(|name| environment(&name))
+                        .map_or_else(Parts::unknown, Parts::whole)
                 } else {
-                    None
+                    Parts::unknown()
                 }
             }
-            _ => None,
+            _ => Parts::unknown(),
         }
+    }
+
+    /// `first`, then each of `nodes`, joined as `os.path.join` does: the
+    /// start known when one of them is only known when the code runs.
+    fn joined(&mut self, first: String, nodes: &[Node<'_>], level: usize) -> Parts {
+        let mut text = first;
+        for node in nodes {
+            let part = self.parts(*node, level + 1);
+            text = join(&text, &part.text);
+            if self.constants.over(self.constants_on, &text) {
+                return Parts::unknown();
+            }
+            if !part.whole {
+                return Parts::partial(text);
+            }
+        }
+        Parts::whole(text)
     }
 
     /// A string literal: escapes read, an f-string's plain `{…}` parts put
     /// in.
-    fn string(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+    fn string(&mut self, node: Node<'_>, level: usize) -> Parts {
         let mut cursor = node.walk();
         let parts: Vec<Node<'_>> = node.children(&mut cursor).collect();
         let prefix = parts
@@ -1041,10 +1347,12 @@ impl<'s> Reader<'s> {
                     let content = self.text(part);
                     // An escape the reader does not decode makes the string
                     // one only known when it runs, never a guess.
-                    let content = if raw {
-                        content.to_string()
+                    let Some(content) = (if raw {
+                        Some(content.to_string())
                     } else {
-                        unescape(content)?
+                        unescape(content)
+                    }) else {
+                        return Parts::partial(text);
                     };
                     text.push_str(&if format {
                         content.replace("{{", "{").replace("}}", "}")
@@ -1057,85 +1365,154 @@ impl<'s> Reader<'s> {
                     if part.children(&mut inner).any(|child| {
                         matches!(child.kind(), "type_conversion" | "format_specifier" | "=")
                     }) {
-                        return None;
+                        return Parts::partial(text);
                     }
-                    let expression = part.child_by_field_name("expression")?;
-                    text.push_str(&self.value(expression, level + 1)?);
+                    let Some(expression) = part.child_by_field_name("expression") else {
+                        return Parts::partial(text);
+                    };
+                    let value = self.parts(expression, level + 1);
+                    text.push_str(&value.text);
+                    if self.constants.over(self.constants_on, &text) {
+                        return Parts::unknown();
+                    }
+                    if !value.whole {
+                        return Parts::partial(text);
+                    }
                 }
                 _ => {}
             }
         }
-        Some(text)
+        Parts::whole(text)
     }
 
-    fn value_of_call(&mut self, call: Node<'_>, level: usize) -> Option<String> {
-        let function = call.child_by_field_name("function")?;
+    fn parts_of_call(&mut self, call: Node<'_>, level: usize) -> Parts {
+        let Some(function) = call.child_by_field_name("function") else {
+            return Parts::unknown();
+        };
         let args = Args::read(call, self.src);
         let name = self.qualified(function, level + 1);
-        let first = |reader: &mut Self| {
-            let node = args.positional.first().copied()?;
-            reader.value(node, level + 1)
+        let first = |reader: &mut Self| match args.positional.first().copied() {
+            Some(node) => reader.parts(node, level + 1),
+            None => Parts::unknown(),
         };
+        let whole = |text: &str| Parts::whole(text.to_string());
         match name.as_deref() {
             Some(
                 "pathlib.Path" | "pathlib.PurePath" | "pathlib.PosixPath" | "pathlib.PurePosixPath",
             ) => {
-                let mut text = String::new();
-                for node in args.positional.clone() {
-                    text = join(&text, &self.value(node, level + 1)?);
-                }
-                Some(if text.is_empty() {
-                    ".".to_string()
+                let parts = self.joined(String::new(), &args.positional, level);
+                if parts.whole && parts.text.is_empty() {
+                    whole(".")
                 } else {
-                    text
-                })
+                    parts
+                }
             }
-            Some("pathlib.Path.home" | "pathlib.PurePath.home") => Some("~".to_string()),
-            Some("pathlib.Path.cwd" | "os.getcwd" | "os.curdir") => Some(".".to_string()),
+            Some("pathlib.Path.home" | "pathlib.PurePath.home") => whole("~"),
+            Some("pathlib.Path.cwd" | "os.getcwd" | "os.curdir") => whole("."),
             Some(
                 "os.path.expanduser" | "os.path.abspath" | "os.path.normpath" | "os.path.realpath"
                 | "os.fspath" | "os.fsdecode" | "str",
             ) => first(self),
             Some("os.path.expandvars") => {
-                let text = first(self)?;
-                if let Some(rest) = text
+                let Some(text) = first(self).value() else {
+                    return Parts::unknown();
+                };
+                let expanded = if let Some(rest) = text
                     .strip_prefix("$HOME")
                     .or_else(|| text.strip_prefix("${HOME}"))
                 {
                     (!rest.contains('$')).then(|| format!("~{rest}"))
                 } else {
                     (!text.contains(['$', '%'])).then_some(text)
-                }
+                };
+                expanded.map_or_else(Parts::unknown, Parts::whole)
             }
-            Some("os.path.join") => {
-                let mut text = String::new();
-                for node in args.positional.clone() {
-                    text = join(&text, &self.value(node, level + 1)?);
-                }
-                Some(text)
-            }
-            Some("os.path.dirname") => Some(join(&first(self)?, "..")),
-            Some("os.environ.get" | "os.getenv") => environment(&first(self)?),
-            Some("tempfile.gettempdir") => Some("/tmp".to_string()),
-            Some("tempfile.mkdtemp") => Some("/tmp/x".to_string()),
+            Some("os.path.join") => self.joined(String::new(), &args.positional, level),
+            Some("os.path.dirname") => first(self)
+                .value()
+                .map_or_else(Parts::unknown, |text| Parts::whole(join(&text, ".."))),
+            Some("os.environ.get" | "os.getenv") => first(self)
+                .value()
+                .and_then(|name| environment(&name))
+                .map_or_else(Parts::unknown, Parts::whole),
+            Some("tempfile.gettempdir") => whole("/tmp"),
+            Some("tempfile.mkdtemp") => whole("/tmp/x"),
             _ => {
-                let attribute = function.child_by_field_name("attribute")?;
-                let receiver = function.child_by_field_name("object")?;
+                let (Some(attribute), Some(receiver)) = (
+                    function.child_by_field_name("attribute"),
+                    function.child_by_field_name("object"),
+                ) else {
+                    return Parts::unknown();
+                };
+                let literal = matches!(receiver.kind(), "string" | "concatenated_string");
                 match self.text(attribute) {
-                    "expanduser" | "resolve" | "absolute" => self.value(receiver, level + 1),
+                    "expanduser" | "resolve" | "absolute" => self.parts(receiver, level + 1),
                     "joinpath" => {
-                        let mut text = self.value(receiver, level + 1)?;
-                        for node in args.positional.clone() {
-                            text = join(&text, &self.value(node, level + 1)?);
+                        let start = self.parts(receiver, level + 1);
+                        if !start.whole {
+                            return start;
                         }
-                        Some(text)
+                        self.joined(start.text, &args.positional, level)
                     }
                     "with_name" => {
-                        let parent = join(&self.value(receiver, level + 1)?, "..");
-                        let node = args.positional.first().copied()?;
-                        Some(join(&parent, &self.value(node, level + 1)?))
+                        let Some(parent) = self.value(receiver, level + 1) else {
+                            return Parts::unknown();
+                        };
+                        let parent = join(&parent, "..");
+                        match args.positional.first().copied() {
+                            Some(node) => {
+                                let name = self.parts(node, level + 1);
+                                Parts {
+                                    text: join(&parent, &name.text),
+                                    whole: name.whole,
+                                }
+                            }
+                            None => Parts::unknown(),
+                        }
                     }
-                    _ => None,
+                    // `'/home/me/.ssh/{}'.format(name)`: the text before the
+                    // first field.
+                    "format" if literal => {
+                        let template = self.parts(receiver, level + 1);
+                        match (template.whole, template.text.find('{')) {
+                            (true, Some(at)) => Parts::partial(template.text[..at].to_string()),
+                            (true, None) => template,
+                            (false, _) => Parts::unknown(),
+                        }
+                    }
+                    // `'/'.join(['/home/me/.ssh', name])`.
+                    "join" if literal => {
+                        let separator = self.parts(receiver, level + 1);
+                        let list = args
+                            .positional
+                            .first()
+                            .copied()
+                            .filter(|list| matches!(list.kind(), "list" | "tuple"));
+                        let (true, Some(list)) = (separator.whole, list) else {
+                            return Parts::unknown();
+                        };
+                        let mut cursor = list.walk();
+                        let items: Vec<Node<'_>> = list
+                            .named_children(&mut cursor)
+                            .filter(|item| item.kind() != "comment")
+                            .collect();
+                        let mut text = String::new();
+                        for (at, item) in items.into_iter().enumerate() {
+                            if at > 0 {
+                                text.push_str(&separator.text);
+                            }
+                            let part = self.parts(item, level + 1);
+                            text.push_str(&part.text);
+                            if self.constants.over(self.constants_on, &text) {
+                                return Parts::unknown();
+                            }
+                            if !part.whole {
+                                return Parts::partial(text);
+                            }
+                        }
+                        Parts::whole(text)
+                    }
+                    _ => Parts::unknown(),
                 }
             }
         }
@@ -1185,12 +1562,48 @@ impl<'s> Reader<'s> {
                     name.as_deref(),
                     Some("urllib.request.urlretrieve" | "wget.download")
                 ) {
+                    // `copytree` reads a folder and all that is in it.
+                    let tree = name.as_deref() == Some("shutil.copytree");
                     for source in self.read_target(&args, 0, &["src", "fsrc"]) {
-                        self.reading.acts.push(Act::Read(source));
+                        self.reading.acts.push(if tree {
+                            Act::ReadTree(source)
+                        } else {
+                            Act::Read(source)
+                        });
                     }
                 }
                 let target = self.target(&args, 1, &["dst", "extract_dir", "filename", "out"]);
                 self.act(target.map(Act::Write));
+            }
+            Some(Kind::Archive) => {
+                let target = self.target(&args, 0, &["base_name"]);
+                self.act(target.map(Act::Write));
+                let nodes: Vec<Node<'t>> = [args.get(2, &["root_dir"]), args.get(3, &["base_dir"])]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                for source in self.read_nodes(&nodes) {
+                    self.reading.acts.push(Act::ReadTree(source));
+                }
+            }
+            Some(Kind::ReadFile) => {
+                for source in self.read_target(&args, 0, &["filename"]) {
+                    self.reading.acts.push(Act::Read(source));
+                }
+            }
+            Some(Kind::NetRc) => {
+                // No file is `~/.netrc`.
+                let file = args
+                    .get(0, &["file"])
+                    .filter(|node| self.text(*node) != "None");
+                let sources = match file {
+                    Some(node) => self.read_arg(node),
+                    None if args.splat => Vec::new(),
+                    None => vec![Arg::Known("~/.netrc".to_string())],
+                };
+                for source in sources {
+                    self.reading.acts.push(Act::Read(source));
+                }
             }
             Some(Kind::Move) => {
                 let from = self.target(&args, 0, &["src", "old"]);
@@ -1333,6 +1746,13 @@ impl<'s> Reader<'s> {
             Some(node) => !matches!(self.text(node), "False" | "None" | "0"),
         };
         if !inplace {
+            // Each file named is read, as `cat` does; none (the arguments of
+            // the script) is not a path the code gives.
+            if let Some(files) = args.get(0, &["files"]) {
+                for source in self.read_files(files) {
+                    self.reading.acts.push(Act::Read(source));
+                }
+            }
             return;
         }
         let files = args.get(0, &["files"]).filter(|_| !args.splat);
@@ -1738,6 +2158,28 @@ impl<'s> Reader<'s> {
             "extractall" => {
                 let target = self.target(args, 0, &["path"]);
                 self.act(target.map(Act::Write));
+            }
+            // `TarFile.add(name)` packs a file, or a folder and all that is
+            // in it; `ZipFile.write(filename)` reads the file;
+            // `ConfigParser.read(filenames)` reads each. Only a name the code
+            // set to such an object: any other object has an `add`, a `write`
+            // and a `read`.
+            "add" if self.is_object(receiver, TAR) => {
+                for source in self.read_target(args, 0, &["name"]) {
+                    self.reading.acts.push(Act::ReadTree(source));
+                }
+            }
+            "write" if self.is_object(receiver, ZIP) => {
+                for source in self.read_target(args, 0, &["filename"]) {
+                    self.reading.acts.push(Act::Read(source));
+                }
+            }
+            "read" if self.is_object(receiver, CONFIG) => {
+                if let Some(files) = args.get(0, &["filenames"]) {
+                    for source in self.read_files(files) {
+                        self.reading.acts.push(Act::Read(source));
+                    }
+                }
             }
             _ => {}
         }

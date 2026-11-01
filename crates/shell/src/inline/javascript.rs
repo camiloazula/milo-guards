@@ -5,7 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language, Reading};
+use super::{
+    environment, join, mode, path, read_path, walk, writes, Act, Ancestor, Constants, Expansion,
+    Holds, Language, Parts, Reading,
+};
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
@@ -349,10 +352,6 @@ const DISTINCT: [&str; 29] = [
     "writeJsonSync",
 ];
 
-/// The most strings noted for one name: a name set to more is read as the
-/// first of them.
-const MAX_CONSTANTS: usize = 64;
-
 /// Whether `property` of `module`, a module that is itself a function that
 /// starts a program (`cross-spawn`, `execa`, `$` of execa), is a member the
 /// reader reads as the call it is. Any other member of such a function
@@ -444,7 +443,7 @@ struct Reader<'s> {
     shared: bool,
     /// The strings each name is set to in the code, as the reader knows
     /// them.
-    constants: HashMap<String, Vec<String>>,
+    constants: Constants,
     /// Whether a name is put back as its constant. Only where a file is
     /// read: a path the reader cannot name is no more than unknown, and a
     /// delete or a write to it is judged as such.
@@ -507,18 +506,25 @@ impl<'s> Reader<'s> {
             reading: Reading::default(),
             nesting,
             shared: false,
-            constants: HashMap::new(),
+            constants: Constants::default(),
             constants_on: false,
         }
     }
 
     /// Note each string a name is set to anywhere in the code, for the reads
     /// of files ([`Self::read_target`]): by an assignment, or by a loop over
-    /// strings written out. Whatever else the name is set to adds none.
+    /// strings written out. Every string is noted, up to a number of bytes in
+    /// all and a length for each ([`Constants`]): a name set to more, or to a
+    /// string built from one of those, is dropped, and a read of it is code
+    /// the reader does not follow. A name grown in place (`k += …`) is
+    /// dropped too. Whatever else the name is set to adds none.
     fn collect_constants(&mut self, root: Node<'_>) {
         let mut found = Vec::new();
         unit::for_each_node(root, |node| match node.kind() {
-            "variable_declarator" | "assignment_expression" | "for_in_statement" => {
+            "variable_declarator"
+            | "assignment_expression"
+            | "augmented_assignment_expression"
+            | "for_in_statement" => {
                 found.push(node);
             }
             _ => {}
@@ -537,32 +543,43 @@ impl<'s> Reader<'s> {
                     node.child_by_field_name("right"),
                 )
             };
-            let (Some(name), Some(value)) = (name, value) else {
+            let (Some(name), Some(mut value)) = (name, value) else {
                 continue;
             };
             if name.kind() != "identifier" {
                 continue;
             }
+            let name = self.text(name);
+            if node.kind() == "augmented_assignment_expression" {
+                // `k += '/id_rsa'`: a string the reader does not work out.
+                self.constants.drop_name(name);
+                continue;
+            }
+            // `a = b = 'x'` sets `a` to the string too.
+            while value.kind() == "assignment_expression" {
+                let Some(next) = value.child_by_field_name("right") else {
+                    break;
+                };
+                value = next;
+            }
+            self.constants.lost = false;
             let mut values = Vec::new();
             if !looped {
-                // `a = b = 'x'` is no string to `a` here: `b` is set to it.
-                if value.kind() != "assignment_expression" {
-                    values.extend(self.value(value, 0));
-                }
+                values.extend(self.all_parts(value).into_iter().filter_map(Parts::value));
             } else if value.kind() == "array" {
                 // `for (const f of ['a', 'b'])`: each in turn.
                 let mut cursor = value.walk();
                 let items: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
-                values.extend(items.into_iter().filter_map(|item| self.value(item, 0)));
-            }
-            let known = self
-                .constants
-                .entry(self.text(name).to_string())
-                .or_default();
-            for value in values {
-                if known.len() < MAX_CONSTANTS && !known.contains(&value) {
-                    known.push(value);
+                for item in items {
+                    values.extend(self.all_parts(item).into_iter().filter_map(Parts::value));
                 }
+            }
+            if std::mem::take(&mut self.constants.lost) {
+                self.constants.drop_name(name);
+                continue;
+            }
+            for value in values {
+                self.constants.note(name, value);
             }
         }
         self.constants_on = false;
@@ -584,19 +601,66 @@ impl<'s> Reader<'s> {
     /// a name the code sets to a string is read as each string it is set
     /// to.
     fn read_target(&mut self, args: &Args<'_>, at: usize) -> Vec<Arg> {
-        if let Some(node) = args.get(at).filter(|node| node.kind() == "identifier") {
-            let text = self.text(node);
-            if let Some(values) = self.constants.get(text).filter(|values| values.len() > 1) {
-                return values
-                    .iter()
-                    .map(|value| path(Some(value.clone()), text))
-                    .collect();
+        let Some(node) = args.get(at) else {
+            return self.target(args, at).into_iter().collect();
+        };
+        let text = self.text(node);
+        if node.kind() == "identifier" {
+            match self.constants.paths(text, text) {
+                Expansion::Paths(paths) => return paths,
+                Expansion::Lost => {
+                    self.reading.unread(text);
+                    return Vec::new();
+                }
+                Expansion::Nothing => {}
             }
         }
+        // The start a path is known to have is the folder it is under, when
+        // the rest is only known when the code runs.
         self.constants_on = true;
-        let target = self.target(args, at);
+        self.constants.lost = false;
+        let all = self.all_parts(node);
         self.constants_on = false;
-        target.into_iter().collect()
+        let mut args: Vec<Arg> = Vec::new();
+        for parts in all {
+            let arg = read_path(parts, text);
+            if !args.contains(&arg) {
+                args.push(arg);
+            }
+        }
+        if !self.constants.spend(args.len()) {
+            self.constants.lost = true;
+            args.clear();
+        }
+        if std::mem::take(&mut self.constants.lost) {
+            self.reading.unread(text);
+        }
+        args
+    }
+
+    /// `node` as far as the code gives it, once for each choice of one string
+    /// for each name in it that holds more than one (`for (const n of ['a',
+    /// 'b'])`). Where names are put back as their strings.
+    fn all_parts(&mut self, node: Node<'_>) -> Vec<Parts> {
+        self.constants.begin();
+        let mut found: Vec<Parts> = Vec::new();
+        loop {
+            let parts = self.parts(node, 0);
+            let seen = found
+                .iter()
+                .any(|other| other.text == parts.text && other.whole == parts.whole);
+            if !self.constants.pending() && !seen {
+                found.push(parts);
+            }
+            if !self.constants.advance() {
+                break;
+            }
+        }
+        self.constants.begin();
+        if found.is_empty() {
+            found.push(Parts::unknown());
+        }
+        found
     }
 
     /// Read every node under `root`, once the names `require`, `import` and
@@ -1017,9 +1081,26 @@ impl<'s> Reader<'s> {
     /// The text of a string, a path, or a join of them, when the code gives
     /// it; `None` when it is only known when it runs.
     fn value(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        self.parts(node, level).value()
+    }
+
+    /// The text of a string, a path, or a join of them, as far as the code
+    /// gives it: all of it, or the start it is known to have (see
+    /// [`Parts`]). Where names are put back as their strings, one longer than
+    /// [`super::MAX_STRING`] is not known.
+    fn parts(&mut self, node: Node<'_>, level: usize) -> Parts {
+        let parts = self.parts_of(node, level);
+        if self.constants_on && parts.text.len() > super::MAX_STRING {
+            self.constants.lost = true;
+            return Parts::unknown();
+        }
+        parts
+    }
+
+    fn parts_of(&mut self, node: Node<'_>, level: usize) -> Parts {
         if level > MAX_TREE_DEPTH {
             self.reading.deep = true;
-            return None;
+            return Parts::unknown();
         }
         match node.kind() {
             "string" => {
@@ -1028,11 +1109,14 @@ impl<'s> Reader<'s> {
                 for part in node.named_children(&mut cursor) {
                     match part.kind() {
                         "string_fragment" => text.push_str(self.text(part)),
-                        "escape_sequence" => text.push_str(&unescape(self.text(part))?),
+                        "escape_sequence" => match unescape(self.text(part)) {
+                            Some(decoded) => text.push_str(&decoded),
+                            None => return Parts::partial(text),
+                        },
                         _ => {}
                     }
                 }
-                Some(text)
+                Parts::whole(text)
             }
             "template_string" => {
                 let mut text = String::new();
@@ -1041,82 +1125,180 @@ impl<'s> Reader<'s> {
                 for part in parts {
                     match part.kind() {
                         "string_fragment" => text.push_str(self.text(part)),
-                        "escape_sequence" => text.push_str(&unescape(self.text(part))?),
+                        "escape_sequence" => match unescape(self.text(part)) {
+                            Some(decoded) => text.push_str(&decoded),
+                            None => return Parts::partial(text),
+                        },
                         "template_substitution" => {
-                            let expression = part.named_child(0)?;
-                            text.push_str(&self.value(expression, level + 1)?);
+                            let Some(expression) = part.named_child(0) else {
+                                return Parts::partial(text);
+                            };
+                            let value = self.parts(expression, level + 1);
+                            text.push_str(&value.text);
+                            if self.constants.over(self.constants_on, &text) {
+                                return Parts::unknown();
+                            }
+                            if !value.whole {
+                                return Parts::partial(text);
+                            }
                         }
                         _ => {}
                     }
                 }
-                Some(text)
+                Parts::whole(text)
             }
-            "parenthesized_expression" | "await_expression" => {
-                let inner = node.named_child(0)?;
-                self.value(inner, level + 1)
-            }
+            "parenthesized_expression" | "await_expression" => match node.named_child(0) {
+                Some(inner) => self.parts(inner, level + 1),
+                None => Parts::unknown(),
+            },
             "binary_expression" => {
-                let operator = node.child_by_field_name("operator")?;
+                let (Some(operator), Some(left), Some(right)) = (
+                    node.child_by_field_name("operator"),
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return Parts::unknown();
+                };
                 if self.text(operator) != "+" {
-                    return None;
+                    return Parts::unknown();
                 }
-                let left = self.value(node.child_by_field_name("left")?, level + 1)?;
-                let right = self.value(node.child_by_field_name("right")?, level + 1)?;
-                Some(format!("{left}{right}"))
+                let left = self.parts(left, level + 1);
+                if !left.whole {
+                    return left;
+                }
+                let right = self.parts(right, level + 1);
+                Parts {
+                    text: format!("{}{}", left.text, right.text),
+                    whole: right.whole,
+                }
             }
             "member_expression" | "identifier" | "subscript_expression" => {
                 if self.constants_on && node.kind() == "identifier" {
-                    if let Some([constant]) = self.constants.get(self.text(node)).map(Vec::as_slice)
-                    {
-                        return Some(constant.clone());
+                    match self.constants.holds(self.text(node)) {
+                        Holds::One(text) => return Parts::whole(text),
+                        Holds::Below(folder) => return Parts::partial(folder),
+                        Holds::Lost => return Parts::unknown(),
+                        Holds::Nothing => {}
                     }
                 }
-                let name = self.qualified(node, level + 1)?;
-                let variable = name
-                    .strip_prefix("process.env.")
-                    .or_else(|| name.strip_prefix("Bun.env."))?;
-                environment(variable)
+                let Some(name) = self.qualified(node, level + 1) else {
+                    return Parts::unknown();
+                };
+                name.strip_prefix("process.env.")
+                    .or_else(|| name.strip_prefix("Bun.env."))
+                    .and_then(environment)
+                    .map_or_else(Parts::unknown, Parts::whole)
             }
-            "call_expression" => self.value_of_call(node, level),
-            _ => None,
+            "call_expression" => self.parts_of_call(node, level),
+            _ => Parts::unknown(),
         }
     }
 
-    fn value_of_call(&mut self, call: Node<'_>, level: usize) -> Option<String> {
-        let function = call.child_by_field_name("function")?;
+    /// Each of `nodes` joined to `text` as `path.join` does: the start known
+    /// when one of them is only known when the code runs.
+    fn joined(&mut self, mut text: String, nodes: &[Node<'_>], level: usize) -> Parts {
+        for node in nodes {
+            let part = self.parts(*node, level + 1);
+            text = join(&text, &part.text);
+            if self.constants.over(self.constants_on, &text) {
+                return Parts::unknown();
+            }
+            if !part.whole {
+                return Parts::partial(text);
+            }
+        }
+        Parts::whole(text)
+    }
+
+    fn parts_of_call(&mut self, call: Node<'_>, level: usize) -> Parts {
+        let Some(function) = call.child_by_field_name("function") else {
+            return Parts::unknown();
+        };
         let args = Args::read(call);
         let name = self.qualified(function, level + 1);
-        let texts = |reader: &mut Self| -> Option<Vec<String>> {
-            args.positional
-                .iter()
-                .map(|node| reader.value(*node, level + 1))
-                .collect()
+        let first = |reader: &mut Self| match args.positional.first().copied() {
+            Some(node) => reader.parts(node, level + 1),
+            None => Parts::unknown(),
         };
+        let whole = |text: &str| Parts::whole(text.to_string());
         match name.as_deref() {
             Some("path.join" | "path.resolve") => {
-                let mut text = String::new();
-                for part in texts(self)? {
-                    text = join(&text, &part);
+                let parts = self.joined(String::new(), &args.positional, level);
+                if parts.whole && parts.text.is_empty() {
+                    whole(".")
+                } else {
+                    parts
                 }
-                Some(if text.is_empty() {
-                    ".".to_string()
-                } else {
-                    text
-                })
             }
-            Some("path.normalize" | "String") => texts(self)?.into_iter().next(),
-            Some("path.dirname") => Some(join(&texts(self)?.into_iter().next()?, "..")),
-            Some("os.homedir") => Some("~".to_string()),
-            Some("os.tmpdir") => Some("/tmp".to_string()),
-            Some("process.cwd" | "Deno.cwd") => Some(".".to_string()),
-            Some("Deno.env.get") => environment(&texts(self)?.into_iter().next()?),
+            Some("path.normalize" | "String") => first(self),
+            Some("path.dirname") => first(self)
+                .value()
+                .map_or_else(Parts::unknown, |text| Parts::whole(join(&text, ".."))),
+            Some("os.homedir") => whole("~"),
+            Some("os.tmpdir") => whole("/tmp"),
+            Some("process.cwd" | "Deno.cwd") => whole("."),
+            Some("Deno.env.get") => first(self)
+                .value()
+                .and_then(|name| environment(&name))
+                .map_or_else(Parts::unknown, Parts::whole),
             _ => {
-                let property = function.child_by_field_name("property")?;
-                if self.text(property) == "toString" && args.positional.is_empty() {
-                    let receiver = function.child_by_field_name("object")?;
-                    self.value(receiver, level + 1)
-                } else {
-                    None
+                let Some(property) = function.child_by_field_name("property") else {
+                    return Parts::unknown();
+                };
+                let Some(receiver) = function.child_by_field_name("object") else {
+                    return Parts::unknown();
+                };
+                match self.text(property) {
+                    "toString" if args.positional.is_empty() => self.parts(receiver, level + 1),
+                    // `'/home/me/.ssh/'.concat(name)`.
+                    "concat" if matches!(receiver.kind(), "string" | "template_string") => {
+                        let mut parts = self.parts(receiver, level + 1);
+                        for node in &args.positional {
+                            if !parts.whole {
+                                break;
+                            }
+                            let part = self.parts(*node, level + 1);
+                            parts = Parts {
+                                text: format!("{}{}", parts.text, part.text),
+                                whole: part.whole,
+                            };
+                            if self.constants.over(self.constants_on, &parts.text) {
+                                return Parts::unknown();
+                            }
+                        }
+                        parts
+                    }
+                    // `['/home/me/.ssh', name].join('/')`.
+                    "join" if receiver.kind() == "array" => {
+                        let separator = match args.positional.first().copied() {
+                            Some(node) => self.parts(node, level + 1).value(),
+                            None => Some(",".to_string()),
+                        };
+                        let Some(separator) = separator else {
+                            return Parts::unknown();
+                        };
+                        let mut cursor = receiver.walk();
+                        let items: Vec<Node<'_>> = receiver
+                            .named_children(&mut cursor)
+                            .filter(|item| item.kind() != "comment")
+                            .collect();
+                        let mut text = String::new();
+                        for (at, item) in items.into_iter().enumerate() {
+                            if at > 0 {
+                                text.push_str(&separator);
+                            }
+                            let part = self.parts(item, level + 1);
+                            text.push_str(&part.text);
+                            if self.constants.over(self.constants_on, &text) {
+                                return Parts::unknown();
+                            }
+                            if !part.whole {
+                                return Parts::partial(text);
+                            }
+                        }
+                        Parts::whole(text)
+                    }
+                    _ => Parts::unknown(),
                 }
             }
         }

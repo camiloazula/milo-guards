@@ -11,6 +11,8 @@
 //! a unit. What the reader cannot follow is an [`Act::Unread`], which
 //! comes back as `unknown`.
 
+use std::collections::{HashMap, HashSet};
+
 use tree_sitter::Node;
 
 use crate::launch::{self, Launch};
@@ -47,6 +49,10 @@ pub(super) enum Act {
     /// Reads a file (`open(path)`, `readFileSync(path)`, the source of a
     /// copy): judged as `cat PATH` is, so a key it names is a read of one.
     Read(Arg),
+    /// Reads a folder and everything under it (`TarFile.add`, the folder
+    /// `shutil.make_archive` packs): judged as `grep -r` is, so a folder that
+    /// holds a key, or the home directory, is a read of one.
+    ReadTree(Arg),
     /// `mv FROM TO`.
     Move { from: Arg, to: Arg },
     /// `ln TARGET LINK`.
@@ -143,6 +149,332 @@ fn path(value: Option<String>, code: &str) -> Arg {
     match value {
         Some(text) => Arg::Known(text),
         None => Arg::Unknown(shorten(code)),
+    }
+}
+
+/// A string the code gives, as far as the reader knows it: the text up to
+/// the first part only known when it runs, and whether that was all of it.
+/// A concatenation, a join and a template keep the start they know
+/// (`'/home/me/.ssh/' + name`), as a shell word with `$name` in it does.
+#[derive(Debug, Default)]
+pub(super) struct Parts {
+    pub(super) text: String,
+    pub(super) whole: bool,
+}
+
+impl Parts {
+    pub(super) fn whole(text: String) -> Self {
+        Self { text, whole: true }
+    }
+
+    pub(super) fn partial(text: String) -> Self {
+        Self { text, whole: false }
+    }
+
+    /// Nothing is known of it.
+    pub(super) fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// The text when it is the whole string.
+    pub(super) fn value(self) -> Option<String> {
+        self.whole.then_some(self.text)
+    }
+}
+
+/// A read of a path that starts as `known` says and ends in something only
+/// known when it runs: the folder it is under, with the rest left open
+/// (`'/home/me/.ssh/id_' + n` is a file in `/home/me/.ssh/`), as `cat
+/// ~/.ssh/$n` is read. `None` when no folder is known.
+fn under(known: &str, code: &str) -> Option<Arg> {
+    let end = known.rfind('/')? + 1;
+    Some(Arg::Template {
+        text: format!("{}{}", &known[..end], crate::posix::OPAQUE),
+        source: shorten(code),
+    })
+}
+
+/// A path read from the start of `parts`: its text when whole, the folder it
+/// is under when only the start is known, else a path only known when the
+/// code runs.
+fn read_path(parts: Parts, code: &str) -> Arg {
+    if parts.whole {
+        Arg::Known(parts.text)
+    } else {
+        under(&parts.text, code).unwrap_or_else(|| Arg::Unknown(shorten(code)))
+    }
+}
+
+/// The longest string worked out from names the code sets: a longer one is
+/// no string the reader knows. A name set to a string built from itself, or
+/// from another that was (`a = a + a`, repeated), doubles it with each line,
+/// so without a limit a few hundred bytes of code take seconds and gigabytes.
+/// Only where a name is put back as its strings, which is where that
+/// growth comes from; a path is not longer than this.
+pub(super) const MAX_STRING: usize = 4 * 1024;
+
+/// The most bytes of strings noted for all names together: past it the name
+/// that went over is dropped, not read as any string. A few times the
+/// longest line, so the strings a line writes out are all noted.
+const MAX_NOTED: usize = 4 * unit::MAX_LEN;
+
+/// The most paths one piece of code reads out of names: past it the read is
+/// of code the reader does not follow. A name read with every string it holds
+/// is that many reads, and so is every use of it.
+const MAX_EXPANDED: usize = 1024;
+
+/// The strings the code sets one name to.
+#[derive(Debug, Default)]
+struct Noted {
+    strings: Vec<String>,
+    seen: HashSet<String>,
+    /// Folders the name stands for a path somewhere below
+    /// (`for p in Path(d).glob('*')`).
+    folders: Vec<String>,
+    /// Whether the name was set to more than the reader keeps: it stands for
+    /// a string it does not know.
+    dropped: bool,
+}
+
+/// What a name is read as.
+#[derive(Debug)]
+pub(super) enum Holds {
+    /// The code sets it to no string the reader knows.
+    Nothing,
+    /// Exactly one string.
+    One(String),
+    /// A path under a folder.
+    Below(String),
+    /// Strings that were dropped, or too many to give one: no string.
+    Lost,
+}
+
+/// The paths a read of a name may be.
+#[derive(Debug)]
+pub(super) enum Expansion {
+    /// The name is none the reader noted a string for.
+    Nothing,
+    /// Every path it may be.
+    Paths(Vec<Arg>),
+    /// Some it does not know.
+    Lost,
+}
+
+/// The strings each name is set to in the code, as the reader knows them,
+/// for the reads of files. Every string is kept, up to a number of bytes in
+/// all; a name that went over it, or was set to a string longer than
+/// [`MAX_STRING`], is dropped, and a read of it is code the reader does not
+/// follow.
+#[derive(Debug, Default)]
+pub(super) struct Constants {
+    names: HashMap<String, Noted>,
+    bytes: usize,
+    expanded: usize,
+    /// Evaluations made, one for each choice of a string for each name that
+    /// holds more than one, in all.
+    evaluations: usize,
+    /// The names that hold more than one string which the value being worked
+    /// out used, in the order it met them, and the string each is read as in
+    /// this evaluation.
+    multi: Vec<String>,
+    picks: HashMap<String, usize>,
+    /// Set when what was just worked out used a string that was dropped, or
+    /// was cut at [`MAX_STRING`]: a read of it is then not read in full.
+    pub(super) lost: bool,
+}
+
+/// The most times one value is worked out again for a choice of strings, and
+/// the most times in all for a piece of code.
+const MAX_CHOICES: usize = 256;
+const MAX_EVALUATIONS: usize = 64 * 1024;
+
+impl Constants {
+    /// Note `value` as a string `name` is set to.
+    pub(super) fn note(&mut self, name: &str, value: String) {
+        let noted = self.names.entry(name.to_string()).or_default();
+        if noted.dropped || noted.seen.contains(&value) {
+            return;
+        }
+        if value.len() > MAX_STRING || self.bytes + 2 * value.len() > MAX_NOTED {
+            self.drop_name(name);
+            return;
+        }
+        self.bytes += 2 * value.len();
+        noted.seen.insert(value.clone());
+        noted.strings.push(value);
+    }
+
+    /// Note that `name` stands for a path somewhere under `folder`.
+    pub(super) fn note_folder(&mut self, name: &str, folder: String) {
+        let noted = self.names.entry(name.to_string()).or_default();
+        if noted.dropped || noted.folders.contains(&folder) {
+            return;
+        }
+        if folder.len() > MAX_STRING || self.bytes + folder.len() > MAX_NOTED {
+            self.drop_name(name);
+            return;
+        }
+        self.bytes += folder.len();
+        noted.folders.push(folder);
+    }
+
+    /// Whether `text`, a string being built where names are put back as their
+    /// strings (`on`), is longer than [`MAX_STRING`]: it is then no string the
+    /// reader knows. Asked at each step of a loop that builds one, so a
+    /// join of thousands of long names is never built.
+    pub(super) fn over(&mut self, on: bool, text: &str) -> bool {
+        let over = on && text.len() > MAX_STRING;
+        self.lost |= over;
+        over
+    }
+
+    /// `name` is set to something the reader cannot hold: it stands for no
+    /// string, whatever else it is set to.
+    pub(super) fn drop_name(&mut self, name: &str) {
+        let noted = self.names.entry(name.to_string()).or_default();
+        let freed: usize = noted
+            .strings
+            .iter()
+            .map(|text| 2 * text.len())
+            .sum::<usize>()
+            + noted.folders.iter().map(String::len).sum::<usize>();
+        self.bytes = self.bytes.saturating_sub(freed);
+        *noted = Noted {
+            dropped: true,
+            ..Noted::default()
+        };
+    }
+
+    /// What `name` is, where a string is wanted from it (an operand of a
+    /// `+`, a join, a template). Sets [`Self::lost`] when it is a name that
+    /// holds strings the reader does not give.
+    pub(super) fn holds(&mut self, name: &str) -> Holds {
+        let Some(noted) = self.names.get(name) else {
+            return Holds::Nothing;
+        };
+        if let Some(string) = self.picks.get(name).and_then(|at| noted.strings.get(*at)) {
+            return Holds::One(string.clone());
+        }
+        match (
+            noted.dropped,
+            noted.strings.as_slice(),
+            noted.folders.as_slice(),
+        ) {
+            (true, _, _) => {
+                self.lost = true;
+                Holds::Lost
+            }
+            (false, [one], []) => Holds::One(one.clone()),
+            (false, [], [folder]) => Holds::Below(folder.clone()),
+            (false, [], []) => Holds::Nothing,
+            // More than one string: the value is worked out again for each,
+            // by [`Self::advance`]; for now it is none.
+            (false, [_, _, ..], []) => {
+                if !self.multi.iter().any(|met| met == name) {
+                    self.multi.push(name.to_string());
+                }
+                Holds::Nothing
+            }
+            _ => {
+                self.lost = true;
+                Holds::Lost
+            }
+        }
+    }
+
+    /// Start working a value out: no name that holds more than one string is
+    /// read as any of them yet.
+    pub(super) fn begin(&mut self) {
+        self.multi.clear();
+        self.picks.clear();
+    }
+
+    /// Whether the evaluation just made met a name that holds more than one
+    /// string and was not read as one of them: its result is not a value.
+    pub(super) fn pending(&self) -> bool {
+        self.multi.iter().any(|name| !self.picks.contains_key(name))
+    }
+
+    /// Move to the next choice of one string for each name that holds more
+    /// than one, the last name first. `false` when every choice has been
+    /// made, or when there are more than [`MAX_CHOICES`] of them (or the
+    /// piece of code has asked for [`MAX_EVALUATIONS`]), which sets
+    /// [`Self::lost`].
+    pub(super) fn advance(&mut self) -> bool {
+        if self.multi.is_empty() {
+            return false;
+        }
+        self.evaluations += 1;
+        if self.evaluations > MAX_EVALUATIONS {
+            self.lost = true;
+            return false;
+        }
+        // A name met for the first time is read as its first string, and
+        // the same choice is worked out again.
+        let mut met = false;
+        for name in &self.multi {
+            if !self.picks.contains_key(name) {
+                self.picks.insert(name.clone(), 0);
+                met = true;
+            }
+        }
+        if met {
+            return true;
+        }
+        let total: usize = self
+            .multi
+            .iter()
+            .map(|name| self.names.get(name).map_or(1, |noted| noted.strings.len()))
+            .fold(1, usize::saturating_mul);
+        if total > MAX_CHOICES {
+            self.lost = true;
+            return false;
+        }
+        for name in self.multi.iter().rev() {
+            let count = self.names.get(name).map_or(1, |noted| noted.strings.len());
+            let at = self.picks.get(name).copied().unwrap_or(0);
+            if at + 1 < count {
+                self.picks.insert(name.clone(), at + 1);
+                return true;
+            }
+            self.picks.insert(name.clone(), 0);
+        }
+        false
+    }
+
+    /// Count `count` more paths read out of names: `false` when that is more
+    /// than a piece of code may read ([`MAX_EXPANDED`]), which they are not.
+    pub(super) fn spend(&mut self, count: usize) -> bool {
+        if self.expanded + count > MAX_EXPANDED {
+            return false;
+        }
+        self.expanded += count;
+        true
+    }
+
+    /// Every path a read of `name` may be, when the code sets it to
+    /// strings.
+    pub(super) fn paths(&mut self, name: &str, code: &str) -> Expansion {
+        let Some(noted) = self.names.get(name) else {
+            return Expansion::Nothing;
+        };
+        if noted.dropped {
+            return Expansion::Lost;
+        }
+        let count = noted.strings.len() + noted.folders.len();
+        if count == 0 {
+            return Expansion::Nothing;
+        }
+        if self.expanded + count > MAX_EXPANDED {
+            return Expansion::Lost;
+        }
+        self.expanded += count;
+        let strings = noted.strings.iter().map(|text| Arg::Known(text.clone()));
+        let folders = noted
+            .folders
+            .iter()
+            .filter_map(|folder| under(folder, code));
+        Expansion::Paths(strings.chain(folders).collect())
     }
 }
 
@@ -788,6 +1120,12 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
         Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
         Act::Write(path) => split.write(Shell::Posix, path),
         Act::Read(path) => run(split, "cat", vec![flag("--"), path], depth),
+        Act::ReadTree(path) => run(
+            split,
+            "grep",
+            vec![flag("-r"), flag("--"), Arg::Known("x".to_string()), path],
+            depth,
+        ),
         Act::Move { from, to } => run(split, "mv", vec![flag("--"), from, to], depth),
         Act::Link { target, link } => {
             run(

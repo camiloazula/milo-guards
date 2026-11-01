@@ -588,10 +588,15 @@ global object in `node -e`).
 | Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod`, `shutil.copymode` and `copystat` (a `chmod` of the second argument) | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
 | Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` ``, `execa`/`execaSync`/`execaCommand`/`execaCommandSync`, `execa`'s `command`, `commandSync` and `$` (also `` $`…` `` and `$.sync`), `cross-spawn`'s `spawn` and `sync` |
 | Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
-| Reads | `open(path)` with a mode that reads, `os.open` with `O_RDONLY`, `Path.read_text`, `read_bytes`, `Path.open()`, `shutil.copy*`/`copytree`/`unpack_archive` and `Path.copy` (the source) | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `copyFileSync`/`cpSync` (the source), their async and `promises` forms, `Deno.readTextFile`, `readFile`, `Deno.open` |
+| Reads | `open(path)` with a mode that reads, `os.open` with `O_RDONLY`, `Path.read_text`, `read_bytes`, `Path.open()`, `shutil.copy*`/`unpack_archive` and `Path.copy` (the source), `shutil.copytree` and `shutil.make_archive` (the folder, and all that is in it: `root_dir` joined to `base_dir`), `TarFile.add` (a file, or a folder and all in it) and `ZipFile.write` (on a name the code set to `tarfile.open(…)`, `tarfile.TarFile(…)` or `zipfile.ZipFile(…)`, as `with … as t` or `t = …`, or called on the spot), `fileinput.input` and `FileInput` (not in place; the files given), `linecache.getline`/`getlines`, `ConfigParser.read` (on a name set to `ConfigParser()`, `RawConfigParser()`; a path or a list), `netrc.netrc` (the file, or `~/.netrc` when none is given) | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `copyFileSync`/`cpSync` (the source), their async and `promises` forms, `Deno.readTextFile`, `readFile`, `Deno.open` |
 
 A read is judged as `cat PATH` is, so it is a finding only where the path is a
-secret (see [Reading a key](#reading-a-key)); it adds nothing for any other.
+secret (see [Reading a key](#reading-a-key)); it adds nothing for any other. A
+folder read all the way down (`TarFile.add`, `copytree`, `make_archive`) is
+judged as `grep -r` is, so the home directory, or a folder holding a key, is a
+read of one, as `tar -cf k.tar ~` is. `add`, `write` and `read` are read only
+on a name the code set to an archive or a config parser: any other object has
+those methods (`set.add`, `file.write`, `file.read`).
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -805,7 +810,16 @@ and a subcommand (`bun run build.ts`, `deno test`) are the workspace's own.
 A line is read in a time that grows with its length: the reader is given each
 node's parent as it walks, and works out the dotted name of each member once,
 and a piece of code that nests too deeply to read ends the walk with
-`unreadable`.
+`unreadable`. Putting a name back as its string, for a read, is bounded too:
+a name set to a string built from itself or from another that was (`a1 = a0 +
+a0`, repeated, which doubles the string with each line) would otherwise take
+seconds and gigabytes from a few hundred bytes. A string worked out from names
+is cut at 4 KB (a path is not longer), checked at each step of a join, a
+template or a concatenation; the strings noted for all names together are cut
+at a few times the length limit; and the paths read out of names are cut at
+1,024 for a piece of code. A name that went over any of them is dropped, not
+read as any string: a read of it, or of a path worked out from it, is code the
+guard does not read (`unknown`), so none of these limits makes a line safe.
 
 ## Reading a key
 
@@ -967,10 +981,34 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   as the code gives it: a literal, `os.path.expanduser('~/…')`, `Path.home()
   / …`, `os.homedir() + …`, or a name the code sets to one of those, or to a
   list a loop goes over (every string a name is set to anywhere in the code is
-  read, in any order). A path only known when the code runs (`open(sys.argv[1])`,
-  `open(input())`) is not a finding, as `cat $f` is not; the line is `unknown`
-  for `effect` as every line with inline code is. Code the guard cannot read, a
-  program the code starts and a name it does not follow stay `unknown` as above.
+  read, in any order, up to the limits below). A path that starts in a place
+  and ends in something only known when the code runs is read as a path in
+  that folder, as `cat ~/.ssh/$n` is: `'/home/me/.ssh/' + n`, `f'…/{n}'`,
+  `'…/%s' % n`, `'…/{}'.format(n)`, `os.path.join(d, n)`, `Path(d) / n`,
+  `d.joinpath(n)`, `` `…/${n}` ``, `path.join(d, n)`, `.concat(n)` and
+  `[d, n].join('/')`, and a name a loop sets to each path `Path(d).glob(…)`,
+  `rglob`, `iterdir` or `glob.glob('d/*')` list (`for p in Path('~/.ssh').glob('*')`).
+  A path with nothing known before the part that is not (`open(n + '/x')`) is
+  not a finding, as `cat $n/x` is not, and neither is the home directory with
+  a name after it (`~/$n`), which `cat ~/$n` is not either. A path only known
+  when the code runs (`open(sys.argv[1])`, `open(input())`) is not a finding,
+  as `cat $f` is not; the line is `unknown` for `effect` as every line with
+  inline code is. Code the guard cannot read, a program the code starts and a
+  name it does not follow stay `unknown` as above.
+
+  A name that holds more than one string, used in a longer path (`for d in
+  ['a', '/home/me/.ssh']: open(d + '/id_rsa')`), makes one read for each
+  choice of a string for each such name, as the shell reads a `for` over words
+  written out: up to 256 choices for one path, and 65,536 for a piece of code.
+
+  A name is put back as its strings only as far as the reader holds them: a
+  string worked out from names is cut at 4 KB, the strings of all names
+  together at a few times the length limit, and the paths read out of names at
+  1,024 for a piece of code (there is no count per name: 65 strings with the
+  key last are all read). A name that went over one of them is dropped, and a
+  read of it is `unknown`, never a read of nothing. So is a name grown in place
+  (`k += '…'`). A name set in any other way (a parameter, an unpacking) is a
+  path only known when the code runs.
 - **A program that reads a secret without being given its path**: `gpg
   --export-secret-keys`, `security find-generic-password -w`, `printenv`.
 - **What leaves the machine** is `SendSecret`'s, as above: `curl -d @key` and

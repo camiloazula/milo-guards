@@ -2536,3 +2536,651 @@ fn a_long_option_of_perl_ruby_php_or_lua_may_take_the_print_flag() {
         ],
     );
 }
+
+// The review of the fourth pass.
+
+/// A script that sets `levels` names, each by `line(at)` from the one before,
+/// and then runs `last`.
+fn chain(interpreter: &str, levels: usize, line: impl Fn(usize) -> String, last: &str) -> String {
+    let (start, prelude, end) = if interpreter == "python3" {
+        (
+            "python3 - <<'PY'",
+            "import os\nfrom pathlib import Path\n",
+            "PY",
+        )
+    } else {
+        ("node - <<'JS'", "const path = require('path');\n", "JS")
+    };
+    let mut text = format!("{start}\n{prelude}");
+    for at in 0..levels {
+        text.push_str(&line(at));
+        text.push('\n');
+    }
+    text.push_str(last);
+    text.push('\n');
+    text.push_str(end);
+    text
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a read that grows with the square or worse"
+)]
+fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
+    // A name put back as its string, when the next name is set, doubled the
+    // string at every line: 30 lines took seconds and 36 ran out of memory.
+    // A string is cut at a length now, and the name that went over it is a
+    // path the guard does not read.
+    let base = "xy";
+    let mut lines: Vec<(String, Rule)> = Vec::new();
+    let python: Vec<Box<dyn Fn(usize) -> String>> = vec![
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = a{p} + a{p}", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = f'{{a{p}}}{{a{p}}}'", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = os.path.join(a{p}, a{p})", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = Path(a{p}) / a{p}", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = ''.join([a{p}, a{p}])", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("a0 = '{base}'"),
+            _ => format!("a{at} = Path(a{p}).joinpath(a{p})", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => "a0 = '/home/me/.ssh/id_rsa'".to_string(),
+            _ => format!("a{at} = a{p} + a{p}", p = at - 1),
+        }),
+    ];
+    for line in python {
+        for levels in [30, 40, 100] {
+            let read = format!("print(open(a{}).read())", levels - 1);
+            lines.push((chain("python3", levels, &line, &read), Rule::Unknown));
+        }
+    }
+    let javascript: Vec<Box<dyn Fn(usize) -> String>> = vec![
+        Box::new(|at| match at {
+            0 => format!("const a0 = '{base}';"),
+            _ => format!("const a{at} = a{p} + a{p};", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("const a0 = '{base}';"),
+            _ => format!("const a{at} = `${{a{p}}}${{a{p}}}`;", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => format!("const a0 = '{base}';"),
+            _ => format!("const a{at} = path.join(a{p}, a{p});", p = at - 1),
+        }),
+        Box::new(|at| match at {
+            0 => "const a0 = '/home/me/.ssh/id_rsa';".to_string(),
+            _ => format!("const a{at} = [a{p}, a{p}].join('');", p = at - 1),
+        }),
+    ];
+    for line in javascript {
+        for levels in [30, 40, 100] {
+            let read = format!("require('fs').readFileSync(a{});", levels - 1);
+            lines.push((chain("node", levels, &line, &read), Rule::Unknown));
+        }
+    }
+    // One long string used thousands of times in one expression: built a
+    // piece at a time, it is cut at the limit, not built.
+    let long = "y".repeat(3000);
+    let python_args = vec!["a"; 12_000].join(", ");
+    let python_template = "{a}".repeat(12_000);
+    let javascript_template = "${a}".repeat(10_000);
+    for body in [
+        format!("import os\na = '{long}'\nk = os.path.join({python_args})\nopen(k)"),
+        format!("a = '{long}'\nk = f'{python_template}'\nopen(k)"),
+        format!("a = '{long}'\nk = ''.join([{python_args}])\nopen(k)"),
+        format!("a = '{long}'\nk = Path({python_args})\nopen(k)"),
+    ] {
+        lines.push((format!("python3 - <<'PY'\n{body}\nPY"), Rule::Unknown));
+    }
+    for body in [
+        format!(
+            "const path = require('path');\nconst a = '{long}';\nconst k = path.join({python_args});\nrequire('fs').readFileSync(k);"
+        ),
+        format!(
+            "const a = '{long}';\nconst k = `{javascript_template}`;\nrequire('fs').readFileSync(k);"
+        ),
+        format!(
+            "const a = '{long}';\nconst k = [{python_args}].join('');\nrequire('fs').readFileSync(k);"
+        ),
+    ] {
+        lines.push((format!("node - <<'JS'\n{body}\nJS"), Rule::Unknown));
+    }
+    for (line, rule) in &lines {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let assessment = milo_guards_shell::classify(line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "{} bytes took {took:?}: {line}",
+            line.len()
+        );
+        // Not read, so not safe: a name that went over the limit is no path
+        // the guard knows.
+        let rules: Vec<Rule> = assessment
+            .findings()
+            .iter()
+            .map(|finding| finding.rule)
+            .collect();
+        assert!(rules.contains(rule), "{rules:?}: {line}");
+    }
+    // Under the limit the strings are still put back, so the key is found
+    // at the end of a chain.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[&chain(
+            "python3",
+            6,
+            |at| match at {
+                0 => "a0 = 'a'".to_string(),
+                _ => format!("a{at} = a{p} + 'b'", p = at - 1),
+            },
+            "print(open(a5).read())",
+        )],
+        &[
+            (
+                &chain(
+                    "python3",
+                    6,
+                    |at| match at {
+                        0 => "a0 = '/home/me/.ssh/'".to_string(),
+                        _ => format!("a{at} = a{p}", p = at - 1),
+                    },
+                    "print(open(a5 + 'id_rsa').read())",
+                ),
+                Rule::ReadSecret,
+            ),
+            (
+                &chain(
+                    "node",
+                    6,
+                    |at| match at {
+                        0 => "const a0 = '/home/me/.ssh/';".to_string(),
+                        _ => format!("const a{at} = a{p};", p = at - 1),
+                    },
+                    "require('fs').readFileSync(a5 + 'id_rsa');",
+                ),
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_name_that_holds_more_than_the_reader_keeps_is_not_read_as_any_string() {
+    // 65 strings written out, the key last: every one is read, as `cat` of
+    // each is.
+    let paths: Vec<String> = (0..65).map(|at| format!("'a{at}.txt'")).collect();
+    let many = format!("{}, '/home/me/.ssh/id_rsa'", paths.join(", "));
+    let many_js = format!("{}, '/home/me/.ssh/id_rsa'", paths.join(", "));
+    // A thousand, in a line well under the length limit.
+    let thousands: Vec<String> = (0..1000).map(|at| format!("'a{at}'")).collect();
+    let thousands = format!("{}, '/home/me/.ssh/id_rsa'", thousands.join(","));
+    let safe_thousands: Vec<String> = (0..1000).map(|at| format!("'a{at}'")).collect();
+    let safe_thousands = safe_thousands.join(",");
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            &format!("python3 -c \"for k in [{}]: print(open(k).read())\"", paths.join(", ")),
+            &format!("python3 - <<'PY'\nfor k in [{safe_thousands}]:\n    print(open(k).read())\nPY"),
+            &format!(
+                "node - <<'JS'\nfor (const k of [{safe_thousands}]) require('fs').readFileSync(k);\nJS"
+            ),
+        ],
+        &[
+            (
+                &format!("python3 -c \"for k in [{many}]: print(open(k).read())\""),
+                Rule::ReadSecret,
+            ),
+            (
+                &format!("python3 - <<'PY'\nfor k in [{thousands}]:\n    print(open(k).read())\nPY"),
+                Rule::ReadSecret,
+            ),
+            (
+                &format!(
+                    "node - <<'JS'\nfor (const k of [{many_js}]) require('fs').readFileSync(k);\nJS"
+                ),
+                Rule::ReadSecret,
+            ),
+            (
+                &format!(
+                    "node - <<'JS'\nfor (const k of [{thousands}]) require('fs').readFileSync(k);\nJS"
+                ),
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+    // A name set to more strings, in all, than the reader holds is a path it
+    // does not read: not safe, as the key may be any of them. Strings made
+    // of one long string each pile up past the budget.
+    let long = "d".repeat(1000);
+    let derived: Vec<String> = (0..400)
+        .map(|at| format!("p{at} = base + '{at}'"))
+        .collect();
+    let derived = derived.join("\n");
+    let script = format!("base = '/home/me/work/repo/{long}'\n{derived}\n");
+    check(
+        Shell::Posix,
+        &posix(),
+        &[&format!(
+            "python3 - <<'PY'\n{script}print(open(p0).read())\nPY"
+        )],
+        &[(
+            &format!("python3 - <<'PY'\n{script}print(open(p399).read())\nPY"),
+            Rule::Unknown,
+        )],
+    );
+    // Read again and again, a name with a thousand strings is not read in
+    // full each time: past a count of reads the code is not followed.
+    let strings: Vec<String> = (0..1000).map(|at| format!("'b{at}'")).collect();
+    let reads = "print(open(k).read())\n".repeat(200);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[(
+            &format!(
+                "python3 - <<'PY'\nfor k in [{}]:\n    pass\n{reads}PY",
+                strings.join(",")
+            ),
+            Rule::Unknown,
+        )],
+    );
+    // A name grown in place is a string the reader does not work out.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            r#"python3 -c "k = 'a.txt'; print(open(k).read())""#,
+            r#"python3 -c "k = j = 'a.txt'; print(open(k).read())""#,
+        ],
+        &[
+            (
+                r#"python3 -c "k = '/home/me/'; k += '.ssh/id_rsa'; print(open(k).read())""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"python3 -c "k = j = '/home/me/.ssh/id_rsa'; print(open(k).read())""#,
+                Rule::ReadSecret,
+            ),
+            (
+                r#"python3 -c "k = j = '/home/me/.ssh/id_rsa'; print(open(j).read())""#,
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e 'let k = \"/home/me/\"; k += \".ssh/id_rsa\"; require(\"fs\").readFileSync(k)'",
+                Rule::Unknown,
+            ),
+            (
+                "node -e 'let k, j; k = j = \"/home/me/.ssh/id_rsa\"; require(\"fs\").readFileSync(k)'",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+    // A name that holds more than one string, in a longer path, is read once
+    // for each of them, as the shell reads `for d in a /home/me/.ssh; do cat
+    // $d/id_rsa; done`.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            r#"python3 -c "d = 'a'; d = 'b'; print(open(d + '/x').read())""#,
+            "python3 -c \"import os\nfor n in ['a.txt', 'b.txt']: print(open(os.path.join('src', n)).read())\"",
+            "python3 -c \"for n in ['a', 'b']: print(open(f'src/{n}.txt').read())\"",
+            "node -e 'for (const n of [\"a\", \"b\"]) require(\"fs\").readFileSync(\"src/\" + n + \".txt\")'",
+        ],
+        &[
+            (
+                r#"python3 -c "for d in ['a', '/home/me/.ssh']: print(open(d + '/id_rsa').read())""#,
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"import os\nfor d in ['a', '/home/me/.ssh']: print(open(os.path.join(d, 'id_rsa')).read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"for d in ['a', '/home/me/']:\n    for n in ['x', '.ssh/id_rsa']: print(open(d + n).read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                // A name built from one that holds two.
+                "python3 -c \"for d in ['a', '/home/me/.ssh']: pass\nk = d + '/id_rsa'\nprint(open(k).read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e 'for (const d of [\"a\", \"/home/me/.ssh\"]) require(\"fs\").readFileSync(d + \"/id_rsa\")'",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e 'for (const d of [\"a\", \"/home/me/.ssh\"]) require(\"fs\").readFileSync(`${d}/id_rsa`)'",
+                Rule::ReadSecret,
+            ),
+            // More choices than the reader goes through (9 names of 2
+            // strings are 512) are a path it does not read.
+            (
+                &format!(
+                    "python3 - <<'PY'\n{}\nprint(open({}).read())\nPY",
+                    (0..9)
+                        .map(|at| format!("for n{at} in ['x{at}', 'y{at}']: pass"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    (0..9)
+                        .map(|at| format!("n{at}"))
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                ),
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn inline_reads_that_a_shell_command_reads_as_a_key_are_read_secret() {
+    let safe = [
+        // A file that is no key, or no name for one.
+        "python3 -c \"import tarfile\nwith tarfile.open('k.tgz', 'w:gz') as t: t.add('src')\"",
+        "python3 -c \"import tarfile; tarfile.open('k.tgz', 'w:gz').add('README.md')\"",
+        "python3 -c \"import zipfile\nwith zipfile.ZipFile('k.zip', 'w') as z: z.write('a.txt')\"",
+        "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', root_dir='src')\"",
+        "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', 'src', 'lib')\"",
+        "python3 -c \"import shutil; shutil.make_archive('k', 'gztar')\"",
+        "python3 -c \"import fileinput\nfor l in fileinput.input(['a.txt', 'b.txt']): print(l)\"",
+        "python3 -c \"import fileinput\nfor l in fileinput.input(): print(l)\"",
+        "python3 -c \"import linecache; print(linecache.getline('a.py', 1))\"",
+        "python3 -c \"import linecache; print(linecache.getlines('a.py'))\"",
+        "python3 -c \"import configparser; c = configparser.ConfigParser(); c.read('setup.cfg')\"",
+        "python3 -c \"import configparser; c = configparser.ConfigParser(); c.read(['a.ini', 'b.ini'])\"",
+        "python3 -c \"import netrc; print(netrc.netrc('x.netrc').hosts)\"",
+        // `add`, `write` and `read` of any other object.
+        "python3 -c \"s = set(); s.add('/home/me/.ssh/id_rsa')\"",
+        "python3 -c \"f = open('out.txt', 'w'); f.write('/home/me/.ssh/id_rsa')\"",
+        "python3 -c \"import io; f = io.StringIO('x'); print(f.read())\"",
+        "python3 -c \"import tarfile\nt = tarfile.open('k.tgz')\nu = set()\nu.add('/home/me/.ssh/id_rsa')\"",
+    ];
+    let risky = [
+        (
+            "python3 -c \"import tarfile\nwith tarfile.open('k.tgz', 'w:gz') as t: t.add('/home/me/.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import tarfile\nwith tarfile.open('k.tgz', 'w:gz') as t: t.add('/home/me/.ssh/id_rsa')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import tarfile\nwith tarfile.open('k.tgz', 'w:gz') as t: t.add(name='/home/me/.ssh', arcname='x')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import tarfile\nt = tarfile.open('k.tgz', 'w:gz')\nt.add('/home/me/.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import tarfile\nt = tarfile.TarFile('k.tar', 'w')\nt.add('/home/me')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import tarfile; tarfile.open('k.tgz', 'w:gz').add('/home/me/.aws')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from tarfile import open as tar_open\nwith tar_open('k.tgz', 'w:gz') as t: t.add('/home/me/.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import zipfile\nwith zipfile.ZipFile('k.zip', 'w') as z: z.write('/home/me/.ssh/id_rsa')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import zipfile\nz = zipfile.ZipFile('k.zip', 'w')\nz.write(filename='/home/me/.aws/credentials')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', root_dir='/home/me', base_dir='.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', '/home/me', '.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', root_dir='/home/me/.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', base_dir='/home/me/.ssh')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', root_dir='/home/me')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; shutil.copytree('/home/me', 'copy')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.input(['/home/me/.ssh/id_rsa']): print(l)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.input(files=['/home/me/.ssh/id_rsa']): print(l)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.input(('a.txt', '/home/me/.ssh/id_rsa')): print(l)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.input('/home/me/.ssh/id_rsa'): print(l)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.FileInput(['/home/me/.ssh/id_rsa']): print(l)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import linecache; print(linecache.getline('/home/me/.ssh/id_rsa', 1))\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import linecache; print(linecache.getlines('/home/me/.ssh/id_rsa'))\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import linecache; print(linecache.getline(filename='/home/me/.netrc', lineno=1))\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import configparser; c = configparser.ConfigParser(); c.read('/home/me/.aws/credentials')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import configparser\nc = configparser.RawConfigParser()\nc.read(['a.ini', '/home/me/.aws/credentials'])\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import configparser\nc = configparser.ConfigParser()\nc.read(filenames='/home/me/.aws/credentials')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from configparser import ConfigParser\nwith open('x') as f: pass\nConfigParser().read('/home/me/.aws/credentials')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import netrc; print(netrc.netrc().hosts)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import netrc; print(netrc.netrc(None).hosts)\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import netrc; print(netrc.netrc('/home/me/.netrc'))\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from netrc import netrc\nprint(netrc(file='/home/me/.netrc'))\"",
+            Rule::ReadSecret,
+        ),
+    ];
+    check(Shell::Posix, &posix(), &safe, &risky);
+    // The shell reads each of these the same way.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("tar -cf k.tar /home/me/.ssh", Rule::ReadSecret),
+            ("zip k.zip /home/me/.ssh/id_rsa", Rule::ReadSecret),
+            ("cp -r /home/me/.ssh keys", Rule::ReadSecret),
+            ("cat /home/me/.netrc", Rule::ReadSecret),
+        ],
+    );
+}
+
+#[test]
+fn an_inline_read_of_a_path_that_starts_in_a_key_folder_is_read_secret() {
+    // `cat /home/me/.ssh/$n` is a read of a key whatever `$n` is; so is code
+    // that reads a path that starts there and ends in something only known
+    // when it runs.
+    let safe = [
+        "python3 -c \"import os\nfor n in os.listdir('/home/me/work/repo'): print(open('/home/me/work/repo/' + n).read())\"",
+        "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join('/home/me/work/repo', n)).read())\"",
+        "python3 -c \"import pathlib; [print(p.read_text()) for p in pathlib.Path('/home/me/work/repo').glob('*.py')]\"",
+        "python3 -c \"import pathlib\nfor p in pathlib.Path('src').iterdir(): print(p.read_text())\"",
+        "python3 -c \"import glob\nfor f in glob.glob('src/*.py'): print(open(f).read())\"",
+        "python3 -c \"import glob\nfor f in glob.glob('*.py'): print(open(f).read())\"",
+        // The home directory alone, or a path with nothing known before the
+        // part that is not, is no folder of keys.
+        "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join(os.path.expanduser('~'), n)).read())\"",
+        "python3 -c \"n = input(); print(open(n + '/x').read())\"",
+        "python3 -c \"n = input(); print(open('/etc/' + n).read())\"",
+        "node -e \"const fs = require('fs'); fs.readdirSync('src').forEach(f => console.log(fs.readFileSync('src/' + f, 'utf8')))\"",
+        "node -e \"const fs = require('fs'); const f = process.argv[1]; fs.readFileSync(f + '.txt')\"",
+    ];
+    let risky = [
+        (
+            "python3 -c \"import os\nfor n in os.listdir('/home/me/.ssh'): print(open('/home/me/.ssh/' + n).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import pathlib; [print(p.read_text()) for p in pathlib.Path('/home/me/.ssh').glob('id_*')]\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import pathlib\nfor p in pathlib.Path('/home/me/.ssh').iterdir(): print(p.read_text())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import pathlib\nfor p in sorted(pathlib.Path('/home/me/.ssh').rglob('*')): print(p.read_bytes())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from pathlib import Path\nfor p in Path.home().joinpath('.ssh').glob('*'): print(open(p).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import glob\nfor f in glob.glob('/home/me/.ssh/*'): print(open(f).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import glob\nfor f in glob.iglob('/home/me/.aws/*'): print(open(f).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import os\nfor n in os.listdir('/home/me/.ssh'): print(open(os.path.join('/home/me/.ssh', n)).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import os\nfor n in os.listdir('/home/me/.ssh'): print(open(os.path.expanduser('~/.ssh/') + n).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from pathlib import Path\nfor n in input().split(): print((Path.home() / '.ssh' / n).read_text())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"from pathlib import Path\nn = input()\nprint(Path('/home/me/.ssh').joinpath(n).read_text())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); print(open('/home/me/.ssh/id_' + n).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); print(open(f'/home/me/.ssh/{n}').read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); print(open('/home/me/.ssh/%s' % n).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); print(open('/home/me/.ssh/{}'.format(n)).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); print(open('/'.join(['/home/me/.ssh', n])).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"n = input(); d = '/home/me/.ssh/'; print(open(d + n).read())\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "python3 -c \"import shutil; n = input(); shutil.copy('/home/me/.ssh/' + n, 'keys/')\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "node -e \"const fs = require('fs'); fs.readdirSync('/home/me/.ssh').forEach(f => console.log(fs.readFileSync('/home/me/.ssh/' + f, 'utf8')))\"",
+            Rule::ReadSecret,
+        ),
+        (
+            "node - <<'JS'\nconst fs = require('fs');\nconst f = process.argv[1];\nconsole.log(fs.readFileSync(`/home/me/.ssh/${f}`, 'utf8'));\nJS",
+            Rule::ReadSecret,
+        ),
+        (
+            "node - <<'JS'\nconst fs = require('fs');\nconst path = require('path');\nconst f = process.argv[1];\nfs.readFileSync(path.join('/home/me/.ssh', f));\nJS",
+            Rule::ReadSecret,
+        ),
+        (
+            "node - <<'JS'\nconst fs = require('fs');\nconst f = process.argv[1];\nfs.readFileSync('/home/me/.ssh/'.concat(f));\nJS",
+            Rule::ReadSecret,
+        ),
+        (
+            "node - <<'JS'\nconst fs = require('fs');\nconst f = process.argv[1];\nfs.readFileSync(['/home/me/.ssh', f].join('/'));\nJS",
+            Rule::ReadSecret,
+        ),
+        (
+            "node - <<'JS'\nconst fs = require('fs');\nfor (const f of process.argv) fs.readFileSync(require('os').homedir() + '/.ssh/' + f);\nJS",
+            Rule::ReadSecret,
+        ),
+    ];
+    check(Shell::Posix, &posix(), &safe, &risky);
+    // As the shell reads them.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["cat /home/me/work/repo/$n", "cat ~/$n"],
+        &[("cat /home/me/.ssh/$n", Rule::ReadSecret)],
+    );
+}
