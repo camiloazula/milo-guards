@@ -34,6 +34,7 @@ mod cmd;
 mod detect;
 mod dotglob;
 mod effect;
+mod explain;
 mod launch;
 mod path;
 mod posix;
@@ -41,6 +42,9 @@ mod powershell;
 mod unit;
 
 pub use effect::Effect;
+pub use explain::{
+    ArgExplanation, ArgKind, Explanation, PipelineStage, RedirectExplanation, UnitExplanation,
+};
 pub use milo_guards_core::{Paths, Protected, ProtectedKind};
 
 /// The shell that runs the line, whose grammar splits it.
@@ -183,12 +187,12 @@ impl milo_guards_core::RuleName for Rule {
 }
 
 /// A line read once: split into units and judged by the rules. `effect`
-/// says the split also keeps what only [`effect`] reads. [`classify`]
-/// and [`effect`] each take their answer from it, so they cannot disagree
-/// about what the units are.
+/// says the split also keeps what only [`effect`] reads. [`classify`],
+/// [`effect`] and [`explain`] each take their answer from it, so they cannot
+/// disagree about what the units are or what they found.
 struct Reading {
     split: unit::Split,
-    findings: Vec<Finding>,
+    judged: detect::Judged,
     resolver: path::Resolver,
 }
 
@@ -196,10 +200,10 @@ impl Reading {
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
         let split = unit::split(command, shell, effect);
         let resolver = path::Resolver::new(paths);
-        let findings = detect::findings(&split, &resolver);
+        let judged = detect::findings(&split, &resolver);
         Self {
             split,
-            findings,
+            judged,
             resolver,
         }
     }
@@ -208,7 +212,7 @@ impl Reading {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let findings = Reading::new(command, shell, paths, false).findings;
+    let findings = Reading::new(command, shell, paths, false).judged.found;
     if findings.is_empty() {
         Assessment::Safe
     } else {
@@ -240,5 +244,35 @@ pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
     let reading = Reading::new(command, shell, paths, true);
-    effect::of(&reading.split, &reading.findings, &reading.resolver)
+    effect::of(&reading.split, &reading.judged.found, &reading.resolver)
+}
+
+/// Show how `command`, run by `shell` with the directories in `paths`, was
+/// read: every program it runs as the rules saw it (the program and its
+/// arguments, where each lands, the folder it runs from, the wrappers taken
+/// off, the shell and nesting it came from, its place in a pipeline) and the
+/// findings each produced, beside the line's own.
+///
+/// It is [`classify`] with the reasoning kept: both take their answer from
+/// one reading, so [`Explanation::findings`] is what `classify` reports and
+/// [`Explanation::assessment`] is its answer. `Display` prints a short
+/// indented tree a person can read in a terminal or paste into an issue;
+/// building it prints nothing.
+///
+/// ```
+/// use milo_guards_shell::{explain, Paths, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let explanation = explain("sudo rm -rf ~", Shell::Posix, &paths);
+/// let unit = &explanation.units[0];
+/// assert_eq!(unit.program, "rm");
+/// assert_eq!(unit.wrappers, ["sudo"]);
+/// assert_eq!(unit.args[1].resolved.as_deref(), Some("your home directory"));
+/// assert!(!explanation.assessment().is_safe());
+/// println!("{explanation}");
+/// ```
+#[must_use = "the explanation is the answer: it shows how the line was read"]
+pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
+    let reading = Reading::new(command, shell, paths, false);
+    explain::explanation(command, shell, &reading)
 }

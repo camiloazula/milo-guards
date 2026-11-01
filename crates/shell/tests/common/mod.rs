@@ -5,11 +5,11 @@
 
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
-use milo_guards_shell::{classify as judge, effect, Effect, Paths, Rule, Shell};
+use milo_guards_shell::{classify as judge, effect, explain, Effect, Paths, Rule, Shell};
 
-/// `classify`, and the line's `effect` held to agree with it (see
-/// [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge every
-/// line through this, so each line they name goes through `effect` too.
+/// `classify`, and the line's `effect` and `explain` held to agree with it
+/// (see [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge
+/// every line through this, so each line they name goes through both too.
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> milo_guards_shell::Assessment {
     let wrong = disagreements(shell, paths, [command]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -40,14 +40,16 @@ pub fn check(shell: Shell, paths: &Paths, safe: &[&str], risky: &[(&str, Rule)])
 /// script it does not read, ...) and that `effect` nevertheless calls
 /// reads-only. There must be none: a line the guard flags is not one that
 /// only reads. (`sudo cat` is `Elevated` and reads only, so an elevation
-/// alone does not count.)
+/// alone does not count.) And the lines whose `explain` does not give
+/// `classify`'s findings and assessment, or whose tree does not show every
+/// finding.
 pub fn disagreements<'a>(
     shell: Shell,
     paths: &Paths,
     rows: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {
     rows.into_iter()
-        .filter_map(|line| {
+        .flat_map(|line| {
             let assessment = judge(line, shell, paths);
             let flagged: Vec<Rule> = assessment
                 .findings()
@@ -55,8 +57,19 @@ pub fn disagreements<'a>(
                 .map(|finding| finding.rule)
                 .filter(|rule| *rule != Rule::Elevated)
                 .collect();
-            (!flagged.is_empty() && effect(line, shell, paths) == Effect::ReadsOnly)
-                .then(|| format!("reads only, but classify finds {flagged:?}: {line}"))
+            let reads = (!flagged.is_empty() && effect(line, shell, paths) == Effect::ReadsOnly)
+                .then(|| format!("reads only, but classify finds {flagged:?}: {line}"));
+            let explanation = explain(line, shell, paths);
+            let tree = explanation.to_string();
+            let unshown = assessment
+                .findings()
+                .iter()
+                .any(|finding| !tree.contains(&finding.reason));
+            let explained = (explanation.assessment() != assessment
+                || explanation.findings() != assessment.findings()
+                || unshown)
+                .then(|| format!("explain and classify disagree: {line}"));
+            reads.into_iter().chain(explained)
         })
         .collect()
 }

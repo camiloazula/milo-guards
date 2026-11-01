@@ -51,6 +51,7 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 }
 
 fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
+    unit.depth = depth;
     for _ in 0..MAX_WRAPPERS {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
@@ -218,6 +219,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        depth,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -247,6 +249,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        depth,
     }
 }
 
