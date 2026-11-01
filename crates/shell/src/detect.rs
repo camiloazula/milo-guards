@@ -244,8 +244,14 @@ impl Checker<'_> {
             .place(&path::within(scope.dir, arg, shell), shell, scope.hidden)
     }
 
+    /// As [`place`](Self::place), for a path something is written into.
+    fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg) -> Place {
+        self.resolver
+            .place_into(&path::within(scope.dir, arg, shell), shell, scope.hidden)
+    }
+
     fn write(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
-        match self.place(shell, scope, target) {
+        match self.place_into(shell, scope, target) {
             place if place.harmless() => {}
             Place::Workspace { exact: true } | Place::Temp { exact: true } => {}
             Place::Disk => self.add(Rule::WipeDisk, "writes over a disk", Some(target)),
@@ -265,6 +271,68 @@ impl Checker<'_> {
                 format!("{verb} {}", place.words()),
                 Some(target),
             ),
+        }
+    }
+
+    /// A copy, move or link of files named `leaves` to `destination`. The
+    /// destination is a file or a folder the files go into, and a line cannot
+    /// say which, so both are read: it is written as a file, and each file
+    /// lands at its own name in it, which is judged as the path it replaces
+    /// (a wildcard name is a pattern). A recursive copy can replace anything
+    /// below the folder it copies into, so there a folder that holds a
+    /// protected path is not safe to copy into.
+    fn copy_to(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        leaves: &[String],
+        destination: &Arg,
+        recursive: bool,
+    ) {
+        let protected = |place: Place| match place {
+            Place::Protected(words) => Some(words),
+            _ => None,
+        };
+        let words = recursive
+            .then(|| protected(self.place(shell, scope, destination)))
+            .flatten();
+        match words {
+            Some(words) => {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
+            None => self.write(shell, scope, destination, "writes to"),
+        }
+        let Some(text) = destination.known() else {
+            return;
+        };
+        let folder = text.trim_end_matches(if shell == Shell::Posix {
+            &['/'][..]
+        } else {
+            &['/', '\\'][..]
+        });
+        for leaf in leaves {
+            let landing = Arg::Known(format!("{folder}/{leaf}"));
+            let place = if recursive {
+                self.place(shell, scope, &landing)
+            } else {
+                self.place_into(shell, scope, &landing)
+            };
+            if let Some(words) = protected(place) {
+                self.add_once(Rule::Overwrite, format!("writes to {words}"), destination);
+            }
+        }
+    }
+
+    /// As [`add`](Self::add), unless the same finding is already there.
+    fn add_once(&mut self, rule: Rule, reason: String, target: &Arg) {
+        let target_text = target.text().to_string();
+        let seen = self.found.iter().any(|found| {
+            found.rule == rule
+                && found.reason == reason
+                && found.target.as_deref() == Some(target_text.as_str())
+        });
+        if !seen {
+            self.add(rule, reason, Some(target));
         }
     }
 

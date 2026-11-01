@@ -51,17 +51,28 @@ impl Checker<'_> {
                 let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
                 self.move_away(unit, &sources);
                 if let Some(destination) = destination {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    self.copy_to(
+                        shell,
+                        unit.scope(),
+                        &leaves(unit, &sources),
+                        &destination,
+                        false,
+                    );
                 }
             }
             "cp" | "install" if shell != Shell::PowerShell => {
-                if let (_, Some(destination)) = sources_and_destination(
+                let recursive = key == "cp"
+                    && (has_flag(args, Some('r'), Some("recursive"))
+                        || has_flag(args, Some('R'), None)
+                        || has_flag(args, Some('a'), Some("archive")));
+                if let (sources, Some(destination)) = sources_and_destination(
                     args,
                     &[
                         "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
                     ],
                 ) {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    let leaves = leaves(unit, &sources);
+                    self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
             }
             "ln" if shell != Shell::PowerShell => {
@@ -80,7 +91,13 @@ impl Checker<'_> {
                     }
                 }
                 if let Some(destination) = destination {
-                    self.write(shell, unit.scope(), &destination, "writes to");
+                    self.copy_to(
+                        shell,
+                        unit.scope(),
+                        &leaves(unit, &sources),
+                        &destination,
+                        false,
+                    );
                 }
             }
             "copy" | "xcopy" | "move" if shell == Shell::Cmd => {
@@ -91,7 +108,11 @@ impl Checker<'_> {
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
-                        self.write(shell, unit.scope(), destination, "writes to");
+                        let recursive =
+                            key == "xcopy" && (has_switch(args, "s") || has_switch(args, "e"));
+                        let sources = &operands[..operands.len() - 1];
+                        let leaves = leaves(unit, sources);
+                        self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                     }
                 }
             }
@@ -101,7 +122,17 @@ impl Checker<'_> {
                     if has_switch(args, "mir") || has_switch(args, "purge") {
                         self.delete(unit, &[destination], "deletes files in");
                     }
-                    self.write(shell, unit.scope(), destination, "writes to");
+                    // What it names after the two folders is what it copies;
+                    // with none, every file of the first.
+                    let named = leaves(unit, &operands[2..]);
+                    let leaves = if named.is_empty() {
+                        vec!["*".to_string()]
+                    } else {
+                        named
+                    };
+                    let recursive =
+                        has_switch(args, "e") || has_switch(args, "s") || has_switch(args, "mir");
+                    self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                 }
             }
             "rsync" => {
@@ -144,26 +175,59 @@ impl Checker<'_> {
                         {
                             self.delete(unit, &[destination], "deletes files in");
                         }
-                        self.write(shell, unit.scope(), destination, "writes to");
+                        let recursive = has_flag(args, Some('r'), Some("recursive"))
+                            || has_flag(args, Some('a'), Some("archive"));
+                        let sources = &operands[..operands.len() - 1];
+                        let leaves = leaves(unit, sources);
+                        self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                     }
                 }
             }
             "copy-item" | "move-item" => {
                 let params = Params::read(args);
-                let mut positional = params.positional.clone();
-                let mut sources = params.values(&["path", "literalpath"]);
-                if sources.is_empty() && !positional.is_empty() {
-                    sources.push(positional.remove(0));
+                let paths = params.values(&["path", "literalpath"]);
+                let recursive = key == "copy-item"
+                    && params
+                        .named
+                        .iter()
+                        .any(|(name, _)| "recurse".starts_with(name.as_str()));
+                // `-Path` is position 0 and `-Destination` position 1. A
+                // comma list of sources is flattened into the arguments, so
+                // an operand after the first destination may be one more
+                // source: each is read as the destination in turn, with the
+                // rest as sources, and a risky reading wins.
+                let mut readings: Vec<(Vec<&Arg>, &Arg)> = Vec::new();
+                let mut operands = paths.clone();
+                operands.extend(params.positional.iter().copied());
+                if let Some(destination) = params.values(&["destination"]).first().copied() {
+                    // What the pipeline hands it is a source too.
+                    if operands.is_empty() && from_pipe(unit) {
+                        operands.push(&Arg::Input);
+                    }
+                    readings.push((operands.clone(), destination));
+                } else {
+                    let first = paths.len().max(1);
+                    for at in first..operands.len() {
+                        let sources = (0..operands.len())
+                            .filter(|other| *other != at)
+                            .map(|other| operands[other])
+                            .collect();
+                        readings.push((sources, operands[at]));
+                    }
                 }
                 if key == "move-item" {
-                    self.move_away(unit, &sources);
+                    let mut moved: Vec<&Arg> = Vec::new();
+                    for source in readings.iter().flat_map(|(sources, _)| sources) {
+                        if !moved.iter().any(|seen| std::ptr::eq(*seen, *source)) {
+                            moved.push(source);
+                        }
+                    }
+                    moved.retain(|source| **source != Arg::Input);
+                    self.move_away(unit, &moved);
                 }
-                if let Some(destination) = params
-                    .values(&["destination"])
-                    .first()
-                    .or(positional.first())
-                {
-                    self.write(shell, unit.scope(), destination, "writes to");
+                for (sources, destination) in readings {
+                    let leaves = leaves(unit, &sources);
+                    self.copy_to(shell, unit.scope(), &leaves, destination, recursive);
                 }
             }
 
@@ -325,4 +389,43 @@ fn remote(arg: &Arg) -> bool {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
     })
+}
+
+/// The name each source lands as inside a folder it is copied into: its last
+/// part. A source that is not known, what a pipeline hands on, or what `find`
+/// found (`-exec cp {} dest \;`) lands as a name that could be anything (`*`),
+/// and `.` or `..` (the contents of a folder) has no name of its own.
+fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
+    let shell = unit.shell;
+    let found = unit.wrappers.iter().any(|wrapper| wrapper == "find");
+    let separators: &[char] = if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    };
+    sources
+        .iter()
+        .flat_map(|source| {
+            let text = match source.known() {
+                Some(text) if !found => text,
+                _ => return vec![Some("*".to_string())],
+            };
+            // cmd's `copy a+b dest` joins files into one named like the first.
+            let texts: Vec<&str> = if shell == Shell::Cmd {
+                text.split('+').collect()
+            } else {
+                vec![text]
+            };
+            texts
+                .into_iter()
+                .map(
+                    |text| match text.trim_end_matches(separators).rsplit(separators).next() {
+                        None | Some("" | "." | ".." | "~") => None,
+                        Some(name) => Some(name.to_string()),
+                    },
+                )
+                .collect()
+        })
+        .flatten()
+        .collect()
 }
