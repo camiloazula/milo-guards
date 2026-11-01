@@ -61,13 +61,34 @@ impl Walker<'_> {
                 self.children(node, None, level);
             }
             "pipe_stmt" => {
-                let pipeline = self.split.pipeline();
+                let pipeline = self.split.pipeline(stage);
+                self.pipe_in(node, pipeline, 0, level);
+            }
+            // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
+            // command's input feeds the units it runs.
+            "redirect_stmt" => {
                 let mut cursor = node.walk();
-                for (index, child) in node.named_children(&mut cursor).enumerate() {
-                    self.walk(child, Some(Stage { pipeline, index }), level + 1);
+                let mut inputs = Vec::new();
+                let mut own: Option<std::ops::Range<usize>> = None;
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "redirection" {
+                        inputs.extend(self.redirect(child));
+                    } else {
+                        let first = self.split.units.len();
+                        self.walk(child, stage, level + 1);
+                        let range = first..self.split.units.len();
+                        own = Some(own.map_or(range.clone(), |own| own.start..range.end));
+                    }
+                }
+                if let Some(own) = own {
+                    for target in inputs {
+                        self.split.redirect(own.clone(), target, true);
+                    }
                 }
             }
-            "redirection" => self.redirect(node),
+            "redirection" => {
+                self.redirect(node);
+            }
             "variable_assignment" => {
                 self.assignment(node);
                 self.children(node, stage, level);
@@ -75,6 +96,32 @@ impl Walker<'_> {
             "comment" => self.comment(node),
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// The stages of `node`, numbered from `first` in `pipeline`, and the
+    /// number after the last. The grammar nests `a | b | c` as
+    /// `(a | b) | c`: the inner pipe is part of the same pipeline.
+    fn pipe_in(&mut self, node: Node<'_>, pipeline: usize, first: usize, level: usize) -> usize {
+        if level > unit::MAX_TREE_DEPTH {
+            self.split
+                .problem(Rule::Unreadable, "nests too deeply to read", None);
+            return first;
+        }
+        let mut next = first;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipe_stmt" {
+                next = self.pipe_in(child, pipeline, next, level + 1);
+            } else {
+                let stage = Stage {
+                    pipeline,
+                    index: next,
+                };
+                self.walk(child, Some(stage), level + 1);
+                next += 1;
+            }
+        }
+        next
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -216,29 +263,35 @@ impl Walker<'_> {
     }
 
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
-    /// (`2>&1`) writes nothing.
-    fn redirect(&mut self, node: Node<'_>) {
+    /// (`2>&1`) writes nothing. Returns the files it reads (`<`), and notes each read.
+    fn redirect(&mut self, node: Node<'_>) -> Vec<Arg> {
         let mut cursor = node.walk();
-        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-        let operator = children
-            .iter()
-            .find(|child| child.kind() == "redirect_op")
-            .map(|op| unit::text(op, self.source));
-        let Some(target) = children
-            .iter()
-            .find(|child| child.kind() == "redirect_target")
-        else {
-            return;
-        };
-        let writes = operator.is_some_and(|op| op.contains('>') && !op.ends_with('&'));
-        let target_text = unit::text(target, self.source);
-        // `<` and `0<`.
-        if operator.is_some_and(|op| op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<") {
-            self.split.read(Shell::Cmd, self.quoted_value(*target));
+        let mut operator = None;
+        let mut inputs = Vec::new();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "redirect_op" => operator = Some(unit::text(&child, self.source)),
+                "redirect_target" => {
+                    let target_text = unit::text(&child, self.source);
+                    let duplicates = operator.is_some_and(|op| op.ends_with('&'));
+                    let writes = operator.is_some_and(|op| op.contains('>') && !duplicates);
+                    if writes && !target_text.starts_with('&') {
+                        self.split.write(Shell::Cmd, self.value(&[child]));
+                    }
+                    // `<` and `0<`.
+                    if operator.is_some_and(|op| {
+                        op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<"
+                    }) {
+                        self.split.read(Shell::Cmd, self.quoted_value(child));
+                    }
+                    if !duplicates && operator.is_some_and(|op| op.contains('<')) {
+                        inputs.push(self.value(&[child]));
+                    }
+                }
+                _ => {}
+            }
         }
-        if writes && !target_text.starts_with('&') {
-            self.split.write(Shell::Cmd, self.value(&[*target]));
-        }
+        inputs
     }
 
     /// The grammar reads `set X=1 && del y` as one assignment whose value

@@ -249,6 +249,8 @@ fn rule_effect(rule: Rule) -> Kind {
         // finding says which file (the line's `Reach` is `Beyond`); what to
         // do about it is the caller's.
         Rule::Elevated | Rule::ReadSecret => Kind::Reads,
+        // Sending a secret away sends data off the machine: it is not a read.
+        Rule::SendSecret => Kind::Changes,
     }
 }
 

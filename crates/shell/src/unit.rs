@@ -1,6 +1,9 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use crate::dotglob;
 use crate::effect::Kind;
 use crate::{Finding, Rule, Shell};
@@ -206,11 +209,66 @@ impl Hidden {
     }
 }
 
+/// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
+#[derive(Debug, Clone)]
+pub(crate) struct Redirect {
+    /// The units it applies to, by index in [`Split::units`].
+    pub(crate) units: Range<usize>,
+    pub(crate) target: Arg,
+    /// Whether it feeds the units' input (`<`), and not their output.
+    pub(crate) input: bool,
+    /// Whether the target is the text fed, a here-string or a
+    /// here-document, and not a file.
+    pub(crate) text: bool,
+}
+
+/// Units a command is handed the result of: what runs in its `$(…)` and
+/// `<(…)`, in its here-document, in the value of an argument.
+#[derive(Debug, Clone)]
+pub(crate) struct Nested {
+    /// The command's own units, by index in [`Split::units`].
+    pub(crate) command: Range<usize>,
+    /// The units that run for it.
+    pub(crate) inside: Range<usize>,
+}
+
+/// A variable set from what a substitution prints: `k=$(cat f)`.
+#[derive(Debug, Clone)]
+pub(crate) struct Assigned {
+    pub(crate) name: String,
+    pub(crate) inside: Range<usize>,
+    /// The variables the value names itself: `j=$k`, `j="$k-x"`.
+    pub(crate) uses: Vec<String>,
+}
+
+/// The variables `text` names, as `$k`, `${k}` and `${k:-x}` do (`$key` is
+/// not `k`).
+pub(crate) fn referenced(text: &str) -> Vec<String> {
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let end = piece
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(piece.len());
+            piece.get(..end).filter(|name| !name.is_empty())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The redirects of files onto units, for the rules that follow a
+    /// secret from a file to where it is sent.
+    pub(crate) redirects: Vec<Redirect>,
+    /// What runs for a command inside its own arguments.
+    pub(crate) nested: Vec<Nested>,
+    /// The variables set from a substitution.
+    pub(crate) assigned: Vec<Assigned>,
     /// The files redirected from (`< file`), where the line was.
     pub(crate) reads: Vec<Read>,
     /// The `for` loops over words written out, whose variable the body does
@@ -220,6 +278,9 @@ pub(crate) struct Split {
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
     pipelines: usize,
+    /// The stage of an outer pipeline that a pipeline runs in, when it runs
+    /// in a stage of another: `(a | b) | c` runs `a | b` in the first stage.
+    pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
     /// Variables the line sets, unsets or reads into (lower case): a path
@@ -302,9 +363,9 @@ pub(crate) struct Binding {
     pub(crate) variable: String,
     pub(crate) words: Vec<String>,
     /// The units added while the loop was read, by index in the split.
-    pub(crate) units: std::ops::Range<usize>,
+    pub(crate) units: Range<usize>,
     /// The redirects from a file added while it was read.
-    pub(crate) reads: std::ops::Range<usize>,
+    pub(crate) reads: Range<usize>,
 }
 
 /// A read a redirect makes: `< file`.
@@ -343,9 +404,9 @@ pub(crate) struct Place {
 /// ended.
 #[derive(Debug)]
 struct Later {
-    units: std::ops::Range<usize>,
-    writes: std::ops::Range<usize>,
-    reads: std::ops::Range<usize>,
+    units: Range<usize>,
+    writes: Range<usize>,
+    reads: Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -396,6 +457,48 @@ impl Split {
             self.dir = Some(crate::path::within(self.dir.as_ref(), &target, unit.shell));
         }
         self.units.push(unit);
+    }
+
+    /// Note that `inside`, a run of units, ran for the command whose own units
+    /// are `command`.
+    pub(crate) fn nest(&mut self, command: Range<usize>, inside: Range<usize>) {
+        if !inside.is_empty() && !command.is_empty() {
+            self.nested.push(Nested { command, inside });
+        }
+    }
+
+    /// Note that the file `target` is redirected onto `units`.
+    pub(crate) fn redirect(&mut self, units: Range<usize>, target: Arg, input: bool) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input,
+            text: false,
+        });
+    }
+
+    /// Note that the text `target` (a here-string, a here-document) is fed
+    /// to `units`.
+    pub(crate) fn feed(&mut self, units: Range<usize>, target: Arg) {
+        self.redirects.push(Redirect {
+            units,
+            target,
+            input: true,
+            text: true,
+        });
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `value` names.
+    pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
+        let uses = referenced(value);
+        if !inside.is_empty() || !uses.is_empty() {
+            self.assigned.push(Assigned {
+                name: name.to_string(),
+                inside,
+                uses,
+            });
+        }
     }
 
     /// Add a redirect's write, made where the line has moved to.
@@ -709,9 +812,13 @@ impl Split {
             .any(|known| known.eq_ignore_ascii_case(name))
     }
 
-    /// A new pipeline's number.
-    pub(crate) fn pipeline(&mut self) -> usize {
+    /// A new pipeline's number; `parent` is the stage of another pipeline it
+    /// runs in.
+    pub(crate) fn pipeline(&mut self, parent: Option<Stage>) -> usize {
         self.pipelines += 1;
+        if let Some(parent) = parent {
+            self.parents.insert(self.pipelines, parent);
+        }
         self.pipelines
     }
 

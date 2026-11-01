@@ -14,6 +14,7 @@ use crate::{Finding, Rule, Shell};
 mod code;
 mod files;
 mod secrets;
+mod send;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
@@ -67,6 +68,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         unplaced_write: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
+        flow: send::Flow::default(),
     };
     // Indexed once, so each unit's pipeline questions are lookups, not
     // scans of every unit.
@@ -94,6 +96,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
+    checker.flow = checker.trace();
     // What each step adds to `found` is what that step found: the findings
     // from `split.findings` come first, and are the line's own.
     let mut line = checker.found.clone();
@@ -138,6 +141,9 @@ struct Checker<'a> {
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
     producers: HashMap<(usize, usize), usize>,
+    /// Where secrets are read and where they go, for the rule that finds
+    /// them sent away.
+    flow: send::Flow,
 }
 
 impl Checker<'_> {
@@ -168,6 +174,7 @@ impl Checker<'_> {
         self.secrets(at, unit, &key);
         self.write_then_run(unit, &key);
         self.files(unit, &key);
+        self.send(at, unit, &key);
         self.system(unit, &key);
         self.code(unit, &key);
     }

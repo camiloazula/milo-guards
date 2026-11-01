@@ -74,10 +74,15 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
         }
         match launch(&key, &unit) {
             Launch::Itself => {
+                // What `find` picks is handed to the programs its `-exec` runs.
+                let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
                     find_exec(split, &unit, depth);
                 }
+                let execs = first..split.units.len();
+                let at = split.units.len();
                 split.push(unit);
+                split.nest(execs, at..at + 1);
                 return;
             }
             Launch::Runs(start) => {
@@ -98,6 +103,7 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
                 let inherited = key == "trap" && trap_inherited(&unit.args);
+                let shell_at = split.units.len();
                 split.push(unit);
                 // A `trap` action in double quotes is expanded when the trap
                 // is set and its result read as code when it runs, as
@@ -146,6 +152,8 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                         // does, but as for a `cd` the guard counts any stage.
                         let here = key == "eval";
                         unit::script_in(split, &text, shell, depth + 1, here);
+                        // What the script runs, it runs for the shell that started it.
+                        split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
                             split.branches -= 1;
                             split.bodies -= 1;

@@ -140,6 +140,8 @@ pub enum Rule {
     RunInput,
     /// Shuts the computer down, restarts it, or stops every process.
     StopSystem,
+    /// Sends a key, a credential or the environment off the machine.
+    SendSecret,
     /// Runs a program or a script known only when it runs.
     Unknown,
     /// The line, or part of it, cannot be read.
@@ -148,7 +150,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -162,6 +164,7 @@ impl Rule {
         Self::RunDownloaded,
         Self::RunInput,
         Self::StopSystem,
+        Self::SendSecret,
         Self::Unknown,
         Self::Unreadable,
     ];
@@ -185,6 +188,7 @@ impl Rule {
             Self::RunDownloaded => "run_downloaded",
             Self::RunInput => "run_input",
             Self::StopSystem => "stop_system",
+            Self::SendSecret => "send_secret",
             Self::Unknown => "unknown",
             Self::Unreadable => "unreadable",
         }
