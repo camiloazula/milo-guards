@@ -81,6 +81,7 @@ fn add_launched(
     wrappers: usize,
     given: Option<Launch>,
 ) {
+    unit.depth = depth;
     let mut given = given;
     for used in 0..wrappers {
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
@@ -125,10 +126,15 @@ fn add_launched(
                 return;
             }
             Launch::Itself => {
+                // What `find` picks is handed to the programs its `-exec` runs.
+                let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
                     find_exec(split, &unit, depth);
                 }
+                let execs = first..split.units.len();
+                let at = split.units.len();
                 split.push(unit);
+                split.nest(execs, at..at + 1);
                 return;
             }
             Launch::Runs(start) => {
@@ -149,6 +155,7 @@ fn add_launched(
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
                 let inherited = key == "trap" && trap_inherited(&unit.args);
+                let shell_at = split.units.len();
                 split.push(unit);
                 // A `trap` action in double quotes is expanded when the trap
                 // is set and its result read as code when it runs, as
@@ -197,6 +204,8 @@ fn add_launched(
                         // does, but as for a `cd` the guard counts any stage.
                         let here = key == "eval";
                         unit::script_in(split, &text, shell, depth + 1, here);
+                        // What the script runs, it runs for the shell that started it.
+                        split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
                             split.branches -= 1;
                             split.bodies -= 1;
@@ -275,6 +284,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        depth,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -304,6 +314,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         dir: None,
         hidden: false,
+        depth,
     }
 }
 
@@ -568,14 +579,20 @@ fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
+    // A `{` stuck to a word (`{rm`) is a group zsh runs, but not one the
+    // grammar reads as such: the word is not read as a program.
+    let stuck =
+        |at: usize| word(at).is_some_and(|text| text.starts_with('{') && !opens_group(text));
     // A name stands before a group or a compound command; before a simple
     // command the first word is the program.
-    let mut at = usize::from(!opens(0) && (opens(1) || compound(1)));
+    let mut at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
     while opens(at) || word(at).is_some_and(|text| text == "!" || is_assignment(text)) {
         at += 1;
     }
     if compound(at) {
         Launch::Opaque("starts a compound command that cannot be read")
+    } else if stuck(at) {
+        Launch::Opaque("starts a group whose commands cannot be read")
     } else {
         runs(args, Some(at))
     }
