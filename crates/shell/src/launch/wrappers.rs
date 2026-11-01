@@ -101,6 +101,18 @@ pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
     names
 }
 
+/// The values `NODE_OPTIONS` is given by the wrapper's own arguments, the
+/// ones before the program at `start` (`env NODE_OPTIONS=… node`, `sudo
+/// NODE_OPTIONS=… node`).
+pub(super) fn node_options(args: &[Arg], start: usize) -> Vec<Arg> {
+    args.iter()
+        .take(start)
+        .filter_map(Arg::known)
+        .filter_map(|text| text.strip_prefix("NODE_OPTIONS="))
+        .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
 /// `xargs`: its options, then the program its input is handed to.
 pub(super) fn xargs(args: &[Arg]) -> Launch {
     let mut replace = None;

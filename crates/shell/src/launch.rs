@@ -49,8 +49,20 @@ pub(super) enum Launch {
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     let outer = split.scope_hidden(false);
+    // What a wrapper in front of the program sets is the program's only.
+    let options = split.node_options.len();
     add_unit(split, unit, depth);
+    split.node_options.truncate(options);
     split.unscope_hidden(outer);
+}
+
+/// Whether node, given code inline or from its input, is told to run code
+/// from a `data:` URL that is not read: by its own options, or by the
+/// `NODE_OPTIONS` it is given.
+fn loads_data(key: &str, unit: &Unit, split: &Split) -> bool {
+    matches!(key, "node" | "nodejs")
+        && (inline::loads_data_url(&unit.args)
+            || inline::options_load_data_url(&split.node_options))
 }
 
 fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
@@ -84,10 +96,16 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                split
+                    .node_options
+                    .extend(wrappers::node_options(&unit.args, start));
                 unit = inner(unit, key, start, &Hands::Nothing);
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
+                split
+                    .node_options
+                    .extend(wrappers::node_options(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -178,6 +196,12 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                     split.push(unit);
                     return;
                 }
+                // Code node is told to run from a `data:` URL first is not read.
+                if loads_data(&key, &unit, split) {
+                    unit.reads = Reads::Interpreter;
+                    split.push(unit);
+                    return;
+                }
                 split.push(unit);
                 inline::apply_all(split, language, &code, depth + 1);
                 return;
@@ -196,8 +220,7 @@ fn add_unit(split: &mut Split, mut unit: Unit, depth: usize) {
                 // text reads that as its code, unless node is also told to load
                 // code from a `data:` URL first: that code runs and is not read,
                 // so the line stays unknown whatever its input holds.
-                let data =
-                    matches!(key.as_str(), "node" | "nodejs") && inline::loads_data_url(&unit.args);
+                let data = loads_data(&key, &unit, split);
                 let source = match (reads, inline::language(&key), &unit.stdin) {
                     (Reads::Interpreter, Some(language), Some(Arg::Known(code))) if !data => {
                         Some((language, code.clone()))

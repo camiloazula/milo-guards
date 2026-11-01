@@ -384,11 +384,24 @@ those come out as the units and paths the rules already read (a delete is
 a script `sh -c` reads), so no rule knows a language.
 
 **Where the code comes from.** `python`, `python3` (and `python3.12`),
-`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
+`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). An `-i`
+before the code (`-i`, `-ic`, `-bic`; not `-I`, which is isolated mode) makes
+Python go on to read code from its input once the code has run, and so do
+node's `-i` and `--interactive` anywhere among its options (bun's `-i`
+installs): the code is read, and the line is `unknown`, as a bare `python3` or
+`node` is, whatever a here-document, a pipe or a redirect hands it. `node`,
 `nodejs`: `-e`, `-p`, `--eval`, `--print` (`--eval=CODE`, `-pe`); a `--import`,
 `--loader` or `--experimental-loader` whose value is a `data:` URL (or only known
 when it runs) runs code that is not read, so the line is `unknown`, also when
-a here-document or here-string follows it (`node --import=data:… <<'JS'`). `bun`:
+a here-document or here-string follows it (`node --import=data:… <<'JS'`); node
+reads an underscore in the name of an option as a hyphen
+(`--experimental_loader`). So does `NODE_OPTIONS`, read as node reads it, with
+the same options: a prefix assignment (`NODE_OPTIONS=… node -e …`), `env
+NODE_OPTIONS=…`, an `export` earlier in the line, and one in front of a shell
+that starts node (`NODE_OPTIONS=… bash -c 'node -e …'`) hand node its value,
+and one that loads a `data:` URL, or is only known when it runs, makes the line
+`unknown`. Any other value (`--max-old-space-size=4096`, `--require ./a.js`) is
+not read. `bun`:
 the same flags, and `--cwd DIR` (`--cwd=DIR`), which the code's relative paths
 are read from, as after a `cd`. `node` and `bun` run the last of several `-e`
 (`node -e A -e B`), so every piece of code is read, not the first; `-p` takes
@@ -411,7 +424,11 @@ something else than the reader sees, which always reads UTF-8: such input is
 holds one. UTF-8 is the same text, and so is an ASCII-compatible encoding
 (`latin-1`) of a text that is all ASCII; a `-c` string or a string literal
 ignores the line. CPython reads CRLF and a lone CR as a newline, so the reader
-does too before it parses Python (a comment ends at a CR). A script file
+does too before it parses Python (a comment ends at a CR). A JavaScript hashbang
+(`#!…` at the start of the code) ends at any line terminator, `\r`, U+2028 and
+U+2029 as well as `\n`, but tree-sitter-javascript ends it at `\n` only: the
+first terminator of the line becomes a `\n` before the code is parsed, so the code
+after it is read and not taken for part of the comment. A script file
 (`python3 scripts/gen.py`, `node build.js`) is the workspace's own code and is
 not read. Neither is code from a pipe or another redirect (`cat x.py |
 python3`, `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a
@@ -441,7 +458,7 @@ global object in `node -e`).
 | Does | Python | JavaScript (Node, Bun, Deno) |
 | --- | --- | --- |
 | Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()` and `.unlink()`, `rimraf` |
-| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `readFile`, `readFileSync`, `createReadStream` and `readJson` given a `flag` or `flags` that writes or is only known when it runs (`w` truncates the file it reads), `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
+| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `.open(…)` of another object (`Path.open('w')`) with a string that is such a mode, a `tarfile` mode (`w:gz`) or a `dbm` flag (`c`, `n`) among its first two arguments, `mode=` or `flag=` (a string that is not a mode `open` takes, a file name or a URL (`Image.open('a.png')`, `webbrowser.open('http://localhost')`), is not a write), `io.open`, `io.FileIO`, `gzip.open`, `tarfile.open`, `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.truncate`, `os.makedirs`, `shutil.copy*`/`copytree` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `readFile`, `readFileSync`, `createReadStream` and `readJson` given a `flag` or `flags` that writes or is only known when it runs (`w` truncates the file it reads), `copyFileSync`/`cpSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
 | Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` (what is moved away, and where it lands) | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
 | Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `Path.symlink_to`, `Path.chmod` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.symlink`, `Deno.chmod` |
 | Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `` Bun.$`…` `` |
@@ -502,7 +519,11 @@ held in a list, a dict or an object, looped over, returned or a default, since
 it comes back under a name the reader does not follow; `with (require('fs'))`;
 a `{ ...rest }` taken from a module (a default, `{ rmSync = null }`, still
 names the member); `sys.modules`; starting a program by `os.exec*`,
-`os.spawn*`, `pty.spawn`, `ctypes`. A command line or code only known when it
+`os.spawn*`, `pty.spawn`, `ctypes`; what reads code from the input, `code.interact`,
+`breakpoint()`, `pdb.set_trace`, `post_mortem` and `pm` in Python, `repl.start`
+and `repl.REPLServer` in JavaScript; a session of the `inspector`, which
+evaluates what it is sent, and a `cluster` worker, which takes its options from
+the settings. A command line or code only known when it
 runs (`child_process.execSync(process.argv[1])`, an f-string with a
 substitution) is `unknown` too. Code with none of the calls above and
 nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
@@ -522,11 +543,38 @@ which reads the line its own way, so a `shell` that is not `true` or a POSIX
 shell is `unknown`. `Bun.$.cwd(…)` and `zx.cd` change the directory of the
 calls after them and are `unknown`.
 
+**`child_process`.** `fork(module, args, options)` runs node on a module, a file of the
+workspace's own as `node worker.js` is, so it is not read. It is `unknown` when
+the module is only known when it runs or starts with `-` (node reads it as an
+option: `fork('-e', ['code'])` runs the code), when the options name the program
+(`execPath`) or the options it runs with (`execArgv: ['-e', 'code']`), or when
+they are not an object literal that shows what it holds (a variable, a spread, a
+computed name, an accessor), and so is a spread in the arguments. The members of
+`child_process` the reader does not read (`ChildProcess`, `_forkChild`, any
+that is not listed in the table above) are `unknown`, as the unlisted `Sync`
+methods are.
+
 Python 2's `exec "code"` (also `exec "code" in globals`) is read like
 `exec("code")`: a literal is read as Python, anything else is `unknown`.
 `Path.rename` and `Path.replace` take their target as the one argument or as
 `target=`; given `*args` or `**kwargs` they are `unknown`, unless on a string
 literal, whose `replace` takes two.
+
+**Names shared with nested code.** Literal code given to `exec`, `eval` or a
+profiler (`cProfile.run`, `pdb.run`) runs in the namespace of the code around
+it, and the reader reads it apart, from a table of names of its own. So a name
+the nested code binds (`exec('import shutil as json')`, then `json.rmtree(…)`;
+`from shutil import rmtree as f`, `var m = require('fs')`, `var { rm } =
+require('fs')`, `global j`, an assignment to a name of the outer code) is a name
+the code around it uses and the reader would not follow, and a name the outer
+code bound (`import shutil as s`, then `exec("s.rmtree(…)")`) is one the nested
+code uses. When the nested code binds a name to what the reader follows (a
+module, a call it knows) other than the name stands for in the code around it, or
+uses a name that code bound to such a thing, the line is `unknown`. The same is
+asked of the code inside the nested code, at any depth, and past the depth that
+can be read the answer is yes. A name bound to anything else (`exec('x =
+1')`, `eval('var x = 1')`) is not a name the reader follows. What the nested code
+does is read all the same.
 
 A key of a destructuring pattern or an import names the member it spells,
 however it is written: `{ "rmSync": r }`, `{ ["rmSync"]: r }`, ``{ [`rm${"Sync"}`]: r }``,

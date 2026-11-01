@@ -202,6 +202,10 @@ pub(crate) struct Code {
     /// The directory the interpreter is told to work from first
     /// (`bun --cwd DIR`), which the code's relative paths are read from.
     pub(crate) dir: Option<Arg>,
+    /// Whether the interpreter goes on to read code from its input once the
+    /// code it is given has run (`python3 -i -c`, `node -i -e`): code the
+    /// guard does not read, so the line is unknown, as a bare interpreter is.
+    pub(crate) input: bool,
 }
 
 /// The inline code an interpreter's own arguments hold, when they say where
@@ -212,14 +216,17 @@ pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
     match language(key)? {
         Language::Python => python_code(args),
         Language::JavaScript if key == "deno" => deno_code(args),
-        Language::JavaScript => script_code(args),
+        Language::JavaScript => script_code(args, matches!(key, "node" | "nodejs")),
     }
 }
 
 /// `python -c CODE`, also in a bundle (`-Sc`) and with the code attached
 /// (`-cCODE`); options that take a value are skipped. The first `-c` ends
-/// the options, so there is one piece of code.
+/// the options, so there is one piece of code. `-i` (alone or in a bundle,
+/// before the code) makes Python read code from its input after the code has
+/// run; `-I` is isolated mode, which does not.
 fn python_code(args: &[Arg]) -> Option<Code> {
+    let mut interactive = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let text = arg.known()?;
@@ -229,8 +236,14 @@ fn python_code(args: &[Arg]) -> Option<Code> {
         for (at, letter) in text.char_indices().skip(1) {
             let rest = &text[at + letter.len_utf8()..];
             match letter {
-                'c' if rest.is_empty() => return iter.next().cloned().map(code_of),
-                'c' => return Some(code_of(Arg::Known(rest.to_string()))),
+                'c' if rest.is_empty() => {
+                    return iter
+                        .next()
+                        .cloned()
+                        .map(|piece| code_of(piece, interactive));
+                }
+                'c' => return Some(code_of(Arg::Known(rest.to_string()), interactive)),
+                'i' => interactive = true,
                 'm' => return None,
                 'W' | 'X' | 'Q' => {
                     if rest.is_empty() {
@@ -245,10 +258,11 @@ fn python_code(args: &[Arg]) -> Option<Code> {
     None
 }
 
-fn code_of(piece: Arg) -> Code {
+fn code_of(piece: Arg, input: bool) -> Code {
     Code {
         pieces: vec![piece],
         dir: None,
+        input,
     }
 }
 
@@ -258,8 +272,11 @@ fn code_of(piece: Arg) -> Code {
 /// its own and the last one runs, so all are collected: reading only the
 /// first would let a second one do anything. `-p` takes the next word as
 /// code unless that is an option, as `node -p -e CODE` has it (`-p` alone,
-/// then the code of `-e`).
-fn script_code(args: &[Arg]) -> Option<Code> {
+/// then the code of `-e`). Node's `-i` and `--interactive`, anywhere among
+/// the options, read code from its input once the code has run (`node`
+/// only: bun's `-i` installs). Node reads an underscore in the name of an
+/// option as a hyphen.
+fn script_code(args: &[Arg], node: bool) -> Option<Code> {
     const VALUES: [&str; 7] = [
         "require",
         "import",
@@ -289,10 +306,12 @@ fn script_code(args: &[Arg]) -> Option<Code> {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
-            match (name, value) {
+            let name = name.replace('_', "-");
+            match (name.as_str(), value) {
                 ("eval" | "print", Some(value)) => {
                     found.pieces.push(Arg::Known(value.to_string()));
                 }
+                ("interactive", _) => found.input |= node,
                 ("eval", None) => takes = Some(true),
                 ("print", None) => takes = Some(false),
                 ("cwd", Some(value)) => found.dir = Some(Arg::Known(value.to_string())),
@@ -306,6 +325,8 @@ fn script_code(args: &[Arg]) -> Option<Code> {
             takes = Some(text.contains('e'));
         } else if matches!(text, "-r" | "-C") {
             iter.next();
+        } else if text == "-i" {
+            found.input |= node;
         }
         match takes {
             // `-e CODE`, whatever the code starts with.
@@ -371,7 +392,8 @@ pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
             Some((name, value)) => (name, Some(value)),
             None => (long, None),
         };
-        let found = match (name, value) {
+        let name = name.replace('_', "-");
+        let found = match (name.as_str(), value) {
             ("import" | "loader" | "experimental-loader", Some(value)) => data_url(value),
             ("import" | "loader" | "experimental-loader", None) => iter
                 .next()
@@ -392,6 +414,27 @@ pub(crate) fn loads_data_url(args: &[Arg]) -> bool {
         }
     }
     false
+}
+
+/// Whether the values `NODE_OPTIONS` is given in front of node (a prefix
+/// assignment, `env NODE_OPTIONS=…`, an `export` before it) load a module from
+/// a `data:` URL: node reads the variable's words as it does its own
+/// options. A value only known when it runs may.
+pub(crate) fn options_load_data_url(values: &[Arg]) -> bool {
+    values.iter().any(|value| match value.known() {
+        Some(text) => {
+            // Node splits on spaces and drops the double quotes; every kind of
+            // white space splits here, which finds at least what it does.
+            let words: Vec<Arg> = text
+                .split(char::is_whitespace)
+                .map(|word| word.replace('"', ""))
+                .filter(|word| !word.is_empty())
+                .map(Arg::Known)
+                .collect();
+            loads_data_url(&words)
+        }
+        None => true,
+    })
 }
 
 /// `deno eval [OPTIONS] CODE [ARGS]`: every word after `eval` that is not an
@@ -472,6 +515,13 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
             Some(other.text()),
         ),
         None => {}
+    }
+    if code.input {
+        split.problem(
+            Rule::Unknown,
+            "reads code from its input after its own",
+            None,
+        );
     }
     for piece in &code.pieces {
         match piece {

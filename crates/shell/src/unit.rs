@@ -227,6 +227,11 @@ pub(crate) struct Split {
     /// starts, and not to itself: `GLOBIGNORE=x bash -c '…'`. The shell that
     /// expands the command's own wildcards has run them before it applies.
     scoped_dotglob: bool,
+    /// The values `NODE_OPTIONS` is given for the program being added: a
+    /// prefix assignment, `env NODE_OPTIONS=…`, an `export` earlier in the
+    /// line. Node reads them as its own options, and a script it starts gets
+    /// them too.
+    pub(crate) node_options: Vec<Arg>,
     /// How deep the line is inside something that may not run, or runs in
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.

@@ -14,20 +14,8 @@ pub(super) fn read(code: &str) -> Reading {
     // ends at a CR would swallow the code after it.
     let translated = translate_newlines(code);
     let code = translated.as_str();
-    let mut parser = tree_sitter::Parser::new();
-    let tree = parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None));
-    let mut reader = Reader {
-        src: code,
-        aliases: HashMap::new(),
-        modules: HashSet::new(),
-        names: HashMap::new(),
-        walking: false,
-        reading: Reading::default(),
-    };
-    let Some(tree) = tree else {
+    let mut reader = Reader::new(code, HashMap::new(), HashSet::new(), 0);
+    let Some(tree) = parse(code) else {
         reader.reading.unread(code);
         return reader.reading;
     };
@@ -36,29 +24,16 @@ pub(super) fn read(code: &str) -> Reading {
         reader.reading.unread(code);
     }
     reader.collect_imports(root);
-    reader.walking = true;
-    // The walk stops once the code is found to nest too deeply to read: the
-    // line is unreadable whatever else is in it.
-    walk(root, |node, field, above| {
-        // Python reads a name in its NFKC form (`ｒｅｍｏｖｅ` is `remove`),
-        // which the reader does not compute: a name that is not ASCII is a
-        // name it does not follow.
-        if node.kind() == "identifier" && !reader.text(node).is_ascii() {
-            reader.reading.unread(reader.text(node));
-        }
-        match node.kind() {
-            "import_statement" | "import_from_statement" | "assignment" => {
-                reader.class_binding(node, above);
-            }
-            "call" => reader.call(node, field, above),
-            "attribute" | "identifier" => reader.reference(node, field, above),
-            "subscript" => reader.subscript(node),
-            "exec_statement" => reader.exec_statement(node),
-            _ => {}
-        }
-        !reader.reading.deep
-    });
+    reader.walk_all(root);
     reader.reading
+}
+
+fn parse(code: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .ok()
+        .and_then(|()| parser.parse(code, None))
 }
 
 /// `code` with CRLF and a lone CR read as a newline, as Python itself does.
@@ -287,6 +262,12 @@ fn kind(name: &str) -> Option<Kind> {
         "asyncio.create_subprocess_exec" => Kind::Exec,
         "pty.spawn"
         | "sys.modules"
+        // Read commands, and run what they say, from the input.
+        | "breakpoint"
+        | "sys.breakpointhook"
+        | "pdb.set_trace"
+        | "pdb.post_mortem"
+        | "pdb.pm"
         | "compile"
         | "globals"
         | "locals"
@@ -372,6 +353,21 @@ struct Reader<'s> {
     names: HashMap<usize, Option<String>>,
     walking: bool,
     reading: Reading,
+    /// How many pieces of literal code (`exec("…")`) this code is inside.
+    nesting: usize,
+    /// Whether literal code given to `exec` or `eval` in this code, or in
+    /// code inside it, binds or uses a name the reader follows.
+    shared: bool,
+}
+
+/// What a name stands for in code that has bound nothing: itself, and the
+/// `pathlib` classes are `pathlib`'s.
+fn fresh(name: &str) -> String {
+    if PATHS.contains(&name) {
+        format!("pathlib.{name}")
+    } else {
+        rebase(name)
+    }
 }
 
 /// The modules that stand for others without having been imported by name:
@@ -438,8 +434,129 @@ impl<'t> Args<'t> {
 }
 
 impl<'s> Reader<'s> {
+    fn new(
+        src: &'s str,
+        aliases: HashMap<String, String>,
+        modules: HashSet<String>,
+        nesting: usize,
+    ) -> Self {
+        Self {
+            src,
+            aliases,
+            modules,
+            names: HashMap::new(),
+            walking: false,
+            reading: Reading::default(),
+            nesting,
+            shared: false,
+        }
+    }
+
+    /// Read every node under `root`, once the names `import` bound are
+    /// known. The walk stops once the code is found to nest too deeply to
+    /// read: the line is unreadable whatever else is in it.
+    fn walk_all(&mut self, root: Node<'_>) {
+        self.walking = true;
+        walk(root, |node, field, above| {
+            // Python reads a name in its NFKC form (`ｒｅｍｏｖｅ` is `remove`),
+            // which the reader does not compute: a name that is not ASCII is
+            // a name it does not follow.
+            if node.kind() == "identifier" && !self.text(node).is_ascii() {
+                self.reading.unread(self.text(node));
+            }
+            match node.kind() {
+                "import_statement" | "import_from_statement" | "assignment" => {
+                    self.class_binding(node, above);
+                }
+                "call" => self.call(node, field, above),
+                "attribute" | "identifier" => self.reference(node, field, above),
+                "subscript" => self.subscript(node),
+                "exec_statement" => self.exec_statement(node),
+                _ => {}
+            }
+            !self.reading.deep
+        });
+    }
+
     fn text(&self, node: Node<'_>) -> &'s str {
         unit::text(&node, self.src)
+    }
+
+    /// What a name stands for in this code: what `import` bound it to, or
+    /// itself.
+    fn resolve(&self, name: &str) -> String {
+        self.aliases
+            .get(name)
+            .map_or_else(|| fresh(name), |value| rebase(value))
+    }
+
+    /// Whether literal code that `exec`, `eval` or a profiler runs shares
+    /// names with this code, in a way the reader would not see: the code runs
+    /// in this code's namespace, so a name it binds is a name here
+    /// (`exec("import shutil as j")`, then `j.rmtree(…)`), and a name this
+    /// code bound is one there (`import shutil as s`, then `exec("s.rmtree(…)")`
+    /// ). The nested code is read apart, from a table of its own. So when it
+    /// binds a name to what the reader follows other than the name stands
+    /// for here, or uses a name bound here to such a thing, the line is not
+    /// read. The same is asked of the code inside the nested code, at any
+    /// depth; past the depth that can be read, it is yes.
+    fn shares_names(&mut self, text: &str) -> bool {
+        if self.nesting >= unit::MAX_DEPTH {
+            return true;
+        }
+        let translated = translate_newlines(text);
+        let Some(tree) = parse(&translated) else {
+            return false;
+        };
+        let root = tree.root_node();
+        // Code that does not parse raises before it runs a thing.
+        if root.has_error() {
+            return false;
+        }
+        let mut inner = Reader::new(
+            &translated,
+            self.aliases.clone(),
+            self.modules.clone(),
+            self.nesting + 1,
+        );
+        inner.collect_imports(root);
+        // A name bound again to something else the reader follows is one
+        // `bind` has already marked unread in the inner reading.
+        let mut shares = inner.reading.deep
+            || !inner.reading.acts.is_empty()
+            || inner
+                .aliases
+                .iter()
+                .any(|(name, value)| rebase(value) != self.resolve(name) && inner.followed(value));
+        walk(root, |node, field, _| {
+            if node.kind() == "identifier" && field != Some("attribute") {
+                let name = self.text_of(node, &translated);
+                if let Some(value) = self.aliases.get(name) {
+                    shares |= self.resolve(name) != fresh(name) && self.followed(value);
+                }
+            }
+            !shares
+        });
+        if !shares {
+            inner.walk_all(root);
+            shares = inner.shared;
+        }
+        shares
+    }
+
+    /// The text of `node` in `src`, which is not the code this reader holds.
+    fn text_of<'a>(&self, node: Node<'_>, src: &'a str) -> &'a str {
+        unit::text(&node, src)
+    }
+
+    /// Note literal code `exec`, `eval` or a profiler runs, which `call` is
+    /// the call of: when it shares names with this code, the line is unread.
+    fn literal_code(&mut self, text: String, call: Node<'_>) {
+        if self.shares_names(&text) {
+            self.shared = true;
+            self.reading.unread(self.text(call));
+        }
+        self.reading.acts.push(Act::Code(Language::Python, text));
     }
 
     fn collect_imports(&mut self, root: Node<'_>) {
@@ -1069,7 +1186,7 @@ impl<'s> Reader<'s> {
             "string" | "concatenated_string" => self.code_literal(*node),
             _ => None,
         }) {
-            Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
+            Some(text) => self.literal_code(text, call),
             None => self.reading.unread(self.text(call)),
         }
     }
@@ -1091,7 +1208,7 @@ impl<'s> Reader<'s> {
             match node.kind() {
                 "lambda" => {}
                 "string" | "concatenated_string" => match self.code_literal(node) {
-                    Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
+                    Some(text) => self.literal_code(text, call),
                     None => unread = true,
                 },
                 _ => unread = true,
@@ -1242,12 +1359,31 @@ impl<'s> Reader<'s> {
             {
                 self.reading.unread(self.text(receiver));
             }
+            // `Path.open(mode)`, `archive.open(name, mode)`, `shelve.open(file,
+            // flag)`. Any object has an `open`, and most take a file name or
+            // a URL: a string is a way of opening for writing only when it
+            // can be one.
             "open" => {
-                let mode = args
-                    .get(0, &["mode"])
+                let keywords = args
+                    .keywords
+                    .iter()
+                    .filter(|(name, _)| matches!(name.as_str(), "mode" | "flag"))
+                    .map(|(_, node)| *node);
+                let nodes: Vec<Node<'_>> = args
+                    .positional
+                    .iter()
+                    .take(2)
+                    .copied()
+                    .chain(keywords)
                     .filter(|node| node.kind() == "string")
-                    .and_then(|node| self.value(node, 0));
-                if writes(mode.as_deref()) {
+                    .collect();
+                let mut writes_file = false;
+                for node in nodes {
+                    writes_file |= self
+                        .value(node, 0)
+                        .is_some_and(|literal| opens_for_writing(&literal));
+                }
+                if writes_file {
                     let target = self.arg(receiver);
                     self.reading.acts.push(Act::Write(target));
                 }
@@ -1424,7 +1560,7 @@ impl<'s> Reader<'s> {
             .filter(|code| code.kind() == "string")
             .and_then(|code| self.value(code, 0));
         match text {
-            Some(text) => self.reading.acts.push(Act::Code(Language::Python, text)),
+            Some(text) => self.literal_code(text, node),
             None => self.reading.unread(self.text(node)),
         }
     }
@@ -1446,6 +1582,39 @@ impl<'s> Reader<'s> {
             self.reading.unread(self.text(node));
         }
     }
+}
+
+/// Whether `mode` is a mode `open` takes: the letters `r`, `w`, `x`, `a`, `b`,
+/// `t`, `+` and `U`, each once, one of `r`, `w`, `x` and `a` (or a `U`
+/// alone), and not both `b` and `t`. `Path.open` raises on anything else
+/// before it opens a file.
+fn is_open_mode(mode: &str) -> bool {
+    let letters: Vec<char> = mode.chars().collect();
+    let distinct = letters
+        .iter()
+        .enumerate()
+        .all(|(at, letter)| !letters[..at].contains(letter));
+    let base = letters
+        .iter()
+        .filter(|letter| matches!(letter, 'r' | 'w' | 'x' | 'a'))
+        .count();
+    distinct
+        && letters
+            .iter()
+            .all(|letter| matches!(letter, 'r' | 'w' | 'x' | 'a' | 'b' | 't' | '+' | 'U'))
+        && (base == 1 || (base == 0 && letters.contains(&'U')))
+        && !(letters.contains(&'b') && letters.contains(&'t'))
+}
+
+/// Whether a string handed to a method called `open` opens a file for
+/// writing: an `open` mode that writes (`w`, `a`, `x`, `+`), a `tarfile` mode
+/// (`w:gz`, `a:`), or a `dbm` flag that makes a database (`c`, `n`).
+fn opens_for_writing(literal: &str) -> bool {
+    (is_open_mode(literal) && writes(Some(literal)))
+        || literal
+            .split_once([':', '|'])
+            .is_some_and(|(mode, _)| matches!(mode, "w" | "a" | "x"))
+        || matches!(literal, "c" | "n")
 }
 
 /// A string literal's text with its escapes read, as Python reads a string

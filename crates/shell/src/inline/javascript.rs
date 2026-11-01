@@ -9,20 +9,10 @@ use super::{environment, join, mode, path, walk, writes, Act, Ancestor, Language
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
 pub(super) fn read(code: &str) -> Reading {
-    let mut parser = tree_sitter::Parser::new();
-    let tree = parser
-        .set_language(&tree_sitter_javascript::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None));
-    let mut reader = Reader {
-        src: code,
-        aliases: HashMap::new(),
-        modules: HashSet::new(),
-        names: HashMap::new(),
-        walking: false,
-        reading: Reading::default(),
-    };
-    let Some(tree) = tree else {
+    let ended = end_hashbang(code);
+    let code = ended.as_str();
+    let mut reader = Reader::new(code, HashMap::new(), HashSet::new(), 0);
+    let Some(tree) = parse(code) else {
         reader.reading.unread(code);
         return reader.reading;
     };
@@ -31,33 +21,38 @@ pub(super) fn read(code: &str) -> Reading {
         reader.reading.unread(code);
     }
     reader.collect_aliases(root);
-    reader.walking = true;
-    // The walk stops once the code is found to nest too deeply to read: the
-    // line is unreadable whatever else is in it.
-    walk(root, |node, field, above| {
-        // A name written with an escape (`\u0072mSync`) is the name it
-        // spells; the reader does not decode it, so it follows none.
-        if node.kind().ends_with("identifier") && reader.text(node).contains('\\') {
-            reader.reading.unread(reader.text(node));
-        }
-        match node.kind() {
-            "import_statement" | "export_statement" => reader.module_source(node),
-            "call_expression" | "new_expression" => reader.call(node, field, above),
-            "member_expression"
-            | "identifier"
-            | "shorthand_property_identifier"
-            | "subscript_expression" => reader.reference(node, field, above),
-            // `with (require('fs')) rmSync(…)`: every name in the block may be
-            // a member of the object.
-            "with_statement" => reader.reading.unread(reader.text(node)),
-            _ => {}
-        }
-        if node.kind() == "subscript_expression" {
-            reader.subscript(node);
-        }
-        !reader.reading.deep
-    });
+    reader.walk_all(root);
     reader.reading
+}
+
+fn parse(code: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_javascript::LANGUAGE.into())
+        .ok()
+        .and_then(|()| parser.parse(code, None))
+}
+
+/// `code` with the line a hashbang (`#!…`) starts ended as JavaScript ends
+/// it: at any line terminator, which is `\r`, U+2028 and U+2029 as well as
+/// `\n`. tree-sitter-javascript ends it at `\n` only, so the code after
+/// another terminator would be read as part of the comment, and not read.
+fn end_hashbang(code: &str) -> String {
+    if code.starts_with("#!") {
+        if let Some((at, terminator)) = code
+            .char_indices()
+            .find(|(_, c)| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+        {
+            if terminator != '\n' {
+                let mut ended = String::with_capacity(code.len());
+                ended.push_str(&code[..at]);
+                ended.push('\n');
+                ended.push_str(&code[at + terminator.len_utf8()..]);
+                return ended;
+            }
+        }
+    }
+    code.to_string()
 }
 
 /// What a call to a qualified name does.
@@ -87,6 +82,8 @@ enum Kind {
     Script,
     /// `spawn(command, args, options)` and its kin.
     Spawn,
+    /// `child_process.fork(module, args, options)`: runs node on a module.
+    Fork,
     /// `new Deno.Command(command, { args })`.
     DenoCommand,
     /// `Bun.spawn(argv)`, `Deno.run({ cmd })`.
@@ -190,6 +187,7 @@ fn whole(name: &str) -> Option<Kind> {
         | "execa.execa"
         | "execa.execaSync"
         | "execa.sync" => Kind::Spawn,
+        "child_process.fork" => Kind::Fork,
         "shelljs.rm" | "shelljs.mv" | "shelljs.cp" | "shelljs.ln" | "shelljs.chmod"
         | "shelljs.mkdir" | "shelljs.touch" => Kind::Shelljs,
         "eval" => Kind::Eval,
@@ -213,9 +211,23 @@ fn whole(name: &str) -> Option<Kind> {
         | "module.createRequire"
         | "require.main"
         | "worker_threads.Worker"
+        // Read code from the input (`repl`), or run what a string or a worker
+        // is told to (`inspector`, `cluster`).
+        | "repl.start"
+        | "repl.REPLServer"
+        | "inspector.Session"
+        | "inspector.promises.Session"
+        | "inspector/promises.Session"
+        | "cluster.fork"
+        | "cluster.setupPrimary"
+        | "cluster.setupMaster"
+        | "cluster.settings"
         | "Deno.dlopen"
         | "Deno.core" => Kind::Unread,
         "require" | "process.getBuiltinModule" | "import.meta.require" => Kind::Require,
+        // The members of `child_process` the reader does not read start a
+        // program or a process (`ChildProcess`, `_forkChild`).
+        name if name.starts_with("child_process.") => Kind::Unread,
         _ => return None,
     })
 }
@@ -244,6 +256,16 @@ const GLOBAL: &str = "globalThis";
 /// where a member of it is named; it is not one of [`ROOTS`], so a `this[key]`
 /// of a class is not a lookup the reader cannot follow.
 const THIS: &str = "this";
+
+/// What a name stands for in code that has bound nothing: itself, and the
+/// global object under its other names.
+fn fresh(name: &str) -> String {
+    if matches!(name, "global" | "window") {
+        GLOBAL.to_string()
+    } else {
+        name.to_string()
+    }
+}
 
 /// The names the global object holds itself under.
 const GLOBALS: [&str; 3] = ["globalThis", "global", "window"];
@@ -350,6 +372,11 @@ struct Reader<'s> {
     names: HashMap<usize, Option<String>>,
     walking: bool,
     reading: Reading,
+    /// How many pieces of literal code (`eval("…")`) this code is inside.
+    nesting: usize,
+    /// Whether literal code given to `eval` in this code, or in code inside
+    /// it, binds or uses a name the reader follows.
+    shared: bool,
 }
 
 /// The shells whose `-c` reads a command line: another program named by
@@ -393,8 +420,123 @@ impl<'t> Args<'t> {
 }
 
 impl<'s> Reader<'s> {
+    fn new(
+        src: &'s str,
+        aliases: HashMap<String, String>,
+        modules: HashSet<String>,
+        nesting: usize,
+    ) -> Self {
+        Self {
+            src,
+            aliases,
+            modules,
+            names: HashMap::new(),
+            walking: false,
+            reading: Reading::default(),
+            nesting,
+            shared: false,
+        }
+    }
+
+    /// Read every node under `root`, once the names `require`, `import` and
+    /// destructuring bound are known. The walk stops once the code is found
+    /// to nest too deeply to read: the line is unreadable whatever else is
+    /// in it.
+    fn walk_all(&mut self, root: Node<'_>) {
+        self.walking = true;
+        walk(root, |node, field, above| {
+            // A name written with an escape (`\u0072mSync`) is the name it
+            // spells; the reader does not decode it, so it follows none.
+            if node.kind().ends_with("identifier") && self.text(node).contains('\\') {
+                self.reading.unread(self.text(node));
+            }
+            match node.kind() {
+                "import_statement" | "export_statement" => self.module_source(node),
+                "call_expression" | "new_expression" => self.call(node, field, above),
+                "member_expression"
+                | "identifier"
+                | "shorthand_property_identifier"
+                | "subscript_expression" => self.reference(node, field, above),
+                // `with (require('fs')) rmSync(…)`: every name in the block
+                // may be a member of the object.
+                "with_statement" => self.reading.unread(self.text(node)),
+                _ => {}
+            }
+            if node.kind() == "subscript_expression" {
+                self.subscript(node);
+            }
+            !self.reading.deep
+        });
+    }
+
     fn text(&self, node: Node<'_>) -> &'s str {
         unit::text(&node, self.src)
+    }
+
+    /// What a name stands for in this code: what `require`, `import` or a
+    /// destructuring bound it to, or itself.
+    fn resolve(&self, name: &str) -> String {
+        self.aliases
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| fresh(name))
+    }
+
+    /// Whether `name`, a dotted name the reader found, is one it reads calls
+    /// by: a call it knows, or a module or an object that holds them.
+    fn followed(&self, name: &str) -> bool {
+        kind(name).is_some() || self.holds_calls(name)
+    }
+
+    /// Whether literal code `eval` runs shares names with this code, in a
+    /// way the reader would not see: the code runs in this code's scope, so a
+    /// name it binds is a name here (`eval("var m = require('fs')")`, then
+    /// `m.rm(…)`), and a name this code bound is one there (`const f =
+    /// require('fs')`, then `eval("f.rm(…)")`). The nested code is read
+    /// apart, from a table of its own. So when it binds a name to what the
+    /// reader follows other than the name stands for here, or uses a name
+    /// bound here to such a thing, the line is not read. The same is asked of
+    /// the code inside the nested code, at any depth; past the depth that can
+    /// be read, it is yes.
+    fn shares_names(&mut self, text: &str) -> bool {
+        if self.nesting >= unit::MAX_DEPTH {
+            return true;
+        }
+        let ended = end_hashbang(text);
+        let Some(tree) = parse(&ended) else {
+            return false;
+        };
+        let root = tree.root_node();
+        // Code that does not parse raises before it runs a thing.
+        if root.has_error() {
+            return false;
+        }
+        let mut inner = Reader::new(
+            &ended,
+            self.aliases.clone(),
+            self.modules.clone(),
+            self.nesting + 1,
+        );
+        inner.collect_aliases(root);
+        let mut shares = inner.reading.deep
+            || inner
+                .aliases
+                .iter()
+                .any(|(name, value)| *value != self.resolve(name) && inner.followed(value));
+        walk(root, |node, _, _| {
+            if matches!(node.kind(), "identifier" | "shorthand_property_identifier") {
+                let name = unit::text(&node, &ended);
+                if let Some(value) = self.aliases.get(name) {
+                    shares |= *value != fresh(name) && self.followed(value);
+                }
+            }
+            !shares
+        });
+        if !shares {
+            inner.walk_all(root);
+            shares = inner.shared;
+        }
+        shares
     }
 
     fn collect_aliases(&mut self, root: Node<'_>) {
@@ -1005,6 +1147,7 @@ impl<'s> Reader<'s> {
                 }
             }
             Some(Kind::Spawn) => cwd = self.spawn(&args, call),
+            Some(Kind::Fork) => self.fork(&args, call),
             Some(Kind::Shelljs) => {
                 let program = name.as_deref().and_then(|name| name.rsplit('.').next());
                 let mut words = vec![Arg::Known(program.unwrap_or_default().to_string())];
@@ -1048,16 +1191,24 @@ impl<'s> Reader<'s> {
                 }
             }
             Some(Kind::Unread) => self.reading.unread(self.text(call)),
-            Some(Kind::Eval) => match args.get(0).filter(|node| node.kind() == "string") {
-                Some(node) => {
-                    if let Some(text) = self.value(node, 0) {
+            Some(Kind::Eval) => {
+                let literal = args
+                    .get(0)
+                    .filter(|node| node.kind() == "string")
+                    .and_then(|node| self.value(node, 0));
+                match literal {
+                    Some(text) => {
+                        if self.shares_names(&text) {
+                            self.shared = true;
+                            self.reading.unread(self.text(call));
+                        }
                         self.reading
                             .acts
                             .push(Act::Code(Language::JavaScript, text));
                     }
+                    None => self.reading.unread(self.text(call)),
                 }
-                None => self.reading.unread(self.text(call)),
-            },
+            }
             Some(Kind::Require) => {
                 let source = requires.and_then(|found| found.0).or_else(|| args.get(0));
                 if source.is_none_or(|node| self.literal(node).is_none()) {
@@ -1351,6 +1502,53 @@ impl<'s> Reader<'s> {
                 }
             })
             .collect()
+    }
+
+    /// `fork('worker.js', ['arg'], { cwd })` runs node on the module, a file
+    /// of the workspace's own as `node worker.js` is. Not so when the module
+    /// is a word that is only known when it runs or starts with `-` (node
+    /// reads it as an option: `fork('-e', ['code'])` runs the code), or when
+    /// the options name the program (`execPath`) or the options it is run
+    /// with (`execArgv`: `['-e', 'code']`), or are not an object literal that
+    /// shows what it holds.
+    fn fork(&mut self, args: &Args<'_>, call: Node<'_>) {
+        let module = args.get(0).and_then(|node| self.value(node, 0));
+        let mut reads = module.is_some_and(|module| !module.starts_with('-')) && !args.splat;
+        for node in args.positional.iter().skip(1) {
+            match node.kind() {
+                "array" => {}
+                "object" => reads &= self.fork_options(*node),
+                _ => reads = false,
+            }
+        }
+        if !reads {
+            self.reading.unread(self.text(call));
+        }
+    }
+
+    /// Whether the options of a `fork` leave the program and its options as
+    /// they are: an object literal with no `execPath` or `execArgv`, and no
+    /// member that could be one (a spread, a computed name, a method).
+    fn fork_options(&mut self, options: Node<'_>) -> bool {
+        let mut cursor = options.walk();
+        let members: Vec<Node<'_>> = options.named_children(&mut cursor).collect();
+        members.into_iter().all(|member| match member.kind() {
+            "comment" => true,
+            "pair" => {
+                let name = member
+                    .child_by_field_name("key")
+                    .and_then(|key| match key.kind() {
+                        "property_identifier" => Some(self.text(key).to_string()),
+                        "string" => self.literal(key),
+                        _ => None,
+                    });
+                name.is_some_and(|name| !matches!(name.as_str(), "execPath" | "execArgv"))
+            }
+            "shorthand_property_identifier" => {
+                !matches!(self.text(member), "execPath" | "execArgv")
+            }
+            _ => false,
+        })
     }
 
     /// `spawn('rm', ['-rf', '~'])` runs the program; with `{ shell: … }`

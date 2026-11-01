@@ -356,6 +356,9 @@ impl Walker<'_> {
                     if child.kind() != "variable_assignment" && self.arg_hides(child) {
                         self.split.hide();
                     }
+                    if child.kind() != "variable_assignment" {
+                        self.exported_options(child);
+                    }
                 }
                 self.children(node, stage, level);
             }
@@ -600,9 +603,20 @@ impl Walker<'_> {
             self.split.hide_functions();
         }
         let outer = self.split.scope_hidden(prefixed);
+        // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
+        let options = self.split.node_options.len();
+        let mut cursor = node.walk();
+        let assignments: Vec<Node<'_>> = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .collect();
+        for assignment in assignments {
+            self.node_options(assignment);
+        }
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.stdin = stdin;
         launch::add(self.split, unit, self.depth);
+        self.split.node_options.truncate(options);
         self.split.unscope_hidden(outer);
     }
 
@@ -746,6 +760,29 @@ impl Walker<'_> {
         })
     }
 
+    /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
+    /// `export NODE_OPTIONS` of a value the line set another way: what node
+    /// gets then is not read.
+    fn exported_options(&mut self, node: Node<'_>) {
+        let word = self.arg(node);
+        let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        match word.known() {
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
+                    self.split.node_options.push(Arg::Known(value.to_string()));
+                } else if text == "NODE_OPTIONS" {
+                    self.split.node_options.push(Arg::Unknown(text.to_string()));
+                }
+            }
+            None if source.starts_with("NODE_OPTIONS") => {
+                self.split
+                    .node_options
+                    .push(Arg::Unknown(source.to_string()));
+            }
+            None => {}
+        }
+    }
+
     /// Whether `node`, an argument of `export` or `declare`, is a quoted
     /// assignment that turns the option on.
     fn arg_hides(&self, node: Node<'_>) -> bool {
@@ -756,6 +793,24 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        // Set on a line of its own, or after `export`: the programs after it
+        // have it, so it stays for the rest of the line.
+        self.node_options(node);
+    }
+
+    /// Note the value `assignment` gives `NODE_OPTIONS`, when it is that
+    /// variable's.
+    fn node_options(&mut self, assignment: Node<'_>) {
+        let Some(name) = assignment.child_by_field_name("name") else {
+            return;
+        };
+        if unit::text(&name, self.source) != "NODE_OPTIONS" {
+            return;
+        }
+        let value = assignment
+            .child_by_field_name("value")
+            .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
+        self.split.node_options.push(value);
     }
 
     /// A redirect that writes: `>`, `>>`, `&>`, `>|`, `<>`, and `>&` to a
