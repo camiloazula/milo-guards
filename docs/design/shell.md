@@ -997,13 +997,42 @@ global object in `node -e`).
 | Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
 | Reads | `open(path)` with a mode that reads, `os.open` with `O_RDONLY`, `Path.read_text`, `read_bytes`, `Path.open()`, `shutil.copy*`/`unpack_archive` and `Path.copy` (the source), `shutil.copytree` and `shutil.make_archive` (the folder, and all that is in it: `root_dir` joined to `base_dir`), `TarFile.add` (a file, or a folder and all in it) and `ZipFile.write` (on a name the code set to `tarfile.open(…)`, `tarfile.TarFile(…)` or `zipfile.ZipFile(…)`, as `with … as t` or `t = …`, or called on the spot), `fileinput.input` and `FileInput` (not in place; the files given), `linecache.getline`/`getlines`, `ConfigParser.read` (on a name set to `ConfigParser()`, `RawConfigParser()`; a path or a list), `netrc.netrc` (the file, or `~/.netrc` when none is given) | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `copyFileSync`/`cpSync` (the source), their async and `promises` forms, `Deno.readTextFile`, `readFile`, `Deno.open` |
 
-A read is judged as `cat PATH` is, so it is a finding only where the path is a
-secret (see [Reading a key](#reading-a-key)); it adds nothing for any other. A
-folder read all the way down (`TarFile.add`, `copytree`, `make_archive`) is
-judged as `grep -r` is, so the home directory, or a folder holding a key, is a
-read of one, as `tar -cf k.tar ~` is. `add`, `write` and `read` are read only
-on a name the code set to an archive or a config parser: any other object has
-those methods (`set.add`, `file.write`, `file.read`).
+A read of a path the code gives whole is judged as `cat PATH` is, so it is a
+finding only where the path is a secret (see [Reading a key](#reading-a-key));
+it adds nothing for any other. A read of a path the guard does not fully know
+is `unknown`, unless the part it does know is already a place that holds a key
+(see [Inline code that opens a file](#what-is-not-a-finding)). A folder read
+all the way down (`TarFile.add`, `copytree`, `make_archive`, and `fs.cp` and
+`cpSync`, which copy a folder and all that is in it) is judged as `grep -r` is,
+so the home directory, or a folder holding a key, is a read of one, as `tar -cf
+k.tar ~` is. `Bun.file(path)` is a handle on the file, which `.text()`,
+`.stream()` and the rest read, and which `Bun.write` copies from, so it is read
+where it is made. `add`, `write` and `read` are read only on a name the code
+set to an archive or a config parser: any other object has those methods
+(`set.add`, `file.write`, `file.read`). `.open()` of a `pathlib` path (`Path(…)`,
+a name set to one, what `/`, `joinpath` and `.parent` make of one) opens the
+file it names, also when its value is not known; the `open` of any other
+object is not known to open a file.
+
+**A call the reader does not know, given a path.** Code that calls something the
+reader has no row for is safe, unless it is given a path: a string that is
+absolute, in the home directory, goes up from where the code runs (`../`) or is
+a `file:` URL, or one built from the home directory, as an argument, a keyword
+argument, or in a list or a dict that is one. Such a call may read, write or
+delete the file (`numpy.fromfile('~/.ssh/id_rsa')`, `pandas.read_csv(…)`,
+`urllib.request.urlopen('file:///…')`, `fetch('file:///…')`,
+`logging.basicConfig(filename='~/.zshrc')`, `foo.rm_rf('~')`), so the line is
+`unknown`, with the reason `gives a path to a call the guard does not read`;
+when the path is a key it is `read_secret`, as for a read. What only looks at a
+name does not count: `os.path.*`, `os.listdir`, `os.scandir`, `os.walk`,
+`os.stat`, `glob.*`, `sys.path.insert`, `re.*`, `json.*`, `console.log`,
+`path.join`, `fs.existsSync`, `fs.readdirSync`, `fs.statSync`, and the methods of
+strings, lists, dictionaries, sets, paths and loggers that cut, compare, hold or
+print a path (`startswith`, `split`, `replace`, `join`, `format`, `get`, `add`,
+`append`, `exists`, `write`). A function the code defines is not one either: its
+own calls are read where they are written, and a read of its parameter is a path
+only known when it runs. The system's stores of secrets (`keyring`, `keytar`)
+are `unknown` whatever they are given.
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -1035,11 +1064,12 @@ home directory; `os.getcwd()` and `process.cwd()`; `os.path.join`,
 a path is the home directory wherever it comes in the code, as the shell reads
 it (code in a double-quoted argument had `$HOME` put in as `~`, so a literal
 tilde cannot be told from it). Anything else, such as a variable or a
-computed value, is a path only known when it runs, as `rm -rf "$DIR"` is. A
-read is the one place a name is put back as the string the code sets it to
-(see [Reading a key](#what-is-not-a-finding)): a delete or a write to `k` is
-still a path only known when it runs, since a name set later or by a loop may
-be another.
+computed value, is a path only known when it runs, as `rm -rf "$DIR"` is: a
+delete or a write to it is judged as a place unknown, and a read of it is
+`unknown`. A read is the one place a name is put back as the string the code
+sets it to (see [Reading a key](#what-is-not-a-finding)): a delete or a write
+to `k` is still a path only known when it runs, since a name set later or by a
+loop may be another.
 
 **What stays `unknown`**, with the reason `runs code the guard does not read`
 and the code that is the reason as the target: code that does not parse;
@@ -1081,8 +1111,12 @@ and then comes back under no name (`print(eval('1+2'))` is still safe: the
 value goes to `print`); `__import__('os.path')` is `os` unless a non-empty
 `fromlist` is given, as Python returns the top package. A command line or code only known when it
 runs (`child_process.execSync(process.argv[1])`, an f-string with a
-substitution) is `unknown` too. Code with none of the calls above and
-nothing it cannot read is safe: `python3 -c 'print(1+1)'`.
+substitution) is `unknown` too. So is a read of a file whose path is not fully
+known (`open(sys.argv[1])`, `open(input())`, `open('src/' + n)`), a call it does
+not know that is given a path, and the system's stores of secrets (`keyring`,
+`keytar`), each with the reason it gives; a key among them is `read_secret`.
+Code with none of the calls above and nothing it cannot read is safe:
+`python3 -c 'print(1+1)'`.
 
 A spread (`spawn(...args)`, `execa('rm', ...rest)`, `new Deno.Command(...args)`)
 in a call that starts a program may hold the program, its arguments or its
@@ -1384,24 +1418,42 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   `readFile`, `fs.promises.readFile`, `createReadStream`, `openSync`,
   `Deno.readTextFile`, and the source of `shutil.copy*`, `copytree` and
   `copyFileSync` are judged as `cat <path>` is: `read_secret` exactly when
-  the path is a place core marks `Secret`, with the same words. A path is read
-  as the code gives it: a literal, `os.path.expanduser('~/…')`, `Path.home()
-  / …`, `os.homedir() + …`, or a name the code sets to one of those, or to a
-  list a loop goes over (every string a name is set to anywhere in the code is
-  read, in any order, up to the limits below). A path that starts in a place
-  and ends in something only known when the code runs is read as a path in
-  that folder, as `cat ~/.ssh/$n` is: `'/home/me/.ssh/' + n`, `f'…/{n}'`,
-  `'…/%s' % n`, `'…/{}'.format(n)`, `os.path.join(d, n)`, `Path(d) / n`,
-  `d.joinpath(n)`, `` `…/${n}` ``, `path.join(d, n)`, `.concat(n)` and
-  `[d, n].join('/')`, and a name a loop sets to each path `Path(d).glob(…)`,
-  `rglob`, `iterdir` or `glob.glob('d/*')` list (`for p in Path('~/.ssh').glob('*')`).
-  A path with nothing known before the part that is not (`open(n + '/x')`) is
-  not a finding, as `cat $n/x` is not, and neither is the home directory with
-  a name after it (`~/$n`), which `cat ~/$n` is not either. A path only known
-  when the code runs (`open(sys.argv[1])`, `open(input())`) is not a finding,
-  as `cat $f` is not; the line is `unknown` for `effect` as every line with
-  inline code is. Code the guard cannot read, a program the code starts and a
-  name it does not follow stay `unknown` as above.
+  the path is a place core marks `Secret`, with the same words. Only a path
+  the code gives whole is a path the guard knows: a literal,
+  `os.path.expanduser('~/…')`, `Path.home() / …`, `os.homedir() + …`, an
+  f-string or template literal made of those, or a name the code sets to one
+  of those, or to strings a loop goes over when they are written out (every
+  string a name is set to anywhere in the code is read, in any order, up to
+  the limits below). A read of any other path fails closed, as a delete of one
+  is a place unknown for `rm`: the line is `unknown`, with the reason `opens a
+  file whose path is only known when the code runs` and the path as the
+  target, unless the part of it the code does give already lies in a place
+  that holds a key, which is `read_secret`, as `cat ~/.ssh/$n` is. So a path
+  that starts in a key folder and ends in something only known when the code
+  runs is `read_secret` (`'/home/me/.ssh/' + n`, `f'…/{n}'`, `'…/%s' % n`
+  and `'…/{}'.format(n)`, when the folder comes before the first part that is
+  not a literal, `os.path.join(d, n)`, `Path(d) / n`, `d.joinpath(n)`,
+  `` `…/${n}` ``, `path.join(d, n)`, `.concat(n)` and `[d, n].join('/')`), and
+  every other path not given whole is `unknown`: one with nothing known before
+  the part that is not (`open(n + '/x')`), one in a folder that holds no key
+  (`open('/etc/' + n)`, `open('src/' + n)`), the home directory with a name
+  after it (`~/` and each name `os.listdir` gives, dotfiles among them), a
+  path only known when the code runs (`open(sys.argv[1])`, `open(input())`,
+  `fileinput.input()` given no files, which reads the ones the line names), a
+  string made by a call the reader does not follow (`'…'.strip()`, `[:-1]`,
+  `.lower()`, `base64.b64decode(…)`, `chr(47)`, `atob(…)`, `new URL(…)`, a
+  function or a lambda that returns it), a name it does not follow (a
+  subscript, a dict, an unpacking, an object's member, a walrus), a `%` or a
+  `.format` with a part that is not a literal (`'%s/.ssh/id_rsa' % h`, even
+  when `h` is the home directory), and a name a loop sets to each path a
+  listing gives, whose pattern is not followed (`Path('~').glob('.ssh/*')`,
+  `Path.home().rglob('id_rsa')`, `glob.glob('~/.n*')`, `iterdir`, `listdir`,
+  `os.walk`, `os.scandir`, `readdirSync`), and a name a loop sets to each of
+  anything but a list written out where the loop is (`for k in ks` with `ks`
+  a name set to a list, a dict's `values()` or `items()`, `'a b'.split()`, a
+  concatenation of lists, `enumerate(…)`, `Object.keys(…).forEach`). Code the
+  guard cannot read, a program the code starts and a name it does not follow
+  stay `unknown` as above.
 
   A name that holds more than one string, used in a longer path (`for d in
   ['a', '/home/me/.ssh']: open(d + '/id_rsa')`), makes one read for each

@@ -1048,10 +1048,16 @@ fn python_changes_directory_in_other_ways() {
         &[
             "python3 -c \"import os, shutil; os.chdir('/tmp'); shutil.rmtree('x')\"",
             "python3 -c \"import os; os.unlink('x.log')\"",
-            "python3 -c \"import os; os.open('x.txt', os.O_RDONLY, dir_fd=3)\"",
             "python3 -c \"import os; os.scandir('.')\"",
         ],
         &[
+            // A file opened from a directory handle is a file the guard
+            // cannot name: its path is counted from a place only known when
+            // the code runs, and a read of one is `unknown`.
+            (
+                "python3 -c \"import os; os.open('x.txt', os.O_RDONLY, dir_fd=3)\"",
+                Rule::Unknown,
+            ),
             // `os.fchdir` goes to a directory only known when it runs.
             (
                 "python3 -c \"import os, shutil; os.fchdir(os.open('/home/me', os.O_RDONLY)); shutil.rmtree('.ssh')\"",
@@ -2318,25 +2324,38 @@ fn inline_code_that_reads_a_key_is_a_read_of_it() {
         Shell::Posix,
         &posix(),
         &[
-            // A file that is no secret, or a path only known when it runs, is
-            // no read of one, as `cat $x` is none.
+            // A file that is no secret, when the code gives the whole path,
+            // is no read of one.
             r#"python3 -c "print(open('README.md').read())""#,
             r#"python3 -c "print(open('/etc/hosts').read())""#,
-            r#"python3 -c "import sys; print(open(sys.argv[1]).read())""#,
             r#"python3 -c "import json; print(json.load(open('package.json')))""#,
             r#"python3 -c "from pathlib import Path; print(Path('src/a.py').read_text())""#,
-            r#"python3 -c "key = input(); print(open(key).read())""#,
             r#"python3 -c "import shutil; shutil.copy('a.txt', 'b.txt')""#,
             r#"python3 -c "k='/home/me/work/repo/ok.txt'; print(open(k).read())""#,
             r#"python3 -c "for f in ['a.txt', 'b.txt']: print(open(f).read())""#,
             r#"node -e "console.log(require('fs').readFileSync('package.json', 'utf8'))""#,
             r#"node -e "require('fs').copyFileSync('a.txt', 'b.txt')""#,
-            r#"node -e "require('fs').readFileSync(process.argv[1])""#,
             r#"node -e "require('fs').readFileSync('/dev/stdin')""#,
             // Written to a file of the workspace, not read.
             r#"python3 -c "open('/home/me/work/repo/out.txt', 'w').write('x')""#,
         ],
         &[
+            // A path only known when the code runs (the command line, the
+            // input) is a file the guard cannot name, whatever the line hands
+            // the code: the read is `unknown`, as the same path is a delete
+            // of a place unknown for `rm`.
+            (
+                r#"python3 -c "import sys; print(open(sys.argv[1]).read())""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"python3 -c "key = input(); print(open(key).read())""#,
+                Rule::Unknown,
+            ),
+            (
+                r#"node -e "require('fs').readFileSync(process.argv[1])""#,
+                Rule::Unknown,
+            ),
             ("cat ~/.ssh/id_rsa", Rule::ReadSecret),
             ("cp ~/.ssh/id_rsa keys/", Rule::ReadSecret),
             (
@@ -2904,7 +2923,6 @@ fn inline_reads_that_a_shell_command_reads_as_a_key_are_read_secret() {
         "python3 -c \"import shutil; shutil.make_archive('k', 'gztar', 'src', 'lib')\"",
         "python3 -c \"import shutil; shutil.make_archive('k', 'gztar')\"",
         "python3 -c \"import fileinput\nfor l in fileinput.input(['a.txt', 'b.txt']): print(l)\"",
-        "python3 -c \"import fileinput\nfor l in fileinput.input(): print(l)\"",
         "python3 -c \"import linecache; print(linecache.getline('a.py', 1))\"",
         "python3 -c \"import linecache; print(linecache.getlines('a.py'))\"",
         "python3 -c \"import configparser; c = configparser.ConfigParser(); c.read('setup.cfg')\"",
@@ -2917,6 +2935,12 @@ fn inline_reads_that_a_shell_command_reads_as_a_key_are_read_secret() {
         "python3 -c \"import tarfile\nt = tarfile.open('k.tgz')\nu = set()\nu.add('/home/me/.ssh/id_rsa')\"",
     ];
     let risky = [
+        // With no files it reads the ones the line names after the code, which
+        // are only known when it runs: `unknown`, as `open(sys.argv[1])` is.
+        (
+            "python3 -c \"import fileinput\nfor l in fileinput.input(): print(l)\"",
+            Rule::Unknown,
+        ),
         (
             "python3 -c \"import tarfile\nwith tarfile.open('k.tgz', 'w:gz') as t: t.add('/home/me/.ssh')\"",
             Rule::ReadSecret,
@@ -3062,22 +3086,58 @@ fn an_inline_read_of_a_path_that_starts_in_a_key_folder_is_read_secret() {
     // `cat /home/me/.ssh/$n` is a read of a key whatever `$n` is; so is code
     // that reads a path that starts there and ends in something only known
     // when it runs.
-    let safe = [
-        "python3 -c \"import os\nfor n in os.listdir('/home/me/work/repo'): print(open('/home/me/work/repo/' + n).read())\"",
-        "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join('/home/me/work/repo', n)).read())\"",
-        "python3 -c \"import pathlib; [print(p.read_text()) for p in pathlib.Path('/home/me/work/repo').glob('*.py')]\"",
-        "python3 -c \"import pathlib\nfor p in pathlib.Path('src').iterdir(): print(p.read_text())\"",
-        "python3 -c \"import glob\nfor f in glob.glob('src/*.py'): print(open(f).read())\"",
-        "python3 -c \"import glob\nfor f in glob.glob('*.py'): print(open(f).read())\"",
-        // The home directory alone, or a path with nothing known before the
-        // part that is not, is no folder of keys.
-        "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join(os.path.expanduser('~'), n)).read())\"",
-        "python3 -c \"n = input(); print(open(n + '/x').read())\"",
-        "python3 -c \"n = input(); print(open('/etc/' + n).read())\"",
-        "node -e \"const fs = require('fs'); fs.readdirSync('src').forEach(f => console.log(fs.readFileSync('src/' + f, 'utf8')))\"",
-        "node -e \"const fs = require('fs'); const f = process.argv[1]; fs.readFileSync(f + '.txt')\"",
-    ];
+    let safe: [&str; 0] = [];
     let risky = [
+        // A path that starts in a folder with no key, or in none the code
+        // gives, and ends in something only known when it runs, is a file the
+        // guard cannot name: `os.listdir` lists the dotfiles too, so a
+        // workspace with a `.netrc` makes `~/` + each name a read of it, as
+        // `for f in .*; do cat ~/"$f"; done` is one. Nothing is a finding of
+        // a key here, so each is `unknown`.
+        (
+            "python3 -c \"import os\nfor n in os.listdir('/home/me/work/repo'): print(open('/home/me/work/repo/' + n).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join('/home/me/work/repo', n)).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import pathlib; [print(p.read_text()) for p in pathlib.Path('/home/me/work/repo').glob('*.py')]\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import pathlib\nfor p in pathlib.Path('src').iterdir(): print(p.read_text())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import glob\nfor f in glob.glob('src/*.py'): print(open(f).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import glob\nfor f in glob.glob('*.py'): print(open(f).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"import os\nfor n in os.listdir('.'): print(open(os.path.join(os.path.expanduser('~'), n)).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"n = input(); print(open(n + '/x').read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "python3 -c \"n = input(); print(open('/etc/' + n).read())\"",
+            Rule::Unknown,
+        ),
+        (
+            "node -e \"const fs = require('fs'); fs.readdirSync('src').forEach(f => console.log(fs.readFileSync('src/' + f, 'utf8')))\"",
+            Rule::Unknown,
+        ),
+        (
+            "node -e \"const fs = require('fs'); const f = process.argv[1]; fs.readFileSync(f + '.txt')\"",
+            Rule::Unknown,
+        ),
         (
             "python3 -c \"import os\nfor n in os.listdir('/home/me/.ssh'): print(open('/home/me/.ssh/' + n).read())\"",
             Rule::ReadSecret,
@@ -3182,6 +3242,316 @@ fn an_inline_read_of_a_path_that_starts_in_a_key_folder_is_read_secret() {
         &posix(),
         &["cat /home/me/work/repo/$n", "cat ~/$n"],
         &[("cat /home/me/.ssh/$n", Rule::ReadSecret)],
+    );
+}
+
+// A delete or a write to a path the reader cannot work out is judged as
+// `rm -rf "$DIR"` is: a place unknown. A read fails closed the same way: code
+// that opens a file whose path the guard does not fully know is `unknown`,
+// unless the part it does know already lies in a place that holds a key, which
+// is `read_secret`. Only code the reader fully understands is safe.
+
+#[test]
+fn a_read_through_a_call_or_a_name_the_reader_does_not_follow_is_unknown() {
+    let unknown = [
+        // A call that gives back a string the reader does not work out.
+        "python3 -c \"print(open('/home/me/.ssh/id_rsaX'[:-1]).read())\"",
+        "python3 -c \"print(open('/home/me/.ssh/id_rsa '.strip()).read())\"",
+        "python3 -c \"print(open('/HOME/ME/.SSH/ID_RSA'.lower()).read())\"",
+        "python3 -c \"import base64\nprint(open(base64.b64decode('L2hvbWUvbWUvLnNzaC9pZF9yc2E=').decode()).read())\"",
+        "python3 -c \"print(open(chr(47) + 'home/me/.ssh/id_rsa').read())\"",
+        // A name the reader does not follow.
+        "python3 -c \"def p(): return '/home/me/.ssh/id_rsa'\nprint(open(p()).read())\"",
+        "python3 -c \"p = lambda: '/home/me/.ssh/id_rsa'\nprint(open(p()).read())\"",
+        "python3 -c \"d = {'k': '/home/me/.ssh/id_rsa'}\nprint(open(d['k']).read())\"",
+        "python3 -c \"ks = ['/home/me/.ssh/id_rsa']\nprint(open(ks[0]).read())\"",
+        "python3 -c \"a, b = 'x', '/home/me/.ssh/id_rsa'\nprint(open(b).read())\"",
+        "python3 -c \"print(open((k := '/home/me/.ssh/id_rsa')).read())\"",
+        "node -e \"console.log(require('fs').readFileSync('/home/me/.ssh/id_rsa'.slice(0), 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync('/home/me/.ssh/id_rsaX'.slice(0,-1), 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync(atob('L2hvbWUvbWUvLnNzaC9pZF9yc2E='), 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync(String.fromCharCode(47)+'home/me/.ssh/id_rsa', 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync(new URL('file:///home/me/.ssh/id_rsa'), 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync(Buffer.from('/home/me/.ssh/id_rsa'), 'utf8'))\"",
+        "node -e \"console.log(require('fs').readFileSync((() => '/home/me/.ssh/id_rsa')(), 'utf8'))\"",
+        "node -e \"function p() { return '/home/me/.ssh/id_rsa' } console.log(require('fs').readFileSync(p(), 'utf8'))\"",
+        "node -e \"const o = {p: '/home/me/.ssh/id_rsa'}; console.log(require('fs').readFileSync(o.p, 'utf8'))\"",
+        "node -e \"const [p] = ['/home/me/.ssh/id_rsa']; console.log(require('fs').readFileSync(p, 'utf8'))\"",
+        // The same reads through the other readers.
+        "python3 -c \"from pathlib import Path\nprint(list(map(Path.read_text, Path('/home/me/.ssh').iterdir())))\"",
+        "python3 -c \"import sys\nfrom pathlib import Path\nprint(Path(sys.argv[1]).open().read())\" /home/me/.ssh/id_rsa",
+        "python3 -c \"import sys\nfrom pathlib import Path\np = Path(sys.argv[1])\nprint(p.open().read())\" /home/me/.ssh/id_rsa",
+    ];
+    let risky: Vec<(&str, Rule)> = unknown.iter().map(|line| (*line, Rule::Unknown)).collect();
+    check(Shell::Posix, &posix(), &[], &risky);
+    // A path the code gives whole is read as `cat` reads it, and the start of
+    // one that is a folder of keys is a read of a key.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["python3 -c \"print(open('README.md').read())\""],
+        &[
+            (
+                "python3 -c \"print(open('/home/me/.ssh/id_rsa').read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"print(open('/home/me/.ssh/id_' + input()).read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e \"console.log(require('fs').readFileSync('/home/me/.ssh/' + process.argv[1]))\"",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_read_whose_path_comes_from_the_command_line_is_unknown() {
+    // The path is on the line, but the guard does not follow the arguments
+    // the code is given: a delete of one is a place unknown for `rm`, and a
+    // read of one is `unknown`.
+    let unknown = [
+        "python3 -c \"import sys\nprint(open(sys.argv[1]).read())\" /home/me/.ssh/id_rsa",
+        "python3 -c \"import sys\nprint(open(sys.argv[1]).read())\" README.md",
+        "node -e \"console.log(require('fs').readFileSync(process.argv[1], 'utf8'))\" /home/me/.ssh/id_rsa",
+        "python3 -c \"import sys\nfor k in sys.argv[1:]:\n    print(open(k).read())\" /home/me/.ssh/id_rsa",
+        "node -e \"process.argv.slice(1).forEach(k => console.log(require('fs').readFileSync(k)))\" /home/me/.ssh/id_rsa",
+        "python3 -c \"import sys\nprint(open('/home/me/%s' % sys.argv[1]).read())\" .netrc",
+        "python3 -c \"import fileinput\nfor l in fileinput.input():\n    print(l)\" /home/me/.ssh/id_rsa",
+        "python3 -c \"import sys, shutil\nshutil.copy(sys.argv[1], 'x')\" /home/me/.ssh/id_rsa",
+        "python3 -c \"print(open(input()).read())\"",
+        "python3 -c \"import os\nprint(open(os.environ['KEYFILE']).read())\"",
+        "node -e \"console.log(require('fs').readFileSync(process.env.KEYFILE, 'utf8'))\"",
+    ];
+    let risky: Vec<(&str, Rule)> = unknown.iter().map(|line| (*line, Rule::Unknown)).collect();
+    check(Shell::Posix, &posix(), &[], &risky);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "python3 -c \"import sys, shutil\nshutil.rmtree(sys.argv[1])\" /home/me",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import sys\nopen(sys.argv[1], 'w')\" /home/me/.zshrc",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_loop_variable_or_a_listing_loses_the_path_so_the_read_is_unknown() {
+    let unknown = [
+        // The pattern of a listing is not followed, so what it gives is a
+        // path somewhere in the folder.
+        "python3 -c \"import pathlib\nfor p in pathlib.Path('/home/me').glob('.ssh/*'):\n    print(p.read_text())\"",
+        "python3 -c \"import pathlib\nfor p in pathlib.Path.home().rglob('id_rsa'):\n    print(p.read_text())\"",
+        "python3 -c \"import glob\nfor p in glob.glob('/home/me/.n*'):\n    print(open(p).read())\"",
+        "python3 -c \"import pathlib\nfor p in pathlib.Path('/home/me').iterdir():\n    print(p.read_text())\"",
+        "python3 -c \"import pathlib\nfor p in pathlib.Path('/home/me').glob('*'):\n    print(p.read_text())\"",
+        "python3 -c \"import pathlib\nfor p in pathlib.Path('/home/me').rglob('*'):\n    print(p.read_text())\"",
+        "python3 -c \"import os\nfor n in os.listdir('/home/me'):\n    print(open('/home/me/' + n).read())\"",
+        "node -e \"const fs = require('fs'); for (const n of fs.readdirSync('/home/me')) console.log(fs.readFileSync('/home/me/' + n, 'utf8'))\"",
+        // A name set to a list the loop goes over.
+        "python3 -c \"ks = ['/home/me/.ssh/id_rsa']\nfor k in ks:\n    print(open(k).read())\"",
+        "python3 -c \"for i, k in enumerate(['/home/me/.ssh/id_rsa']):\n    print(open(k).read())\"",
+        "python3 -c \"for k in {'/home/me/.ssh/id_rsa': 1}.values():\n    print(open(k).read())\"",
+        "python3 -c \"for k, v in {'/home/me/.ssh/id_rsa': 1}.items():\n    print(open(k).read())\"",
+        "python3 -c \"for d in 'a /home/me/.ssh'.split():\n    print(open(d + '/id_rsa').read())\"",
+        "python3 -c \"for d in ['a'] + ['/home/me/.ssh']:\n    print(open(d + '/id_rsa').read())\"",
+        "node -e \"['/home/me/.ssh/id_rsa'].forEach(k => console.log(require('fs').readFileSync(k)))\"",
+        "node -e \"Object.keys({'/home/me/.ssh/id_rsa': 1}).forEach(k => console.log(require('fs').readFileSync(k)))\"",
+        // Walks and scans.
+        "python3 -c \"import os\nfor r, d, fs in os.walk('/home/me/.ssh'):\n    for f in fs:\n        print(open(os.path.join(r, f)).read())\"",
+        "python3 -c \"import os\nfor r, d, fs in os.walk('/home/me'):\n    for f in fs:\n        print(open(os.path.join(r, f)).read())\"",
+        "python3 -c \"import os\nfor e in os.scandir('/home/me/.ssh'):\n    print(open(e.path).read())\"",
+        "python3 -c \"import os\nfor e in os.scandir('/home/me/.ssh'):\n    print(open(e).read())\"",
+        "python3 -c \"import pathlib\nfor r, d, fs in pathlib.Path('/home/me/.ssh').walk():\n    for f in fs:\n        print(open(r / f).read())\"",
+        "python3 -c \"import glob\nfor p in glob.iglob('/home/me/.*'):\n    print(open(p).read())\"",
+        // A name from a listing, and what is made of a listing.
+        "python3 -c \"import os\nns = os.listdir('/home/me')\nprint(open('/home/me/' + ns[0]).read())\"",
+        "python3 -c \"import os\nprint([open('/home/me/' + n).read() for n in os.listdir('/home/me')])\"",
+        "python3 -c \"import os\nprint(list(map(lambda n: open('/home/me/'+n).read(), os.listdir('/home/me'))))\"",
+        "python3 -c \"from pathlib import Path\nprint(list(map(Path.read_text, Path('/home/me/.ssh').iterdir())))\"",
+        "python3 -c \"from pathlib import Path\nprint(list(Path('/home/me/.ssh').iterdir())[0].read_text())\"",
+        "python3 -c \"from pathlib import Path\nprint(next(Path('/home/me/.ssh').iterdir()).read_text())\"",
+    ];
+    let risky: Vec<(&str, Rule)> = unknown.iter().map(|line| (*line, Rule::Unknown)).collect();
+    check(Shell::Posix, &posix(), &[], &risky);
+    // What a loop over strings the code writes out is read in full still is.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["python3 -c \"for f in ['a.txt', 'b.txt']:\n    print(open(f).read())\""],
+        &[],
+    );
+}
+
+#[test]
+fn a_percent_or_format_with_a_part_that_is_not_a_literal_loses_the_path() {
+    let unknown = [
+        "python3 -c \"import os\nprint(open('%s/.ssh/id_rsa' % os.environ['HOME']).read())\"",
+        "python3 -c \"import os\nprint(open('{}/.ssh/id_rsa'.format(os.path.expanduser('~'))).read())\"",
+        "python3 -c \"import os\nprint(open('{h}/.ssh/id_rsa'.format(h=os.path.expanduser('~'))).read())\"",
+        "python3 -c \"import os\nprint(open('%(h)s/.ssh/id_rsa' % {'h': os.path.expanduser('~')}).read())\"",
+        "python3 -c \"import os\nh = os.path.expanduser('~')\nprint(open('%s/.ssh/id_rsa' % h).read())\"",
+        "python3 -c \"import os\nh = os.path.expanduser('~')\nprint(open('%s/%s' % (h, '.netrc')).read())\"",
+        // All literal, and still no path the guard works out.
+        "python3 -c \"import os\nprint(open(os.path.expanduser('~/%s' % '.netrc')).read())\"",
+        "python3 -c \"d = '/home/me/.ssh'\nn = input()\nprint(open('%s/%s' % (d, n)).read())\"",
+        "python3 -c \"d = '/home/me/.ssh'\nn = input()\nprint(open('{}/{}'.format(d, n)).read())\"",
+    ];
+    let risky: Vec<(&str, Rule)> = unknown.iter().map(|line| (*line, Rule::Unknown)).collect();
+    check(Shell::Posix, &posix(), &[], &risky);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            // A delete of a place that is not known is a delete of one, and an
+            // f-string is read in full.
+            (
+                "python3 -c \"import os, shutil\nshutil.rmtree('%s' % os.path.expanduser('~'))\"",
+                Rule::Delete,
+            ),
+            (
+                "python3 -c \"import os\nh = os.path.expanduser('~')\nprint(open(f'{h}/.ssh/id_rsa').read())\"",
+                Rule::ReadSecret,
+            ),
+            // The text before the first part that is not a literal is a
+            // folder of keys.
+            (
+                "python3 -c \"n = input()\nprint(open('/home/me/.ssh/%s' % n).read())\"",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_call_the_reader_does_not_know_that_is_given_a_path_is_unknown() {
+    let unknown = [
+        // The same call on a path that is no key is `unknown`.
+        "python3 -c \"import pandas\nprint(pandas.read_csv('/home/me/data.csv'))\"",
+        "python3 -c \"from numpy import loadtxt\nprint(loadtxt('/tmp/data.txt'))\"",
+        "python3 -c \"import foo\nfoo.baz(path='/tmp/x')\"",
+        "python3 -c \"import foo\nfoo.baz(['/tmp/x'])\"",
+        "python3 -c \"import foo\nfoo.baz({'p': '/tmp/x'})\"",
+        "python3 -c \"import foo\nfoo.baz('~/x')\"",
+        "python3 -c \"import foo, os\nfoo.baz(os.path.expanduser('~'))\"",
+        "python3 -c \"import foo\nfoo.baz('file:///tmp/x')\"",
+        // The store of secrets of the system.
+        "python3 -c \"import keyring\nprint(keyring.get_password('x','y'))\"",
+        "node -e \"const k = require('keytar'); k.getPassword('x', 'y')\"",
+        // Writes and deletes it does not model.
+        "python3 -c \"import logging\nlogging.basicConfig(filename='/home/me/.zshrc', filemode='w')\nlogging.error('x')\"",
+        "python3 -c \"import numpy\nnumpy.save('/home/me/.zshrc', [1])\"",
+        "python3 -c \"import foo\nfoo.rm_rf('/home/me')\"",
+        "python3 -c \"from foo import rm_rf\nrm_rf('/home/me')\"",
+        "node -e \"require('xyz').rimraf('/home/me')\"",
+        "node -e \"require('fs').utimesSync('/home/me/.zshrc', 0, 0)\"",
+        "node -e \"const x = require('xyz'); x.save('/tmp/x', 'y')\"",
+        "node -e \"fetch('file:///tmp/x').then(r => r.text())\"",
+    ];
+    let risky: Vec<(&str, Rule)> = unknown.iter().map(|line| (*line, Rule::Unknown)).collect();
+    check(Shell::Posix, &posix(), &[], &risky);
+    // Reads it does not model, on a key, say what they read; so does a
+    // recursive copy of the home directory, as `cp -r ~ /tmp/x` and
+    // `shutil.copytree` do.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "python3 -c \"import urllib.request\nprint(urllib.request.urlopen('file:///home/me/.ssh/id_rsa').read())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"import numpy\nprint(numpy.fromfile('/home/me/.ssh/id_rsa'))\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"import numpy\nprint(numpy.loadtxt('/home/me/.aws/credentials'))\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"import pandas\nprint(pandas.read_csv('/home/me/.aws/credentials'))\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "bun -e \"console.log(await Bun.file('/home/me/.ssh/id_rsa').text())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "bun -e \"console.log(await Bun.file('/home/me/.ssh/id_rsa').stream())\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "bun -e \"await Bun.write('/tmp/x', Bun.file('/home/me/.ssh/id_rsa'))\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e \"fetch('file:///home/me/.ssh/id_rsa').then(r => r.text()).then(console.log)\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "python3 -c \"import foo\nfoo.baz('~/.ssh/id_rsa')\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e \"require('fs').cpSync('/home/me','/tmp/x',{recursive:true})\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e \"require('fs').promises.cp('/home/me','/tmp/x',{recursive:true})\"",
+                Rule::ReadSecret,
+            ),
+            (
+                "node -e \"require('fs').cp('/home/me','/tmp/x',{recursive:true},()=>{})\"",
+                Rule::ReadSecret,
+            ),
+            ("cp -r ~ /tmp/x", Rule::ReadSecret),
+            (
+                "python3 -c \"import shutil\nshutil.copytree('/home/me', '/tmp/x')\"",
+                Rule::ReadSecret,
+            ),
+            ("touch ~/.zshrc", Rule::Overwrite),
+        ],
+    );
+    // What only looks at a name, or asks for the metadata of a file, opens
+    // nothing, and a path given to it is no reason to doubt the line.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "python3 -c \"import os; print(os.listdir('.'))\"",
+            "python3 -c \"import os; print(os.path.exists('/tmp/x'))\"",
+            "python3 -c \"import os; print(os.path.join('/tmp', 'x'))\"",
+            "python3 -c \"import os; print(os.stat('/tmp').st_mode)\"",
+            "python3 -c \"import sys; sys.path.insert(0, '/opt/lib'); print(sys.path)\"",
+            "python3 -c \"import shutil; print(shutil.disk_usage('/'))\"",
+            "python3 -c \"import re; print(re.sub('/+', '/', '/a//b'))\"",
+            "python3 -c \"print('/tmp/x'.split('/'))\"",
+            "python3 -c \"import os; print(os.environ.get('HOME', '/root'))\"",
+            "python3 -c \"from pathlib import Path; print(Path('/tmp/x').exists())\"",
+            "python3 -c \"s = set(); s.add('/tmp/x'); print(s)\"",
+            "python3 -c \"import json; print(json.dumps({'a': '/tmp/x'}))\"",
+            "python3 -c \"import urllib.request; print(urllib.request.urlopen('https://example.com').status)\"",
+            "node -e \"console.log(require('os').homedir())\"",
+            "node -e \"console.log(require('path').join('/a', 'b'))\"",
+            "node -e \"console.log(require('fs').existsSync('/tmp/x'))\"",
+            "node -e \"console.log(require('fs').readdirSync('/tmp'))\"",
+            "node -e \"console.log('/tmp/x'.split('/'))\"",
+            "node -e \"fetch('https://example.com').then(r => console.log(r.status))\"",
+            "bun -e \"console.log(await Bun.file('package.json').text())\"",
+        ],
+        &[],
     );
 }
 

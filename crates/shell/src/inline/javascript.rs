@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use super::{
-    environment, join, mode, path, read_path, walk, writes, Act, Ancestor, Constants, Expansion,
-    Holds, Language, Parts, Reading,
+    environment, join, mode, named_path, path, read_path, walk, writes, Act, Ancestor, Constants,
+    Expansion, Holds, Language, Parts, Reading,
 };
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
@@ -83,6 +83,9 @@ enum Kind {
     DenoOpen,
     /// `Bun.write(path, data)`: the path may be `Bun.file(path)`.
     BunWrite,
+    /// `Bun.file(path)`: a handle on a file, which `.text()`, `.stream()` and
+    /// the rest read, and is a copy's source when handed to `Bun.write`.
+    BunFile,
     /// Runs a command line.
     Script,
     /// `spawn(command, args, options)` and its kin.
@@ -181,6 +184,7 @@ fn whole(name: &str) -> Option<Kind> {
         "Deno.run" | "Bun.spawn" | "Bun.spawnSync" => Kind::Argv,
         "Deno.Command" => Kind::DenoCommand,
         "Bun.write" => Kind::BunWrite,
+        "Bun.file" => Kind::BunFile,
         "Bun.$"
         | "zx.$"
         | "child_process.exec"
@@ -240,6 +244,8 @@ fn whole(name: &str) -> Option<Kind> {
         | "cluster.settings"
         | "Deno.dlopen"
         | "Deno.core" => Kind::Unread,
+        // The system's store of secrets, which is no file the reader names.
+        name if name.starts_with("keytar.") => Kind::Unread,
         "require" | "process.getBuiltinModule" | "import.meta.require" => Kind::Require,
         // The members of `child_process` the reader does not read start a
         // program or a process (`ChildProcess`, `_forkChild`).
@@ -376,6 +382,119 @@ fn readable_member(module: &str, property: &str) -> bool {
     };
     members.contains(&property)
 }
+
+/// The calls, by the start of their name, that are given a path and only look
+/// at its name, give back a string made of it, or look at the metadata of a
+/// file or list a folder: they open nothing, so a path handed to one is no
+/// reason to doubt the line. A call the reader does not know that is not one
+/// of these, and is given a path, may read it, write it or delete it.
+const NAMES_ONLY: &[&str] = &[
+    "console.",
+    "path.",
+    "JSON.",
+    "Math.",
+    "Object.",
+    "Array.",
+    "String.",
+    "Number.",
+    "Date.",
+    "Promise.",
+    "Buffer.",
+    "Symbol.",
+    "process.stdout.",
+    "process.stderr.",
+    "process.env",
+    "process.cwd",
+    "process.emitWarning",
+    "os.",
+    "util.",
+    "assert.",
+    "crypto.",
+    "querystring.",
+    "url.",
+    "events.",
+    "fs.exists",
+    "fs.stat",
+    "fs.lstat",
+    "fs.access",
+    "fs.readdir",
+    "fs.readlink",
+    "fs.realpath",
+    "fs.opendir",
+    "fs.promises.stat",
+    "fs.promises.lstat",
+    "fs.promises.access",
+    "fs.promises.readdir",
+    "fs.promises.readlink",
+    "fs.promises.realpath",
+    "fs.promises.opendir",
+    "Deno.stat",
+    "Deno.lstat",
+    "Deno.readDir",
+    "Deno.readLink",
+    "Deno.realPath",
+    "Deno.cwd",
+    "Deno.env.",
+];
+
+/// The methods of strings, arrays, maps, sets, streams and loggers that are
+/// given a path as text or as an argument and open nothing: they cut it,
+/// compare it, hold it, or write it as a message.
+const METHODS_OF_TEXT: &[&str] = &[
+    "startsWith",
+    "endsWith",
+    "split",
+    "slice",
+    "substring",
+    "substr",
+    "replace",
+    "replaceAll",
+    "concat",
+    "join",
+    "includes",
+    "indexOf",
+    "lastIndexOf",
+    "match",
+    "matchAll",
+    "test",
+    "push",
+    "unshift",
+    "get",
+    "set",
+    "has",
+    "add",
+    "toString",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "padStart",
+    "padEnd",
+    "normalize",
+    "toLowerCase",
+    "toUpperCase",
+    "log",
+    "error",
+    "warn",
+    "info",
+    "debug",
+    "write",
+    "end",
+    "then",
+    "catch",
+    "finally",
+    "on",
+    "once",
+    "emit",
+    "resolve",
+    "reject",
+    "localeCompare",
+    "charAt",
+    "at",
+    "includes",
+    "forEach",
+    "map",
+    "filter",
+];
 
 /// The properties of an options object whose truth means a file is written.
 const WRITE_OPTIONS: [&str; 5] = ["write", "append", "create", "createNew", "truncate"];
@@ -1408,8 +1527,17 @@ impl<'s> Reader<'s> {
                 self.act(target.map(Act::Write));
             }
             Some(Kind::Copy) => {
+                // `cp` and `cpSync` copy a folder and all that is in it, and
+                // so does `fs-extra`'s `copy`.
+                let call = name.as_deref().unwrap_or_default();
+                let tree = call.starts_with("fs-extra.copy")
+                    || matches!(call.rsplit('.').next(), Some("cp" | "cpSync"));
                 for source in self.read_target(&args, 0) {
-                    self.reading.acts.push(Act::Read(source));
+                    self.reading.acts.push(if tree {
+                        Act::ReadTree(source)
+                    } else {
+                        Act::Read(source)
+                    });
                 }
                 let target = self.target(&args, 1);
                 self.act(target.map(Act::Write));
@@ -1488,6 +1616,11 @@ impl<'s> Reader<'s> {
                     None => self.target(&args, 0),
                 };
                 self.act(target.map(Act::Write));
+            }
+            Some(Kind::BunFile) => {
+                for source in self.read_target(&args, 0) {
+                    self.reading.acts.push(Act::Read(source));
+                }
             }
             Some(Kind::Script) => {
                 let command = self.target(&args, 0);
@@ -1610,7 +1743,13 @@ impl<'s> Reader<'s> {
                     }
                 }
             }
-            None => self.method(function, name.as_deref(), call),
+            None => {
+                self.method(function, name.as_deref(), call);
+                // A call the reader does not know is given a path.
+                if self.reading.acts.len() == before {
+                    self.unmodeled(function, name.as_deref(), &args);
+                }
+            }
         }
         self.within(cwd, before);
         // `import(x)`: a module loaded where the reader cannot follow it,
@@ -2041,6 +2180,52 @@ impl<'s> Reader<'s> {
                 Act::Write(target)
             }
         }));
+    }
+
+    /// A call the reader does not know (not a delete, a write, a read or a
+    /// command it follows) that is given a path, as a string or built from
+    /// the home directory: it may read it, write it or delete it, so the
+    /// line is `unknown`, unless the path is a key (`read_secret`). A call
+    /// that only looks at the name of a path, a method of a string, an array
+    /// or a map, and a function the code defines (whose own calls are read
+    /// where they are written) are not given a path in this sense.
+    fn unmodeled(&mut self, function: Node<'_>, name: Option<&str>, args: &Args<'_>) {
+        match function.kind() {
+            "identifier" => {
+                if !name.is_some_and(|name| name.contains('.') || name == "fetch") {
+                    return;
+                }
+            }
+            "member_expression" => {
+                let Some(method) = function.child_by_field_name("property") else {
+                    return;
+                };
+                if METHODS_OF_TEXT.contains(&self.text(method)) {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        if name.is_some_and(|name| NAMES_ONLY.iter().any(|start| name.starts_with(start))) {
+            return;
+        }
+        let mut given = Vec::new();
+        for node in &args.positional {
+            let mut cursor = node.walk();
+            match node.kind() {
+                "array" => given.extend(node.named_children(&mut cursor)),
+                "object" => given.extend(
+                    node.named_children(&mut cursor)
+                        .filter_map(|pair| pair.child_by_field_name("value")),
+                ),
+                _ => given.push(*node),
+            }
+        }
+        for node in given {
+            if let Some(path) = self.value(node, 0).as_deref().and_then(named_path) {
+                self.reading.acts.push(Act::Opaque(path));
+            }
+        }
     }
 
     /// A name or property used without being called: an alias of a call the

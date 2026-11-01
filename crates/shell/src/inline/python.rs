@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use super::{
-    environment, join, mode, path, read_path, walk, writes, Act, Ancestor, Constants, Expansion,
-    Holds, Language, Parts, Reading,
+    environment, join, mode, named_path, path, read_path, walk, writes, Act, Ancestor, Constants,
+    Expansion, Holds, Language, Parts, Reading,
 };
 use crate::unit::{self, Arg, MAX_TREE_DEPTH};
 
@@ -328,7 +328,11 @@ fn kind(name: &str) -> Option<Kind> {
             // `runcall`, `main`, `Pdb`), which reads commands, and runs what
             // they say, from the input.
             || name.starts_with("pdb.")
-            || name.starts_with("ctypes.") =>
+            || name.starts_with("ctypes.")
+            // The system's store of secrets, which is no file the reader
+            // names: what a call asks it for is a read of a key.
+            || name.starts_with("keyring.")
+            || name.starts_with("keyrings.") =>
         {
             Kind::Unread
         }
@@ -342,7 +346,7 @@ const PATHS: [&str; 4] = ["Path", "PurePath", "PosixPath", "PurePosixPath"];
 
 /// The calls that give a method of a `pathlib.Path` away when named without
 /// being called (`map(Path.unlink, paths)`).
-const METHODS: [&str; 7] = [
+const METHODS: [&str; 10] = [
     "unlink",
     "rmdir",
     "write_text",
@@ -350,6 +354,161 @@ const METHODS: [&str; 7] = [
     "symlink_to",
     "hardlink_to",
     "extractall",
+    "read_text",
+    "read_bytes",
+    "open",
+];
+
+/// The calls, by the start of their name, that are given a path and only
+/// look at its name or give back a string made of it: they open nothing, so
+/// a path handed to one is no reason to doubt the line. A call the reader
+/// does not know that is not one of these, and is given a path, may read it,
+/// write it or delete it.
+const NAMES_ONLY: &[&str] = &[
+    "os.path.",
+    "posixpath.",
+    "ntpath.",
+    "genericpath.",
+    "pathlib.",
+    "sys.",
+    "re.",
+    "json.",
+    "math.",
+    "time.",
+    "datetime.",
+    "random.",
+    "string.",
+    "textwrap.",
+    "base64.",
+    "binascii.",
+    "hashlib.",
+    "struct.",
+    "itertools.",
+    "functools.",
+    "collections.",
+    "operator.",
+    "typing.",
+    "shlex.",
+    "fnmatch.",
+    "glob.",
+    "uuid.",
+    "secrets.",
+    "platform.",
+    "locale.",
+    "argparse.",
+    "warnings.",
+    "urllib.parse.",
+    "logging.getLogger",
+    "logging.debug",
+    "logging.info",
+    "logging.warning",
+    "logging.error",
+    "logging.critical",
+    "logging.exception",
+    "os.environ.",
+    "os.getenv",
+    "os.get",
+    "os.fs",
+    "shutil.which",
+];
+
+/// More of them, by their whole name: a listing or a look at the metadata of
+/// a file opens none of it.
+const NAMES_ONLY_MORE: &[&str] = &[
+    "os.listdir",
+    "os.scandir",
+    "os.walk",
+    "os.fwalk",
+    "os.stat",
+    "os.lstat",
+    "os.access",
+    "os.statvfs",
+    "os.readlink",
+    "shutil.disk_usage",
+    "shutil.get_terminal_size",
+    "os.cpu_count",
+    "os.urandom",
+];
+
+/// The methods of strings, lists, dictionaries, paths and loggers that are
+/// given a path as text or as an argument and open nothing: they cut it,
+/// compare it, hold it, or write it as a message.
+const METHODS_OF_TEXT: &[&str] = &[
+    "startswith",
+    "endswith",
+    "split",
+    "rsplit",
+    "splitlines",
+    "partition",
+    "rpartition",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "removeprefix",
+    "removesuffix",
+    "replace",
+    "join",
+    "format",
+    "format_map",
+    "get",
+    "setdefault",
+    "pop",
+    "append",
+    "extend",
+    "insert",
+    "index",
+    "add",
+    "discard",
+    "rindex",
+    "find",
+    "rfind",
+    "count",
+    "encode",
+    "decode",
+    "lower",
+    "upper",
+    "title",
+    "write",
+    "writelines",
+    "print",
+    "relative_to",
+    "is_relative_to",
+    "joinpath",
+    "with_name",
+    "with_suffix",
+    "with_stem",
+    "match",
+    "fullmatch",
+    "search",
+    "sub",
+    "subn",
+    "findall",
+    "finditer",
+    "add_argument",
+    "add_parser",
+    "set_defaults",
+    "getLogger",
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "critical",
+    "exception",
+    "exists",
+    "is_file",
+    "is_dir",
+    "samefile",
+];
+
+/// More of them: the reads of a path's metadata and its listings.
+const METHODS_OF_PATHS: &[&str] = &[
+    "stat",
+    "lstat",
+    "glob",
+    "rglob",
+    "iterdir",
+    "expanduser",
+    "resolve",
 ];
 
 /// Attributes that reach what a name cannot: a namespace as a table, the
@@ -404,6 +563,8 @@ const TAR: u8 = 1;
 const ZIP: u8 = 2;
 /// `configparser.ConfigParser()`: `read` reads the files it is given.
 const CONFIG: u8 = 4;
+/// `pathlib.Path(…)`: its `open` opens the file it names.
+const PATH: u8 = 8;
 
 /// What a name stands for in code that has bound nothing: itself, and the
 /// `pathlib` classes are `pathlib`'s.
@@ -608,21 +769,93 @@ impl<'s> Reader<'s> {
     /// `name = tarfile.open(…)`, `with zipfile.ZipFile(…) as name`: `name`
     /// stands for an archive or a config parser, whose methods read files.
     fn note_object(&mut self, value: Node<'_>, name: Node<'_>) {
-        if name.kind() != "identifier" || value.kind() != "call" {
+        if name.kind() != "identifier" {
             return;
         }
-        let Some(function) = value.child_by_field_name("function") else {
-            return;
-        };
-        let class = self.class_of(function);
+        let mut class = 0;
+        if self.path_like(value, 0) {
+            class |= PATH;
+        }
+        if value.kind() == "call" {
+            if let Some(function) = value.child_by_field_name("function") {
+                class |= self.class_of(function);
+            }
+        }
         if class != 0 {
             *self.objects.entry(self.text(name).to_string()).or_default() |= class;
         }
     }
 
-    /// What the call of `function` makes: `TAR`, `ZIP`, `CONFIG`, or none.
+    /// Whether `node` is a `pathlib` path: `Path(…)`, `Path.home()`, a name
+    /// the code set to one, and what a path's own methods and `/` make of it.
+    /// A method such as `open` of any other object is not known to open a
+    /// file.
+    fn path_like(&mut self, node: Node<'_>, level: usize) -> bool {
+        if level > 8 {
+            return false;
+        }
+        match node.kind() {
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|inner| self.path_like(inner, level + 1)),
+            "identifier" => self
+                .objects
+                .get(self.text(node))
+                .is_some_and(|classes| classes & PATH != 0),
+            "call" => {
+                let Some(function) = node.child_by_field_name("function") else {
+                    return false;
+                };
+                if self.class_of(function) & PATH != 0 {
+                    return true;
+                }
+                let method = function
+                    .child_by_field_name("attribute")
+                    .map(|attribute| self.text(attribute));
+                let object = function.child_by_field_name("object");
+                match (method, object) {
+                    (
+                        Some(
+                            "joinpath" | "with_name" | "with_suffix" | "with_stem" | "resolve"
+                            | "absolute" | "expanduser",
+                        ),
+                        Some(object),
+                    ) => self.path_like(object, level + 1),
+                    _ => false,
+                }
+            }
+            "binary_operator" => {
+                let slash = node
+                    .child_by_field_name("operator")
+                    .is_some_and(|operator| self.text(operator) == "/");
+                slash
+                    && node
+                        .child_by_field_name("left")
+                        .is_some_and(|left| self.path_like(left, level + 1))
+            }
+            "attribute" => {
+                node.child_by_field_name("attribute")
+                    .is_some_and(|attribute| self.text(attribute) == "parent")
+                    && node
+                        .child_by_field_name("object")
+                        .is_some_and(|object| self.path_like(object, level + 1))
+            }
+            _ => false,
+        }
+    }
+
+    /// What the call of `function` makes: `TAR`, `ZIP`, `CONFIG`, `PATH`, or
+    /// none.
     fn class_of(&mut self, function: Node<'_>) -> u8 {
         match self.qualified(function, 0).as_deref() {
+            Some(
+                "pathlib.Path"
+                | "pathlib.PurePath"
+                | "pathlib.PosixPath"
+                | "pathlib.PurePosixPath"
+                | "pathlib.Path.home"
+                | "pathlib.Path.cwd",
+            ) => PATH,
             Some("tarfile.open") => TAR,
             Some(name) if name.starts_with("tarfile.TarFile") => TAR,
             Some("zipfile.ZipFile" | "zipfile.PyZipFile") => ZIP,
@@ -1727,10 +1960,68 @@ impl<'s> Reader<'s> {
                     self.used(call, field, above);
                 }
             }
-            None => self.method(function, &args),
+            None => {
+                self.method(function, &args);
+                // A call the reader does not know is given a path.
+                if self.reading.acts.len() == before {
+                    self.unmodeled(function, name.as_deref(), &args);
+                }
+            }
         }
         if matches!(kind, Some(Kind::Script | Kind::Subprocess | Kind::Exec)) {
             self.within(&args, before);
+        }
+    }
+
+    /// A call the reader does not know (not a delete, a write, a read or a
+    /// command it follows) that is given a path, as a string or built from
+    /// the home directory: it may read it, write it or delete it, so the
+    /// line is `unknown`, unless the path is a key (`read_secret`). A call
+    /// that only looks at the name of a path, a method of a string or a list,
+    /// and a function the code defines (whose own calls are read where they
+    /// are written) are not given a path in this sense.
+    fn unmodeled(&mut self, function: Node<'_>, name: Option<&str>, args: &Args<'_>) {
+        match function.kind() {
+            "identifier" => {
+                if !name.is_some_and(|name| name.contains('.')) {
+                    return;
+                }
+            }
+            "attribute" => {
+                let Some(method) = function.child_by_field_name("attribute") else {
+                    return;
+                };
+                let method = self.text(method);
+                if METHODS_OF_TEXT.contains(&method) || METHODS_OF_PATHS.contains(&method) {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        if name.is_some_and(|name| {
+            NAMES_ONLY.iter().any(|start| name.starts_with(start))
+                || NAMES_ONLY_MORE.contains(&name)
+        }) {
+            return;
+        }
+        let mut nodes: Vec<Node<'_>> = args.positional.clone();
+        nodes.extend(args.keywords.iter().map(|(_, value)| *value));
+        let mut given = Vec::new();
+        for node in nodes {
+            let mut cursor = node.walk();
+            match node.kind() {
+                "list" | "tuple" => given.extend(node.named_children(&mut cursor)),
+                "dictionary" => given.extend(
+                    node.named_children(&mut cursor)
+                        .filter_map(|pair| pair.child_by_field_name("value")),
+                ),
+                _ => given.push(node),
+            }
+        }
+        for node in given {
+            if let Some(path) = self.value(node, 0).as_deref().and_then(named_path) {
+                self.reading.acts.push(Act::Opaque(path));
+            }
         }
     }
 
@@ -1746,12 +2037,16 @@ impl<'s> Reader<'s> {
             Some(node) => !matches!(self.text(node), "False" | "None" | "0"),
         };
         if !inplace {
-            // Each file named is read, as `cat` does; none (the arguments of
-            // the script) is not a path the code gives.
-            if let Some(files) = args.get(0, &["files"]) {
-                for source in self.read_files(files) {
-                    self.reading.acts.push(Act::Read(source));
+            // Each file named is read, as `cat` does; none reads the files
+            // the line names in the arguments of the script, which are only
+            // known when it runs.
+            match args.get(0, &["files"]) {
+                Some(files) => {
+                    for source in self.read_files(files) {
+                        self.reading.acts.push(Act::Read(source));
+                    }
                 }
+                None => self.reading.unread(self.text(call)),
             }
             return;
         }
@@ -2137,9 +2432,11 @@ impl<'s> Reader<'s> {
                     self.reading.acts.push(Act::Write(target));
                 } else {
                     // A path opened to read; any other object's `open` is
-                    // not known to be a file.
+                    // not known to be a file, unless the receiver is a
+                    // `pathlib` path whose own value is not known.
+                    let path = self.path_like(receiver, 0);
                     for source in self.read_arg(receiver) {
-                        if source.known().is_some() {
+                        if path || source.known().is_some() {
                             self.reading.acts.push(Act::Read(source));
                         }
                     }

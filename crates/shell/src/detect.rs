@@ -122,6 +122,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     for (at, unit) in split.units.iter().enumerate() {
         let before = checker.found.len();
         checker.unit(at, unit);
+        checker.loose(at, before);
         units.push(checker.found[before..].to_vec());
     }
     // A read through `<` is not a unit's: it belongs to the line.
@@ -193,6 +194,21 @@ impl Checker<'_> {
             reason: reason.into(),
             target: target.map(|arg| arg.text().to_string()),
         });
+    }
+
+    /// The unit at `at` reads a file the code names without the guard
+    /// knowing the whole path (see [`Split::loose`]): it is `unknown`, unless
+    /// the unit found a key in the part that is known, from `before` on.
+    fn loose(&mut self, at: usize, before: usize) {
+        let Some(finding) = self.split.loose.get(&at) else {
+            return;
+        };
+        if !self.found[before..]
+            .iter()
+            .any(|found| found.rule == Rule::ReadSecret)
+        {
+            self.found.push(finding.clone());
+        }
     }
 
     fn unit(&mut self, at: usize, unit: &Unit) {

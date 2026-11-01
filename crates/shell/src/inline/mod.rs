@@ -17,7 +17,7 @@ use tree_sitter::Node;
 
 use crate::launch;
 use crate::unit::{self, Arg, Split, Unit};
-use crate::{Rule, Shell};
+use crate::{Finding, Rule, Shell};
 
 mod javascript;
 mod python;
@@ -53,6 +53,10 @@ pub(super) enum Act {
     /// `shutil.make_archive` packs): judged as `grep -r` is, so a folder that
     /// holds a key, or the home directory, is a read of one.
     ReadTree(Arg),
+    /// A path handed to a call the reader does not know: it may read it,
+    /// write it or delete it, so the line is `unknown`, unless the path is a
+    /// key, which is judged as `cat PATH` is (`read_secret`).
+    Opaque(Arg),
     /// `mv FROM TO`.
     Move { from: Arg, to: Arg },
     /// `ln TARGET LINK`.
@@ -180,6 +184,31 @@ impl Parts {
     pub(super) fn value(self) -> Option<String> {
         self.whole.then_some(self.text)
     }
+}
+
+/// The place a string names when the code hands it to a call, for a string
+/// that is one: an absolute path, one in the home directory, one that goes up
+/// from where the code runs, or a `file:` URL (whose path is the place, and
+/// is only known when it runs if it holds an escape). A bare name is the
+/// workspace's own, and the rest of the strings are words.
+pub(super) fn named_path(text: &str) -> Option<Arg> {
+    if text.contains('\n') {
+        return None;
+    }
+    if text.is_char_boundary(5) && text[..5].eq_ignore_ascii_case("file:") {
+        let rest = &text[5..];
+        let rest = match rest.strip_prefix("//") {
+            Some(after) => after.find('/').map_or("", |at| &after[at..]),
+            None => rest,
+        };
+        return Some(if rest.is_empty() || rest.contains('%') {
+            Arg::Unknown(shorten(text))
+        } else {
+            Arg::Known(rest.to_string())
+        });
+    }
+    (text.starts_with(['/', '~']) || text == ".." || text.starts_with("../"))
+        .then(|| Arg::Known(text.to_string()))
 }
 
 /// A read of a path that starts as `known` says and ends in something only
@@ -1090,13 +1119,18 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
     match act {
         Act::Remove(path) => run(split, "rm", vec![flag("-rf"), flag("--"), path], depth),
         Act::Write(path) => split.write(Shell::Posix, path),
-        Act::Read(path) => run(split, "cat", vec![flag("--"), path], depth),
-        Act::ReadTree(path) => run(
-            split,
-            "grep",
-            vec![flag("-r"), flag("--"), Arg::Known("x".to_string()), path],
-            depth,
-        ),
+        Act::Read(path) => {
+            let whole = matches!(path, Arg::Known(_));
+            let doubt = (!whole).then_some(PARTIAL);
+            opened(split, "cat", vec![flag("--")], path, doubt, depth);
+        }
+        Act::ReadTree(path) => {
+            let whole = matches!(path, Arg::Known(_));
+            let args = vec![flag("-r"), flag("--"), Arg::Known("x".to_string())];
+            let doubt = (!whole).then_some(PARTIAL);
+            opened(split, "grep", args, path, doubt, depth);
+        }
+        Act::Opaque(path) => opened(split, "cat", vec![flag("--")], path, Some(HANDED), depth),
         Act::Move { from, to } => run(split, "mv", vec![flag("--"), from, to], depth),
         Act::Link { target, link } => {
             run(
@@ -1142,6 +1176,54 @@ fn perform(split: &mut Split, act: Act, depth: usize) {
 
 fn flag(text: &str) -> Arg {
     Arg::Known(text.to_string())
+}
+
+/// Why a read of a file is `unknown`: the path is only known when the code
+/// runs, or in part.
+const PARTIAL: &str = "opens a file whose path is only known when the code runs";
+
+/// Why a path handed to a call the reader does not know is `unknown`.
+const HANDED: &str = "gives a path to a call the guard does not read";
+
+/// Add the unit `program args… path`, which opens the file the code names.
+/// Only a path the code gives whole is a path the guard knows. One only
+/// known when the code runs, or known in part, is a read of a file the guard
+/// cannot name: the line is `unknown` for the `doubt` it carries, unless the
+/// part of the path it does know already lies in a place that holds a key,
+/// which the unit finds and says (`read_secret`). Deletes and writes fail
+/// closed the same way.
+fn opened(
+    split: &mut Split,
+    program: &str,
+    mut args: Vec<Arg>,
+    path: Arg,
+    doubt: Option<&str>,
+    depth: usize,
+) {
+    let shown = path.text().to_string();
+    args.push(path);
+    let before = split.units.len();
+    run(split, program, args, depth);
+    let Some(reason) = doubt else {
+        return;
+    };
+    let finding = Finding {
+        rule: Rule::Unknown,
+        reason: reason.to_string(),
+        target: Some(shown),
+    };
+    let unit = split.units.get(before..).and_then(|added| {
+        added
+            .iter()
+            .position(|unit| unit.key().as_deref() == Some(program))
+    });
+    match unit {
+        Some(at) => {
+            split.loose.insert(before + at, finding);
+        }
+        // The program was not added as itself: nothing says what the file is.
+        None => split.findings.push(finding),
+    }
 }
 
 /// Add the unit `program args…`, as if the line had run it.

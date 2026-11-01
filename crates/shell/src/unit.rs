@@ -358,6 +358,11 @@ pub(crate) struct Split {
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
+    /// For a unit that reads a file the code names without the guard knowing
+    /// the whole path (`open(n + '/x')`), by its place in `units`: the
+    /// finding that stands unless the unit finds a key in the part of the
+    /// path that is known, as `read_secret` then says it more exactly.
+    pub(crate) loose: HashMap<usize, Finding>,
     pipelines: usize,
     /// The stage of an outer pipeline that a pipeline runs in, when it runs
     /// in a stage of another: `(a | b) | c` runs `a | b` in the first stage.
