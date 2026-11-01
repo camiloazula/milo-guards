@@ -430,3 +430,107 @@ fn a_recursive_hidden_listing_hands_on_git_only_when_a_pattern_can_reach_it() {
         ],
     );
 }
+
+#[test]
+fn a_recursive_hidden_listing_reaches_the_folders_and_objects_below_the_top_of_git() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "Get-ChildItem -Force -Recurse -Include bin,obj,Debug | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Recurse -Filter node_modules | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Recurse -Include *.tmp,*.orig,*.log | Remove-Item -Force",
+            "Get-ChildItem -Force -Recurse -Directory -Filter obj | Remove-Item -Recurse -Force",
+            "Get-ChildItem -Force -Recurse -Filter Debug | Remove-Item -Recurse -Force",
+        ],
+        &[
+            (
+                "Get-ChildItem -Force -Recurse -Filter pack | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "gci -Force -Recurse -Filter pack | rm -r -fo",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include heads | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include tags | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter remotes | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include origin | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "gci -fo -r -include pack,heads | % { Remove-Item $_.FullName -Recurse -Force }",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter ?? | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include ?? | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Directory -Filter ?? | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Directory -Include ?? | Remove-Item -Recurse -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter 1* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter *7* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Include [a-f]* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+            (
+                "Get-ChildItem -Force -Recurse -Filter pack-1* | Remove-Item -Force",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn del_s_reaches_the_objects_of_git_by_the_shape_of_their_names() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del /s /q *.tmp",
+            "del /s /q *.orig",
+            "del /s /q *.log",
+            "del /s /q *.obj",
+            "del /s /q bin",
+            "del /s /q obj",
+            "del /s /q node_modules",
+            "del /s /q Debug",
+        ],
+        &[
+            ("del /s /q 1*", Rule::Delete),
+            ("del /s /q *7*", Rule::Delete),
+            ("del /s /q ??", Rule::Delete),
+            ("del /s /q pack", Rule::Delete),
+            ("del /s /q origin", Rule::Delete),
+            ("del /s /q ??????~1", Rule::Delete),
+            ("del /s /q ab*~1", Rule::Delete),
+        ],
+    );
+}

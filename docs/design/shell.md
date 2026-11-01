@@ -342,8 +342,16 @@ a path.
   wildcard (`-Include` is matched against the long name only). A recursive
   listing (`-Recurse`, `-Depth`) searches the folders below, so
   `-Filter config` finds `.git\config`: it hands on `.git` when a pattern can
-  match one of the names `.git` holds (`HEAD`, `config`, `index`, a pack, a
-  branch named `main`), and every hidden folder when a pattern is not known.
+  match one of the names `.git` holds: a top-level entry or file (`HEAD`,
+  `config`, `index`), a folder below the top (`pack`, `heads`, `tags`,
+  `remotes`, and the default remote `origin`), a branch named `main` or
+  `master`, or an object by the shape of its name, asked as "can this pattern
+  match some string of n hex digits": a loose object's folder (two digits,
+  `??`), its file (thirty-eight, `1*`, `*7*`) and a pack (`pack-` and forty
+  digits, then `.pack` or `.idx`); and every hidden folder when a pattern is
+  not known. `bin`, `obj`, `node_modules`, `Debug`, `*.tmp`, `*.orig` and
+  `*.log` hold a letter that is not a hex digit, or a dot, so they match none
+  of these.
   `-Force -Filter *.tmp | Move-Item -Destination trash` stays safe, and
   `-Exclude` leaves the listing whole. So the everyday clean-ups
   `-Include bin,obj -Recurse -Force | Remove-Item -Recurse -Force`,
@@ -366,9 +374,13 @@ a path.
 - `del /s` and `erase /s` search every folder below the one they start in.
   From the workspace folder, a name pattern that can match one of the files
   `.git` holds (`HEAD`, `config`, `index`, `packed-refs`, `description`,
-  `COMMIT_EDITMSG`, a pack, or a branch named `main` or `master`) is a
+  `COMMIT_EDITMSG`, a branch named `main` or `master`), a folder below its
+  top (`pack`, `heads`, `tags`, `remotes`, `origin`), or an object by the
+  shape of its name (a loose object's two-digit folder, its thirty-eight-digit
+  file, a `pack-` and forty hex digits with `.pack` or `.idx`) is a
   `delete`: `del /s /q HEAD`, `del /s /q *.` (every name without an
-  extension), `del /s /q ?????`. `del /s /q *.obj`, `*.tmp`, `*.pyc` and
+  extension), `del /s /q ?????`, `del /s /q 1*`, `del /s /q *7*`.
+  `del /s /q *.obj`, `*.tmp`, `*.pyc`, `bin`, `obj` and
   `Thumbs.db` stay safe, and so does a pattern started deeper in the
   workspace (`del /s /q src\HEAD`), since only the workspace's own `.git`
   is the model's to protect. Without `/s` the name is one file in the folder
@@ -379,10 +391,10 @@ a path.
   the end also matches a name with no extension (`del /s /q main.*` takes the
   branch `main`), a run of `?` at the end or just before a `.` can match
   nothing (`HEAD?`, `????????`), and the 8.3 short names of the long ones are
-  tried too (`*.pac`, `COMMIT~1`, `PACKED~1`), since the system drive creates
-  them. `main.obj`, `*.obj`, `*.log` and `*.orig` stay safe. Only the names
-  listed and their short forms are tried, so a pattern that fits some other
-  branch or object name is not told.
+  tried too (`*.pac`, `COMMIT~1`, `PACKED~1`, and six hex digits with `~1` for
+  a loose object), since the system drive creates them. `main.obj`, `*.obj`, `*.log` and `*.orig` stay safe. Only the names
+  listed, their short forms and the hex shapes are tried, so a pattern that
+  fits some other branch name (`dev`) is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.

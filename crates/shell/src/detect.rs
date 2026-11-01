@@ -486,9 +486,12 @@ struct Pattern {
 /// the 8.3 short name too, so one that can match `GIT~1` (`g*`, `*~1`,
 /// `?????`) hands on `.git` as well; `-Include` is matched against the long
 /// name only. When the listing recurses, the folders below are searched too,
-/// so `.git` is handed on when a pattern can match one of the names it holds
-/// (`config` finds `.git\config`); a pattern that is not known hands on every
-/// hidden folder. What the pattern keeps that is not hidden is judged as
+/// so `.git` is handed on when a pattern can match one of the names it holds:
+/// a top-level entry or a well-known file (`config` finds `.git\config`), a
+/// well-known folder (`pack`, `heads`, `tags`, `remotes`, `origin`), or an
+/// object by the shape of its name (`??` finds a loose object's folder, `1*` a
+/// loose object or a pack). A pattern that is not known hands on every hidden
+/// folder. What the pattern keeps that is not hidden is judged as
 /// written, so `*.tmp` stays the files of the folder.
 fn hidden_matches(places: &[Arg], patterns: &[Pattern], recurses: bool) -> Vec<Arg> {
     let mut found = Vec::new();

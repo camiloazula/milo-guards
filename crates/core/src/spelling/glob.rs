@@ -55,6 +55,19 @@ const GIT_FILES: [&str; 7] = [
     "pack-0.idx",
 ];
 
+/// Folders below the top level whose loss takes history with it: the packs
+/// (`objects/pack`), every branch tip and its reflog (`refs/heads`,
+/// `logs/refs/heads`), the tags, the remote-tracking branches and the default
+/// remote, `origin`, which is as well known as `main`.
+const GIT_FOLDERS: [&str; 5] = ["pack", "heads", "tags", "remotes", "origin"];
+
+/// The hex digits an object's name is spelled with (lower case, as git writes
+/// them; a Windows name compares without case).
+const HEX: &str = "0123456789abcdef";
+
+/// The digits of an 8.3 short name's `~n` tail.
+const TAIL_DIGITS: &str = "123456789";
+
 /// The 8.3 short names Windows gives the long names above on a drive that
 /// creates them (the system drive does by default): cmd matches its wildcards
 /// against these as well as the long names, which is why `*.pac` finds a pack.
@@ -77,12 +90,17 @@ const GIT_SHORT_NAMES: [&str; 12] = [
 
 /// Whether the name pattern `pattern` can match the name of something a
 /// repository's `.git` holds: one of its top-level entries (`HEAD`, `config`,
-/// `index`, `objects`, ...) or a well-known file deeper in (`description`,
-/// `COMMIT_EDITMSG`, a pack, a branch named `main` or `master`).
+/// `index`, `objects`, ...), a well-known file deeper in (`description`,
+/// `COMMIT_EDITMSG`, a branch named `main` or `master`), a well-known folder
+/// deeper in (`pack`, `heads`, `tags`, `remotes`, `origin`), or an object by
+/// the shape of its name: a loose object's folder (two hex digits), its file
+/// (thirty-eight) and a pack (`pack-` and forty hex digits, then `.pack` or
+/// `.idx`).
 ///
-/// It is for a search that goes into every folder below one (`del /s`), which
-/// finds `.git`'s own files whatever folder they lie in. On Windows the
-/// pattern is read as cmd reads it, which is not how PowerShell does:
+/// It is for a search that goes into every folder below one (`del /s`, a
+/// recursive `Get-ChildItem`), which finds `.git`'s own files whatever folder
+/// they lie in. On Windows the pattern is read as cmd reads it, which is not
+/// how PowerShell does:
 /// - a trailing dot or space is not part of a name, so the pattern is read
 ///   both with and without it;
 /// - a `.` followed only by `*` or `?` to the end of the pattern also matches
@@ -91,22 +109,77 @@ const GIT_SHORT_NAMES: [&str; 12] = [
 /// - a run of `?` at the end of the pattern, or just before a `.`, can match
 ///   nothing (`HEAD?` finds `HEAD`, `main?.x` finds `main.x`);
 /// - the 8.3 short names of the long ones are tried as well (`PACKED~1`,
-///   `*.pac`).
+///   `*.pac`, and the six hex digits and `~1` of a loose object's).
 ///
-/// Only the names above and their short forms are tried: a pattern that
-/// matches a branch or an object with some other name is not told.
+/// A hex-shaped name is judged by shape: the pattern is asked whether it can
+/// match some string of that many hex digits, so `??`, `1*` and `*7*` are
+/// told, and `bin`, `obj`, `*.tmp` and `*.log` are not. Only the names above
+/// are tried: a pattern that matches a branch with some other name (`dev`) is
+/// not told.
 ///
 /// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
 #[must_use]
 pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
-    let names = GIT_ENTRIES.iter().chain(&GIT_FILES);
+    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
     if flavour != Flavour::Windows {
         return !pattern.is_empty()
-            && names
+            && (names
                 .clone()
-                .any(|name| matches(pattern, name, flavour, true));
+                .any(|name| matches(pattern, name, flavour, true))
+                || can_match_shape(pattern, flavour, &hex_shapes(false)));
     }
-    can_match_cmd(pattern, names.chain(&GIT_SHORT_NAMES))
+    can_match_cmd(pattern, names.chain(&GIT_SHORT_NAMES), &hex_shapes(true))
+}
+
+/// One position of a name's shape: the characters it can be.
+type Slot = Vec<char>;
+
+/// A name's shape: what each of its positions can be.
+type NameShape = Vec<Slot>;
+
+/// The shape of a name that is `head`, then `hex` positions that can each be
+/// a hex digit, then `tail`.
+fn shape_of(head: &str, hex: usize, tail: &[Slot]) -> NameShape {
+    let mut slots: NameShape = head.chars().map(|c| vec![c]).collect();
+    slots.extend((0..hex).map(|_| HEX.chars().collect::<Slot>()));
+    slots.extend(tail.iter().cloned());
+    slots
+}
+
+/// The shapes of the names git gives objects: a loose object's folder and
+/// file, and a pack with its index. With `short`, the 8.3 short names of the
+/// long ones as well (six hex digits and `~n`, `PACK-` and a digit, `~n`, and
+/// the three-letter extension).
+fn hex_shapes(short: bool) -> Vec<NameShape> {
+    let literal = |text: &str| -> Vec<Slot> { text.chars().map(|c| vec![c]).collect() };
+    let mut shapes = vec![
+        shape_of("", 2, &[]),
+        shape_of("", 38, &[]),
+        shape_of("pack-", 40, &literal(".pack")),
+        shape_of("pack-", 40, &literal(".idx")),
+    ];
+    if short {
+        let tilde_n: Vec<Slot> = vec![vec!['~'], TAIL_DIGITS.chars().collect()];
+        shapes.push(shape_of("", 6, &tilde_n));
+        for extension in [".pac", ".idx"] {
+            let mut tail = tilde_n.clone();
+            tail.extend(literal(extension));
+            shapes.push(shape_of("pack-", 1, &tail));
+        }
+    }
+    shapes
+}
+
+/// Whether the (non-cmd) pattern can match a name of one of `shapes`.
+fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape]) -> bool {
+    let tokens = tokens(pattern, flavour);
+    let optional = vec![false; tokens.len()];
+    let fold = flavour == Flavour::Windows;
+    shapes.iter().any(|shape| {
+        matches_by(&tokens, &optional, shape.len(), &|at, token| {
+            shape[at].iter().any(|c| token.takes(*c, fold))
+        })
+    })
 }
 
 /// The 8.3 short name of the `.git` folder itself on a drive that creates
@@ -124,12 +197,16 @@ const GIT_FOLDER_SHORT_NAME: &str = "GIT~1";
 /// `.git`.
 #[must_use]
 pub fn can_match_git_short_name(pattern: &str) -> bool {
-    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter())
+    can_match_cmd(pattern, [GIT_FOLDER_SHORT_NAME].iter(), &[])
 }
 
 /// Whether the cmd pattern `pattern` (or, without its trailing dots and
 /// spaces, which are not part of a name) can match one of `names`.
-fn can_match_cmd<'a>(pattern: &str, names: impl Iterator<Item = &'a &'a str> + Clone) -> bool {
+fn can_match_cmd<'a>(
+    pattern: &str,
+    names: impl Iterator<Item = &'a &'a str> + Clone,
+    shapes: &[NameShape],
+) -> bool {
     let trimmed = pattern.trim_end_matches(['.', ' ']);
     [pattern, trimmed].iter().any(|pattern| {
         if pattern.is_empty() {
@@ -139,6 +216,11 @@ fn can_match_cmd<'a>(pattern: &str, names: impl Iterator<Item = &'a &'a str> + C
         names
             .clone()
             .any(|name| matches_cmd(&tokens, &optional, name))
+            || shapes.iter().any(|shape| {
+                matches_by(&tokens, &optional, shape.len(), &|at, token| {
+                    shape[at].iter().any(|c| token.takes(*c, true))
+                })
+            })
     })
 }
 
@@ -174,6 +256,23 @@ fn cmd_tokens(pattern: &str) -> (Vec<Token>, Vec<bool>) {
 /// Whether the cmd pattern given as `tokens` (see [`cmd_tokens`]) matches
 /// `name`, with no case and with the leading dot open to wildcards.
 fn matches_cmd(tokens: &[Token], optional: &[bool], name: &str) -> bool {
+    let name: Vec<char> = name.chars().collect();
+    matches_by(tokens, optional, name.len(), &|at, token| {
+        token.takes(name[at], true)
+    })
+}
+
+/// Whether `tokens` can match a name of `len` characters, where
+/// `takes(at, token)` says whether the token (not a `*`) takes the character
+/// at position `at`. A token marked in `optional` can also match nothing. The
+/// name is read position by position, so a position that can be any of
+/// several characters is asked once.
+fn matches_by(
+    tokens: &[Token],
+    optional: &[bool],
+    len: usize,
+    takes: &dyn Fn(usize, &Token) -> bool,
+) -> bool {
     // The token positions the name read so far can stand at, after skipping
     // every token that can match nothing.
     let settle = |states: &mut Vec<bool>| {
@@ -186,7 +285,7 @@ fn matches_cmd(tokens: &[Token], optional: &[bool], name: &str) -> bool {
     let mut states = vec![false; tokens.len() + 1];
     states[0] = true;
     settle(&mut states);
-    for c in name.chars() {
+    for position in 0..len {
         let mut next = vec![false; tokens.len() + 1];
         for at in 0..tokens.len() {
             if !states[at] {
@@ -194,7 +293,7 @@ fn matches_cmd(tokens: &[Token], optional: &[bool], name: &str) -> bool {
             }
             if tokens[at] == Token::Star {
                 next[at] = true;
-            } else if tokens[at].takes(c, true) {
+            } else if takes(position, &tokens[at]) {
                 next[at + 1] = true;
             }
         }
@@ -493,6 +592,29 @@ mod tests {
             "*.pac",
             "COMMIT~1",
             "PACK-0~1.IDX",
+            "pack",
+            "Heads",
+            "tags",
+            "remotes",
+            "ORIGIN",
+            "pac?",
+            "??",
+            "???",
+            "pack?",
+            "1*",
+            "*7*",
+            "[a-f]?",
+            "?a",
+            "*ff",
+            "0*",
+            "pack-1*",
+            "pack-*.idx",
+            "*.pack",
+            "pack-?*.pack",
+            "??????~1",
+            "AB*~1",
+            "PACK-A~1.PAC",
+            "*~1.IDX",
         ] {
             assert!(can_match_git_entry(pattern, windows), "{pattern}");
         }
@@ -514,6 +636,18 @@ mod tests {
             "foo?.*",
             "HEAD?.x",
             "mainx.*",
+            "bin",
+            "obj",
+            "Debug",
+            "node_modules",
+            "target",
+            "?x",
+            "[g-z]?",
+            "x*",
+            "*.d",
+            "*.o",
+            "pack-x*",
+            "*.packx",
         ] {
             assert!(!can_match_git_entry(pattern, windows), "{pattern}");
         }
@@ -522,6 +656,11 @@ mod tests {
         assert!(!can_match_git_entry("HEAD.", Flavour::Posix));
         assert!(!can_match_git_entry("main.*", Flavour::Posix));
         assert!(!can_match_git_entry("*.pac", Flavour::Posix));
+        // An object's name is lower case on a case-sensitive file system.
+        assert!(can_match_git_entry("1*", Flavour::Posix));
+        assert!(can_match_git_entry("??", Flavour::Posix));
+        assert!(!can_match_git_entry("A?", Flavour::Posix));
+        assert!(!can_match_git_entry("??????~1", Flavour::Posix));
     }
 
     #[test]
