@@ -1438,8 +1438,9 @@ Some risks only show when units are read together.
   later write to `z` lands on the startup file.
 - **A script a line writes and then runs.** It is risky however it was
   written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
-  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `run_downloaded`. The guard
-  matches the two by the file they name (core's `key`).
+  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `unknown` ("runs a script the
+  same line writes"; `run_downloaded` is a download piped into a shell). The
+  guard matches the two by the file they name (core's `key`).
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
@@ -1458,6 +1459,16 @@ Some risks only show when units are read together.
   working folder first, so a bare name there is the file the line writes when
   it names one (it is not judged when it cannot be placed: `dir` and `echo`
   are programs of cmd, not files).
+  PowerShell runs a script file by name too, so these are `unknown` with the
+  same reason when the line writes the file: `powershell` or `pwsh -File
+  i.ps1` (`-f`, `-fi`, `/File`, `-File:i.ps1`, after any other option; a name
+  with no extension is the `.ps1` PowerShell tries first), the first word that
+  is not a parameter (`pwsh i.ps1` runs it as a file), and `Invoke-Command
+  -FilePath i.ps1`. `powershell -File scripts\build.ps1` with nothing written
+  first stays safe. After `-WorkingDirectory` the file is read from a folder
+  the line gives, so it counts as only known when it runs: `unknown` once the
+  line writes any file. `pwsh -File i.ps1` from a POSIX shell is read the same
+  way.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
