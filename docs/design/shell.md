@@ -366,9 +366,15 @@ a path.
   is the model's to protect. Without `/s` the name is one file in the folder
   (`del HEAD` is safe). Whether `del /s` descends into hidden folders has
   not been checked on a Windows machine; it is taken to, since a false safe is
-  the worse mistake, and the rows relax if it is found not to. Only the names
-  listed are tried, so a pattern that fits some other branch or object name is
-  not told.
+  the worse mistake, and the rows relax if it is found not to. The pattern is
+  read by cmd's rules, not PowerShell's: a `.` followed only by `*` or `?` at
+  the end also matches a name with no extension (`del /s /q main.*` takes the
+  branch `main`), a run of `?` at the end or just before a `.` can match
+  nothing (`HEAD?`, `????????`), and the 8.3 short names of the long ones are
+  tried too (`*.pac`, `COMMIT~1`, `PACKED~1`), since the system drive creates
+  them. `main.obj`, `*.obj`, `*.log` and `*.orig` stay safe. Only the names
+  listed and their short forms are tried, so a pattern that fits some other
+  branch or object name is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
   own path.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.

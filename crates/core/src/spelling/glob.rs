@@ -55,32 +55,134 @@ const GIT_FILES: [&str; 7] = [
     "pack-0.idx",
 ];
 
+/// The 8.3 short names Windows gives the long names above on a drive that
+/// creates them (the system drive does by default): cmd matches its wildcards
+/// against these as well as the long names, which is why `*.pac` finds a pack.
+/// A name of at most eight characters with an extension of at most three has
+/// none.
+const GIT_SHORT_NAMES: [&str; 12] = [
+    "PACKED~1",
+    "COMMIT~1",
+    "DESCRI~1",
+    "ORIG_H~1",
+    "FETCH_~1",
+    "MERGE_~1",
+    "REBASE~1",
+    "REBASE~2",
+    "SEQUEN~1",
+    "WORKTR~1",
+    "PACK-0~1.PAC",
+    "PACK-0~1.IDX",
+];
+
 /// Whether the name pattern `pattern` can match the name of something a
 /// repository's `.git` holds: one of its top-level entries (`HEAD`, `config`,
 /// `index`, `objects`, ...) or a well-known file deeper in (`description`,
 /// `COMMIT_EDITMSG`, a pack, a branch named `main` or `master`).
 ///
 /// It is for a search that goes into every folder below one (`del /s`), which
-/// finds `.git`'s own files whatever folder they lie in. A trailing dot or
-/// space is not part of a Windows name, so it is read both ways. Only the
-/// names above are tried: a pattern that matches a branch or an object with
-/// some other name is not told.
+/// finds `.git`'s own files whatever folder they lie in. On Windows the
+/// pattern is read as cmd reads it, which is not how PowerShell does:
+/// - a trailing dot or space is not part of a name, so the pattern is read
+///   both with and without it;
+/// - a `.` followed only by `*` or `?` to the end of the pattern also matches
+///   a name with no extension (`main.*` finds `main`, as `dir foo.*` lists
+///   `foo`);
+/// - a run of `?` at the end of the pattern, or just before a `.`, can match
+///   nothing (`HEAD?` finds `HEAD`, `main?.x` finds `main.x`);
+/// - the 8.3 short names of the long ones are tried as well (`PACKED~1`,
+///   `*.pac`).
+///
+/// Only the names above and their short forms are tried: a pattern that
+/// matches a branch or an object with some other name is not told.
 ///
 /// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
 #[must_use]
 pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
-    let trimmed = if flavour == Flavour::Windows {
+    let windows = flavour == Flavour::Windows;
+    let trimmed = if windows {
         pattern.trim_end_matches(['.', ' '])
     } else {
         pattern
     };
+    let names = GIT_ENTRIES.iter().chain(&GIT_FILES);
     [pattern, trimmed].iter().any(|pattern| {
-        !pattern.is_empty()
-            && GIT_ENTRIES
-                .iter()
-                .chain(&GIT_FILES)
-                .any(|name| matches(pattern, name, flavour, true))
+        if pattern.is_empty() {
+            return false;
+        }
+        if !windows {
+            return names
+                .clone()
+                .any(|name| matches(pattern, name, flavour, true));
+        }
+        let (tokens, optional) = cmd_tokens(pattern);
+        names
+            .clone()
+            .chain(&GIT_SHORT_NAMES)
+            .any(|name| matches_cmd(&tokens, &optional, name))
     })
+}
+
+/// The tokens of a cmd pattern and which of them can match nothing: a `?` in
+/// a run at the end or just before a `.`, and a `.` followed only by `*` or
+/// `?` to the end (a `*` can always match nothing).
+fn cmd_tokens(pattern: &str) -> (Vec<Token>, Vec<bool>) {
+    let tokens = tokens(pattern, Flavour::Windows);
+    let mut optional = vec![false; tokens.len()];
+    let wild = |token: &Token| matches!(token, Token::Star | Token::Any);
+    // The tail of wildcards at the end, and the dot before it.
+    let tail = tokens
+        .iter()
+        .rposition(|token| !wild(token))
+        .map_or(0, |at| at + 1);
+    optional[tail..].fill(true);
+    if tail > 0 && tokens[tail - 1] == Token::Literal('.') {
+        optional[tail - 1] = true;
+    }
+    for (at, token) in tokens.iter().enumerate() {
+        if *token == Token::Literal('.') {
+            let run = tokens[..at]
+                .iter()
+                .rev()
+                .take_while(|token| **token == Token::Any)
+                .count();
+            optional[at - run..at].fill(true);
+        }
+    }
+    (tokens, optional)
+}
+
+/// Whether the cmd pattern given as `tokens` (see [`cmd_tokens`]) matches
+/// `name`, with no case and with the leading dot open to wildcards.
+fn matches_cmd(tokens: &[Token], optional: &[bool], name: &str) -> bool {
+    // The token positions the name read so far can stand at, after skipping
+    // every token that can match nothing.
+    let settle = |states: &mut Vec<bool>| {
+        for at in 0..tokens.len() {
+            if states[at] && (tokens[at] == Token::Star || optional[at]) {
+                states[at + 1] = true;
+            }
+        }
+    };
+    let mut states = vec![false; tokens.len() + 1];
+    states[0] = true;
+    settle(&mut states);
+    for c in name.chars() {
+        let mut next = vec![false; tokens.len() + 1];
+        for at in 0..tokens.len() {
+            if !states[at] {
+                continue;
+            }
+            if tokens[at] == Token::Star {
+                next[at] = true;
+            } else if tokens[at].takes(c, true) {
+                next[at + 1] = true;
+            }
+        }
+        settle(&mut next);
+        states = next;
+    }
+    states[tokens.len()]
 }
 
 /// Whether the pattern part `pattern` matches the file name `name`.
@@ -363,6 +465,15 @@ mod tests {
             "HEAD.",
             "ma?n",
             "[a-z]ndex",
+            "main.*",
+            "HEAD.*",
+            "HEAD?",
+            "main.?",
+            "????????",
+            "ma?n?.*",
+            "*.pac",
+            "COMMIT~1",
+            "PACK-0~1.IDX",
         ] {
             assert!(can_match_git_entry(pattern, windows), "{pattern}");
         }
@@ -378,12 +489,20 @@ mod tests {
             "a.txt",
             "x*y",
             "*.sample",
+            "main.obj",
+            "*.orig",
+            "foo.*",
+            "foo?.*",
+            "HEAD?.x",
+            "mainx.*",
         ] {
             assert!(!can_match_git_entry(pattern, windows), "{pattern}");
         }
         assert!(can_match_git_entry("HEAD", Flavour::Posix));
         assert!(!can_match_git_entry("head", Flavour::Posix));
         assert!(!can_match_git_entry("HEAD.", Flavour::Posix));
+        assert!(!can_match_git_entry("main.*", Flavour::Posix));
+        assert!(!can_match_git_entry("*.pac", Flavour::Posix));
     }
 
     #[test]

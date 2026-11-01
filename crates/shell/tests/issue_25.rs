@@ -259,3 +259,75 @@ fn del_s_stays_everyday_when_it_cannot_reach_the_files_of_git() {
         &[],
     );
 }
+
+#[test]
+fn del_s_reads_cmds_own_wildcard_rules() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("del /s /q main.*", Rule::Delete),
+            ("del /s /q master.*", Rule::Delete),
+            ("del /s /q HEAD.*", Rule::Delete),
+            ("del /s /q index.*", Rule::Delete),
+            ("del /s /q config.*", Rule::Delete),
+            ("del /s /q main.?", Rule::Delete),
+            ("del /s /q HEAD?", Rule::Delete),
+            ("del /s /q config?", Rule::Delete),
+            ("del /s /q index?", Rule::Delete),
+            ("del /s /q ????????", Rule::Delete),
+            ("del /s /q main?.*", Rule::Delete),
+            ("del /s /q HEA??.", Rule::Delete),
+            ("del /s /q mai??.*", Rule::Delete),
+            ("del /s /q ma?n?.?", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn del_s_tries_the_short_names_of_git_files() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("del /s /q *.pac", Rule::Delete),
+            ("del /s /q *.PAC", Rule::Delete),
+            ("del /s /q COMMIT~1", Rule::Delete),
+            ("del /s /q PACKED~1", Rule::Delete),
+            ("del /s /q DESCRI~1", Rule::Delete),
+            ("del /s /q ORIG_H~1", Rule::Delete),
+            ("del /s /q FETCH_~1", Rule::Delete),
+            ("del /s /q MERGE_~1", Rule::Delete),
+            ("del /s /q REBASE~1", Rule::Delete),
+            ("del /s /q REBASE~2", Rule::Delete),
+            ("del /s /q SEQUEN~1", Rule::Delete),
+            ("del /s /q WORKTR~1", Rule::Delete),
+            ("del /s /q PACK-0~1.PAC", Rule::Delete),
+            ("del /s /q PACK-0~1.IDX", Rule::Delete),
+            ("del /s /q PACK-0~1.*", Rule::Delete),
+        ],
+    );
+}
+
+#[test]
+fn del_s_with_cmds_rules_keeps_the_everyday_cleans_safe() {
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[
+            "del /s /q main.obj",
+            "del /s /q *.obj",
+            "del /s /q *.log",
+            "del /s /q *.orig",
+            "del /s /q foo.*",
+            "del /s /q foo?.*",
+            "del /s /q a?.txt",
+            "del /s /q mainx.*",
+            "del /s /q ??.obj",
+            "del /s /q build.?",
+        ],
+        &[],
+    );
+}
