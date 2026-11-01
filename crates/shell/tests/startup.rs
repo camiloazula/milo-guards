@@ -8,7 +8,7 @@
 mod common;
 
 use common::{check, check_effect, classify, macos, posix, windows};
-use milo_guards_shell::{Assessment, Effect, Paths, Protected, Rule, Shell};
+use milo_guards_shell::{Assessment, Effect, Paths, Protected, Reach, Rule, Shell};
 
 const WORDS: &str = "a file a tool runs on its own";
 
@@ -866,13 +866,15 @@ fn a_destination_that_may_be_a_file_is_not_read_as_a_folder() {
     );
 }
 
-/// Reading one only reads; writing one changes.
+/// Reading one only reads, and what it reads is the project's own: a file a
+/// tool runs on its own is no secret, so its `Reach` stays `Workspace`.
+/// Writing one changes.
 #[test]
 fn the_effect_of_a_line_that_reads_one_is_reads_only() {
     check_effect(
         Shell::Posix,
         &posix(),
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &[
             "cat .envrc",
             "cat .vscode/tasks.json",
@@ -900,7 +902,7 @@ fn the_effect_of_a_line_that_reads_one_is_reads_only() {
     check_effect(
         Shell::Cmd,
         &windows(),
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &[
             "type .envrc",
             "type .vscode\\tasks.json",
@@ -910,7 +912,7 @@ fn the_effect_of_a_line_that_reads_one_is_reads_only() {
     check_effect(
         Shell::PowerShell,
         &windows(),
-        Effect::ReadsOnly,
+        Effect::ReadsOnly(Reach::Workspace),
         &[
             "Get-Content .envrc",
             "Select-String x .github\\workflows\\ci.yml",
@@ -1440,6 +1442,52 @@ fn a_rename_or_a_link_onto_a_protected_name_is_a_write_of_it() {
             ("ln -s a .agent", Rule::Overwrite),
             ("ln a .agent/rules", Rule::Overwrite),
             ("ln -sf a .AGENT", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn reading_a_file_a_tool_runs_on_its_own_stays_in_the_workspace() {
+    let lines: Vec<String> = PLACES
+        .iter()
+        .flat_map(|place| {
+            [
+                format!("cat {place}"),
+                format!("grep -rn x {place}"),
+                format!("head -n 3 {place}"),
+                format!("diff {place} {place}"),
+            ]
+        })
+        .chain(
+            [
+                "ls .github/workflows",
+                "ls -la .husky .githooks .devcontainer",
+                "grep -r x .github",
+                "cat .github/workflows/*",
+                "cat .vscode/*.json",
+                "cat *.code-workspace",
+                "cat **/.envrc",
+                "find . -name Jenkinsfile",
+            ]
+            .map(str::to_string),
+        )
+        .collect();
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    check_effect(
+        Shell::Posix,
+        &posix(),
+        Effect::ReadsOnly(Reach::Workspace),
+        &lines,
+    );
+    // Beyond the workspace the same names are not the project's.
+    check_effect(
+        Shell::Posix,
+        &posix(),
+        Effect::ReadsOnly(Reach::Beyond),
+        &[
+            "cat ../.envrc",
+            "cat ~/.envrc",
+            "cat /etc/.vscode/tasks.json",
         ],
     );
 }

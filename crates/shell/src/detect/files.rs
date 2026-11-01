@@ -1,6 +1,6 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, sources_and_destination, Checker};
+use super::{downloads_to, sources_and_destination, Checker, COPY_VALUED};
 use crate::launch::{find_targets, perl_edits};
 use crate::path::Place;
 use crate::powershell::Params;
@@ -65,12 +65,7 @@ impl Checker<'_> {
                     && (has_flag(args, Some('r'), Some("recursive"))
                         || has_flag(args, Some('R'), None)
                         || has_flag(args, Some('a'), Some("archive")));
-                if let (sources, Some(destination)) = sources_and_destination(
-                    args,
-                    &[
-                        "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
-                    ],
-                ) {
+                if let (sources, Some(destination)) = sources_and_destination(args, &COPY_VALUED) {
                     let leaves = leaves(unit, &sources);
                     self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
@@ -129,35 +124,7 @@ impl Checker<'_> {
                 }
             }
             "rsync" => {
-                let operands = operands(
-                    args,
-                    &[
-                        "-e",
-                        "--rsh",
-                        "--exclude",
-                        "--include",
-                        "--filter",
-                        "-f",
-                        "--files-from",
-                        "--exclude-from",
-                        "--include-from",
-                        "--log-file",
-                        "--password-file",
-                        "--port",
-                        "--backup-dir",
-                        "--suffix",
-                        "-T",
-                        "--temp-dir",
-                        "--chmod",
-                        "--chown",
-                        "--compare-dest",
-                        "--copy-dest",
-                        "--link-dest",
-                        "--partial-dir",
-                        "--timeout",
-                        "--bwlimit",
-                    ],
-                );
+                let operands = rsync_operands(args);
                 if operands.len() >= 2 {
                     if let Some(destination) =
                         operands.last().filter(|destination| !remote(destination))
@@ -227,7 +194,28 @@ impl Checker<'_> {
             // Renaming: the new name is a name in the source's folder, and
             // that is where the file lands.
             "rename-item" if shell == Shell::PowerShell => {
-                let params = Params::read(args);
+                // `-NewName` (and what abbreviates it) is read as `-Name`,
+                // which takes a value: the shared list of value parameters
+                // is not changed for one cmdlet's own.
+                let renamed_args: Vec<Arg> = args
+                    .iter()
+                    .map(|arg| {
+                        let named = arg.known().and_then(|text| text.strip_prefix('-'));
+                        let (name, colon) = match named {
+                            Some(name) => match name.strip_suffix(':') {
+                                Some(name) => (name, ":"),
+                                None => (name, ""),
+                            },
+                            None => return arg.clone(),
+                        };
+                        if name.len() >= 2 && "newname".starts_with(&name.to_ascii_lowercase()) {
+                            Arg::Known(format!("-Name{colon}"))
+                        } else {
+                            arg.clone()
+                        }
+                    })
+                    .collect();
+                let params = Params::read(&renamed_args);
                 let mut sources = params.values(&["path", "literalpath"]);
                 let mut positional = params.positional.iter().copied();
                 if sources.is_empty() {
@@ -237,7 +225,7 @@ impl Checker<'_> {
                     sources.push(&Arg::Input);
                 }
                 let name = params
-                    .values(&["newname"])
+                    .values(&["name"])
                     .first()
                     .copied()
                     .or_else(|| positional.next());
@@ -634,8 +622,8 @@ fn sed_files(args: &[Arg]) -> Vec<&Arg> {
     operands
 }
 
-/// An rsync `host:path` destination, which is not on this machine.
-fn remote(arg: &Arg) -> bool {
+/// An rsync `host:path` operand, which is not on this machine.
+pub(super) fn remote(arg: &Arg) -> bool {
     arg.known().is_some_and(|text| {
         text.find(':')
             .is_some_and(|colon| colon > 1 && !text[..colon].contains('/'))
@@ -679,4 +667,38 @@ fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
         })
         .flatten()
         .collect()
+}
+
+/// What rsync is given to copy and where: the operands, not the values of
+/// its options that take one.
+pub(super) fn rsync_operands(args: &[Arg]) -> Vec<&Arg> {
+    operands(
+        args,
+        &[
+            "-e",
+            "--rsh",
+            "--exclude",
+            "--include",
+            "--filter",
+            "-f",
+            "--files-from",
+            "--exclude-from",
+            "--include-from",
+            "--log-file",
+            "--password-file",
+            "--port",
+            "--backup-dir",
+            "--suffix",
+            "-T",
+            "--temp-dir",
+            "--chmod",
+            "--chown",
+            "--compare-dest",
+            "--copy-dest",
+            "--link-dest",
+            "--partial-dir",
+            "--timeout",
+            "--bwlimit",
+        ],
+    )
 }

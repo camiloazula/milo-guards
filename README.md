@@ -19,9 +19,14 @@ verdict back in microseconds.
 - **shell** judges a shell line: POSIX shells, PowerShell and cmd. It parses the
   line and judges the programs, flags, operands and redirects, never the raw
   text. `rm -rf ~` is risky ("deletes your home directory"); `ls src` is safe.
+  `cat ~/.ssh/id_ed25519` is risky too ("reads your SSH keys"), as it is for
+  the file guard below: one file, one answer, whichever way it is read.
   Beside that verdict, `effect` says whether a line only reads, changes
   something or cannot be told: `git status` only reads, `mkdir build` is safe
-  and changes the disk, `./script.sh` cannot be told.
+  and changes the disk, `./script.sh` cannot be told. A line that only reads
+  also says whether the reads stay in the workspace: `git status` does, `cat
+  ~/.ssh/id_ed25519` does not. `effect_paths` lists the places
+  such a line reads, and how each is read (exactly, as a pattern, or as a walk), for a caller that checks them on the disk.
 - **file** judges one read or write of a path through a file API, which no shell
   line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
   drives, shares, long paths, short names, any case): a read of

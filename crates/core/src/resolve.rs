@@ -3,6 +3,8 @@
 //! whatever the host. Windows paths compare without case, as Windows does.
 //! Nothing reads the file system, so a symlink is judged by its own name.
 
+use std::path::PathBuf;
+
 use crate::spelling::glob::{self, Shape, WILDCARDS};
 use crate::{Paths, Place, ProtectedKind, Sensitivity};
 
@@ -131,6 +133,23 @@ impl Loc {
             self.parts.join("/")
         };
         format!("{root}|{parts}")
+    }
+
+    /// The path as text, as the system it is on writes it: `/a/b`, `C:\a\b`,
+    /// `\\server\share\a`.
+    fn render(&self) -> String {
+        let (root, separator) = match &self.root {
+            Root::Unix => ("/".to_string(), "/"),
+            Root::Drive(letter) => (format!("{letter}:\\"), "\\"),
+            Root::Unc(share) => (format!("\\\\{}\\", share.replace('/', "\\")), "\\"),
+        };
+        let text = format!("{root}{}", self.parts.join(separator));
+        // A share with nothing below it is written without a closing
+        // separator; a drive and the root keep theirs.
+        match (&self.root, self.parts.is_empty()) {
+            (Root::Unc(_), true) => text.trim_end_matches('\\').to_string(),
+            _ => text,
+        }
     }
 
     fn join(&self, parts: &[&str]) -> Self {
@@ -990,6 +1009,9 @@ pub struct Resolver {
     /// Each protected path, its words, and whether it is a folder.
     protected: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
+    /// Whether the working directory is in a workspace folder that holds no
+    /// sensitive place, and is not the kernel's: see [`Resolver::cwd_is_clear`].
+    cwd_clear: bool,
 }
 
 impl Resolver {
@@ -1108,8 +1130,9 @@ impl Resolver {
             root_homes,
             protected: Vec::new(),
             system: Vec::new(),
+            cwd_clear: false,
         };
-        let workspaces = workspaces
+        let workspaces: Vec<Workspace> = workspaces
             .into_iter()
             .map(|loc| Workspace {
                 in_sensitive: resolver.sensitive_at(&loc).is_some(),
@@ -1128,6 +1151,15 @@ impl Resolver {
                 )
             })
             .collect();
+        resolver.cwd_clear = workspaces
+            .iter()
+            .any(|workspace| !workspace.holds_sensitive && workspace.loc.holds(&resolver.cwd))
+            && !(matches!(resolver.cwd.root, Root::Unix)
+                && resolver
+                    .cwd
+                    .parts
+                    .first()
+                    .is_some_and(|top| same_fold(top, "dev") || same_fold(top, "proc")));
         resolver.workspaces = workspaces;
         resolver.temps = temps;
         resolver.protected = protected;
@@ -1209,9 +1241,67 @@ impl Resolver {
 
     /// `holding` says whether a harmless folder that holds a protected path
     /// is judged as that path. `writes` says whether the path is written,
-    /// and then the words of a file a tool runs on its own come with the place
-    /// when it is the workspace's own.
+    /// and then the words of a file a tool runs on its own come with the
+    /// place when it is the workspace's own (for every reading, if any gives
+    /// them: the most serious place wins, and only an `Inside` one has them).
+    ///
+    /// A POSIX pattern with a part that can match `..` (`.*`, `.?`, `.[.]`)
+    /// is judged as every way that part can be read, `.` and `..` as well as
+    /// a name, and the most serious place wins: an old shell (bash 3.2, dash)
+    /// expands `.*/.*/.ssh/id_rsa` to `../../.ssh/id_rsa`, and the guard cannot
+    /// know which shell runs the line.
     fn place_as(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+        writes: Writes,
+    ) -> (Place, Option<&'static str>) {
+        let mut readings = self
+            .readings(path, flavour, hidden, holding, writes)
+            .into_iter();
+        let mut best = readings.next().unwrap_or((Place::Unknown, None));
+        let mut words = best.1;
+        for reading in readings {
+            words = words.or(reading.1);
+            if severity(reading.0) > severity(best.0) {
+                best = reading;
+            }
+        }
+        (best.0, words.filter(|_| best.0 == Place::Inside))
+    }
+
+    /// Every place a path can land: where it is read as written, then where
+    /// each other reading of a POSIX pattern part that can match `..` puts it
+    /// (see `place_as`). A guard that asks a different question of the places
+    /// than `place` does (the shell guard asks whether a folder read all the
+    /// way down holds a secret) asks of each, so none keeps its own reading of
+    /// a pattern.
+    #[must_use]
+    pub fn places(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Vec<Place> {
+        self.readings(path, flavour, hidden, true, Writes::No)
+            .into_iter()
+            .map(|(place, _)| place)
+            .collect()
+    }
+
+    fn readings(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+        writes: Writes,
+    ) -> Vec<(Place, Option<&'static str>)> {
+        let mut places = vec![self.place_one(path, flavour, hidden, holding, writes)];
+        for variant in climbing(path.text(), flavour) {
+            places.push(self.place_one(respell(path, &variant), flavour, hidden, holding, writes));
+        }
+        places
+    }
+
+    fn place_one(
         &self,
         path: Spelling<'_>,
         flavour: Flavour,
@@ -1231,41 +1321,8 @@ impl Resolver {
         if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
             return (Place::Unknown, None);
         }
-        // Each part holding a wildcard stands for one entry, so a `..` after
-        // it (`src/*/../../x`) still climbs; what a pattern matches lies in
-        // the folder before its first wildcard part that no `..` cancels.
-        let marked = mark_wildcards(text, flavour);
-        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
-        // From the first wildcard part on, as the text of each part.
-        let wildcards: Vec<&str> = text
-            .split(flavour.separators())
-            .filter(|part| part.contains(WILDCARDS))
-            .collect();
-        let tail: Option<Vec<String>> = loc
-            .parts
-            .iter()
-            .position(|part| part.starts_with(WILDCARD))
-            .map(|at| {
-                loc.parts[at..]
-                    .iter()
-                    .map(|part| match part.strip_prefix(WILDCARD) {
-                        Some(n) => n
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|n| wildcards.get(n).copied())
-                            .unwrap_or("*")
-                            .to_string(),
-                        None => part.clone(),
-                    })
-                    .collect()
-            });
-        let pattern = match loc.parts.iter().position(|part| part.starts_with(WILDCARD)) {
-            Some(at) => {
-                loc.parts.truncate(at);
-                true
-            }
-            None => false,
-        };
+        let (loc, tail) = self.cut(path, text, flavour);
+        let pattern = tail.is_some();
         // A pattern is judged by the folder before its first wildcard part,
         // and what it can pick is read from its parts below.
         let place = self.judge(&loc, flavour, holding && !pattern);
@@ -1293,6 +1350,183 @@ impl Resolver {
             })
             .and_then(|runs| runs.then_some(STARTUP_WORDS));
         (place, startup)
+    }
+
+    /// Where a path is cut at its first wildcard part: the location before
+    /// it (the whole path when there is none), and, for a pattern, the text
+    /// of each part from there on.
+    ///
+    /// Each part holding a wildcard stands for one entry, so a `..` after it
+    /// (`src/*/../../x`) still climbs; what a pattern matches lies in the
+    /// folder before its first wildcard part that no `..` cancels.
+    fn cut(&self, path: Spelling<'_>, text: &str, flavour: Flavour) -> (Loc, Option<Vec<String>>) {
+        let marked = mark_wildcards(text, flavour);
+        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
+        let wildcards: Vec<&str> = text
+            .split(flavour.separators())
+            .filter(|part| part.contains(WILDCARDS))
+            .collect();
+        let first = loc.parts.iter().position(|part| part.starts_with(WILDCARD));
+        let tail = first.map(|at| {
+            loc.parts[at..]
+                .iter()
+                .map(|part| match part.strip_prefix(WILDCARD) {
+                    Some(n) => n
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| wildcards.get(n).copied())
+                        .unwrap_or("*")
+                        .to_string(),
+                    None => part.clone(),
+                })
+                .collect()
+        });
+        if let Some(at) = first {
+            loc.parts.truncate(at);
+        }
+        (loc, tail)
+    }
+
+    /// The words of a key or a credential that a pattern can pick: `~/.s*/id_rsa`
+    /// picks `~/.ssh/id_rsa`, `/etc/sh*dow` the system's password hashes, and
+    /// `~/.*` every dot file in the home directory, among them the secret
+    /// ones. `None` for a path with no wildcard (judge it with
+    /// [`place`](Self::place)), for one that is known only when it runs, and
+    /// for one that picks no secret. `hidden` says a wildcard may match a
+    /// leading dot, as for [`place_hidden`](Self::place_hidden).
+    ///
+    /// A part is matched against the names of each secret place one for one,
+    /// as for the protected paths; a pattern that stops at a folder that only
+    /// holds a secret picks no secret, since it reads that folder's name.
+    /// What counts as a secret is the same as for `place`: this home
+    /// directory's, another user's (`/home/*/.ssh`), the root user's, and the
+    /// system's own.
+    #[must_use]
+    pub fn picks_secret(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        // A part that can match `..` is read as `.` and `..` too (see
+        // `place_hidden`).
+        self.picks_one(path, flavour, hidden).or_else(|| {
+            climbing(path.text(), flavour)
+                .iter()
+                .find_map(|variant| self.picks_one(respell(path, variant), flavour, hidden))
+        })
+    }
+
+    fn picks_one(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        let text = path.text();
+        if !glob::has_wildcard(text)
+            || self.elsewhere(path, flavour)
+            || known_when_run(path, flavour)
+        {
+            return None;
+        }
+        let (loc, tail) = self.cut(path, text, flavour);
+        let tail = tail?;
+        let stripped = loc.stripped();
+        let folder = stripped.as_ref().unwrap_or(&loc);
+        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+        let hidden = hidden || flavour == Flavour::Windows;
+        let windows = folder.windows();
+        // A user's name in another home directory: any part picks it.
+        const USER: &str = "\u{0}user";
+        let matches = |part: &str, name: &str| {
+            name == USER || pattern_matches(part, name, flavour, hidden, windows)
+        };
+        // The first part of the pattern must pick the first name below the
+        // folder, or nothing below it is picked: the cheap test that keeps
+        // the whole table from being walked for each pattern.
+        let first = *tail.first()?;
+        let starts = |name: &str| is_globstar(first) || matches(first, name);
+        let reaches = |names: &[String]| picks(&tail, names, true, true, &matches);
+        // This home directory's and the system's own, by their full place.
+        for (entry, words, kind) in &self.sensitive {
+            if *kind != Sensitivity::Secret || !above(folder, entry) {
+                continue;
+            }
+            let names = &entry.parts[folder.parts.len()..];
+            // A pattern in the secret folder itself goes below it.
+            if names.is_empty() || (starts(&names[0]) && reaches(names)) {
+                return Some(words);
+            }
+        }
+        // The same places under another user's home directory and the root
+        // user's: the folder holding the homes, a user's name, then the place.
+        let homes = self
+            .neighbours
+            .iter()
+            .map(|folder| (folder, true))
+            .chain(self.root_homes.iter().map(|home| (home, false)));
+        for (home, with_user) in homes {
+            // The folder must lead into the home (and the user's name).
+            let depth = home.parts.len() + usize::from(with_user);
+            let lead_ok = folder.root.same(&home.root)
+                && folder
+                    .parts
+                    .iter()
+                    .take(depth)
+                    .enumerate()
+                    .all(|(at, spelled)| {
+                        home.parts
+                            .get(at)
+                            .is_none_or(|name| same_name(spelled, name, windows))
+                    });
+            if !lead_ok {
+                continue;
+            }
+            for (entry, words, kind) in &SENSITIVE {
+                if *kind != Sensitivity::Secret {
+                    continue;
+                }
+                // The names of home, user and place, from the folder down.
+                let total = depth + entry.len();
+                if folder.parts.len() > total {
+                    continue;
+                }
+                let name_at = |at: usize| -> &str {
+                    match at.checked_sub(home.parts.len()) {
+                        None => &home.parts[at],
+                        Some(0) if with_user => USER,
+                        Some(rest) => entry[rest - usize::from(with_user)],
+                    }
+                };
+                // What the folder spells beyond the home must be the place's.
+                let spelled_ok = folder
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .skip(depth)
+                    .all(|(at, spelled)| same_name(spelled, name_at(at), windows));
+                if !spelled_ok {
+                    continue;
+                }
+                // A pattern in the secret folder itself goes below it.
+                if folder.parts.len() == total {
+                    return Some(words);
+                }
+                if !starts(name_at(folder.parts.len())) {
+                    continue;
+                }
+                let names: Vec<String> = (folder.parts.len()..total)
+                    .map(|at| name_at(at).to_string())
+                    .collect();
+                if reaches(&names) {
+                    return Some(words);
+                }
+            }
+        }
+        None
     }
 
     /// Where a pattern lands, from the place of the folder before its first
@@ -1349,6 +1583,25 @@ impl Resolver {
             return None;
         }
         Some(self.locate(path, flavour).key())
+    }
+
+    /// The absolute path `path` names, as it is spelled: `~` and `..` applied
+    /// and the working directory put in front of a relative one, and nothing
+    /// else read, so a symbolic link is not followed and a name is not folded
+    /// to the case the disk keeps. A Windows long path is written as the plain
+    /// path it names (`\\?\C:\x` is `C:\x`). `None` when the path is not one
+    /// definite place on a disk: a device, or a path on another drive's own
+    /// working directory (`D:x` from `C:`). A wildcard is not read: it is a
+    /// part of the name, so the caller says the folder it expands in.
+    #[must_use]
+    pub fn absolute(&self, path: Spelling<'_>, flavour: Flavour) -> Option<PathBuf> {
+        let device = matches!(path, Spelling::Plain(text) if device(text, flavour).is_some());
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if device || self.elsewhere(path, flavour) {
+            return None;
+        }
+        Some(PathBuf::from(self.locate_raw(path, flavour).render()))
     }
 
     /// The plain path a Windows long path names (`\\?\C:\x` is `C:\x`,
@@ -1598,6 +1851,17 @@ impl Resolver {
         })
     }
 
+    /// Whether a path written from the working directory, with nothing in it
+    /// that climbs (no `..`), no `~`, no drive and no variable, can only land
+    /// in the agent's own workspace: the working directory is in a workspace
+    /// folder that holds no key, a startup file or another sensitive place,
+    /// and is not under `/dev` or `/proc`. Such a path is not a secret, and a
+    /// guard that asks of many paths may skip resolving it.
+    #[must_use]
+    pub fn cwd_is_clear(&self) -> bool {
+        self.cwd_clear
+    }
+
     /// How `path`s are spelled on the machine these directories describe:
     /// `Windows` when the home directory is a Windows path, `Posix`
     /// otherwise, the way [`new`](Self::new) tells the two apart.
@@ -1665,6 +1929,103 @@ impl Resolver {
 }
 
 impl Resolver {
+    /// Whether reading what `path` names can reach a secret
+    /// ([`Sensitivity::Secret`] place) below it, that [`place`](Self::place)
+    /// does not say. A path that is itself a secret, or inside one, is
+    /// `place`'s to say; this is for a folder read whole, and for a pattern.
+    ///
+    /// With `deep`, what the path names is read with everything below it (a
+    /// recursive search, a listing of every name), so a folder holding a
+    /// secret reaches it, and so does a pattern that picks a folder holding
+    /// one. Without it only what the path names is read: a folder is not
+    /// opened, and a pattern reaches a secret only when it picks the secret
+    /// itself (or goes below it).
+    ///
+    /// A pattern is read as the shell reads it, with `hidden` for a shell
+    /// whose wildcards match a leading dot (`dotglob`); Windows wildcards
+    /// always do. A path known only when it runs may reach any, so it does.
+    #[must_use]
+    pub fn reaches_secret(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        deep: bool,
+    ) -> bool {
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return true;
+        }
+        let text = path.text();
+        let marked = mark_wildcards(text, flavour);
+        let mut loc = self.locate_raw(path.with(marked.as_deref().unwrap_or(text)), flavour);
+        let wildcards: Vec<&str> = text
+            .split(flavour.separators())
+            .filter(|part| part.contains(WILDCARDS))
+            .collect();
+        // The pattern's parts from the first wildcard part on, as text.
+        let mut tail: Vec<String> = Vec::new();
+        if let Some(at) = loc.parts.iter().position(|part| part.starts_with(WILDCARD)) {
+            tail = loc.parts[at..]
+                .iter()
+                .map(|part| match part.strip_prefix(WILDCARD) {
+                    Some(n) => n
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| wildcards.get(n).copied())
+                        .unwrap_or("*")
+                        .to_string(),
+                    None => part.clone(),
+                })
+                .collect();
+            loc.parts.truncate(at);
+        }
+        let stripped = loc.stripped();
+        let folder = stripped.as_ref().unwrap_or(&loc);
+        let secrets = || {
+            self.sensitive
+                .iter()
+                .filter(|(_, _, kind)| *kind == Sensitivity::Secret)
+        };
+        if secrets().any(|(entry, ..)| below(folder, entry)) {
+            return true;
+        }
+        let holds_homes = deep && self.holds_homes(folder);
+        if tail.is_empty() {
+            return holds_homes || (deep && secrets().any(|(entry, ..)| above(folder, entry)));
+        }
+        let windows = folder.windows();
+        let hidden = hidden || flavour == Flavour::Windows;
+        let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
+        holds_homes
+            || secrets().any(|(entry, ..)| {
+                above(folder, entry)
+                    && picks(
+                        &tail,
+                        &entry.parts[folder.parts.len()..],
+                        !deep,
+                        true,
+                        &|part, name| pattern_matches(part, name, flavour, hidden, windows),
+                    )
+            })
+    }
+
+    /// Whether `folder` is, or holds, another user's home directory or the
+    /// root user's, whose own secrets are in it.
+    fn holds_homes(&self, folder: &Loc) -> bool {
+        self.root_homes.iter().any(|home| above(folder, home))
+            || self.neighbours.iter().any(|homes| {
+                let shorter = folder.parts.len().min(homes.parts.len());
+                folder.parts.len() <= homes.parts.len() + 1
+                    && folder.root.same(&homes.root)
+                    && folder.parts[..shorter]
+                        .iter()
+                        .zip(&homes.parts)
+                        .all(|(spelled, name)| same_name(spelled, name, folder.windows()))
+            })
+    }
+
     /// The words of a protected path that a pattern can pick, by name.
     /// `folder` is where the pattern starts (the folder before its first
     /// wildcard part), `tail` the pattern's parts from there, and `place`
@@ -1722,6 +2083,79 @@ impl Resolver {
 /// 8.3 short name.
 fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
     same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
+}
+
+/// The path `text` as `path` is spelled, from another text.
+fn respell<'b>(path: Spelling<'_>, text: &'b str) -> Spelling<'b> {
+    match path {
+        Spelling::Plain(_) => Spelling::Plain(text),
+        Spelling::Home(_) => Spelling::Home(text),
+    }
+}
+
+/// The most parts of one pattern that are read as `.` and `..`: each makes
+/// three readings, so more would be too many to read.
+const MOST_CLIMBING: usize = 4;
+
+/// The other readings of a POSIX pattern with parts that can match `..`: a
+/// part that starts with a literal dot and matches `..` (`.*`, `.?`, `.[.]`,
+/// `.[!a]`) stands for `.` and `..` as well as the names it picks, in an old
+/// shell that matches them (bash 3.2, dash; bash 5 and zsh do not, and the
+/// guard cannot know which runs the line). Each reading puts `.` or `..`
+/// for such a part; none when no part can. PowerShell and cmd wildcards are
+/// not read this way.
+fn climbing(text: &str, flavour: Flavour) -> Vec<String> {
+    if flavour != Flavour::Posix || !text.contains('.') || !glob::has_wildcard(text) {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = text.split('/').collect();
+    let can: Vec<usize> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| {
+            part.starts_with('.')
+                && glob::has_wildcard(part)
+                && glob::matches(part, "..", Flavour::Posix, false)
+        })
+        .map(|(at, _)| at)
+        .take(MOST_CLIMBING)
+        .collect();
+    if can.is_empty() {
+        return Vec::new();
+    }
+    // Each such part is its own name (0), `.` (1) or `..` (2); all names is
+    // the text itself.
+    let total = 3_usize.pow(u32::try_from(can.len()).unwrap_or(0));
+    (1..total)
+        .map(|mut choice| {
+            let mut read = parts.clone();
+            for &at in &can {
+                read[at] = match choice % 3 {
+                    1 => ".",
+                    2 => "..",
+                    _ => read[at],
+                };
+                choice /= 3;
+            }
+            read.join("/")
+        })
+        .collect()
+}
+
+/// How serious a place is to touch, for choosing among the readings of a
+/// pattern: the agent's own, beyond it, a system folder, the home directory
+/// or what holds the workspace, history or a startup file, a caller's own
+/// path, a key.
+fn severity(place: Place) -> u8 {
+    match place {
+        Place::Inside | Place::Temp { .. } | Place::Null => 0,
+        Place::Outside | Place::Unknown | Place::Registry => 1,
+        Place::Top(_) => 2,
+        Place::Workspace { .. } | Place::Home { .. } => 3,
+        Place::Protected(_) => 5,
+        Place::Sensitive(_, Sensitivity::Secret) | Place::Disk => 6,
+        _ => 4,
+    }
 }
 
 /// `c` as the widest reading of "the same without case" has it: the one

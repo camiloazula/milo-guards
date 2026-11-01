@@ -462,7 +462,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Two questions are `Resolver` methods, since a guard needs them resolved: the
+Six questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -475,6 +475,31 @@ path made absolute, with the working directory and `~` applied.
   what is not. It answers `None` on Windows, where the device namespace is a
   `Disk`. It does not change `place`, so the shell guard's verdicts stay
   what they were.
+- `places(path, flavour, hidden)` is every place a path can land: as written,
+  then as each other reading of a POSIX part that can match `..` puts it. `place`
+  is the most serious of them. A guard that asks another question of the places
+  (is it the home directory?) asks of each.
+- `picks_secret(path, flavour, hidden)` is `Some(words)` for a pattern that can
+  name a key or a credential: `~/.s*/id_rsa` picks `~/.ssh/id_rsa`,
+  `/etc/sh*dow` the system's password hashes, `/home/*/.ssh` any user's keys,
+  `~/.*` every dot file in the home directory, the secret ones among them. It
+  reads a pattern as `place` does, by the folder before its first wildcard part
+  and what its parts can match below, one part against one name, as for a
+  protected path; a part matches a name as `glob::matches` says, `hidden`
+  included, and a pattern that stops at a folder holding a secret picks no
+  secret, since it reads that folder's name. Only a `Secret` place counts: a
+  startup file or the history is not one. A POSIX part that can match `..`
+  (`.*`, `.?`, `.[.]`) is also read as `.` and `..`, here and in `place`, where
+  the most serious reading wins. It is `None` for a path with no
+  wildcard (that is `place`'s) and for one known only when it runs. It does not
+  change `place`, so the shell guard's verdicts for deleting and writing stay
+  what they were.
+- `cwd_is_clear()` says whether a path written from the working directory, with
+  no `..`, `~`, drive or variable in it, can only land in the agent's own
+  workspace: the working directory is in a workspace folder that holds no key,
+  startup file or other sensitive place, and is not under `/dev` or `/proc`.
+  Such a path is not a secret, so a guard that asks about every operand of every
+  program (the shell guard's rule about reading a key) skips resolving it.
 - `git(path, flavour)` is `Some(words)` for a path in a git repository's own
   folder at any depth, `vendor/x/.git/hooks/pre-commit` and not only the
   workspace's `.git`: `a git hook, which runs code` for `hooks`, and `the
@@ -497,6 +522,22 @@ path made absolute, with the working directory and `~` applied.
   `.vscode` holds `.vscode/tasks.json`), but a workspace folder or any other
   folder, which can hold one that a name cannot tell, does not. Both are
   spelling alone, like everything here.
+- `reaches_secret(path, flavour, hidden, deep)` says whether reading what a
+  path names can reach a secret (`Sensitivity::Secret`) below it, which `place`
+  does not say: `place` says what the path itself is, and a folder or a pattern
+  holds or picks more. With `deep` the path is read with everything below it (a
+  recursive search, a listing), so a folder that holds a secret, another user's
+  home, or a pattern that picks a folder holding one, reaches it; without it
+  only a pattern that picks the secret itself, or goes below it, does. A
+  pattern is read as the shell reads it, `hidden` being a shell whose wildcards
+  match a leading dot (Windows ones always do). A path known only when it runs
+  may reach any, so it does. It does not change `place`.
+- `absolute(path, flavour)` is the absolute path a spelling names, as spelled:
+  `~` and `..` applied and the working directory put in front of a relative
+  path, the links and the case left alone, a Windows long path written as the
+  plain path it names. It is `None` for what is not one place on a disk: a
+  device, or a path on another drive's own working directory. A wildcard is not
+  read; the caller says the folder a pattern expands in.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 
