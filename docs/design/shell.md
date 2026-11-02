@@ -2034,8 +2034,38 @@ is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
 DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
 backtick is an expansion, as in a double-quoted word, so the body is a
 template; a body with both an escaped and an expanding `$` or backtick is
-`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+`unknown`. `<<-` takes the tabs off each line first, except a line that goes on after a
+backslash-newline: every shell keeps its tabs (`DR\` then a tab and `OP`
+is `DR`, a tab and `OP`). A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
+
+The body of an unquoted delimiter is joined the same way when the guard splits
+the line, also one inside `"$(…)"` or a backtick in double quotes: a
+backslash-newline in it is taken out before the body is read, so `$(r\` then
+`m -rf …)` in it is `rm`. With `<<-` the tabs of the line that goes on stay (all
+of bash, sh, dash, ksh and zsh keep them), so `\tEO\` then `\tF` is no end
+line. Where shells differ is a line that took in a backslash-newline and then
+is, or is near, the delimiter (`EO\` then `F`): bash, sh and zsh compare the
+joined line and end the body there, dash and ksh do not. Such a line, joined or
+in any piece of it (`x\` then `EOF`), makes the line `Unreadable`. A quoted
+delimiter's body is copied as it is.
+
+The shell ends a here-document only at a line that is exactly the delimiter
+(for `<<-`, after leading tabs only). The grammar also ends it at a line only
+near the delimiter (` EOF`, `EOF `, `EOF #…`, `EOF ;…`), so the rest would be
+judged as shell commands while the program reads it as its input
+(`python3 - <<'PY'` with a ` PY` line in front of `shutil.rmtree(…)`). Such a
+line makes the whole line `Unreadable`, for every reader of a here-document,
+also one inside `"$(…)"` or a backtick in double quotes (`git commit -m
+"$(cat <<'EOF' …)"` is how an agent writes one): the quoting starts afresh
+inside a substitution. A line that is the delimiter in quotes or with a
+backslash (`'EOF'`) ends the body for neither the grammar nor the shell, but
+is refused too, so that one rule covers every spelling. A quoted delimiter is
+read through its closing quote (`<<'E;F'` is `E;F`, `<<"E O"` is `E O`), and a
+parenthesis in a `${…}` is not counted as the end of the `$(…)` around it. Text
+whose quotes or substitutions never close is a text a shell refuses, so the
+scan that joins the lines has misread it and what follows was not joined: it is
+`Unreadable`.
 
 What a stage says is worked out once and read once for each client language,
 whatever the number of clients after it, so the time grows with the line and

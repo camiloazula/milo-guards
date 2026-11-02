@@ -12,12 +12,31 @@ use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let (text, marks) = join_continuations(text);
+    let (text, marks, near, open) = join_continuations(text);
     let text = text.as_str();
+    // The grammar ends such a here-document at the near line, where the shell
+    // does not: what the program reads is not what the guard reads.
+    if near {
+        split.problem(
+            Rule::Unreadable,
+            "has a here-document line that is only near its delimiter",
+            None,
+        );
+    }
     let language = tree_sitter_bash::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
+    // The grammar may read quotes that never close, and then says so; if it
+    // does not, the scan above has misread the text, and what follows its
+    // stopping place was not joined.
+    if open && !tree.root_node().has_error() {
+        split.problem(
+            Rule::Unreadable,
+            "has quotes or a substitution that never close",
+            None,
+        );
+    }
     let (names, looped) = assigned(tree.root_node(), text);
     for name in names {
         split.reassign(&name);
@@ -76,30 +95,58 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 
 /// `text` with each backslash-newline taken out, as the shell does before
 /// it reads a line (`r\<newline>m` is `rm`), except inside single quotes,
-/// comments and here-document bodies, where it stays. A body is copied as it
-/// is, so a quote in it (`don't`) cannot leave the rest of the line looking
-/// quoted.
+/// comments and the bodies of here-documents with a quoted delimiter, where
+/// it stays. Such a body is copied as it is, so a quote in it (`don't`)
+/// cannot leave the rest of the line looking quoted. The body of an unquoted
+/// delimiter is fed to the shell as the inside of a double-quoted word: a
+/// backslash-newline in it is joined, before the body is expanded. A line that
+/// took one in and is, or is near, the delimiter (joined, or in any piece) is
+/// refused: bash, sh and zsh compare the joined line, dash and ksh do not, so
+/// they disagree on where the body ends. With `<<-` the tabs of the line that
+/// goes on stay, as in every shell.
 ///
 /// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
 /// given back as the offset in the new text where it was, the end of its
 /// word, for [`Walker::qualified`].
-fn join_continuations(text: &str) -> (String, Vec<usize>) {
+fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     let chars: Vec<char> = text.chars().collect();
     let mut marks = Vec::new();
+    // Whether a body has a line only near its delimiter (see
+    // [`near_delimiter`]).
+    let mut near = false;
+    // Whether quotes or a substitution never close: a shell refuses such
+    // text, so the scan has misread it, and what follows was not joined.
+    let mut open = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
+    // Whether the open single quotes are `$'…'`, where a backslash escapes the
+    // next character, so `\'` does not end them.
+    let mut ansi = false;
+    // The `$(…)`, `$((…))`, `((…))` and backticks open at this point, each
+    // with whether it sits in double quotes: inside one the quoting starts
+    // afresh, so a here-document in `"$(psql <<'EOF' …)"` is a here-document.
+    let mut subs: Vec<(Sub, bool)> = Vec::new();
     // Here-documents opened on the current line, read from the next one:
-    // each delimiter, and whether `<<-` lets it be indented with tabs.
-    let mut bodies: Vec<(String, bool)> = Vec::new();
+    // each delimiter, whether `<<-` lets it be indented with tabs, and
+    // whether the word had a quote or a backslash (a body fed as it is).
+    let mut bodies: Vec<(String, bool, bool)> = Vec::new();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
         if single {
             joined.push(c);
-            single = c != '\'';
+            if ansi && c == '\\' {
+                if let Some(&next) = chars.get(at) {
+                    joined.push(next);
+                    at += 1;
+                }
+            } else {
+                single = c != '\'';
+            }
             continue;
         }
+        let in_brace = matches!(subs.last(), Some((Sub::Brace, _)));
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
@@ -122,13 +169,78 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
             },
             '\'' if !double => {
                 single = true;
+                ansi = ansi_quote(&joined);
                 joined.push(c);
             }
             '"' => {
                 double = !double;
                 joined.push(c);
             }
+            // Arithmetic, `$((…))`: a `<<` in it is a shift.
+            '$' if chars.get(at) == Some(&'(') && chars.get(at + 1) == Some(&'(') => {
+                joined.push_str("$((");
+                at += 2;
+                subs.push((Sub::Arith(2), double));
+                double = false;
+            }
+            // A substitution: outside the quotes of the line around it.
+            '$' if chars.get(at) == Some(&'(') => {
+                joined.push_str("$(");
+                at += 1;
+                subs.push((Sub::Paren(1), double));
+                double = false;
+            }
+            // A `${…}`: a parenthesis in it (`${x/(/y}`, `${x%(*}`) is text,
+            // not the end of the substitution around it. The quotes in it
+            // are the ones of the word around it, so it ends at a `}` in the
+            // same state.
+            '$' if chars.get(at) == Some(&'{') => {
+                joined.push_str("${");
+                at += 1;
+                subs.push((Sub::Brace, double));
+            }
+            '}' if matches!(subs.last(), Some((Sub::Brace, outer)) if *outer == double) => {
+                joined.push(c);
+                subs.pop();
+            }
+            // Arithmetic, `((…))`, unless already in some.
+            '(' if !double
+                && !in_brace
+                && chars.get(at) == Some(&'(')
+                && !matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                joined.push_str("((");
+                at += 1;
+                subs.push((Sub::Arith(2), double));
+            }
+            '`' => {
+                joined.push(c);
+                if let Some(&(Sub::Backtick, outer)) = subs.last() {
+                    subs.pop();
+                    double = outer;
+                } else {
+                    subs.push((Sub::Backtick, double));
+                    double = false;
+                }
+            }
+            '(' if !double && !in_brace => {
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), _)) = subs.last_mut() {
+                    *depth += 1;
+                }
+                joined.push(c);
+            }
+            ')' if !double && !in_brace => {
+                joined.push(c);
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), outer)) = subs.last_mut() {
+                    *depth = depth.saturating_sub(1);
+                    if *depth == 0 {
+                        double = *outer;
+                        subs.pop();
+                    }
+                }
+            }
             '#' if !double
+                && !in_brace
                 && joined
                     .chars()
                     .last()
@@ -140,9 +252,22 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                     at += 1;
                 }
             }
+            // A `<<` in arithmetic is a shift (`$((1<<2))`), but the shell
+            // reads `$((cat <<EOF` and the like as a subshell with a
+            // here-document: a word and the end of the line after it could be
+            // either, and is not guessed at.
+            '<' if !double
+                && !in_brace
+                && chars.get(at) == Some(&'<')
+                && matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                near |= ends_like_heredoc_start(chars.get(at + 1..).unwrap_or_default());
+                joined.push(c);
+            }
             // `<<WORD` (not `<<<`): a here-document whose body starts on
             // the next line.
             '<' if !double
+                && !in_brace
                 && chars.get(at) == Some(&'<')
                 && chars.get(at + 1) != Some(&'<')
                 && at.checked_sub(2).and_then(|before| chars.get(before)) != Some(&'<') =>
@@ -158,30 +283,85 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                     joined.push(space);
                     at += 1;
                 }
+                // The word: a quoted part is read through its closing quote
+                // (`<<'E;F'` is `E;F`), the rest stops at a space or an
+                // operator.
                 let mut word = String::new();
+                let mut quoted = false;
                 while let Some(&next) = chars.get(at) {
                     if next.is_whitespace() || ";&|<>()".contains(next) {
                         break;
                     }
                     joined.push(next);
-                    if !matches!(next, '\'' | '"' | '\\') {
-                        word.push(next);
-                    }
                     at += 1;
+                    quoted |= matches!(next, '\\' | '\'' | '"');
+                    match next {
+                        '\\' => {
+                            if let Some(&escaped) = chars.get(at).filter(|c| **c != '\n') {
+                                joined.push(escaped);
+                                word.push(escaped);
+                                at += 1;
+                            }
+                        }
+                        '\'' | '"' => {
+                            let mut closed = false;
+                            while let Some(&inner) = chars.get(at) {
+                                joined.push(inner);
+                                at += 1;
+                                if inner == next {
+                                    closed = true;
+                                    break;
+                                }
+                                if inner == '\\' && next == '"' {
+                                    if let Some(&escaped) = chars.get(at) {
+                                        joined.push(escaped);
+                                        word.push(escaped);
+                                        at += 1;
+                                    }
+                                    continue;
+                                }
+                                word.push(inner);
+                            }
+                            // A quote that never closes is not a word the
+                            // shell would take.
+                            open |= !closed;
+                        }
+                        _ => word.push(next),
+                    }
                 }
                 if !word.is_empty() {
-                    bodies.push((word, tabs));
+                    bodies.push((word, tabs, quoted));
                 }
             }
             '\n' if !double && !bodies.is_empty() => {
                 joined.push('\n');
-                for (delimiter, tabs) in std::mem::take(&mut bodies) {
+                for (delimiter, tabs, quoted) in std::mem::take(&mut bodies) {
                     while at < chars.len() {
-                        let start = at;
-                        while chars.get(at).is_some_and(|c| *c != '\n') {
+                        let mut line = String::new();
+                        // Where in `line` each backslash-newline was taken
+                        // out: the pieces of the physical lines.
+                        let mut cuts: Vec<usize> = Vec::new();
+                        while let Some(&c) = chars.get(at).filter(|c| **c != '\n') {
                             at += 1;
+                            if c != '\\' || quoted {
+                                line.push(c);
+                            } else if let Some(&next) = chars.get(at) {
+                                // An unquoted body: a backslash-newline is
+                                // joined, any other escape (`\\`) is kept
+                                // whole, so `\\<newline>` is not one. The
+                                // tabs of the line that goes on stay, also
+                                // with `<<-`: shells keep them.
+                                at += 1;
+                                if next == '\n' {
+                                    cuts.push(line.len());
+                                } else {
+                                    line.push(c);
+                                    line.push(next);
+                                }
+                            } else {
+                                line.push(c);
+                            }
                         }
-                        let line: String = chars[start..at].iter().collect();
                         joined.push_str(&line);
                         if at < chars.len() {
                             joined.push('\n');
@@ -192,16 +372,95 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                         } else {
                             line.as_str()
                         };
+                        // A line that took in a backslash-newline: bash, sh
+                        // and zsh join it before they compare it with the
+                        // delimiter, dash and ksh do not (and then end the
+                        // body at a piece that is the delimiter). If the
+                        // joined line or any piece is, or is near, the
+                        // delimiter, the shells disagree on where the body
+                        // ends, so the line is refused.
+                        if !cuts.is_empty() {
+                            let mut start = 0;
+                            let mut pieces = Vec::new();
+                            for cut in cuts.iter().copied().chain([line.len()]) {
+                                pieces.push(line.get(start..cut).unwrap_or_default());
+                                start = cut;
+                            }
+                            near |= near_delimiter(content, &delimiter)
+                                || pieces.iter().any(|piece| near_delimiter(piece, &delimiter));
+                        }
                         if content == delimiter {
                             break;
                         }
+                        near |= near_delimiter(content, &delimiter);
                     }
                 }
             }
             _ => joined.push(c),
         }
     }
-    (joined, marks)
+    open |= single || double || !subs.is_empty();
+    (joined, marks, near, open)
+}
+
+/// An open `$(…)`, `$((…))` or `((…))` (with the depth of the parentheses in
+/// it) or backtick, see [`join_continuations`].
+#[derive(Clone, Copy)]
+enum Sub {
+    Paren(usize),
+    Arith(usize),
+    Backtick,
+    /// A `${…}`, in which a parenthesis is not counted.
+    Brace,
+}
+
+/// Whether the quote that follows `before` opens `$'…'`: a `$` that is not
+/// escaped and does not pair with another (`$$'` is the process id and a plain
+/// quote). A backslash in `$'…'` escapes the next character.
+fn ansi_quote(before: &str) -> bool {
+    let dollars = before.chars().rev().take_while(|c| *c == '$').count();
+    let rest = &before[..before.len() - dollars];
+    let slashes = rest.chars().rev().take_while(|c| *c == '\\').count();
+    let unescaped = if slashes % 2 == 1 {
+        dollars.saturating_sub(1)
+    } else {
+        dollars
+    };
+    unescaped % 2 == 1
+}
+
+/// Whether `rest`, the text after a `<<` in arithmetic, has the look of a
+/// here-document's start: an optional `-`, one word, then the end of the line.
+fn ends_like_heredoc_start(rest: &[char]) -> bool {
+    let mut rest = rest.iter().peekable();
+    rest.next_if(|c| **c == '-');
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    let mut word = 0;
+    while rest
+        .next_if(|c| !c.is_whitespace() && !";&|<>()".contains(**c))
+        .is_some()
+    {
+        word += 1;
+    }
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    word > 0 && rest.next() == Some(&'\n')
+}
+
+/// Whether a line of a here-document's body is only near its delimiter: the
+/// shell ends the body at a line that is exactly the delimiter (for `<<-`,
+/// after its leading tabs), but the grammar also ends it at ` EOF`, `EOF `,
+/// `EOF #…` and `EOF ;…`. The line's first word, without spaces, quotes and
+/// backslashes, is the delimiter while the line is not. A line that is the
+/// delimiter in quotes or with a backslash (`'EOF'`) ends the body for
+/// neither the grammar nor the shell, but is refused too: it is no body
+/// anyone writes, and one rule is simpler than two.
+fn near_delimiter(line: &str, delimiter: &str) -> bool {
+    let word = line
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || ";&|()<>#".contains(c))
+        .next()
+        .unwrap_or_default();
+    word.replace(['\'', '"', '\\'], "") == delimiter
 }
 
 /// The command a redirect after `node` belongs to, when `node` is a list, a
