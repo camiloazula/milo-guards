@@ -793,7 +793,13 @@ the same line. It is `stop_system` when the line stops more than a name:
   `-match` pattern written out is a regular expression searched for in each
   name, read as `pkill` reads one, so `-match 'node'` is `-like '*node*'`
   (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
-  it runs are `stop_system`, as is `-notmatch`);
+  it runs are `stop_system`, as is `-notmatch`). A `-match` pattern is a .NET
+  expression, and the guard reads it only in the POSIX ERE subset: one with a
+  `(?` in it (a lookaround, an inline option, a comment, a named group, a
+  conditional) or an escape that is a letter or digit other than `\d \D \w \W
+  \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
+  read, and the filter is "picked by a filter only known when it runs"
+  (`-match '^(?!node)'` picks every process but `node`);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
   `-Property Name`) keep some of the same processes; a `Select-Object` given
   `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable

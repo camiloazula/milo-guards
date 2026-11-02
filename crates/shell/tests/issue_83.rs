@@ -663,6 +663,154 @@ fn a_where_object_name_pattern_is_read_like_a_wildcard_around_it() {
 }
 
 #[test]
+fn a_match_pattern_is_a_dotnet_expression_read_only_in_the_posix_subset() {
+    // `-match` takes a .NET expression: a lookaround, an inline option or
+    // comment, an escape that spells a character (`\x6f`, `\157`, `\cO`), a
+    // Unicode class (`\p{L}`) and a named backreference are not read, so the
+    // filter is one only known when it runs. (`\uXXXX` goes the same way, by
+    // the same code path.)
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            r"Get-Process | Where-Object { $_.Name -match 'node\d*' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'node\.exe' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match '^node\b' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match '^vite\w*$' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'node\\n' } | Stop-Process",
+        ],
+        &[
+            // Lookarounds.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node).*' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node$).+' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object Name -match '^(?!(node|vite)$)' | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | ? { $_.Name -match '(?!x)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where { $_.Name -match '(?!x)' } | kill",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?=e)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?<!x)e' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            // Inline options, comments and conditionals.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?x) e x p l o r e r' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?x)expl orer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?i:EXPLORER)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?#node)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'node(?(x)|)' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            // Escapes that spell out a character.
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl\x6frer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'ex\x70lorer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'lsas\x73' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'explor\x65r' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl\157rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl\0157rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl\cOrer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            // Unicode classes.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '\p{L}' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '\p{L}+' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '\P{N}' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object -Property Name -Match -Value '\p{L}' | Stop-Process",
+                Rule::StopSystem,
+            ),
+            // Named backreferences.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\k<n>r' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\k{n}r' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            // The same filters in front of a method that stops them.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % Kill",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % { $_.Kill() }",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | ForEach-Object { $_.Kill() }",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -imatch 'expl\x6frer' } | % Kill",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+}
+
+#[test]
 fn wmic_in_powershell_does_not_read_a_value_with_a_variable_in_it() {
     check(
         Shell::PowerShell,

@@ -695,7 +695,13 @@ fn filter_name(args: &[Arg]) -> Option<(&Arg, Names)> {
     let value = value.or_else(|| positional.next())?;
     let property = property.known()?.to_ascii_lowercase();
     let kind = compares?;
+    // A `-match` pattern is a .NET expression, read here only in the POSIX
+    // subset: one that uses more is not read (a lookaround, an option, `\x6f`,
+    // `\p{L}`, `\k<n>`), and the filter is any other.
+    let dotnet =
+        matches!(kind, Names::Regex { .. }) && value.known().is_some_and(regex::dotnet_only);
     (positional.next().is_none()
+        && !dotnet
         && matches!(property.as_str(), "name" | "processname")
         && value.known().is_some())
     .then_some((value, kind))

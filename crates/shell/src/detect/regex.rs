@@ -295,6 +295,33 @@ fn escape(escaped: char) -> Re {
     }
 }
 
+/// Whether a .NET regular expression (a PowerShell `-match` pattern) holds
+/// something the POSIX reading here would take for plain text: a group that
+/// starts with `(?` (a lookaround, an option, a comment, a named group, a
+/// conditional) or an escape that is a letter or digit other than `\d \D \w
+/// \W \s \S \b \B` (`\x6f`, `\157`, `\cO`, `o`, `\p{L}`, `\k<n>`). Such a
+/// pattern is not read at all.
+pub(super) fn dotnet_only(pattern: &str) -> bool {
+    if pattern.contains("(?") {
+        return true;
+    }
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(escaped)
+                    if escaped.is_alphanumeric()
+                        && !matches!(escaped, 'd' | 'D' | 'w' | 'W' | 's' | 'S' | 'b' | 'B') =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 /// Whether every match of a regular expression holds a letter or digit the
 /// expression spells out. One that does not matches every process: `.`,
 /// `.*`, `^`, the empty one, `a*`, `(a|)`. What cannot be read as a regular
