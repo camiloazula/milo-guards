@@ -450,7 +450,27 @@ and `{ cd ../..; ls; } > x` writes `<cwd>/x`. When that folder is not certain,
 the redirect is placed from every folder that may be it, as for a `cd` above:
 where the line is when the statement ends too if the statement is in a loop or
 a function body, and where the line began too if an earlier `cd` may not have
-moved it. A redirect on a call to a function whose body moves the line
+moved it. A `cd` in the body that may not have run (in a branch of an `if` or a
+`case`, after `&&` or `||` or on the left of `||`, in a loop body, in a pipeline
+stage or behind a wrapper) leaves the line in a folder that is not certain. The
+redirect itself still opens from where the statement began, but a later run of
+a file it wrote may be from either folder, so the file counts as written from
+where the line is when the statement ends too, for that judgement only. `if
+false; then cd sub; else echo x; fi > x.sh; bash x.sh`, `{ echo x; false && cd
+sub; } > x.sh; bash x.sh` and `for i in $l; do cd sub; echo x; done > x.sh; bash
+x.sh` may run the `x.sh` they wrote, when the `cd` did not run, so they are
+`unknown`, as the same `cd` at the top level is; but `{
+cd sub; echo x; } > x.sh; bash x.sh` surely runs `sub/x.sh` and `if true; then cd
+sub; fi > x.sh; bash x.sh` keeps its verdict: an `if` whose condition is `true`
+or `:` alone, with no `elif` or `else`, runs its body, so a `cd` in it is not
+one that may not have run (unless a function of that name is defined, or the
+line has an `alias`, `enable` or `disable`, which can change what the name
+stands for). That is all it changes: for the option, a function definition and
+where a later `cd` starts it is a branch like any other `if`. After such a
+statement a later `cd` is placed from both folders too: `{ echo x; false && cd
+sub; } > x.sh; cd ..; bash x.sh` may run the `x.sh` it wrote.
+
+A redirect on a call to a function whose body moves the line
 (`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
 well, from the folder the line is in when the function is called. The walk
 applies the body's `cd` once, where the function is defined, so it cannot name

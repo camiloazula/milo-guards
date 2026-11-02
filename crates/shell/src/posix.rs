@@ -822,6 +822,7 @@ struct Tail {
     here: OpensFrom,
     moved: usize,
     moves: usize,
+    uncertain: usize,
     first: usize,
 }
 
@@ -1102,10 +1103,15 @@ impl Walker<'_> {
                     self.split.hide_functions();
                 }
                 let function = self.function_start(node);
+                // `if true; then …; fi` runs its body: a `cd` in it is no
+                // `cd` that may not have run. It is still a branch for all
+                // else (the option, a definition, where a `cd` is placed).
+                let taken = self.always_taken(node);
                 // The variable of `for` and `select` is set for the body
                 // (`for PATH in /x; do …`).
                 self.split.assigned_earlier |= node.kind() == "for_statement";
                 self.split.branches += 1;
+                self.split.taken += usize::from(taken);
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
@@ -1125,6 +1131,7 @@ impl Walker<'_> {
                 self.split.assigned_earlier |= node.kind() == "function_definition";
                 self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
+                self.split.taken -= usize::from(taken);
                 self.split.branches -= 1;
             }
             "pipeline" => {
@@ -1173,6 +1180,32 @@ impl Walker<'_> {
         }
     }
 
+    /// Whether `node` is an `if` that surely runs its one body: its condition
+    /// is the command `true` or `:` alone, no `elif` or `else` follows, no
+    /// function of that name is defined to stand in for it, and no alias,
+    /// `enable` or `disable` may have changed what the name stands for.
+    fn always_taken(&self, node: Node<'_>) -> bool {
+        if node.kind() != "if_statement" {
+            return false;
+        }
+        let mut cursor = node.walk();
+        let other = node
+            .named_children(&mut cursor)
+            .any(|child| matches!(child.kind(), "elif_clause" | "else_clause"));
+        let mut conditions = node
+            .children_by_field_name("condition", &mut cursor)
+            .filter(Node::is_named);
+        let (Some(condition), None) = (conditions.next(), conditions.next()) else {
+            return false;
+        };
+        let name = unit::text(&condition, self.source).trim();
+        !other
+            && condition.kind() == "command"
+            && matches!(name, "true" | ":")
+            && !self.split.defines_function(name)
+            && !self.split.renames_builtins()
+    }
+
     /// A list of commands joined by `&&` and `||`: the right side of either
     /// may not run.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -1200,6 +1233,7 @@ impl Walker<'_> {
                     here: self.split.opens_here(),
                     moved: self.split.moved_so_far(),
                     moves: self.split.moves_so_far(),
+                    uncertain: self.split.uncertain_so_far(),
                     first: self.split.units.len(),
                 });
             }
@@ -2054,6 +2088,7 @@ impl Walker<'_> {
         let here = self.split.opens_here();
         let moved_before = self.split.moved_so_far();
         let moves_before = self.split.moves_so_far();
+        let uncertain_before = self.split.uncertain_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
@@ -2134,6 +2169,7 @@ impl Walker<'_> {
                         tail.first..own.end,
                         tail.moved,
                         tail.moves,
+                        tail.uncertain,
                         by_folder,
                     )
                 } else {
@@ -2142,6 +2178,7 @@ impl Walker<'_> {
                         own.clone(),
                         moved_before,
                         moves_before,
+                        uncertain_before,
                         by_folder,
                     )
                 };

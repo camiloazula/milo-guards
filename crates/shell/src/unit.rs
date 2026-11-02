@@ -414,6 +414,12 @@ pub(crate) enum OpensFrom {
     /// The folder a unit starts in (as [`Unit::dir`]; `None`: where the
     /// line began).
     Start(Option<Arg>),
+    /// The folder a unit starts in, as [`Self::Start`], when the body that
+    /// runs after it holds a `cd` that may not have run: the redirect is
+    /// still opened from that folder, but the line may end in that folder or
+    /// the one the `cd` took it to, so a later run of a file a redirect wrote
+    /// is also judged from where the line ends (see [`Split::later_writes`]).
+    Unsure(Option<Arg>),
     /// The folder a unit starts in, and also where the line is when the
     /// redirect is read (where the unit goes): the folder the unit starts in
     /// is not certain, because its body runs more than once or an earlier
@@ -534,6 +540,11 @@ struct Reaching {
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The files a redirect wrote from a folder the line may not be in when
+    /// the redirect is read (see [`OpensFrom::Unsure`]), as if from where the
+    /// line is then: only a later run of a file is judged from these, never
+    /// where the redirect itself writes.
+    pub(crate) later_writes: Vec<Write>,
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
@@ -585,6 +596,10 @@ pub(crate) struct Split {
     /// or is the left side of `||`. Where the next `cd` starts is then not
     /// certain.
     maybe_moved: bool,
+    /// How many times a `cd` read so far was taken as one that may not have
+    /// moved the line (see [`Self::maybe_moved`]): a body that adds to it
+    /// leaves the line in a folder that is not certain.
+    uncertain: usize,
     /// The units that move the line from a folder that is not certain (see
     /// [`Self::maybe_moved`]; a loop or a function body runs again from where
     /// its last `cd` went), by their place in `units`.
@@ -662,6 +677,10 @@ pub(crate) struct Split {
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
     pub(crate) branches: usize,
+    /// How many of [`Self::branches`] are an `if true; then …; fi` (see
+    /// `Walker::always_taken`): it still counts as a branch for everything
+    /// else, and is left out only for whether a `cd` in it may not have run.
+    pub(crate) taken: usize,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -822,6 +841,7 @@ pub(crate) struct Place {
     moves: usize,
     later: usize,
     maybe_moved: bool,
+    uncertain: usize,
 }
 
 /// An action that runs later, in this shell, from wherever the line has
@@ -982,6 +1002,15 @@ impl Split {
                 || !unit.wrappers.is_empty()
             {
                 self.maybe_moved = true;
+                // An `if true` body surely runs, so its `cd` does not leave
+                // the line unsure where a redirect on the `if` ends.
+                if self.branches > self.taken
+                    || self.repeats > 0
+                    || unit.stage.is_some()
+                    || !unit.wrappers.is_empty()
+                {
+                    self.uncertain += 1;
+                }
             }
         }
         if unit.shell == Shell::Cmd {
@@ -1237,13 +1266,20 @@ impl Split {
     /// `moved_before` is how many `cd`s had been read when the statement
     /// began, and `moves_before` how many this shell had run: the body moves
     /// the line only if it ran one that a subshell did not give back.
-    /// `by_folder` is as for [`Self::starts_in`].
+    /// `by_folder` is as for [`Self::starts_in`]. `uncertain_before` is how
+    /// many `cd`s had been taken as ones that may not have run (see
+    /// [`Self::uncertain_so_far`]): when the body added one (a `cd` in a
+    /// branch, after `&&` or `||`, or in a loop), the line may be where it
+    /// started or where the `cd` took it ([`OpensFrom::Unsure`]): the redirect
+    /// still opens from where it started, and only a later run of a file it
+    /// wrote is also judged from where the line ends.
     pub(crate) fn opens_before(
         &mut self,
         start: OpensFrom,
         units: Range<usize>,
         moved_before: usize,
         moves_before: usize,
+        uncertain_before: usize,
         by_folder: bool,
     ) -> OpensFrom {
         let moved = self.moves != moves_before;
@@ -1252,12 +1288,19 @@ impl Split {
         } else {
             Vec::new()
         };
+        let unsure = self.uncertain != uncertain_before;
         if dirs.is_empty() {
-            return if moved { start } else { OpensFrom::Line };
+            return match start {
+                OpensFrom::Start(dir) if moved && unsure => OpensFrom::Unsure(dir),
+                start if moved => start,
+                _ => OpensFrom::Line,
+            };
         }
         if moved {
             match start {
-                OpensFrom::Start(dir) | OpensFrom::Both(dir) => dirs.push(dir),
+                OpensFrom::Start(dir) | OpensFrom::Unsure(dir) | OpensFrom::Both(dir) => {
+                    dirs.push(dir);
+                }
                 OpensFrom::Among(more) => dirs.extend(more),
                 OpensFrom::Line => {}
             }
@@ -1318,6 +1361,7 @@ impl Split {
     pub(crate) fn may_not_have_moved(&mut self, moves: usize) {
         if self.moves != moves {
             self.maybe_moved = true;
+            self.uncertain += 1;
         }
     }
 
@@ -1327,6 +1371,12 @@ impl Split {
     /// not moved the line.
     pub(crate) fn moves_so_far(&self) -> usize {
         self.moves
+    }
+
+    /// How many `cd`s have been taken as ones that may not have run so far,
+    /// for [`Self::opens_before`].
+    pub(crate) fn uncertain_so_far(&self) -> usize {
+        self.uncertain
     }
 
     /// How many `cd`s the walk has read, in a subshell or not, for
@@ -1355,7 +1405,7 @@ impl Split {
     fn redirect_dirs(&self) -> Vec<Option<Arg>> {
         match &self.opens_from {
             OpensFrom::Line => vec![self.dir.clone()],
-            OpensFrom::Start(dir) => vec![dir.clone()],
+            OpensFrom::Start(dir) | OpensFrom::Unsure(dir) => vec![dir.clone()],
             OpensFrom::Both(dir) => vec![dir.clone(), self.dir.clone()],
             OpensFrom::Among(dirs) => dirs
                 .iter()
@@ -1534,6 +1584,14 @@ impl Split {
                 hidden,
             });
         }
+        if matches!(self.opens_from, OpensFrom::Unsure(_)) {
+            self.later_writes.push(Write {
+                shell,
+                target,
+                dir: self.dir.clone(),
+                hidden,
+            });
+        }
     }
 
     /// Record a `for` loop over `words` whose body, the units and the
@@ -1635,6 +1693,17 @@ impl Split {
     /// Whether the line defines the function `name`.
     pub(crate) fn defines_function(&self, name: &str) -> bool {
         self.functions.iter().any(|known| known == name)
+    }
+
+    /// Whether a command read so far may change what a builtin's name
+    /// stands for: an alias (`alias true=false`), or `enable` and `disable`
+    /// (`enable -n true` turns the builtin off, so a program of that name
+    /// from `PATH` runs).
+    pub(crate) fn renames_builtins(&self) -> bool {
+        self.units.iter().any(|unit| {
+            unit.key()
+                .is_some_and(|key| matches!(key.as_str(), "alias" | "enable" | "disable"))
+        })
     }
 
     /// Say a function the line defines runs with the option on, as a
@@ -1803,6 +1872,7 @@ impl Split {
             moves: self.moves,
             later: self.later.len(),
             maybe_moved: self.maybe_moved,
+            uncertain: self.uncertain,
         }
     }
 
@@ -1825,6 +1895,7 @@ impl Split {
         self.drive_guess = place.drive_guess;
         self.moves = place.moves;
         self.maybe_moved = place.maybe_moved;
+        self.uncertain = place.uncertain;
     }
 
     /// Record that the line sets or unsets the variable `name`, for `effect`.
