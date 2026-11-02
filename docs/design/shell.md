@@ -1806,8 +1806,10 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A PowerShell word that may be a redirect and cannot be told apart: a `>`
   with no file after it (`echo x 1>`), two in one word (`a>b>c`), a `>` in a
   word that also holds a quote or an escape (`1>"..\x.txt"`, `` 1>x`.txt ``),
-  or one in the name of the command (`echo>f`). It is `unknown`, `has a word
-  that may be a redirect the guard cannot read`.
+  or one in the name of the command (`echo>f`, `& echo>f`). It is `unknown`,
+  `has a word that may be a redirect the guard cannot read`. A `>` inside a
+  closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
+  double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.

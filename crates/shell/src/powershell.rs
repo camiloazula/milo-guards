@@ -210,10 +210,55 @@ enum Bare<'t> {
     Unclear,
 }
 
+/// Where the first `>` of a word is, read outside its quotes.
+enum Arrow {
+    /// At this byte, outside every quote.
+    At(usize),
+    /// Every `>` is text, in a closed quote (`--format="%an <%ae>"`).
+    Quoted,
+    /// A `>` the guard cannot place: in a quote that is not closed or that
+    /// holds `$(` or a backtick, or after an escape.
+    Unclear,
+}
+
+/// Find the first `>` of a word that is outside its quotes. PowerShell reads
+/// one inside a closed `'...'` or `"..."` as text.
+fn first_arrow(text: &str) -> Arrow {
+    let mut quote: Option<(char, usize)> = None;
+    for (index, c) in text.char_indices() {
+        match quote {
+            Some((open, start)) if c == open => {
+                let inside = &text[start..index];
+                if open == '"' && (inside.contains("$(") || inside.contains('`')) {
+                    return Arrow::Unclear;
+                }
+                quote = None;
+            }
+            Some(_) => {}
+            None => match c {
+                '>' => return Arrow::At(index),
+                '\'' | '"' => quote = Some((c, index + 1)),
+                '`' => return Arrow::Unclear,
+                _ => {}
+            },
+        }
+    }
+    if quote.is_some() {
+        Arrow::Unclear
+    } else {
+        Arrow::Quoted
+    }
+}
+
 /// Read the redirect in the text of a bare word.
 fn bare_redirect(text: &str) -> Bare<'_> {
-    let Some(at) = text.find('>') else {
+    if !text.contains('>') {
         return Bare::Plain;
+    }
+    let at = match first_arrow(text) {
+        Arrow::At(at) => at,
+        Arrow::Quoted => return Bare::Plain,
+        Arrow::Unclear => return Bare::Unclear,
     };
     let (head, rest) = text.split_at(at);
     let target = rest
@@ -463,7 +508,9 @@ impl Walker<'_> {
         let bare = match kind {
             "generic_token" | "command_parameter" if !target => bare_redirect(text),
             // A name or a list that holds a `>` (`echo>f`, `x>a,b`).
-            "command_name" if !target && text.contains('>') => Bare::Unclear,
+            // Also after `&` or `.`, where the name is wrapped in a
+            // `command_name_expr`.
+            "command_name" | "command_name_expr" if !target && text.contains('>') => Bare::Unclear,
             "array_literal_expression" if !target => {
                 let mut arrow = false;
                 unit::for_each_node(child, |inner| {

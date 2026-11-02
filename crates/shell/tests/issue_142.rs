@@ -7,7 +7,7 @@
 mod common;
 
 use common::{check, check_effect, windows};
-use milo_guards_shell::{Effect, Rule, Shell};
+use milo_guards_shell::{Effect, Reach, Rule, Shell};
 
 #[test]
 fn a_redirect_the_grammar_reads_as_a_word_writes_its_file() {
@@ -117,6 +117,13 @@ fn a_word_that_may_be_a_redirect_and_cannot_be_told_apart_is_unknown() {
             ("echo x\"a\">..\\x.txt", Rule::Unknown),
             // The name of the command.
             ("echo>..\\x.txt", Rule::Unknown),
+            // Also after the call and dot-source operators.
+            ("& echo>..\\x.txt", Rule::Unknown),
+            ("& echo>>..\\x.txt", Rule::Unknown),
+            ("& .\\run.ps1>..\\x.txt", Rule::Unknown),
+            (". .\\x.ps1>..\\x.txt", Rule::Unknown),
+            // A quoted span that runs a command still writes.
+            ("git log --format=\"$(echo a>..\\x.txt)\"", Rule::Unknown),
             // A parameter after the operator may be the file or an argument.
             ("git reset 1> --hard", Rule::Unknown),
             ("git clean 1> -fdx", Rule::Unknown),
@@ -158,5 +165,47 @@ fn a_redirect_in_a_word_is_never_reads_only() {
         &windows(),
         Effect::Changes,
         &["git reset 1> --hard", "git reset x> --hard"],
+    );
+}
+
+#[test]
+fn a_greater_than_in_a_quote_of_a_parameter_is_text() {
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            "git commit --author=\"Me <me@example.com>\" -m \"x\"",
+            "git log --format=\"%an <%ae>\"",
+            "git log -n 3 --format=\"%h <%ae>\" --no-merges",
+            "git log --format=\"%h %s\" --author=\"Me <me@x.y>\"",
+            "git log --pretty=format:\"%an <%ae>\"",
+            "git log --pretty=format:\"%h %an <%ae>\"",
+            "git log --pretty=format:\"%h -> %s\"",
+            "git log --format='%an <%ae>'",
+            "git log --format=\"%h > %s\"",
+        ],
+        &[
+            // A `>` outside the quote is still a redirect.
+            ("git log --format=\"%h\">..\\x.txt", Rule::Unknown),
+            ("git log --format='%h'>..\\x.txt", Rule::Unknown),
+        ],
+    );
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        Effect::ReadsOnly(Reach::Workspace),
+        &[
+            "git log --format=\"%an <%ae>\"",
+            "git log -n 3 --format=\"%h <%ae>\" --no-merges",
+            "git log --pretty=format:\"%h -> %s\"",
+            "git log --format='%an <%ae>'",
+            "git log --format=\"%h > %s\"",
+        ],
+    );
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        Effect::Changes,
+        &["git commit --author=\"Me <me@example.com>\" -m \"x\""],
     );
 }
