@@ -8,7 +8,7 @@ use tree_sitter::{Node, TreeCursor};
 use crate::dotglob;
 use crate::launch;
 use crate::startup;
-use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
+use crate::unit::{self, Arg, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -731,14 +731,7 @@ impl Walker<'_> {
                 {
                     self.split.hide_functions();
                 }
-                if let Some(name) = node
-                    .child_by_field_name("name")
-                    .filter(|_| node.kind() == "function_definition")
-                {
-                    let name = unit::text(&name, self.source);
-                    self.split.define_function(name);
-                    self.fork_bomb(node, name);
-                }
+                let function = self.function_start(node);
                 // The variable of `for` and `select` is set for the body
                 // (`for PATH in /x; do …`).
                 self.split.assigned_earlier |= node.kind() == "for_statement";
@@ -750,6 +743,7 @@ impl Walker<'_> {
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                self.function_end(function);
                 // A function defined here may stand for a program of the same
                 // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
                 // here on.
@@ -799,6 +793,34 @@ impl Walker<'_> {
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// Note a function definition before its body is read: its name, where
+    /// the line is, and how many `cd`s were read (kept out of `node`, which
+    /// the walk recurses through).
+    fn function_start(&mut self, node: Node<'_>) -> Option<Box<(String, Option<Arg>, usize)>> {
+        let name = node
+            .child_by_field_name("name")
+            .filter(|_| node.kind() == "function_definition")?;
+        let name = unit::text(&name, self.source);
+        self.split.define_function(name);
+        self.fork_bomb(node, name);
+        Some(Box::new((
+            name.to_string(),
+            self.split.line_dir(),
+            self.split.moved_so_far(),
+        )))
+    }
+
+    /// A call to a function whose body moved the line opens its redirects
+    /// before that, from where the definition began.
+    fn function_end(&mut self, start: Option<Box<(String, Option<Arg>, usize)>>) {
+        if let Some(start) = start {
+            let (name, dir, moved) = *start;
+            if self.split.moved_so_far() != moved {
+                self.split.move_by_function(&name, dir);
+            }
         }
     }
 
@@ -1413,21 +1435,33 @@ impl Walker<'_> {
         own: Range<usize>,
     ) {
         let from = self.split.starts_in(own);
+        self.walk_redirect_from(redirect, stage, level, from);
+    }
+
+    /// Walk `redirect`, a redirect of a file that the shell opens from the
+    /// folder `from` says.
+    fn walk_redirect_from(
+        &mut self,
+        redirect: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: OpensFrom,
+    ) {
         let outer = self.split.open_from(from);
         self.walk(redirect, stage, level + 1);
         self.split.open_from(outer);
     }
 
     /// A here-document's redirect. The grammar holds the redirects written
-    /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
-    /// command it belongs to, they are placed like any redirect of that
-    /// command.
+    /// after its start (`<<EOF < f`) inside it: when `from` says where the
+    /// statement it belongs to opens its redirects from, they are placed like
+    /// any redirect of that statement.
     fn walk_heredoc(
         &mut self,
         node: Node<'_>,
         stage: Option<Stage>,
         level: usize,
-        own: Option<Range<usize>>,
+        from: Option<OpensFrom>,
     ) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -1445,9 +1479,9 @@ impl Walker<'_> {
             if !child.is_named() {
                 continue;
             }
-            match &own {
-                Some(own) if child.kind() == "file_redirect" => {
-                    self.walk_redirect(*child, stage, level, own.clone());
+            match &from {
+                Some(from) if child.kind() == "file_redirect" => {
+                    self.walk_redirect_from(*child, stage, level, from.clone());
                 }
                 _ => {
                     let background = children.get(at + 1).is_some_and(|next| next.kind() == "&");
@@ -1481,6 +1515,10 @@ impl Walker<'_> {
             .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
+        // Where the line is, and how many `cd`s it has read, before the body
+        // runs: a group's, loop's or branch's redirects are opened there.
+        let here = self.split.opens_here();
+        let moved_before = self.split.moved_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
@@ -1522,15 +1560,25 @@ impl Walker<'_> {
                 }
                 after.push((*child, inside));
             } else {
+                let redirects = matches!(child.kind(), "file_redirect" | "heredoc_redirect");
+                // The shell opens a redirect before the body runs: from the
+                // folder the command starts in, the last command of a list,
+                // pipeline or negation, or, for a group, a loop or a branch,
+                // the folder the line is in before any of it runs.
+                let opens = if !redirects {
+                    OpensFrom::Line
+                } else if simple {
+                    self.split.starts_in(own.clone())
+                } else if chained {
+                    self.split.starts_in(placed.clone())
+                } else {
+                    let moved = self.split.moved_so_far() != moved_before;
+                    self.split.opens_before(here.clone(), own.clone(), moved)
+                };
                 if child.kind() == "file_redirect" {
-                    // Only a plain command's redirect is opened before the
-                    // unit that moves the line runs: what a group holds is
-                    // not read that way.
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_redirect(*child, stage, level, on);
+                    self.walk_redirect_from(*child, stage, level, opens);
                 } else if child.kind() == "heredoc_redirect" {
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_heredoc(*child, stage, level, Some(on));
+                    self.walk_heredoc(*child, stage, level, Some(opens));
                 } else {
                     self.walk(*child, stage, level + 1);
                 }

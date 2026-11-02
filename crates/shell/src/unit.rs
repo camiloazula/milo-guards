@@ -228,6 +228,15 @@ impl Unit {
     }
 }
 
+/// Whether `unit` may be a call to the function `name`: the program is the
+/// name, or its path ends in it (the key is in lower case, so a function
+/// whose name differs only in case counts too).
+fn calls(unit: &Unit, name: &str) -> bool {
+    unit.shell == Shell::Posix
+        && (unit.program.known() == Some(name)
+            || unit.key().is_some_and(|key| key.eq_ignore_ascii_case(name)))
+}
+
 /// The name rules know a program by.
 pub(crate) fn key(program: &str, shell: Shell) -> String {
     let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
@@ -318,6 +327,11 @@ pub(crate) enum OpensFrom {
     /// is not certain, because its body runs more than once or an earlier
     /// `cd` may not have moved the line, so either may be the one.
     Both(Option<Arg>),
+    /// Any of these folders, and also where the line is when the redirect is
+    /// read: a call to a function whose body moves the line starts in the
+    /// folder the line is in when it is called, which is not known; the
+    /// folders it was defined in are the ones the walk can name.
+    Among(Vec<Option<Arg>>),
 }
 
 /// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
@@ -420,6 +434,9 @@ pub(crate) struct Split {
     /// redirects asks for its range once for each, and the answers must not
     /// read the command's units again, whatever runs in between.
     starts: HashMap<(usize, usize), Option<usize>>,
+    /// The same for the folders of the functions a range of units calls that
+    /// move the line (see [`Self::function_starts`]).
+    called: HashMap<(usize, usize), Vec<Option<Arg>>>,
     /// Whether a `cd` read so far may not have moved the line: it sits in a
     /// branch, a loop, a function body, a pipeline stage or the background,
     /// or is the left side of `||`. Where the next `cd` starts is then not
@@ -523,6 +540,9 @@ pub(crate) struct Split {
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
+    /// The functions whose body moves the line, each with the folder the
+    /// line was in where it was defined.
+    moving_functions: Vec<(String, Option<Arg>)>,
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
@@ -990,6 +1010,59 @@ impl Split {
         }
     }
 
+    /// The folders the functions called in `units` that move the line were
+    /// defined in: a call opens its redirects before the body runs, from
+    /// where the line is then, which the walk takes to be one of these.
+    fn function_starts(&mut self, units: Range<usize>) -> Vec<Option<Arg>> {
+        if self.moving_functions.is_empty() {
+            return Vec::new();
+        }
+        // As for [`Self::starts_in`], a range is read once however many
+        // redirects ask for it.
+        let key = (units.start, units.end);
+        if let Some(starts) = self.called.get(&key) {
+            return starts.clone();
+        }
+        let starts: Vec<Option<Arg>> = self
+            .units
+            .get(units)
+            .into_iter()
+            .flatten()
+            .flat_map(|unit| {
+                self.moving_functions
+                    .iter()
+                    .filter(|(name, _)| calls(unit, name))
+                    .map(|(_, dir)| dir.clone())
+            })
+            .collect();
+        self.called.insert(key, starts.clone());
+        starts
+    }
+
+    /// Where the redirects on a group, a loop or a branch whose body is
+    /// `units` open their files from, before any of it runs: `start` (see
+    /// [`Self::opens_here`]) when the body moves the line, and the folder a
+    /// function it calls was defined in when that moves the line.
+    pub(crate) fn opens_before(
+        &mut self,
+        start: OpensFrom,
+        units: Range<usize>,
+        moved: bool,
+    ) -> OpensFrom {
+        let mut dirs = self.function_starts(units);
+        if dirs.is_empty() {
+            return if moved { start } else { OpensFrom::Line };
+        }
+        if moved {
+            match start {
+                OpensFrom::Start(dir) | OpensFrom::Both(dir) => dirs.push(dir),
+                OpensFrom::Among(more) => dirs.extend(more),
+                OpensFrom::Line => {}
+            }
+        }
+        OpensFrom::Among(dirs)
+    }
+
     /// Where the redirects on `units` open their files from: the folder the
     /// first of them that moves the line (`cd`, `pushd`, `Set-Location`)
     /// starts in, as the shell opens them before it runs; where the line is
@@ -1015,7 +1088,12 @@ impl Split {
         let Some((index, unit)) =
             mover.and_then(|index| self.units.get(index).map(|unit| (index, unit)))
         else {
-            return OpensFrom::Line;
+            let starts = self.function_starts(key.0..key.1);
+            return if starts.is_empty() {
+                OpensFrom::Line
+            } else {
+                OpensFrom::Among(starts)
+            };
         };
         if self.unsure_starts.contains(&index) {
             OpensFrom::Both(unit.dir.clone())
@@ -1061,7 +1139,40 @@ impl Split {
             OpensFrom::Line => vec![self.dir.clone()],
             OpensFrom::Start(dir) => vec![dir.clone()],
             OpensFrom::Both(dir) => vec![dir.clone(), self.dir.clone()],
+            OpensFrom::Among(dirs) => dirs
+                .iter()
+                .cloned()
+                .chain(std::iter::once(self.dir.clone()))
+                .collect(),
         }
+    }
+
+    /// Where a redirect on a group, a loop or a branch that begins now opens
+    /// its file from: the folder the line is in now. When the body then runs
+    /// again from where its last pass left the line, or an earlier `cd` may
+    /// not have moved the line, either may be the one, and the redirect is
+    /// also placed from where the line is when it is read.
+    pub(crate) fn opens_here(&self) -> OpensFrom {
+        if self.maybe_moved {
+            // The `cd` that may not have run could have left the line where
+            // it began.
+            OpensFrom::Among(vec![self.dir.clone(), None])
+        } else if self.repeats > 0 {
+            OpensFrom::Both(self.dir.clone())
+        } else {
+            OpensFrom::Start(self.dir.clone())
+        }
+    }
+
+    /// Where the `cd`s read so far moved the line to.
+    pub(crate) fn line_dir(&self) -> Option<Arg> {
+        self.dir.clone()
+    }
+
+    /// Note that the function `name`, defined with the line in `dir`, moves
+    /// the line when it is called.
+    pub(crate) fn move_by_function(&mut self, name: &str, dir: Option<Arg>) {
+        self.moving_functions.push((name.to_string(), dir));
     }
 
     /// Add a redirect's write, made where the line has moved to, or from

@@ -420,9 +420,23 @@ The redirect of the next command is placed from where the line now is. In a
 POSIX shell only a redirect on the command itself is read this way, and that
 includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
-and it is read as the last command's): a file a
-group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
-still placed from where the line is when its body ends. In PowerShell only the
+and it is read as the last command's). The file a group, a loop, a branch or a
+subshell is redirected from is opened before its body runs, so it is placed from
+the folder the line is in when the statement begins, not from the one a `cd` in
+the body leaves it in: `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
+l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
+../../.ssh/id_rsa` does (`read_secret`), `{ cd sub; ls; } > ../x` writes
+`<cwd>/../x`, while `{ cd ../..; cat; } < .ssh/id_rsa` reads `<cwd>/.ssh/id_rsa`
+and `{ cd ../..; ls; } > x` writes `<cwd>/x`. When that folder is not certain,
+the redirect is placed from every folder that may be it, as for a `cd` above:
+where the line is when the statement ends too if the statement is in a loop or
+a function body, and where the line began too if an earlier `cd` may not have
+moved it. A redirect on a call to a function whose body moves the line
+(`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
+well; the folder the line is in when the function is called is not followed
+through the definition, so it is placed from the folder the function was
+defined in and from where the line is when the redirect is read, and a `cd`
+between the definition and the call is not counted. In PowerShell only the
 redirects of the command itself are placed so: a redirect inside a `$()` in its
 arguments is placed from where the line is there, and so is a redirect that
 follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
