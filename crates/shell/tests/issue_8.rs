@@ -794,15 +794,25 @@ fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
             "Stop-Process -Id (Get-Process node | Select-Object -First 1).Id",
             "Stop-Process (Get-Process node)",
             "Stop-Process -Id (Get-Process -Id $pid).Id",
-            "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess",
-            "Stop-Process -InputObject $p",
             "Get-Process node | % { Stop-Process -Id $_.Id }",
             "Get-Process node | ForEach-Object { Stop-Process -InputObject $_ -Force }",
-            "$procs | % { Stop-Process -Id $_.Id }",
-            "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id $_.OwningProcess }",
             "Get-Process | % { $_.Name }",
         ],
         &[
+            // Another cmdlet's listing, a variable and the item of a block
+            // that no `Get-Process` feeds are processes only known when it
+            // runs (issue 83): they were safe, as `kill $(lsof -ti:3000)`
+            // is not.
+            (
+                "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess",
+                Rule::StopSystem,
+            ),
+            ("Stop-Process -InputObject $p", Rule::StopSystem),
+            ("$procs | % { Stop-Process -Id $_.Id }", Rule::StopSystem),
+            (
+                "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id $_.OwningProcess }",
+                Rule::StopSystem,
+            ),
             (
                 "Stop-Process -InputObject (Get-Process) -Force",
                 Rule::StopSystem,
@@ -879,8 +889,8 @@ fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
         &[
             "Get-Process -Id 123 | Stop-Process",
             "Get-Process -Id $pid | Stop-Process",
-            "gps -Id 1,2 | kill",
-            "Get-Process -InputObject $x | Stop-Process",
+            // Ids 12 and 13: 1 is the system's first process (issue 83).
+            "gps -Id 12,13 | kill",
             "Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process",
             "Get-Process | Where-Object { $_.Name -like 'node*' } | Stop-Process -Force",
             "Get-Process | Where-Object { $PSItem.Name -eq 'node' } | Stop-Process -WhatIf",
@@ -893,6 +903,11 @@ fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
             "Get-Process | Where-Object { $_.ProcessName -ceq 'node' } | Stop-Process",
         ],
         &[
+            // A variable picks the processes only when it runs (issue 83).
+            (
+                "Get-Process -InputObject $x | Stop-Process",
+                Rule::StopSystem,
+            ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -eq 'explorer' } | Stop-Process",
                 Rule::StopSystem,
@@ -1806,14 +1821,20 @@ fn a_nested_listing_is_one_finding_and_a_command_with_none_is_not_one() {
     check(
         Shell::PowerShell,
         &windows,
+        &[],
         &[
-            "Stop-Process -Id (Get-Content pid.txt)",
-            "Stop-Process -Id (cat pid.txt | Select-Object -First 1)",
+            // No listing in them, so no listing finding, but a file's text
+            // is an id only known when it runs (issue 83).
+            ("Stop-Process -Id (Get-Content pid.txt)", Rule::StopSystem),
+            (
+                "Stop-Process -Id (cat pid.txt | Select-Object -First 1)",
+                Rule::StopSystem,
+            ),
+            (
+                "Stop-Process -Id (Foo (Get-Process explorer).Id)",
+                Rule::StopSystem,
+            ),
         ],
-        &[(
-            "Stop-Process -Id (Foo (Get-Process explorer).Id)",
-            Rule::StopSystem,
-        )],
     );
     for line in [
         listing_chain(100),
@@ -1886,9 +1907,14 @@ fn a_member_of_the_item_other_than_the_process_s_own_is_another_process() {
             "Get-Process notepad | % { Stop-Process -InputObject $_ }",
             "Get-Process notepad | % { Stop-Process $_.Id }",
             "Get-Process notepad | % { Stop-Process -Id $PSItem.Id -Force }",
-            "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id ($_.OwningProcess) }",
         ],
         &[
+            // After anything but a `Get-Process`, `$_` is not a process
+            // and its member is an id only known when it runs (issue 83).
+            (
+                "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id ($_.OwningProcess) }",
+                Rule::StopSystem,
+            ),
             (
                 "Get-Process notepad | % { Stop-Process -InputObject $_.Parent }",
                 Rule::StopSystem,

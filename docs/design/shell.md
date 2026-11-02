@@ -779,8 +779,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   lists: `Get-Process node | Stop-Process` is the name `node`, and any other
   first stage (`$procs | Stop-Process`) is known only when it runs. A
   `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
-  `Stop-Process -Id` does, and is safe; one given no name lists every
-  process. A stage between the listing and `Stop-Process` is never "every
+  `Stop-Process -Id` does, and its ids are judged as that is (see the next item);
+  one given no name lists every process. A stage between the listing and `Stop-Process` is never "every
   process": `Where-Object` is read when it only compares `Name` or
   `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
   'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
@@ -796,8 +796,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
   `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
   of a pipeline that starts with `Get-Process`. Any other `-Id` or
-  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
-  processes the guard does not read and is safe. Only a member that is the
+  `-InputObject` value is judged as an id (see the next item).
+  Only a member that is the
   process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
   any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
   as `-ExpandProperty` does, and is any other stage: `Stop-Process
@@ -815,11 +815,53 @@ the same line. It is `stop_system` when the line stops more than a name:
   (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
   processes only known when it runs". After a first stage that is not a
   `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
-  `$_` is not a process and the value is read as any other `-Id`. A
+  `$_` is not a process and the value is read as any other `-Id`; the item
+  itself (`$procs | % { Stop-Process -Id $_.Id }`) is "stops processes only
+  known when it runs". A
   `Get-Process` anywhere else in the arguments, inside another command or a
   block, is read as one such listing, once, however many there are: the
   arguments are read in one pass that never goes below a command, so the time
   is the line's length however deeply they nest.
+- **A process picked by an id, or through a method.** An id is safe when it
+  is written out in digits: `Stop-Process -Id 1234`, `Stop-Process 1234,5678`,
+  `kill 4242`, `taskkill /PID 1234`, `Get-Process -Id 1234 | Stop-Process`,
+  and `$PID`, the shell that runs the line. Anything else is a process only
+  known when it runs, and may be any process the system needs, so it is
+  `stop_system`: a variable (`Stop-Process -Id $id`, `-InputObject $p`), a
+  file's text (`-Id (Get-Content app.pid)`), another cmdlet's listing
+  (`-Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess`, the PowerShell
+  of `kill $(lsof -ti:3000)`), the item of a `ForEach-Object` block that no
+  `Get-Process` feeds, and a word that is not a number (`0x10`, `-1`,
+  `'1234,5678'`, one too long for an id). An id of 0 is the caller's own
+  process group where PowerShell runs on Linux or macOS, and 1 is the first
+  process of the system, as for `kill`: both are `stop_system`
+  (`Stop-Process -Id 0`, `taskkill /PID 1`). `taskkill /PID` and the
+  `processid` of `wmic process where processid=1234 delete` are judged the
+  same way, and so are the ids a `Get-Process -Id` listing is given. A
+  listing counts as the argument only when it is all the argument is: in
+  `-Id ((Get-Process node).Id, $x)` and `-Id (Get-Process node).Id, $x` the
+  `$x` is judged as an id of its own.
+
+  A method called on a process stops it as `Stop-Process` does: `Kill`,
+  `Terminate` (the WMI one) and `CloseMainWindow`, which asks a window to
+  close. The call is judged as the `Stop-Process` of its object. The object is
+  read for sure in three shapes: a `Get-Process` listing (`(Get-Process
+  node).Kill()`, `Get-Process node | % { $_.Kill() }`, `Get-Process node |
+  % Kill`, also `ForEach-Object -MemberName Kill`), judged by its name as the
+  pipeline is; `[System.Diagnostics.Process]::GetProcessById(1234)` with the
+  id in digits, judged as an id; and the item of a block after a listing.
+  Every other object may be any process: `$p.Kill()`, `$procs | % { $_.Kill()
+  }`, `(Get-Process node).Parent.Kill()`, `(Get-Process node)[0].Kill()`,
+  `[System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }`,
+  `(Get-WmiObject Win32_Process).Terminate()`. `Invoke-CimMethod` and
+  `Invoke-WmiMethod` (also `icim`, `iwmi`) given `Terminate`, and `wmic
+  process … call terminate` and `… delete`, stop the processes an instance or
+  a `where` clause picks: `wmic process where name="node.exe" call terminate`
+  is the name `node.exe`, and `where processid=1234` is an id; no `where`, a
+  `like`, a second condition, or a value only known when it runs is
+  `stop_system`, as is the CIM or WMI method (the instances come from a
+  listing the guard does not follow). The array's `.ForEach('Kill')` is a
+  line the grammar does not read, so it is `unreadable`.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
   `stop_system` however it is called, even when the line only defines it, and

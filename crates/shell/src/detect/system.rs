@@ -74,6 +74,7 @@ impl Checker<'_> {
             "pkill" => self.pkill(args),
             "taskkill" => self.taskkill(args),
             "stop-process" => self.stop_process(unit),
+            "invoke-cimmethod" | "invoke-wmimethod" => self.wmi_method(args),
             "shutdown" | "reboot" | "halt" | "poweroff" | "stop-computer" | "restart-computer" => {
                 let cancels = args.iter().filter_map(Arg::known).any(|text| {
                     matches!(
@@ -178,6 +179,10 @@ impl Checker<'_> {
                     && words.iter().any(|word| word == "create")
                 {
                     self.add(Rule::Unknown, "starts a program through wmic", None);
+                }
+                // `wmic process … call terminate` and `… delete` stop them.
+                if key == "wmic" && words.iter().any(|word| word == "process") {
+                    self.wmic_process(args);
                 }
             }
             "net" | "net1" => {

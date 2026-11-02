@@ -161,6 +161,8 @@ pub(crate) fn canonical(name: &str) -> &str {
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
         "gps" | "ps" => "get-process",
+        "icim" => "invoke-cimmethod",
+        "iwmi" => "invoke-wmimethod",
         "%" | "foreach" => "foreach-object",
         "tee" => "tee-object",
         "cd" | "sl" | "chdir" => "set-location",
@@ -654,9 +656,12 @@ impl Walker<'_> {
                 }
             }
         }
+        // Whether a `ForEach-Object` calls a method that stops a process on
+        // each item (`% Kill`).
+        let mut stops = false;
         if let Some(program) = program.known() {
             let key = unit::key(program, Shell::PowerShell);
-            blocks::check(
+            stops = blocks::check(
                 self.split,
                 &key,
                 &args,
@@ -677,6 +682,7 @@ impl Walker<'_> {
             if let Some(elements) = node.child_by_field_name("command_elements") {
                 unit.listings = self.listings(elements);
                 unit.unread_item = self.item.is_some() && self.unread_item(elements);
+                unit.listed = shapes.iter().map(|shape| shape.listing).collect();
             }
         }
         // A block known only when it runs (`-Action $block`, an action given
@@ -691,8 +697,69 @@ impl Walker<'_> {
                 );
             }
         }
+        let at = unit.stage;
         launch::add(self.split, unit, self.depth);
+        if stops {
+            // `ForEach-Object Kill` stops each process it is handed, as a
+            // `Stop-Process` that is given them does.
+            self.stop_unit(vec![Arg::Input], Vec::new(), Vec::new(), at);
+        }
         key
+    }
+
+    /// Add the `Stop-Process` a method that stops a process stands for
+    /// (`(Get-Process node).Kill()`, `$_.Terminate()`, `% Kill`): it is
+    /// judged as one given the same processes, by its `args`, which of them
+    /// hold a `Get-Process` listing (`listed`) and what the listings are.
+    fn stop_unit(
+        &mut self,
+        args: Vec<Arg>,
+        listed: Vec<bool>,
+        listings: Vec<Listing>,
+        stage: Option<Stage>,
+    ) {
+        let mut unit = Unit::new(
+            Shell::PowerShell,
+            Arg::Known("Stop-Process".to_string()),
+            args,
+            stage,
+        );
+        unit.listed = listed;
+        unit.listings = listings;
+        launch::add(self.split, unit, self.depth);
+    }
+
+    /// A call of a method that stops a process (see [`blocks::stops_process`])
+    /// on the first of `children`, the object. It is judged as a
+    /// `Stop-Process` of that object: the processes a `Get-Process` listing
+    /// gives, the item of a `ForEach-Object` block, or a process picked by
+    /// an id written out (`[Process]::GetProcessById(1234)`); an object
+    /// the guard cannot trace to one of those is any process.
+    fn stop_call(&mut self, node: Node<'_>, children: &[Node<'_>]) {
+        let Some(object) = children.first() else {
+            return;
+        };
+        let text = unit::text(object, self.source);
+        if object.kind() == "variable" && self.is_item(text) {
+            self.stop_unit(vec![Arg::Input], Vec::new(), Vec::new(), self.item);
+        } else if self.holds.contains(&object.id()) {
+            let listings = self.listings(node);
+            self.stop_unit(
+                vec![Arg::Unknown(text.to_string())],
+                vec![true],
+                listings,
+                None,
+            );
+        } else if let Some(id) = process_by_id(text) {
+            self.stop_unit(vec![Arg::Known(id)], vec![false], Vec::new(), None);
+        } else {
+            self.stop_unit(
+                vec![Arg::Unknown(text.to_string())],
+                vec![false],
+                Vec::new(),
+                None,
+            );
+        }
     }
 
     /// Add what an element stands for to `args`, and one shape to `shapes` for
@@ -1004,7 +1071,11 @@ impl Walker<'_> {
                 // A `Get-Process` below a command (in its arguments, or in
                 // a block it runs) is not what this `Stop-Process` is handed.
                 other |= self.holds.contains(&node.id());
-            } else if self.passes(node) {
+            } else if self.passes(node)
+                // The list of the arguments themselves (`-Id $a, $b`): each
+                // of them is read as an argument of its own.
+                || (node.kind() == "array_literal_expression" && parent.id() == elements.id())
+            {
                 self.push_towards_listings(node, &mut stack);
             } else {
                 // It holds a listing, which it may change.
@@ -1043,13 +1114,16 @@ impl Walker<'_> {
     /// `.ProcessName`), not one that leads to others (`.Parent`, `.Threads`).
     fn passes(&self, node: Node<'_>) -> bool {
         match node.kind() {
+            "pipeline_chain" => true,
+            // Wrappers that hold the listing and nothing else: one with a
+            // second part (`(Get-Process node), $x`, `$(Get-Process node; $x)`)
+            // hands on that part too, which the listing says nothing of.
             "pipeline"
-            | "pipeline_chain"
             | "parenthesized_expression"
             | "sub_expression"
             | "statement_list"
             | "array_literal_expression"
-            | "unary_expression" => true,
+            | "unary_expression" => node.named_child_count() == 1,
             // The grammar wraps an expression in a layer for each operator
             // that binds looser; one with no operand but its own is only
             // that wrapping (`((Get-Process node).Id)`).
@@ -1231,6 +1305,7 @@ impl Walker<'_> {
             block: is_script_block(node),
             splat: is_splat(node, self.source),
             joined,
+            listing: self.holds.contains(&node.id()),
         }
     }
 
@@ -1429,6 +1504,12 @@ impl Walker<'_> {
         .iter()
         .any(|kind| object.contains(kind));
         blocks::hook_call(self.split, &method, &children, node, self.source);
+        // A method that stops a process, called on it (`.Kill()`). The
+        // array's `.ForEach('Kill')` is a line the grammar does not read.
+        if blocks::stops_process(&method) {
+            self.stop_call(node, &children);
+            return;
+        }
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
         if matches!(
@@ -1481,6 +1562,22 @@ impl Walker<'_> {
             );
         self.split.write(Shell::PowerShell, target);
     }
+}
+
+/// The id in `[System.Diagnostics.Process]::GetProcessById(1234)`, when the
+/// text is exactly that call (or the same with the namespace left out) and
+/// the id is written out in digits.
+fn process_by_id(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let id = [
+        "[system.diagnostics.process]::getprocessbyid(",
+        "[diagnostics.process]::getprocessbyid(",
+        "[process]::getprocessbyid(",
+    ]
+    .iter()
+    .find_map(|call| lower.strip_prefix(call))?
+    .strip_suffix(')')?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
 }
 
 /// What a .NET method does to files or the system, by its lower-case name:

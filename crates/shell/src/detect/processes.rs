@@ -215,10 +215,13 @@ impl Checker<'_> {
                         self.stop_named(name, Names::Wildcard);
                     }
                 }
-                // Stopping by id: the processes are named, whichever they are.
+                // Stopping by id: the processes are named, and the id is
+                // judged (see `stop_id`).
                 "/pid" | "-pid" => {
                     named = true;
-                    iter.next();
+                    if let Some(id) = iter.next() {
+                        self.stop_id(id);
+                    }
                 }
                 "/fi" | "-fi" => filters.extend(iter.next()),
                 _ => {}
@@ -321,13 +324,33 @@ impl Checker<'_> {
             for listing in &unit.listings {
                 self.judge_listing(&listing.args, &listing.between);
             }
-            let item = params
+            // What is left is a process picked by an id, and it is judged
+            // as `taskkill /PID` is: an id written out is a process the
+            // agent picked, and any other value may be any process.
+            let values: Vec<&Arg> = params
                 .values(&["id", "inputobject"])
                 .into_iter()
                 .chain(params.positional.iter().copied())
-                .any(|arg| *arg == Arg::Input);
-            if let Some(stage) = unit.stage.filter(|stage| item && stage.index > 0) {
-                self.judge_before(stage);
+                .collect();
+            for value in &values {
+                if **value != Arg::Input && !is_listed(unit, value) {
+                    self.stop_id(value);
+                }
+            }
+            if values.iter().any(|arg| **arg == Arg::Input) {
+                let judged = unit
+                    .stage
+                    .filter(|stage| stage.index > 0)
+                    .is_some_and(|stage| self.judge_before(stage));
+                // The item of a block that does not follow a `Get-Process`
+                // is not a process the guard can name.
+                if !judged {
+                    self.add(
+                        Rule::StopSystem,
+                        "stops processes only known when it runs",
+                        None,
+                    );
+                }
             }
             return;
         }
@@ -339,6 +362,119 @@ impl Checker<'_> {
                 Rule::StopSystem,
                 "stops processes only known when it runs",
                 None,
+            );
+        }
+    }
+
+    /// `wmic process where name="node.exe" call terminate` and
+    /// `wmic process where processid=1234 delete`: they stop the processes
+    /// the `where` clause picks, judged as `taskkill` judges a name and an
+    /// id. A clause that is not one of those two comparisons (a `like`, a
+    /// second condition), or none at all, picks processes only known when it
+    /// runs, and none is every process.
+    pub(super) fn wmic_process(&mut self, args: &[Arg]) {
+        let word = |arg: &Arg| arg.text().to_ascii_lowercase();
+        if !args
+            .iter()
+            .any(|arg| matches!(word(arg).as_str(), "terminate" | "delete"))
+        {
+            return;
+        }
+        let Some(at) = args.iter().position(|arg| word(arg) == "where") else {
+            self.add(Rule::StopSystem, "stops every process", None);
+            return;
+        };
+        let clause: Vec<&Arg> = args[at + 1..]
+            .iter()
+            .take_while(|arg| !matches!(word(arg).as_str(), "call" | "delete"))
+            .collect();
+        let unread = |this: &mut Self| {
+            this.add(
+                Rule::StopSystem,
+                "stops processes picked by a filter only known when it runs",
+                clause.first().copied(),
+            );
+        };
+        if clause.iter().any(|arg| arg.known().is_none()) {
+            unread(self);
+            return;
+        }
+        let text: String = clause.iter().filter_map(|arg| arg.known()).collect();
+        let text = text.replace(['"', '\''], "");
+        match text.split_once('=') {
+            Some((field, value))
+                if !value.is_empty()
+                    && !value.contains(['=', '%', '*', '?', ' '])
+                    && field.eq_ignore_ascii_case("name") =>
+            {
+                self.stop_named(&Arg::Known(value.to_string()), Names::Wildcard);
+            }
+            Some((field, value))
+                if !value.is_empty() && field.eq_ignore_ascii_case("processid") =>
+            {
+                self.stop_id(&Arg::Known(value.to_string()));
+            }
+            _ => unread(self),
+        }
+    }
+
+    /// `Invoke-CimMethod -MethodName Terminate` and `Invoke-WmiMethod -Name
+    /// Terminate` stop the processes their instances are, which come from a
+    /// listing the guard does not follow.
+    pub(super) fn wmi_method(&mut self, args: &[Arg]) {
+        if let Some(method) = args.iter().find(|arg| {
+            arg.known()
+                .is_some_and(|text| text.eq_ignore_ascii_case("terminate"))
+        }) {
+            self.add(
+                Rule::StopSystem,
+                "stops processes through a WMI method, picked only when it runs",
+                Some(method),
+            );
+        }
+    }
+
+    /// One process id a stop is given (`Stop-Process -Id`, `taskkill /PID`).
+    /// An id written out in digits is a process the agent picked, unless it
+    /// is one `kill` already refuses to take lightly: 0 is the caller's own
+    /// process group (where PowerShell runs on Linux and macOS, as `kill 0`)
+    /// and 1 the first process of the system. `$PID` is the shell that runs
+    /// the line. Any other value (a variable, a substitution, a file's text,
+    /// another cmdlet's listing, a word that is not a number) is only known
+    /// when it runs and may be any process, those included.
+    fn stop_id(&mut self, id: &Arg) {
+        let read = match id {
+            Arg::Known(text) => {
+                let digits = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+                match text.parse::<u64>() {
+                    Ok(0) if digits => {
+                        self.add(
+                            Rule::StopSystem,
+                            "stops every process in its own group",
+                            Some(id),
+                        );
+                        return;
+                    }
+                    Ok(1) if digits => {
+                        self.add(
+                            Rule::StopSystem,
+                            "stops the system's first process",
+                            Some(id),
+                        );
+                        return;
+                    }
+                    Ok(_) => digits,
+                    Err(_) => false,
+                }
+            }
+            Arg::Unknown(text) => matches!(text.to_ascii_lowercase().as_str(), "$pid" | "${pid}"),
+            Arg::Template { .. } | Arg::Input | Arg::Null => false,
+        };
+        if !read {
+            self.add(
+                Rule::StopSystem,
+                "stops processes only known when it runs",
+                Some(id),
             );
         }
     }
@@ -395,8 +531,12 @@ impl Checker<'_> {
             return;
         }
         let params = Params::cmdlet(listing, &GET_PROCESS);
+        let by_id = params.has(&["id", "inputobject"]);
         let mut names = params.values(&["name"]);
-        names.extend(params.positional.iter().copied());
+        // After `-Id`, the words of a list (`-Id 1234, 5678`) are ids.
+        if !by_id {
+            names.extend(params.positional.iter().copied());
+        }
         // Named by the listing: what follows can only narrow it.
         if !names.is_empty() {
             for name in names {
@@ -404,8 +544,16 @@ impl Checker<'_> {
             }
             return;
         }
-        // Picked by id or by object.
-        if params.has(&["id", "inputobject"]) {
+        // Picked by id or by object: the values are judged as `Stop-Process`
+        // judges them.
+        if by_id {
+            for value in params
+                .values(&["id", "inputobject"])
+                .into_iter()
+                .chain(params.positional.iter().copied())
+            {
+                self.stop_id(value);
+            }
             return;
         }
         if between.is_empty() {
@@ -431,6 +579,17 @@ impl Checker<'_> {
             );
         }
     }
+}
+
+/// Whether an argument of a `Stop-Process` holds a `Get-Process` listing,
+/// which the listing rules judge.
+fn is_listed(unit: &Unit, arg: &Arg) -> bool {
+    unit.args
+        .iter()
+        .position(|candidate| std::ptr::eq(candidate, arg))
+        .and_then(|at| unit.listed.get(at))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// What a stage between a listing and a stop does to the processes.
