@@ -253,7 +253,12 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
             );
         }
         Act::Chmod { path, mode } => {
-            run(split, "chmod", vec![flag("--"), arg(mode), arg(path)], depth);
+            run(
+                split,
+                "chmod",
+                vec![flag("--"), arg(mode), arg(path)],
+                depth,
+            );
         }
         Act::Chown(path) => run(
             split,
@@ -441,4 +446,32 @@ fn run(split: &mut Split, program: &str, args: Vec<Arg>, depth: usize) {
         Unit::new(Shell::Posix, flag(program), args, None),
         depth,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reader holds code to the limits the shell holds a line to, and
+    /// shows the start of code the way the shell does (two copies, one in
+    /// each crate, because the shell shows it with or without the reader).
+    #[test]
+    fn the_reader_and_the_shell_agree_on_the_limits_and_on_the_start_of_code() {
+        assert_eq!(reader::MAX_DEPTH, unit::MAX_DEPTH);
+        assert_eq!(reader::MAX_TREE_DEPTH, unit::MAX_TREE_DEPTH);
+        assert_eq!(reader::MAX_LEN, unit::MAX_LEN);
+        for code in [
+            "if (",
+            "  if ( second line\nthird",
+            &format!("if ( {}", "x".repeat(200)),
+            &format!("if ( {}\nmore", "é".repeat(80)),
+            "if (\u{3000}",
+        ] {
+            let acts = reader::read(Language::JavaScript, code).acts;
+            let [Act::Unread(shown)] = acts.as_slice() else {
+                panic!("{code:?}: {acts:?}");
+            };
+            assert_eq!(*shown, shorten(code), "{code:?}");
+        }
+    }
 }
