@@ -7,17 +7,26 @@
 //! This module finds the code on a line: which program is an interpreter,
 //! where its code is among the options, whether the interpreter is told to
 //! load more code before it (`--import`, `NODE_OPTIONS`, `PYTHONPATH`), and
-//! whether it is only asked to print its version. [`apply`] turns what the
-//! reader found into the shell's own terms.
+//! whether it is only asked to print its version. What the reader found is
+//! turned into the shell's own terms in `apply`, behind the `inline`
+//! feature; without it `off` says every inline line is `unknown`.
 
+#[cfg(feature = "inline")]
 use milo_guards_code::{is_data_url, is_foreign_module};
 
 use crate::unit::Arg;
 
+#[cfg(feature = "inline")]
 mod apply;
+#[cfg(not(feature = "inline"))]
+mod off;
 
+#[cfg(feature = "inline")]
 pub(crate) use apply::{apply_all, apply_input};
+#[cfg(feature = "inline")]
 pub(crate) use milo_guards_code::Language;
+#[cfg(not(feature = "inline"))]
+pub(crate) use off::{apply_all, apply_input, is_data_url, is_foreign_module, Language};
 
 /// The language of the code a program runs, by its name.
 pub(crate) fn language(key: &str) -> Option<Language> {

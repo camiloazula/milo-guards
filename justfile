@@ -14,8 +14,8 @@ _default:
 # and measures coverage, and one optimized build, which runs the tests that
 # time the guard. Advisories are not part of it: they change without a
 # commit, so they are their own recipe and their own CI job.
-# Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, dependencies.
-verify: format-check lint coverage timing doc-test doc deny
+# Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, the shell guard without its inline reader, dependencies.
+verify: format-check lint coverage timing doc-test doc no-inline deny
 
 # The `cargo lint` alias in .cargo/config.toml runs the same.
 # Clippy on the whole workspace, warnings denied.
@@ -63,6 +63,16 @@ doc-test:
 # rustdoc on the whole workspace, warnings denied.
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+# `--all-features` never builds the shell guard without its `inline` feature,
+# which pulls in the readers of Python and JavaScript and their grammars. Off,
+# every inline line is `unknown` and the guard must still build and lint clean;
+# `tests/inline_off.rs` is the one test target that is only compiled there (the
+# others test the reader).
+# The shell guard without its inline reader: lint clean, and every inline line unknown.
+no-inline:
+    cargo clippy -p milo-guards-shell --no-default-features --all-targets --locked -- -D warnings
+    cargo test -p milo-guards-shell --no-default-features --test inline_off --locked
 
 # Metadata only, no build.
 # Dependency gates (deny.toml): bans, licences and sources.
