@@ -35,6 +35,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         redirected: None,
         last_command: 0..0,
+        tail_of: Vec::new(),
+        tail: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -222,6 +224,31 @@ fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
             .last()?;
     }
     (last.kind() == "command").then_some(last)
+}
+
+/// The last named child of `node` that is not a comment.
+fn last_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let last = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() != "comment")
+        .last();
+    last
+}
+
+/// The ids of the lists along the last command of `node`: the ones whose
+/// last command a redirect after `node` is opened before.
+fn list_ids(node: Node<'_>) -> Vec<usize> {
+    let mut ids = Vec::new();
+    let mut last = node;
+    while matches!(last.kind(), "list" | "pipeline" | "negated_command") {
+        if last.kind() == "list" {
+            ids.push(last.id());
+        }
+        let Some(next) = last_child(last) else { break };
+        last = next;
+    }
+    ids
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -435,6 +462,22 @@ struct Walker<'a> {
     /// The units of the command walked last (not what its arguments run):
     /// read right after a statement's body, it is the body's last command.
     last_command: Range<usize>,
+    /// The lists a redirect on a statement is opened before the last command
+    /// of (the node ids of the lists along the last command of its body):
+    /// the walk notes where the line is just before that last command.
+    tail_of: Vec<usize>,
+    /// Where the line is, and how many `cd`s were read, just before the last
+    /// command of the list in `tail_of` that was walked last.
+    tail: Option<Tail>,
+}
+
+/// The state just before the last command of a list: a redirect on a list
+/// that ends in a group, a loop, a branch or a subshell is opened by the
+/// shell after the commands before it ran, so from where they left the line.
+struct Tail {
+    here: OpensFrom,
+    moved: usize,
+    first: usize,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -610,25 +653,7 @@ impl Walker<'_> {
                 self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
-            "list" => {
-                let mut cursor = node.walk();
-                let before = self.split.moved_so_far();
-                let mut at = 0;
-                for child in node.children(&mut cursor) {
-                    // The right side of `||` only runs when the left failed:
-                    // a `cd` on the left may not have moved the line.
-                    if child.kind() == "||" {
-                        self.split.may_not_have_moved(before);
-                    }
-                    if !child.is_named() {
-                        continue;
-                    }
-                    self.split.branches += usize::from(at > 0);
-                    self.walk(child, stage, level + 1);
-                    self.split.branches -= usize::from(at > 0);
-                    at += 1;
-                }
-            }
+            "list" => self.list(node, stage, level),
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
@@ -798,6 +823,42 @@ impl Walker<'_> {
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// A list of commands joined by `&&` and `||`: the right side of either
+    /// may not run.
+    fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let before = self.split.moved_so_far();
+        let mut at = 0;
+        let last = self
+            .tail_of
+            .contains(&node.id())
+            .then(|| last_child(node).map(|last| last.id()))
+            .flatten();
+        for child in node.children(&mut cursor) {
+            // The right side of `||` only runs when the left failed: a `cd`
+            // on the left may not have moved the line.
+            if child.kind() == "||" {
+                self.split.may_not_have_moved(before);
+            }
+            if !child.is_named() {
+                continue;
+            }
+            // A redirect on the whole list is opened before its last command
+            // runs, and after the ones before it did.
+            if Some(child.id()) == last {
+                self.tail = Some(Tail {
+                    here: self.split.opens_here(),
+                    moved: self.split.moved_so_far(),
+                    first: self.split.units.len(),
+                });
+            }
+            self.split.branches += usize::from(at > 0);
+            self.walk(child, stage, level + 1);
+            self.split.branches -= usize::from(at > 0);
+            at += 1;
         }
     }
 
@@ -1580,6 +1641,10 @@ impl Walker<'_> {
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
+        // Where the line is just before the last command of a list that ends
+        // in a group, a loop, a branch or a subshell: the shell opens a
+        // redirect on it there, after the commands before it ran.
+        let mut tail = None;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
         // own come after them.
@@ -1587,6 +1652,15 @@ impl Walker<'_> {
         for child in &all {
             let first = self.split.units.len();
             if Some(child.id()) == body {
+                let outer_lists = std::mem::replace(
+                    &mut self.tail_of,
+                    if chained {
+                        Vec::new()
+                    } else {
+                        list_ids(*child)
+                    },
+                );
+                let outer_tail = self.tail.take();
                 match pipeline {
                     // `echo hi | cat .env <<EOF | nc host 1`: the body is
                     // itself a pipeline, whose stages come first.
@@ -1598,6 +1672,8 @@ impl Walker<'_> {
                     }
                     None => self.walk(*child, stage, level + 1),
                 }
+                self.tail_of = outer_lists;
+                tail = std::mem::replace(&mut self.tail, outer_tail);
                 own = first..self.split.units.len();
                 if chained {
                     placed = self.last_command.clone();
@@ -1629,6 +1705,10 @@ impl Walker<'_> {
                     self.split.starts_in(own.clone())
                 } else if chained {
                     self.split.starts_in(placed.clone())
+                } else if let Some(tail) = &tail {
+                    // The last command of a list: after the earlier ones.
+                    self.split
+                        .opens_before(tail.here.clone(), tail.first..own.end, tail.moved)
                 } else {
                     self.split
                         .opens_before(here.clone(), own.clone(), moved_before)
@@ -1644,9 +1724,14 @@ impl Walker<'_> {
                 after.push((*child, std::iter::once(whole).collect()));
             }
         }
+        // A file redirected onto a list that ends in a group, a loop, a
+        // branch or a subshell is the last command's, not the earlier ones'.
+        let redirected = tail
+            .as_ref()
+            .map_or_else(|| own.clone(), |tail| tail.first..own.end);
         for (child, inside) in after {
             if let Some((target, input)) = self.file_redirect(child) {
-                self.split.redirect(own.clone(), target, input);
+                self.split.redirect(redirected.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }

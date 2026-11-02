@@ -422,8 +422,18 @@ includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
 and it is read as the last command's). The file a group, a loop, a branch or a
 subshell is redirected from is opened before its body runs, so it is placed from
-the folder the line is in when the statement begins, not from the one a `cd` in
-the body leaves it in: `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
+the folder the line is in when that statement begins, not from the one a `cd` in
+the body leaves it in. When the statement is the last command of a list (`cd ~
+&& { cat; } < .ssh/id_rsa`, `cd ~ && while read l; do …; done < f`), the grammar
+puts the redirect on the whole list, but the shell opens it after the commands
+before it ran, so "when the statement begins" is after them: the folder and the
+count of `cd`s are taken just before that last command, not before the list,
+and the redirect is on that last command only (the key above is read from
+`~`, and a `send_secret` pipe after it finds it). A `cd` before it that may not
+have run (after `||`, or the right side of `&&` or `||`) makes the folder
+uncertain, as for a `cd` above. A pipeline's last stage starts where the
+pipeline starts (`cd ~ | { cat; } < .ssh/id_rsa` opens it from the folder the
+line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
 l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
 ../../.ssh/id_rsa` does (`read_secret`), `{ cd sub; ls; } > ../x` writes
 `<cwd>/../x`, while `{ cd ../..; cat; } < .ssh/id_rsa` reads `<cwd>/.ssh/id_rsa`
