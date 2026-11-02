@@ -6,7 +6,8 @@
 //! delete no data; then PowerShell and cmd, the reason a prompt can show, and
 //! the timed tests. How the text a client gets is read (fed by `printf`,
 //! `echo`, `cat` or a here-document) is in `drop_data_input.rs`; how
-//! PowerShell hands words to a client is in `powershell_arguments.rs`.
+//! PowerShell hands words to a client is in
+//! `tests/cases/powershell_arguments.cases`.
 
 mod common;
 

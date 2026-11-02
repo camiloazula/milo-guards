@@ -1,0 +1,195 @@
+# Where `Set-Location` leaves a PowerShell line, so what follows is judged in
+# that provider: a drive made with `New-PSDrive` is a drive; in the registry,
+# `Env:`, `Function:` and the like a bare `NUL` or `CON` is an item there, not
+# the device; a rooted path or `~` after a `cd` stays on the drive of that
+# `cd`; a single letter is a disk unless the line makes it a drive; and a
+# `Set-Location` fed by the pipeline, `cd -` and `cd -- -` go to a place only
+# known when it runs. The format is in CONTRIBUTING.md.
+
+# A drive name may hold any character but a separator or a dot: `_` and `-`.
+powershell finds=delete | Remove-Item -Recurse my_drive:*
+powershell finds=delete | Remove-Item -Recurse my-drive:\\*
+powershell finds=delete | Remove-Item -Recurse my_drive:\\x
+powershell finds=delete | Remove-Item -Recurse my_drive:x
+powershell finds=delete | Remove-Item -Recurse -Force My-Drive:*
+powershell finds=delete | Remove-Item -Recurse -Path my_drive:*
+powershell finds=delete | rm -r my_drive:*
+powershell finds=delete | Get-ChildItem my_drive:* | Remove-Item -Recurse
+powershell finds=overwrite | Set-Content my_drive:x 'y'
+powershell finds=overwrite | 'x' > my-drive:out.txt
+powershell finds=delete | Move-Item my_drive:x src\\y
+powershell finds=overwrite | Copy-Item src\\x my-drive:y
+powershell finds=delete | Rename-Item my_drive:x y
+powershell finds=delete | cd C:\\Users\\me; Remove-Item -Recurse my_drive:*
+powershell finds=delete | cd src; Remove-Item -Recurse my_drive:*
+# A drive made with such a name and entered.
+powershell finds=delete | New-PSDrive -Name my_reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my_reg:; Remove-Item NUL -Recurse
+powershell finds=delete | New-PSDrive -Name my-reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my-reg:; Remove-Item NUL -Recurse
+powershell finds=overwrite | New-PSDrive -Name my_fn -PSProvider Function -Root \\; cd my_fn:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
+
+# A name with a separator, a wildcard or a dot is not a drive: a stream of a
+# file, known only when it runs.
+powershell finds=delete | Remove-Item -Recurse x.txt:stream
+powershell finds=delete | Remove-Item -Recurse src\\a:stream
+powershell finds=delete | Remove-Item -Recurse .\\a:b
+powershell finds=delete | Remove-Item -Recurse a*:b
+powershell finds=delete | Remove-Item -Recurse 'a?:b'
+
+# A drive made later in the text is still a drive: after the `cd` in the
+# text, in a function body or a loop that runs after it.
+powershell finds=delete | function g { cd X:; Remove-Item NUL -Recurse }; New-PSDrive -Name X -PSProvider Registry -Root HKCU:\\Software; g
+powershell finds=overwrite | function g { cd X:; Set-Content NUL 'x'; NUL }; New-PSDrive -Name X -PSProvider Function -Root \\; g
+powershell finds=overwrite | foreach ($i in 1..2) { cd X:; Set-Content NUL 'x'; New-PSDrive -Name X -PSProvider Function -Root \\ }
+
+# A single letter drive is a disk unless the line makes a drive.
+powershell safe | cd D:; Remove-Item NUL
+powershell safe | cd D:\\x; Remove-Item NUL
+powershell safe | cd C:\\x; Set-Content NUL x
+# A drive that is made, but never entered.
+powershell safe | New-PSDrive -Name X -PSProvider Registry -Root HKCU:\\Software; Remove-Item NUL
+powershell finds=overwrite | New-PSDrive -Name X -PSProvider Function -Root \\; cd X:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
+powershell finds=delete | New-PSDrive -Name X -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd X:; Remove-Item NUL -Recurse
+powershell finds=delete | ndr -Name X -PSProvider Registry -Root HKCU:\\Software; cd X:\\Foo; Remove-Item NUL -Recurse
+powershell finds=delete | mount X Registry HKCU:\\Software; Set-Location X:; Remove-Item NUL
+powershell finds=overwrite | New-PSDrive -Name X -PSProvider Function -Root \\; pushd X:\\; Set-Content NUL x
+
+# An item named like a device in a provider is an item: in the registry,
+# `Env:` and the like `NUL` and `CON` are ordinary item names, so deleting,
+# moving or changing one changes that item.
+# A write or a redirect fails there, so it stays harmless.
+powershell safe | cd HKCU:\\Software\\Foo; python x.py > NUL
+powershell safe | cd HKCU:\\Software\\Foo; python x.py > $null
+powershell safe | cd HKCU:\\Software\\Foo; python x.py | Out-File NUL
+# After a cd to the file system it is the device.
+powershell safe | cd C:\\other; Remove-Item NUL
+powershell safe | cd C:\\other; python x.py > CON
+# `$null` is the null value in any provider.
+powershell safe | cd HKCU:\\Software\\Foo; Remove-Item $null
+powershell safe | python x.py > $null
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Remove-Item NUL -Recurse
+powershell finds=system_settings | Set-Location HKLM:\\SOFTWARE\\Foo; Remove-Item nul
+powershell finds=system_settings | Push-Location HKCU:\\Software\\Foo; Remove-Item NUL
+powershell finds=system_settings | sl HKCU:\\Software\\Foo; ri NUL
+powershell finds=system_settings | cd Registry::HKEY_CURRENT_USER\\Software\\Foo; Remove-Item NUL
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Remove-ItemProperty -Path NUL -Name x
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Set-ItemProperty -Path NUL -Name x -Value 1
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; New-Item NUL -Force
+# A registry key moved is a registry change, as `Remove-Item`.
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Move-Item NUL Bar
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Clear-Item NUL
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Clear-Item CON
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Set-Item NUL -Value 1
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; si NUL 1
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; cli NUL
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Clear-Item -Path NUL
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Clear-Item -LiteralPath NUL
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Get-Item NUL | Clear-Item
+powershell finds=system_settings | cd HKCU:\\Software; Clear-Item NUL
+powershell finds=system_settings | cd Registry::HKEY_LOCAL_MACHINE\\SOFTWARE; Clear-Item NUL
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Move-ItemProperty NUL CON -Name x
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Copy-ItemProperty NUL CON -Name x
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Move-ItemProperty -Path NUL -Destination CON -Name x
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Foo; Copy-ItemProperty -Path NUL -Destination CON -Name x
+# A place only known when it runs may be a registry key.
+powershell finds=delete | cd $key; Remove-Item NUL -Recurse
+powershell finds=delete | cd $key; Remove-Item NUL
+powershell finds=delete | cd $dir; ri nul -r
+powershell finds=delete | cd $dir; rm -r -fo CON
+powershell finds=delete | cd $dir; Remove-Item -LiteralPath NUL -Recurse
+powershell finds=overwrite | cd $key; Clear-Item NUL
+powershell finds=overwrite | cd $key; Move-ItemProperty NUL CON -Name x
+# The providers that are not the registry.
+powershell finds=delete | cd Env:; Remove-Item NUL
+powershell finds=delete | cd Variable:; Remove-Item NUL
+powershell finds=delete | cd Function:; Remove-Item CON
+powershell finds=delete | cd Cert:\\CurrentUser\\My; Remove-Item NUL
+powershell finds=overwrite | cd Env:; Set-Item NUL -Value x
+powershell finds=overwrite | cd Variable:; Set-Item NUL -Value x
+powershell finds=overwrite | cd 1:; Set-Item NUL -Value 1
+powershell finds=overwrite | cd Function:; Set-Item NUL -Value 'Remove-Item ~ -Recurse'; NUL
+powershell finds=overwrite | cd Alias:; Set-Item NUL -Value Remove-Item
+
+# A content write that a provider takes is an item. Only a file system path
+# fails in another provider (a redirect, `Out-File`, `Tee-Object`,
+# `-OutFile`); `Set-Content` and the like take an item of `Function:`,
+# `Alias:`, `Env:` and `Variable:`, and a copy's destination is a key in the
+# registry.
+powershell safe | cd HKCU:\\Software\\Foo; python x.py | Tee-Object -FilePath NUL
+powershell safe | cd HKCU:\\Software\\Foo; Invoke-WebRequest http://x/y -OutFile NUL
+powershell safe | cd C:\\other; Set-Content NUL x
+powershell safe | cd C:\\other; Copy-Item x NUL
+powershell finds=overwrite | cd Function:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
+powershell finds=overwrite | cd Alias:; Set-Content NUL Remove-Item; NUL -Recurse -Force ~
+powershell finds=overwrite | cd Function:; Add-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
+powershell finds=overwrite | cd Env:; Clear-Content NUL
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Copy-Item Bar NUL -Recurse
+powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion; Copy-Item -Path HKCU:\\Software\\Evil -Destination NUL -Recurse -Force
+powershell finds=overwrite | cd $key; Copy-Item x NUL -Recurse
+powershell finds=overwrite | cd $key; Move-Item x NUL
+
+# A rooted path after a cd stays on the drive of that cd. `cd \` is the root
+# of the current drive: after a `cd` to the registry, `Function:` or a place
+# only known when it runs, that is not the file system, so `NUL` there is an
+# item.
+powershell safe | cd Function:; cd \\; cd C:\\x; Remove-Item NUL
+powershell safe | cd C:\\x; cd \\; Remove-Item NUL
+powershell safe | cd \\; Remove-Item NUL
+powershell safe | cd C:\\x; cd /; Remove-Item NUL
+powershell safe | cd Function:; cd C:\\x; Remove-Item NUL
+powershell finds=overwrite | cd Function:; cd \\; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; cd \\; Remove-Item NUL -Recurse
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; cd \\Software\\Foo; Set-ItemProperty NUL -Name x -Value 1
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Set-Location \\; New-Item NUL -Force
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; pushd \\Software; Remove-Item NUL -Recurse
+powershell finds=overwrite | cd Function:; cd /; Set-Content NUL x
+powershell finds=delete | cd $key; cd \\; Remove-Item NUL -Recurse
+powershell finds=overwrite | cd $key; cd \\Software; New-Item NUL -Force
+# A provider path with no drive has no root to read.
+powershell finds=delete | cd Registry::HKEY_CURRENT_USER\\Software\\Foo; cd \\; Remove-Item NUL
+# A rooted path written after the `cd` is rooted on its drive too.
+powershell finds=system_settings | cd HKCU:\\Software\\Foo; Remove-Item \\Software\\Run -Recurse
+
+# Home after a cd to a place without one is not the file system. `~` is the
+# home of the provider the folder is in; the registry, `Function:` and the
+# like have none, so the `cd ~` fails and the line stays where it was.
+# The file system has a home.
+powershell safe | cd C:\\x; cd ~; Remove-Item NUL
+powershell safe | cd ~; Remove-Item NUL
+powershell safe | cd x; cd ~; Remove-Item NUL
+powershell safe | cd FileSystem::C:\\x; cd ~; Remove-Item NUL
+powershell finds=delete | cd HKCU:\\Software\\Foo; cd ~; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software\\Foo; cd ~\\x; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software\\Foo; cd ~/x; Remove-Item NUL -Recurse
+powershell finds=overwrite | cd Function:; cd ~; Set-Content NUL 'x'; NUL
+powershell finds=delete | cd HKCU:\\Software; cd; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software; Set-Location; Remove-Item NUL -Recurse
+powershell finds=delete | cd Registry::HKEY_CURRENT_USER\\Software; cd ~; Remove-Item NUL -Recurse
+powershell finds=delete | cd $dir; cd ~; Remove-Item NUL -Recurse
+
+# A `Set-Location` fed by the pipeline does not go home.
+powershell safe | cd; Remove-Item NUL
+powershell safe | Set-Location | Out-Null; Remove-Item NUL
+powershell finds=delete | Get-Item HKCU:\\Software | Set-Location; Remove-Item NUL -Recurse
+powershell finds=delete | 'HKCU:\\Software' | cd; Remove-Item NUL -Recurse
+powershell finds=delete | $k | cd; Remove-Item NUL -Recurse
+powershell finds=delete | Get-Item HKCU:\\Software | Push-Location; Remove-Item NUL -Recurse
+
+# A PowerShell `cd -` (and `cd +`) is a step in location history: the place
+# is only known when it runs, not a folder named `-`.
+powershell finds=delete | cd HKCU:\\Software; cd C:\\x; cd -; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software; cd C:\\x; Set-Location -; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software; cd C:\\x; sl -; Remove-Item NUL -Recurse
+powershell finds=delete | cd $k; cd C:\\x; cd -; Remove-Item NUL -Recurse
+powershell finds=overwrite | cd Function:; cd C:\\x; cd -; Set-Content NUL 'rm -r -fo ~'; NUL
+powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -; Remove-Item -Recurse -Force *
+powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; Set-Location -Path -; Remove-Item -Recurse -Force *
+
+# The end of parameters token is not the path of a cd: `--` ends the
+# parameters, so `cd -- -` is the history step and `cd -- X` goes to X.
+powershell safe | cd -- src; npm test
+powershell safe | cd -- .\\src; npm test
+powershell finds=delete | cd HKCU:\\Software; cd C:\\x; cd -- -; Remove-Item NUL -Recurse
+powershell finds=delete | cd HKCU:\\Software; cd C:\\x; Set-Location -- -; Remove-Item NUL -Recurse
+powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- -; Remove-Item -Recurse -Force *
+powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- +; Remove-Item -Recurse -Force *
+powershell finds=delete | cd -- C:\\Windows\\System32; Remove-Item -Recurse -Force *

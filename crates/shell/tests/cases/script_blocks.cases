@@ -1,0 +1,401 @@
+# PowerShell code known only when it runs, given to a cmdlet as a script
+# block or built from text: `Invoke-Command $b`, `[scriptblock]::Create(…)`,
+# `InvokeScript(…)`, `Start-Job`, a splat on a cmdlet that runs a block, a hook
+# the host runs, a method called by a name, `ExpandString`, `Where-Object` and
+# `Trace-Command`. A block written out is read where it stands, and text given
+# to build code is read too. The format is in CONTRIBUTING.md.
+
+# A block is read where it is written out, and unknown otherwise.
+powershell safe | Invoke-Command { Get-ChildItem }
+powershell safe | Invoke-Command -ScriptBlock { Get-ChildItem }
+powershell safe | Invoke-Command -ScriptBlock:{ Get-ChildItem }
+powershell safe | Invoke-Command -Script { Get-ChildItem }
+powershell safe | icm { Get-ChildItem }
+powershell safe | Invoke-Command -ComputerName srv -ScriptBlock { Get-Date }
+powershell safe | Invoke-Command -Session $s { Get-Date }
+powershell safe | Invoke-Command -Session $s -ScriptBlock { Get-Date } -ArgumentList $x
+powershell safe | Invoke-Command localhost { Get-Date }
+powershell safe | Invoke-Command -FilePath .\\check.ps1 -ComputerName srv
+powershell safe | 1..3 | ForEach-Object { $_ * 2 }
+powershell safe | 1..3 | % { $_ * 2 }
+powershell safe | Get-ChildItem | ForEach-Object Name
+powershell safe | Get-ChildItem | % -MemberName Name
+powershell safe | 1..3 | ForEach-Object -Begin { $s = 0 } -Process { $s += $_ } -End { $s }
+powershell safe | 1..3 | ForEach-Object { 'begin' } { $_ } { 'end' }
+powershell safe | 1..3 | ForEach-Object -Parallel { $_ } -ThrottleLimit $n
+powershell safe | Start-Job { cargo build }
+powershell safe | Start-Job -Name build -ScriptBlock { cargo build }
+powershell safe | Start-Job -InitializationScript { $x = 1 } -ScriptBlock { cargo build }
+powershell safe | Start-ThreadJob -ScriptBlock { cargo build }
+powershell safe | Register-ScheduledJob -Name nightly -ScriptBlock { cargo build }
+powershell safe | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action { break }
+powershell safe | Set-PSBreakpoint -Script $script -Line 3
+powershell safe | New-Module -ScriptBlock { function f { 1 } }
+powershell safe | Measure-Command { cargo build }
+powershell safe | $ExecutionContext.InvokeCommand.CommandNotFoundAction = { param($name) }
+powershell safe | $ExecutionContext.InvokeCommand.GetCommand('git', 'Application')
+powershell safe | $b = { Get-ChildItem }
+powershell safe | .\\build.ps1 -Action Build
+powershell safe | Get-Process -Name code
+powershell finds=unknown | Invoke-Command $b
+powershell finds=unknown | Invoke-Command -ScriptBlock $b
+powershell finds=unknown | Start-Job $b
+powershell finds=unknown | Start-ThreadJob -ScriptBlock $b
+powershell finds=unknown | Set-PSBreakpoint -Action $b
+powershell finds=unknown | Register-ScheduledJob -ScriptBlock $b
+powershell finds=unknown | 1 | ForEach-Object $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.InvokeScript('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand.CommandNotFoundAction = $b
+powershell finds=unknown | $b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Invoke-Command $b
+# Each parameter by name and by prefix.
+powershell finds=unknown | Invoke-Command -ScriptBlock:$b
+powershell finds=unknown | Invoke-Command -Script $b
+powershell finds=unknown | Invoke-Command -ComputerName srv -ScriptBlock $b
+powershell finds=unknown | Invoke-Command -Session $s $b
+powershell finds=unknown | Invoke-Command -ArgumentList { 1 } $b
+powershell finds=unknown | Invoke-Command -ScriptBlock (Get-Block)
+powershell finds=unknown | Invoke-Command ({ Get-ChildItem })
+powershell finds=unknown | icm $b
+powershell finds=unknown | sajb $b
+powershell finds=unknown | sbp -Action $b
+powershell finds=unknown | Start-Job -Name build $b
+powershell finds=unknown | Start-Job -InitializationScript $i { 1 }
+powershell finds=unknown | Start-Job -ScriptBlock ([scriptblock]::Create($x))
+powershell finds=unknown | Start-ThreadJob -InitializationScript $i -ScriptBlock { 1 }
+powershell finds=unknown | Register-ScheduledJob -Name nightly -InitializationScript $i -ScriptBlock { 1 }
+powershell finds=unknown | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action $b
+powershell finds=unknown | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action 'break'
+powershell finds=unknown | 1 | % $b
+powershell finds=unknown | 1 | ForEach-Object -Process $b
+powershell finds=unknown | 1 | ForEach-Object -Begin $b -Process { $_ }
+powershell finds=unknown | 1 | ForEach-Object -Begin { 1 } -Process { $_ } -End $b
+powershell finds=unknown | 1 | ForEach-Object -Parallel $b
+powershell finds=unknown | 1 | ForEach-Object { 'begin' } $b
+powershell finds=unknown | 1 | ForEach-Object -Pro $b
+# Cmdlets that run a block the same way.
+powershell finds=unknown | New-Module -ScriptBlock $b
+powershell finds=unknown | Measure-Command $b
+powershell finds=unknown | Measure-Command -Expression $b
+# A hook the host runs for every command.
+powershell finds=unknown | $ExecutionContext.InvokeCommand.PreCommandLookupAction = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.PostCommandLookupAction += $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.CommandNotFoundAction = (Get-Block)
+# Code built from text. Building a block is running code the guard does not
+# read, whatever hands it on.
+powershell finds=unknown | [scriptblock]::Create($code)
+powershell finds=unknown | [ScriptBlock]::Create($safe)
+powershell finds=unknown | [ScriptBlock]::Create('Get-ChildItem')
+powershell finds=unknown | [System.Management.Automation.ScriptBlock]::Create($code)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.NewScriptBlock($code)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.InvokeScript($code)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.InvokeScript('Get-ChildItem')
+powershell finds=unknown | $ExecutionContext.SessionState.InvokeCommand.InvokeScript($code, $arg)
+
+# Text given to build code is read.
+powershell finds=delete,unknown | [scriptblock]::Create('Remove-Item -Recurse -Force ~')
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand.NewScriptBlock('Remove-Item -Recurse -Force ~')
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand.InvokeScript('Remove-Item -Recurse -Force ~')
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand.InvokeScript("Remove-Item -Recurse -Force $HOME")
+powershell finds=delete,unknown | $b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Invoke-Command $b
+
+# A list stays with the parameter it follows.
+powershell safe | Start-Job { param($a,$b) $a } -ArgumentList $x, $y
+powershell safe | Start-Job -ScriptBlock { param($a,$b) $a } -ArgumentList $x, $y
+powershell safe | Start-Job -ArgumentList $x, $y -ScriptBlock { param($a,$b) $a }
+powershell safe | Invoke-Command { param($a,$b) $a } -ArgumentList $x, $y
+powershell safe | Invoke-Command -ComputerName $a, $b { Get-Date }
+powershell safe | 1..3 | ForEach-Object -Process { $_ } -ArgumentList $a, $b
+powershell safe | 1..3 | ForEach-Object -Begin { 1 } -Process { $_ } -ArgumentList $a, $b -End { 2 }
+powershell safe | 1..3 | ForEach-Object -Process { 1 }, { 2 }
+
+# `Start-Job` takes a second block by position.
+powershell safe | Start-Job { cargo build } { $x = 1 }
+powershell safe | Start-Job -ScriptBlock { cargo build } { $x = 1 }
+powershell safe | Start-Job -Command { cargo build }
+powershell safe | Start-Job -Command { cargo build } -InitializationScript { $x = 1 }
+powershell safe | Start-Job { cargo build } -Name build
+powershell safe | Start-Job -Name build { cargo build }
+powershell safe | Invoke-Command -Command { Get-Date }
+powershell finds=unknown | Start-Job { cargo build } $i
+powershell finds=unknown | Start-Job -ScriptBlock { cargo build } $i
+powershell finds=unknown | Start-Job -Command { 1 } $i
+powershell finds=unknown | Start-Job -Script { 1 } $i
+powershell finds=unknown | Start-Job -ScriptBlock { 1 } (Get-Block)
+powershell finds=unknown | Start-Job -ScriptBlock { 1 } 'x'
+powershell finds=unknown | Start-Job $b { 1 }
+powershell finds=unknown | Start-Job -Command $b
+powershell finds=unknown | sajb { 1 } $i
+powershell finds=unknown | Invoke-Command -Command $b
+powershell finds=unknown | icm -Command $b
+# A comma list after a block parameter is all blocks.
+powershell finds=unknown | 1..3 | ForEach-Object -Process { 1 }, $b
+
+# A named initialization script leaves the positional block to be read.
+powershell safe | Start-ThreadJob -InitializationScript { 1 } { cargo build }
+powershell safe | Start-ThreadJob -InitializationScript { 1 } -ScriptBlock { cargo build }
+powershell safe | Start-ThreadJob { cargo build } -Name build
+powershell safe | Register-ScheduledJob nightly { cargo build }
+powershell safe | Register-ScheduledJob -InitializationScript { 1 } nightly { cargo build }
+powershell safe | Register-ScheduledJob -Name nightly -InitializationScript { 1 } { cargo build }
+powershell safe | Register-ScheduledJob -Name nightly -InitializationScript { 1 } -ScriptBlock { cargo build }
+powershell finds=unknown | Start-ThreadJob -InitializationScript { Import-Module x } $b
+powershell finds=unknown | Start-ThreadJob -Init { 1 } (Get-Block)
+powershell finds=unknown | Register-ScheduledJob -InitializationScript { 1 } nightly $b
+powershell finds=unknown | Register-ScheduledJob -Name nightly -InitializationScript { 1 } $b
+powershell finds=unknown | Register-ScheduledJob nightly $b
+powershell finds=unknown | Start-ThreadJob $b
+
+# Common parameters and `-Args` take their value.
+powershell safe | Start-Job { npm test } -ErrorAction Stop
+powershell safe | Start-Job { npm test } -EA Stop
+powershell safe | Start-Job -ScriptBlock { npm test } -OutVariable j
+powershell safe | Start-Job -ScriptBlock { npm test } -OV j
+powershell safe | Start-Job -ErrorAction:Stop -ScriptBlock { npm test }
+powershell safe | Start-Job { param($a) $a } -Args $x
+powershell safe | Start-Job { npm test } -ErrorVariable e -WarningAction Ignore -WarningVariable w
+powershell safe | Start-Job { npm test } -InformationAction Ignore -InformationVariable i -ProgressAction SilentlyContinue
+powershell safe | Start-Job { npm test } -OutBuffer 2 -PipelineVariable p
+powershell safe | Start-ThreadJob { npm test } -ErrorAction Stop
+powershell safe | Start-ThreadJob -ScriptBlock { npm test } -EV e
+powershell safe | Register-ScheduledJob -Name nightly -ScriptBlock { npm test } -ErrorAction Stop
+powershell safe | Register-ScheduledJob nightly { npm test } -WA Ignore
+powershell safe | Invoke-Command { Get-Date } -ErrorAction Stop
+powershell safe | Invoke-Command -ErrorAction Stop { Get-Date }
+powershell safe | Invoke-Command { param($a) $a } -Args $x
+powershell safe | New-Module { function f { 1 } } -ErrorAction Stop
+powershell safe | Measure-Command { cargo build } -ErrorAction Stop
+powershell safe | 1..3 | ForEach-Object { $_ } -Args $x
+powershell safe | 1..3 | ForEach-Object { $_ } -ErrorAction Stop
+powershell safe | 1..3 | ForEach-Object { $_ } -Confirm:$false
+powershell safe | 1..3 | ForEach-Object -Confirm:$false { $_ }
+powershell safe | Start-Job { npm test } -Confirm:$false
+powershell safe | Start-Job -Confirm:$false { npm test }
+powershell safe | Invoke-Command { Get-Date } -Whatever:$x
+powershell safe | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action { break } -ErrorAction Stop
+# The value after a parameter is not hidden by what it follows.
+powershell finds=unknown | Start-Job { npm test } -ErrorAction Stop $i
+powershell finds=unknown | Start-Job -ErrorAction:Stop $b
+powershell finds=unknown | Start-ThreadJob -ErrorAction Stop $b
+powershell finds=unknown | 1..3 | ForEach-Object -Confirm:$false $b
+
+# `-RemainingScripts` is a block parameter.
+powershell safe | 1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }
+powershell safe | 1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, { 3 }
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -RemainingScripts $b
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -RemainingScripts:$b
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -Rem:$b
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -Remaining:$b
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -RemainingScripts:$b, $c
+powershell finds=unknown | 1 | ForEach-Object -Process { 1 } -RemainingScripts { 2 }, $c
+
+# A splat on a cmdlet that runs a block is unknown.
+# One block is all these take: a splat beside one adds none.
+powershell safe | Invoke-Command { Get-Date } @p
+powershell safe | Invoke-Command -ComputerName srv -ScriptBlock { Get-Date } @p
+powershell safe | New-Module { function f { 1 } } @p
+powershell safe | Measure-Command { cargo build } @p
+powershell safe | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action { break } @p
+# A splat on a cmdlet that runs no block of its own.
+powershell safe | Get-ChildItem @p
+powershell safe | Get-Process @p
+powershell finds=unknown | Set-PSBreakpoint @p
+powershell finds=unknown | Set-PSBreakpoint -Command Get-Date @p
+powershell finds=unknown | Set-PSBreakpoint -Script build.ps1 -Line 3 @p
+powershell finds=unknown | sbp @p
+powershell finds=unknown | Start-Job { 1 } @p
+powershell finds=unknown | Start-Job -ScriptBlock { 1 } @p
+powershell finds=unknown | Start-Job @p
+powershell finds=unknown | Start-ThreadJob { 1 } @p
+powershell finds=unknown | Start-ThreadJob -ScriptBlock { 1 } @p
+powershell finds=unknown | Register-ScheduledJob -Name nightly -ScriptBlock { 1 } @p
+powershell finds=unknown | Invoke-Command @p
+powershell finds=unknown | Invoke-Command -ComputerName srv @p
+powershell finds=unknown | New-Module @p
+powershell finds=unknown | Measure-Command @p
+powershell finds=unknown | 1..3 | ForEach-Object { $_ } @p
+powershell finds=unknown | 1..3 | ForEach-Object @p
+# The event cmdlets keep their own reading of a splat and of a block that is
+# not written out.
+powershell finds=unknown | Register-EngineEvent PowerShell.Exiting -Action $b
+powershell finds=unknown | Register-EngineEvent @p
+
+# Every hook on `InvokeCommand` is read, set or called.
+powershell safe | $ExecutionContext.InvokeCommand.LocationChangedAction = { param($s, $e) }
+powershell safe | $ExecutionContext.InvokeCommand.set_CommandNotFoundAction({ param($n) })
+powershell safe | $ExecutionContext.InvokeCommand.set_PreCommandLookupAction({ param($n) })
+powershell safe | $ExecutionContext.InvokeCommand.set_PostCommandLookupAction({ param($n) })
+powershell safe | $ExecutionContext.InvokeCommand.set_LocationChangedAction({ param($s, $e) })
+powershell safe | $ExecutionContext.InvokeCommand.set_Other($b)
+powershell safe | $ExecutionContext.InvokeCommand.Other = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.LocationChangedAction = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.LocationChangedAction += $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.LocationChangedAction = (Get-Block)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.'LocationChangedAction' = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_CommandNotFoundAction($b)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_PreCommandLookupAction($b)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_PostCommandLookupAction($b)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_LocationChangedAction($b)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_LocationChangedAction((Get-Block))
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_CommandNotFoundAction()
+powershell finds=unknown | $ExecutionContext.InvokeCommand.set_CommandNotFoundAction('x')
+
+# A method name in quotes is the method.
+powershell finds=unknown | $ExecutionContext.InvokeCommand.'InvokeScript'('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand."InvokeScript"('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand."NewScriptBlock"($code)
+powershell finds=unknown | [scriptblock]::'Create'('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | [scriptblock]::"Create"($code)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.'set_CommandNotFoundAction'($b)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.'ExpandString'($s)
+powershell finds=unknown | $b.'Invoke'()
+powershell finds=delete | (Get-Item ~).'Delete'()
+powershell finds=delete | $ExecutionContext.InvokeCommand.'InvokeScript'('Remove-Item -Recurse -Force ~')
+powershell finds=delete | [scriptblock]::'Create'('Remove-Item -Recurse -Force ~')
+
+# A method called by a name known only when it runs is unknown.
+powershell safe | $list.Add(1)
+powershell safe | $list.'Add'(1)
+powershell safe | $list."Add"(1)
+powershell safe | $s.Substring(1)
+powershell safe | $s."Substring"(1)
+powershell safe | [Math]::Max(1, 2)
+powershell safe | [Math]::"Max"(1, 2)
+# A property read has no argument list: a name only known when it runs is a
+# column, not a call.
+powershell safe | $row.$col
+powershell safe | $row.$col.Name
+powershell safe | $row."$col"
+powershell safe | $row.($col)
+powershell safe | $row.$col = 1
+powershell safe | Write-Output $row.$col
+powershell finds=unknown | $m='InvokeScript'; $ExecutionContext.InvokeCommand.$m('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand.($m)('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand."$m"('x')
+powershell finds=unknown | $ExecutionContext.InvokeCommand."Invoke$('Script')"('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand."Invoke$($m)"('x')
+powershell finds=unknown | $m="Delete"; (Get-Item ~).$m()
+powershell finds=unknown | $m='Delete'; (Get-Item ~).$m()
+powershell finds=unknown | $m='Delete'; [IO.Directory]::$m('C:\\x', $true)
+powershell finds=unknown | $t::$m('x')
+powershell finds=unknown | $list.$m(1)
+powershell finds=unknown | $list.(Get-Name)(1)
+powershell finds=unknown | $list.{ Add }(1)
+powershell finds=unknown | $list.[string]$m(1)
+# A name written out stays the method it names: constant strings, with or
+# without quotes, and the escape in a double-quoted one.
+powershell finds=unknown | $e.InvokeCommand.InvokeScript('x')
+powershell finds=unknown | $e.InvokeCommand.'InvokeScript'('x')
+powershell finds=unknown | $e.InvokeCommand."InvokeScript"('x')
+powershell finds=unknown | $e.InvokeCommand."Invoke`Script"('x')
+powershell finds=delete | (Get-Item ~)."Delete"()
+powershell finds=delete | (Get-Item ~)."Del`ete"()
+
+# `ExpandString` runs the subexpressions in its text.
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand.ExpandString('$(Remove-Item -Recurse -Force ~)')
+powershell finds=delete,unknown | $ExecutionContext.SessionState.InvokeCommand.ExpandString('a $(Remove-Item -Recurse -Force ~)')
+powershell finds=unknown | $ExecutionContext.InvokeCommand.ExpandString($s)
+powershell finds=unknown | $ExecutionContext.InvokeCommand.ExpandString('plain text')
+
+# A member name that runs code or deletes is the method called.
+powershell safe | Get-ChildItem | % FullName
+powershell safe | Get-ChildItem | % -MemberName Length
+powershell safe | 'a' | % ToUpper
+powershell safe | 'a' | % -MemberName Replace -ArgumentList 'a', 'b'
+powershell finds=unknown | $b | ForEach-Object Invoke
+powershell finds=unknown | $b | % -MemberName Invoke
+powershell finds=unknown | $b | % -MemberName:Invoke
+powershell finds=unknown | $b | ForEach-Object InvokeReturnAsIs
+powershell finds=unknown | $b | % InvokeWithContext
+powershell finds=unknown | $b | % 'Invoke'
+powershell finds=unknown | $b | % -Mem Invoke
+powershell finds=unknown | $b | % -MemberName $m
+powershell finds=delete | Get-ChildItem | % Delete
+powershell finds=delete | Get-ChildItem | % -MemberName MoveTo -ArgumentList x
+powershell finds=delete | Get-Item HKCU:\\x | % DeleteSubKeyTree
+
+# A member name that builds code or sets a hook is judged.
+powershell safe | $ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction
+powershell safe | $ExecutionContext.InvokeCommand | % CommandNotFoundAction
+powershell safe | $ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList { 1 }
+powershell safe | $ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList { 1 }
+powershell safe | $ExecutionContext.InvokeCommand | % set_CommandNotFoundAction { 1 }
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % InvokeScript $s
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % NewScriptBlock $s
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % ExpandString $s
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % 'InvokeScript' 'Get-Date'
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList $s
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % set_CommandNotFoundAction $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % set_CommandNotFoundAction
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % set_LocationChangedAction $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % -MemberName set_CommandNotFoundAction -ArgumentList $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % -MemberName CommandNotFoundAction -ArgumentList $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % CommandNotFoundAction $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand | % -MemberName PreCommandLookupAction -Args $b
+# The text given as the code is read, whichever way it is written out.
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand | % InvokeScript 'Remove-Item -Recurse -Force ~'
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand | % -MemberName InvokeScript -ArgumentList 'Remove-Item -Recurse -Force ~'
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand | % -MemberName:InvokeScript -ArgumentList:'Remove-Item -Recurse -Force ~'
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand | % ExpandString '$(Remove-Item -Recurse -Force ~)'
+powershell finds=delete,unknown | $ExecutionContext.InvokeCommand | % NewScriptBlock 'Remove-Item -Recurse -Force ~'
+
+# What follows a member name is its arguments.
+powershell safe | $list | % Add $item
+powershell safe | $s | % Substring 1 $n
+powershell safe | 1 | ForEach-Object -MemberName Name $b
+powershell safe | $s | % -MemberName Substring -ArgumentList $a, $b
+powershell safe | $s | % 'Substring' $a $b
+powershell finds=unknown | 1 | ForEach-Object { 1 } $b
+powershell finds=unknown | 1 | % { 1 } , $b
+powershell finds=unknown | 1 | % $b Name
+powershell finds=delete | $list | % Delete $item
+powershell finds=unknown | 1 | % Add -Process $b
+
+# `Where-Object` runs its filter script.
+powershell safe | 1 | Where-Object { $_ -gt 1 }
+powershell safe | 1 | ? { $_ -gt 1 }
+powershell safe | 1 | where { $_ -gt 1 }
+powershell safe | Get-ChildItem | Where-Object -FilterScript { $_.Length -gt 1 }
+powershell safe | Get-ChildItem | ? -FilterScript:{ $_.Length -gt 1 }
+powershell safe | Get-ChildItem | ? -Filter { $_.Length -gt 1 }
+# A word first is the property of the comparison form.
+powershell safe | Get-ChildItem | ? Name -like '*.rs'
+powershell safe | Get-ChildItem | Where-Object Name -eq 'a.rs'
+powershell safe | Get-ChildItem | where Length -gt 100
+powershell safe | Get-ChildItem | ? 'Name' -like '*.rs'
+powershell safe | Get-ChildItem | ? -Property Name -Value x -EQ
+powershell safe | Get-ChildItem | ? -Property Name -Value $v -Like
+powershell safe | Get-ChildItem | ? -Property $p -Value $v -EQ
+powershell safe | Get-ChildItem | ? Name -in $names
+powershell safe | Get-ChildItem | ? -InputObject $x { 1 }
+powershell safe | Get-ChildItem | ? Name -ne $x -ErrorAction Stop
+powershell safe | Get-ChildItem | ? -FilterScript { 1 } @p
+powershell finds=unknown | 1 | Where-Object $b
+powershell finds=unknown | 1 | ? $b
+powershell finds=unknown | 1 | where $b
+powershell finds=unknown | Get-ChildItem | Where-Object -FilterScript $b
+powershell finds=unknown | Get-ChildItem | ? -Filter $b
+powershell finds=unknown | Get-ChildItem | ? -FilterScript:$b
+powershell finds=unknown | Get-ChildItem | ? -FilterScript (Get-Block)
+powershell finds=unknown | Get-ChildItem | ? (Get-Block)
+powershell finds=unknown | Get-ChildItem | ? $prop -eq 1
+powershell finds=unknown | Get-ChildItem | ? @p
+powershell finds=unknown | $t=[scriptblock]; $b=$t::Create('Remove-Item -Recurse -Force ~'); 1 | ? $b
+powershell finds=unknown | $b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); 1 | Where-Object $b
+
+# `Trace-Command` runs its expression.
+powershell safe | Trace-Command -Name ParameterBinding -Expression { Get-Date }
+powershell safe | Trace-Command -Name ParameterBinding -Expression:{ Get-Date }
+powershell safe | Trace-Command ParameterBinding { Get-Date }
+powershell safe | Trace-Command -Name ParameterBinding { Get-Date }
+powershell safe | Trace-Command $name { Get-Date }
+powershell safe | Trace-Command -Name ParameterBinding -Expression { Get-Date } -PSHost
+powershell safe | Trace-Command -Name ParameterBinding -Expression { Get-Date } -FilePath trace.log
+powershell safe | Trace-Command -Name $n -Expression { Get-Date } -Option All
+powershell finds=unknown | Trace-Command -Name ParameterBinding -Expression $b
+powershell finds=unknown | Trace-Command -Name ParameterBinding -Exp $b
+powershell finds=unknown | Trace-Command ParameterBinding $b
+powershell finds=unknown | Trace-Command -Name ParameterBinding $b
+powershell finds=unknown | Trace-Command ParameterBinding Get-Date
+powershell finds=unknown | Trace-Command -Name ParameterBinding -Command Get-Date
+powershell finds=unknown | Trace-Command -Name ParameterBinding -Expression { 1 } @p
+powershell finds=unknown | $b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Trace-Command ParameterBinding $b

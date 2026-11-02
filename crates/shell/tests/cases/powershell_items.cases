@@ -1,0 +1,407 @@
+# PowerShell item cmdlets judged by where their path lands: a registry key is
+# `system_settings`, as `Remove-Item` on it is, and an item beyond the
+# workspace is a delete or an overwrite. Every path of a list and every
+# positional counts; what `Get-Item` or a listing hands on down a pipeline is
+# the item (a listing that shows hidden files hands those on too); a
+# `-LiteralPath` alias, a splat, a common parameter or a switch never hides
+# which argument is the item; and `Start-Process` reads its program under
+# every alias of `-FilePath`. cmd's renames are not provider paths. The format
+# is in CONTRIBUTING.md.
+
+# A machine with a second workspace folder on `D:`.
+paths two_workspaces base=windows workspace=D:\\ws2
+
+# Item cmdlets on the registry change the system.
+powershell finds=system_settings | Clear-Item HKCU:\\Software\\x
+powershell finds=system_settings | Clear-Item -Path HKCU:\\Software\\x
+powershell finds=system_settings | Clear-Item -LiteralPath HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item HKCU:\\Software\\x y
+powershell finds=system_settings | Rename-Item -Path HKCU:\\Software\\x -NewName y
+powershell finds=system_settings | Rename-Item -NewName y HKCU:\\Software\\x
+powershell finds=system_settings | Set-Item HKLM:\\SYSTEM\\x -Value 1
+powershell finds=system_settings | Set-Item -Path HKLM:\\SYSTEM\\x -Value 1
+powershell finds=system_settings | New-Item HKCU:\\Software\\x -Force
+powershell finds=system_settings | New-Item -Path HKCU:\\Software -Name x -Force
+powershell finds=system_settings | Move-Item HKCU:\\Software\\x HKCU:\\Software\\y
+powershell finds=system_settings | Move-Item HKCU:\\Software\\x src\\y
+powershell finds=system_settings | Copy-Item HKCU:\\Software\\x HKCU:\\Software\\y -Force
+powershell finds=system_settings | Copy-Item -Path src\\x -Destination HKCU:\\Software\\y -Force
+powershell finds=system_settings | Clear-Item hklm:*
+powershell finds=system_settings | Set-Item HKCU:*
+powershell finds=system_settings | Rename-Item Registry::HKEY_CURRENT_USER\\Software\\x y
+powershell finds=system_settings | Clear-Item Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\x
+powershell finds=system_settings | cd src; Rename-Item Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\x y
+# The aliases are judged the same.
+powershell finds=system_settings | cli HKCU:\\Software\\x
+powershell finds=system_settings | ren HKCU:\\Software\\x y
+powershell finds=system_settings | rni HKCU:\\Software\\x y
+powershell finds=system_settings | si HKLM:\\SYSTEM\\x -Value 1
+powershell finds=system_settings | ni HKCU:\\Software\\x -Force
+powershell finds=system_settings | mi HKCU:\\Software\\x HKCU:\\Software\\y
+powershell finds=system_settings | move HKCU:\\Software\\x HKCU:\\Software\\y
+powershell finds=system_settings | cpi HKCU:\\Software\\x HKCU:\\Software\\y -Force
+powershell finds=system_settings | clp HKCU:\\Software\\x -Name y
+powershell finds=system_settings | rnp HKCU:\\Software\\x -Name y -NewName z
+powershell finds=system_settings | cpp -Path HKCU:\\Software\\x -Name y -Destination HKCU:\\Software\\z
+powershell finds=system_settings | mp HKCU:\\Software\\x y HKCU:\\Software\\z
+# The value cmdlets are judged by their place.
+powershell finds=system_settings | Clear-ItemProperty -Path HKCU:\\Software\\x -Name y
+powershell finds=system_settings | Rename-ItemProperty -Path HKCU:\\Software\\x -Name y -NewName z
+powershell finds=system_settings | Copy-ItemProperty -Path HKCU:\\Software\\x -Name y -Destination HKCU:\\Software\\z
+powershell finds=system_settings | Move-ItemProperty HKCU:\\Software\\x y HKCU:\\Software\\z
+
+# Item cmdlets are safe inside the workspace and risky beyond it.
+powershell safe | Rename-Item src\\a.rs b.rs
+powershell safe | Rename-Item -Path src\\a.rs -NewName b.rs
+powershell safe | Rename-Item -LiteralPath src\\a.rs -NewName b.rs
+powershell safe | Rename-Item -NewName b.rs src\\a.rs
+powershell safe | rni src\\a.rs b.rs
+powershell safe | ren src\\a.rs b.rs
+powershell safe | Get-ChildItem *.txt | ForEach-Object { Rename-Item $_ -NewName x }
+powershell safe | Move-Item src\\a src\\b
+powershell safe | Get-ChildItem src | Move-Item -Destination old
+powershell safe | Copy-Item src\\a src\\b -Force
+powershell safe | New-Item -ItemType Directory build -Force
+powershell safe | New-Item -Path build\\out.txt -Force
+powershell safe | Get-ItemProperty HKCU:\\Software\\x
+powershell safe | Get-Item HKLM:\\SYSTEM\\x
+powershell safe | Copy-Item HKCU:\\Software\\x src\\y -Force
+powershell finds=delete | Rename-Item C:\\Users\\me\\x y
+powershell finds=delete | Rename-Item ~\\.ssh\\id_rsa key
+powershell finds=delete | Rename-Item $p y
+powershell finds=overwrite | Rename-Item -Path src\\a -NewName ..\\..\\b
+powershell finds=delete | cd C:\\Users\\me; Rename-Item x y
+powershell finds=overwrite | Set-Item Env:FOO bar
+powershell finds=overwrite | Clear-Item Variable:x
+powershell finds=delete | Get-ChildItem ~ | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem ~ | ForEach-Object { Rename-Item $_.FullName -NewName x }
+powershell finds=delete | Get-ChildItem .. | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem ~ | Move-Item -Destination x
+powershell finds=system_settings | Get-ChildItem HKCU:\\Software\\x | Rename-Item -NewName y
+powershell finds=system_settings | Get-ChildItem HKCU:\\Software\\x | Clear-Item
+
+# `Rename-Item` judges every positional and path. A new name only known when
+# it runs may be a startup file's (`.envrc`), so it is an overwrite even for an
+# item inside the workspace, but it is never judged as the item renamed.
+powershell safe | Rename-Item -n y src\\x
+powershell safe | Rename-Item -- src\\x y
+powershell safe | Rename-Item -Path src\\a, src\\b -NewName c
+powershell finds=overwrite | Rename-Item -Path src\\a.rs -NewName $name
+powershell finds=overwrite | Get-ChildItem *.txt | Rename-Item -NewName { $_.Name + 'x' }
+powershell finds=overwrite | Get-ChildItem src | Rename-Item -NewName { $_.Name + 'x' }
+powershell finds=overwrite | Get-Item * | Rename-Item -NewName { $_.Name + 1 }
+powershell finds=overwrite | Get-ChildItem | Rename-Item -NewName { $_.Name + 1 }
+powershell finds=overwrite | Get-ChildItem . | Rename-Item -NewName { $_.Name + 1 }
+powershell finds=overwrite | Rename-Item src\\a.rs $name
+powershell finds=overwrite | Rename-Item src\\a.rs ($x + '.bak')
+powershell finds=overwrite | Get-ChildItem | ForEach-Object { Rename-Item $_ ($_.Name + 1) }
+powershell finds=system_settings | Rename-Item -n y HKCU:\\Software\\x
+powershell finds=delete | Rename-Item -N y C:\\Windows\\x
+powershell finds=system_settings | Rename-Item -- HKCU:\\Software\\x y
+powershell finds=delete | Rename-Item -- C:\\Windows\\x y
+powershell finds=delete | Rename-Item -n y $p
+powershell finds=delete | Rename-Item -- $p y
+powershell finds=delete | Rename-Item -Path src\\a,C:\\Windows\\x -NewName y
+powershell finds=delete | Rename-Item src\\a, C:\\Windows\\x y
+
+# cmd's renames are not provider paths.
+cmd safe | rename src\\a.rs b.rs
+
+# `Get-Item` hands on the workspace itself.
+# What it hands on inside the workspace stays safe.
+powershell safe | Get-Item src | Rename-Item -NewName old
+powershell finds=delete | Rename-Item . old
+powershell finds=delete | Get-Item . | Rename-Item -NewName old
+powershell finds=delete | gi . | ren -NewName old
+powershell finds=delete | cd ~; Get-Item C:\\Users\\me\\dev\\repo | Rename-Item -NewName old
+powershell finds=delete | Get-Item C:\\Users\\me\\dev\\repo | Move-Item -Destination src\\old
+powershell@two_workspaces finds=delete | Rename-Item D:\\ws2 old
+powershell@two_workspaces finds=delete | Move-Item D:\\ws2 C:\\Users\\me\\dev\\repo\\old
+powershell@two_workspaces finds=delete | Get-Item D:\\ws2 | ForEach-Object { Rename-Item $_ old }
+powershell@two_workspaces finds=delete | Get-Item D:\\ws2 | Move-Item -Destination C:\\Users\\me\\dev\\repo\\old
+
+# `Clear-Item` and `Set-Item` judge every path and positional of a list (a
+# list of thousands of paths is in powershell_items.rs).
+powershell safe | Clear-Item src\\a, src\\b
+powershell safe | Set-Item src\\a, src\\b -Value 1
+powershell safe | Set-Item src\\a, src\\b 1
+powershell safe | Set-Item src\\a 1
+powershell safe | Set-Item src\\a
+powershell safe | Set-Item -Path src\\a 1
+powershell safe | Set-Item -Path src\\a -Value 1
+powershell finds=system_settings | Clear-Item src\\a, HKCU:\\Software\\y
+powershell finds=system_settings | Clear-Item -Path src\\a,HKCU:\\Software\\y
+powershell finds=system_settings | Clear-Item -LiteralPath src\\a,HKCU:\\Software\\y
+powershell finds=system_settings | Set-Item src\\a,HKLM:\\x -Value 1
+powershell finds=system_settings | Set-Item -Path src\\a,HKLM:\\x -Value 1
+powershell finds=system_settings | Set-Item src\\a,HKLM:\\x 1
+powershell finds=system_settings | Set-Item -Path src\\a,HKLM:\\x 1
+powershell finds=system_settings | Set-Item src\\a, HKLM:\\x, 1
+powershell finds=system_settings | Set-Item src\\a, HKLM:\\x
+powershell finds=system_settings | Set-Item src\\a,HKLM:\\x
+powershell finds=system_settings | si src\\a,HKCU:\\Software\\Classes\\x
+powershell finds=system_settings | Set-Item src\\a, HKLM:\\x 1
+powershell finds=system_settings | Set-Item HKLM:\\x
+powershell finds=overwrite | Set-Item src\\a, C:\\Users\\other\\x
+powershell finds=overwrite | Set-Item src\\a, D:\\data\\x
+powershell finds=overwrite | Set-Item src\\a, $p
+powershell finds=overwrite | si src\\a, $p
+powershell finds=overwrite | Set-Item src\\a, ..
+powershell finds=overwrite | Set-Item src\\a, Env:PATH
+powershell finds=overwrite | Set-Item src\\a C:\\Users\\other\\x
+
+# `Move-Item` judges every source of a list.
+powershell safe | Move-Item -Path src\\a,src\\b -Destination src\\d
+powershell safe | Move-Item src\\a, src\\b -Destination src\\d
+powershell safe | Move-Item -Path src\\a src\\d
+powershell safe | Move-Item src\\a src\\d
+powershell safe | Move-Item -LiteralPath src\\a,src\\b -Destination src\\d
+powershell finds=delete | Move-Item -Path src\\a,C:\\Windows\\x -Destination src\\d
+powershell finds=system_settings | Move-Item -Path src\\a,HKCU:\\Software\\x -Destination src\\d
+powershell finds=delete | Move-Item src\\a, C:\\Windows\\x -Destination src\\d
+powershell finds=delete | Move-Item -LiteralPath src\\a,~\\x -Destination src\\d
+powershell finds=delete | Move-Item -Path src\\a,C:\\Windows\\x src\\d
+powershell finds=delete | Move-Item src\\a, C:\\Windows\\x src\\d
+
+# `New-Item` judges every positional and reads its type.
+powershell safe | New-Item src\\a.txt -ItemType File
+powershell safe | New-Item -Type File -Force src\\a.txt
+powershell safe | New-Item -Path src\\a.txt -Value $x
+powershell safe | ni -Type Directory src\\d -Force
+powershell safe | New-Item -n x -Force src
+powershell finds=overwrite | New-Item -Type File -Force C:\\Windows\\System32\\drivers\\etc\\hosts
+powershell finds=overwrite | ni -Type File -Force ~\\.ssh\\authorized_keys
+powershell finds=system_settings | New-Item -Force -Type Directory HKCU:\\Software\\x
+powershell finds=system_settings | New-Item -n x -Force HKCU:\\Software
+powershell finds=system_settings | New-Item -Force -- HKCU:\\Software\\x
+
+# The item property cmdlets judge the path when a parameter hides it.
+powershell safe | Set-ItemProperty -Path src\\a.txt -Name IsReadOnly -Value $false
+powershell safe | Set-ItemProperty src\\a.txt IsReadOnly $true
+powershell safe | Set-ItemProperty src\\a.txt -Name IsReadOnly -Value $true -Force
+powershell safe | Clear-ItemProperty src\\a.txt -Name x
+powershell finds=system_settings | Clear-ItemProperty -n a HKCU:\\Software\\x
+powershell finds=system_settings | clp -n a HKCU:\\Software\\x
+powershell finds=system_settings | Clear-ItemProperty -- HKCU:\\Software\\x a
+powershell finds=system_settings | Clear-ItemProperty -Name a -- HKCU:\\Software\\x
+powershell finds=system_settings | Rename-ItemProperty -- HKCU:\\Software\\x a b
+powershell finds=system_settings | Set-ItemProperty -n a HKCU:\\Software\\x 1
+powershell finds=system_settings | Remove-ItemProperty -n a HKCU:\\Software\\x
+powershell finds=system_settings | Set-ItemProperty -- HKCU:\\Software\\x a 1
+powershell finds=system_settings | New-ItemProperty -Name a -PropertyType DWord -Value 1 HKCU:\\Software\\x
+powershell finds=system_settings | New-ItemProperty -PropertyType DWord HKCU:\\Software\\x -Name a -Value 1
+powershell finds=system_settings | Set-ItemProperty -Type DWord HKCU:\\Software\\x -Name a -Value 1
+
+# A listing that shows hidden files hands them on (a long one is timed in
+# powershell_items.rs).
+powershell safe | Get-ChildItem | Rename-Item -NewName x
+powershell safe | Get-ChildItem -Attributes Directory | Rename-Item -NewName x
+powershell safe | gci -ad | Rename-Item -NewName x
+powershell safe | gci -Attributes ReadOnly | Move-Item -Destination old
+powershell safe | Get-ChildItem -Depth 1 | Rename-Item -NewName x
+# A filter that cannot match a hidden name the guard cares about.
+powershell safe | gci -Force -Filter '?it' | Move-Item -Destination old
+powershell safe | gci -Force -Include *.log, *.tmp | Move-Item -Destination trash
+powershell safe | gci -Attributes Hidden -Filter *.tmp | Move-Item -Destination trash
+powershell safe | gci -Force -Filter *.tmp | Move-Item -Destination trash
+powershell safe | gci -Hidden -Filter *.tmp | Move-Item -Destination trash
+powershell safe | gci -Force -Include *.tmp | Move-Item -Destination trash
+powershell safe | Get-ChildItem -Filter .git | Move-Item -Destination old
+powershell safe | Get-ChildItem -Filter * | Rename-Item -NewName x
+powershell safe | Get-ChildItem -Force src -Filter .git | Move-Item -Destination old
+# `-Force` and `-Hidden`.
+powershell finds=delete | Get-ChildItem -Force | Rename-Item -NewName { $_.Name + 1 }
+powershell finds=delete | Get-ChildItem -Hidden | Rename-Item -NewName { $_.Name + 1 }
+powershell finds=delete | gci -fo | ren -NewName { $_.Name + 1 }
+powershell finds=delete | Get-ChildItem -Force | Move-Item -Destination old
+powershell finds=delete | ls -Force | mi -Destination old
+powershell finds=delete | Get-ChildItem -Force | ForEach-Object { Rename-Item $_ ($_.Name + 1) }
+powershell finds=delete | Move-Item .git old
+powershell finds=delete | Rename-Item .git x
+# The hidden alias and the attributes.
+powershell finds=delete | gci -ah | Rename-Item -NewName x
+powershell finds=delete | gci -ah | ForEach-Object { Rename-Item $_ x }
+powershell finds=delete | gci -ah | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Attributes Hidden | Rename-Item -NewName x
+powershell finds=delete | gci -Attributes h | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Attributes !Directory+Hidden | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Attributes Directory,Hidden | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Attributes $a | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Attributes:Hidden | Rename-Item -NewName x
+# `-Depth` takes a value, which is not a folder listed.
+powershell finds=delete | gci -Depth 1 -Force | Rename-Item -NewName x
+powershell finds=overwrite | gci -Force -Depth 1 | Clear-Item
+powershell finds=delete | Get-ChildItem -Depth 1 | Remove-Item -Recurse -Force
+# A filter that may match a hidden name still hands it on.
+powershell finds=delete | Get-ChildItem -Force -Filter .git | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Force -Include .git | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Force -Include .git,x | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Force -Include x,.git | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Force -Exclude x | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Force -Filter * | Rename-Item -NewName x
+powershell finds=delete | gci -Force -Filter *it | Move-Item -Destination old
+powershell finds=delete | gci -Force -Filter $f | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -Hidden -Filter .g* | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter config | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Force -Depth 2 -Filter config | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -Force -Filter .git | Remove-Item -Recurse
+powershell finds=delete | Get-ChildItem -Force ~ -Filter .ssh | Move-Item -Destination old
+powershell finds=delete | Get-Item -Force -Filter .git | Move-Item -Destination old
+
+# A switch of a listing does not take the folder.
+# `-File`.
+powershell safe | Get-ChildItem -File src | Rename-Item -NewName x
+powershell safe | ls -File | Rename-Item -NewName x
+# The switch aliases, of a listing and of other cmdlets.
+powershell safe | Get-ChildItem -s -Filter *.rs | Select-String x
+powershell safe | gci -s src | Clear-Item
+powershell safe | Get-ChildItem -ar src | Rename-Item -NewName x
+powershell safe | Get-ChildItem -Name src | Select-String x
+powershell safe | Start-Process cmd -ar x
+powershell safe | Remove-Item -s x
+powershell finds=delete | Get-ChildItem -File ~ | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -File ~\\Downloads | Rename-Item -NewName { $_.Name -replace " ","_" }
+powershell finds=delete | ls -File ~ | Rename-Item -NewName x
+powershell finds=delete | dir -File C:\\Windows | ren -NewName x
+powershell finds=system_settings | Get-ChildItem -File HKCU:\\Software | Rename-Item -NewName x
+powershell finds=overwrite | Get-ChildItem -File ~ | Clear-Item
+powershell finds=delete | Get-ChildItem -File ~ | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -File ~ | ForEach-Object { Rename-Item $_ x }
+powershell finds=delete | Get-ChildItem -File ~ | ForEach-Object { Move-Item $_ old }
+powershell finds=delete | Get-ChildItem ~ -File | Rename-Item -NewName x
+powershell finds=delete | Get-ChildItem -File:$true ~ | Rename-Item -NewName x
+powershell finds=system_settings | gci -s HKCU:\\Software | Clear-Item
+powershell finds=system_settings | gci -s HKCU:\\Software | Rename-Item -NewName x
+powershell finds=system_settings | gci -s HKCU:\\Software -Filter x | Clear-Item
+powershell finds=system_settings | Get-ChildItem -ar HKCU:\\Software | Set-Item -Value 1
+powershell finds=delete | Get-ChildItem -s C:\\Windows | Move-Item -Destination old
+powershell finds=delete | Get-ChildItem -ar C:\\Windows | Rename-Item -NewName { $_.Name + 'x' }
+powershell finds=delete | Get-ChildItem -s C:\\Windows -Filter *.log | Remove-Item
+powershell finds=delete | dir -s C:\\Windows -Filter *.log | Remove-Item
+powershell finds=delete | gci -ar C:\\Windows -Filter *.log | Remove-Item
+powershell finds=delete | gci -s .. -Filter *.rs | Remove-Item
+powershell finds=delete | gci -Name C:\\Windows | Remove-Item
+powershell finds=delete | gci -n C:\\Windows -Filter *.log | Remove-Item
+
+# The aliases of `-LiteralPath` name the item.
+powershell safe | Rename-Item src\\y -LP src\\x
+powershell safe | Rename-Item y -PSPath src\\x
+powershell safe | Set-ItemProperty y -LP src\\x -Value 1
+powershell finds=delete | Rename-Item y -PSPath $p
+powershell finds=delete | Rename-Item y -LP $p
+powershell finds=delete | Rename-Item y -psp C:\\Windows\\x
+powershell finds=delete | Rename-Item y -LP (Get-Item C:\\Windows\\x)
+powershell finds=delete | Rename-Item y -LP C:\\Windows\\x
+powershell finds=system_settings | Rename-Item y -PSPath HKCU:\\Software\\x
+powershell finds=system_settings | Clear-ItemProperty y -PSPath HKCU:\\Software\\x
+powershell finds=system_settings | Rename-ItemProperty y -PSPath HKCU:\\Software\\x -NewName z
+powershell finds=system_settings | Set-ItemProperty y -LP HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-ItemProperty y -LP HKCU:\\Software\\x
+
+# A splat hides which argument is the item: it may bind any parameter, the
+# item or the destination among them; an array or a hashtable written out is
+# not a splat.
+powershell safe | Rename-Item src\\y z
+powershell safe | Copy-Item src\\a src\\b
+powershell safe | Copy-Item -Path src\\a -Destination src\\b @p
+powershell safe | Copy-Item @('src\\a','src\\b') dist
+powershell safe | Copy-Item @(Get-ChildItem src\\*.rs) dist
+powershell finds=delete | Rename-Item y @p
+powershell finds=delete | Rename-Item y @args
+powershell finds=delete | Rename-Item @p y
+powershell finds=overwrite | Clear-ItemProperty y @p
+powershell finds=overwrite | Rename-ItemProperty y @p
+powershell finds=overwrite | Copy-Item @p
+powershell finds=overwrite | Copy-Item @p -Force
+powershell finds=overwrite | cp @p
+powershell finds=overwrite | Copy-Item @args
+powershell finds=overwrite | Copy-Item @p src\\hosts
+powershell finds=overwrite | Copy-Item @p src\\a
+powershell finds=overwrite | Copy-Item src\\a @p
+powershell finds=overwrite | $p = @{ Path = 'src\\hosts'; Destination = 'C:\\Windows\\System32\\drivers\\etc\\hosts'; Force = $true }; Copy-Item @p
+powershell finds=overwrite | Copy-Item @p dist
+
+# A common parameter before the path does not hide it, and one after the
+# destination does not become it.
+powershell safe | Clear-Item -ErrorAction SilentlyContinue src\\x
+powershell safe | Rename-Item -ea 0 src\\x y
+powershell safe | Set-Item -ea 0 src\\x -Value 1
+powershell safe | Copy-Item src\\a src\\b -proga 0
+powershell finds=system_settings | Clear-Item -ErrorAction SilentlyContinue HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -ErrorAction SilentlyContinue HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -ErrorAction SilentlyContinue HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -ea 0 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -ea 0 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -ea 0 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -OutVariable o HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -OutVariable o HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -OutVariable o HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -OutBuffer 1 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -OutBuffer 1 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -OutBuffer 1 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -WarningAction 0 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -WarningAction 0 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -WarningAction 0 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -InformationAction 0 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -InformationAction 0 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -InformationAction 0 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -ProgressAction 0 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -ProgressAction 0 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -ProgressAction 0 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -proga 0 HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -proga 0 HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -proga 0 HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -ErrorVariable e HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -ErrorVariable e HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -ErrorVariable e HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | Clear-Item -PipelineVariable p HKCU:\\Software\\x
+powershell finds=system_settings | Rename-Item -PipelineVariable p HKCU:\\Software\\x y
+powershell finds=system_settings | Set-Item -PipelineVariable p HKCU:\\Software\\x -Value 1
+powershell finds=system_settings | New-Item -ErrorAction 0 HKCU:\\Software\\x -Force
+powershell finds=system_settings | Copy-Item -ErrorAction 0 src\\x HKCU:\\y -Force
+powershell finds=overwrite | Set-Content -ErrorAction Stop C:\\Windows\\x y
+powershell finds=delete | Remove-Item -ErrorAction SilentlyContinue C:\\Windows\\x
+powershell finds=delete | Remove-Item -ea 0 -Recurse -Force C:\\Windows\\x
+powershell finds=overwrite | Copy-Item src\\a C:\\Windows\\x -proga 0
+powershell finds=system_settings | Set-ItemProperty -proga 0 HKLM:\\x -Name y -Value 1
+powershell finds=overwrite | Set-Content -proga 0 C:\\Windows\\x y
+powershell finds=overwrite | Out-File -proga 0 C:\\Windows\\x
+powershell finds=permissions | Set-Acl -proga 0 C:\\Windows\\x $a
+
+# `Start-Process` reads its program under every alias of `-FilePath`.
+powershell safe | Start-Process -PSPath notepad
+powershell safe | Start-Process -Path notepad
+powershell finds=elevated | Start-Process -PSPath cmd -Verb RunAs
+powershell finds=elevated | Start-Process -Path cmd -Verb RunAs
+powershell finds=elevated | Start-Process -LiteralPath cmd -Verb RunAs
+powershell finds=elevated | Start-Process -psp cmd -Verb RunAs
+powershell finds=unknown | Start-Process -PSPath $p
+powershell finds=unknown | Start-Process -Path $p
+powershell finds=unknown | saps -PSPath $p
+powershell finds=unknown | start -PSPath $p
+powershell finds=run_input | Start-Process -PSPath powershell -ArgumentList '-c Remove-Item -Recurse ~'
+powershell finds=delete | Start-Process -psp cmd -ArgumentList '/c rd /s /q C:\\'
+
+# A shortened `-FilePath` is not read as the `-File` switch: `-File`, `-Fil`
+# and `-Fi` are a switch only for a listing; for every other cmdlet they
+# abbreviate `-FilePath` (or `-Filter`), which takes a value, so the path or
+# program that follows is still judged when a value parameter the guard does
+# not know comes before it.
+powershell finds=overwrite | Tee-Object -InputObject a -File ~\\.bashrc
+powershell finds=overwrite | Tee-Object -InputObject a -Fil ~\\.bashrc
+powershell finds=overwrite | Tee-Object -InputObject a -File ~\\.bashrc -Append
+powershell finds=overwrite | Tee-Object -InputObject a -Append -File ~\\.bashrc
+powershell finds=overwrite | 'x' | Tee-Object -InputObject a -File ~\\.bashrc
+powershell finds=overwrite | Tee-Object -InputObject a -File C:\\Windows\\System32\\drivers\\etc\\hosts
+powershell finds=overwrite | Out-File -InputObject a -File ~\\.bashrc
+powershell finds=overwrite | Out-File -InputObject a -Fil ~\\.bashrc
+powershell finds=overwrite | Out-File -InputObject a -Fi ~\\.bashrc
+powershell finds=overwrite | Out-File -Encoding utf8 -InputObject a -File ~\\.bashrc
+powershell finds=delete | Start-Process -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -WindowStyle Hidden -Fi cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | saps -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | start -WindowStyle Hidden -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -WindowStyle Hidden -File cmd.exe '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -RedirectStandardOutput o.txt -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=permissions | Set-Acl -Fil x ~\\.ssh $a
