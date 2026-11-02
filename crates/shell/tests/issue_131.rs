@@ -178,6 +178,56 @@ fn the_paths_of_a_cd_after_and_or_a_pipe_or_a_not_are_placed_from_where_it_start
 }
 
 #[test]
+fn a_redirect_after_a_here_document_start_on_a_cd_is_placed_from_where_it_starts() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd sub <<EOF > out.txt\nx\nEOF",
+            "cd sub <<EOF < ../x\nx\nEOF",
+        ],
+        &[
+            ("cd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF", Rule::ReadSecret),
+            (
+                "cd sub <<-EOF < ../../.ssh/id_rsa\nx\nEOF",
+                Rule::ReadSecret,
+            ),
+            (
+                "pushd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF",
+                Rule::ReadSecret,
+            ),
+            ("cd sub <<< x < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("pushd sub <<< x < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("cd sub <<EOF > ../../.bashrc\nx\nEOF", Rule::Overwrite),
+            ("cd sub <<-EOF > ../../.bashrc\nx\nEOF", Rule::Overwrite),
+            ("pushd sub <<EOF > ../../.bashrc\nx\nEOF", Rule::Overwrite),
+            ("cd sub <<< x > ../../.bashrc", Rule::Overwrite),
+            ("pushd sub <<< x > ../../.bashrc", Rule::Overwrite),
+        ],
+    );
+    let repo = "/home/me/work/repo";
+    lists(
+        Shell::Posix,
+        &[
+            (
+                "cd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF",
+                vec![
+                    exact(&format!("{repo}/../../.ssh/id_rsa")),
+                    exact(&format!("{repo}/sub")),
+                ],
+            ),
+            (
+                "pushd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF",
+                vec![
+                    exact(&format!("{repo}/../../.ssh/id_rsa")),
+                    exact(&format!("{repo}/sub")),
+                ],
+            ),
+        ],
+    );
+}
+
+#[test]
 fn a_write_on_a_cd_is_placed_from_where_the_cd_starts() {
     check(
         Shell::Posix,

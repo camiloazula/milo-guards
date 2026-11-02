@@ -769,21 +769,7 @@ impl Walker<'_> {
             // The grammar reads `$(…)` in a here-document's body but not a
             // backtick substitution, which the shell runs when the delimiter
             // is not quoted: `effect` cannot say what the line does then.
-            "heredoc_redirect" => {
-                let mut cursor = node.walk();
-                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
-                let quoted = children.iter().any(|child| {
-                    child.kind() == "heredoc_start"
-                        && unit::text(child, self.source).contains(['\'', '"', '\\'])
-                });
-                let backtick = children.iter().any(|child| {
-                    child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
-                });
-                if backtick && !quoted && self.split.kept.on {
-                    self.split.opaque();
-                }
-                self.children(node, stage, level);
-            }
+            "heredoc_redirect" => self.walk_heredoc(node, stage, level, None),
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
             "test_command" => {
@@ -1432,6 +1418,45 @@ impl Walker<'_> {
         self.split.open_from(outer);
     }
 
+    /// A here-document's redirect. The grammar holds the redirects written
+    /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
+    /// command it belongs to, they are placed like any redirect of that
+    /// command.
+    fn walk_heredoc(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        own: Option<Range<usize>>,
+    ) {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        let quoted = children.iter().any(|child| {
+            child.kind() == "heredoc_start"
+                && unit::text(child, self.source).contains(['\'', '"', '\\'])
+        });
+        let backtick = children.iter().any(|child| {
+            child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
+        });
+        if backtick && !quoted && self.split.kept.on {
+            self.split.opaque();
+        }
+        for (at, child) in children.iter().enumerate() {
+            if !child.is_named() {
+                continue;
+            }
+            match &own {
+                Some(own) if child.kind() == "file_redirect" => {
+                    self.walk_redirect(*child, stage, level, own.clone());
+                }
+                _ => {
+                    let background = children.get(at + 1).is_some_and(|next| next.kind() == "&");
+                    self.walk_in(*child, stage, level + 1, background);
+                }
+            }
+        }
+    }
+
     /// A statement with redirects: they belong to its body, whose input and
     /// output they are, and what runs in a here-document is handed to it.
     fn redirected(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -1503,6 +1528,9 @@ impl Walker<'_> {
                     // not read that way.
                     let on = if simple { own.clone() } else { placed.clone() };
                     self.walk_redirect(*child, stage, level, on);
+                } else if child.kind() == "heredoc_redirect" {
+                    let on = if simple { own.clone() } else { placed.clone() };
+                    self.walk_heredoc(*child, stage, level, Some(on));
                 } else {
                     self.walk(*child, stage, level + 1);
                 }
