@@ -210,6 +210,26 @@ impl Walker<'_> {
             return;
         }
         match node.kind() {
+            // `a && b`, `a || b`: the right side may not run, and the right
+            // side of `||` runs only when the left failed, so a `cd` on the
+            // left may not have moved the line.
+            "pipeline" => {
+                let before = self.split.moved_so_far();
+                let mut cursor = node.walk();
+                let mut at = 0;
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "pipeline_chain_tail" {
+                        if unit::text(&child, self.source) == "||" {
+                            self.split.may_not_have_moved(before);
+                        }
+                        continue;
+                    }
+                    self.split.branches += usize::from(at > 0);
+                    self.walk(child, stage, level + 1);
+                    self.split.branches -= usize::from(at > 0);
+                    at += 1;
+                }
+            }
             "pipeline_chain" => {
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
@@ -272,6 +292,13 @@ impl Walker<'_> {
                 self.children(node, stage, level);
                 self.split.repeats -= 1;
             }
+            // What a condition guards, or a `try` may stop short of, may not
+            // run.
+            "if_statement" | "switch_statement" | "try_statement" => {
+                self.split.branches += 1;
+                self.children(node, stage, level);
+                self.split.branches -= 1;
+            }
             "redirection" => {
                 self.redirect(node);
                 self.children(node, None, level);
@@ -328,7 +355,14 @@ impl Walker<'_> {
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
+            // A pipeline followed by `&` runs as a job of its own: a `cd` in
+            // it does not move the session.
+            let job = child
+                .next_named_sibling()
+                .is_some_and(|next| next.kind() == "background_operator");
+            self.split.branches += usize::from(job);
             self.walk(child, stage, level + 1);
+            self.split.branches -= usize::from(job);
         }
     }
 

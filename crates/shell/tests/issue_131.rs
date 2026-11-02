@@ -236,6 +236,96 @@ fn a_write_on_a_cmd_cd_is_placed_from_where_it_starts() {
 }
 
 #[test]
+fn a_redirect_on_a_cd_in_a_loop_or_a_function_is_also_placed_from_where_it_goes() {
+    // The body runs more than once: the next pass starts where the last
+    // one's `cd` went, so the file may be opened from either folder.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd sub > out.txt",
+            "for i in 1 2; do cd sub > out.txt; done",
+            "f() { cd sub < ../x; }; f; f",
+        ],
+        &[
+            ("for i in 1 2; do cd .. > x; done", Rule::Overwrite),
+            ("while true; do cd .. > x; done", Rule::Overwrite),
+            ("until false; do cd .. > x; done", Rule::Overwrite),
+            (
+                "for i in 1 2; do cd .. < ../.ssh/id_rsa; done",
+                Rule::ReadSecret,
+            ),
+            (
+                "while true; do cd .. < ../.ssh/id_rsa; done",
+                Rule::ReadSecret,
+            ),
+            ("f() { cd .. > x; }; f; f", Rule::Overwrite),
+            ("f() { cd .. < ../.ssh/id_rsa; }; f; f", Rule::ReadSecret),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &["Set-Location sub > out.txt"],
+        &[
+            ("foreach ($i in 1..2) { cd .. > x.txt }", Rule::Overwrite),
+            ("1..2 | ForEach-Object { cd .. > x.txt }", Rule::Overwrite),
+            ("while ($true) { Set-Location .. > x.txt }", Rule::Overwrite),
+            (
+                "for ($i=0; $i -lt 2; $i++) { Set-Location .. > x.txt }",
+                Rule::Overwrite,
+            ),
+            (
+                "function f { Set-Location .. > x.txt }; f; f",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_redirect_on_a_cd_after_a_cd_that_may_not_have_moved_is_also_placed_from_where_it_goes() {
+    // The first `cd` may not have moved the line (it failed, ran in a pipeline
+    // stage or in the background, or its branch did not run): the second one
+    // may start in the folder the line began in.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cd sub && cd .. > x",
+            "cd sub; cd .. > ../repo/x",
+            "if true; then cd sub > out.txt; fi",
+        ],
+        &[
+            ("cd sub || cd .. > ../x", Rule::Overwrite),
+            ("cd sub | cd .. > ../x", Rule::Overwrite),
+            ("cd sub & cd .. > ../x", Rule::Overwrite),
+            ("if false; then cd sub; fi; cd .. > ../x", Rule::Overwrite),
+            ("true || cd sub; cd .. > ../x", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[],
+        &[
+            ("cd sub || cd .. > ..\\x.txt", Rule::Overwrite),
+            ("if ($false) { cd sub }; cd .. > ..\\x.txt", Rule::Overwrite),
+            ("cd sub | cd .. > ..\\x.txt", Rule::Overwrite),
+        ],
+    );
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("cd sub | cd .. > ..\\x.txt", Rule::Overwrite),
+            ("cd sub || cd .. > ..\\x.txt", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
 fn the_paths_of_a_cd_with_a_read_are_placed_from_where_it_starts() {
     let repo = "/home/me/work/repo";
     lists(

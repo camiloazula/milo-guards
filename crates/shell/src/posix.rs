@@ -612,10 +612,21 @@ impl Walker<'_> {
             // The right side of `&&` and `||` may not run.
             "list" => {
                 let mut cursor = node.walk();
-                for (at, child) in node.named_children(&mut cursor).enumerate() {
+                let before = self.split.moved_so_far();
+                let mut at = 0;
+                for child in node.children(&mut cursor) {
+                    // The right side of `||` only runs when the left failed:
+                    // a `cd` on the left may not have moved the line.
+                    if child.kind() == "||" {
+                        self.split.may_not_have_moved(before);
+                    }
+                    if !child.is_named() {
+                        continue;
+                    }
                     self.split.branches += usize::from(at > 0);
                     self.walk(child, stage, level + 1);
                     self.split.branches -= usize::from(at > 0);
+                    at += 1;
                 }
             }
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;

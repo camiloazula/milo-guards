@@ -427,6 +427,20 @@ follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
 x.txt` writes two folders up, as the session ran the argument before it opened
 the file).
 
+The folder a `cd` starts in is not always certain, and the redirect is then
+placed from both places, the one the `cd` starts in and the one it goes to, so
+either can make the line risky. It is not certain when the `cd` is in a loop
+or a function body, which runs again from where the last pass left the line
+(`for i in 1 2; do cd .. > x; done` writes `<cwd>/../x` on the second pass;
+`f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
+`for` and `function`), and when an earlier `cd` may not have moved the line: it
+ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
+a branch of an `if`, `case` or `switch` or a `try`, or on the left of `||`
+(`cd sub || cd .. > ../x`, `if false; then cd sub; fi; cd .. > ../x`; the same
+in PowerShell and cmd). Only a `cd` after one of those is read this way: a
+redirect on a `cd` that follows a plain `cd` and `;` is placed from where the
+line is, as before.
+
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 
