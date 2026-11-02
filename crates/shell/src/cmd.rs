@@ -1,6 +1,8 @@
 //! Splitting a Windows command prompt line (`cmd.exe`) with
 //! tree-sitter-batch.
 
+use std::ops::Range;
+
 use tree_sitter::Node;
 
 use crate::launch;
@@ -69,7 +71,7 @@ impl Walker<'_> {
             "redirect_stmt" => {
                 let mut cursor = node.walk();
                 let mut inputs = Vec::new();
-                let mut own: Option<std::ops::Range<usize>> = None;
+                let mut own: Option<Range<usize>> = None;
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "redirection" {
                         inputs.extend(self.redirect(child));
@@ -178,7 +180,15 @@ impl Walker<'_> {
             .iter()
             .find(|child| child.kind() == "argument_list")
             .copied();
-        let mut args = list.map(|list| self.args(list)).unwrap_or_default();
+        let (mut args, spans) = list.map(|list| self.args(list)).unwrap_or_default();
+        if program.known().is_some_and(|program| {
+            matches!(
+                unit::key(program, Shell::Cmd).as_str(),
+                "cd" | "chdir" | "pushd"
+            )
+        }) {
+            self.one_folder(&mut args, &spans);
+        }
         // `start "title" program …`: cmd takes a first quoted argument as
         // the window's title, which the values here no longer show.
         if program
@@ -201,10 +211,11 @@ impl Walker<'_> {
     /// The arguments of a list. cmd splits arguments at spaces only, so the
     /// pieces the grammar gives that touch (`%USERPROFILE%` and `\x`) are
     /// one argument.
-    fn args(&self, list: Node<'_>) -> Vec<Arg> {
+    fn args(&self, list: Node<'_>) -> (Vec<Arg>, Vec<Range<usize>>) {
         let mut cursor = list.walk();
         let pieces: Vec<Node<'_>> = list.named_children(&mut cursor).collect();
         let mut args = Vec::new();
+        let mut spans = Vec::new();
         let mut group: Vec<Node<'_>> = Vec::new();
         for piece in pieces {
             if group
@@ -212,14 +223,63 @@ impl Walker<'_> {
                 .is_some_and(|last| last.end_byte() != piece.start_byte())
             {
                 args.push(self.value(&group));
+                spans.extend(span(&group));
                 group.clear();
             }
             group.push(piece);
         }
         if !group.is_empty() {
             args.push(self.value(&group));
+            spans.extend(span(&group));
         }
-        args
+        (args, spans)
+    }
+
+    /// The operands of a cmd `cd` (`chdir`, `pushd`) written with more than
+    /// one word (`cd My Folder`) as the one folder cmd reads: the words
+    /// joined as written, the spaces between them kept and none after the
+    /// last. A word known only when it runs, or a later `/d`, which cmd may
+    /// read as the switch, leaves the folder known only when it runs. The
+    /// operands are the `args` from the first that is no switch; `spans` are
+    /// where each is in the source.
+    fn one_folder(&self, args: &mut Vec<Arg>, spans: &[Range<usize>]) {
+        let first = args
+            .iter()
+            .position(|arg| !arg.known().is_some_and(unit::is_switch));
+        let Some(first) = first.filter(|first| first + 1 < args.len()) else {
+            return;
+        };
+        let (Some(start), Some(end)) = (spans.get(first), spans.last()) else {
+            return;
+        };
+        let written = self
+            .source
+            .get(start.start..end.end)
+            .unwrap_or_default()
+            .to_string();
+        let mut joined = Some(String::new());
+        for (at, arg) in args.iter().enumerate().skip(first) {
+            let gap = at
+                .checked_sub(1)
+                .filter(|before| *before >= first)
+                .and_then(|before| {
+                    self.source
+                        .get(spans.get(before)?.end..spans.get(at)?.start)
+                })
+                .unwrap_or_default();
+            joined = match (joined, arg.known()) {
+                (Some(mut text), Some(word))
+                    if !(at > first && word.eq_ignore_ascii_case("/d")) =>
+                {
+                    text.push_str(gap);
+                    text.push_str(word);
+                    Some(text)
+                }
+                _ => None,
+            };
+        }
+        args.truncate(first);
+        args.push(joined.map_or_else(|| Arg::Unknown(written), Arg::Known));
     }
 
     /// One argument made of touching pieces.
@@ -312,6 +372,11 @@ impl Walker<'_> {
             }
         }
     }
+}
+
+/// The bytes of the source that the touching `pieces` cover.
+fn span(pieces: &[Node<'_>]) -> Option<Range<usize>> {
+    Some(pieces.first()?.start_byte()..pieces.last()?.end_byte())
 }
 
 /// Where the first `&` or `|` outside double quotes and not escaped with

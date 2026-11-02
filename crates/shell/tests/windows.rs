@@ -554,8 +554,14 @@ fn a_drive_relative_path_is_from_its_drives_own_directory() {
     check(
         Shell::Cmd,
         &on_d,
-        &["del *.obj", "del D:*.obj"],
-        &[("del /q C:*", Rule::Delete), ("rd /s /q C:x", Rule::Delete)],
+        &["del *.obj"],
+        &[
+            ("del /q C:*", Rule::Delete),
+            ("rd /s /q C:x", Rule::Delete),
+            // cmd keeps a working directory for each drive and the line never
+            // shows where it is, so `D:*.obj` is unknown even on D:.
+            ("del D:*.obj", Rule::Delete),
+        ],
     );
     // On C:, `C:x` is `x` from the working directory.
     check(
