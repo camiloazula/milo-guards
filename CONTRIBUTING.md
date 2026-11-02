@@ -77,7 +77,11 @@ cargo install cargo-deny       # for just deny and just advisories
   a caller uses it.
 - A test goes in the file named by what it checks, never in one named after
   a ticket or a review; a fix adds rows to that file
-  ([GUIDELINES.md](GUIDELINES.md#tests)).
+  ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a source file's own
+  helpers goes in that file's `#[cfg(test)] mod tests`; a test of what a crate
+  does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
+  with shared helpers in `tests/common`; a test of the front door from end to
+  end in `crates/guards/tests`.
 - Nothing is released yet, and the repository is private. Callers depend on a
   git commit.
 
