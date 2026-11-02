@@ -2,9 +2,11 @@
 //! working folder at the front of its import path, so `import json` runs
 //! `./json.py` if there is one, and so does every module `json` loads in turn.
 //! An import in `-c` code is read whole only for the modules built into the
-//! interpreter binary (`sys`, `builtins`, `errno`, `itertools`, `time`), which
-//! the import system finds before it looks at the path; any other import makes
-//! the code not read whole, whatever the folder is.
+//! interpreter binary (`sys`, `errno`, `itertools`, `time`), which the import
+//! system finds before it looks at the path; any other import makes the code
+//! not read whole, whatever the folder is. `python2` (and `python`, which is
+//! Python 2 on some systems) has only `sys` and `errno` built in, and no
+//! `builtins` module at all: it is `__builtin__` there.
 
 mod common;
 
@@ -122,12 +124,11 @@ fn a_module_built_into_the_interpreter_is_still_read_whole() {
             "python3 -c 'import sys'",
             "python3 -c 'import sys; print(sys.argv)'",
             "python3 -c 'import sys; print(sys.stdin.read())'",
-            "python3 -c 'import builtins'",
             "python3 -c 'import time; print(time.time())'",
             "python3 -c 'import time; print(time.monotonic(), time.perf_counter())'",
             "python3 -c 'import errno; print(errno.ENOENT)'",
             "python3 -c 'import itertools'",
-            "python3 -c 'import sys, time, errno, builtins, itertools'",
+            "python3 -c 'import sys, time, errno, itertools'",
             "python3 -c 'import sys\nimport time\nprint(sys.argv, time.time())'",
             "cd sub && python3 -c 'import sys; print(sys.version)'",
             "cd sub && python3 -c 'import time'",
@@ -135,6 +136,14 @@ fn a_module_built_into_the_interpreter_is_still_read_whole() {
             "python3.12 -c 'import sys; print(sys.version)'",
         ],
         &[
+            // `builtins` is no built-in module in Python 2 (it is
+            // `__builtin__`), so a planted `./builtins.py` would run.
+            ("python3 -c 'import builtins'", Rule::Unknown),
+            ("python -c 'import builtins'", Rule::Unknown),
+            (
+                "python3 -c 'import sys, time, errno, builtins, itertools'",
+                Rule::Unknown,
+            ),
             // Using a built-in module beyond the few members on the list is
             // not read whole: `builtins.exec` is `exec`.
             (
@@ -187,6 +196,52 @@ fn a_module_built_into_the_interpreter_is_still_read_whole() {
             ),
             (
                 "python3 -c \"import json; open('/home/me/.zshrc', 'w').write('x')\"",
+                Rule::Overwrite,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn python_2_reads_an_import_whole_only_for_sys_and_errno() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Nothing a planted file can stand in for, in Python 2 too.
+            "python2 -c 'print(1)'",
+            "python2 -c 'import sys; print(sys.version)'",
+            "python2 -c 'import sys; print(sys.argv)'",
+            "python2 -c 'import errno; print(errno.ENOENT)'",
+            "python2 -c 'import sys, errno'",
+            "python -c 'import sys, errno'",
+        ],
+        &[
+            // Python 2 has no `builtins` module: `import builtins` searches
+            // the path, the working folder first, and a planted
+            // `./builtins.py` runs.
+            ("python2 -c 'import builtins'", Rule::Unknown),
+            ("python -c 'import builtins'", Rule::Unknown),
+            ("cd sub && python2 -c 'import builtins'", Rule::Unknown),
+            // `time` and `itertools` are shared files of `lib-dynload`, which
+            // come after the working folder on the path.
+            (
+                "python2 -c 'import time; print(time.time())'",
+                Rule::Unknown,
+            ),
+            ("python2 -c 'import time'", Rule::Unknown),
+            ("python2 -c 'import itertools'", Rule::Unknown),
+            ("python -c 'import time'", Rule::Unknown),
+            ("python -c 'import time; print(time.time())'", Rule::Unknown),
+            ("python -c 'import itertools'", Rule::Unknown),
+            ("python2 -c 'import sys, time'", Rule::Unknown),
+            ("python2 -c 'import json'", Rule::Unknown),
+            // The names stay names the code may not use unbound.
+            ("python2 -c 'print(time.time())'", Rule::Unknown),
+            ("python2 -c 'time = 1'", Rule::Unknown),
+            // What the code does is still found beside the import.
+            (
+                "python2 -c \"import time; open('/home/me/.zshrc', 'w').write('x')\"",
                 Rule::Overwrite,
             ),
         ],

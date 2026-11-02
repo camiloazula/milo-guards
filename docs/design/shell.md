@@ -1395,7 +1395,9 @@ questions are answered apart:
    path and mode (a name on the list used as a value, `x = print; x(1)`, is
    not); and no import, run-time code or environment write is outside the
    list (Python imports only the modules built into the interpreter binary,
-   plainly: `sys`, `builtins`, `errno`, `itertools` and `time`, which the
+   plainly: `sys`, `errno`, `itertools` and `time` (only `sys` and `errno`
+   for `python2` and `python`, which may be Python 2, where `time` and
+   `itertools` are files and `builtins` is `__builtin__`), which the
    import system finds before it looks in the folder the code runs in, so
    nothing there can stand in for them; any other import, `json`, `re` and
    `math` among them, is looked up in that folder first and makes the code not

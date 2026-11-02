@@ -16,12 +16,12 @@
 //! - its statements are expression statements, assignments to a plain name
 //!   and `if`/`else`, so the code runs straight through;
 //! - its calls are on a short list that only computes (`print`, `len`, `str`,
-//!   `json.dumps`, `console.log`, `Math.max`, the methods of a string or a
+//!   `time.time`, `console.log`, `Math.max`, the methods of a string or a
 //!   list), or `open` in Python, which the reader judges by its path and mode;
 //! - its imports are the modules built into the interpreter binary (`sys`,
-//!   `builtins`, `errno`, `itertools`, `time`) in Python, which no file in
-//!   the folder the code runs in can stand in for, and it has no import,
-//!   `require` or `eval` in JavaScript;
+//!   `errno`, `itertools`, `time`) in Python 3, and `sys` and `errno` alone in
+//!   Python 2, which no file in the folder the code runs in can stand in for,
+//!   and it has no import, `require` or `eval` in JavaScript;
 //! - it names nothing that is not a name it set, a call on the list or a
 //!   module on the list that it imported (JavaScript's are always there), and
 //!   sets none of those;
@@ -39,15 +39,29 @@ use super::{walk, Ancestor, Language};
 /// which looks in the folder the code runs in first (all Python code does,
 /// with or without an `import`).
 pub(super) fn reads_whole(language: Language, code: &str) -> Option<bool> {
-    if code.chars().any(|c| {
-        (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
-    }) {
+    if has_odd_character(code) {
         return None;
     }
     match language {
-        Language::Python => python(code),
+        Language::Python => python(code, false),
         Language::JavaScript => javascript(code).then_some(false),
     }
+}
+
+/// [`reads_whole`] for Python 2, which has fewer modules built in.
+pub(super) fn reads_whole_python2(code: &str) -> Option<bool> {
+    if has_odd_character(code) {
+        return None;
+    }
+    python(code, true)
+}
+
+/// Whether `code` holds a control character other than a newline or a tab,
+/// or a line separator the grammars and the interpreters read differently.
+fn has_odd_character(code: &str) -> bool {
+    code.chars().any(|c| {
+        (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
+    })
 }
 
 /// The calls of a name alone that compute and touch nothing, and `open`,
@@ -95,16 +109,33 @@ const PYTHON_CALLS: [&str; 40] = [
     "slice",
 ];
 
-/// The modules an import may name, and the names the code may not set: the
-/// ones built into every interpreter binary (the `Modules/Setup.bootstrap`
-/// of `CPython` compiles `errno`, `itertools` and `time` in, `sys` and `builtins` are the
-/// interpreter itself). The import system tries the built-in finder before it
+/// The modules an import may name in Python 3, and the names the code may not
+/// set: the ones the `Modules/Setup.bootstrap` of `CPython` compiles into the
+/// interpreter binary (`errno`, `itertools`, `time`) and `sys`, which is the
+/// interpreter itself. The import system tries the built-in finder before it
 /// looks at the import path, so no file in the folder the code runs in can
 /// stand in for one of them, and importing one reads nothing from disk. Every
 /// other module (`json`, `re`, `math`, which is a file on many builds, and the
 /// modules each of them loads in turn) is looked up in that folder first, and
-/// an import of one makes the code not read whole.
-const PYTHON_MODULES: [&str; 5] = ["builtins", "errno", "itertools", "sys", "time"];
+/// an import of one makes the code not read whole. `builtins` is not on the
+/// list: it is `__builtin__` in Python 2, so a planted `./builtins.py` would
+/// run there, and code may use none of its members anyway.
+const PYTHON_MODULES: [&str; 4] = ["errno", "itertools", "sys", "time"];
+
+/// The modules an import may name in Python 2, where only `sys` and `errno`
+/// are built into the binary: `time` and `itertools` are shared files of
+/// `lib-dynload`, which the import path reaches after the folder the code
+/// runs in.
+const PYTHON2_MODULES: [&str; 2] = ["errno", "sys"];
+
+/// The modules an import may name, for Python 2 or Python 3.
+fn python_modules(python2: bool) -> &'static [&'static str] {
+    if python2 {
+        &PYTHON2_MODULES
+    } else {
+        &PYTHON_MODULES
+    }
+}
 
 /// Whether `module.name` is a member the code may use, as a call or not.
 fn python_member(module: &str, name: &str, call: bool) -> bool {
@@ -117,8 +148,8 @@ fn python_member(module: &str, name: &str, call: bool) -> bool {
                 "time" | "time_ns" | "monotonic" | "monotonic_ns" | "perf_counter"
             )
         }
-        // `builtins.exec` is `exec`, and `itertools` builds lazy iterators:
-        // importing either is read whole and using either is not.
+        // `itertools` builds lazy iterators: importing it is read whole and
+        // using it is not.
         _ => false,
     }
 }
@@ -148,7 +179,7 @@ fn has_statement(root: Node<'_>) -> bool {
 }
 
 /// Python code that is read whole, and whether it imports a module.
-fn python(code: &str) -> Option<bool> {
+fn python(code: &str, python2: bool) -> Option<bool> {
     let mut parser = tree_sitter::Parser::new();
     let tree = parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
@@ -197,7 +228,7 @@ fn python(code: &str) -> Option<bool> {
     }
     let mut whole = true;
     walk(root, |node, field, above| {
-        whole = python_node(node, field, above, code, &assigned, &imported);
+        whole = python_node(node, field, above, code, &assigned, &imported, python2);
         whole
     });
     // Python loads modules from the folder it runs in without an import
@@ -214,11 +245,13 @@ fn python_node(
     code: &str,
     assigned: &HashSet<String>,
     imported: &HashSet<String>,
+    python2: bool,
 ) -> bool {
     // A token (`(`, `,`, an operator) is the business of the node it is in.
     if !node.is_named() {
         return true;
     }
+    let modules = python_modules(python2);
     let parent = above.last().map(|ancestor| ancestor.node.kind());
     match node.kind() {
         "module"
@@ -286,9 +319,9 @@ fn python_node(
             .is_some_and(|left| left.kind() == "identifier"),
         "import_statement" => {
             let mut cursor = node.walk();
-            let all = node.named_children(&mut cursor).all(|name| {
-                name.kind() == "dotted_name" && PYTHON_MODULES.contains(&text(name, code))
-            });
+            let all = node
+                .named_children(&mut cursor)
+                .all(|name| name.kind() == "dotted_name" && modules.contains(&text(name, code)));
             all
         }
         "dotted_name" => parent == Some("import_statement"),
@@ -321,7 +354,7 @@ fn python_node(
             if name.starts_with('_') {
                 return false;
             }
-            if object.kind() == "identifier" && PYTHON_MODULES.contains(&text(object, code)) {
+            if object.kind() == "identifier" && modules.contains(&text(object, code)) {
                 return python_member(text(object, code), name, call);
             }
             true

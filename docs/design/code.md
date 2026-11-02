@@ -171,9 +171,15 @@ understood only when all of these hold:
      set, of a call (`f()()`), or with a spread (`print(*args)`).
 4. **No import, run-time code or environment write is outside the list.**
    Python imports only the modules built into the interpreter binary,
-   plainly: `sys`, `builtins`, `errno`, `itertools` and `time` (the ones
-   CPython's `Modules/Setup.bootstrap` compiles in, and `sys` and `builtins`,
-   which are the interpreter itself). The import system tries its built-in
+   plainly: `sys`, `errno`, `itertools` and `time` (the ones CPython's
+   `Modules/Setup.bootstrap` compiles in, and `sys`, which is the interpreter
+   itself). `builtins` is not one of them: it is `__builtin__` in Python 2,
+   where `import builtins` searches the path, and code may use none of its
+   members anyway. Python 2 (`understand_python2`) has only `sys` and `errno`
+   built in; `time` and `itertools` are shared files of its `lib-dynload`,
+   which the path reaches after the working folder, so a caller that may be
+   running Python 2 (`python2`, and `python`, which is Python 2 on some
+   systems) asks for that one. The import system tries its built-in
    finder before it looks at the import path, so no file in the folder the
    code runs in can stand in for one of them, and importing one reads
    nothing from disk. Every other module is looked up in that folder first
@@ -184,8 +190,7 @@ understood only when all of these hold:
    There is no table of what each module loads. No alias (`import sys as s`),
    no `from … import`. The members used are few: `sys.stdin`, `sys.argv` and
    `sys.version`; `time.time` and the four clocks above; `errno.<NAME>`; and
-   none of `builtins` and `itertools` (`builtins.exec` is `exec`), so
-   importing those two is understood and using them is not. JavaScript has no
+   none of `itertools`, so importing it is understood and using it is not. JavaScript has no
    `import`, `require` or `import()`.
    No `eval`, `exec`, `compile`, `__import__` or `Function`; no write to
    `os.environ`, `process.env` or a member of a module (`console.log = 1`); no

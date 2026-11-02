@@ -3,7 +3,7 @@
 //! way out of it.
 
 use milo_guards_code::Language::{self, JavaScript, Python};
-use milo_guards_code::{understand, Understanding};
+use milo_guards_code::{understand, understand_python2, Understanding};
 
 const YES: Understanding = Understanding::Understood { imports: false };
 const YES_IMPORTING: Understanding = Understanding::Understood { imports: true };
@@ -45,7 +45,7 @@ fn python_that_computes_is_understood() {
             ("import sys\nprint(sys.stdin.read())", YES_IMPORTING),
             ("import time\nprint(time.time())", YES_IMPORTING),
             ("import errno\nprint(errno.ENOENT)", YES_IMPORTING),
-            ("import itertools, builtins", YES_IMPORTING),
+            ("import itertools, errno", YES_IMPORTING),
             (
                 "import sys, time, errno\nprint(sys.argv, time.monotonic())",
                 YES_IMPORTING,
@@ -196,6 +196,37 @@ fn javascript_outside_the_subset_is_not_understood() {
             ("console.log(1)\u{2028}console.log(2)", NO),
         ],
     );
+}
+
+#[test]
+fn python_2_imports_only_sys_and_errno_whole() {
+    let rows: [(&str, Understanding); 14] = [
+        ("print(1+1)", YES_IMPORTING),
+        ("import sys\nprint(sys.argv)", YES_IMPORTING),
+        ("import sys; print(sys.version)", YES_IMPORTING),
+        ("import errno\nprint(errno.ENOENT)", YES_IMPORTING),
+        ("import sys, errno", YES_IMPORTING),
+        // Not built into the Python 2 binary: looked up in the working
+        // folder first.
+        ("import builtins", NO),
+        ("import time", NO),
+        ("import time\nprint(time.time())", NO),
+        ("import itertools", NO),
+        ("import sys, time", NO),
+        ("import json", NO),
+        ("print(time.time())", NO),
+        ("time = 1", NO),
+        ("import sys\nsys.exit(0)", NO),
+    ];
+    let wrong: Vec<String> = rows
+        .iter()
+        .filter_map(|(code, expected)| {
+            let found = understand_python2(code);
+            (found != *expected)
+                .then(|| format!("{code:?}: expected {expected:?}, found {found:?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
 
 #[test]
