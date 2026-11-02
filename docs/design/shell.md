@@ -1881,9 +1881,19 @@ Some risks only show when units are read together.
   takes a value or not may have taken the first. A write by a pattern
   (`Set-Content *.ps1 x`, `tee *.sh`) writes every file it matches: a run of a
   file in the same folder whose name matches is `unknown`, one in another
-  folder is not. A file named by something only known when it runs
-  (`Set-Content $f x`) is `overwrite` already, so the line is not safe
-  whatever it runs.
+  folder is not. The work for each run is bounded: the guard reads up to
+  eight distinct patterns, each with a file name part of up to 64 bytes (the
+  same pattern again adds nothing). A line that writes by more, or by a longer
+  one, writes any file, so every script it runs is `unknown`; so is the run
+  of a name longer than 255 bytes when the line writes by any pattern. A file
+  named by something only known when it runs is a write the guard cannot
+  place: a write cmdlet's path or name that is one (`Set-Content $f x`,
+  `Set-Content a.txt,$x y`, `New-Item -Path a.txt,$x`), first or later in a
+  list, writes any file, so every script the line runs is `unknown`. The
+  word after the first path is not told from the value, so `Set-Content
+  notes.txt $x; .\i.ps1` is `unknown` too; a value given by `-Value` is not a
+  path. A `New-Item` of more than 64 paths and names together is read the
+  same way.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
