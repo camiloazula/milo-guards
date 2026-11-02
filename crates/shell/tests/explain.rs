@@ -1,6 +1,9 @@
-//! `explain`: the line as the rules saw it. Every row of the other tables
-//! goes through it too (see `common::disagreements`), so it can never
-//! disagree with `classify`; here is what it shows.
+//! `explain`: the line as the rules saw it, unit by unit (program, wrappers,
+//! depth, shell, arguments as written and resolved, folder, wildcards,
+//! findings), with its redirects and the findings of the line itself, and
+//! the tree it prints. Every row of the other tables goes through it too
+//! (see `common::disagreements`), so it can never disagree with `classify`;
+//! here is what it shows.
 
 mod common;
 
@@ -26,7 +29,7 @@ fn rules(findings: &[milo_guards_shell::Finding]) -> Vec<Rule> {
 }
 
 #[test]
-fn the_line_is_split_into_units_with_wrappers_and_depth() {
+fn the_line_is_split_into_units_that_keep_their_wrappers_depth_and_findings() {
     let explanation = explain(
         "sudo rm -rf ~ && bash -c 'git reset --hard'",
         Shell::Posix,
@@ -42,15 +45,7 @@ fn the_line_is_split_into_units_with_wrappers_and_depth() {
     );
     assert_eq!(explanation.units[1].key.as_deref(), Some("bash"));
     assert!(explanation.units.iter().all(|u| u.shell == Shell::Posix));
-}
-
-#[test]
-fn each_unit_keeps_the_findings_it_produced() {
-    let explanation = explain(
-        "sudo rm -rf ~ && bash -c 'git reset --hard'",
-        Shell::Posix,
-        &posix(),
-    );
+    // Each unit keeps the findings it produced.
     assert_eq!(
         rules(&explanation.units[0].findings),
         [Rule::Elevated, Rule::Delete]
@@ -301,7 +296,7 @@ fn classify_and_explain_agree() {
 }
 
 #[test]
-fn the_tree_for_the_issue_line() {
+fn the_tree_shows_each_unit_with_its_shell_wrappers_arguments_and_findings() {
     let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
     let tree = explain(
         "sudo rm -rf ~ && bash -c 'git reset --hard'",

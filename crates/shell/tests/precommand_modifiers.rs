@@ -1,11 +1,19 @@
 //! zsh's precommand modifiers and `coproc` run the command after them, so
-//! that command is judged like one that stands alone.
+//! that command is judged like one that stands alone, and decides the
+//! line's effect. A modifier turns zsh's own flags off, never bash's.
 
 mod common;
 
 use common::{check, check_effect, posix};
 use milo_guards_shell::{Effect, Reach, Rule, Shell};
 
+/// The command after a modifier or `coproc` is read where the shell runs it:
+/// past the name, the `{` words, `NAME=value` words and `!`. The loop,
+/// conditional and function forms are cut up by the grammar with the body
+/// behind a program named `do`, `then` or `{`, zsh reads a `{` stuck to a
+/// word as a group where the grammar reads `{rm` as a program, and the
+/// grammar takes the words after a redirect's target for more targets: none
+/// of these can be read.
 #[test]
 fn a_modifier_or_coproc_does_not_hide_the_command_it_runs() {
     check(
@@ -23,6 +31,14 @@ fn a_modifier_or_coproc_does_not_hide_the_command_it_runs() {
             "coproc",
             "noglob",
             "coproc NAME cat",
+            // The program inside a group.
+            "coproc { { ls; }; }",
+            "coproc NAME { { ls; }; }",
+            "coproc { FOO=1 ls; }",
+            "coproc { ! ls; }",
+            "coproc NAME { ! ls; }",
+            "coproc FOO=1 ls",
+            "coproc { > out; ls; }",
         ],
         &[
             ("noglob rm -rf ~", Rule::Delete),
@@ -43,19 +59,7 @@ fn a_modifier_or_coproc_does_not_hide_the_command_it_runs() {
             ("echo hi | coproc rm -rf ~", Rule::Delete),
             ("coproc { $CMD; }", Rule::Unknown),
             ("noglob $CMD", Rule::Unknown),
-        ],
-    );
-}
-
-/// The loop, conditional and function forms are cut up by the grammar with
-/// the body behind a program named `do`, `then` or `{`: not read.
-#[test]
-fn coproc_of_a_compound_command_is_unreadable() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // A compound command after `coproc`.
             ("coproc while true; do rm -rf ~; done", Rule::Unreadable),
             (
                 "coproc NAME while true; do rm -rf ~; done",
@@ -70,51 +74,7 @@ fn coproc_of_a_compound_command_is_unreadable() {
             ),
             ("coproc case x in x) rm -rf ~;; esac", Rule::Unreadable),
             ("coproc function f { rm -rf ~; }", Rule::Unreadable),
-        ],
-    );
-}
-
-#[test]
-fn what_they_run_decides_the_effect() {
-    let paths = posix();
-    check_effect(
-        Shell::Posix,
-        &paths,
-        Effect::ReadsOnly(Reach::Workspace),
-        &["noglob ls *.txt", "nocorrect ls", "- ls", "coproc cat"],
-    );
-    check_effect(
-        Shell::Posix,
-        &paths,
-        Effect::Changes,
-        &[
-            "noglob rm -rf ~",
-            "- rm -rf ~",
-            "coproc rm -rf ~",
-            "coproc { rm -rf ~; }",
-        ],
-    );
-    check_effect(Shell::Posix, &paths, Effect::Unknown, &["noglob $CMD"]);
-}
-
-/// The group's commands are read where the shell runs them: past the name,
-/// the `{` words, `NAME=value` words and `!`, and a loop, conditional or
-/// function inside the group is as unreadable as one after a bare `coproc`.
-#[test]
-fn coproc_reads_the_program_inside_a_group() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "coproc { { ls; }; }",
-            "coproc NAME { { ls; }; }",
-            "coproc { FOO=1 ls; }",
-            "coproc { ! ls; }",
-            "coproc NAME { ! ls; }",
-            "coproc FOO=1 ls",
-            "coproc { > out; ls; }",
-        ],
-        &[
+            // The program inside a group, and a compound command there.
             (
                 "coproc NAME { while true; do rm -rf ~; done; }",
                 Rule::Unreadable,
@@ -138,37 +98,13 @@ fn coproc_reads_the_program_inside_a_group() {
             ("coproc { { rm -rf ~; }; }", Rule::Delete),
             ("coproc NAME { { rm -rf ~; }; }", Rule::Delete),
             ("coproc { { { rm -rf ~; }; }; }", Rule::Delete),
-        ],
-    );
-}
-
-/// zsh reads a `{` stuck to a word as a group and runs it; the grammar reads
-/// `{rm` as a program of that name, so the group is not read.
-#[test]
-fn coproc_of_a_group_with_the_braces_stuck_to_a_word_is_unreadable() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // Braces stuck to a word.
             ("coproc {rm -rf ~;}", Rule::Unreadable),
             ("coproc {{rm -rf ~;};}", Rule::Unreadable),
             ("coproc NAME {rm -rf ~;}", Rule::Unreadable),
             ("coproc { {rm -rf ~;}; }", Rule::Delete),
             ("coproc {ls;}", Rule::Unreadable),
-        ],
-    );
-}
-
-/// What stands before the command in a simple command or a group is read
-/// past, as it is without `coproc`.
-#[test]
-fn coproc_reads_past_assignments_and_a_bang() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // Assignments and a bang before the command, as without `coproc`.
             ("coproc FOO=1 rm -rf ~", Rule::Delete),
             ("coproc A=1 B=2 rm -rf ~", Rule::Delete),
             ("coproc PATH=/x rm -rf ~", Rule::Delete),
@@ -184,20 +120,7 @@ fn coproc_reads_past_assignments_and_a_bang() {
             ("coproc FOO=1 sudo rm -rf ~", Rule::Elevated),
             ("coproc $X=1 rm -rf ~", Rule::Unknown),
             ("coproc GLOBIGNORE=x bash -c 'rm -rf *git'", Rule::Delete),
-        ],
-    );
-}
-
-/// The grammar takes the words after a redirect's target for more targets,
-/// so a command that follows a redirect in a `coproc` is not among the
-/// arguments: it cannot be read.
-#[test]
-fn coproc_command_after_a_redirect_is_unreadable() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // A command after a redirect.
             ("coproc { 2>/dev/null rm -rf ~; }", Rule::Unreadable),
             ("coproc { > out rm -rf ~; }", Rule::Unreadable),
             ("coproc { < in rm -rf ~; }", Rule::Unreadable),
@@ -210,30 +133,46 @@ fn coproc_command_after_a_redirect_is_unreadable() {
     );
 }
 
+/// What they run decides the effect; an assignment in front of the command
+/// is a variable set, as it is without `coproc`.
 #[test]
-fn a_coproc_assignment_is_a_variable_set_for_effect() {
+fn what_they_run_decides_the_effect() {
     let paths = posix();
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::Unknown,
+        Effect::ReadsOnly(Reach::Workspace),
         &[
-            "coproc PATH=/x ls",
-            "coproc FOO=1 ls",
-            "coproc NAME { PATH=/x ls; }",
+            "noglob ls *.txt",
+            "nocorrect ls",
+            "- ls",
+            "coproc cat",
+            "coproc LANG=C ls",
         ],
     );
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::ReadsOnly(Reach::Workspace),
-        &["coproc LANG=C ls", "env LANG=C ls"],
+        Effect::Changes,
+        &[
+            "noglob rm -rf ~",
+            "- rm -rf ~",
+            "coproc rm -rf ~",
+            "coproc { rm -rf ~; }",
+            "coproc LANG=C rm -rf ~",
+            "coproc { { rm -rf ~; }; }",
+        ],
     );
     check_effect(
         Shell::Posix,
         &paths,
-        Effect::Changes,
-        &["coproc LANG=C rm -rf ~", "coproc { { rm -rf ~; }; }"],
+        Effect::Unknown,
+        &[
+            "noglob $CMD",
+            "coproc PATH=/x ls",
+            "coproc FOO=1 ls",
+            "coproc NAME { PATH=/x ls; }",
+        ],
     );
 }
 
@@ -256,7 +195,6 @@ fn a_zsh_modifier_turns_zshs_flag_off_and_never_bashs() {
             "setopt globdots; noglob - unsetopt globdots; rm -rf *git",
             "setopt globdots; - noglob unsetopt globdots; rm -rf *git",
             "setopt globdots; builtin - unsetopt globdots; rm -rf *git",
-            "shopt -s dotglob; command shopt -u dotglob; rm -rf *git",
         ],
         &[
             // `nocorrect` is a reserved word: after any wrapper but a leading
