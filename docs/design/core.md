@@ -580,6 +580,15 @@ path made absolute, with the working directory and `~` applied.
   plain path it names. It is `None` for what is not one place on a disk: a
   device, or a path on another drive's own working directory. A wildcard is not
   read; the caller says the folder a pattern expands in.
+- `opened(path, flavour)` is the absolute path the system opens when it is
+  handed the spelling: `absolute` with every `..` kept where it was written
+  (`~` expanded, `.` dropped, the working directory put in front of a relative
+  path). The system applies a `..` after it has followed the link before it, so
+  `link/../x` is the parent of what `link` points to, not the folder `link` is
+  in; `absolute` applies it by spelling, which is how the guard judges, and
+  `opened` leaves it to a caller that can look at the disk. A `..` with nothing
+  above it (`/..`) is dropped, as the system does. It is `None` in the same
+  cases as `absolute`.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 
