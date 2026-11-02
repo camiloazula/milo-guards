@@ -4,6 +4,7 @@
 //! a setting, an application's own preferences, a user's own services) is
 //! left alone.
 
+use super::processes::{is_system_label, is_system_unit};
 use super::Checker;
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, Arg, Unit};
@@ -606,6 +607,16 @@ impl Checker<'_> {
                 "stop" | "kill" => {
                     let verb = if sub == "kill" { "kills" } else { "stops" };
                     for unit in words.iter().skip(1) {
+                        // The unit that runs a process the system needs
+                        // (`systemd-logind`) ends the session it serves.
+                        if unit.known().is_some_and(is_system_unit) {
+                            self.add(
+                                Rule::StopSystem,
+                                format!("{verb} a process the system needs"),
+                                Some(unit),
+                            );
+                            continue;
+                        }
                         let reason = match unit.known() {
                             Some(name) if is_pattern(name) && !protects(name) => {
                                 format!("{verb} services that may protect the system")
@@ -632,6 +643,13 @@ impl Checker<'_> {
         let stops = action
             .known()
             .is_none_or(|action| action.eq_ignore_ascii_case("stop"));
+        if stops && name.known().is_some_and(is_system_unit) {
+            self.add(
+                Rule::StopSystem,
+                "stops a process the system needs",
+                Some(name),
+            );
+        }
         if stops && name.known().is_none_or(protects) {
             self.add(
                 Rule::SystemSettings,
@@ -659,6 +677,25 @@ impl Checker<'_> {
             }
         };
         let rest = &words[1..];
+        // `kill signal target` and `stop label` end the process of a
+        // service: one the system needs is `stop_system`, and so is one
+        // only known when it runs. The target is the last operand.
+        if matches!(sub.as_str(), "kill" | "stop") {
+            match rest.last().map(|target| (target, target.known())) {
+                Some((target, Some(label))) if is_system_label(label) => self.add(
+                    Rule::StopSystem,
+                    "stops a process the system needs",
+                    Some(target),
+                ),
+                Some((target, None)) => self.add(
+                    Rule::StopSystem,
+                    "stops a service only known when it runs",
+                    Some(target),
+                ),
+                _ => {}
+            }
+            return;
+        }
         let paths: &[&Arg] = match sub.as_str() {
             // `-D domain` unloads every plist in that search path.
             "unload" => {
