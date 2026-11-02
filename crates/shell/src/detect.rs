@@ -88,6 +88,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         found: split.findings.clone(),
         written: HashSet::new(),
         unplaced_write: false,
+        patterns: Vec::new(),
         downloaders: HashMap::new(),
         producers: HashMap::new(),
         stages: HashMap::new(),
@@ -180,6 +181,27 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     }
 }
 
+/// A pattern the line writes by (`Set-Content *.ps1 x`): every file it
+/// matches is written.
+struct WrittenPattern {
+    /// The key of the folder it is in; `None` when that cannot be placed.
+    folder: Option<String>,
+    /// The file name part, which holds the wildcard.
+    name: String,
+    /// The shell that wrote it, which says how it is read.
+    shell: Shell,
+}
+
+/// `path` as the folder it is in (the working folder, `.`, when it has no
+/// separator) and its file name.
+fn split_name(path: &str, shell: Shell) -> (String, &str) {
+    match path.rsplit_once(separators(shell)) {
+        Some(("", name)) => ("/".to_string(), name),
+        Some((folder, name)) => (folder.to_string(), name),
+        None => (".".to_string(), path),
+    }
+}
+
 struct Checker<'a> {
     split: &'a Split,
     resolver: &'a Resolver,
@@ -191,6 +213,9 @@ struct Checker<'a> {
     /// when it runs, or after a `cd` to such a place): it has no key, but
     /// may be a script the line runs.
     unplaced_write: bool,
+    /// The file name part of each pattern the line writes by (`*.ps1`), with
+    /// the shell that wrote it: every file it matches is written.
+    patterns: Vec<WrittenPattern>,
     /// For each pipeline, the first stage that downloads.
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
@@ -243,7 +268,37 @@ impl Checker<'_> {
             self.written.insert(key);
         } else if self.resolver.unplaced(dir, target, shell) {
             self.unplaced_write = true;
+        } else if let Arg::Known(text) = target {
+            // A pattern writes every file it matches: a script of that
+            // name is one the line may write.
+            if glob::has_wildcard(text) {
+                let (folder, name) = split_name(text, shell);
+                // A folder that cannot be placed (a pattern in it too) is
+                // any folder.
+                let folder = self.resolver.file_key(dir, &Arg::Known(folder), shell);
+                self.patterns.push(WrittenPattern {
+                    folder,
+                    name: name.to_string(),
+                    shell,
+                });
+            }
         }
+    }
+
+    /// Whether the line writes, by a pattern, the file `script` names from
+    /// `dir`: its name matches the pattern's, in the pattern's folder.
+    fn pattern_written(&self, dir: Option<&Arg>, script: &str, shell: Shell) -> bool {
+        let (folder, name) = split_name(script, shell);
+        let folder = self.resolver.file_key(dir, &Arg::Known(folder), shell);
+        self.patterns.iter().any(|pattern| {
+            let flavour = if pattern.shell == Shell::Posix {
+                Flavour::Posix
+            } else {
+                Flavour::Windows
+            };
+            (pattern.folder.is_none() || folder.is_none() || pattern.folder == folder)
+                && glob::matches(&pattern.name, name, flavour, true)
+        })
     }
 
     fn add(&mut self, rule: Rule, reason: impl Into<String>, target: Option<&Arg>) {
@@ -778,9 +833,11 @@ impl Checker<'_> {
 
     /// Whether the line writes the file `name` names from where `unit` runs.
     fn names_written(&self, unit: &Unit, name: &str) -> bool {
-        self.resolver
-            .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
-            .is_some_and(|wanted| self.written.contains(&wanted))
+        self.pattern_written(unit.dir.as_ref(), name, unit.shell)
+            || self
+                .resolver
+                .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
+                .is_some_and(|wanted| self.written.contains(&wanted))
     }
 
     fn add_run_written(&mut self, script: &Arg) {
@@ -836,6 +893,13 @@ impl Checker<'_> {
                 "runs a script only known when it runs",
                 Some(script),
             );
+            return;
+        }
+        if script
+            .known()
+            .is_some_and(|text| self.pattern_written(dir, text, unit.shell))
+        {
+            self.add_run_written(script);
             return;
         }
         let Some(wanted) = self.resolver.file_key(dir, script, unit.shell) else {
@@ -1218,22 +1282,28 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
         }
         "copy-item" | "move-item" => {
             let params = Params::read(args);
-            let sources = params.values(&["path", "literalpath"]);
-            params
+            let mut sources = params.values(&["path", "literalpath"]);
+            let mut positional = params.positional.iter().copied();
+            // `Copy-Item a b` is `-Path a -Destination b`: a positional
+            // is the source first, then the destination, each only where
+            // no parameter names it.
+            if sources.is_empty() {
+                sources.extend(positional.next());
+            }
+            let destination = params
                 .values(&["destination"])
                 .first()
-                .map_or_else(Vec::new, |destination| {
-                    into_folder(&or_here(destination), &sources)
-                })
+                .copied()
+                .or_else(|| positional.next());
+            destination.map_or_else(Vec::new, |destination| {
+                into_folder(&or_here(destination), &sources)
+            })
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
         }
-        "set-content" | "add-content" | "out-file" | "tee-object" => Params::read(args)
-            .values(&["path", "literalpath", "filepath"])
-            .into_iter()
-            .cloned()
-            .collect(),
+        "set-content" | "add-content" | "out-file" | "tee-object" => content_files(args),
+        "new-item" => new_item_files(args),
         "dd" => args
             .iter()
             .filter_map(|arg| arg.known()?.strip_prefix("of="))
@@ -1241,6 +1311,72 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The files `Set-Content`, `Add-Content`, `Out-File` and `Tee-Object`
+/// write: the one `-Path`, `-LiteralPath` or `-FilePath` names, or, with none
+/// given, the first operand (`Set-Content i.ps1 x`). The parser hands a list
+/// of paths (`a.ps1,b.ps1`) over as separate words, which cannot be told from
+/// a file and its value (`a.txt x.ps1`): so any other operand the guard can
+/// read is a file too, and so is any operand when a parameter the guard
+/// cannot tell takes a value or not may have taken the first.
+fn content_files(args: &[Arg]) -> Vec<Arg> {
+    let params = Params::read(args);
+    let mut files: Vec<Arg> = params
+        .values(&["path", "literalpath", "filepath"])
+        .into_iter()
+        .cloned()
+        .collect();
+    let unclear = params.unclear();
+    for (at, operand) in params.positional.iter().enumerate() {
+        let first = at == 0 && files.is_empty();
+        if first || unclear || operand.known().is_some() {
+            files.push((*operand).clone());
+        }
+    }
+    files
+}
+
+/// The files `New-Item` creates: its path (named, or the first operand), or,
+/// with `-Name`, each name inside that folder (the working folder when no
+/// path is given). Any other operand the guard can read is one more path, or
+/// one more name (a list is handed over as separate words). A part only known
+/// when it runs is kept as it is, so the file cannot be placed and any run of
+/// one is judged for it.
+fn new_item_files(args: &[Arg]) -> Vec<Arg> {
+    let params = Params::read(args);
+    let mut folders = params.values(&["path", "literalpath"]);
+    let mut names = params.values(&["name"]);
+    let mut operands = params.positional.iter().copied();
+    if names.is_empty() {
+        if folders.is_empty() {
+            folders.extend(operands.next());
+        }
+        folders.extend(operands.filter(|operand| operand.known().is_some()));
+        return folders.into_iter().cloned().collect();
+    }
+    // With `-Name` the first operand is the folder, or the first of a list
+    // of names: it is read as both when no `-Path` says which.
+    let here = Arg::Known(".".to_string());
+    if folders.is_empty() {
+        folders.push(&here);
+        folders.extend(operands.clone().next());
+    }
+    names.extend(operands.filter(|operand| operand.known().is_some()));
+    let mut files = Vec::new();
+    for folder in folders {
+        for name in &names {
+            match (folder, name) {
+                (Arg::Known(folder), Arg::Known(name)) => {
+                    let folder = folder.trim_end_matches(['/', '\\']);
+                    files.push(Arg::Known(format!("{folder}/{name}")));
+                }
+                (Arg::Known(_), unknown) => files.push((*unknown).clone()),
+                (unknown, _) => files.push(unknown.clone()),
+            }
+        }
+    }
+    files
 }
 
 /// A `$null` destination of `Copy-Item` or `Move-Item` is no destination, so

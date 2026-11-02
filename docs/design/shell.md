@@ -1868,6 +1868,22 @@ Some risks only show when units are read together.
   the line gives, so it counts as only known when it runs: `unknown` once the
   line writes any file. `pwsh -File i.ps1` from a POSIX shell is read the same
   way.
+  A PowerShell write names its file by position as well as by `-Path`,
+  `-LiteralPath` or `-FilePath`: `Set-Content i.ps1 x`, `Add-Content`,
+  `'x' | Out-File i.ps1`, `Tee-Object`, `New-Item i.ps1 -Value x` (with
+  `-Name`, the name inside the folder), and the aliases, and the destination
+  of `Copy-Item a b` and `Move-Item a b`. Each is a write of that file, so
+  `Set-Content i.ps1 x; .\i.ps1` is `unknown` as the `-Path` form is. The
+  parser hands a list of paths (`a.ps1,b.ps1`) over as separate words, which
+  cannot be told from a file and its value, so every other operand the guard
+  can read counts as a file too (`Set-Content notes.txt x.ps1; .\x.ps1` is
+  `unknown`), and so does every operand when a parameter the guard cannot tell
+  takes a value or not may have taken the first. A write by a pattern
+  (`Set-Content *.ps1 x`, `tee *.sh`) writes every file it matches: a run of a
+  file in the same folder whose name matches is `unknown`, one in another
+  folder is not. A file named by something only known when it runs
+  (`Set-Content $f x`) is `overwrite` already, so the line is not safe
+  whatever it runs.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
