@@ -95,6 +95,11 @@ pub(crate) struct Unit {
     pub(crate) wrappers: Vec<String>,
     pub(crate) stage: Option<Stage>,
     pub(crate) reads: Reads,
+    /// What a here-document or here-string hands the program as its input:
+    /// the text, when it is plain text, and an unknown when the input is
+    /// read from a file or the text is only known when it runs. `None` for
+    /// a program whose input is not redirected.
+    pub(crate) stdin: Option<Arg>,
     /// Where an earlier `cd` in the line moved to, when one did: relative
     /// paths resolve from there.
     pub(crate) dir: Option<Arg>,
@@ -196,6 +201,7 @@ impl Unit {
             wrappers: Vec::new(),
             stage,
             reads: Reads::Nothing,
+            stdin: None,
             dir: None,
             hidden: false,
             startup: Rc::default(),
@@ -373,6 +379,11 @@ pub(crate) struct Split {
     /// What splitting itself found: what could not be read, scripts known
     /// only when they run.
     pub(crate) findings: Vec<Finding>,
+    /// For a unit that reads a file the code names without the guard knowing
+    /// the whole path (`open(n + '/x')`), by its place in `units`: the
+    /// finding that stands unless the unit finds a key in the part of the
+    /// path that is known, as `read_secret` then says it more exactly.
+    pub(crate) loose: HashMap<usize, Finding>,
     pipelines: usize,
     /// The stage of an outer pipeline that a pipeline runs in, when it runs
     /// in a stage of another: `(a | b) | c` runs `a | b` in the first stage.
@@ -418,6 +429,35 @@ pub(crate) struct Split {
     /// starts, and not to itself: `GLOBIGNORE=x bash -c '…'`. The shell that
     /// expands the command's own wildcards has run them before it applies.
     scoped_dotglob: bool,
+    /// The values `NODE_OPTIONS` is given for the program being added: a
+    /// prefix assignment, `env NODE_OPTIONS=…`, an `export` earlier in the
+    /// line. Node reads them as its own options, and a script it starts gets
+    /// them too.
+    pub(crate) node_options: Vec<Arg>,
+    /// The values `PYTHONPATH` is given for the program being added, noted
+    /// as `node_options` is. Python puts each folder in it where an import
+    /// looks, and runs its `sitecustomize` before any code it is given.
+    pub(crate) python_path: Vec<Arg>,
+    /// How many assignments and wrappers hand the program being added an
+    /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
+    /// interpreter loads what that environment tells it to, which the code
+    /// does not show.
+    pub(crate) environment: usize,
+    /// Whether an earlier part of the line assigned, read into or unset a
+    /// variable on a line of its own (`NODE_OPTIONS=x; node -e …`): if the
+    /// variable is already exported, which `PATH` and `HOME` always are, the
+    /// assignment changes what the interpreter is given.
+    pub(crate) assigned_earlier: bool,
+    /// What inline code the guard found nothing in comes to when it is not
+    /// read whole (see [`crate::inline`]): `unknown`, said once, and only
+    /// when the line has no finding of its own, which already asks.
+    pub(crate) unread: Vec<Finding>,
+    /// The inline Python read whole that imports a module, with the folder
+    /// it runs in: Python puts that folder first where an import looks, so
+    /// outside the workspace (or where it is not known) a `json.py` there is
+    /// what `import json` loads. Judged with the directories, where the
+    /// line is judged.
+    pub(crate) importing: Vec<Importing>,
     /// Whether the command being added has a word with zsh's `(D)` glob
     /// qualifier, which lets that command's wildcards match a leading dot
     /// without any option on: `rm -rf *git(D)`. It belongs to the command
@@ -537,6 +577,19 @@ pub(crate) struct Read {
     pub(crate) hidden: bool,
 }
 
+/// Inline Python read whole that imports a module (see
+/// [`Split::importing`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Importing {
+    /// The folder the line had moved to when the code ran.
+    pub(crate) dir: Option<Arg>,
+    /// Whether the code sits in a function body or a loop, which runs again
+    /// after any `cd` of the line.
+    pub(crate) repeated: bool,
+    /// What it comes to when that folder is not the workspace's.
+    pub(crate) finding: Finding,
+}
+
 /// Where the walk was when an action that runs later began.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Began {
@@ -544,6 +597,7 @@ pub(crate) struct Began {
     writes: usize,
     reads: usize,
     findings: usize,
+    importing: usize,
     moved: usize,
 }
 
@@ -568,6 +622,7 @@ struct Later {
     units: Range<usize>,
     writes: Range<usize>,
     reads: Range<usize>,
+    importing: Range<usize>,
     /// The `cd`s this shell had run, and all the `cd`s read, when it ended.
     moves: usize,
     moved: usize,
@@ -1056,6 +1111,7 @@ impl Split {
             writes: self.writes.len(),
             reads: self.reads.len(),
             findings: self.findings.len(),
+            importing: self.importing.len(),
             moved: self.moved,
         }
     }
@@ -1075,6 +1131,7 @@ impl Split {
             units: began.units..self.units.len(),
             writes: began.writes..self.writes.len(),
             reads: began.reads..self.reads.len(),
+            importing: began.importing..self.importing.len(),
             moves: self.moves,
             moved: self.moved,
             inherited,
@@ -1137,6 +1194,13 @@ impl Split {
         }
         for read in self.reads.get_mut(later.reads.clone()).unwrap_or_default() {
             read.dir = Some(moved.clone());
+        }
+        for code in self
+            .importing
+            .get_mut(later.importing.clone())
+            .unwrap_or_default()
+        {
+            code.dir = Some(moved.clone());
         }
     }
 
@@ -1260,6 +1324,80 @@ impl Split {
             self.parents.insert(self.pipelines, parent);
         }
         self.pipelines
+    }
+
+    /// Whether the environment of a program started now may differ from the
+    /// one the line shows: an assignment or a wrapper hands it one, or an
+    /// earlier unit exported a variable, turned them all on (`set -a`) or
+    /// read a file that may set them.
+    pub(crate) fn environment_set(&self) -> bool {
+        self.environment > 0
+            || self.assigned_earlier
+            || self.units.iter().any(|unit| {
+                unit.key().is_some_and(|key| {
+                    matches!(
+                        key.as_str(),
+                        "export"
+                            | "declare"
+                            | "typeset"
+                            | "readonly"
+                            | "local"
+                            | "set"
+                            | "source"
+                            | "."
+                            | "read"
+                            | "let"
+                            | "mapfile"
+                            | "readarray"
+                            | "getopts"
+                            // They change what a program's name stands for:
+                            // an alias, a path `hash` remembers, a builtin
+                            // `enable` loads or turns off.
+                            | "alias"
+                            | "unalias"
+                            | "hash"
+                            | "enable"
+                    ) || (key == "printf"
+                        && unit
+                            .args
+                            .iter()
+                            .filter_map(Arg::known)
+                            .any(|arg| arg.strip_prefix("-v").is_some()))
+                })
+            })
+    }
+
+    /// Note that code is given to an interpreter that the guard does not read
+    /// whole: the line is `unknown` unless it has a finding of its own.
+    pub(crate) fn unread_code(&mut self, code: &str) {
+        if self.unread.is_empty() {
+            self.unread.push(Self::unread_finding(code));
+        }
+    }
+
+    /// What inline code the guard does not read whole comes to.
+    pub(crate) fn unread_finding(code: &str) -> Finding {
+        Finding {
+            rule: Rule::Unknown,
+            reason: "runs code the guard does not read fully".to_string(),
+            target: Some(crate::inline::shorten(code)),
+        }
+    }
+
+    /// Note inline Python read whole that imports a module, run from the
+    /// folder the line has moved to (see [`Split::importing`]).
+    pub(crate) fn imports(&mut self, code: &str) {
+        self.importing.push(Importing {
+            dir: self.dir.clone(),
+            repeated: self.repeats > 0,
+            finding: Self::unread_finding(code),
+        });
+    }
+
+    /// Whether the line moves to another folder anywhere: `cd`, `pushd`,
+    /// `popd`.
+    pub(crate) fn ever_moves(&self) -> bool {
+        self.moved > 0
     }
 
     pub(crate) fn problem(&mut self, rule: Rule, reason: &str, target: Option<&str>) {
@@ -1421,7 +1559,7 @@ pub(crate) const MAX_DEPTH: usize = 8;
 pub(crate) const MAX_TREE_DEPTH: usize = 400;
 
 /// The longest line read: past it, the line is not read at all.
-const MAX_LEN: usize = 64 * 1024;
+pub(crate) const MAX_LEN: usize = 64 * 1024;
 
 /// The most nested script text read for one line, in bytes: past it, the
 /// line is unreadable. A nested script is read once for each time the line
@@ -1546,6 +1684,32 @@ pub(crate) fn split(
     split
 }
 
+/// Whether `text`, a script or inline code `depth` levels deep, may be read:
+/// not nested too deeply, not too long, and not the one that takes the
+/// line past the budget of nested text. A finding says why when not.
+pub(crate) fn within_limits(split: &mut Split, text: &str, depth: usize) -> bool {
+    if depth > MAX_DEPTH {
+        split.problem(
+            Rule::Unreadable,
+            "starts shells inside shells too deeply to read",
+            None,
+        );
+        return false;
+    }
+    if text.len() > MAX_LEN {
+        split.problem(Rule::Unreadable, "is too long to read", None);
+        return false;
+    }
+    if depth > 0 {
+        split.nested_read += text.len() + 1;
+        if split.nested_read > MAX_NESTED_READ {
+            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
+            return false;
+        }
+    }
+    true
+}
+
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
     script_in(split, text, shell, depth, false);
@@ -1554,16 +1718,7 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
 /// As [`script`]; `here` says the script runs in this shell, as `eval`'s
 /// does, so what it does to the working directory stays.
 pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
-    if depth > MAX_DEPTH {
-        split.problem(
-            Rule::Unreadable,
-            "starts shells inside shells too deeply to read",
-            None,
-        );
-        return;
-    }
-    if text.len() > MAX_LEN {
-        split.problem(Rule::Unreadable, "is too long to read", None);
+    if !within_limits(split, text, depth) {
         return;
     }
     if let Some(why) = too_tangled(text, shell) {
@@ -1577,13 +1732,6 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
             Some(text),
         );
         return;
-    }
-    if depth > 0 {
-        split.nested_read += text.len() + 1;
-        if split.nested_read > MAX_NESTED_READ {
-            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
-            return;
-        }
     }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
     // does not move the line that started it. `eval`'s runs in this shell.

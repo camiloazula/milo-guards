@@ -37,7 +37,8 @@ A line is judged in three steps.
 The modules follow the steps. `posix`, `powershell` and `cmd` split a line with
 their grammar. `launch` takes wrappers off and reads scripts handed to shells.
 `unit` holds the unit and the helpers that read its arguments. `detect` holds
-the rules. `path` is the shell's side of the path model.
+the rules. `path` is the shell's side of the path model. `inline` reads the code
+an interpreter is given inline (see [Inline code](#inline-code)).
 
 ## Splitting
 
@@ -125,11 +126,16 @@ run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
 guard knows. What a runner starts is a program, never a builtin of the shell,
 so `npx cd src` does not move the rest of the line to `src`.
 
-`bun` and `deno` are interpreters. `bun -e`, `--eval`, `-p`, `--print` (also
-in a bundle, `bun -pe 'code'`, or with the code attached, `bun -e'code'`),
-`bun repl`, `deno eval`, `deno repl`, a bare `deno` and a script read from the
-input (`bun run -`, `deno run -`, `uv run -`) run code the guard does not
-read: `Unknown`, or `RunDownloaded` after a download. The options before the
+`bun` and `deno` are interpreters. The code given to `bun -e`, `--eval`, `-p`,
+`--print` (also in a bundle, `bun -pe 'code'`, or with the code attached, `bun
+-e'code'`) and `deno eval` is read and judged like the code of `node -e` (see
+[Inline code](#inline-code)); in cmd and PowerShell lines it is not read, and
+comes back as `Unknown`. `bun repl`, `deno repl`, a bare `deno` and a script
+read from the input (`bun run -`, `deno run -`, `uv run -`) run code the guard
+does not read: `Unknown`, or `RunDownloaded` after a download; in cmd and
+PowerShell lines a REPL reads its input only when something is piped into it
+(`echo x | deno`), and in cmd lines so does a script read from the input
+(`type x.js | bun run -`). The options before the
 subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
 inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
 -c`. `bun run file`, `deno run file` and `bun file` are judged like `node
@@ -141,8 +147,9 @@ and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
 is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
 these runner parts of `bun`, `deno` and `dx` are read as in the other shells
 (`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
-`dx rimraf C:\`); what they read of an interpreter (inline code, a script
-from the input, `bun exec`) is not. `deno -v` and `deno --help=full` only
+`dx rimraf C:\`); what they read of an interpreter (a script from the input
+that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
+there. `deno -v` and `deno --help=full` only
 print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
@@ -1254,6 +1261,221 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 `*.*` on Windows) takes the whole folder. One that picks names (`*.log`,
 `*/*.o`) touches files inside it. [Core](core.md) has the rule.
 
+## Inline code
+
+Python and JavaScript given inline are read with their own tree-sitter
+grammars (`inline`, apart from the shell splitters) and judged with the same
+rules and the same path model as the shell commands that do the same. Two
+questions are answered apart:
+
+- **What the code is found to do.** The reader finds the calls that delete,
+  write, move and run, and the paths they name; those come out as the units
+  and paths the rules already read (a delete is `rm -rf PATH`, a move `mv`, a
+  copy a write to its destination, a command line a script `sh -c` reads), so
+  no rule knows a language. What it finds is kept wherever the code comes
+  from and however it is written: `delete`, `overwrite`, `read_secret` and
+  the rest are said whenever the reader is certain of them.
+- **Whether a line it finds nothing in is safe.** Only code read whole is. A
+  line with inline code that is not read whole, and has no finding of its own,
+  is `unknown`, with the reason `runs code the guard does not read fully` and
+  the start of the code as the target. It is said once for the line, and not
+  when the line already has a finding, which already asks.
+
+**Read whole.** A line with inline code is safe only when all six hold:
+
+1. **The code is written whole on the line**, as the one word after its flag:
+   `python -c CODE` (`python3`, `python3.12`, `python2`), `node -e CODE`
+   (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the same, `deno eval CODE`.
+   Code handed by a here-document, a here-string, a pipe or a redirect
+   (`python3 -`, `python3 - <<'PY'`, `node <<< 'code'`, `bun -`, `deno run -`,
+   `python3 /dev/stdin`) is never read whole.
+2. **Nothing is set around the interpreter.** No option and no argument but the
+   flag and the code (`python3 -X dev -c`, `-I`, `-u`, `-W ignore`, `node -r`,
+   `--import`, `--loader`, `--input-type`, `--no-warnings`, `bun --cwd`,
+   `deno eval -A`, `python3 -c CODE arg`); no assignment in front of it
+   (`FOO=1 python3 -c …`, `PYTHONPATH=… `, `NODE_OPTIONS=…`, `LD_PRELOAD=…`);
+   no wrapper that may hand it an environment (`env`, `sudo`, `xargs`, also
+   in front of a shell that starts it: `FOO=1 bash -c 'python3 -c …'`; `time`,
+   `nice`, `timeout` and the like only change how it runs), and no package
+   runner (`npx`, `npm exec`, `pnpm exec`, `pnpm dlx`, `bunx`, `bun x`, `uvx`,
+   `uv run`, `pipx run`, `deno x`, `dx`), which puts a venv or
+   `node_modules/.bin` on `PATH`, passes its config on as environment
+   variables and loads `--env-file`; and no `export`, `declare`, `typeset`,
+   `readonly`, `local`, `set`, `source`, `.`, `read`, `let`, `mapfile`,
+   `readarray`, `getopts`, `unset` or assignment on a line of its own
+   (`NODE_OPTIONS=x; node -e …`, `HOME=/elsewhere; python3 -c …`) earlier in
+   the line, nor any other way of setting a variable: `printf -v`, the
+   variable of a `for` or `select` loop, an arithmetic assignment (`((X=1))`,
+   `((X++))`, `$((X=1))`) and a `${X:=v}` or `${X=v}` expansion. A variable
+   already exported (`PATH`, `HOME`, and whatever the caller has set) is
+   changed for the interpreter, and which are is not known. Nor does the line
+   change what the interpreter's name stands for before it: `alias`,
+   `unalias`, `hash` (`hash -p /tmp/x/node node` runs any binary), `enable`,
+   or a function defined earlier (`node() { NODE_OPTIONS=… command node
+   "$@"; }`), none of which the code shows; a function body is still read
+   where it is written, and a delete in it is still found.
+   An option of `bun run` that carries code (`bun -F x run -e CODE`) is
+   an option and a subcommand around the code, not read whole.
+3. **It parses and holds a statement.** A parse error (`python3 -c 'if 1:'`),
+   code that is empty or only comments, and an empty block (`node -e '{}'`,
+   `if (1) {}`) are not read whole.
+4. **It runs straight through.** Its statements are expression statements,
+   assignments to a plain name (`x = 1`, `a, b = 1, 2`, `x += 1`, `const`,
+   `let`, `var`) and `if` with `else`. A `def`, `class`, `lambda`, arrow
+   function, `function`, loop, comprehension, generator expression, `try`,
+   `with`, `switch`, `match`, `async`, `await`, `yield`, decorator, `new`,
+   spread or `*args` is not.
+5. **Every call is on the list**, and is a call: a name on the list used as a
+   value (`x = print; x(1)`, `map(open, paths)`) is not read.
+   - Python: `print`, `len`, `str`, `int`, `float`, `bool`, `repr`, `abs`,
+     `min`, `max`, `sum`, `round`, `sorted`, `reversed`, `list`, `tuple`,
+     `dict`, `set`, `frozenset`, `range`, `enumerate`, `zip`, `any`, `all`,
+     `ord`, `chr`, `hex`, `bin`, `oct`, `divmod`, `pow`, `bytes`, `bytearray`,
+     `format`, `ascii`, `iter`, `next`, `complex`, `slice`; `open`, which the
+     reader judges by its path and mode; `json.dumps`, `loads`, `load`, `dump`;
+     `re.compile`, `match`, `search`, `fullmatch`, `sub`, `subn`, `split`,
+     `findall`, `finditer`, `escape`; `math.*`; and a method of a value the
+     code made (a string, a list, a file from `open`, `sys.stdin`).
+   - JavaScript: `parseInt`, `parseFloat`, `String`, `Number`, `Boolean`,
+     `isNaN`, `isFinite`; `console.log`, `error`, `warn`, `info`, `debug`;
+     `JSON.stringify` and `parse`; `Math.abs`, `ceil`, `floor`, `round`, `max`,
+     `min`, `pow`, `sqrt`, `trunc`, `sign`, `cbrt`, `hypot`, `log`, `log2`,
+     `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `random`, `PI`, `E`;
+     and the methods `toString`, `toUpperCase`, `toLowerCase`, `trim`,
+     `trimStart`, `trimEnd`, `split`, `join`, `slice`, `substring`, `indexOf`,
+     `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `replace`,
+     `replaceAll`, `repeat`, `padStart`, `padEnd`, `concat`, `charAt`,
+     `charCodeAt`, `push`, `pop`, `shift`, `unshift`, `reverse`, `sort`, `at`,
+     `toFixed`, `test` and `match`; the only other member is `length`.
+   - Anything else is not: `os.getcwd`, `os.listdir`, `sys.exit`,
+     `sys.stdout.write`, `time.sleep`, `input`, `dir`, `id`, `hash`, `exit`,
+     `getattr`, `glob.*`, `platform.*`, `base64.*`; `process.*`, `setTimeout`,
+     `new Date()`, `Date.now()`, `Buffer.from`, `Object.*`, `require("fs").*`,
+     `Bun.*`, `Deno.*`; a call of a name nothing bound, of a name the code
+     set, of a call (`f()()`), or with a spread (`print(*args)`).
+6. **No import, run-time code or environment write is outside the list.**
+   Python imports only `json`, `math`, `re` and `sys`, plainly: no alias
+   (`import json as j`), no `from … import`; the only members of `sys` are
+   `stdin` and `argv`. JavaScript has no `import`, `require` or `import()`.
+   No `eval`, `exec`, `compile`, `__import__` or `Function`; no write to
+   `os.environ`, `process.env` or a member of a module (`console.log = 1`); no
+   name the code sets is a name above, or starts with an underscore; no member
+   starts with one (`().__class__`); and every name is plain ASCII letters,
+   digits, `_` and `$`, as Python reads a name in its NFKC form (a full-width
+   `＿＿class＿＿` is `__class__`) and JavaScript reads `console` as
+   `console`, so neither is the name the checks see. A name the code did not
+   set is not read whole either, so `os.getcwd()` with no `import os` is not,
+   and a module on the list is a name only once the code imports it:
+   `print(math.pi)` and `json.dumps(1)` with no import are not read whole
+   (they only fail, but the guard does not say so). Python puts the folder
+   the code runs in ahead of the standard library, so `import json` loads
+   `./json.py` from it, and so does code with no `import` (an uncaught
+   exception imports `traceback`, the `idna` codec imports `stringprep`).
+   Python code is read whole only when that
+   folder is inside a workspace folder, the workspace's own code: the working
+   directory, or where the line has moved to by `cd`. After a `cd` out of the
+   workspace (`cd /tmp/x && python3 -c 'import json'`, `cd ..`), to a place
+   the guard cannot tell (`cd "$X"`, `pushd`, `popd`), or with a working
+   directory outside it, the code is not read whole; the same when the code is
+   in a function body, a loop or a `trap` and the line moves anywhere, since
+   it runs again after the `cd`. So `cd /tmp/x && python3 -c 'print(1)'` is
+   not read whole either.
+
+`python3 -c 'print(1+1)'`, `node -e 'console.log(1)'`,
+`python3 -c "import json,sys; json.load(sys.stdin)"` and
+`python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import os;
+print(os.getcwd())'`, `node -p 'process.env'`, `python3 -c 'def f(): return 1'`,
+`PYTHONPATH=. python3 -c 'print(1)'` and `python3 - <<'PY' … PY` with nothing
+found in it are `unknown`. Code outside the six is still read, and a delete,
+an overwrite or a key it is found to touch is still said: `python3 - <<'PY'`
+with `shutil.rmtree('/home/me')` in it is `delete`. What it is not is safe
+because nothing was found.
+
+`effect` never answers `ReadsOnly` for a line with inline code: the interpreter
+is not one of its readers (`Unknown`), and a delete, write or command the code
+makes is a unit of its own that changes things (`Changes`). `python3 -c
+'print(1)'` is safe for `classify` and `Unknown` for `effect`. Every row of
+`tests/inline.rs` goes through `effect` with the shared `check`, which holds
+this to `classify`.
+
+**What is found.** Whatever the code comes from, the reader finds these, with
+calls found by their name once what `import`, `require` and destructuring bound
+is put back (`from os import remove as rm`, `const { rm } = require('fs')`,
+`o = os`, `getattr(os, 'remove')`):
+
+| Does | Python | JavaScript (Node, Bun, Deno) |
+| --- | --- | --- |
+| Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()`, `rimraf` |
+| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.makedirs`, `shutil.copy*` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
+| Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
+| Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `shutil.copymode` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.chmod` |
+| Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `execa`, `cross-spawn` |
+| Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
+| Reads | `open(path)` with a mode that reads, `Path.read_text`, `read_bytes`, the source of `shutil.copy*`, `tarfile`, `fileinput`, `linecache`, `ConfigParser.read`, `netrc` | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `Deno.readTextFile`, `Bun.file` |
+
+A literal command string is split in the shell grammar and judged like a
+nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
+'~'])`) is judged as the unit it is, `shell=True` or `{ shell: true }` making
+it a command line; `cwd` runs it after a `cd`. A path is a literal string,
+`os.path.expanduser('~…')`, `Path.home()`, `os.environ['HOME']`,
+`process.env.HOME`, `os.homedir()`, `os.path.join`, `path.join`, `Path(…) / …`,
+string `+`, f-strings and template literals made only of those, or a name the
+code sets to one (every string a name is set to anywhere is read). Anything
+else is a path only known when it runs, as `rm -rf "$DIR"` is: a delete or a
+write to it is judged as a place unknown, and a read of it is `unknown`. A read
+of a path the code gives whole is judged as `cat PATH` is, so it is a finding
+only where the path is a secret (see [Reading a key](#reading-a-key)); a folder
+read all the way down (`TarFile.add`, `copytree`, `make_archive`) is judged as
+`grep -r` is. A `chdir` moves the code's own paths, not the line's, and is read
+where the code runs it: in code that changes directory, each relative path is
+judged from every directory the code may be in, and is only known when it runs
+when they cannot be told.
+
+**Where the code comes from.** `python`, `python3` (and `python3.12`),
+`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
+`nodejs`: `-e`, `-p`, `--eval`, `--print`; `bun` the same, and `--cwd DIR`;
+`deno eval`; every piece of code of several `-e` is read, not the first. A
+here-document or here-string of plain text (a quoted delimiter, or one with
+nothing in the body the shell would expand) handed to `python3`, `python3 -`,
+`node`, `node -`, `bun -`, `bun run -`, `deno run -` is read as code. All of
+these are read for what they find, and none but the first kind, written whole
+with no option or environment, is read whole. An `-i` (`python3 -i -c`,
+`node -i -e`) makes the interpreter go on to read code from its input, which is
+`unknown`, as a bare `python3` or `node` is. A script file (`python3
+scripts/gen.py`, `node build.js`) is the workspace's own code and is not read.
+Neither is code from a pipe or another redirect (`cat x.py | python3`,
+`python3 < x.py`), which stays `unknown`, or `run_downloaded` after a download.
+Code that PowerShell or cmd hands to an interpreter stays `unknown`: its paths
+and commands are not POSIX ones. An interpreter given only a flag that prints
+and exits (`--version`, `-V`, `--help`, `-h`) reads no input.
+
+**What the reader itself leaves `unknown`.** Code that does not parse; `eval`,
+`exec`, `compile`, `Function` and `vm.*` of anything but a literal string (a
+literal is read as code of its language, at any depth, to the same limits as
+nested scripts); a library call that runs the code it is given or loads code
+(`timeit`, `cProfile.run`, `pickle`, `pdb`, `importlib`); `__import__`,
+`getattr`, `import()` and `require` of a computed name; an assignment to a
+member of a module, of a builtin class or of `process`, `Deno` or `Bun`; an
+alias of a call it cannot follow (`r = os.remove`, `map(fs.unlinkSync, files)`);
+a module handed on as a value; a read of a path not fully known
+(`open(sys.argv[1])`); a command line or an argument only known when the code
+runs; a `chdir` it cannot place; a call it has no row for that is given a path
+(`unknown` with the reason `gives a path to a call the guard does not read`, or
+`read_secret` when the path is a key); and code loaded from outside the
+workspace: a module from the network (also `run_downloaded`), a file outside it
+(an absolute path, a `file:` URL, `../x.js`), a `data:` URL, a `sys.path` entry
+outside it, and a `PYTHONPATH` or `NODE_OPTIONS` that loads such code. A key
+among them is `read_secret`. A program the code starts with an environment the
+code sets is `unknown` with the reason `starts a program with an environment
+set in the code`, because the variable may be one the shell side judges. A name
+bound by nested code, and a name written with an escape or not in ASCII, is a
+name the reader does not follow. Code too long or nested too deeply to read is
+`unreadable`. A string worked out from names is cut at 4 KB, and the strings
+noted for all names together and the paths read out of them are bounded, so a
+few hundred bytes cannot take seconds: a name that went over a limit is dropped,
+not read as any string, and a read of it is `unknown`, so no limit makes a line
+safe.
+
 ## Reading a key
 
 `read_secret` finds a read of a key or a credential. Refused on the file API,
@@ -1401,9 +1623,81 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   a line run unasked when it is `ReadsOnly` asks. A reader whose file is known
   and is not a secret is safe, with its own row.
 - **A program the guard does not know opens a file.** `jq`, `yq`, `ssh-keygen
-  -y -f`, an editor, `column`, an interpreter's own `open()`. The list above is
-  what is known; a program outside it is `effect`'s `Unknown`, and a script or
-  an interpreter's code is already `unknown`.
+  -y -f`, an editor, `column`. The list above is what is known; a program
+  outside it is `effect`'s `Unknown`, and a script file is the workspace's own
+  code and not read.
+- **Inline code that opens a file is a read of it.** Python and JavaScript
+  given inline are read (see [Inline code](#inline-code)), and an `open()` in a
+  mode that reads, `Path.read_text` and `read_bytes`, `readFileSync`,
+  `readFile`, `fs.promises.readFile`, `createReadStream`, `openSync`,
+  `Deno.readTextFile`, and the source of `shutil.copy*`, `copytree` and
+  `copyFileSync` are judged as `cat <path>` is: `read_secret` exactly when
+  the path is a place core marks `Secret`, with the same words. Only a path
+  the code gives whole is a path the guard knows: a literal,
+  `os.path.expanduser('~/…')`, `Path.home() / …`, `os.homedir() + …`, an
+  f-string or template literal made of those, or a name the code sets to one
+  of those, or to strings a loop goes over when they are written out (every
+  string a name is set to anywhere in the code is read, in any order, up to
+  the limits below). A read of any other path fails closed, as a delete of one
+  is a place unknown for `rm`: the line is `unknown`, with the reason `opens a
+  file whose path is only known when the code runs` and the path as the
+  target, unless the part of it the code does give already lies in a place
+  that holds a key, which is `read_secret`, as `cat ~/.ssh/$n` is. So a path
+  that starts in a key folder and ends in something only known when the code
+  runs is `read_secret` (`'/home/me/.ssh/' + n`, `f'…/{n}'`, `'…/%s' % n`
+  and `'…/{}'.format(n)`, when the folder comes before the first part that is
+  not a literal, `os.path.join(d, n)`, `Path(d) / n`, `d.joinpath(n)`,
+  `` `…/${n}` ``, `path.join(d, n)`, `.concat(n)` and `[d, n].join('/')`), and
+  every other path not given whole is `unknown`: one with nothing known before
+  the part that is not (`open(n + '/x')`), one in a folder that holds no key
+  (`open('/etc/' + n)`, `open('src/' + n)`), the home directory with a name
+  after it (`~/` and each name `os.listdir` gives, dotfiles among them), a
+  path only known when the code runs (`open(sys.argv[1])`, `open(input())`,
+  `fileinput.input()` given no files, which reads the ones the line names), a
+  string made by a call the reader does not follow (`'…'.strip()`, `[:-1]`,
+  `.lower()`, `base64.b64decode(…)`, `chr(47)`, `atob(…)`, `new URL(…)`, a
+  function or a lambda that returns it), a name it does not follow (a
+  subscript, a dict, an unpacking, an object's member, a walrus), a `%` or a
+  `.format` with a part that is not a literal (`'%s/.ssh/id_rsa' % h`, even
+  when `h` is the home directory), and a name a loop sets to each path a
+  listing gives, whose pattern is not followed (`Path('~').glob('.ssh/*')`,
+  `Path.home().rglob('id_rsa')`, `glob.glob('~/.n*')`, `iterdir`, `listdir`,
+  `os.walk`, `os.scandir`, `readdirSync`), and a name a loop sets to each of
+  anything but a list written out where the loop is (`for k in ks` with `ks`
+  a name set to a list, a dict's `values()` or `items()`, `'a b'.split()`, a
+  concatenation of lists, `enumerate(…)`, `Object.keys(…).forEach`). Code the
+  guard cannot read, a program the code starts and a name it does not follow
+  stay `unknown` as above.
+
+  A name that holds more than one string, used in a longer path (`for d in
+  ['a', '/home/me/.ssh']: open(d + '/id_rsa')`), makes one read for each
+  choice of a string for each such name, as the shell reads a `for` over words
+  written out: up to 256 choices for one path, and 65,536 for a piece of code.
+
+  A name is put back as its strings only as far as the reader holds them: a
+  string worked out from names is cut at 4 KB, the strings of all names
+  together at a few times the length limit, and the paths read out of names at
+  1,024 for a piece of code (there is no count per name: 65 strings with the
+  key last are all read). A name that went over one of them is dropped, and a
+  read of it is `unknown`, never a read of nothing. So is a name grown in place
+  (`k += '…'`).
+
+  A name is put back as its strings only when the reader works out every
+  binding of it whole. A binding is an assignment, an augmented assignment, a
+  walrus, an unpacking target (`x, y = …`, `[x, *y] = …`, `({x} = …)`), a `for`,
+  `with`, `except`, `match` or `catch` target, a parameter, a `def`, a `class`,
+  a `global` or `nonlocal` write from a function, a `del`, a `var` declared
+  again, an increment, a property of the global object, and a write from code
+  that `exec` or `eval` runs, at any depth. One that is not a string the reader
+  gives whole (`x = sys.argv[1]`, `x = chr(47) + '…'`, `x = '…'[::-1]`,
+  `x = y[0]`, `x = g()`, `x = KEY if c else 'b'`, `x = '%s/…' % h`, any of the
+  forms above) makes a read of the name `unknown` besides the strings it was
+  set to whole, which are read as before: `read_secret` when one is a key, so
+  `x = '/home/me/.ssh/id_rsa'` followed by `x = sys.argv[1]` is a read of the
+  key, and `x = 'a.txt'` followed by it is `unknown`. A path worked out from
+  such a name is `unknown` as well, whatever the order the code writes them in.
+  A name that is only ever set in any other way (a parameter, an unpacking) is
+  a path only known when the code runs.
 - **A program that reads a secret without being given its path**: `gpg
   --export-secret-keys`, `security find-generic-password -w`, `printenv`.
 - **What leaves the machine** is `SendSecret`'s, as above: `curl -d @key` and
@@ -1442,8 +1736,15 @@ A line is never safe because the guard gave up on it. These come back risky:
 
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter: `python3 -c`, `node -e`, `bun -e`, `deno eval`, a script piped into
-  one.
+- Code handed to an interpreter that is not read: Ruby, Perl (beyond
+  `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
+  from a file it is redirected from. Python and JavaScript given inline
+  (`python3 -c`, `node -e`, `bun -e`, `deno eval`) are read, and what they do
+  is judged, but a line is safe only for code read whole: written whole on the
+  line, with no option or environment around the interpreter, and made of
+  plain statements and calls on a short list. Any other code is `unknown`,
+  `runs code the guard does not read fully`, unless it is found to do
+  something worse (see [Inline code](#inline-code)).
 - A .NET call that deletes, writes or starts a program.
 - PowerShell code known only when it runs: a script block that is not written
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
@@ -2611,6 +2912,9 @@ The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
 PowerShell and cmd, built on core's test kit. Each table has a list of safe
 lines and a list of risky lines with the rule each must break. A new rule
 comes with rows of both kinds.
+
+`tests/inline.rs` is the same for inline Python and JavaScript, with a table for
+what is safe, what each rule finds and what stays `unknown`.
 
 `tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
 line of `posix.rs` and `windows.rs` also goes through `effect`: the shared

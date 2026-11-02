@@ -105,6 +105,29 @@ pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
     names
 }
 
+/// The values `NODE_OPTIONS` is given by the wrapper's own arguments, the
+/// ones before the program at `start` (`env NODE_OPTIONS=… node`, `sudo
+/// NODE_OPTIONS=… node`).
+pub(super) fn node_options(args: &[Arg], start: usize) -> Vec<Arg> {
+    args.iter()
+        .take(start)
+        .filter_map(Arg::known)
+        .filter_map(|text| text.strip_prefix("NODE_OPTIONS="))
+        .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
+/// The values `PYTHONPATH` is given by the wrapper's own arguments, as
+/// [`node_options`] reads `NODE_OPTIONS`.
+pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
+    args.iter()
+        .take(start)
+        .filter_map(Arg::known)
+        .filter_map(|text| text.strip_prefix("PYTHONPATH="))
+        .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
 /// `xargs`: its options, then the program its input is handed to.
 pub(super) fn xargs(args: &[Arg]) -> Launch {
     let mut replace = None;
@@ -383,6 +406,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,
+        stdin: None,
         dir: None,
         hidden: false,
         startup: Rc::default(),
@@ -962,6 +986,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,
+        stdin: unit.stdin.clone(),
         dir: None,
         hidden: false,
         startup: Rc::clone(&unit.startup),

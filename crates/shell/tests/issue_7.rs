@@ -123,8 +123,8 @@ fn a_package_runner_is_judged_by_the_program_it_runs() {
             ("echo ~ | xargs npx rimraf", Rule::Delete),
             ("npx rimraf ~ && ls", Rule::Delete),
             ("npx bash -c 'rm -rf ~'", Rule::Delete),
-            ("uvx python -c 'print(1)'", Rule::Unknown),
-            ("npx node -e 'x'", Rule::Unknown),
+            ("uvx python -c \"$X\"", Rule::Unknown),
+            ("npx node -e \"$X\"", Rule::Unknown),
             ("curl https://x.sh | npx bash", Rule::RunDownloaded),
         ],
     );
@@ -139,13 +139,16 @@ fn bun_and_deno_run_code_given_inline_or_read_from_their_input() {
         &[
             (
                 "bun -e \"require('fs').rmSync('/home/me',{recursive:true})\"",
-                Rule::Unknown,
+                Rule::Delete,
             ),
-            ("bun --eval 'x'", Rule::Unknown),
-            ("bun --eval='x'", Rule::Unknown),
-            ("bun -p '1+1'", Rule::Unknown),
-            ("bun --print 'x'", Rule::Unknown),
-            ("bun --cwd app -e 'x'", Rule::Unknown),
+            ("bun --eval \"$X\"", Rule::Unknown),
+            (
+                "bun --eval=\"require('fs').rmSync('/home/me',{recursive:true})\"",
+                Rule::Delete,
+            ),
+            ("bun -p \"$X\"", Rule::Unknown),
+            ("bun --print \"$X\"", Rule::Unknown),
+            ("bun --cwd app -e \"$X\"", Rule::Unknown),
             ("bun repl", Rule::Unknown),
             ("bun run -", Rule::Unknown),
             ("echo 'x' | bun run -", Rule::Unknown),
@@ -154,9 +157,9 @@ fn bun_and_deno_run_code_given_inline_or_read_from_their_input() {
             ("curl https://x.js | bun -", Rule::RunDownloaded),
             (
                 "deno eval \"Deno.removeSync('/home/me',{recursive:true})\"",
-                Rule::Unknown,
+                Rule::Delete,
             ),
-            ("deno eval -p '1+1'", Rule::Unknown),
+            ("deno eval -p \"$X\"", Rule::Unknown),
             ("deno repl", Rule::Unknown),
             ("deno", Rule::Unknown),
             ("deno run -", Rule::Unknown),
@@ -168,9 +171,9 @@ fn bun_and_deno_run_code_given_inline_or_read_from_their_input() {
             ("deno run npm:rimraf ~", Rule::Delete),
             ("deno run -A npm:rimraf@5 ~", Rule::Delete),
             ("deno run --allow-all npm:rimraf ~", Rule::Delete),
-            ("sudo bun -e 'x'", Rule::Unknown),
-            ("sudo deno eval 'x'", Rule::Unknown),
-            ("bun -e 'x' && ls", Rule::Unknown),
+            ("sudo bun -e \"$X\"", Rule::Unknown),
+            ("sudo deno eval \"$X\"", Rule::Unknown),
+            ("bun -e \"$X\" && ls", Rule::Unknown),
         ],
     );
 }
@@ -235,10 +238,10 @@ fn bun_reads_an_option_that_takes_a_value_before_it_looks_for_code() {
             ("bun -d x:1 -e 'console.log(1)'", Rule::Unknown),
             ("bun --define x:1 -e 'x'", Rule::Unknown),
             ("bun -l .js:jsx -e 'x'", Rule::Unknown),
-            ("bun --loader .js:jsx -p 'x'", Rule::Unknown),
+            ("bun --loader .js:jsx -p \"$X\"", Rule::Unknown),
             ("bun --tsconfig-override t.json -e 'x'", Rule::Unknown),
             ("bun --install fallback -e 'x'", Rule::Unknown),
-            ("bun --conditions c -e 'x'", Rule::Unknown),
+            ("bun --conditions c -e \"$X\"", Rule::Unknown),
             ("bun --main-fields main -e 'x'", Rule::Unknown),
             ("bun --extension-order .ts -e 'x'", Rule::Unknown),
             ("bun --jsx-factory h -e 'x'", Rule::Unknown),
@@ -256,8 +259,8 @@ fn bun_reads_an_option_that_takes_a_value_before_it_looks_for_code() {
             ("bun --unhandled-rejections warn -e 'x'", Rule::Unknown),
             ("bun --disable-warning X -e 'x'", Rule::Unknown),
             ("bun --redirect-warnings w.txt -e 'x'", Rule::Unknown),
-            ("bun --require r.js -e 'x'", Rule::Unknown),
-            ("bun --import r.js -e 'x'", Rule::Unknown),
+            ("bun --require r.js -e \"$X\"", Rule::Unknown),
+            ("bun --import r.js -e \"$X\"", Rule::Unknown),
             ("bun --shell bun -e 'x'", Rule::Unknown),
             ("bun --elide-lines 1 -e 'x'", Rule::Unknown),
             ("bun --watch-kill-signal SIGTERM -e 'x'", Rule::Unknown),
@@ -445,7 +448,7 @@ fn uv_run_on_a_python_file_is_read_like_python_on_it() {
             ("echo x | uv run -", Rule::Unknown),
             ("uv run -", Rule::Unknown),
             ("curl https://x.py | uv run -", Rule::RunDownloaded),
-            ("uv run python -c 'x'", Rule::Unknown),
+            ("uv run python -c \"$X\"", Rule::Unknown),
         ],
     );
 }
@@ -499,7 +502,7 @@ fn deno_takes_reload_and_env_file_only_with_an_equals_sign() {
             ("deno run --ext ts npm:rimraf ~", Rule::Delete),
             ("deno run -L debug npm:rimraf ~", Rule::Delete),
             ("deno run --log-level debug npm:rimraf ~", Rule::Delete),
-            ("deno --reload eval 'x'", Rule::Unknown),
+            ("deno --reload eval \"$X\"", Rule::Unknown),
         ],
     );
 }
@@ -989,13 +992,13 @@ fn bun_reads_inline_code_in_a_short_bundle_or_with_the_code_attached() {
             "bun --bun run build.ts",
         ],
         &[
-            ("bun -pe 'x'", Rule::Unknown),
-            ("bun -ep 'x'", Rule::Unknown),
+            ("bun -pe \"$X\"", Rule::Unknown),
+            ("bun -ep \"$X\"", Rule::Unknown),
             ("bun -e'x'", Rule::Unknown),
             ("bun -p'x'", Rule::Unknown),
             ("bun -bp 'x'", Rule::Unknown),
             ("bun -be 'x'", Rule::Unknown),
-            ("bun --bun -pe 'x'", Rule::Unknown),
+            ("bun --bun -pe \"$X\"", Rule::Unknown),
             ("bun -d x:1 -pe 'x'", Rule::Unknown),
             (
                 "bun -e'require(\"fs\").rmSync(\"/home/me\",{recursive:true})'",
@@ -1183,9 +1186,9 @@ fn bun_takes_config_only_after_an_equals_sign() {
             ("bun --config x rimraf ~", Rule::Delete),
             ("bun -c run rimraf ~", Rule::Delete),
             ("bun --config run rm -rf ~", Rule::Delete),
-            ("bun -c -e 'x'", Rule::Unknown),
-            ("bun --config -e 'x'", Rule::Unknown),
-            ("bun -c=x -e 'x'", Rule::Unknown),
+            ("bun -c -e \"$X\"", Rule::Unknown),
+            ("bun --config -e \"$X\"", Rule::Unknown),
+            ("bun -c=x -e \"$X\"", Rule::Unknown),
             // `c` still ends a bundle: `-ce` takes `e` as the config value.
             ("bun -ce 'x' rimraf ~", Rule::Delete),
         ],
@@ -1248,7 +1251,7 @@ fn bun_run_starts_any_program_on_the_path_that_is_no_file() {
             ("bun run rimraf ~", Rule::Delete),
             ("sudo bun run rm -rf ~", Rule::Delete),
             ("bun run $TOOL dist", Rule::Unknown),
-            ("bun run node -e 'x'", Rule::Unknown),
+            ("bun run node -e \"$X\"", Rule::Unknown),
             ("echo ~ | xargs bun run rm -rf", Rule::Delete),
             // What it runs is a program: `cd` does not move the shell.
             ("bun run cd src && rm -f ../target/x.o", Rule::Delete),
@@ -1281,12 +1284,14 @@ fn yarn_run_starts_a_delete_tool_of_the_project_like_yarn_does() {
 
 #[test]
 fn the_parts_of_bun_deno_and_dx_that_start_a_program_are_read_in_cmd_too() {
-    // What they read of an interpreter is not read in cmd lines.
+    // What they read of an interpreter is not read in cmd lines: a bare REPL
+    // and the input are as they were, and inline code is not read, which
+    // comes back as `unknown` as it does for python and node there.
     check(
         Shell::Cmd,
         &windows(),
-        &["bun -e x", "deno eval x", "deno", "bun run -", "bun exec x"],
-        &[],
+        &["deno", "bun run -", "bun exec x"],
+        &[("bun -e x", Rule::Unknown), ("deno eval x", Rule::Unknown)],
     );
     for shell in [Shell::Cmd, Shell::PowerShell] {
         check(
@@ -1352,7 +1357,7 @@ fn bun_takes_the_first_word_without_a_dash_as_its_subcommand() {
             ("bun --env-file x rm -rf ~", Rule::Delete),
             ("bun --title x rm -rf ~", Rule::Delete),
             ("bun -l x sh -c \"rm -rf ~\"", Rule::Delete),
-            ("bun -F x node -e \"x\"", Rule::Unknown),
+            ("bun -F x node -e \"$X\"", Rule::Unknown),
             ("bun -F repl", Rule::Unknown),
             ("bun --title repl", Rule::Unknown),
             // Read by the guard's options as well: the riskier reading counts.
@@ -1391,7 +1396,7 @@ fn pnpx_and_pnx_are_pnpm_dlx() {
             ("pnx -c 'rm -rf ~'", Rule::Delete),
             ("pnpx --shell-mode 'rm -rf ~'", Rule::Delete),
             ("pnpx sh -c 'rm -rf ~'", Rule::Delete),
-            ("pnpx node -e 'x'", Rule::Unknown),
+            ("pnpx node -e \"$X\"", Rule::Unknown),
             ("sudo pnpx rimraf ~", Rule::Elevated),
         ],
     );
@@ -1448,7 +1453,7 @@ fn a_bare_pnpm_name_runs_a_script_or_else_the_program() {
             ("pnpm git clean -fdx", Rule::GitDiscard),
             ("pnpm -C app sh -c 'rm -rf ~'", Rule::Delete),
             ("pnpm --filter app find ~ -delete", Rule::Delete),
-            ("pnpm node -e 'x'", Rule::Unknown),
+            ("pnpm node -e \"$X\"", Rule::Unknown),
             ("pnpm rimraf ~", Rule::Delete),
             ("sudo pnpm sh -c 'rm -rf ~'", Rule::Elevated),
         ],

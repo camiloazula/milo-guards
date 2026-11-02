@@ -32,6 +32,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         marks: &marks,
         depth,
         split,
+        redirected: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -407,6 +408,16 @@ struct Walker<'a> {
     marks: &'a [usize],
     depth: usize,
     split: &'a mut Split,
+    /// The redirects of the statement being walked, for its body command.
+    redirected: Option<Redirected>,
+}
+
+/// The redirects of a statement whose body is a command: the node id of
+/// that command, what redirects its input, and where the redirects start.
+struct Redirected {
+    body: usize,
+    inputs: Vec<Option<Arg>>,
+    from: usize,
 }
 
 impl Walker<'_> {
@@ -416,6 +427,46 @@ impl Walker<'_> {
         self.marks
             .iter()
             .any(|mark| (node.start_byte()..=node.end_byte()).contains(mark))
+    }
+
+    /// Whether `node`, a `${…}`, gives its variable a value when it has
+    /// none: `${X:=v}`, `${X=v}`, `${X[1]:=v}`. Whether it had one is not
+    /// known, so the variable is taken as set.
+    fn assigns_default(&self, node: Node<'_>) -> bool {
+        let Some(inner) = unit::text(&node, self.source)
+            .strip_prefix("${")
+            .and_then(|inner| inner.strip_suffix('}'))
+        else {
+            return false;
+        };
+        let rest = inner.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        let rest = match rest.strip_prefix('[') {
+            Some(subscript) => subscript.split_once(']').map_or("", |(_, rest)| rest),
+            None => rest,
+        };
+        rest.len() < inner.len() && (rest.starts_with('=') || rest.starts_with(":="))
+    }
+
+    /// Whether `node` is in arithmetic, `(( ))` or `$(( ))`, where `=`, `++`
+    /// and `--` set a variable, and not in a `[` or `[[` test, where `=` is a
+    /// comparison.
+    fn in_arithmetic(node: Node<'_>) -> bool {
+        let mut up = node.parent();
+        while let Some(parent) = up {
+            match parent.kind() {
+                "arithmetic_expansion" | "c_style_for_statement" | "compound_statement" => {
+                    return true
+                }
+                "binary_expression"
+                | "unary_expression"
+                | "postfix_expression"
+                | "parenthesized_expression"
+                | "ternary_expression" => {}
+                _ => return false,
+            }
+            up = parent.parent();
+        }
+        false
     }
 
     /// Whether `node`, a `${…}`, assigns `GLOBIGNORE` a value that is not
@@ -518,10 +569,18 @@ impl Walker<'_> {
             // `command` reads; what they hold is still walked.
             "command" => self.command_node(node, stage, level),
             // `cmd < f`, `cmd > f`, `cmd <<EOF`.
-            "redirected_statement" => self.redirected(node, stage, level),
+            // The redirects of a command are for its input too: a
+            // here-document it reads its code from.
+            "redirected_statement" => {
+                let outer = self.redirected.take();
+                self.redirected = self.redirects(node);
+                self.redirected(node, stage, level);
+                self.redirected = outer;
+            }
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
+                self.split.assigned_earlier = true;
                 self.assignment(node);
                 self.assigned(node, level);
             }
@@ -537,6 +596,7 @@ impl Walker<'_> {
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
+                self.split.assigned_earlier = true;
                 let mut cursor = node.walk();
                 let names: Vec<&str> = node
                     .named_children(&mut cursor)
@@ -559,6 +619,7 @@ impl Walker<'_> {
                         self.split.hide();
                     }
                     if child.kind() != "variable_assignment" {
+                        self.exported_options(child);
                         let text = unit::text(&child, self.source);
                         let written = startup::Written {
                             expanded: text.contains(['$', '`']),
@@ -583,6 +644,9 @@ impl Walker<'_> {
                 if assigns && self.assigns_in_chain(node) {
                     self.split.hide();
                 }
+                // `((PATH=1))` sets a variable the interpreter after it may
+                // be given.
+                self.split.assigned_earlier |= assigns && Self::in_arithmetic(node);
                 self.children(node, stage, level);
             }
             // `: ${GLOBIGNORE:=x}`: the expansion sets it.
@@ -590,6 +654,7 @@ impl Walker<'_> {
                 if self.assigns_ignore(node) {
                     self.split.hide();
                 }
+                self.split.assigned_earlier |= self.assigns_default(node);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
@@ -600,6 +665,7 @@ impl Walker<'_> {
                 if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
                     self.split.hide();
                 }
+                self.split.assigned_earlier |= bare.len() < text.len() && Self::in_arithmetic(node);
                 self.children(node, stage, level);
             }
             // What may not run, may run more than once, or runs when the
@@ -637,6 +703,9 @@ impl Walker<'_> {
                     self.split.define_function(name);
                     self.fork_bomb(node, name);
                 }
+                // The variable of `for` and `select` is set for the body
+                // (`for PATH in /x; do …`).
+                self.split.assigned_earlier |= node.kind() == "for_statement";
                 self.split.branches += 1;
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
@@ -645,6 +714,10 @@ impl Walker<'_> {
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                // A function defined here may stand for a program of the same
+                // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
+                // here on.
+                self.split.assigned_earlier |= node.kind() == "function_definition";
                 self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
                 self.split.branches -= 1;
@@ -872,6 +945,20 @@ impl Walker<'_> {
         // `a` only): it is an argument all the same.
         let lost = dashes_before_heredoc(self.source.get(node.end_byte()..).unwrap_or_default());
         args.extend(std::iter::repeat_n(Arg::Known("-".to_string()), lost));
+        // A here-document or here-string is the program's input. tree-sitter
+        // drops a lone `-` before the redirect (`python3 - <<'PY'`), which
+        // names that input, so it is put back when the lines above did not.
+        let mut stdin = None;
+        if let Some((input, from)) = self.input(node) {
+            let gap = self.source.get(node.start_byte()..from).unwrap_or_default();
+            if lost == 0
+                && gap.split_whitespace().any(|word| word == "-")
+                && !args.iter().any(|arg| arg.known() == Some("-"))
+            {
+                args.push(Arg::Known("-".to_string()));
+            }
+            stdin = Some(input);
+        }
         // `read GLOBIGNORE`, `printf -v GLOBIGNORE`, `printf -vGLOBIGNORE`,
         // `let GLOBIGNORE=1`: set by a command whose value the line does not
         // show or reads as an assignment.
@@ -952,12 +1039,157 @@ impl Walker<'_> {
             );
         }
         let outer = self.split.scope_hidden(prefixed);
+        // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
+        // The same for `PYTHONPATH=… python3 -c …`.
+        let options = self.split.node_options.len();
+        let paths = self.split.python_path.len();
+        let mut cursor = node.walk();
+        let assignments: Vec<Node<'_>> = node
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "variable_assignment")
+            .collect();
+        // Inline code is not read whole by a program given an environment.
+        let environed = assignments.len();
+        self.split.environment += environed;
+        for assignment in assignments {
+            self.node_options(assignment);
+        }
         let before = self.split.qualify(qualified);
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        unit.stdin = stdin;
         unit.startup = startup;
         launch::add(self.split, unit, self.depth);
+        self.split.environment -= environed;
         self.split.restore_qualified(before);
+        self.split.node_options.truncate(options);
+        self.split.python_path.truncate(paths);
         self.split.unscope_hidden(outer);
+    }
+
+    /// What redirects the input of the command at `node`: a here-document or
+    /// here-string gives its text, and any other redirect of the input (a
+    /// file, a second one) an unknown, since which one the program reads is
+    /// not worth working out. The byte where the redirects start comes too.
+    /// `None` when the input is not redirected, or the command is part of a
+    /// pipeline, where the tree does not say which command a here-document
+    /// is for.
+    fn input(&self, node: Node<'_>) -> Option<(Arg, usize)> {
+        // A here-string is a redirect of the command itself; the others are
+        // the redirected statement's, whose body the command is.
+        let mut inputs = Vec::new();
+        let mut from = usize::MAX;
+        let mut cursor = node.walk();
+        for redirect in node.children_by_field_name("redirect", &mut cursor) {
+            from = from.min(redirect.start_byte());
+            self.inputs(redirect, &mut inputs);
+        }
+        if let Some(redirected) = self.redirected.as_ref().filter(|r| r.body == node.id()) {
+            inputs.extend(redirected.inputs.iter().cloned());
+            from = from.min(redirected.from);
+        }
+        let input = match inputs.len() {
+            0 => return None,
+            1 => inputs.pop().flatten(),
+            _ => None,
+        };
+        Some((
+            input.unwrap_or_else(|| Arg::Unknown("<input>".to_string())),
+            from,
+        ))
+    }
+
+    /// What the redirects of a redirected statement are for its body, when
+    /// the body is a command; asking the tree for a node's parent walks it
+    /// from the top, which a long line would pay for at each command.
+    fn redirects(&self, statement: Node<'_>) -> Option<Redirected> {
+        let body = statement
+            .child_by_field_name("body")
+            .filter(|body| body.kind() == "command")?;
+        let mut inputs = Vec::new();
+        let mut from = usize::MAX;
+        let mut cursor = statement.walk();
+        for redirect in statement.children_by_field_name("redirect", &mut cursor) {
+            from = from.min(redirect.start_byte());
+            self.inputs(redirect, &mut inputs);
+        }
+        Some(Redirected {
+            body: body.id(),
+            inputs,
+            from,
+        })
+    }
+
+    /// The redirects of the input at `redirect`, also the ones the tree
+    /// nests inside a here-document: each is its text when it is one, and
+    /// `None` when the program reads something else.
+    fn inputs(&self, redirect: Node<'_>, inputs: &mut Vec<Option<Arg>>) {
+        let on_input = redirect
+            .child_by_field_name("descriptor")
+            .is_none_or(|descriptor| unit::text(&descriptor, self.source) == "0");
+        let mut cursor = redirect.walk();
+        match redirect.kind() {
+            "heredoc_redirect" => {
+                if on_input {
+                    inputs.push(self.heredoc(redirect));
+                }
+                for child in redirect.named_children(&mut cursor) {
+                    if matches!(child.kind(), "file_redirect" | "herestring_redirect") {
+                        self.inputs(child, inputs);
+                    }
+                }
+            }
+            "herestring_redirect" if on_input => {
+                let text = redirect
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() != "file_descriptor");
+                inputs.push(text.and_then(|text| match self.arg(text) {
+                    Arg::Known(text) => Some(Arg::Known(format!("{text}\n"))),
+                    _ => None,
+                }));
+            }
+            "file_redirect" if on_input => {
+                let operator = redirect
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .map(|child| unit::text(&child, self.source));
+                if operator.is_some_and(|operator| operator.starts_with('<')) {
+                    inputs.push(None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The text of a here-document, when it is plain text: the delimiter is
+    /// quoted, or the body has nothing the shell would expand. `<<-` takes
+    /// the tabs off the front of each line.
+    fn heredoc(&self, redirect: Node<'_>) -> Option<Arg> {
+        let mut cursor = redirect.walk();
+        let children: Vec<Node<'_>> = redirect.named_children(&mut cursor).collect();
+        let start = children
+            .iter()
+            .find(|child| child.kind() == "heredoc_start")?;
+        let body = children
+            .iter()
+            .find(|child| child.kind() == "heredoc_body")?;
+        let delimiter = unit::text(start, self.source);
+        let body = unit::text(body, self.source);
+        let quoted = delimiter.contains(['\'', '"', '\\']);
+        if !quoted && body.contains(['$', '`', '\\']) {
+            return None;
+        }
+        let strips = redirect
+            .children(&mut cursor)
+            .any(|child| !child.is_named() && unit::text(&child, self.source) == "<<-");
+        let text = if strips {
+            body.lines()
+                .map(|line| line.trim_start_matches('\t'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            body.to_string()
+        };
+        Some(Arg::Known(text))
     }
 
     /// Whether `assignment` gives a variable a value that turns the option
@@ -974,6 +1206,38 @@ impl Walker<'_> {
         })
     }
 
+    /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
+    /// `export NODE_OPTIONS` of a value the line set another way: what node
+    /// gets then is not read.
+    fn exported_options(&mut self, node: Node<'_>) {
+        let word = self.arg(node);
+        let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        match word.known() {
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
+                    self.split.node_options.push(Arg::Known(value.to_string()));
+                } else if text == "NODE_OPTIONS" {
+                    self.split.node_options.push(Arg::Unknown(text.to_string()));
+                } else if let Some(value) = text.strip_prefix("PYTHONPATH=") {
+                    self.split.python_path.push(Arg::Known(value.to_string()));
+                } else if text == "PYTHONPATH" {
+                    self.split.python_path.push(Arg::Unknown(text.to_string()));
+                }
+            }
+            None if source.starts_with("NODE_OPTIONS") => {
+                self.split
+                    .node_options
+                    .push(Arg::Unknown(source.to_string()));
+            }
+            None if source.starts_with("PYTHONPATH") => {
+                self.split
+                    .python_path
+                    .push(Arg::Unknown(source.to_string()));
+            }
+            None => {}
+        }
+    }
+
     /// Whether `node`, an argument of `export` or `declare`, is a quoted
     /// assignment that turns the option on.
     fn arg_hides(&self, node: Node<'_>) -> bool {
@@ -984,10 +1248,33 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        // Set on a line of its own, or after `export`: the programs after it
+        // have it, so it stays for the rest of the line.
+        self.node_options(node);
         // `BASH_ENV=f` on a line of its own, or after `export`, is the
         // file every shell started from here on runs.
         if let Some(file) = self.startup(node) {
             self.split.add_startup(file);
+        }
+    }
+
+    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
+    /// when it is one of those variables'.
+    fn node_options(&mut self, assignment: Node<'_>) {
+        let Some(name) = assignment.child_by_field_name("name") else {
+            return;
+        };
+        let name = unit::text(&name, self.source);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+            return;
+        }
+        let value = assignment
+            .child_by_field_name("value")
+            .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
+        if name == "PYTHONPATH" {
+            self.split.python_path.push(value);
+        } else {
+            self.split.node_options.push(value);
         }
     }
 
