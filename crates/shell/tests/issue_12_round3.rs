@@ -129,6 +129,10 @@ fn an_unquoted_here_document_is_read_as_the_shell_feeds_it() {
             // `\\` is one backslash.
             "psql <<EOF\nSELECT 'it\\\\' AS a;\nEOF",
             "psql <<EOF\nSELECT 1,\\\n2;\nEOF",
+            // With `<<-` the tabs of the line that goes on stay in every
+            // shell (bash, sh, dash, ksh, zsh), so the client gets `DR`, a
+            // tab and `OP TABLE t`, not `DROP`.
+            "psql <<-EOF\n\tDR\\\n\tOP TABLE t\n\tEOF",
             // What a dollar-quoted string holds is not code, when its `$` are
             // the client's.
             "psql <<EOF\nSELECT \\$\\$ ; DROP TABLE t; \\$\\$;\nEOF",
@@ -138,7 +142,7 @@ fn an_unquoted_here_document_is_read_as_the_shell_feeds_it() {
             // A backslash and a newline are taken out: `DROP`.
             ("psql <<EOF\nDR\\\nOP TABLE t\nEOF", Rule::DropData),
             ("cat <<EOF | psql\nDR\\\nOP TABLE t\nEOF", Rule::DropData),
-            ("psql <<-EOF\n\tDR\\\n\tOP TABLE t\n\tEOF", Rule::DropData),
+            ("psql <<-EOF\n\tDR\\\nOP TABLE t\n\tEOF", Rule::DropData),
             // `$$` is the shell's process id, not a string.
             (
                 "psql <<EOF\nSELECT $$ ; DROP TABLE t; $$\nEOF",

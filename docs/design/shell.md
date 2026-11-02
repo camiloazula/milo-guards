@@ -55,7 +55,16 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 - Where a grammar reads a line differently from the shell, the shell wins.
   A POSIX line's backslash-newlines are joined first, so `r\<newline>m` is
   `rm`. cmd's built-ins also split arguments at `,`, `;` and `=`. PowerShell's
-  `--%` ends at `|`. PowerShell reads `$HOME\.ssh\id` as one word but its
+  `--%` ends at `|`. PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
+  and their doubled forms as redirects, but lexes `1>`, `7>` and a `>` glued
+  to its word (`echo x>f`, `echo x 1>f`) as words; the guard reads each as the
+  redirect it is, with the stream number dropped, and the file glued to it or
+  the next argument as the file it writes (`echo x 1> ..\x.txt` is an
+  `overwrite`); a word glued to the `>` that the grammar lexes as a
+  parameter (`git log --format=%h>..\x.txt`) is read the same way, with the
+  part before the `>` kept as the parameter. A `1>` followed by a parameter
+  (`git reset 1> --hard`) is `unknown`: the guard keeps the parameter an
+  argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
@@ -1844,6 +1853,13 @@ A line is never safe because the guard gave up on it. These come back risky:
   out. A comma list stays with the parameter it follows (`-ArgumentList $x, $y`),
   and so does the argument after a parameter written with a colon
   (`-Confirm:$false`), a common parameter (`-ErrorAction Stop`) and `-Args`.
+- A PowerShell word that may be a redirect and cannot be told apart: a `>`
+  with no file after it (`echo x 1>`), two in one word (`a>b>c`), a `>` in a
+  word that also holds a quote or an escape (`1>"..\x.txt"`, `` 1>x`.txt ``),
+  or one in the name of the command (`echo>f`, `& echo>f`). It is `unknown`,
+  `has a word that may be a redirect the guard cannot read`. A `>` inside a
+  closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
+  double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
 - A line the grammar cannot parse.
@@ -2068,8 +2084,38 @@ is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
 DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
 backtick is an expansion, as in a double-quoted word, so the body is a
 template; a body with both an escaped and an expanding `$` or backtick is
-`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+`unknown`. `<<-` takes the tabs off each line first, except a line that goes on after a
+backslash-newline: every shell keeps its tabs (`DR\` then a tab and `OP`
+is `DR`, a tab and `OP`). A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
+
+The body of an unquoted delimiter is joined the same way when the guard splits
+the line, also one inside `"$(…)"` or a backtick in double quotes: a
+backslash-newline in it is taken out before the body is read, so `$(r\` then
+`m -rf …)` in it is `rm`. With `<<-` the tabs of the line that goes on stay (all
+of bash, sh, dash, ksh and zsh keep them), so `\tEO\` then `\tF` is no end
+line. Where shells differ is a line that took in a backslash-newline and then
+is, or is near, the delimiter (`EO\` then `F`): bash, sh and zsh compare the
+joined line and end the body there, dash and ksh do not. Such a line, joined or
+in any piece of it (`x\` then `EOF`), makes the line `Unreadable`. A quoted
+delimiter's body is copied as it is.
+
+The shell ends a here-document only at a line that is exactly the delimiter
+(for `<<-`, after leading tabs only). The grammar also ends it at a line only
+near the delimiter (` EOF`, `EOF `, `EOF #…`, `EOF ;…`), so the rest would be
+judged as shell commands while the program reads it as its input
+(`python3 - <<'PY'` with a ` PY` line in front of `shutil.rmtree(…)`). Such a
+line makes the whole line `Unreadable`, for every reader of a here-document,
+also one inside `"$(…)"` or a backtick in double quotes (`git commit -m
+"$(cat <<'EOF' …)"` is how an agent writes one): the quoting starts afresh
+inside a substitution. A line that is the delimiter in quotes or with a
+backslash (`'EOF'`) ends the body for neither the grammar nor the shell, but
+is refused too, so that one rule covers every spelling. A quoted delimiter is
+read through its closing quote (`<<'E;F'` is `E;F`, `<<"E O"` is `E O`), and a
+parenthesis in a `${…}` is not counted as the end of the `$(…)` around it. Text
+whose quotes or substitutions never close is a text a shell refuses, so the
+scan that joins the lines has misread it and what follows was not joined: it is
+`Unreadable`.
 
 What a stage says is worked out once and read once for each client language,
 whatever the number of clients after it, so the time grows with the line and
