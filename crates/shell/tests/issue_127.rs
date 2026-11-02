@@ -50,7 +50,8 @@ fn a_here_document_line_near_its_delimiter_is_unreadable() {
                 "python3 - <<'PY'\nimport shutil\nPY\t\nshutil.rmtree('/home/me')\nPY",
                 Rule::Unreadable,
             ),
-            // Other quoting of the delimiter.
+            // The delimiter in quotes ends the body for neither the grammar
+            // nor the shell, but is refused all the same (one simple rule).
             (
                 "python3 - <<'PY'\nimport shutil\n'PY'\nshutil.rmtree('/home/me')\nPY",
                 Rule::Unreadable,
@@ -84,6 +85,110 @@ fn a_here_document_line_near_its_delimiter_is_unreadable() {
             // A reader that is not special still gets the same answer.
             ("cat <<'EOF'\nx\n EOF\nrm -rf /home/me\nEOF", Rule::Unreadable),
         ],
+    );
+}
+
+/// The commonest way an agent writes a here-document is inside `"$(…)"`
+/// (`git commit -m "$(cat <<'EOF' …)"`), so the same line in double quotes, or
+/// in a backtick in double quotes, is as unreadable as outside them.
+#[test]
+fn a_here_document_in_a_double_quoted_substitution_is_unreadable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "echo \"$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "x=\"$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            // The end line with a trailing space or a comment.
+            (
+                "echo \"$(psql <<'EOF'\nselect 1;\nEOF \ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$(psql <<'EOF'\nselect 1;\nEOF #\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            // An unquoted delimiter, and `<<-`.
+            (
+                "echo \"$(psql <<EOF\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$(psql <<-EOF\n\tselect 1;\n EOF\n\tdrop table t;\n\tEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            // A backtick in double quotes.
+            (
+                "echo \"`psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n`\"",
+                Rule::Unreadable,
+            ),
+            (
+                "x=\"`psql <<'EOF'\nselect 1;\nEOF \ndrop table t;\nEOF\n`\"",
+                Rule::Unreadable,
+            ),
+            // Other readers.
+            (
+                "echo \"$(mysql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$(sqlite3 db <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$(bash <<'EOF'\necho a\n EOF\nrm -rf /home/me\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            // In a substitution in a substitution, in a subshell, in a pipe,
+            // with words around it.
+            (
+                "echo \"$(echo \"$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\")\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$( (psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n) )\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"a\" \"$(psql <<'EOF' | cat\nselect 1;\n EOF\ndrop table t;\nEOF\n)\" \"b\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"`echo \"$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)\"`\"",
+                Rule::Unreadable,
+            ),
+            // The same line outside the quotes.
+            (
+                "echo $(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)",
+                Rule::Unreadable,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_here_document_in_a_double_quoted_substitution_that_ends_exactly_reads_as_before() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+            "x=\"$(cat <<'EOF'\nx\nEOF\n)\"",
+            "echo \"$(cat <<EOF\nx\nEOF\n)\"",
+            "echo \"`cat <<'EOF'\nx\nEOF\n`\"",
+            "echo \"$(cat <<-EOF\n\tx\n\tEOF\n)\"",
+            "echo \"$(psql <<'EOF'\nselect 1;\nEOF\n)\" && echo done",
+            // A line that holds a different word is body.
+            "echo \"$(sqlite3 db <<'EOF'\nselect 1;\nPY\nEOF\n)\" \"$(echo ')')\"",
+        ],
+        &[],
     );
 }
 

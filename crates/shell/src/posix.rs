@@ -101,6 +101,10 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
     let mut near = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
+    // The `$(…)` and backticks open at this point, each with whether it sits
+    // in double quotes: inside one the quoting starts afresh, so a
+    // here-document in `"$(psql <<'EOF' …)"` is a here-document.
+    let mut subs: Vec<(Sub, bool)> = Vec::new();
     // Here-documents opened on the current line, read from the next one:
     // each delimiter, and whether `<<-` lets it be indented with tabs.
     let mut bodies: Vec<(String, bool)> = Vec::new();
@@ -139,6 +143,39 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             '"' => {
                 double = !double;
                 joined.push(c);
+            }
+            // A substitution: outside the quotes of the line around it.
+            '$' if chars.get(at) == Some(&'(') => {
+                joined.push_str("$(");
+                at += 1;
+                subs.push((Sub::Paren(1), double));
+                double = false;
+            }
+            '`' => {
+                joined.push(c);
+                if let Some(&(Sub::Backtick, outer)) = subs.last() {
+                    subs.pop();
+                    double = outer;
+                } else {
+                    subs.push((Sub::Backtick, double));
+                    double = false;
+                }
+            }
+            '(' if !double => {
+                if let Some((Sub::Paren(depth), _)) = subs.last_mut() {
+                    *depth += 1;
+                }
+                joined.push(c);
+            }
+            ')' if !double => {
+                joined.push(c);
+                if let Some((Sub::Paren(depth), outer)) = subs.last_mut() {
+                    *depth = depth.saturating_sub(1);
+                    if *depth == 0 {
+                        double = *outer;
+                        subs.pop();
+                    }
+                }
             }
             '#' if !double
                 && joined
@@ -217,11 +254,22 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
     (joined, marks, near)
 }
 
+/// An open `$(…)` (with the depth of the parentheses in it) or backtick, see
+/// [`join_continuations`].
+#[derive(Clone, Copy)]
+enum Sub {
+    Paren(usize),
+    Backtick,
+}
+
 /// Whether a line of a here-document's body is only near its delimiter: the
 /// shell ends the body at a line that is exactly the delimiter (for `<<-`,
 /// after its leading tabs), but the grammar also ends it at ` EOF`, `EOF `,
-/// `EOF #…`, `EOF ;…` and `'EOF'`. The line's first word, without spaces,
-/// quotes and backslashes, is the delimiter while the line is not.
+/// `EOF #…` and `EOF ;…`. The line's first word, without spaces, quotes and
+/// backslashes, is the delimiter while the line is not. A line that is the
+/// delimiter in quotes or with a backslash (`'EOF'`) ends the body for
+/// neither the grammar nor the shell, but is refused too: it is no body
+/// anyone writes, and one rule is simpler than two.
 fn near_delimiter(line: &str, delimiter: &str) -> bool {
     let word = line
         .trim_start()
