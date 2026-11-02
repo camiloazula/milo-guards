@@ -752,7 +752,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
   server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
   -I`). The expression is read with its syntax, never skipped for having
-  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  some (that is `pkill`'s and `killall`'s POSIX syntax; PowerShell's `-match`
+  is .NET's, see the `Where-Object` item below): `.`, a `[…]` set and an escape are one character, a group and `|` are
   read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
   and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
   (an escape, a collating element, `\b`, a back reference) it is read as
@@ -791,17 +792,27 @@ the same line. It is `stop_system` when the line stops more than a name:
   `ProcessName` with `-eq`, `-like` or `-match` (`Where-Object { $_.ProcessName -eq
   'node' }`, `Where-Object Name -like 'node*'`), and judged by that name; a
   `-match` pattern written out is a regular expression searched for in each
-  name, read as `pkill` reads one, so `-match 'node'` is `-like '*node*'`
+  name, read as `pkill` reads one except where .NET differs (below), so
+  `-match 'node'` is `-like '*node*'`
   (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
   it runs are `stop_system`, as is `-notmatch`). A `-match` pattern is a .NET
-  expression, and the guard reads it only in the POSIX ERE subset: one with a
+  expression, and the guard reads it only in the POSIX ERE subset. Two things
+  are read the .NET way: a `/` is a plain character (a process name holds no
+  folder, so `'/?explorer'` and `'svc/*host'` are `stop_system`, the `?` or
+  `*` applying to the `/`), and an anchor takes a quantifier that makes it
+  optional (`'^*explorer'`, `'$?explorer'`, `'^{0,1}svchost'` match like the
+  name without it). A pattern outside the subset is not read: one with a
   `(?` in it (a lookaround, an inline option, a comment, a named group, a
   conditional) or an escape that is a letter or digit other than `\d \D \w \W
   \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
   read, and the filter is "picked by a filter only known when it runs"
   (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
   a backslash inside a bracket expression (.NET reads `[\]o]` as the set `]`
-  and `o`, where POSIX closes the set at the first `]`) and one with a
+  and `o`, where POSIX closes the set at the first `]`), one with a `[`
+  inside a bracket expression (.NET reads `[:`, `[.` and `[=` as a plain `[`
+  and closes the set at the next `]`, where POSIX reads a class or a
+  collating element up to `:]`, `.]` or `=]`, and `[a-z-[0]]` is a set minus
+  another) and one with a
   character that is not ASCII (.NET ignores case by the current culture, so
   `İ` can stand for `i` and `ſ` for `s`, and the guard folds ASCII only);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,

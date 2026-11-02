@@ -127,12 +127,16 @@ impl Parser<'_> {
             }
             self.at += 1;
             let atom = match c {
+                // An anchor takes a quantifier too (`^*x`, `$?x`), which .NET
+                // accepts and reads as an anchor that may be absent.
                 '^' => {
-                    items.push(Re::Start);
+                    let anchor = self.quantified(Re::Start);
+                    items.push(anchor);
                     continue;
                 }
                 '$' => {
-                    items.push(Re::End);
+                    let anchor = self.quantified(Re::End);
+                    items.push(anchor);
                     continue;
                 }
                 '/' if self.folders => {
@@ -301,7 +305,9 @@ fn escape(escaped: char) -> Re {
 /// conditional) or an escape that is a letter or digit other than `\d \D \w
 /// \W \s \S \b \B` (`\x6f`, `\157`, `\cO`, `o`, `\p{L}`, `\k<n>`), a backslash
 /// inside a bracket expression (.NET reads it as an escape, so `[\]o]` is the
-/// set `]` and `o`, where POSIX closes the set at the first `]`), or a
+/// set `]` and `o`, where POSIX closes the set at the first `]`), a `[`
+/// inside one (`[:`, `[.` and `[=` are a plain `[` to .NET, which closes the
+/// set at the next `]`, and `[a-z-[0]]` is a subtraction), or a
 /// character that is not ASCII (.NET ignores case by the current culture, so
 /// `İ` and `ſ` can stand for `i` and `s`). Such a pattern is not read at all.
 pub(super) fn dotnet_only(pattern: &str) -> bool {
@@ -322,20 +328,16 @@ pub(super) fn dotnet_only(pattern: &str) -> bool {
                 }
                 _ => {}
             },
-            '[' if !in_set => {
+            // A `[` inside a set: `[:`, `[.` and `[=` are a literal `[` in
+            // .NET, which closes the set at the next `]` (POSIX reads a class
+            // or a collating element up to `:]`, `.]` or `=]`), and `-[` is
+            // a subtraction (`[a-z-[0]]`).
+            '[' if in_set => return true,
+            '[' => {
                 in_set = true;
                 // A `]` first in the set, after a `^` or not, is a member.
                 chars.next_if_eq(&'^');
                 chars.next_if_eq(&']');
-            }
-            // A POSIX class (`[:alpha:]`) inside a set is skipped whole.
-            '[' if chars.peek() == Some(&':') => {
-                while let Some(skipped) = chars.next() {
-                    if skipped == ':' && chars.peek() == Some(&']') {
-                        chars.next();
-                        break;
-                    }
-                }
             }
             ']' => in_set = false,
             _ => {}
@@ -430,9 +432,17 @@ fn compile<'a>(re: &'a Re, program: &mut Vec<Inst<'a>>) {
 /// Whether the regular expression can match one of `names`: searched for in
 /// the name, or all of it when `exact`. An expression that cannot be read
 /// counts as matching. A `/` in it ends a folder, as a command line's
-/// program starts where its folder does.
-pub(super) fn matches_any(pattern: &str, names: &[&str], exact: bool, ignore_case: bool) -> bool {
-    let Some(re) = parse(pattern, true) else {
+/// program starts where its folder does, unless the expression is .NET's
+/// (`dotnet`): a process name there is never a path, so a `/` is a plain
+/// character.
+pub(super) fn matches_any(
+    pattern: &str,
+    names: &[&str],
+    exact: bool,
+    ignore_case: bool,
+    dotnet: bool,
+) -> bool {
+    let Some(re) = parse(pattern, !dotnet) else {
         return true;
     };
     search(&re, names, (exact, ignore_case, false))

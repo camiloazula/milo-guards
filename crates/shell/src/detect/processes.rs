@@ -28,10 +28,13 @@ enum Names {
     /// `exact` is `pkill -x`, which wants the whole name to match;
     /// `ignore_case` is `pkill -i` and `killall -I`; `full` is `pkill -f`,
     /// which searches the whole command line, not only the name.
+    /// `dotnet` is PowerShell's `-match`, a .NET expression, where a `/` is
+    /// a plain character and not the end of a folder.
     Regex {
         exact: bool,
         ignore_case: bool,
         full: bool,
+        dotnet: bool,
     },
     /// With the wildcards `*`, `?` and `[a-z]`: `Stop-Process -Name node*`,
     /// `taskkill /IM node*`.
@@ -105,6 +108,7 @@ impl Checker<'_> {
                 exact: false,
                 ignore_case: options.has("I") || options.has("ignore-case"),
                 full: false,
+                dotnet: false,
             }
         } else {
             Names::Literal
@@ -144,6 +148,7 @@ impl Checker<'_> {
             exact: options.has("x") || options.has("exact"),
             ignore_case: options.has("i") || options.has("ignore-case"),
             full: options.has("f") || options.has("full"),
+            dotnet: false,
         };
         let user = ["u", "U", "G", "euid", "uid", "group"]
             .iter()
@@ -679,6 +684,7 @@ fn filter_name(args: &[Arg]) -> Option<(&Arg, Names)> {
                     exact: false,
                     ignore_case: true,
                     full: false,
+                    dotnet: true,
                 };
                 if compares.replace(regex).is_some_and(|kind| kind != regex) {
                     return None;
@@ -979,6 +985,7 @@ fn names_system_process(text: &str, kind: Names) -> bool {
             exact,
             ignore_case,
             full,
+            dotnet,
         } => {
             // Each alternative of a pattern, without its anchors and
             // brackets, and its folder when it is a command line's program,
@@ -990,7 +997,7 @@ fn names_system_process(text: &str, kind: Names) -> bool {
                 SYSTEM_PROCESSES
                     .iter()
                     .any(|system| process_name(system) == process_name(name))
-            }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case)
+            }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case, dotnet)
                 // `-f` searches the whole command line, whose program is not
                 // the last part of a path the pattern spells.
                 || (full

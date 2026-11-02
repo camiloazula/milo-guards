@@ -921,6 +921,115 @@ fn a_match_pattern_with_a_backslash_in_a_set_or_a_non_ascii_letter_is_not_read()
     );
 }
 
+/// The forms a `-match` pattern is stopped through, one line each.
+fn match_lines(pattern: &str) -> Vec<String> {
+    vec![
+        format!("Get-Process | Where-Object {{ $_.Name -match '{pattern}' }} | Stop-Process"),
+        format!("Get-Process | Where-Object Name -match '{pattern}' | Stop-Process"),
+        format!("Get-Process | ? {{ $_.ProcessName -match '{pattern}' }} | kill"),
+        format!("Get-Process | Where-Object {{ $_.Name -match '{pattern}' }} | % Kill"),
+        format!(
+            "Get-Process | Where-Object {{ $_.Name -match '{pattern}' }} | ForEach-Object {{ $_.Kill() }}"
+        ),
+    ]
+}
+
+/// Every form of each pattern is `stop_system`.
+fn all_stop_system(patterns: &[&str]) {
+    let lines: Vec<String> = patterns.iter().flat_map(|p| match_lines(p)).collect();
+    let risky: Vec<(&str, Rule)> = lines
+        .iter()
+        .map(|line| (line.as_str(), Rule::StopSystem))
+        .collect();
+    check(Shell::PowerShell, &windows(), &[], &risky);
+}
+
+#[test]
+fn a_dotnet_match_pattern_reads_a_slash_as_a_plain_character() {
+    // A process name never holds a folder, so a `/` in a .NET expression ends
+    // nothing; the quantifier after it still applies to what it follows.
+    all_stop_system(&[
+        "/?explorer",
+        "/*explorer",
+        "exp/?lorer",
+        "svc/*host",
+        "/{0}lsass",
+        "sm/*ss",
+        "smss/{0,}",
+    ]);
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            r"Get-Process | Where-Object { $_.Name -match 'a/b' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'node/?x' } | Stop-Process",
+        ],
+        &[(
+            r"Get-Process | Where-Object { $_.Name -match @('/?explorer') } | Stop-Process",
+            Rule::StopSystem,
+        )],
+    );
+}
+
+#[test]
+fn a_dotnet_match_pattern_takes_a_quantifier_after_an_anchor() {
+    // .NET accepts `^*x` and `$?x`: the anchor may be absent, so they match
+    // like `x`.
+    all_stop_system(&[
+        "^*explorer",
+        "^?explorer",
+        "^+explorer",
+        "^{0,1}svchost",
+        "${0}explorer",
+        "$?explorer",
+        "explorer$*",
+        "lsass$?",
+    ]);
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            r"Get-Process | Where-Object { $_.Name -match '^*node' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'node$?' } | Stop-Process",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_dotnet_match_pattern_with_a_bracket_in_a_set_is_not_read() {
+    // `[.`, `[=` and `[:` that does not close with `word:]` are a plain `[`
+    // to .NET, which closes the set at the next `]`; `[a-z-[0]]` is a set
+    // minus another. The POSIX reading skips or splits them differently.
+    all_stop_system(&[
+        "zz[[.]|.|.]]",
+        "zz[[=]|.|=]]",
+        "zz[[:]|.|:]]",
+        "q[[:]|^|:]]",
+        "e[a-z-[0]]",
+        "s[a-z-[0-9]]",
+        "ex[a-z-[q]]+",
+        "sm[a-z-[x]]s",
+        "w[a-z-[x]]nlogon",
+        "w[^0-9-[x]]nlogon",
+    ]);
+}
+
+#[test]
+fn a_posix_expression_still_reads_a_slash_as_the_end_of_a_folder() {
+    // `pkill` sees a program's folder end at a `/`, and its sets are POSIX's.
+    check(
+        Shell::Posix,
+        &posix(),
+        &["pkill 'a/?node'", "pkill 'node[[:alpha:]]x'"],
+        &[
+            ("pkill '/sbin/[i]nit'", Rule::StopSystem),
+            ("pkill '^*init'", Rule::StopSystem),
+            ("pkill 'zz[[:alpha:]]|init'", Rule::StopSystem),
+        ],
+    );
+}
+
 #[test]
 fn wmic_in_powershell_does_not_read_a_value_with_a_variable_in_it() {
     check(
