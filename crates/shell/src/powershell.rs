@@ -8,11 +8,9 @@ use tree_sitter::Node;
 
 mod blocks;
 
-use std::cell::Cell;
-
 use crate::detect::DOWNLOADERS;
 use crate::launch;
-use crate::unit::{self, Arg, Between, Listing, Origin, Split, Stage, Unit};
+use crate::unit::{self, Arg, Between, Listing, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -81,7 +79,6 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         split,
         item: None,
-        system: Cell::new(false),
         holds: HashSet::new(),
     };
     walker.mark_listings(tree.root_node());
@@ -187,9 +184,6 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// Inside a `ForEach-Object` block: the stage whose input `$_` is.
     item: Option<Stage>,
-    /// Whether a value read since it was last cleared came from a system
-    /// folder's variable (`$env:SystemRoot`), whose drive is a guess.
-    system: Cell<bool>,
     /// The nodes with a `Get-Process` somewhere below them, worked out once
     /// for the whole tree so that each `Stop-Process` reads only the nodes
     /// that lead to a listing.
@@ -332,7 +326,6 @@ impl Walker<'_> {
         let name = node.child_by_field_name("command_name")?;
         let program = self.name(name);
         let mut args = Vec::new();
-        let mut origins = Vec::new();
         let mut shapes = Vec::new();
         // Whether an argument is a download, as `iex (iwr url)` runs one.
         let mut downloads = false;
@@ -366,7 +359,6 @@ impl Walker<'_> {
                             self.push_element(
                                 &mut args,
                                 &mut shapes,
-                                &mut origins,
                                 item,
                                 program_key.as_deref(),
                                 index > 0,
@@ -376,7 +368,6 @@ impl Walker<'_> {
                     _ => self.push_element(
                         &mut args,
                         &mut shapes,
-                        &mut origins,
                         element,
                         program_key.as_deref(),
                         false,
@@ -398,7 +389,7 @@ impl Walker<'_> {
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
-        let mut unit = Unit::new(Shell::PowerShell, program, args, stage).with_origins(origins);
+        let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
         unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
         // The processes a `Stop-Process` is handed by a listing in its own
@@ -425,34 +416,25 @@ impl Walker<'_> {
         key
     }
 
-    /// Add what an element stands for to `args`, one shape to `shapes` for
-    /// each argument, and where each value came from to `origins`, so the
-    /// three stay in step: the element's own shape goes with the first
-    /// argument, and any more it stands for (the three of a `Where-Object`
-    /// name filter) are plain.
+    /// Add what an element stands for to `args`, and one shape to `shapes` for
+    /// each argument, so the two stay in step: the element's own shape goes
+    /// with the first argument, and any more it stands for (the three of a
+    /// `Where-Object` name filter) are plain.
     fn push_element(
         &self,
         args: &mut Vec<Arg>,
         shapes: &mut Vec<blocks::Shape>,
-        origins: &mut Vec<Origin>,
         element: Node<'_>,
         program: Option<&str>,
         joined: bool,
     ) {
-        self.system.set(false);
-        let made = self.element_values(element, program);
-        let origin = if self.system.replace(false) {
-            Origin::System
-        } else {
-            Origin::Typed
-        };
+        let made = self.element_args(element, program);
         for (at, arg) in made.into_iter().enumerate() {
             shapes.push(if at == 0 {
                 self.shape(element, joined)
             } else {
                 blocks::Shape::default()
             });
-            origins.push(origin);
             args.push(arg);
         }
     }
@@ -460,7 +442,7 @@ impl Walker<'_> {
     /// The arguments an element stands for: one, or three when it is the
     /// block of a `Where-Object` that only compares a process's name
     /// (`{ $_.ProcessName -eq 'node' }`), read as `ProcessName -eq node`.
-    fn element_values(&self, element: Node<'_>, program: Option<&str>) -> Vec<Arg> {
+    fn element_args(&self, element: Node<'_>, program: Option<&str>) -> Vec<Arg> {
         // A value a `Stop-Process` in a block builds on `$_`: the item, when
         // it unwraps to the item or one of the process's own members, and
         // only known when it runs for anything else.
@@ -668,10 +650,10 @@ impl Walker<'_> {
                 "array_literal_expression" => {
                     let mut items = element.walk();
                     for item in element.named_children(&mut items) {
-                        args.extend(self.element_values(item, program));
+                        args.extend(self.element_args(item, program));
                     }
                 }
-                _ => args.extend(self.element_values(element, program)),
+                _ => args.extend(self.element_args(element, program)),
             }
         }
         args
@@ -1125,9 +1107,6 @@ impl Walker<'_> {
         let Some(value) = place_variable(name) else {
             return Arg::Unknown(source.to_string());
         };
-        if value.starts_with("C:") {
-            self.system.set(true);
-        }
         Arg::Known(value.to_string())
     }
 

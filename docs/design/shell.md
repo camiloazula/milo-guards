@@ -443,74 +443,6 @@ runs. Without one, a letter is a disk.
 After a `cd` to a known place on the file system, the device is read as
 written for every command. cmd and POSIX have no other provider.
 
-In cmd, `cd` (or `chdir`) without `/d` does not change the drive: for a path
-on another drive it sets that drive's own working directory and the line stays
-where it was, so `cd D:\ws\a & rd /s /q ..\..` from `C:\Users\me\repo` deletes
-`C:\Users`. The line tracks the drive it is on, starting from the working
-directory's, and stays only while it is sure which drive that is. A `cd`
-without `/d`, and a `cd /d`, `pushd` or `D:` on the same drive, cannot change
-the drive, so it stays sure. A `cd /d`, `pushd` or `D:` to another drive may
-not have run (it can sit in a branch, in a pipe stage or behind `start`, or
-fail), so the drive is only a guess from then on: a `cd` without `/d` to a path
-on another drive than the guess leaves the line somewhere unknown, and one to
-the guessed drive moves it. With `/d`, or on the same drive, the line moves as
-for any `cd` (a `pushd` to a network path puts the line on a drive the line
-does not name). Which drive the line is on is not known after `popd`, from a
-working directory on no drive, or beside a `/d` that does not come first, and
-a `cd` to another drive then leaves the line somewhere unknown.
-
-A path that starts at home (`~`, which `%TEMP%`, `%TMP%`, `%USERPROFILE%`,
-`%APPDATA%` and `%LOCALAPPDATA%` become) is on the home directory's drive, and
-is read like a path with that drive letter: `cd %TEMP%` from `D:\ws\repo`
-leaves the line on `D:` when home is on `C:`. When home is on no drive, a `cd`
-to it leaves the line somewhere unknown. Only a variable puts a path under
-home in cmd, which never expands a `~` typed in the line: `cd ~\..\..` from
-`D:\ws\repo` goes to `D:\ws`, so a typed `~` names a folder on the line's own
-drive and never makes the line stay. The `C:` in `%SystemRoot%`, `%windir%`,
-`%SystemDrive%`, `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%ProgramData%`
-(and `$env:SystemRoot` and the like) is a guess, since Windows may be on
-another drive: a `cd` to one never leaves the line where it was, and puts it
-on an unknown drive (somewhere unknown, without `/d`), whatever drive the line
-was certainly on. Nothing shows that cmd refuses a network path
-(`\\host\share`, `//host/share`) or a device path (`\\?\C:\`, `\\.\C:\`) as a
-working directory, so a `cd` or `chdir` to one, with or without `/d`, leaves
-the line somewhere unknown. A PowerShell `Set-Location`, `cd` or
-`Push-Location` to a path with a drive letter, or at home, moves the line onto
-that drive as a guess, as `cd /d` does; a relative one keeps the drive and
-whether it is sure; a provider path (`Env:`), a network path or an unknown one
-leaves the drive unknown. A `cmd /c` the line runs later starts from there.
-
-A cmd program that is a drive letter and its colon whole (`%SystemDrive%`,
-`"C:"`) is a switch to a drive that is not known: the line is on an unknown
-drive, somewhere unknown, and a later `cd` without `/d` does not leave it where
-it was. cmd also reads the name of a command differently from the grammar when
-it holds `^`, `;`, `,`, `=` or a variable: it drops the caret, ends the name at
-`;`, `,` and `=` (`C:;`, `cd;/d C:\`, `cd=/d C:\`), and puts a variable's value
-in. So the drive is not known after a unit whose name holds any of them, and
-when the name, read that way, is `cd`, `chdir`, `pushd`, `popd` or a drive
-(`c^d /d C:\`, `p^ushd C:\`, `c""d /d C:\`, `C:;`), the line is somewhere
-unknown too. Quotes alone leave the drive alone, as a quoted path to a program
-is a plain word; they count only when they make a `cd` or a drive of the name.
-
-A program that starts another in a folder runs it there: cmd's `start /d
-FOLDER` (also `/dFOLDER`), `pwsh` with `-WorkingDirectory` or `-wd`, and
-`Start-Process -WorkingDirectory`. What it starts, and the scripts that run, are
-read from that folder, and the line is put back where it was after. Windows
-PowerShell (`powershell`) has no `-WorkingDirectory`: it reads the first
-parameter it does not know (`-wd` itself) as the start of the command text, and
-every argument after it, whatever it looks like (`-File`, `-WindowStyle`),
-is part of that text. The text starts at `-wd`, so its first statement is `-wd
-...`, a command that is not found: it runs nothing and moves nothing (`-wd
-Set-Location X; ...` does not change the folder), and what follows its first
-`;` runs in the line's own folder. The guard reads the text from `-wd` itself,
-so such a line is unreadable and risky, and a delete after the `;` is found.
-A folder that is a drive's own working directory (`C:`, `C:.`, `C:x`) is
-somewhere unknown for `start /d` and `pwsh -wd`, whatever a `cd` without `/d`
-set on that drive; a folder only known when it runs is somewhere unknown too.
-So `start /d C: cmd /c rd /s /q System32` is risky whatever came before it:
-the guard does not follow the drive's working directory into the program it
-starts. A drive the started program is on is only a guess.
-
 A variable that names a place (`$HOME`, `%TEMP%`, `$env:TEMP`) stops naming it
 once the line sets it anywhere: `TMPDIR=$HOME`, `set TEMP=...`, `unset HOME`.
 
@@ -1137,41 +1069,29 @@ a path.
   `-Depth` and `-Attributes` take a value, which is never read as the path.
   A common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
-  from that drive's own working directory, and so is a bare `C:`. On the drive
-  the working directory is on, it is relative to it; on any other drive it is
-  outside the workspace. In cmd, while the drive the line is on is certain,
-  after a `cd` on that drive `C:x` is `x` from the folder the line is in, and
-  after a `cd` without `/d` to another drive (`cd C:\Users\me\.ssh` from `D:`,
-  which sets that drive's working directory and leaves the line on `D:`) it is
-  under the folder that `cd` set, so `copy C:id_rsa x.txt` reads
-  `C:\Users\me\.ssh\id_rsa` and is judged as that key, and `x.txt` is in the
-  line's own folder. A later `cd C:sub` goes on from that folder. The folder
-  is followed only when the `cd` surely ran in the line's own process. After a
-  `cd` that may not run (the right side of `||` or `&&`, either side of `||`
-  for what follows it, an `if`, a `for`, a pipe stage, which cmd runs in a
-  child, or behind `start`, a new process) the drive's folder is unknown, and
-  `C:x` on the line's own drive is left as written, not put under the folder
-  the line is in, which may be one the `cd` never reached. The folder of every
-  other drive is unknown too after a `cd` given a variable (`cd %X%`, which
-  may name any drive) and after a `call` (a batch file or label that runs in
-  the same process and may `cd` anywhere), and so after a batch file run
-  without `call` (`x.bat`, `x.cmd`), which runs in the same process the same
-  way, and after a name with no extension (`x`, `npm`, `mvn`), which PATHEXT
-  may resolve to a batch file (`x.bat`, `npm.cmd`), and after a name with a
-  wildcard (`x.b?t`, `x.*`), which cmd finds by a file search where `?` and `*`
-  match. A cmd builtin, a drive
-  switch and a name with another extension (`x.exe`) change nothing. What
-  follows a `set` value is run in the line's own process after `&`, `&&` and
-  `||` (only a lone `|`, a pipe, runs it in a child), but only a lone `&` makes
-  it sure: a `set` can fail (`set /p` on an empty input, `set /a` on a division
-  by zero), so what follows `&&` or `||` may not run. A file
-  the command redirects is read before the command runs, so it is resolved
-  before the folders are given up. This changes how a drive's folder and
-  `C:x` are read only: a plain relative path after `npm install` is as before. When the
-  folder is not known (the drive is only a guess, or the `cd` named a path from
-  the drive's own working directory that nothing set), `C:x` is unknown after a
-  `cd`, except that after `cd C:` a relative path is `C:x`, a path on that
-  drive.
+  from that drive's own working directory, and so is a bare `C:`. In
+  PowerShell, on the drive the working directory is on, it is relative to it;
+  on any other drive it is outside the workspace. After a `cd` it is unknown,
+  except that after `cd C:` a relative path is `C:x`, a path on that drive.
+  cmd keeps a working directory for every drive and the line never shows where
+  each one is, so in cmd three rules hold:
+  - `cd` and `chdir` without `/d` to a path on another drive set that drive's
+    own working directory and do not move the line, so `cd D:\ws\a\b\c & rd /s
+    /q ..\..` from `C:\Users\me\repo` deletes `C:\Users`. `/d`, `pushd` and a
+    drive switch (`D:`) change the drive, and `cd D:` alone moves nothing. A
+    move to another drive may not have run (a branch, a pipe stage, a `cd /d`
+    that fails), so after one the drive is a guess: a `cd` without `/d` to a
+    path on a third drive leaves the folder unknown, as does any `cd` while the
+    drive is not known (after `popd`, a path or a program only known when it
+    runs, `/d` written other than first).
+  - Every drive-relative path is unknown, on the drive the line is on or on
+    another: `D:x`, `D:..\x`, `D:` and `C:x` are never safe to delete or
+    write. Read from the line's own folder, one that lands on a key or another
+    protected place is still judged as that.
+  - A `cd`, `chdir` or `pushd` with more than one word (`cd My Folder`) goes to
+    the words joined as written, the spaces between them kept and none after
+    the last. The folder is unknown when any word is only known when it runs,
+    or a later word is `/d`.
 - A listing hands its pattern on as written, so it is read the same way: the
   drive is not part of the pattern (`Get-ChildItem C:* | Remove-Item` takes the
   whole working directory), and a provider-qualified one

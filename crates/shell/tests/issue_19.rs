@@ -25,7 +25,7 @@ fn a_script_the_line_writes_and_runs_with_file_is_a_script_nobody_can_read() {
             ".\\build.ps1",
             ". .\\profile.ps1",
             "Invoke-Command -FilePath scripts\\build.ps1",
-            "pwsh -WorkingDirectory sub -File i.ps1",
+            "powershell -WorkingDirectory sub -File i.ps1",
             "powershell -File",
             // Something else written first.
             "'x' > out.txt; powershell -File build.ps1",
@@ -159,8 +159,8 @@ fn a_script_the_line_writes_and_runs_with_file_is_a_script_nobody_can_read() {
             ("Set-Location $d; 'x' > i.ps1; powershell -File i.ps1", Rule::Unknown),
             ("'x' > i.ps1; Set-Location $d; powershell -File i.ps1", Rule::Unknown),
             ("'x' > i.ps1; powershell -File $f", Rule::Unknown),
-            ("'x' > sub\\i.ps1; pwsh -WorkingDirectory sub -File i.ps1", Rule::Unknown),
-            ("'x' > i.ps1; pwsh -wd sub -File i.ps1", Rule::Unknown),
+            ("'x' > sub\\i.ps1; powershell -WorkingDirectory sub -File i.ps1", Rule::Unknown),
+            ("'x' > i.ps1; powershell -wd sub -File i.ps1", Rule::Unknown),
             ("'x' > i.ps1; pwsh -WorkingDirectory sub i.ps1", Rule::Unknown),
         ],
     );

@@ -7,7 +7,7 @@
 use crate::dotglob;
 use crate::powershell::Params;
 use crate::startup;
-use crate::unit::{self, has_flag, Arg, Origin, Reads, Split, Unit};
+use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
 mod find;
@@ -21,10 +21,7 @@ pub(crate) use interpreters::{
     after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
-use wrappers::{
-    cmd, env, env_sets, powershell, powershell_folder, rsh, runner, start, start_folder,
-    start_process, tmux, xargs,
-};
+use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
 pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
 
 /// How many wrappers may stand in front of a program before the line is
@@ -82,45 +79,10 @@ fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
 /// left, so a line past them is too wrapped however it forks.
 fn add_launched(
     split: &mut Split,
-    unit: Unit,
+    mut unit: Unit,
     depth: usize,
     wrappers: usize,
     given: Option<Launch>,
-) {
-    // A program that is told the folder to start another in (`start /d`,
-    // `pwsh -WorkingDirectory`) runs it there: the line is put back where
-    // it was when everything it starts has been read.
-    let mut entered = Vec::new();
-    add_in(split, unit, depth, (wrappers, given), &mut entered);
-    while let Some(place) = entered.pop() {
-        split.restore_dir(place);
-    }
-}
-
-/// The folder the program `unit` (named `key`) starts another in, and the
-/// shell that reads it, when it names one.
-fn started_in(unit: &Unit, key: &str) -> Option<(Arg, Shell)> {
-    match key {
-        "start" if unit.shell == Shell::Cmd => start_folder(&unit.args).map(|f| (f, Shell::Cmd)),
-        // Only `pwsh` has `-WorkingDirectory`: Windows PowerShell reads an
-        // unknown parameter as the start of the command text.
-        "pwsh" => powershell_folder(&unit.args).map(|folder| (folder, Shell::PowerShell)),
-        "start-process" if unit.shell == Shell::PowerShell => {
-            let params = Params::read(&unit.args);
-            let folder = params.values(&["workingdirectory"]).last().copied()?;
-            Some((folder.clone(), Shell::PowerShell))
-        }
-        _ => None,
-    }
-}
-
-/// [`add_launched`], with the places to put the line back to in `entered`.
-fn add_in(
-    split: &mut Split,
-    mut unit: Unit,
-    depth: usize,
-    (wrappers, given): (usize, Option<Launch>),
-    entered: &mut Vec<unit::Place>,
 ) {
     unit.depth = depth;
     let mut given = given;
@@ -148,11 +110,6 @@ fn add_in(
             };
             for name in names {
                 split.set(&name);
-            }
-        }
-        if given.is_none() {
-            if let Some((folder, shell)) = started_in(&unit, &key) {
-                entered.push(split.enter(&folder, shell));
             }
         }
         match given.take().unwrap_or_else(|| launch(&key, &unit)) {
@@ -344,14 +301,12 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
     let Unit {
         shell,
         args,
-        origins,
         mut wrappers,
         stage,
         startup,
         depth,
         ..
     } = unit;
-    let origins: Vec<Origin> = origins.into_iter().skip(start + 1).collect();
     let mut rest = args.into_iter().skip(start);
     let program = rest.next().unwrap_or(Arg::Unknown(String::new()));
     let mut args: Vec<Arg> = rest.collect();
@@ -374,7 +329,6 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         shell,
         program,
         args,
-        origins,
         wrappers,
         stage,
         reads: Reads::Nothing,
@@ -618,7 +572,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             interpreter(key, args)
         }
         "cmd" => cmd(args),
-        "powershell" | "pwsh" => powershell(args, key == "pwsh"),
+        "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
             Launch::Downloaded
         }

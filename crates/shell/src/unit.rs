@@ -62,23 +62,6 @@ impl Arg {
     }
 }
 
-/// Where a cmd or PowerShell argument's value came from, which says whether
-/// the drive in it was named by the line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Origin {
-    /// Written out in the line (a literal `~` in cmd is a folder called `~`).
-    #[default]
-    Typed,
-    /// Starts with a variable that names a place under home (`%USERPROFILE%`,
-    /// `%TEMP%`, `%TMP%`, `%APPDATA%`, `%LOCALAPPDATA%` in cmd): on home's
-    /// drive.
-    Home,
-    /// Holds a variable for a system folder (`%SystemRoot%`, `%windir%`,
-    /// `%SystemDrive%`, `%ProgramFiles%`, `%ProgramData%`, `$env:SystemRoot`):
-    /// the `C:` in its value is a guess, as Windows may be on another drive.
-    System,
-}
-
 /// Where a unit sits in a pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stage {
@@ -108,9 +91,6 @@ pub(crate) struct Unit {
     pub(crate) shell: Shell,
     pub(crate) program: Arg,
     pub(crate) args: Vec<Arg>,
-    /// Where each argument's value came from, by position (shorter than
-    /// `args`, or empty, for the ones that were typed).
-    pub(crate) origins: Vec<Origin>,
     /// The wrappers taken off in front of it, by name: `sudo`, `env`.
     pub(crate) wrappers: Vec<String>,
     pub(crate) stage: Option<Stage>,
@@ -213,7 +193,6 @@ impl Unit {
             shell,
             program,
             args,
-            origins: Vec::new(),
             wrappers: Vec::new(),
             stage,
             reads: Reads::Nothing,
@@ -226,22 +205,6 @@ impl Unit {
             unread_item: false,
             depth: 0,
         }
-    }
-
-    /// The unit with where each of its arguments came from.
-    pub(crate) fn with_origins(mut self, origins: Vec<Origin>) -> Self {
-        self.origins = origins;
-        self
-    }
-
-    /// Where the value of `arg`, one of this unit's arguments, came from.
-    fn origin_of(&self, arg: &Arg) -> Origin {
-        self.args
-            .iter()
-            .position(|other| std::ptr::eq(other, arg))
-            .and_then(|at| self.origins.get(at))
-            .copied()
-            .unwrap_or_default()
     }
 
     pub(crate) fn scope(&self) -> Scope<'_> {
@@ -416,48 +379,23 @@ pub(crate) struct Split {
     pub(crate) parents: HashMap<usize, Stage>,
     /// Where the `cd`s read so far moved to.
     dir: Option<Arg>,
-    /// The drive the line is on (upper case), which cmd's `cd` without `/d`
-    /// does not leave; `None` when it is not known. Beside it, whether it is
-    /// certain: a `cd /d`, `pushd` or `D:` to another drive makes it a guess,
-    /// as it may sit in a branch, in a pipe stage or behind `start`, or fail,
-    /// and then the line never left its drive.
-    drive: (Option<char>, bool),
-    /// The working directory each drive other than the line's own has, when
-    /// a `cd` without `/d` set it (`cd C:\x` from `D:`), by drive letter: a
-    /// path on that drive's own working directory (`C:name`) is under it.
-    /// `Arg::Unknown` when the `cd` named a place that is not whole. Only
-    /// read while the line's drive is certain (see [`Split::on_drive`]).
-    /// A `cd` that may not have run (in a branch, a pipe stage, behind
-    /// `start`), a `cd` given a variable, and a `call` leave the drive's
-    /// folder `Arg::Unknown`: the folder is followed only when the `cd`
-    /// surely ran.
-    drive_dirs: Vec<(char, Arg)>,
-    /// Whether a `cd` that may not have run was read (in a branch, a pipe
-    /// stage, behind `start`), or a `call` that may have run one: the
-    /// folder the line is in is then only a guess, so a path on the line's
-    /// own drive's working directory (`C:x`) is not put under it.
-    maybe_moved: bool,
-    /// The drive the home directory is on (upper case), `None` when it is
-    /// on no drive: where a path that starts at home (`~`, which cmd's
-    /// `%TEMP%` and `%USERPROFILE%` become) is.
-    home_drive: Option<char>,
     /// Whether `dir` is a place the line moved to that may hold code (see
     /// [`holds_code`]) or is only known when it runs, kept as the `cd`s are
     /// read so the folder's whole name is not read again after each one.
     dir_code: bool,
+    /// In cmd, the drive the line is on, upper case: where it started, then
+    /// where a drive switch, `cd /d` or `pushd` took it. `None` when it is
+    /// on no drive or is only known when it runs.
+    drive: Option<char>,
+    /// Whether `drive` is only a guess: the move that put the line there
+    /// (`cd /d`, `pushd`, `D:`) may not have run.
+    drive_guess: bool,
+    /// The drive the home directory is on.
+    home_drive: Option<char>,
     /// Whether the line makes a PowerShell drive (`New-PSDrive`, `ndr`,
     /// `mount`) anywhere, before or after a `cd` in its text: a single letter
     /// in a `cd` may be one of another provider, not a disk.
     psdrive: bool,
-    /// How this reading takes a `cd` that may or may not move the line, and
-    /// one with more than one word (see [`Outcome`]).
-    outcome: Outcome,
-    /// Whether a `cd` was read that may or may not have moved the line: the
-    /// line is then judged a second time with each such `cd` as a move.
-    unsure_seen: bool,
-    /// Whether a `cd` with more than one word was read: the line is then
-    /// judged with its target as the words joined, and as the first word.
-    words_seen: bool,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -615,9 +553,8 @@ pub(crate) struct Began {
 pub(crate) struct Place {
     dir: Option<Arg>,
     dir_code: bool,
-    drive: (Option<char>, bool),
-    drive_dirs: Vec<(char, Arg)>,
-    maybe_moved: bool,
+    drive: Option<char>,
+    drive_guess: bool,
     moves: usize,
     later: usize,
 }
@@ -733,12 +670,6 @@ impl Split {
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
-        if unit.shell == Shell::Cmd {
-            unit.args = std::mem::take(&mut unit.args)
-                .into_iter()
-                .map(|arg| self.on_drive(Shell::Cmd, arg))
-                .collect();
-        }
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
         if let Some(change) = unit
@@ -766,140 +697,126 @@ impl Split {
         if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
             self.psdrive = true;
         }
-        if let Some((target, origin)) = moves_from(&unit, self.outcome) {
-            if joined_words(&unit).is_some() {
-                self.words_seen = true;
+        let mut moved = moves_to(&unit);
+        if unit.shell == Shell::Cmd {
+            // A program only known when it runs may be a drive switch.
+            if unit.program.is_unknown() {
+                self.change_drive(None);
             }
-            let mut effect = match unit.shell {
-                Shell::Cmd => cmd_effect(&unit, (&target, origin), self.drive, self.home_drive),
-                Shell::PowerShell => {
-                    ps_effect(&unit, (&target, origin), self.drive, self.home_drive)
+            moved = moved.and_then(|target| self.cmd_target(&unit, target));
+        }
+        if let Some(target) = moved {
+            self.moves += 1;
+            self.moved += 1;
+            let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
+            // Once the line makes a drive, a drive letter may name it: the
+            // place is only known when it runs.
+            let dir = match dir {
+                Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
+                    Arg::Unknown(text)
                 }
-                Shell::Posix => Effect::Moves(None, false),
+                dir => dir,
             };
-            // Whether the `cd` surely ran in the line's own process: not in
-            // a branch (`||`, `&&`, `if`), a pipe stage (cmd runs each in a
-            // child) or behind `start` (a new process).
-            if let Effect::Unsure(drive) = effect {
-                self.unsure_seen = true;
-                if self.outcome != Outcome::Stayed {
-                    effect = Effect::Moves(drive, false);
+            // The folder holds code when the target does (it replaced the
+            // folder, or was put after it), or when the folder did and the
+            // target was put after it: a join is longer than its target.
+            // Only the target is read, never the whole folder again.
+            let target_text = target.known();
+            self.dir_code = match &dir {
+                Arg::Known(text) => {
+                    target_text.is_none_or(holds_code)
+                        || (self.dir_code && target_text != Some(text.as_str()))
                 }
-            }
-            let surely = self.branches == 0 && unit.stage.is_none() && unit.wrappers.is_empty();
-            self.maybe_moved |= !surely;
-            // A folder that is not known may be on any drive.
-            if unit.shell == Shell::Cmd && !matches!(target, Arg::Known(_)) {
-                self.unset_drive_dirs();
-            }
-            match effect {
-                Effect::Stays => self.set_drive_dir(&target, origin, surely),
-                Effect::Unsure(drive) => {
-                    self.moves += 1;
-                    self.moved += 1;
-                    self.set_dir(Arg::Unknown(target.text().to_string()), &target);
-                    self.drive = (drive, false);
-                }
-                Effect::Moves(drive, sure) => {
-                    self.moves += 1;
-                    self.moved += 1;
-                    let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
-                    // Once the line makes a drive, a drive letter may name
-                    // it: the place is only known when it runs.
-                    let dir = match dir {
-                        Arg::Known(text)
-                            if self.psdrive && crate::path::drive_of(&text).is_some() =>
-                        {
-                            Arg::Unknown(text)
-                        }
-                        dir => dir,
-                    };
-                    self.set_dir(dir, &target);
-                    self.drive = (drive, sure && drive.is_some());
-                }
-            }
+                _ => true,
+            };
+            self.pwd.unplain |= self.dir_code;
+            self.dir = Some(dir);
         }
         self.units.push(unit);
     }
 
-    /// A `cd` without `/d` to `target` on a drive other than the line's own
-    /// sets that drive's working directory and leaves the line where it was:
-    /// note the folder, so a path on the drive's own working directory
-    /// (`C:name`) is read under it. A folder that is not a whole path (a
-    /// path from the drive's own working directory, which was not set before)
-    /// is only known when it runs, and so is the folder of a `cd` that may not
-    /// have run (`surely` is `false`): the drive keeps the folder it had or
-    /// the one the `cd` names.
-    fn set_drive_dir(&mut self, target: &Arg, origin: Origin, surely: bool) {
-        let Arg::Known(text) = target else { return };
-        let Named::On(letter) = named_drive(text, Shell::Cmd, origin, self.home_drive) else {
-            return;
+    /// Where the cmd unit `unit`, which moves to `target`, takes the line,
+    /// and `None` when it leaves the line where it was. `cd` and `chdir`
+    /// without `/d` set the working directory of the drive they name and do
+    /// not change the drive the line is on, so a path on another drive does
+    /// not move the line; `/d`, `pushd` and a drive switch (`D:`) change the
+    /// drive. A move to another drive may not have run (a branch, a failed
+    /// `cd /d`), so the drive the line is then on is only a guess; when it is
+    /// not known, or only guessed, and the path names another drive, the
+    /// path may or may not have moved the line, so the place is not known
+    /// either.
+    fn cmd_target(&mut self, unit: &Unit, target: Arg) -> Option<Arg> {
+        if let Some(letter) = cmd_drive_switch(unit) {
+            self.change_drive(Some(letter.to_ascii_uppercase()));
+            return Some(target);
+        }
+        let key = unit.key().unwrap_or_default();
+        match key.as_str() {
+            "popd" => {
+                self.change_drive(None);
+                return Some(target);
+            }
+            "cd" | "chdir" | "pushd" => {}
+            // `cd..`, `cd\`: no drive in the name.
+            _ => return Some(target),
+        }
+        let Some(text) = target.known() else {
+            // A path only known when it runs may carry `/d`.
+            self.change_drive(None);
+            return Some(target);
         };
-        let whole = text
-            .get(2..)
-            .is_some_and(|rest| rest.starts_with(['\\', '/']))
-            || at_home(text);
-        let dir = if whole && surely {
-            target.clone()
+        // `/dD:\x` written together is read by cmd as `/d` and a path.
+        let glued = unit.args.iter().filter_map(Arg::known).any(|arg| {
+            arg.get(..2)
+                .is_some_and(|start| start.eq_ignore_ascii_case("/d"))
+                && arg.len() > 2
+                && !is_switch(arg)
+        });
+        if glued {
+            self.change_drive(None);
+            return Some(Arg::Unknown(text.to_string()));
+        }
+        let switch = unit
+            .args
+            .first()
+            .and_then(Arg::known)
+            .is_some_and(|arg| arg.eq_ignore_ascii_case("/d"));
+        // The drive a path names: its own letter, or home's for `~`.
+        let named = if let Some(letter) = crate::path::drive_of(text) {
+            Some(Some(letter))
+        } else if text
+            .strip_prefix('~')
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
+        {
+            Some(self.home_drive)
         } else {
-            Arg::Unknown(text.clone())
+            None
         };
-        self.drive_dirs.retain(|(held, _)| *held != letter);
-        self.drive_dirs.push((letter, dir));
+        if switch || key == "pushd" {
+            // A network path is mapped to a drive letter the line does not
+            // name.
+            if text.starts_with(r"\\") || text.starts_with("//") {
+                self.change_drive(None);
+            } else if let Some(there) = named {
+                self.change_drive(there);
+            }
+            return Some(target);
+        }
+        match named {
+            // Only the drive's own working directory is shown: nothing moves.
+            Some(Some(_)) if text.len() == 2 => None,
+            None => Some(target),
+            Some(there) if there.is_some() && there == self.drive => Some(target),
+            Some(_) if self.drive.is_some() && !self.drive_guess => None,
+            Some(_) => Some(Arg::Unknown(text.to_string())),
+        }
     }
 
-    /// Every folder a `cd` without `/d` set on another drive is no longer
-    /// known: a `cd` to a place only known when it runs may be on any of
-    /// them, and a called batch file or label, which runs in this process,
-    /// may `cd` on any drive.
-    pub(crate) fn unset_drive_dirs(&mut self) {
-        for (letter, dir) in &mut self.drive_dirs {
-            *dir = Arg::Unknown(format!("{letter}:"));
-        }
-    }
-
-    /// A `call` ran a batch file or a label in this very process: it may
-    /// have run any `cd`, on any drive.
-    pub(crate) fn called(&mut self) {
-        self.maybe_moved = true;
-        self.unset_drive_dirs();
-    }
-
-    /// `arg`, a cmd argument, with a path on a drive's own working directory
-    /// (`C:name`, `C:`) put under the folder that is the working directory
-    /// of that drive, when the line knows it: the folder a `cd` without `/d`
-    /// set on a drive the line is not on, or the folder the line is in when
-    /// that is the drive it is certainly on. Left as written when the
-    /// working directory of that drive is the one the caller gave (no `cd`
-    /// has moved the line, and no other drive's folder was set) or when
-    /// which drive the line is on is not certain.
-    pub(crate) fn on_drive(&self, shell: Shell, arg: Arg) -> Arg {
-        let (Shell::Cmd, (Some(on), true), Arg::Known(text)) = (shell, self.drive, &arg) else {
-            return arg;
-        };
-        let Some(letter) = crate::path::drive_of(text) else {
-            return arg;
-        };
-        let rest = &text[2..];
-        if rest.starts_with(['\\', '/']) {
-            return arg;
-        }
-        let rest = if rest.is_empty() { "." } else { rest };
-        if letter == on {
-            // The line's own folder: what the resolver joins a relative path
-            // to. Without a `cd`, that is the caller's working directory.
-            // After a `cd` that may not have run it is not known: the path
-            // is left as written.
-            return match self.dir {
-                Some(_) if !self.maybe_moved => Arg::Known(format!("./{rest}")),
-                _ => arg,
-            };
-        }
-        match self.drive_dirs.iter().find(|(held, _)| *held == letter) {
-            Some((_, Arg::Known(dir))) => Arg::Known(format!("{dir}/{rest}")),
-            Some((_, Arg::Unknown(_))) => Arg::Unknown(text.clone()),
-            _ => arg,
-        }
+    /// The line is now on `to` (`None`: not known). It is surely there only
+    /// when it surely was, and the move did not change the drive.
+    fn change_drive(&mut self, to: Option<char>) {
+        self.drive_guess = !(to.is_some() && to == self.drive && !self.drive_guess);
+        self.drive = to;
     }
 
     /// Note that `inside`, a run of units, ran for the command whose own units
@@ -966,7 +883,6 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to.
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
-        let target = self.on_drive(shell, target);
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.write_in_body.push(self.writes.len());
@@ -993,7 +909,6 @@ impl Split {
     /// Add a redirect's read, made where the line has moved to.
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
         let dir = self.dir.clone();
-        let target = self.on_drive(shell, target);
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.read_in_body.push(self.reads.len());
@@ -1232,68 +1147,10 @@ impl Split {
             dir: self.dir.clone(),
             dir_code: self.dir_code,
             drive: self.drive,
-            drive_dirs: self.drive_dirs.clone(),
-            maybe_moved: self.maybe_moved,
+            drive_guess: self.drive_guess,
             moves: self.moves,
             later: self.later.len(),
         }
-    }
-
-    /// A unit cmd reads differently from the way the guard does (a name with
-    /// `^`, `"`, `;`, `,`, `=` or a variable in it) may be a drive switch,
-    /// `cd /d` or `pushd` the guard does not show: the drive the line is on
-    /// is no longer known.
-    pub(crate) fn forget_drive(&mut self) {
-        self.drive = (None, false);
-    }
-
-    /// The line is somewhere that is only known when it runs, on a drive
-    /// that is not known: as after a `cd` whose effect cannot be told.
-    pub(crate) fn lose_place(&mut self, text: &str) {
-        self.moves += 1;
-        self.moved += 1;
-        self.set_dir(Arg::Unknown(text.to_string()), &Arg::Unknown(String::new()));
-        self.drive = (None, false);
-    }
-
-    /// Make `dir` the folder the line is in, after a move to `target`. The
-    /// folder holds code when the target does (it replaced the folder, or
-    /// was put after it), or when the folder did and the target was put after
-    /// it: a join is longer than its target. Only the target is read, never
-    /// the whole folder again. A folder only known when it runs holds code.
-    fn set_dir(&mut self, dir: Arg, target: &Arg) {
-        let target_text = target.known();
-        self.dir_code = match &dir {
-            Arg::Known(text) => {
-                target_text.is_none_or(holds_code)
-                    || (self.dir_code && target_text != Some(text.as_str()))
-            }
-            _ => true,
-        };
-        self.pwd.unplain |= self.dir_code;
-        self.dir = Some(dir);
-    }
-
-    /// Run what follows in `folder`, which a program that starts another
-    /// (`start /d`, `pwsh -WorkingDirectory`) names as the one it runs in,
-    /// read by `shell`; the place to put the line back to when it ends. A
-    /// folder on a drive's own working directory (`C:`, `C:x`) is not a
-    /// place the line shows, and a drive the started program is on is a
-    /// guess, as it may not start.
-    pub(crate) fn enter(&mut self, folder: &Arg, shell: Shell) -> Place {
-        let place = self.dir_snapshot();
-        let dir = crate::path::within(self.dir.as_ref(), folder, shell);
-        self.drive = match &dir {
-            Arg::Known(text) if is_network(text) => (None, false),
-            Arg::Known(text) => match crate::path::drive_of(text) {
-                Some(letter) => (Some(letter), false),
-                None if text.starts_with('~') => (None, false),
-                None => self.drive,
-            },
-            _ => (None, false),
-        };
-        self.set_dir(dir, folder);
-        place
     }
 
     /// Put the line back where it was. An action that runs later, set inside
@@ -1312,8 +1169,7 @@ impl Split {
         self.dir = place.dir;
         self.dir_code = place.dir_code;
         self.drive = place.drive;
-        self.drive_dirs = place.drive_dirs;
-        self.maybe_moved = place.maybe_moved;
+        self.drive_guess = place.drive_guess;
         self.moves = place.moves;
     }
 
@@ -1415,221 +1271,6 @@ impl Split {
     }
 }
 
-/// The drive a bare `D:` switches to: cmd reads it as the program `D` given
-/// `:`, PowerShell as a function named `D:`. A cmd program that is a drive
-/// and its colon (`%SystemDrive%`, `"C:"`) is one too, see [`drive_program`].
-fn drive_switch(unit: &Unit) -> Option<char> {
-    let lower = unit.program.known()?.to_ascii_lowercase();
-    let letter = match unit.shell {
-        Shell::Cmd if drive_program(unit) => lower.chars().next(),
-        Shell::Cmd => (lower.len() == 1 && unit.args.first().and_then(Arg::known) == Some(":"))
-            .then(|| lower.chars().next())?,
-        Shell::PowerShell => {
-            (lower.len() == 2 && lower.ends_with(':')).then(|| lower.chars().next())?
-        }
-        Shell::Posix => None,
-    };
-    letter
-        .filter(char::is_ascii_alphabetic)
-        .map(|letter| letter.to_ascii_uppercase())
-}
-
-/// Whether the cmd program of `unit` is a drive letter and its colon whole
-/// (`C:`): the word a variable (`%SystemDrive%`) or quotes (`"C:"`) leave
-/// where a typed `C:` is the program `C` given `:`. cmd switches to that
-/// drive, which is a guess when a variable names it.
-fn drive_program(unit: &Unit) -> bool {
-    unit.program.known().is_some_and(|program| {
-        let mut chars = program.chars();
-        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-            && chars.next() == Some(':')
-            && chars.next().is_none()
-    })
-}
-
-/// What a `cd` does to where a cmd line is.
-enum Effect {
-    /// It moves the line, onto this drive (`None` when that is not known),
-    /// which is certain or a guess (`true` when certain).
-    Moves(Option<char>, bool),
-    /// It sets another drive's working directory and leaves the line where
-    /// it was. Only said while the drive the line is on is certain.
-    Stays,
-    /// Whether it moves cannot be told: the line is somewhere unknown, on a
-    /// drive that is not known (`None`).
-    Unsure(Option<char>),
-}
-
-/// Whether `text` names a network path (`\\host\share`, `//host/share`) or a
-/// device path (`\\?\C:\`, `\\.\C:\`), which also start with two separators.
-fn is_network(text: &str) -> bool {
-    text.starts_with("\\\\") || text.starts_with("//")
-}
-
-/// Whether `text` starts at the home directory: `~`, which cmd's `%TEMP%`,
-/// `%USERPROFILE%` and the like become.
-fn at_home(text: &str) -> bool {
-    text.strip_prefix('~')
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
-}
-
-/// The drive a path names.
-enum Named {
-    /// This drive, by its letter or because the path starts at home.
-    On(char),
-    /// The path starts at a home that is on no drive.
-    Nowhere,
-    /// The path names no drive.
-    None,
-}
-
-/// The drive `text` names, from its letter or from the home directory it
-/// starts at. In cmd a `~` is home only when a variable put it there
-/// (`origin` is [`Origin::Home`]): a `~` typed in the line is a folder of
-/// that name, on the line's own drive. PowerShell expands a typed `~`.
-fn named_drive(text: &str, shell: Shell, origin: Origin, home_drive: Option<char>) -> Named {
-    let home = match shell {
-        Shell::Cmd => origin == Origin::Home && at_home(text),
-        _ => at_home(text),
-    };
-    if let Some(letter) = crate::path::drive_of(text) {
-        Named::On(letter)
-    } else if home {
-        home_drive.map_or(Named::Nowhere, Named::On)
-    } else {
-        Named::None
-    }
-}
-
-/// What the cmd unit `unit`, which moves to `target` (with where its value
-/// came from), does to where the line is, the line being on `drive` (with
-/// whether that is certain) and the home directory on `home_drive`. `cd`
-/// without `/d` does not change the drive: for a path on another drive it
-/// sets that drive's own working directory and the line stays; `/d` changes
-/// both, as `pushd` and `D:` do. None of them can change the drive when it
-/// names the drive the line is on; to another drive each may sit in a branch
-/// or a pipe stage, or fail, so the drive is then only a guess, and a `cd`
-/// without `/d` to a path on a drive other than the guess leaves the line
-/// somewhere unknown. Nothing shows that cmd refuses a network or device
-/// path (`\\host\share`, `\\?\C:\`) as a working directory, so a `cd` to one
-/// leaves the line somewhere unknown. The drive in a system folder's
-/// variable (`%SystemRoot%`) is only a guess, so it never leaves the line
-/// where it was and puts it on an unknown drive.
-fn cmd_effect(
-    unit: &Unit,
-    (target, origin): (&Arg, Origin),
-    (drive, sure): (Option<char>, bool),
-    home_drive: Option<char>,
-) -> Effect {
-    // A move onto `there`: certain only when the line was certainly there.
-    let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
-    if let Some(letter) = drive_switch(unit) {
-        // A program that is the drive whole is named by a variable or in
-        // quotes, and `%SystemDrive%` may not be `C:`: the drive is a guess.
-        if drive_program(unit) {
-            return Effect::Moves(None, false);
-        }
-        return onto(Some(letter));
-    }
-    let key = unit.key().unwrap_or_default();
-    match key.as_str() {
-        "popd" => return Effect::Moves(None, false),
-        "pushd" => {
-            // A network path is mapped to a drive letter the line does not
-            // name, so the line is on an unknown drive then.
-            return match target.known() {
-                Some(text) if is_network(text) => Effect::Moves(None, false),
-                Some(_) if origin == Origin::System => Effect::Moves(None, false),
-                Some(text) => match named_drive(text, Shell::Cmd, origin, home_drive) {
-                    Named::On(there) => onto(Some(there)),
-                    Named::Nowhere => Effect::Moves(None, false),
-                    Named::None => onto(drive),
-                },
-                None => Effect::Moves(None, false),
-            };
-        }
-        "cd" | "chdir" => {}
-        // `cd..`, `cd\`: no drive in them, but a network path can follow.
-        _ => {
-            return match target.known() {
-                Some(text) if is_network(text) => Effect::Unsure(None),
-                _ => Effect::Moves(drive, sure),
-            };
-        }
-    }
-    let is_switch = |arg: &Arg| arg.known().is_some_and(|t| t.eq_ignore_ascii_case("/d"));
-    let leading = unit.args.first().is_some_and(is_switch);
-    let anywhere = unit.args.iter().any(is_switch);
-    let Some(text) = target.known() else {
-        return if anywhere {
-            Effect::Moves(None, false)
-        } else {
-            Effect::Moves(drive, sure)
-        };
-    };
-    if is_network(text) {
-        return Effect::Unsure(None);
-    }
-    if origin == Origin::System {
-        return if leading {
-            Effect::Moves(None, false)
-        } else {
-            Effect::Unsure(None)
-        };
-    }
-    let there = match named_drive(text, Shell::Cmd, origin, home_drive) {
-        Named::On(there) => there,
-        // Home is on no drive: where it is, and whether `cd` leaves the
-        // line, cannot be told.
-        Named::Nowhere if leading => return Effect::Moves(None, false),
-        Named::Nowhere => return Effect::Unsure(None),
-        Named::None => return Effect::Moves(drive, sure),
-    };
-    if leading {
-        onto(Some(there))
-    } else if anywhere {
-        Effect::Unsure(None)
-    } else {
-        match drive {
-            Some(here) if here == there => Effect::Moves(drive, sure),
-            Some(_) if sure => Effect::Stays,
-            _ => Effect::Unsure(None),
-        }
-    }
-}
-
-/// What the PowerShell unit `unit`, which moves to `target`, does to where a
-/// line that may run `cmd` is: a move to a path with a drive letter (or at
-/// home) is onto that drive, only a guess unless the line was certainly
-/// there; a relative path keeps the drive and whether it is certain; a
-/// provider path (`Env:`, `HKLM:`), a network path, a system folder's
-/// variable (`$env:SystemRoot`, whose drive is a guess) or an unknown one
-/// leaves the drive unknown.
-fn ps_effect(
-    unit: &Unit,
-    (target, origin): (&Arg, Origin),
-    (drive, sure): (Option<char>, bool),
-    home_drive: Option<char>,
-) -> Effect {
-    let onto = |there: Option<char>| Effect::Moves(there, sure && there == drive);
-    if let Some(letter) = drive_switch(unit) {
-        return onto(Some(letter));
-    }
-    let Some(text) = target.known() else {
-        return Effect::Moves(None, false);
-    };
-    if is_network(text) || origin == Origin::System {
-        return Effect::Moves(None, false);
-    }
-    match named_drive(text, Shell::PowerShell, origin, home_drive) {
-        Named::On(there) => onto(Some(there)),
-        Named::Nowhere => Effect::Moves(None, false),
-        // A provider path (`Env:`, `Microsoft.PowerShell.Core\Registry::`).
-        Named::None if text.contains(':') => Effect::Moves(None, false),
-        Named::None => Effect::Moves(drive, sure),
-    }
-}
-
 /// Whether a name may hold code or stand for other names once the shell has
 /// it as the working directory: `$(…)`, a backtick, a backslash (`\044(…)`),
 /// or a wildcard, which matches a name the line made but did not write out
@@ -1658,30 +1299,18 @@ fn makes_physical(unit: &Unit) -> bool {
             && unit.args.iter().any(|arg| arg.known() == Some("physical")))
 }
 
+/// The drive a cmd unit switches to: `D:` is read as the program `D` given
+/// `:`.
+fn cmd_drive_switch(unit: &Unit) -> Option<char> {
+    let program = unit.program.known()?;
+    let mut chars = program.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next().is_none() && unit.args.first().and_then(Arg::known) == Some(":"))
+        .then_some(letter)
+}
+
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
-    moves_from(unit, Outcome::Stayed).map(|(target, _)| target)
-}
-
-/// The target of a cmd `cd` (`chdir`, `pushd`) given more than one plain
-/// word, as cmd reads it: the words joined by a space, without the spaces at
-/// the end. `None` for any other unit, and when a word is not known.
-fn joined_words(unit: &Unit) -> Option<String> {
-    if unit.shell != Shell::Cmd || !matches!(unit.key()?.as_str(), "cd" | "chdir" | "pushd") {
-        return None;
-    }
-    let words = plain(&unit.args);
-    if words.len() < 2 {
-        return None;
-    }
-    let texts: Option<Vec<&str>> = words.iter().map(|word| word.known()).collect();
-    Some(texts?.join(" ").trim_end().to_string())
-}
-
-/// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one, and
-/// where the target's value came from.
-fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
-    let typed = |target: Arg| Some((target, Origin::Typed));
     // What a package runner starts is a program (`npx cd src`), not the
     // shell's builtin: it cannot move the shell.
     if unit
@@ -1694,9 +1323,19 @@ fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
-    // show.
-    if let Some(letter) = drive_switch(unit) {
-        return typed(Arg::Unknown(format!("{letter}:")));
+    // show: cmd reads it as the program `D` given `:`, PowerShell as a
+    // function named `D:`.
+    let drive = match unit.shell {
+        Shell::Cmd => cmd_drive_switch(unit).is_some(),
+        Shell::PowerShell => {
+            lower.len() == 2
+                && lower.ends_with(':')
+                && lower.starts_with(|c: char| c.is_ascii_alphabetic())
+        }
+        Shell::Posix => false,
+    };
+    if drive {
+        return Some(Arg::Unknown(format!("{}:", &lower[..1])));
     }
     // `cd..` and `cd\`: cmd and PowerShell read them as one program name.
     if unit.shell != Shell::Posix {
@@ -1705,16 +1344,16 @@ fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
                 .strip_prefix(verb)
                 .is_some_and(|rest| rest.starts_with(['.', '\\', '/']))
             {
-                return typed(Arg::Known(program[verb.len()..].to_string()));
+                return Some(Arg::Known(program[verb.len()..].to_string()));
             }
         }
     }
     let key = unit.key()?;
     match (unit.shell, key.as_str()) {
         (Shell::Posix, "cd" | "chdir") => match operands(&unit.args, &[]).first() {
-            Some(Arg::Known(dash)) if dash == "-" => typed(Arg::Unknown(dash.clone())),
-            Some(target) => typed((*target).clone()),
-            None => typed(Arg::Known("~".to_string())),
+            Some(Arg::Known(dash)) if dash == "-" => Some(Arg::Unknown(dash.clone())),
+            Some(target) => Some((*target).clone()),
+            None => Some(Arg::Known("~".to_string())),
         },
         // `pushd` alone swaps the top of the stack and `pushd +1` rotates
         // it: neither names where it goes.
@@ -1724,46 +1363,16 @@ fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
                     && target.len() > 1
                     && target[1..].chars().all(|c| c.is_ascii_digit())) =>
             {
-                typed(Arg::Known(target.clone()))
+                Some(Arg::Known(target.clone()))
             }
-            Some(other) => typed(Arg::Unknown(other.text().to_string())),
-            None => typed(Arg::Unknown(key)),
+            Some(other) => Some(Arg::Unknown(other.text().to_string())),
+            None => Some(Arg::Unknown(key)),
         },
         (Shell::Posix | Shell::Cmd, "popd") | (Shell::PowerShell, "pop-location") => {
-            typed(Arg::Unknown(key))
+            Some(Arg::Unknown(key))
         }
-        // A target that starts `//` looks like a switch (`/x`), but it can be
-        // a network or device path (`//host/share`, `//?/C:/`): it is read
-        // as the target, whose place is then not known.
-        //
-        // With command extensions on, cmd's `cd` does not split on spaces:
-        // `cd D:\ws\a \..\..` goes to the one folder `D:\ws\a \..\..`. With
-        // more than one plain word the target is not read: it is unknown.
         (Shell::Cmd, "cd" | "chdir" | "pushd") => {
-            let words = plain(&unit.args);
-            match words.first().copied() {
-                // The other reading: it goes to the words as written, and
-                // Windows drops the spaces at the end of the path.
-                Some(first) if words.len() > 1 && outcome == Outcome::Joined => Some((
-                    Arg::Known(joined_words(unit).unwrap_or_default()),
-                    unit.origin_of(first),
-                )),
-                // Or the first word is the folder, and the rest is noise.
-                Some(first) if words.len() > 1 && outcome == Outcome::First => {
-                    Some((first.clone(), unit.origin_of(first)))
-                }
-                Some(first) if words.len() > 1 => Some((
-                    Arg::Unknown(first.text().to_string()),
-                    unit.origin_of(first),
-                )),
-                found => found
-                    .or_else(|| {
-                        unit.args
-                            .iter()
-                            .find(|arg| arg.known().is_some_and(|text| text.starts_with("//")))
-                    })
-                    .map(|target| (target.clone(), unit.origin_of(target))),
-            }
+            plain(&unit.args).first().map(|target| (*target).clone())
         }
         (Shell::PowerShell, "set-location" | "push-location") => {
             let params = crate::powershell::Params::read(&unit.args);
@@ -1782,19 +1391,22 @@ fn moves_from(unit: &Unit, outcome: Outcome) -> Option<(Arg, Origin)> {
                 .values(&["path", "literalpath"])
                 .first()
                 .copied()
-                .or(first);
-            match target {
-                // PowerShell 6.2+ reads `-` and `+` as a step back or
-                // forward in location history, not a folder.
-                Some(Arg::Known(step)) if step == "-" || step == "+" => {
-                    typed(Arg::Unknown(step.clone()))
-                }
-                Some(target) => Some((target.clone(), unit.origin_of(target))),
+                .or(first)
+                .map(|target| match target {
+                    // PowerShell 6.2+ reads `-` and `+` as a step back or
+                    // forward in location history, not a folder.
+                    Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
+                    other => (*other).clone(),
+                });
+            Some(target.unwrap_or_else(|| {
                 // With no path, a stage after the first takes it from the
                 // pipeline; the first goes home.
-                None if unit.stage.is_some_and(|stage| stage.index > 0) => typed(Arg::Unknown(key)),
-                None => typed(Arg::Known("~".to_string())),
-            }
+                if unit.stage.is_some_and(|stage| stage.index > 0) {
+                    Arg::Unknown(key)
+                } else {
+                    Arg::Known("~".to_string())
+                }
+            }))
         }
         _ => None,
     }
@@ -1902,80 +1514,30 @@ fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
     None
 }
 
-/// Split `command`, which starts on `drive` and with home on `home_drive`;
+/// Split `command`, started on the drive `drive` with home on `home_drive`;
 /// `effect` says it is also read for [`crate::effect`].
 pub(crate) fn split(
     command: &str,
     shell: Shell,
-    drive: Option<char>,
-    home_drive: Option<char>,
-    effect: bool,
-) -> Split {
-    read(command, shell, (drive, home_drive), effect, Outcome::Stayed)
-}
-
-/// How a reading takes a `cd` whose outcome is not known.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Outcome {
-    /// The first reading: a `cd` that may not have moved the line leaves its
-    /// folder unknown, and so does a cmd `cd` with more than one word.
-    #[default]
-    Stayed,
-    /// Each such `cd` moved the line, a cmd `cd` with more than one word to
-    /// the words joined as written (cmd takes the rest of the command as the
-    /// path).
-    Joined,
-    /// As `Joined`, but a cmd `cd` with more than one word went to its first
-    /// word.
-    First,
-}
-
-/// Split `command` again with each `cd` whose outcome is not known taken as a
-/// move (see [`Outcome`]): the line may have left the folder it was in, to a
-/// folder that holds secrets. Empty when the first reading met none.
-pub(crate) fn split_moved(
-    first: &Split,
-    command: &str,
-    shell: Shell,
-    drives: (Option<char>, Option<char>),
-) -> Vec<Split> {
-    let mut outcomes = Vec::new();
-    if first.unsure_seen || first.words_seen {
-        outcomes.push(Outcome::Joined);
-    }
-    if first.words_seen {
-        outcomes.push(Outcome::First);
-    }
-    outcomes
-        .into_iter()
-        .map(|outcome| read(command, shell, drives, false, outcome))
-        .collect()
-}
-
-fn read(
-    command: &str,
-    shell: Shell,
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
-    outcome: Outcome,
 ) -> Split {
-    let fresh = |psdrive: bool| {
-        let mut split = Split {
-            drive: (drive, drive.is_some()),
-            home_drive,
-            psdrive,
-            outcome,
-            ..Split::default()
-        };
-        split.kept.on = effect;
-        split
+    let mut split = Split {
+        drive,
+        home_drive,
+        ..Split::default()
     };
-    let mut split = fresh(false);
+    split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        split = fresh(true);
+        split = Split {
+            psdrive: true,
+            drive,
+            home_drive,
+            ..Split::default()
+        };
         script(&mut split, command, shell, 0);
     }
     split.hide_bodies();

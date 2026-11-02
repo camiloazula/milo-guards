@@ -213,29 +213,20 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
 /// argument that is not a parameter) runs the rest; `-EncodedCommand` runs
 /// what cannot be read; `-File` runs a script file; with none of them it
 /// reads commands from its input.
-pub(super) fn powershell(args: &[Arg], pwsh: bool) -> Launch {
-    match powershell_entry(args, pwsh, &mut None) {
+pub(super) fn powershell(args: &[Arg]) -> Launch {
+    match powershell_entry(args) {
         Entry::Launch(launch) => launch,
         Entry::File(_) => Launch::Itself,
         Entry::Rest(rest, _) => Launch::Script(Shell::PowerShell, join(rest)),
     }
 }
 
-/// The folder `-WorkingDirectory` (`-wd`) gives `pwsh` to run in, when it
-/// names one. Windows PowerShell has no such parameter: it reads the first
-/// one it does not know as the start of the command text.
-pub(super) fn powershell_folder(args: &[Arg]) -> Option<Arg> {
-    let mut folder = None;
-    powershell_entry(args, true, &mut folder);
-    folder
-}
-
 /// The script file `powershell` or `pwsh` runs from its arguments: the one
 /// `-File` names, or the first word that is not a parameter (which `pwsh`
 /// runs as a file and Windows PowerShell as a command). `None` when it is not
 /// known now, or no file is run.
-pub(crate) fn powershell_file(args: &[Arg], pwsh: bool) -> Option<Arg> {
-    match powershell_entry(args, pwsh, &mut None) {
+pub(crate) fn powershell_file(args: &[Arg]) -> Option<Arg> {
+    match powershell_entry(args) {
         Entry::File(file) => Some(file),
         Entry::Rest([first, ..], moved) => first.known().map(|file| file_arg(file, moved)),
         Entry::Launch(_) | Entry::Rest(..) => None,
@@ -253,9 +244,7 @@ enum Entry<'a> {
     Rest(&'a [Arg], bool),
 }
 
-/// [`Entry`] for the arguments, and the folder `pwsh` is told to run in put
-/// in `folder`.
-fn powershell_entry<'a>(args: &'a [Arg], pwsh: bool, folder: &mut Option<Arg>) -> Entry<'a> {
+fn powershell_entry(args: &[Arg]) -> Entry<'_> {
     let mut at = 0;
     // Whether `-WorkingDirectory` has moved the folder a file is read from.
     let mut moved = false;
@@ -316,22 +305,6 @@ fn powershell_entry<'a>(args: &'a [Arg], pwsh: bool, folder: &mut Option<Arg>) -
                 None => Entry::Launch(Launch::Itself),
                 Some(script) => Entry::Launch(Launch::Script(Shell::PowerShell, script.clone())),
             };
-        } else if name == "wd" || (name.starts_with("wo") && "workingdirectory".starts_with(&name))
-        {
-            if !pwsh {
-                // Windows PowerShell does not know the parameter: it is the
-                // first one it does not know, so it starts the command text,
-                // and every argument after it is part of that text, whatever
-                // it looks like (`-wd -File x; ...` runs the `;` statement).
-                // The text starts at `-wd` itself, so its first statement is
-                // `-wd ...`: a command that is not found, which runs nothing
-                // and moves nothing (`-wd Set-Location X; ...` does not
-                // change the folder, and the `;` statement after it runs).
-                return Entry::Launch(Launch::Script(Shell::PowerShell, join(&args[at..])));
-            }
-            *folder = args.get(at + 1).cloned();
-            moved = true;
-            at += 2;
         } else if matches!(
             name.as_str(),
             "windowstyle"
@@ -343,9 +316,12 @@ fn powershell_entry<'a>(args: &'a [Arg], pwsh: bool, folder: &mut Option<Arg>) -
                 | "o"
                 | "inputformat"
                 | "if"
+                | "workingdirectory"
+                | "wd"
                 | "settingsfile"
                 | "custompipename"
         ) {
+            moved |= matches!(name.as_str(), "workingdirectory" | "wd");
             at += 2;
         } else {
             at += 1;
@@ -404,7 +380,6 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         shell: unit.shell,
         program: program.clone(),
         args,
-        origins: Vec::new(),
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,
@@ -421,19 +396,6 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
 
 /// cmd's `start`: a quoted title first, its `/` options, then the program.
 pub(super) fn start(args: &[Arg]) -> Launch {
-    start_in(args, &mut None)
-}
-
-/// The folder `start /d` gives the program it starts to run in, when it
-/// names one (`/d C:\x`, or joined: `/dC:\x`).
-pub(super) fn start_folder(args: &[Arg]) -> Option<Arg> {
-    let mut folder = None;
-    start_in(args, &mut folder);
-    folder
-}
-
-/// [`start`], and the folder it is told to run in put in `folder`.
-fn start_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
     let mut at = 0;
     if args
         .first()
@@ -444,16 +406,7 @@ fn start_in(args: &[Arg], folder: &mut Option<Arg>) -> Launch {
     }
     while let Some(arg) = args.get(at) {
         match arg.known().map(str::to_ascii_lowercase) {
-            Some(text) if text == "/d" => {
-                *folder = args.get(at + 1).cloned();
-                at += 2;
-            }
-            Some(text) if matches!(text.as_str(), "/affinity" | "/node") => at += 2,
-            Some(text) if text.starts_with("/d") => {
-                // `/dC:\x`: the folder is joined to the option.
-                *folder = arg.known().map(|text| Arg::Known(text[2..].to_string()));
-                at += 1;
-            }
+            Some(text) if matches!(text.as_str(), "/d" | "/affinity" | "/node") => at += 2,
             Some(text) if text.starts_with('/') => at += 1,
             _ => return Launch::Runs(at),
         }
@@ -1006,7 +959,6 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         shell: unit.shell,
         program: without_version(&unit.args[program]),
         args: unit.args[program + 1..].to_vec(),
-        origins: unit.origins.iter().skip(program + 1).copied().collect(),
         wrappers,
         stage: unit.stage,
         reads: Reads::Nothing,

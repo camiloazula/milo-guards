@@ -226,32 +226,17 @@ impl Reading {
         let split = unit::split(
             command,
             shell,
-            path::drive_of(&paths.cwd.to_string_lossy()),
-            path::drive_of(&paths.home.to_string_lossy()),
+            (
+                path::drive_of(&paths.cwd.to_string_lossy()),
+                path::drive_of(&paths.home.to_string_lossy()),
+            ),
             effect,
         );
         let mut resolver = path::Resolver::new(paths);
         if effect {
             resolver.keep(paths);
         }
-        let mut judged = detect::findings(&split, &resolver);
-        // A `cd` that may or may not have moved the line is judged both
-        // ways: where it stayed is the reading above, and where it went is
-        // this one. The findings of both are the line's.
-        let drives = (
-            path::drive_of(&paths.cwd.to_string_lossy()),
-            path::drive_of(&paths.home.to_string_lossy()),
-        );
-        for moved in unit::split_moved(&split, command, shell, drives) {
-            for finding in detect::findings(&moved, &resolver).found {
-                if !judged.found.contains(&finding) {
-                    judged.found.push(finding.clone());
-                    // It belongs to the line, not to a unit of the first
-                    // reading, which the explanation shows beside it.
-                    judged.line.push(finding);
-                }
-            }
-        }
+        let judged = detect::findings(&split, &resolver);
         Self {
             split,
             judged,

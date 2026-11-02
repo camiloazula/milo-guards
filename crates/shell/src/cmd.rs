@@ -1,10 +1,12 @@
 //! Splitting a Windows command prompt line (`cmd.exe`) with
 //! tree-sitter-batch.
 
+use std::ops::Range;
+
 use tree_sitter::Node;
 
 use crate::launch;
-use crate::unit::{self, Arg, Origin, Split, Stage, Unit};
+use crate::unit::{self, Arg, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -42,70 +44,13 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     .walk(tree.root_node(), None, 0);
 }
 
-/// The commands cmd runs itself, with no program and no batch file.
-const BUILTINS: &[&str] = &[
-    "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date", "del", "dir", "echo",
-    "endlocal", "erase", "exit", "for", "ftype", "goto", "if", "md", "mkdir", "mklink", "move",
-    "path", "pause", "popd", "prompt", "pushd", "rd", "rem", "ren", "rename", "rmdir", "set",
-    "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
-];
-
-/// Whether a command whose name is written `word` may run a batch file in
-/// the line's own process, which may `cd` on any drive: a name ending in
-/// `.bat` or `.cmd`, or one with no extension (PATHEXT may find `x.bat` for
-/// `x`, `npm.cmd` for `npm`). A cmd builtin, a drive switch (`D:`), and a
-/// name with another extension (`x.exe`) are not. A name written with a
-/// character cmd reads differently (`?` and `*` match in the file search
-/// cmd makes, so `x.b?t` may find `x.bat`), or one that holds a second
-/// colon, may be anything.
-fn may_be_batch(word: &str) -> bool {
-    if word.contains(['^', ';', ',', '=', '%', '!', '?', '*']) {
-        return true;
-    }
-    // cmd drops the quotes of a name.
-    let lower = word.replace('"', "").to_ascii_lowercase();
-    // `D:x.bat`, `D:\ws\x.bat`: the drive is not part of the file's name,
-    // and `D:` alone is a drive switch.
-    let mut chars = lower.chars();
-    let lower =
-        if chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':') {
-            let rest = &lower[2..];
-            if rest.is_empty() {
-                return false;
-            }
-            rest.to_string()
-        } else {
-            lower
-        };
-    if lower.contains(':') {
-        return true;
-    }
-    let file = lower.rsplit(['\\', '/']).next().unwrap_or_default();
-    if BUILTINS.contains(&file) {
-        return false;
-    }
-    // `cd..`, `cd\`: a `cd` with its path written against the name.
-    for cd in ["chdir", "cd"] {
-        if lower
-            .strip_prefix(cd)
-            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| matches!(c, '.' | '\\')))
-        {
-            return false;
-        }
-    }
-    match file.rsplit_once('.') {
-        Some((_, extension)) if !extension.is_empty() => matches!(extension, "bat" | "cmd"),
-        _ => true,
-    }
-}
-
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
     split: &'a mut Split,
 }
 
-impl<'a> Walker<'a> {
+impl Walker<'_> {
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         if level > unit::MAX_TREE_DEPTH {
             self.split
@@ -113,49 +58,9 @@ impl<'a> Walker<'a> {
             return;
         }
         match node.kind() {
-            // `x.bat`, `npm install`: a batch file named, or one the name may
-            // find through PATHEXT, runs in this very process as `call` does.
-            "cmd" => {
-                if self.simple(node, stage, level) {
-                    self.split.called();
-                }
-            }
-            // `call x.bat`, `call :label`: runs in this very process, and
-            // may `cd` on any drive.
-            "call_stmt" => {
+            "cmd" | "call_stmt" => {
                 self.command(node, stage);
                 self.children(node, None, level);
-                self.split.called();
-            }
-            // `a || b` runs `b` only when `a` failed; `a && b` runs `b` only
-            // when `a` worked. A `cd` in either is not sure to have run, and
-            // in `||` neither is the one on the left sure to have run for
-            // what follows it.
-            "cond_exec" => {
-                let mut cursor = node.walk();
-                let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-                let and = parts
-                    .first()
-                    .zip(parts.get(1))
-                    .is_some_and(|(left, right)| {
-                        self.source
-                            .get(left.end_byte()..right.start_byte())
-                            .is_some_and(|between| {
-                                between.contains("&&") && !between.contains("||")
-                            })
-                    });
-                for (at, part) in parts.iter().enumerate() {
-                    let branch = at > 0 || !and;
-                    self.split.branches += usize::from(branch);
-                    self.walk(*part, stage, level + 1);
-                    self.split.branches -= usize::from(branch);
-                }
-            }
-            // `if x cd D:\y`: the condition may be false.
-            "if_stmt" => {
-                self.split.branches += 1;
-                self.children(node, stage, level);
-                self.split.branches -= 1;
             }
             "pipe_stmt" => {
                 let pipeline = self.split.pipeline(stage);
@@ -166,32 +71,21 @@ impl<'a> Walker<'a> {
             "redirect_stmt" => {
                 let mut cursor = node.walk();
                 let mut inputs = Vec::new();
-                let mut own: Option<std::ops::Range<usize>> = None;
-                // cmd opens what is redirected before it runs the command,
-                // so a batch file the command names `cd`s only after.
-                let mut called = false;
+                let mut own: Option<Range<usize>> = None;
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "redirection" {
                         inputs.extend(self.redirect(child));
                     } else {
                         let first = self.split.units.len();
-                        if child.kind() == "cmd" {
-                            called |= self.simple(child, stage, level + 1);
-                        } else {
-                            self.walk(child, stage, level + 1);
-                        }
+                        self.walk(child, stage, level + 1);
                         let range = first..self.split.units.len();
                         own = Some(own.map_or(range.clone(), |own| own.start..range.end));
                     }
                 }
                 if let Some(own) = own {
                     for target in inputs {
-                        let target = self.split.on_drive(Shell::Cmd, target);
                         self.split.redirect(own.clone(), target, true);
                     }
-                }
-                if called {
-                    self.split.called();
                 }
             }
             "redirection" => {
@@ -205,22 +99,11 @@ impl<'a> Walker<'a> {
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => {
                 self.split.repeats += 1;
-                self.split.branches += 1;
                 self.children(node, stage, level);
-                self.split.branches -= 1;
                 self.split.repeats -= 1;
             }
             _ => self.children(node, stage, level),
         }
-    }
-
-    /// A command and its arguments, and whether it may be a batch file that
-    /// runs in this very process, which the caller then notes with
-    /// `Split::called` once it has read what the command redirects.
-    fn simple(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) -> bool {
-        let program = self.command(node, stage);
-        self.children(node, None, level);
-        program.as_deref().is_none_or(may_be_batch)
     }
 
     /// The stages of `node`, numbered from `first` in `pipeline`, and the
@@ -276,27 +159,36 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Runs the command `node` holds, and returns how its name is written.
-    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) -> Option<String> {
+    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // `call %X%` names its program with a variable: the first piece is
         // the program whatever its kind, so no command goes unread.
-        let name = children
+        let Some(name) = children
             .iter()
             .find(|child| child.kind() == "command_name")
             .or_else(|| {
                 children
                     .iter()
                     .find(|child| child.kind() != "argument_list")
-            })?;
+            })
+        else {
+            return;
+        };
         let program = self.value(&[*name]);
-        let named = self.word(name).to_string();
         let list = children
             .iter()
             .find(|child| child.kind() == "argument_list")
             .copied();
-        let (mut args, mut origins) = list.map(|list| self.args(list)).unwrap_or_default();
+        let (mut args, spans) = list.map(|list| self.args(list)).unwrap_or_default();
+        if program.known().is_some_and(|program| {
+            matches!(
+                unit::key(program, Shell::Cmd).as_str(),
+                "cd" | "chdir" | "pushd"
+            )
+        }) {
+            self.one_folder(&mut args, &spans);
+        }
         // `start "title" program …`: cmd takes a first quoted argument as
         // the window's title, which the values here no longer show.
         if program
@@ -308,98 +200,90 @@ impl<'a> Walker<'a> {
                 .is_some_and(|first| first.kind() == "string")
         {
             args.remove(0);
-            origins.remove(0);
         }
         launch::add(
             self.split,
-            Unit::new(Shell::Cmd, program, args, stage).with_origins(origins),
+            Unit::new(Shell::Cmd, program, args, stage),
             self.depth,
         );
-        self.unread_name(name);
-        Some(named)
-    }
-
-    /// The name of a command as written, to the space or separator that
-    /// ends it.
-    fn word(&self, name: &Node<'_>) -> &'a str {
-        let rest = self.source.get(name.start_byte()..).unwrap_or_default();
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | '<' | '>' | '(' | ')'))
-            .unwrap_or(rest.len());
-        &rest[..end]
-    }
-
-    /// cmd reads the name of a command differently from the grammar when it
-    /// holds `^`, `"`, `;`, `,`, `=` or a variable: it drops the first two,
-    /// ends the name at the next three and puts a variable's value in. Such
-    /// a name may be a drive switch, `cd /d` or `pushd` that the unit does not
-    /// show, so the drive the line is on is not known after it; and when it
-    /// names `cd` or a drive, the place the line is in is not known either.
-    /// Quotes alone are read: a quoted path to a program (`"C:\x\y.exe"`)
-    /// is a plain word, and only quotes that make a `cd` or a drive of the
-    /// word count.
-    fn unread_name(&mut self, name: &Node<'_>) {
-        let word = self.word(name);
-        let cleaned: String = word
-            .chars()
-            .filter(|c| !matches!(c, '^' | '"'))
-            .take_while(|c| !matches!(c, ';' | ',' | '='))
-            .collect::<String>()
-            .to_ascii_lowercase();
-        let mut chars = cleaned.chars();
-        // Written other than plainly, and then a `cd` or a drive.
-        let moves = word.contains(['^', '"', ';', ',', '='])
-            && ((chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-                && chars.next() == Some(':')
-                && chars.next().is_none())
-                || matches!(cleaned.as_str(), "cd" | "chdir" | "pushd" | "popd"));
-        if !(moves || word.contains(['^', ';', ',', '=', '%', '!'])) {
-            return;
-        }
-        self.split.forget_drive();
-        if moves {
-            self.split.lose_place(word);
-        }
     }
 
     /// The arguments of a list. cmd splits arguments at spaces only, so the
     /// pieces the grammar gives that touch (`%USERPROFILE%` and `\x`) are
     /// one argument.
-    fn args(&self, list: Node<'_>) -> (Vec<Arg>, Vec<Origin>) {
+    fn args(&self, list: Node<'_>) -> (Vec<Arg>, Vec<Range<usize>>) {
         let mut cursor = list.walk();
         let pieces: Vec<Node<'_>> = list.named_children(&mut cursor).collect();
         let mut args = Vec::new();
-        let mut origins = Vec::new();
+        let mut spans = Vec::new();
         let mut group: Vec<Node<'_>> = Vec::new();
         for piece in pieces {
             if group
                 .last()
                 .is_some_and(|last| last.end_byte() != piece.start_byte())
             {
-                let (arg, origin) = self.value_from(&group);
-                args.push(arg);
-                origins.push(origin);
+                args.push(self.value(&group));
+                spans.extend(span(&group));
                 group.clear();
             }
             group.push(piece);
         }
         if !group.is_empty() {
-            let (arg, origin) = self.value_from(&group);
-            args.push(arg);
-            origins.push(origin);
+            args.push(self.value(&group));
+            spans.extend(span(&group));
         }
-        (args, origins)
+        (args, spans)
+    }
+
+    /// The operands of a cmd `cd` (`chdir`, `pushd`) written with more than
+    /// one word (`cd My Folder`) as the one folder cmd reads: the words
+    /// joined as written, the spaces between them kept and none after the
+    /// last. A word known only when it runs, or a later `/d`, which cmd may
+    /// read as the switch, leaves the folder known only when it runs. The
+    /// operands are the `args` from the first that is no switch; `spans` are
+    /// where each is in the source.
+    fn one_folder(&self, args: &mut Vec<Arg>, spans: &[Range<usize>]) {
+        let first = args
+            .iter()
+            .position(|arg| !arg.known().is_some_and(unit::is_switch));
+        let Some(first) = first.filter(|first| first + 1 < args.len()) else {
+            return;
+        };
+        let (Some(start), Some(end)) = (spans.get(first), spans.last()) else {
+            return;
+        };
+        let written = self
+            .source
+            .get(start.start..end.end)
+            .unwrap_or_default()
+            .to_string();
+        let mut joined = Some(String::new());
+        for (at, arg) in args.iter().enumerate().skip(first) {
+            let gap = at
+                .checked_sub(1)
+                .filter(|before| *before >= first)
+                .and_then(|before| {
+                    self.source
+                        .get(spans.get(before)?.end..spans.get(at)?.start)
+                })
+                .unwrap_or_default();
+            joined = match (joined, arg.known()) {
+                (Some(mut text), Some(word))
+                    if !(at > first && word.eq_ignore_ascii_case("/d")) =>
+                {
+                    text.push_str(gap);
+                    text.push_str(word);
+                    Some(text)
+                }
+                _ => None,
+            };
+        }
+        args.truncate(first);
+        args.push(joined.map_or_else(|| Arg::Unknown(written), Arg::Known));
     }
 
     /// One argument made of touching pieces.
     fn value(&self, pieces: &[Node<'_>]) -> Arg {
-        self.value_from(pieces).0
-    }
-
-    /// One argument made of touching pieces, and where its value came from:
-    /// from a system folder's variable anywhere in it, else from a variable
-    /// under home at its very start.
-    fn value_from(&self, pieces: &[Node<'_>]) -> (Arg, Origin) {
         let source = match (pieces.first(), pieces.last()) {
             (Some(first), Some(last)) => self
                 .source
@@ -407,9 +291,7 @@ impl<'a> Walker<'a> {
                 .unwrap_or_default(),
             _ => "",
         };
-        let unknown = || (Arg::Unknown(source.to_string()), Origin::Typed);
         let mut value = String::new();
-        let mut origin = Origin::Typed;
         for piece in pieces {
             let text = unit::text(piece, self.source);
             let text = match piece.kind() {
@@ -418,21 +300,14 @@ impl<'a> Walker<'a> {
                     .map_or(text, |inner| inner.strip_suffix('"').unwrap_or(inner)),
                 "command_name" | "command_option" | "argument_value" | "variable_reference"
                 | "redirect_target" => text,
-                _ => return unknown(),
+                _ => return Arg::Unknown(source.to_string()),
             };
-            let Some((text, from)) = expand(text, self.split) else {
-                return unknown();
-            };
-            origin = match (origin, from) {
-                (Origin::System, _) | (_, Origin::System) => Origin::System,
-                // Only a variable at the start of the whole value puts it
-                // under home.
-                (Origin::Typed, Origin::Home) if value.is_empty() => Origin::Home,
-                (kept, _) => kept,
-            };
-            value.push_str(&text);
+            match expand(text, self.split) {
+                Some(text) => value.push_str(&text),
+                None => return Arg::Unknown(source.to_string()),
+            }
         }
-        (Arg::Known(value), origin)
+        Arg::Known(value)
     }
 
     /// A redirect's target with its quotes taken off, as cmd takes them off
@@ -448,7 +323,7 @@ impl<'a> Walker<'a> {
         };
         let unquoted = source.replace('"', "");
         match expand(&unquoted, self.split) {
-            Some((text, _)) => Arg::Known(text),
+            Some(text) => Arg::Known(text),
             None => Arg::Unknown(source.to_string()),
         }
     }
@@ -493,24 +368,15 @@ impl<'a> Walker<'a> {
         if let Some(at) = unquoted_operator(text) {
             let rest = text[at..].trim_start_matches(['&', '|', ' ', '\t']);
             if !rest.is_empty() {
-                let operator = text[at..text.len() - rest.len()].trim();
-                // A lone `|` is a pipe: both sides run in a child process
-                // of their own, so what follows keeps to its own script.
-                // After `&`, `&&` or `||` cmd runs the rest in this very
-                // process, so its `cd`, drive switch, `call` and batch file
-                // move the line: read it here.
-                let pipe = operator == "|";
-                // Only a lone `&` is sure: a `set` can fail (`set /p` on an
-                // empty input, `set /a` on a division by zero), so what
-                // follows `&&` runs only when it worked and what follows
-                // `||` only when it failed, as in `cond_exec`.
-                let branch = usize::from(operator != "&");
-                self.split.branches += branch;
-                unit::script_in(self.split, rest, Shell::Cmd, self.depth + 1, !pipe);
-                self.split.branches -= branch;
+                unit::script(self.split, rest, Shell::Cmd, self.depth + 1);
             }
         }
     }
+}
+
+/// The bytes of the source that the touching `pieces` cover.
+fn span(pieces: &[Node<'_>]) -> Option<Range<usize>> {
+    Some(pieces.first()?.start_byte()..pieces.last()?.end_byte())
 }
 
 /// Where the first `&` or `|` outside double quotes and not escaped with
@@ -531,17 +397,14 @@ fn unquoted_operator(text: &str) -> Option<usize> {
 }
 
 /// `text` with cmd's escapes taken off (`^&` is `&`) and the variables that
-/// name a known place put in, and where the value came from: [`Origin::Home`]
-/// when it starts with a variable under home, [`Origin::System`] when it
-/// holds a system folder's variable; `None` when any other variable (`%X%`,
-/// `%%f`, `!X!`), or one the line sets, makes it known only when it runs.
-fn expand(text: &str, split: &Split) -> Option<(String, Origin)> {
+/// name a known place put in; `None` when any other variable (`%X%`, `%%f`,
+/// `!X!`), or one the line sets, makes it known only when it runs.
+fn expand(text: &str, split: &Split) -> Option<String> {
     let text = unescape(text);
     if text.matches('!').count() >= 2 {
         return None;
     }
     let mut value = String::with_capacity(text.len());
-    let mut origin = Origin::Typed;
     let mut rest = text.as_str();
     while let Some(at) = rest.find('%') {
         value.push_str(&rest[..at]);
@@ -551,34 +414,26 @@ fn expand(text: &str, split: &Split) -> Option<(String, Origin)> {
         if split.reassigned(name) {
             return None;
         }
-        let (path, from) = place(name)?;
-        origin = match (origin, from) {
-            (Origin::System, _) | (_, Origin::System) => Origin::System,
-            (Origin::Typed, Origin::Home) if value.is_empty() => Origin::Home,
-            (kept, _) => kept,
-        };
-        value.push_str(path);
+        value.push_str(place(name)?);
         rest = &after[end + 1..];
     }
     value.push_str(rest);
-    Some((value, origin))
+    Some(value)
 }
 
-/// The variables that name a known place, as paths the resolver reads, and
-/// what kind of place: under home (on home's drive), a system folder (whose
-/// drive is a guess, as Windows may not be on `C:`), or neither.
-fn place(name: &str) -> Option<(&'static str, Origin)> {
+/// The variables that name a known place, as paths the resolver reads.
+fn place(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_lowercase().as_str() {
-        "userprofile" => ("~", Origin::Home),
-        "cd" => (".", Origin::Typed),
-        "temp" | "tmp" => ("~\\AppData\\Local\\Temp", Origin::Home),
-        "appdata" => ("~\\AppData\\Roaming", Origin::Home),
-        "localappdata" => ("~\\AppData\\Local", Origin::Home),
-        "systemroot" | "windir" => ("C:\\Windows", Origin::System),
-        "systemdrive" => ("C:", Origin::System),
-        "programfiles" => ("C:\\Program Files", Origin::System),
-        "programfiles(x86)" => ("C:\\Program Files (x86)", Origin::System),
-        "programdata" => ("C:\\ProgramData", Origin::System),
+        "userprofile" => "~",
+        "cd" => ".",
+        "temp" | "tmp" => "~\\AppData\\Local\\Temp",
+        "appdata" => "~\\AppData\\Roaming",
+        "localappdata" => "~\\AppData\\Local",
+        "systemroot" | "windir" => "C:\\Windows",
+        "systemdrive" => "C:",
+        "programfiles" => "C:\\Program Files",
+        "programfiles(x86)" => "C:\\Program Files (x86)",
+        "programdata" => "C:\\ProgramData",
         _ => return None,
     })
 }

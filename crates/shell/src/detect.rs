@@ -637,7 +637,7 @@ impl Checker<'_> {
     /// `.ps1` it tries first.
     fn write_then_run(&mut self, unit: &Unit, key: &str) {
         let file = match key {
-            "powershell" | "pwsh" => powershell_file(&unit.args, key == "pwsh"),
+            "powershell" | "pwsh" => powershell_file(&unit.args),
             "invoke-command" if unit.shell == Shell::PowerShell => Params::read(&unit.args)
                 .values(&["filepath"])
                 .first()

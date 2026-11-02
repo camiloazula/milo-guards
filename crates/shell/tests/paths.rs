@@ -511,7 +511,8 @@ fn cmd_paths_are_windows_paths() {
                 "type \\\\?\\C:\\Users\\me\\dev\\repo\\y",
                 Some(&[r"C:\Users\me\dev\repo\y"]),
             ),
-            ("type D:x", Some(&[])),
+            // cmd's working directory on another drive is not shown.
+            ("type D:x", None),
             ("del a.txt", None),
             ("type \\\\server\\share\\x", None),
         ],
