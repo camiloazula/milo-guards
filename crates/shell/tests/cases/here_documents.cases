@@ -1,0 +1,298 @@
+# Here-documents. The shell ends one only at a line that is exactly its
+# delimiter (for `<<-`, after leading tabs); the grammar also ends it at a
+# line only near the delimiter, so such a line is Unreadable. The format is
+# in CONTRIBUTING.md.
+
+# A here-document ends only at a line that is its delimiter.
+posix safe | cat <<'EOF'\nx\nEOF
+posix safe | cat <<EOF\nx\nEOF
+posix safe | cat <<-EOF\n\tx\n\tEOF
+posix safe | cat <<-EOF\n\t\tx\n\t\tEOF
+# A line that only holds the delimiter's letters is body.
+posix safe | cat <<'EOF'\nXEOF\nEOF
+posix safe | cat <<'EOF'\nthe EOF marker\nEOF
+# A command after the end is read as a command.
+posix safe | cat <<'EOF'\nx\nEOF\necho done
+# In a double-quoted substitution, ending exactly.
+posix safe | git commit -m "$(cat <<'EOF'\nmsg\nEOF\n)"
+posix safe | x="$(cat <<'EOF'\nx\nEOF\n)"
+posix safe | echo "$(cat <<EOF\nx\nEOF\n)"
+posix safe | echo "`cat <<'EOF'\nx\nEOF\n`"
+posix safe | echo "$(cat <<-EOF\n\tx\n\tEOF\n)"
+posix safe | echo "$(psql <<'EOF'\nselect 1;\nEOF\n)" && echo done
+# A line that holds a different word is body.
+posix safe | echo "$(sqlite3 db <<'EOF'\nselect 1;\nPY\nEOF\n)" "$(echo ')')"
+# A leading space.
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\nfor PY in [1]:\n PY\n shutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<PY\nimport shutil\nfor PY in [1]:\n PY\n shutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<-'PY'\nimport shutil\nfor PY in [1]:\n PY\n shutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\ntry:\n pass\nexcept NameError:\n PY\n shutil.rmtree('/home/me')\nPY
+# A trailing space, a comment, a `;`, a tab after the word.
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\nPY \nshutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\nPY #x\nshutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\nPY ;x\nshutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\nPY\t\nshutil.rmtree('/home/me')\nPY
+# The delimiter in quotes ends the body for neither the grammar nor the shell,
+# but is refused all the same (one simple rule).
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\n'PY'\nshutil.rmtree('/home/me')\nPY
+posix finds=unreadable | python3 - <<'PY'\nimport shutil\n"PY"\nshutil.rmtree('/home/me')\nPY
+# `<<-` strips tabs only: a space in front is near.
+posix finds=unreadable | python3 - <<-'PY'\nimport shutil\n\t PY\nshutil.rmtree('/home/me')\n\tPY
+# Every reader of a here-document.
+posix finds=unreadable | bash <<'EOF'\necho a\n EOF\nrm -rf /home/me\nEOF
+posix finds=unreadable | sh -s <<'EOF'\necho a\nEOF \nrm -rf /home/me\nEOF
+posix finds=unreadable | node <<'EOF'\nlet a = 1\n EOF\nrequire('fs').rmSync('/home/me')\nEOF
+posix finds=unreadable | psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF
+# A reader that is not special still gets the same answer.
+posix finds=unreadable | cat <<'EOF'\nx\n EOF\nrm -rf /home/me\nEOF
+# The commonest way an agent writes a here-document is inside `"$(…)"`
+# (`git commit -m "$(cat <<'EOF' …)"`), so the same line in double quotes, or
+# in a backtick in double quotes, is as unreadable as outside them.
+posix finds=unreadable | echo "$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)"
+posix finds=unreadable | x="$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)"
+# The end line with a trailing space or a comment.
+posix finds=unreadable | echo "$(psql <<'EOF'\nselect 1;\nEOF \ndrop table t;\nEOF\n)"
+posix finds=unreadable | echo "$(psql <<'EOF'\nselect 1;\nEOF #\ndrop table t;\nEOF\n)"
+# An unquoted delimiter, and `<<-`.
+posix finds=unreadable | echo "$(psql <<EOF\nselect 1;\n EOF\ndrop table t;\nEOF\n)"
+posix finds=unreadable | echo "$(psql <<-EOF\n\tselect 1;\n EOF\n\tdrop table t;\n\tEOF\n)"
+# A backtick in double quotes.
+posix finds=unreadable | echo "`psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n`"
+posix finds=unreadable | x="`psql <<'EOF'\nselect 1;\nEOF \ndrop table t;\nEOF\n`"
+# Other readers.
+posix finds=unreadable | echo "$(mysql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)"
+posix finds=unreadable | echo "$(sqlite3 db <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)"
+posix finds=unreadable | echo "$(bash <<'EOF'\necho a\n EOF\nrm -rf /home/me\nEOF\n)"
+# In a substitution in a substitution, in a subshell, in a pipe, with words
+# around it.
+posix finds=unreadable | echo "$(echo "$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)")"
+posix finds=unreadable | echo "$( (psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n) )"
+posix finds=unreadable | echo "a" "$(psql <<'EOF' | cat\nselect 1;\n EOF\ndrop table t;\nEOF\n)" "b"
+posix finds=unreadable | echo "`echo "$(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)"`"
+# The same line outside the quotes.
+posix finds=unreadable | echo $(psql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF\n)
+
+# A backslash-newline in an unquoted here-document body is joined. The shell
+# joins each backslash-newline in the body of an unquoted here-document before
+# it expands the body and before it looks for the end line, so
+# `$(r\<newline>m -rf …)` in it runs `rm`. A quoted delimiter feeds the body
+# as it is. Bash, sh and zsh join a backslash-newline before they compare a
+# body line with the delimiter; dash and ksh do not. So a line that took one
+# in and is (joined, or in any piece) the delimiter or near it ends the body
+# for some shells and not for others: Unreadable. With `<<-` the tabs of the
+# line that goes on stay in every shell, so `\tEO\<newline>\tF` is no
+# delimiter, and the body goes on to the real end line, where the statements
+# in it are read.
+# A quoted delimiter: the body is text, the backslash stays.
+posix safe | cat <<'EOF'\n$(r\\\nm -rf /home/me)\nEOF
+posix safe | echo "$(cat <<'EOF'\n$(r\\\nm -rf /home/me)\nEOF\n)"
+posix safe | cat <<\\EOF\n$(r\\\nm -rf /home/me)\nEOF
+posix safe | cat <<'EOF'\nEO\\\nF\nEOF
+# An escaped backslash is not a continuation, and the body stays text: `\\`
+# then a newline.
+posix safe | echo "$(cat <<EOF\nx\\\\\nEOF\n)"
+# Continuations that come nowhere near the delimiter.
+posix safe | cat <<EOF\nlong \\\nline\nEOF
+posix safe | cat <<-EOF\n\tx\\\n\ty\n\tEOF
+posix safe | git commit -m "$(cat <<EOF\nmsg \\\nmore\nEOF\n)"
+# The tabs stay after a backslash-newline, so this line is not the delimiter
+# in any shell, and `rm` is body text.
+posix safe | echo "$(cat <<-EOF\n\tx\n\tEO\\\n\tF\nr\\\nm -rf /home/me\nEOF\n)"
+# The top-level form.
+posix finds=delete | cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF
+posix finds=delete | cat <<-EOF\nx $(r\\\nm -rf /home/me)\n\tEOF
+posix finds=delete | cat <<-EOF\n$(rm -rf /home/me)\n\tEOF
+# The same inside a double-quoted substitution.
+posix finds=delete | echo "$(cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n)"
+posix finds=delete | git commit -m "$(cat <<EOF\nmsg $(r\\\nm -rf /home/me)\nEOF\n)"
+posix finds=delete | x="$(cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n)"
+# In a backtick in double quotes.
+posix finds=delete | echo "`cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n`"
+# A line that takes in a backslash-newline and then is the delimiter: bash, sh
+# and zsh end the body there, dash and ksh do not, so the line is Unreadable.
+posix finds=unreadable | echo "$(cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n)"
+posix finds=unreadable | echo "$(cat <<EOF\nx\nE\\\nOF\nr\\\nm -rf /home/me\nEOF\n)"
+posix finds=unreadable | echo "`cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n`"
+# Joined, the line is the delimiter.
+posix finds=unreadable | psql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF
+posix finds=unreadable | mysql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF
+posix finds=unreadable | sh <<EOF\necho a\nE\\\nOF\nrm -rf /home/me\nEOF
+# `<<-`: the tab is in front of the first piece only, and the joined line is
+# the delimiter after the tab comes off.
+posix finds=unreadable | psql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF
+posix finds=unreadable | mysql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF
+# A line that is the delimiter once joined from an empty piece.
+posix finds=unreadable | psql <<EOF\nselect 1;\nEOF\\\n\ndrop table t;\nEOF
+# A piece is the delimiter (dash and ksh end the body there).
+posix finds=unreadable | psql <<EOF\nselect 1;\nx\\\nEOF\ndrop table t;\nEOF
+posix finds=unreadable | mysql <<EOF\nselect 1;\nx\\\nEOF\ndrop table t;\nEOF
+# Near the delimiter, joined or in a piece.
+posix finds=unreadable | psql <<EOF\nselect 1;\nEOF\\\n ;x\ndrop table t;\nEOF
+posix finds=unreadable | psql <<EOF\nselect 1;\nx\\\n EOF\ndrop table t;\nEOF
+# Inside a double-quoted substitution.
+posix finds=unreadable | echo "$(psql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF\n)"
+posix finds=unreadable | echo "$(psql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF\n)"
+# With `<<-` the continued line keeps its tabs: the body goes on to the real
+# end line and its statements are read.
+posix finds=drop_data | psql <<-EOF\n\tselect 1;\n\tEO\\\n\tF\n\tdrop table t;\n\tEOF
+posix finds=drop_data | mysql <<-EOF\n\tselect 1;\n\tEO\\\n\tF\n\tdrop table t;\n\tEOF
+
+# A backtick substitution in an unquoted here-document is read as code. The
+# shell runs a backtick substitution in the body of an unquoted here-document,
+# as it does a `$(...)`, so it is read as the code it is, and a substitution
+# that cannot be read makes the line `Unreadable`. A quoted delimiter feeds
+# the body as it is.
+posix safe | cat <<EOF\n`ls`\nEOF
+posix safe | cat <<EOF\nlist: `echo hi` done\nEOF
+posix safe | cat <<EOF\n``\nEOF
+posix safe | cat <<EOF\n`echo é`\nEOF
+posix safe | cat <<-EOF\n\t`ls`\n\tEOF
+# A `\"` in the code reads the same with the backslash kept or off.
+posix safe | cat <<EOF\n`echo "say \\"hi\\""`\nEOF
+posix safe | git commit -m "$(cat <<EOF\nfix `ls`\nEOF\n)"
+# A quoted delimiter feeds the body as it is.
+posix safe | cat <<'EOF'\n`rm -rf /home/me`\nEOF
+posix safe | cat <<\\EOF\n`rm -rf /home/me`\nEOF
+posix safe | cat <<"EOF"\n`rm -rf /home/me`\nEOF
+posix safe | cat <<-'EOF'\n\t`rm -rf /home/me`\n\tEOF
+posix safe | git commit -m "$(cat <<'EOF'\nfix `rm -rf /home/me`\nEOF\n)"
+# An escaped backtick is text.
+posix safe | cat <<EOF\n\\`rm -rf /home/me\\`\nEOF
+# A here-string is not a here-document.
+posix safe | cat <<< 'x `rm -rf /home/me`'
+# No backtick at all.
+posix safe | cat <<EOF\nrm -rf /home/me\nEOF
+# A backtick in the text after an expansion is code, not a part of the
+# expansion.
+posix safe | cat > version.txt <<EOF\nversion=$VERSION\nbuilt=`date`\nEOF
+posix safe | cat <<EOF\nHello $USER, today is `date +%A`.\nEOF
+posix safe | cat <<EOF\n`echo $HOME`\nEOF
+posix safe | cat <<EOF\n$(pwd) `ls`\nEOF
+posix safe | git commit -m "$(cat <<EOF\nRelease $VERSION\n\nAdds \\`--flag\\` to the parser.\nEOF\n)"
+posix safe | gh pr create --title x --body "$(cat <<EOF\nCloses #$ISSUE\n\nUse \\`foo\\` here.\nEOF\n)"
+posix safe | cat <<EOF\nPath: ${PWD}\nRun `make` next.\nEOF
+posix safe | cat <<EOF\nTotal: $((1+2)) files, see `ls`\nEOF
+# An escaped backtick after an expansion is text.
+posix safe | cat <<EOF\n$(pwd) \\`x\\`\nEOF
+posix finds=delete | cat <<EOF\n`rm -rf /home/me`\nEOF
+posix finds=delete | cat <<EOF\nline `rm -rf /home/me` end\nEOF
+posix finds=delete | cat <<-EOF\n\t`rm -rf /home/me`\n\tEOF
+posix finds=delete | cat <<EOF | cat\n`rm -rf /home/me`\nEOF
+posix finds=elevated | cat <<EOF\n`sudo ls`\nEOF
+posix finds=read_secret | cat <<EOF\n`cat ~/.ssh/id_rsa`\nEOF
+# A reader of its input: the backticks run before it reads.
+posix finds=delete | python3 - <<PY\nprint(1)\n`rm -rf /home/me`\nPY
+posix finds=delete | bash <<EOF\necho a\n`rm -rf /home/me`\nEOF
+# A second here-document on the line, or one after a command.
+posix finds=delete | cat <<A <<B\nx\nA\n`rm -rf /home/me`\nB
+posix finds=delete | true && cat <<EOF\n`rm -rf /home/me`\nEOF
+# After an expansion.
+posix finds=delete | cat <<EOF\n$USER `rm -rf /home/me`\nEOF
+posix finds=delete | cat <<EOF\n${PWD} `rm -rf /home/me`\nEOF
+posix finds=delete | cat <<EOF\n$(pwd) `rm -rf /home/me` $USER\nEOF
+# The text around a backtick substitution does not hide it. An escaped
+# backtick is text; the next one is code.
+posix finds=delete | cat <<EOF\n\\`x\\` `rm -rf /home/me`\nEOF
+# Two backslashes are a backslash, so the backtick is code.
+posix finds=delete | cat <<EOF\n\\\\`rm -rf /home/me`\nEOF
+# A backslash-newline is joined before the code is read.
+posix finds=delete | cat <<EOF\n`r\\\nm -rf /home/me`\nEOF
+# The code takes `\``, `\\` and `\$` down one level.
+posix finds=delete | cat <<EOF\n`echo \\`rm -rf /home/me\\``\nEOF
+posix finds=delete | cat <<EOF\n`rm -rf \\$HOME`\nEOF
+# Code that goes over several lines, with tabs in a `<<-` body.
+posix finds=delete | cat <<-EOF\n\t`echo a\n\t&& rm -rf /home/me`\n\tEOF
+# A backtick inside a `$(...)` is the grammar's own.
+posix finds=delete | cat <<EOF\n$(echo `rm -rf /home/me`)\nEOF
+# In a message handed to a command.
+posix finds=delete | git commit -m "$(cat <<EOF\nfix `rm -rf /home/me`\nEOF\n)"
+# A here-document in a substitution in a substitution.
+posix finds=delete | echo "$(cat <<EOF\n`rm -rf /home/me`\nEOF\n)"
+# A here-document in the code is read in turn.
+posix finds=delete | cat <<EOF\n`cat <<X\nhi\nX\nrm -rf /home/me`\nEOF
+# Dash takes the backslash off `\"` (bash keeps it), so the quote ends and the
+# commands between two of them run.
+posix finds=delete | cat <<EOF\n`echo "x\\"; rm -rf /home/me; echo \\"y"`\nEOF
+posix finds=delete | cat <<EOF\n`echo "\\"; rm -rf /home/me; \\""`\nEOF
+posix finds=delete | cat <<-EOF\n\t`echo "x\\"; rm -rf /home/me; echo \\"y"`\n\tEOF
+# A quote in the code does not end it: the first backtick does.
+posix finds=unreadable | cat <<EOF\n`echo '` ; rm -rf /home/me ; echo '`\nEOF
+# A backtick that never closes.
+posix finds=unreadable | cat <<EOF\n`rm -rf /home/me\nEOF
+posix finds=unreadable | cat <<EOF\n`ls` `rm -rf /home/me\nEOF
+posix finds=unreadable | cat <<EOF\nx \\``rm -rf /home/me\nEOF
+# An escaped backtick, then one that never closes.
+posix finds=unreadable | cat <<EOF\n\\`rm -rf /home/me`\nEOF
+# Code a shell refuses.
+posix finds=unreadable | cat <<EOF\n`echo 'a`\nEOF
+posix finds=unreadable | cat <<EOF\n`if then fi`\nEOF
+# A backtick the grammar read inside a `${...}`.
+posix finds=unreadable | cat <<EOF\n${x:-`rm -rf /home/me`}\nEOF
+# A here-document in a backtick substitution: the outer one takes a backslash
+# off first, so the body is not what it shows.
+posix finds=unreadable | echo "`cat <<EOF\n\\`rm -rf /home/me\\`\nEOF\n`"
+posix finds=unreadable | echo `cat <<EOF\n\\`ls\\`\nEOF\n`
+
+# Text before a here-document that a scan misreads hides nothing. Text before
+# a here-document that a plain scan misreads leaves the next lines copied as a
+# body, so a backslash-newline in them is never joined and the `rm` it spells
+# is never seen. A `<<` in arithmetic is a shift, not a here-document. A
+# backslash in `$'…'` escapes the next character, so `\'` does not end it. A
+# parenthesis in `${…}` (`${x/(/y}`) is text: counting it kept the `)` that
+# ends `$(` from being seen, and a later `'` in the double-quoted rest then
+# opened single quotes to the end of the text.
+posix safe | echo "$((1<<2))"
+posix safe | echo $((1<<2))\nls
+posix safe | x=$(( x << 1 ))\nls
+posix safe | ((x<<1))\nls
+posix safe | echo $'it\\'s'
+posix safe | echo "$(echo $'it\\'s')"
+posix safe | echo $$'a'\nls
+posix safe | echo "$(echo ${x/(/y}) it's"
+posix safe | echo "$(echo ${x%(*}) it's"\nls
+# A shift in arithmetic.
+posix finds=delete | echo "$((1<<2))"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$((x<<1))"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(( x << 1 ))"\nr\\\nm -rf /home/me
+# Without the quotes, in an assignment, and as a command.
+posix finds=delete | echo $((1<<2))\nr\\\nm -rf /home/me
+posix finds=delete | x=$(( x << 1 ))\nr\\\nm -rf /home/me
+posix finds=delete | ((x<<1))\nr\\\nm -rf /home/me
+# A here-document line near its delimiter after such a prefix.
+posix finds=unreadable | echo "$((1<<2))"\npython3 - <<'PY'\nimport shutil\n PY\nshutil.rmtree('/home/me')\nPY
+# A word and the end of the line after `<<` in `$((` could be the subshell
+# `$((cat <<EOF` as well: not guessed at.
+posix finds=unreadable | echo "$((cat <<EOF\nx\n EOF\nrm -rf /home/me\nEOF\n))"
+# An escaped quote in ANSI-C quotes.
+posix finds=delete | echo "$(echo $'it\\'s')"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(echo $'it\\'s')" && r\\\nm -rf /home/me
+posix finds=delete | echo "$(printf $'a\\'b')"\nr\\\nm -rf /home/me
+posix finds=delete | echo "`echo $'it\\'s'`"\nr\\\nm -rf /home/me
+# Without the double quotes.
+posix finds=delete | echo $'it\\'s'\nr\\\nm -rf /home/me
+posix finds=delete | echo $(echo $'it\\'s')\nr\\\nm -rf /home/me
+# An escaped backslash before the quote ends nothing: `\\` is one backslash,
+# and the quote after it ends the string.
+posix finds=delete | echo $'a\\\\'\nr\\\nm -rf /home/me
+# A here-document line near its delimiter after such a prefix.
+posix finds=unreadable | echo "$(echo $'it\\'s')"\npython3 - <<'PY'\nimport shutil\n PY\nshutil.rmtree('/home/me')\nPY
+# A parenthesis in an expansion in a substitution.
+posix finds=delete | echo "$(echo ${x/(/y}) it's"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(echo ${x%(*}) it's"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(echo ${x#*(}) it's"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(echo ${x//(/}) it's"\nr\\\nm -rf /home/me
+posix finds=delete | echo "$(echo ${x/(/y})" && echo "it's" && r\\\nm -rf /home/me
+# Without the double quotes.
+posix finds=delete | echo $(echo ${x/(/y}) "it's"\nr\\\nm -rf /home/me
+# Text the scan cannot close is not judged.
+posix finds=unreadable | echo "$(echo ${x/(/y}) it's\n
+posix finds=unreadable | echo 'a
+
+# A quoted delimiter with an operator or space is read whole (each operator
+# and quote, in a `$(…)` and in a backtick, is in here_documents.rs).
+posix safe | echo "$(cat <<'E;F'\nx\nE;F\n)"
+posix safe | cat <<'E O'\nx\nE O
+# A here-document line near its delimiter after such a prefix.
+posix finds=unreadable | echo "$(cat <<'E;F'\nx\nE;F\n)"\npsql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF
+# A quote that never closes is not read.
+posix finds=unreadable | cat <<'E;F\nx\nE;F
