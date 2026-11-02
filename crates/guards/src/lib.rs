@@ -178,6 +178,9 @@ pub use milo_guards_core::{Assessment, Finding, Paths, Protected, ProtectedKind,
 #[cfg(feature = "shell")]
 pub use milo_guards_shell as shell;
 
+#[cfg(feature = "code")]
+pub use milo_guards_code as code;
+
 #[cfg(feature = "file")]
 pub use milo_guards_file as file;
 

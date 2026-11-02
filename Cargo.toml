@@ -53,10 +53,12 @@ exit = "deny"                        # a library never ends the caller's process
 resolver = "2"
 # `crates/core` is what every guard builds on, one crate per guard beside it,
 # and `crates/guards` is the one crate a caller depends on: it re-exports
-# each guard behind a feature. Package names carry the `milo-guards-` prefix;
-# folders drop it.
+# each guard behind a feature. `crates/code` reads the code of other
+# languages, for the shell guard and for any guard that gets code to judge.
+# Package names carry the `milo-guards-` prefix; folders drop it.
 members = [
     "crates/core",
+    "crates/code",
     "crates/shell",
     "crates/file",
     "crates/url",
@@ -74,6 +76,7 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 milo-guards-core  = { path = "crates/core" }
+milo-guards-code  = { path = "crates/code" }
 milo-guards-shell = { path = "crates/shell" }
 milo-guards-file  = { path = "crates/file" }
 milo-guards-url   = { path = "crates/url" }
