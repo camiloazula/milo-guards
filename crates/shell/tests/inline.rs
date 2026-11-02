@@ -15,7 +15,7 @@ fn inline_code_that_touches_nothing_is_safe() {
         &[
             "python3 -c 'print(1+1)'",
             "node -e 'console.log(1)'",
-            "python3 -c \"import json,sys; json.load(sys.stdin)\"",
+            "python3 -c \"import sys; print(sys.stdin.read())\"",
             "python3 -c \"open('out.txt','w')\"",
             "python -c 'print(\"hi\")'",
             "python3.12 -c 'print(1)'",
@@ -23,7 +23,6 @@ fn inline_code_that_touches_nothing_is_safe() {
             "bun -e 'console.log(1)'",
             "bun --print '1+1'",
             "deno eval 'console.log(1)'",
-            "python3 -c \"import re; print(re.sub('a','b','abc'))\"",
             "python3 -c \"print(open('/home/me/.zshrc').read())\"",
             "python3 -c \"print(open('/home/me/.zshrc', 'r').read())\"",
             // Work in the workspace and the temporary folder is the agent's own.
@@ -41,6 +40,16 @@ fn inline_code_that_touches_nothing_is_safe() {
             ("node --eval='console.log(1)'", Rule::Unknown),
             (
                 "node -r ts-node/register -e 'console.log(1)'",
+                Rule::Unknown,
+            ),
+            // The two rows that imported `json` and `re` and were safe: a
+            // module that is a file is looked up in the folder first (#136).
+            (
+                "python3 -c \"import json,sys; json.load(sys.stdin)\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import re; print(re.sub('a','b','abc'))\"",
                 Rule::Unknown,
             ),
             ("python3 -Sc 'print(1)'", Rule::Unknown),

@@ -260,11 +260,14 @@ pub enum Understanding {
 /// - its statements are expression statements, assignments to a plain name
 ///   and `if`/`else`, so the code runs straight through;
 /// - its calls are on a short list that only computes (`print`, `len`, `str`,
-///   `json.dumps`, `console.log`, `Math.max`, the methods of a string or a
+///   `time.time`, `console.log`, `Math.max`, the methods of a string or a
 ///   list), or `open` in Python, which the reader judges by its path and
 ///   mode;
-/// - its imports are `json`, `math`, `re` and `sys` in Python, and it has no
-///   import, `require` or `eval` in JavaScript;
+/// - its imports are the modules built into the interpreter binary (`sys`,
+///   `errno`, `itertools`, `time`) in Python 3, and `sys` and `errno` alone
+///   in Python 2 (see [`understand_python2`]), which no file in the folder
+///   the code runs in can stand in for, and it has no import, `require` or
+///   `eval` in JavaScript;
 /// - it names nothing that is not a name it set, a call on the list or a
 ///   module on the list that it imported, and sets none of those;
 /// - it reaches into nothing: no attribute that starts with an underscore,
@@ -277,6 +280,19 @@ pub enum Understanding {
 /// does, whatever [`read`] found in it.
 pub fn understand(language: Language, code: &str) -> Understanding {
     match strict::reads_whole(language, code) {
+        None => Understanding::NotUnderstood,
+        Some(imports) => Understanding::Understood { imports },
+    }
+}
+
+/// Whether `code` that Python 2 runs is read whole: the same subset as
+/// [`understand`] for [`Language::Python`], but with only `sys` and `errno` to
+/// import. `time` and `itertools` are shared files of Python 2's
+/// `lib-dynload`, which the import path reaches after the folder the code runs
+/// in, and `builtins` is no built-in module there (it is `__builtin__`), so a
+/// file of that name in the folder would run.
+pub fn understand_python2(code: &str) -> Understanding {
+    match strict::reads_whole_python2(code) {
         None => Understanding::NotUnderstood,
         Some(imports) => Understanding::Understood { imports },
     }

@@ -968,11 +968,14 @@ fn python_library_calls_that_run_code_are_read_or_unknown() {
     check(
         Shell::Posix,
         &posix(),
+        &[],
         &[
             // A callable is walked where it is written, a literal is read.
-            r#"python3 -c 'import json; json.loads("{}")'"#,
-        ],
-        &[
+            // (`json` is a file looked up in the folder first: unknown, #136.)
+            (
+                r#"python3 -c 'import json; json.loads("{}")'"#,
+                Rule::Unknown,
+            ),
             (
                 r#"python3 -c 'import timeit; timeit.timeit("import shutil; shutil.rmtree(\"/home/me\")", number=1)'"#,
                 Rule::Delete,
@@ -2515,7 +2518,6 @@ fn inline_code_that_reads_a_key_is_a_read_of_it() {
             // is no read of one.
             r#"python3 -c "print(open('README.md').read())""#,
             r#"python3 -c "print(open('/etc/hosts').read())""#,
-            r#"python3 -c "import json; print(json.load(open('package.json')))""#,
             r#"python3 -c "k='/home/me/work/repo/ok.txt'; print(open(k).read())""#,
             // Written to a file of the workspace, not read.
             r#"python3 -c "open('/home/me/work/repo/out.txt', 'w').write('x')""#,
@@ -2525,6 +2527,11 @@ fn inline_code_that_reads_a_key_is_a_read_of_it() {
             // input) is a file the guard cannot name, whatever the line hands
             // the code: the read is `unknown`, as the same path is a delete
             // of a place unknown for `rm`.
+            // (`json` is a file looked up in the folder first: unknown, #136.)
+            (
+                r#"python3 -c "import json; print(json.load(open('package.json')))""#,
+                Rule::Unknown,
+            ),
             (
                 r#"python3 -c "import sys; print(open(sys.argv[1]).read())""#,
                 Rule::Unknown,
@@ -3775,13 +3782,21 @@ fn a_call_the_reader_does_not_know_that_is_given_a_path_is_unknown() {
         Shell::Posix,
         &posix(),
         &[
-            "python3 -c \"import re; print(re.sub('/+', '/', '/a//b'))\"",
             "python3 -c \"print('/tmp/x'.split('/'))\"",
             "python3 -c \"s = set(); s.add('/tmp/x'); print(s)\"",
-            "python3 -c \"import json; print(json.dumps({'a': '/tmp/x'}))\"",
             "node -e \"console.log('/tmp/x'.split('/'))\"",
         ],
         &[
+            // `re` and `json` are files looked up in the folder first
+            // (#136): unknown, whatever path they are given.
+            (
+                "python3 -c \"import re; print(re.sub('/+', '/', '/a//b'))\"",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c \"import json; print(json.dumps({'a': '/tmp/x'}))\"",
+                Rule::Unknown,
+            ),
             // A call to the network is a call the reader has no row for, with
             // or without a path; so is a path outside the workspace given to
             // `sys.path`, where an import looks for code.
@@ -4221,10 +4236,10 @@ fn a_call_the_reader_has_no_row_for_is_unknown_with_or_without_a_path() {
         Shell::Posix,
         &posix(),
         &[
-            "python3 -c \"import re, math; print(re.sub('a', 'b', 'aaa'), math.sqrt(2))\"",
             "python3 -c \"print(sorted({'b': 1, 'a': 2}.items()), 'a,b'.split(','))\"",
         ],
         &[
+    ("python3 -c \"import re, math; print(re.sub('a', 'b', 'aaa'), math.sqrt(2))\"", Rule::Unknown),
     // Not read whole by the strict gate: unknown.
     ("python3 -c \"import json, os; print(json.dumps({'cwd': os.getcwd()}))\"", Rule::Unknown),
     ("python3 -c \"import datetime; print(datetime.datetime.now().isoformat())\"", Rule::Unknown),
@@ -4847,11 +4862,10 @@ fn code_read_whole_is_safe_when_it_finds_nothing() {
         &[
             "python3 -c 'print(1+1)'",
             "python3.12 -c 'print(1)'",
-            "python3 -c 'import json,sys; json.load(sys.stdin)'",
-            "python3 -c 'import json; print(json.dumps({\"a\": [1, 2]}))'",
+            "python3 -c 'import sys; print(sys.stdin.read())'",
+            "python3 -c 'import sys, time; print(sys.argv, time.time())'",
             "python3 -c \"open('out.txt','w')\"",
             "python3 -c 'x = 1\nif x:\n    print(x)\nelse:\n    print(2)'",
-            "python3 -c 'import math, re; print(math.sqrt(4), re.sub(\"a\", \"b\", \"cat\"))'",
             "python3 -c 'print(\"a,b\".split(\",\"), f\"{1 + 1}\")'",
             "node -e 'console.log(1)'",
             "node -p '1 + 1'",
@@ -4864,6 +4878,20 @@ fn code_read_whole_is_safe_when_it_finds_nothing() {
             "deno eval 'console.log(1)'",
         ],
         &[
+            // `json`, `math` and `re` are files looked up in the folder first
+            // (#136): unknown, as is any import off the built-in modules.
+            (
+                "python3 -c 'import json,sys; json.load(sys.stdin)'",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c 'import json; print(json.dumps({\"a\": [1, 2]}))'",
+                Rule::Unknown,
+            ),
+            (
+                "python3 -c 'import math, re; print(math.sqrt(4), re.sub(\"a\", \"b\", \"cat\"))'",
+                Rule::Unknown,
+            ),
             // What it finds is still found.
             (
                 "python3 -c \"open('/home/me/.zshrc','w').write('x')\"",
@@ -5343,19 +5371,20 @@ fn an_import_looks_in_the_folder_the_code_runs_in_first() {
         Shell::Posix,
         &posix(),
         &[
-            // The workspace's own code.
-            "cd sub && python3 -c 'import json'",
-            "cd . && python3 -c 'import json'",
-            "cd /home/me/work/repo && python3 -c 'import json'",
-            "cd /home/me/work/repo/sub && python3 -c 'import json'",
-            "cd sub; cd ..; python3 -c 'import json'",
+            // The workspace's own code. (A built-in module: `json` and the
+            // rest of the files are looked up in the folder first, #136.)
+            "cd sub && python3 -c 'import sys'",
+            "cd . && python3 -c 'import sys'",
+            "cd /home/me/work/repo && python3 -c 'import sys'",
+            "cd /home/me/work/repo/sub && python3 -c 'import sys'",
+            "cd sub; cd ..; python3 -c 'import sys'",
             // The `cd` is behind or after it.
             "cd sub && python3 -c 'print(1/0)'",
-            "(cd /tmp/x && true); python3 -c 'import json'",
-            "python3 -c 'import json' && cd /tmp/x",
-            "f() { python3 -c 'import json'; }; f",
-            "python3 -c 'import json'",
-            "python3 -c 'import json, sys; json.load(sys.stdin)'",
+            "(cd /tmp/x && true); python3 -c 'import sys'",
+            "python3 -c 'import sys' && cd /tmp/x",
+            "f() { python3 -c 'import sys'; }; f",
+            "python3 -c 'import sys'",
+            "python3 -c 'import sys; print(sys.argv)'",
         ],
         &[],
     );
@@ -5369,10 +5398,11 @@ fn an_import_in_a_working_directory_outside_the_workspace_is_unknown() {
         &outside,
         &[
             // Moved into the workspace, the folder is its own.
-            "cd /home/me/work/repo && python3 -c 'import json'",
+            "cd /home/me/work/repo && python3 -c 'import sys'",
             "cd /home/me/work/repo && python3 -c 'print(1/0)'",
         ],
         &[
+            ("python3 -c 'import sys'", Rule::Unknown),
             ("python3 -c 'import json'", Rule::Unknown),
             ("python3 -c 'print(1)'", Rule::Unknown),
             ("python3 -c 'print(1/0)'", Rule::Unknown),
@@ -5396,10 +5426,17 @@ fn a_module_used_without_its_import_is_not_read_whole() {
         Shell::Posix,
         &posix(),
         &[
-            "python3 -c 'import math; print(math.pi)'",
             "python3 -c 'import sys; print(sys.argv)'",
-            "python3 -c 'import json; print(json.dumps(1))'",
+            "python3 -c 'import time; print(time.time())'",
         ],
-        &[],
+        &[
+            // Files looked up in the folder first (#136): unknown even with
+            // the import.
+            ("python3 -c 'import math; print(math.pi)'", Rule::Unknown),
+            (
+                "python3 -c 'import json; print(json.dumps(1))'",
+                Rule::Unknown,
+            ),
+        ],
     );
 }

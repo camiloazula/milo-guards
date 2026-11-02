@@ -1597,18 +1597,27 @@ questions are answered apart:
    name and `if` with `else` (no `def`, `class`, lambda, arrow function, loop,
    comprehension, `try`, `with`, `switch`, `match`, `async`, `await`,
    decorator, `new`, spread); every call is a call on a short list that only
-   computes (`print`, `len`, `json.dumps`, `console.log`, `Math.max`, the
+   computes (`print`, `len`, `time.time`, `console.log`, `Math.max`, the
    methods of a string or a list) or `open`, which the reader judges by its
    path and mode (a name on the list used as a value, `x = print; x(1)`, is
    not); and no import, run-time code or environment write is outside the
-   list (Python imports only `json`, `math`, `re` and `sys`, plainly;
+   list (Python imports only the modules built into the interpreter binary,
+   plainly: `sys`, `errno`, `itertools` and `time` (only `sys` and `errno`
+   for `python2` and `python`, which may be Python 2, where `time` and
+   `itertools` are files and `builtins` is `__builtin__`), which the
+   import system finds before it looks in the folder the code runs in, so
+   nothing there can stand in for them; any other import, `json`, `re` and
+   `math` among them, is looked up in that folder first and makes the code not
+   read whole, with no table of what each module loads in turn;
    JavaScript has no `import` or `require`; no `eval`, `exec`, `compile` or
    `Function`; no name that starts with an underscore or is not plain ASCII; a
    name the code did not set is not read whole). `os.getcwd()`, `sys.exit()`,
    `input()`, `process.env` and `new Date()` are not on the list.
 4. **The folder Python runs in is the workspace's own.** Python puts the folder
    the code runs in ahead of the standard library, so `import json` loads
-   `./json.py` from it, and so does code with no `import` (an uncaught
+   `./json.py` from it (which is why it is not read whole, even in the
+   workspace: a planted file there would run with no line naming it), and so
+   does code with no `import` (an uncaught
    exception imports `traceback`, the `idna` codec imports `stringprep`: this
    is `Understood { imports: true }`). Python code is read whole only when that
    folder is inside a workspace folder, the workspace's own code: the working
@@ -1621,8 +1630,9 @@ questions are answered apart:
    not read whole either.
 
 `python3 -c 'print(1+1)'`, `node -e 'console.log(1)'`,
-`python3 -c "import json,sys; json.load(sys.stdin)"` and
-`python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import os;
+`python3 -c "import sys; print(sys.version)"` and
+`python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import json'`,
+`cd sub && python3 -c 'import re'`, `python3 -c 'import os;
 print(os.getcwd())'`, `node -p 'process.env'`, `python3 -c 'def f(): return 1'`,
 `PYTHONPATH=. python3 -c 'print(1)'` and `python3 - <<'PY' … PY` with nothing
 found in it are `unknown`. Code outside the four is still read, and a delete,
@@ -2065,6 +2075,32 @@ Some risks only show when units are read together.
   the line gives, so it counts as only known when it runs: `unknown` once the
   line writes any file. `pwsh -File i.ps1` from a POSIX shell is read the same
   way.
+  A PowerShell write names its file by position as well as by `-Path`,
+  `-LiteralPath` or `-FilePath`: `Set-Content i.ps1 x`, `Add-Content`,
+  `'x' | Out-File i.ps1`, `Tee-Object`, `New-Item i.ps1 -Value x` (with
+  `-Name`, the name inside the folder), and the aliases, and the destination
+  of `Copy-Item a b` and `Move-Item a b`. Each is a write of that file, so
+  `Set-Content i.ps1 x; .\i.ps1` is `unknown` as the `-Path` form is. The
+  parser hands a list of paths (`a.ps1,b.ps1`) over as separate words, which
+  cannot be told from a file and its value, so every other operand the guard
+  can read counts as a file too (`Set-Content notes.txt x.ps1; .\x.ps1` is
+  `unknown`), and so does every operand when a parameter the guard cannot tell
+  takes a value or not may have taken the first. A write by a pattern
+  (`Set-Content *.ps1 x`, `tee *.sh`) writes every file it matches: a run of a
+  file in the same folder whose name matches is `unknown`, one in another
+  folder is not. The work for each run is bounded: the guard reads up to
+  eight distinct patterns, each with a file name part of up to 64 bytes (the
+  same pattern again adds nothing). A line that writes by more, or by a longer
+  one, writes any file, so every script it runs is `unknown`; so is the run
+  of a name longer than 255 bytes when the line writes by any pattern. A file
+  named by something only known when it runs is a write the guard cannot
+  place: a write cmdlet's path or name that is one (`Set-Content $f x`,
+  `Set-Content a.txt,$x y`, `New-Item -Path a.txt,$x`), first or later in a
+  list, writes any file, so every script the line runs is `unknown`. The
+  word after the first path is not told from the value, so `Set-Content
+  notes.txt $x; .\i.ps1` is `unknown` too; a value given by `-Value` is not a
+  path. A `New-Item` of more than 64 paths and names together is read the
+  same way.
 - **A listing piped into a delete.** It hands on what it picks. `ls *.bak |
   xargs rm` and `Get-ChildItem *.log | Remove-Item` delete files in the
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the

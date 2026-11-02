@@ -66,6 +66,11 @@ pub(crate) struct Code {
     /// argument. A line is only safe for code read whole (see
     /// `milo_guards_code::understand`).
     pub(crate) plain: bool,
+    /// Whether the interpreter may be Python 2 (`python2`, and `python`,
+    /// which is Python 2 on some systems), which has only `sys` and `errno`
+    /// built in: every other module, `time` and `itertools` too, is a file
+    /// the working folder is searched for first.
+    pub(crate) python2: bool,
 }
 
 /// The inline code an interpreter's own arguments hold, when they say where
@@ -80,6 +85,7 @@ pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
     }?;
     Some(Code {
         plain: is_plain(key, args),
+        python2: matches!(key, "python" | "python2"),
         ..found
     })
 }
@@ -144,6 +150,7 @@ fn code_of(piece: Arg, input: bool) -> Code {
         dir: None,
         input,
         plain: false,
+        python2: false,
     }
 }
 
