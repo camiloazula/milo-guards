@@ -320,6 +320,8 @@ impl Resolver {
         match start(text, shell) {
             Start::Plain => make(Spelling::Plain(text)),
             Start::Home(rest) => make(Spelling::Home(rest)),
+            // cmd's working directory for that drive is not shown.
+            Start::DriveRelative(..) if shell == Shell::Cmd => None,
             Start::DriveRelative(letter, rest) => self
                 .on_cwd_drive(letter, rest)
                 .and_then(|rest| make(Spelling::Plain(rest))),
@@ -655,6 +657,16 @@ impl Resolver {
             Start::Home(rest) => place_core(Spelling::Home(rest), flavour),
             Start::Provider(name, _) if REGISTRY.contains(&name.as_str()) => Place::Registry,
             Start::Provider(..) => Place::Outside,
+            // cmd keeps a working directory for every drive and the line
+            // never shows where each is, so `C:x` is a place only known when
+            // it runs, whichever drive the line is on. Read from the line's
+            // own folder it may land somewhere that matters (`C:..\..\.ssh`):
+            // then that is what it is judged as.
+            Start::DriveRelative(letter, rest) if shell == Shell::Cmd => self
+                .on_cwd_drive(letter, rest)
+                .map(|rest| place_core(Spelling::Plain(rest), flavour))
+                .filter(|place| !place.harmless())
+                .unwrap_or(Place::Unknown),
             Start::DriveRelative(letter, rest) => match self.on_cwd_drive(letter, rest) {
                 Some(rest) => place_core(Spelling::Plain(rest), flavour),
                 None => Place::Outside,

@@ -1087,10 +1087,29 @@ a path.
   `-Depth` and `-Attributes` take a value, which is never read as the path.
   A common parameter's value (`-ErrorAction 0`) is never read as the path.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
-  from that drive's own working directory, and so is a bare `C:`. On the drive
-  the working directory is on, it is relative to it; on any other drive it is
-  outside the workspace. After a `cd` it is unknown, except that after `cd C:`
-  a relative path is `C:x`, a path on that drive.
+  from that drive's own working directory, and so is a bare `C:`. In
+  PowerShell, on the drive the working directory is on, it is relative to it;
+  on any other drive it is outside the workspace. After a `cd` it is unknown,
+  except that after `cd C:` a relative path is `C:x`, a path on that drive.
+  cmd keeps a working directory for every drive and the line never shows where
+  each one is, so in cmd three rules hold:
+  - `cd` and `chdir` without `/d` to a path on another drive set that drive's
+    own working directory and do not move the line, so `cd D:\ws\a\b\c & rd /s
+    /q ..\..` from `C:\Users\me\repo` deletes `C:\Users`. `/d`, `pushd` and a
+    drive switch (`D:`) change the drive, and `cd D:` alone moves nothing. A
+    move to another drive may not have run (a branch, a pipe stage, a `cd /d`
+    that fails), so after one the drive is a guess: a `cd` without `/d` to a
+    path on a third drive leaves the folder unknown, as does any `cd` while the
+    drive is not known (after `popd`, a path or a program only known when it
+    runs, `/d` written other than first).
+  - Every drive-relative path is unknown, on the drive the line is on or on
+    another: `D:x`, `D:..\x`, `D:` and `C:x` are never safe to delete or
+    write. Read from the line's own folder, one that lands on a key or another
+    protected place is still judged as that.
+  - A `cd`, `chdir` or `pushd` with more than one word (`cd My Folder`) goes to
+    the words joined as written, the spaces between them kept and none after
+    the last. The folder is unknown when any word is only known when it runs,
+    or a later word is `/d`.
 - A listing hands its pattern on as written, so it is read the same way: the
   drive is not part of the pattern (`Get-ChildItem C:* | Remove-Item` takes the
   whole working directory), and a provider-qualified one
