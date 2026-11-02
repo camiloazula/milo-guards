@@ -103,6 +103,12 @@ crates depend on each other and how that is enforced is in
 
 - **A new rule comes with table tests of safe and risky lines**, each line
   with the verdict and the reason it should get. [Shell](docs/design/shell.md)
+- **A test file is named by what it checks, never by a ticket, an issue or a
+  review**, and a fix adds its rows to that file. A source file's own helpers
+  are tested in its `#[cfg(test)] mod tests`; what a crate does and its edge
+  cases in `crates/<crate>/tests/<what-it-checks>.rs`, with shared helpers in
+  `tests/common`; the front door end to end in `crates/guards/tests`.
+  [Architecture](docs/design/architecture.md#where-a-test-goes)
 - **Do not re-enable the disabled clippy lints**, and gate a deliberate panic
   behind `#[allow(..., reason = "...")]`.
   [Architecture](docs/design/architecture.md)

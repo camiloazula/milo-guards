@@ -150,6 +150,33 @@ the crate.
 The workspace also forbids `unsafe`, and the dependency check allows only
 permissive licences.
 
+## Where a test goes
+
+A test file is named by what it checks (`cd.rs`, `drop_data.rs`,
+`found_whole.rs`), never by the ticket, the issue or the review that asked
+for it. A fix adds its rows to the file of what it checks; a second file for
+one thing is only for a large one (`stop_processes.rs` and
+`stop_processes_windows.rs`). Rows that only differ by their data are one
+table, and a row is kept once: the same input under the same shell and paths
+with the same answer is a duplicate, the same input under another shell, other
+paths or for another answer is not. There are three kinds of test, and each
+has its place:
+
+- A test of a source file's own helpers is in that file's
+  `#[cfg(test)] mod tests`.
+- A test of what a crate does, and of its edge cases, is in
+  `crates/<crate>/tests/<what-it-checks>.rs`, one thing to a file, with the
+  helpers the files share in `tests/common`.
+- A test of the front door from end to end is in `crates/guards/tests`:
+  `agree.rs` (the shell and the file guard give one answer), `contract.rs`
+  (the contract and the direction of the dependencies), `everyday.rs` (the
+  everyday commands stay safe) and `toolchain.rs` (the places that name the
+  Rust version agree).
+
+Some names are read by other files: `just no-inline` runs
+`crates/shell/tests/inline_off.rs` by name, and `agree.rs` reads the file
+guard's `posix.rs`, `windows.rs` and `protected.rs`.
+
 ## Why tree-sitter is held at 0.26
 
 The shell guard and the code reader parse with tree-sitter. Cargo lets a

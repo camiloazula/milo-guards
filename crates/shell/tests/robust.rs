@@ -1,11 +1,15 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
 //! a line it could not read safe; and the same for `effect`, which never
-//! calls such a line reads-only.
+//! calls such a line reads-only. The counts that guard the grammars' time
+//! stop a line too long, too nested or too tangled to read, and do not take
+//! everyday lines that hold a lot of `<<` or `&` for tangled ones.
 
 mod common;
 mod noise;
 
-use common::{disagreements, posix, windows};
+use std::time::Duration;
+
+use common::{check, disagreements, posix, took, windows};
 use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
 use noise::Lcg;
 
@@ -92,7 +96,7 @@ fn a_line_too_long_or_too_nested_is_not_read() {
     assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
     // Every `(` row is stopped before it is parsed, by the count of open
     // `(`; the walk's own depth limit is tested on lines without one, in
-    // `issue_16.rs`.
+    // `nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk`.
     for (open, close, shell) in [
         ("(", ")", Shell::Posix),
         ("$(", ")", Shell::Posix),
@@ -125,10 +129,107 @@ fn a_line_too_long_or_too_nested_is_not_read() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
+fn nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk() {
+    // `a_line_too_long_or_too_nested_is_not_read` nests with `(`, which the
+    // count before parsing stops, so the walk's own depth limit, and its
+    // freedom from recursion, would go untested there. These lines hold no
+    // `(`: braces in a POSIX shell, script blocks in PowerShell. Each is deep
+    // enough to overflow a stack that recursed, and reaches the walk.
+    let braces = "{ ".repeat(13_000) + "echo" + &"; }".repeat(13_000);
+    let blocks = "{".repeat(30_000) + "echo" + &"}".repeat(30_000);
+    for (line, shell) in [(&braces, Shell::Posix), (&blocks, Shell::PowerShell)] {
+        let paths = if shell == Shell::Posix {
+            posix()
+        } else {
+            windows()
+        };
+        check(shell, &paths, &[], &[(line, Rule::Unreadable)]);
+        assert_eq!(effect(line, shell, &paths), Effect::Unknown, "{shell:?}");
+    }
+}
+
+/// Source with a stream operator on each line, written into a file by a
+/// here-document or a PowerShell here-string.
+fn cpp_lines() -> String {
+    let mut lines = String::new();
+    for n in 1..=130 {
+        lines.extend(["std::cout << \"line ", &n.to_string(), "\" << std::endl;\n"]);
+    }
+    lines
+}
+
+#[test]
+fn here_documents_are_read_in_any_number_unless_too_many_wait_on_one_line() {
+    // Each line of the body holds two `<<`, none of them a here-document;
+    // 130 of them are more than the limit on here-documents, counted over
+    // the text.
+    let heredoc = format!("cat > main.cpp <<'EOF'\n{}EOF\n", cpp_lines());
+    // And a body with a delimiter of another shape, or an indented one.
+    let tabbed = format!("cat > main.cpp <<-EOF\n{}\tEOF\n", cpp_lines());
+    let quoted = format!("cat > main.cpp <<\"END\"\n{}END\n", cpp_lines());
+    // Three hundred, each closed: here-documents after a command, on lines
+    // of their own, are read in linear time, so any number of them are fine.
+    let closed = "cat <<EOF\nx\nEOF\n".repeat(300);
+    let many = "cat <<EOF\nx\nEOF\n".repeat(4_000);
+    // And here-strings, of any number.
+    let strings = "cat <<< a; ".repeat(1_000);
+    // Too many here-documents started on one line are not read: the grammar
+    // takes time that grows with the square of how many wait for the end of
+    // the line, closed or not.
+    let waiting = "cat <<EOF; ".repeat(300) + "\nEOF\n";
+    let continued = "cat <<EOF; \\\n".repeat(300) + "\nEOF\n";
+    check(
+        Shell::Posix,
+        &posix(),
+        &[&heredoc, &tabbed, &quoted, &closed, &many, &strings],
+        &[(&waiting, Rule::Unreadable), (&continued, Rule::Unreadable)],
+    );
+}
+
+#[test]
+fn a_file_of_stream_operators_written_by_a_here_string_is_safe_in_powershell() {
+    // PowerShell has no here-documents: `<<` in the text of a here-string is
+    // text.
+    let here_string = format!("Set-Content main.cpp @'\n{}'@\n", cpp_lines());
+    check(Shell::PowerShell, &windows(), &[&here_string], &[]);
+}
+
+#[test]
+fn a_long_chain_in_cmd_is_not_read_and_one_that_reads_is() {
+    // `&` and `|` are counted before parsing: past the grammar's own depth a
+    // chain is unreadable anyway, so a shorter one is read as before.
+    let long = "echo x & ".repeat(5_000);
+    let longer_pipeline = "echo x | ".repeat(5_000) + "cat";
+    let short = "echo x & ".repeat(300) + "echo y";
+    let shorter_pipeline = "echo x | ".repeat(300) + "cat";
+    let both = "echo x & echo y | ".repeat(150) + "echo z";
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[&short, &shorter_pipeline, &both],
+        &[
+            (&long, Rule::Unreadable),
+            (&longer_pipeline, Rule::Unreadable),
+        ],
+    );
+}
+
+#[test]
+fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
+    // Each `eval` reads everything after it as a script, so each of the
+    // seven reads the whole payload: more than the line may have read.
+    let line = format!("{}: {}", "eval ".repeat(7), "a".repeat(58_000));
+    assert!(line.len() <= 64 * 1024, "{}", line.len());
+    assert!(classify(&line, Shell::Posix, &posix())
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable));
+    assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
+    // A few reads of a short script are fine.
+    assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
+}
+
+#[test]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -151,21 +252,12 @@ fn a_long_run_of_open_brackets_is_read_quickly() {
             windows(),
         ),
     ] {
-        let started = std::time::Instant::now();
-        let _ = classify(&line, shell, &paths);
-        let took = started.elapsed();
-        assert!(
-            took < std::time::Duration::from_millis(200),
-            "{shell:?} took {took:?}"
-        );
+        let took = took(&line, shell, &paths);
+        assert!(took < Duration::from_millis(200), "{shell:?} took {took:?}");
     }
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -182,15 +274,10 @@ fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
         "{}",
         line.len()
     );
-    let started = std::time::Instant::now();
-    let assessment = classify(&line, Shell::Posix, &posix());
-    let took = started.elapsed();
-    assert!(
-        took < std::time::Duration::from_millis(200),
-        "took {took:?}"
-    );
+    let took = took(&line, Shell::Posix, &posix());
+    assert!(took < Duration::from_millis(200), "took {took:?}");
     assert_eq!(
-        assessment
+        classify(&line, Shell::Posix, &posix())
             .findings()
             .iter()
             .map(|finding| finding.rule)
@@ -200,10 +287,6 @@ fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -221,22 +304,13 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
     }
     assert!(wide.len() <= 64 * 1024, "{}", wide.len());
     for line in [deep, wide] {
-        let started = std::time::Instant::now();
-        let assessment = classify(&line, Shell::Posix, &posix());
-        let took = started.elapsed();
-        assert!(
-            took < std::time::Duration::from_millis(200),
-            "took {took:?}"
-        );
-        assert!(!assessment.is_safe());
+        let took = took(&line, Shell::Posix, &posix());
+        assert!(took < Duration::from_millis(200), "took {took:?}");
+        assert!(!classify(&line, Shell::Posix, &posix()).is_safe());
     }
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -255,11 +329,9 @@ fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
         wide,
     ] {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let started = std::time::Instant::now();
-        let _ = classify(&line, Shell::Posix, &posix());
-        let took = started.elapsed();
+        let took = took(&line, Shell::Posix, &posix());
         assert!(
-            took < std::time::Duration::from_millis(500),
+            took < Duration::from_millis(500),
             "took {took:?} for {}",
             &line[..40]
         );
@@ -267,25 +339,6 @@ fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
 }
 
 #[test]
-fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
-    // Each `eval` reads everything after it as a script, so each of the
-    // seven reads the whole payload: more than the line may have read.
-    let line = format!("{}: {}", "eval ".repeat(7), "a".repeat(58_000));
-    assert!(line.len() <= 64 * 1024, "{}", line.len());
-    assert!(classify(&line, Shell::Posix, &posix())
-        .findings()
-        .iter()
-        .any(|finding| finding.rule == Rule::Unreadable));
-    assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
-    // A few reads of a short script are fine.
-    assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
-}
-
-#[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch an exponential read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -299,14 +352,15 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
         for count in [16, 20, 40, 600, 2_000] {
             let line = format!("{}rm -rf ~", group.repeat(count));
             assert!(line.len() <= 64 * 1024, "{}", line.len());
-            let started = std::time::Instant::now();
-            let assessment = classify(&line, Shell::Posix, &posix());
-            let took = started.elapsed();
+            let took = took(&line, Shell::Posix, &posix());
             assert!(
-                took < std::time::Duration::from_millis(200),
+                took < Duration::from_millis(200),
                 "{count} x {group:?} took {took:?}"
             );
-            assert!(!assessment.is_safe(), "{count} x {group:?}");
+            assert!(
+                !classify(&line, Shell::Posix, &posix()).is_safe(),
+                "{count} x {group:?}"
+            );
             assert!(!matches!(
                 effect(&line, Shell::Posix, &posix()),
                 Effect::ReadsOnly(_)
@@ -323,10 +377,6 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a cubic read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -349,21 +399,15 @@ fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
         "{}",
         line.len()
     );
-    let started = std::time::Instant::now();
-    let assessment = classify(&line, Shell::Posix, &posix());
-    let took = started.elapsed();
-    assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
-    assert!(assessment
+    let took = took(&line, Shell::Posix, &posix());
+    assert!(took < Duration::from_secs(2), "took {took:?}");
+    assert!(classify(&line, Shell::Posix, &posix())
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::SendSecret));
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a product of redirects and units"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
@@ -373,11 +417,9 @@ fn input_redirects_over_many_units_are_read_in_linear_time() {
     // each unit in it.
     let timed = |line: &str| {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let started = std::time::Instant::now();
-        let assessment = classify(line, Shell::Posix, &posix());
-        let took = started.elapsed();
-        assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
-        assessment
+        let took = took(line, Shell::Posix, &posix());
+        assert!(took < Duration::from_secs(2), "took {took:?}");
+        classify(line, Shell::Posix, &posix())
     };
     let body = "a;".repeat(2_000);
     let files = "<a".repeat(2_000);

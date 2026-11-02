@@ -4,11 +4,82 @@
 
 #![allow(dead_code, unreachable_pub)]
 
-use milo_guards_secrets::Rule;
+use milo_guards_secrets::{find, find_spans, Rule};
 
 /// `length` characters made by repeating `seed`.
 pub fn fill(seed: &str, length: usize) -> String {
     seed.chars().cycle().take(length).collect()
+}
+
+/// Whether every byte of the first `secret` in `text` is in a span, and what
+/// the findings say if a part is not.
+pub fn covered(text: &str, secret: &str) -> Result<(), String> {
+    let Some(at) = text.find(secret) else {
+        return Err("the secret is not in the text".to_string());
+    };
+    let spans = find_spans(text);
+    let missed = (at..at + secret.len())
+        .filter(|byte| {
+            !spans
+                .iter()
+                .any(|span| span.start <= *byte && *byte < span.end)
+        })
+        .count();
+    if missed == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{missed} of {} bytes not found, spans {spans:?}",
+        secret.len()
+    ))
+}
+
+/// A row: the text, and the secret in it that must be found whole.
+pub fn p(bad: &mut Vec<String>, label: &str, text: &str, secret: &str) {
+    if let Err(why) = covered(text, secret) {
+        bad.push(format!("{label}: {why}"));
+    }
+}
+
+/// A row: the text must be Safe.
+pub fn s(bad: &mut Vec<String>, label: &str, text: &str) {
+    let assessment = find(text);
+    if !assessment.is_safe() {
+        bad.push(format!("{label}: {:?}", assessment.findings()));
+    }
+}
+
+/// The rows `p` and `s` found wrong, all of them in one message.
+pub fn nothing_wrong(bad: &[String]) {
+    assert!(
+        bad.is_empty(),
+        "{} rows wrong:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// `text` as unpadded base64url, the way a Discord bot token writes its id.
+pub fn base64url(text: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in text.as_bytes().chunks(3) {
+        let a = u32::from(chunk[0]);
+        let b = chunk.get(1).map_or(0, |b| u32::from(*b));
+        let c = chunk.get(2).map_or(0, |b| u32::from(*b));
+        let bits = (a << 16) | (b << 8) | c;
+        let digits = chunk.len() + 1;
+        for n in 0..digits {
+            let at = ((bits >> (18 - 6 * n)) & 63) as usize;
+            out.push(char::from(ALPHABET[at]));
+        }
+    }
+    out
+}
+
+/// A Discord bot token made from a user id, with a fake age and signature.
+pub fn token(id: &str) -> String {
+    format!("{}.GaBcDe.{}", base64url(id), fill("FakeDiscordTok_-9", 38))
 }
 
 /// One sample: the text around a secret, the secret itself and the rule and

@@ -428,13 +428,18 @@ does.
 ## Tests
 
 - `tests/rules.rs`: one table of texts per rule, with the spelling variants a
-  reviewer would try as rows of their own.
-- `tests/safe.rs`: the texts that must be Safe.
+  reviewer would try as rows of their own; a Discord bot token found by its
+  own shape, and the real passwords and tokens beside the Safe rows.
+- `tests/safe.rs`: the texts that must be Safe: the files of a code base,
+  stand-ins, dotted chains of identifiers, the labels of a locale file,
+  pagination cursors and short quoted tokens.
 - `tests/spans.rs`: replacing every span leaves the text around it as it was,
   with multi-byte text beside it; spans are in order and apart; escapes are
   read and carried back.
 - `tests/rows.rs`: one sample for every row of the table finds exactly its
   secret with its rule and reason, and no target or reason holds the secret.
-- `tests/review.rs`: the rows of a reviewer's probe, every kind of key in the
-  dress it comes in, and the text of a code base that looks like a secret.
+- `tests/found_whole.rs`: every kind of key in the dress it comes in is found
+  whole (each byte of it in a span): the keys of each provider and format,
+  where a value ends, spans that overlap, and values that look like a
+  stand-in but are real.
 - `tests/entropy.rs`, `tests/names.rs` and `tests/robust.rs`.

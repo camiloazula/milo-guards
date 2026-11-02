@@ -1,12 +1,22 @@
-//! What the tables share: the directories commands run with, and a check
-//! that names every row that came out wrong at once.
+//! What the tables share: the directories commands run with, a check that
+//! names every row that came out wrong at once (and one that a row breaks one
+//! rule and not another), the makers of the paths a
+//! reads-only line lists, a clock and a linear-time check for the timed
+//! tests, and (in [`inline`])
+//! the builders of inline-code rows.
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
+
+pub mod inline;
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
 use milo_guards_shell::{
-    classify as judge, effect, effect_paths, explain, Effect, Paths, Reach, Rule, Shell,
+    classify as judge, effect, effect_paths, explain, Effect, How, Paths, Reach, ReadPath, Rule,
+    Shell,
 };
 
 /// A text as the tree prints it: a control character written as an escape.
@@ -180,6 +190,25 @@ fn stays(path: &str, paths: &Paths, windows: bool) -> bool {
         .any(|folder| inside(path, &folder))
 }
 
+/// Every `lines` row breaks `has` and does not break `lacks`; the rows that
+/// do not are named together.
+pub fn only(shell: Shell, paths: &Paths, has: Rule, lacks: Rule, lines: &[&str]) {
+    let wrong: Vec<String> = lines
+        .iter()
+        .filter_map(|line| {
+            let found = rules(line, shell, paths);
+            (!found.contains(&has) || found.contains(&lacks))
+                .then(|| format!("expected {has:?} without {lacks:?}: {line}\n    got {found:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 /// `effect` of each `lines` row is `expected`; the rows that are not are
 /// named together.
 pub fn check_effect(shell: Shell, paths: &Paths, expected: Effect, lines: &[&str]) {
@@ -200,4 +229,101 @@ pub fn check_effect(shell: Shell, paths: &Paths, expected: Effect, lines: &[&str
         wrong.len(),
         wrong.join("\n")
     );
+}
+
+/// `effect_paths` of each row's line is the row's list, and agrees with
+/// `effect` (see [`path_disagreement`]); the rows that do not are named
+/// together.
+pub fn lists(shell: Shell, paths: &Paths, rows: &[(&str, Vec<ReadPath>)]) {
+    let wrong: Vec<String> = rows
+        .iter()
+        .filter_map(|(line, want)| {
+            let got = effect_paths(line, shell, paths);
+            let disagree = path_disagreement(shell, paths, line);
+            (got.as_ref() != Some(want) || disagree.is_some())
+                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}\n    {disagree:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// A path read as it is.
+pub fn exact(path: &str) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Exact,
+    }
+}
+
+/// A pattern: the folder it expands in, and the rest.
+pub fn glob(path: &str, rest: &str) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Glob(rest.to_string()),
+    }
+}
+
+/// A walk of the folder at `path`, and whether it opens what it finds
+/// through links.
+pub fn walk(path: &str, follows_links: bool) -> ReadPath {
+    ReadPath {
+        path: PathBuf::from(path),
+        how: How::Tree { follows_links },
+    }
+}
+
+/// The reason of the first finding of `rule` that `classify` gives `line`.
+pub fn reason(line: &str, shell: Shell, paths: &Paths, rule: Rule) -> Option<String> {
+    judge(line, shell, paths)
+        .findings()
+        .iter()
+        .find(|finding| finding.rule == rule)
+        .map(|finding| finding.reason.clone())
+}
+
+/// How long `classify` takes to judge `line`: the best of three runs, so a
+/// busy machine slows it less.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only a test times it, to catch a quadratic read"
+)]
+pub fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
+    (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            let _ = judge(line, shell, paths);
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default()
+}
+
+/// A line of a quarter of the size takes about a quarter of the time; one
+/// that is read in quadratic time takes sixteen times as long. `line` makes
+/// the line of a size; the two are compared with each other, so a slow or
+/// busy machine, which slows both, does not fail it.
+pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usize) -> String) {
+    let floor = Duration::from_millis(5);
+    let mut last = (Duration::ZERO, Duration::ZERO);
+    let linear = (0..3).any(|_| {
+        let small = took(&line(16 * 1024), shell, paths);
+        let big = took(&line(64 * 1024), shell, paths);
+        last = (small, big);
+        big <= 10 * small.max(floor)
+    });
+    assert!(
+        linear,
+        "{what}: 16 KB took {:?}, 64 KB took {:?}",
+        last.0, last.1
+    );
+}
+
+/// `part` repeated to fill `size` bytes, less `slack` for what is around it.
+pub fn filled(part: &str, size: usize, slack: usize) -> String {
+    part.repeat((size - slack) / part.len())
 }

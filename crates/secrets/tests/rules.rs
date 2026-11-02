@@ -1,9 +1,12 @@
 //! One table of texts per rule: each text must break its rule, and the
-//! spelling variants a reviewer would try are rows of their own.
+//! spelling variants a reviewer would try are rows of their own. A Discord bot
+//! token is found by its own shape (its first part is a user id in base64url,
+//! digits when decoded), and the real passwords and tokens beside the rows of
+//! `safe.rs` are still found.
 
 mod common;
 
-use common::{fill, pem};
+use common::{base64url, fill, pem, token};
 use milo_guards_core::testing::check;
 use milo_guards_secrets::{find, find_spans, Rule};
 
@@ -15,6 +18,17 @@ fn rules(text: &str) -> Vec<Rule> {
 /// A text with `value` as its only secret has exactly one finding of `rule`.
 fn only(text: &str, rule: Rule) {
     assert_eq!(rules(text), [rule], "{text:?}");
+}
+
+/// Every row has exactly one finding, of `rule`, and its span is the row's
+/// secret.
+fn assert_found(rows: &[(String, String)], rule: Rule) {
+    for (text, secret) in rows {
+        let spans = find_spans(text);
+        assert_eq!(spans.len(), 1, "{text:?}\n  got {spans:?}");
+        assert_eq!(spans[0].rule, rule, "{text:?}");
+        assert_eq!(&text[spans[0].start..spans[0].end], secret, "{text:?}");
+    }
 }
 
 #[test]
@@ -875,4 +889,163 @@ fn the_limits_of_reading_a_value_are_kept_as_rows() {
     // found.
     assert!(find("password=Ab3d9").is_safe());
     assert!(find("passcode=F4kePass9word").is_safe());
+}
+
+#[test]
+fn the_encoder_writes_what_the_discord_row_expects() {
+    assert_eq!(base64url("123456789012345678"), "MTIzNDU2Nzg5MDEyMzQ1Njc4");
+}
+
+#[test]
+fn a_real_discord_bot_token_is_still_found() {
+    let ids = [
+        "123456789012345678",
+        "1234567890123456789",
+        "12345678901234567890",
+        "987654321098765432",
+        "876543210987654321",
+        "556677889900112233",
+        // An id of seventeen digits, from the first years of the service.
+        "12345678901234567",
+    ];
+    let mut rows = Vec::new();
+    for id in ids {
+        let secret = token(id);
+        rows.push((format!("DISCORD: {secret}"), secret.clone()));
+        rows.push((format!("DISCORD_TOKEN={secret}\n"), secret.clone()));
+        rows.push((format!("client.login(\"{secret}\")"), secret.clone()));
+        rows.push((format!("see {secret} and more"), secret));
+    }
+    assert_found(&rows, Rule::ApiKey);
+}
+
+#[test]
+fn a_discord_token_with_a_seven_character_age_is_found() {
+    let secret = format!(
+        "{}.GaBcDeF.{}",
+        base64url("123456789012345678"),
+        fill("FakeDiscordTok_-9", 27)
+    );
+    assert_found(&[(format!("bot: {secret}"), secret)], Rule::ApiKey);
+}
+
+#[test]
+fn a_page_access_token_is_still_a_secret() {
+    let facebook = "EAAGm0PX4ZCpsBAKZB7Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1UgZDZD";
+    let word = "Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug";
+    let rows = [
+        format!("PAGE_TOKEN={facebook}"),
+        format!("FB_PAGE_TOKEN={facebook}"),
+        format!("export FACEBOOK_PAGE_TOKEN=\"{facebook}\""),
+        format!("page_token={facebook}"),
+        format!("{{\"page_token\": \"{facebook}\"}}"),
+        format!("WEBPAGE_TOKEN={word}"),
+        format!("homepage_token = \"{word}\""),
+    ];
+    for row in &rows {
+        assert!(!find(row).is_safe(), "{row:?} is a secret");
+    }
+}
+
+#[test]
+fn a_decoy_discord_match_does_not_hide_the_real_token() {
+    let rows = [
+        // The decoy begins at a glued letter, and the real token is inside it.
+        (
+            "NMTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+        (
+            "O_MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+        // The third part of the decoy swallows the id of the real token.
+        (
+            "see NavigationControllerDelegate.handler.MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+        ),
+    ];
+    let rows: Vec<(String, String)> = rows
+        .into_iter()
+        .map(|(text, secret)| (text.to_string(), secret.to_string()))
+        .collect();
+    assert_found(&rows, Rule::ApiKey);
+}
+
+#[test]
+fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
+    // The base64url of an id made of digits holds no `_` or `-`, so one that
+    // touches the token ends the run of letters before it, whatever it was.
+    let secret = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q";
+    let rows: Vec<(String, String)> = [
+        "token_",
+        "key-",
+        "prod_",
+        "abc_",
+        "my-bot-",
+        "secrets/discord-bot-",
+        "____",
+        "----",
+        "--token--",
+    ]
+    .into_iter()
+    .map(|head| (format!("{head}{secret}"), secret.to_string()))
+    .collect();
+    assert_found(&rows, Rule::ApiKey);
+    assert!(
+        !find(&format!("secrets/discord-bot-{secret}.txt")).is_safe(),
+        "a token in a file name is a secret"
+    );
+    // Four letters or digits right before the token are still a longer id.
+    for head in ["abcd", "x_abcd", "Zm9v1234"] {
+        let row = format!("{head}{secret}");
+        assert!(
+            find_spans(&row).iter().all(|s| s.rule != Rule::ApiKey),
+            "{row:?} is the tail of a longer id"
+        );
+    }
+}
+
+#[test]
+fn a_real_password_or_token_beside_the_safe_rows_is_still_found() {
+    let long = fill("Fk9Zq2Xw", 32);
+    let rows: Vec<(String, String)> = [
+        // A quoted password with a digit or a symbol is not a word.
+        ("{\"password\": \"Contraseña1\"}", "Contraseña1"),
+        ("{\"password\": \"Hunter2!\"}", "Hunter2!"),
+        ("{\"password\": \"Correct?Horse\"}", "Correct?Horse"),
+        ("{\"password\": \"hunter22\"}", "hunter22"),
+        ("{\"confirm_password\": \"Confirmar#7\"}", "Confirmar#7"),
+        // Not a Title word: lower case, upper case or several capitals.
+        ("{\"password\": \"sunshine\"}", "sunshine"),
+        ("{\"password\": \"SUNSHINE\"}", "SUNSHINE"),
+        ("{\"password\": \"SunShine\"}", "SunShine"),
+        // A word as the value of a name that is not a key of data.
+        ("password = \"Sunshine\"", "Sunshine"),
+        ("let password = \"Sunshine\";", "Sunshine"),
+        ("password: Sunshine1", "Sunshine1"),
+        // More than a word, or too long to be a label.
+        (
+            "{\"password\": \"Supercalifragilisticexpialidocious\"}",
+            "Supercalifragilisticexpialidocious",
+        ),
+        // A quoted token of eight characters, and a long one under any name.
+        ("let token = \"abc12345\";", "abc12345"),
+        ("{\"token\": \"Xk9fQ2mZ\"}", "Xk9fQ2mZ"),
+        ("let api_token = \"Xk9fQ2mZ7p\";", "Xk9fQ2mZ7p"),
+        // A secret short value under a word that is not a token's.
+        ("password = \"abc123\"", "abc123"),
+        ("let secret = \"abc123\";", "abc123"),
+    ]
+    .into_iter()
+    .map(|(text, secret)| (text.to_string(), secret.to_string()))
+    .chain([
+        (format!("{{\"token\": \"{long}\"}}"), long.clone()),
+        (format!("let token = \"{long}\";"), long.clone()),
+        (format!("\"next_token_secret\": \"{long}\""), long.clone()),
+        (format!("{{\"page_secret\": \"{long}\"}}"), long.clone()),
+        (format!("{{\"api_key\": \"{long}\"}}"), long),
+    ])
+    .collect();
+    assert_found(&rows, Rule::GenericSecret);
 }
