@@ -12,8 +12,17 @@ use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let (text, marks) = join_continuations(text);
+    let (text, marks, near) = join_continuations(text);
     let text = text.as_str();
+    // The grammar ends such a here-document at the near line, where the shell
+    // does not: what the program reads is not what the guard reads.
+    if near {
+        split.problem(
+            Rule::Unreadable,
+            "has a here-document line that is only near its delimiter",
+            None,
+        );
+    }
     let language = tree_sitter_bash::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
@@ -84,9 +93,12 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
 /// given back as the offset in the new text where it was, the end of its
 /// word, for [`Walker::qualified`].
-fn join_continuations(text: &str) -> (String, Vec<usize>) {
+fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
     let chars: Vec<char> = text.chars().collect();
     let mut marks = Vec::new();
+    // Whether a body has a line only near its delimiter (see
+    // [`near_delimiter`]).
+    let mut near = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
     // Here-documents opened on the current line, read from the next one:
@@ -195,13 +207,28 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                         if content == delimiter {
                             break;
                         }
+                        near |= near_delimiter(content, &delimiter);
                     }
                 }
             }
             _ => joined.push(c),
         }
     }
-    (joined, marks)
+    (joined, marks, near)
+}
+
+/// Whether a line of a here-document's body is only near its delimiter: the
+/// shell ends the body at a line that is exactly the delimiter (for `<<-`,
+/// after its leading tabs), but the grammar also ends it at ` EOF`, `EOF `,
+/// `EOF #…`, `EOF ;…` and `'EOF'`. The line's first word, without spaces,
+/// quotes and backslashes, is the delimiter while the line is not.
+fn near_delimiter(line: &str, delimiter: &str) -> bool {
+    let word = line
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || ";&|()<>#".contains(c))
+        .next()
+        .unwrap_or_default();
+    word.replace(['\'', '"', '\\'], "") == delimiter
 }
 
 /// The command a redirect after `node` belongs to, when `node` is a list, a

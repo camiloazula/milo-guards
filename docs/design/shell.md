@@ -2021,6 +2021,13 @@ template; a body with both an escaped and an expanding `$` or backtick is
 `unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
 
+The shell ends a here-document only at a line that is exactly the delimiter
+(for `<<-`, after leading tabs only). The grammar also ends it at a line only
+near the delimiter (` EOF`, `EOF `, `EOF #…`, `EOF ;…`, `'EOF'`), so the rest
+would be judged as shell commands while the program reads it as its input
+(`python3 - <<'PY'` with a ` PY` line in front of `shutil.rmtree(…)`). Such a
+line makes the whole line `Unreadable`, for every reader of a here-document.
+
 What a stage says is worked out once and read once for each client language,
 whatever the number of clients after it, so the time grows with the line and
 not with the clients times the programs. A stage that says more than 256 KB
