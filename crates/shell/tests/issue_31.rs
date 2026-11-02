@@ -477,10 +477,6 @@ fn an_arithmetic_chain_that_assigns_globignore_turns_hidden_names_on() {
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
-#[cfg_attr(
-    coverage,
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
 fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
     // A bracket whose only `]`s close `[:a:]`-style elements has no end, and
     // each `[` after it must not scan to the end of the word again: a run of
