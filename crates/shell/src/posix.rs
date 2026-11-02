@@ -8,16 +8,35 @@ use tree_sitter::{Node, TreeCursor};
 use crate::dotglob;
 use crate::launch;
 use crate::startup;
-use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
+use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let (text, marks) = join_continuations(text);
+    let (text, marks, near, open) = join_continuations(text);
     let text = text.as_str();
+    // The grammar ends such a here-document at the near line, where the shell
+    // does not: what the program reads is not what the guard reads.
+    if near {
+        split.problem(
+            Rule::Unreadable,
+            "has a here-document line that is only near its delimiter",
+            None,
+        );
+    }
     let language = tree_sitter_bash::LANGUAGE.into();
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
+    // The grammar may read quotes that never close, and then says so; if it
+    // does not, the scan above has misread the text, and what follows its
+    // stopping place was not joined.
+    if open && !tree.root_node().has_error() {
+        split.problem(
+            Rule::Unreadable,
+            "has quotes or a substitution that never close",
+            None,
+        );
+    }
     let (names, looped) = assigned(tree.root_node(), text);
     for name in names {
         split.reassign(&name);
@@ -35,6 +54,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         redirected: None,
         last_command: 0..0,
+        tail_of: Vec::new(),
+        tail: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -76,30 +97,58 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 
 /// `text` with each backslash-newline taken out, as the shell does before
 /// it reads a line (`r\<newline>m` is `rm`), except inside single quotes,
-/// comments and here-document bodies, where it stays. A body is copied as it
-/// is, so a quote in it (`don't`) cannot leave the rest of the line looking
-/// quoted.
+/// comments and the bodies of here-documents with a quoted delimiter, where
+/// it stays. Such a body is copied as it is, so a quote in it (`don't`)
+/// cannot leave the rest of the line looking quoted. The body of an unquoted
+/// delimiter is fed to the shell as the inside of a double-quoted word: a
+/// backslash-newline in it is joined, before the body is expanded. A line that
+/// took one in and is, or is near, the delimiter (joined, or in any piece) is
+/// refused: bash, sh and zsh compare the joined line, dash and ksh do not, so
+/// they disagree on where the body ends. With `<<-` the tabs of the line that
+/// goes on stay, as in every shell.
 ///
 /// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
 /// given back as the offset in the new text where it was, the end of its
 /// word, for [`Walker::qualified`].
-fn join_continuations(text: &str) -> (String, Vec<usize>) {
+fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     let chars: Vec<char> = text.chars().collect();
     let mut marks = Vec::new();
+    // Whether a body has a line only near its delimiter (see
+    // [`near_delimiter`]).
+    let mut near = false;
+    // Whether quotes or a substitution never close: a shell refuses such
+    // text, so the scan has misread it, and what follows was not joined.
+    let mut open = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
+    // Whether the open single quotes are `$'…'`, where a backslash escapes the
+    // next character, so `\'` does not end them.
+    let mut ansi = false;
+    // The `$(…)`, `$((…))`, `((…))` and backticks open at this point, each
+    // with whether it sits in double quotes: inside one the quoting starts
+    // afresh, so a here-document in `"$(psql <<'EOF' …)"` is a here-document.
+    let mut subs: Vec<(Sub, bool)> = Vec::new();
     // Here-documents opened on the current line, read from the next one:
-    // each delimiter, and whether `<<-` lets it be indented with tabs.
-    let mut bodies: Vec<(String, bool)> = Vec::new();
+    // each delimiter, whether `<<-` lets it be indented with tabs, and
+    // whether the word had a quote or a backslash (a body fed as it is).
+    let mut bodies: Vec<(String, bool, bool)> = Vec::new();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
         if single {
             joined.push(c);
-            single = c != '\'';
+            if ansi && c == '\\' {
+                if let Some(&next) = chars.get(at) {
+                    joined.push(next);
+                    at += 1;
+                }
+            } else {
+                single = c != '\'';
+            }
             continue;
         }
+        let in_brace = matches!(subs.last(), Some((Sub::Brace, _)));
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
@@ -122,13 +171,78 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
             },
             '\'' if !double => {
                 single = true;
+                ansi = ansi_quote(&joined);
                 joined.push(c);
             }
             '"' => {
                 double = !double;
                 joined.push(c);
             }
+            // Arithmetic, `$((…))`: a `<<` in it is a shift.
+            '$' if chars.get(at) == Some(&'(') && chars.get(at + 1) == Some(&'(') => {
+                joined.push_str("$((");
+                at += 2;
+                subs.push((Sub::Arith(2), double));
+                double = false;
+            }
+            // A substitution: outside the quotes of the line around it.
+            '$' if chars.get(at) == Some(&'(') => {
+                joined.push_str("$(");
+                at += 1;
+                subs.push((Sub::Paren(1), double));
+                double = false;
+            }
+            // A `${…}`: a parenthesis in it (`${x/(/y}`, `${x%(*}`) is text,
+            // not the end of the substitution around it. The quotes in it
+            // are the ones of the word around it, so it ends at a `}` in the
+            // same state.
+            '$' if chars.get(at) == Some(&'{') => {
+                joined.push_str("${");
+                at += 1;
+                subs.push((Sub::Brace, double));
+            }
+            '}' if matches!(subs.last(), Some((Sub::Brace, outer)) if *outer == double) => {
+                joined.push(c);
+                subs.pop();
+            }
+            // Arithmetic, `((…))`, unless already in some.
+            '(' if !double
+                && !in_brace
+                && chars.get(at) == Some(&'(')
+                && !matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                joined.push_str("((");
+                at += 1;
+                subs.push((Sub::Arith(2), double));
+            }
+            '`' => {
+                joined.push(c);
+                if let Some(&(Sub::Backtick, outer)) = subs.last() {
+                    subs.pop();
+                    double = outer;
+                } else {
+                    subs.push((Sub::Backtick, double));
+                    double = false;
+                }
+            }
+            '(' if !double && !in_brace => {
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), _)) = subs.last_mut() {
+                    *depth += 1;
+                }
+                joined.push(c);
+            }
+            ')' if !double && !in_brace => {
+                joined.push(c);
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), outer)) = subs.last_mut() {
+                    *depth = depth.saturating_sub(1);
+                    if *depth == 0 {
+                        double = *outer;
+                        subs.pop();
+                    }
+                }
+            }
             '#' if !double
+                && !in_brace
                 && joined
                     .chars()
                     .last()
@@ -140,9 +254,22 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                     at += 1;
                 }
             }
+            // A `<<` in arithmetic is a shift (`$((1<<2))`), but the shell
+            // reads `$((cat <<EOF` and the like as a subshell with a
+            // here-document: a word and the end of the line after it could be
+            // either, and is not guessed at.
+            '<' if !double
+                && !in_brace
+                && chars.get(at) == Some(&'<')
+                && matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                near |= ends_like_heredoc_start(chars.get(at + 1..).unwrap_or_default());
+                joined.push(c);
+            }
             // `<<WORD` (not `<<<`): a here-document whose body starts on
             // the next line.
             '<' if !double
+                && !in_brace
                 && chars.get(at) == Some(&'<')
                 && chars.get(at + 1) != Some(&'<')
                 && at.checked_sub(2).and_then(|before| chars.get(before)) != Some(&'<') =>
@@ -158,30 +285,85 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                     joined.push(space);
                     at += 1;
                 }
+                // The word: a quoted part is read through its closing quote
+                // (`<<'E;F'` is `E;F`), the rest stops at a space or an
+                // operator.
                 let mut word = String::new();
+                let mut quoted = false;
                 while let Some(&next) = chars.get(at) {
                     if next.is_whitespace() || ";&|<>()".contains(next) {
                         break;
                     }
                     joined.push(next);
-                    if !matches!(next, '\'' | '"' | '\\') {
-                        word.push(next);
-                    }
                     at += 1;
+                    quoted |= matches!(next, '\\' | '\'' | '"');
+                    match next {
+                        '\\' => {
+                            if let Some(&escaped) = chars.get(at).filter(|c| **c != '\n') {
+                                joined.push(escaped);
+                                word.push(escaped);
+                                at += 1;
+                            }
+                        }
+                        '\'' | '"' => {
+                            let mut closed = false;
+                            while let Some(&inner) = chars.get(at) {
+                                joined.push(inner);
+                                at += 1;
+                                if inner == next {
+                                    closed = true;
+                                    break;
+                                }
+                                if inner == '\\' && next == '"' {
+                                    if let Some(&escaped) = chars.get(at) {
+                                        joined.push(escaped);
+                                        word.push(escaped);
+                                        at += 1;
+                                    }
+                                    continue;
+                                }
+                                word.push(inner);
+                            }
+                            // A quote that never closes is not a word the
+                            // shell would take.
+                            open |= !closed;
+                        }
+                        _ => word.push(next),
+                    }
                 }
                 if !word.is_empty() {
-                    bodies.push((word, tabs));
+                    bodies.push((word, tabs, quoted));
                 }
             }
             '\n' if !double && !bodies.is_empty() => {
                 joined.push('\n');
-                for (delimiter, tabs) in std::mem::take(&mut bodies) {
+                for (delimiter, tabs, quoted) in std::mem::take(&mut bodies) {
                     while at < chars.len() {
-                        let start = at;
-                        while chars.get(at).is_some_and(|c| *c != '\n') {
+                        let mut line = String::new();
+                        // Where in `line` each backslash-newline was taken
+                        // out: the pieces of the physical lines.
+                        let mut cuts: Vec<usize> = Vec::new();
+                        while let Some(&c) = chars.get(at).filter(|c| **c != '\n') {
                             at += 1;
+                            if c != '\\' || quoted {
+                                line.push(c);
+                            } else if let Some(&next) = chars.get(at) {
+                                // An unquoted body: a backslash-newline is
+                                // joined, any other escape (`\\`) is kept
+                                // whole, so `\\<newline>` is not one. The
+                                // tabs of the line that goes on stay, also
+                                // with `<<-`: shells keep them.
+                                at += 1;
+                                if next == '\n' {
+                                    cuts.push(line.len());
+                                } else {
+                                    line.push(c);
+                                    line.push(next);
+                                }
+                            } else {
+                                line.push(c);
+                            }
                         }
-                        let line: String = chars[start..at].iter().collect();
                         joined.push_str(&line);
                         if at < chars.len() {
                             joined.push('\n');
@@ -192,16 +374,180 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
                         } else {
                             line.as_str()
                         };
+                        // A line that took in a backslash-newline: bash, sh
+                        // and zsh join it before they compare it with the
+                        // delimiter, dash and ksh do not (and then end the
+                        // body at a piece that is the delimiter). If the
+                        // joined line or any piece is, or is near, the
+                        // delimiter, the shells disagree on where the body
+                        // ends, so the line is refused.
+                        if !cuts.is_empty() {
+                            let mut start = 0;
+                            let mut pieces = Vec::new();
+                            for cut in cuts.iter().copied().chain([line.len()]) {
+                                pieces.push(line.get(start..cut).unwrap_or_default());
+                                start = cut;
+                            }
+                            near |= near_delimiter(content, &delimiter)
+                                || pieces.iter().any(|piece| near_delimiter(piece, &delimiter));
+                        }
                         if content == delimiter {
                             break;
                         }
+                        near |= near_delimiter(content, &delimiter);
                     }
                 }
             }
             _ => joined.push(c),
         }
     }
-    (joined, marks)
+    open |= single || double || !subs.is_empty();
+    (joined, marks, near, open)
+}
+
+/// An open `$(…)`, `$((…))` or `((…))` (with the depth of the parentheses in
+/// it) or backtick, see [`join_continuations`].
+#[derive(Clone, Copy)]
+enum Sub {
+    Paren(usize),
+    Arith(usize),
+    Backtick,
+    /// A `${…}`, in which a parenthesis is not counted.
+    Brace,
+}
+
+/// Whether the quote that follows `before` opens `$'…'`: a `$` that is not
+/// escaped and does not pair with another (`$$'` is the process id and a plain
+/// quote). A backslash in `$'…'` escapes the next character.
+fn ansi_quote(before: &str) -> bool {
+    let dollars = before.chars().rev().take_while(|c| *c == '$').count();
+    let rest = &before[..before.len() - dollars];
+    let slashes = rest.chars().rev().take_while(|c| *c == '\\').count();
+    let unescaped = if slashes % 2 == 1 {
+        dollars.saturating_sub(1)
+    } else {
+        dollars
+    };
+    unescaped % 2 == 1
+}
+
+/// Whether `rest`, the text after a `<<` in arithmetic, has the look of a
+/// here-document's start: an optional `-`, one word, then the end of the line.
+fn ends_like_heredoc_start(rest: &[char]) -> bool {
+    let mut rest = rest.iter().peekable();
+    rest.next_if(|c| **c == '-');
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    let mut word = 0;
+    while rest
+        .next_if(|c| !c.is_whitespace() && !";&|<>()".contains(**c))
+        .is_some()
+    {
+        word += 1;
+    }
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    word > 0 && rest.next() == Some(&'\n')
+}
+
+/// Whether a line of a here-document's body is only near its delimiter: the
+/// shell ends the body at a line that is exactly the delimiter (for `<<-`,
+/// after its leading tabs), but the grammar also ends it at ` EOF`, `EOF `,
+/// `EOF #…` and `EOF ;…`. The line's first word, without spaces, quotes and
+/// backslashes, is the delimiter while the line is not. A line that is the
+/// delimiter in quotes or with a backslash (`'EOF'`) ends the body for
+/// neither the grammar nor the shell, but is refused too: it is no body
+/// anyone writes, and one rule is simpler than two.
+fn near_delimiter(line: &str, delimiter: &str) -> bool {
+    let word = line
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || ";&|()<>#".contains(c))
+        .next()
+        .unwrap_or_default();
+    word.replace(['\'', '"', '\\'], "") == delimiter
+}
+
+/// The code of each backtick substitution in the body of an unquoted
+/// here-document, which the shell runs and the grammar does not read. `skip`
+/// are the byte ranges of the parts of the body the grammar read itself (a
+/// `$(…)`, a `${…}`): a backtick in them is theirs. The shell takes the first
+/// backtick that no backslash escapes as the end, whatever quotes lie between,
+/// and then takes one backslash off `\``, `\\` and `\$` in what it found
+/// (`\` and any other character stay). Shells differ on `\"`: bash keeps the
+/// backslash, dash takes it off (its body is read as the inside of double
+/// quotes, where `"` is special). A code that holds one is returned twice,
+/// once for each reading, so that what either shell runs is judged. `None`
+/// when a backtick never closes, which a shell refuses. With `strips` (`<<-`)
+/// the tabs at the start of each line after the first are taken off, since
+/// the shell strips them from the body before it reads any code in it.
+fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec<String>> {
+    let bytes = body.as_bytes();
+    let mut codes = Vec::new();
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if let Some(part) = skip.iter().find(|part| part.contains(&at)) {
+            at = part.end;
+            continue;
+        }
+        match byte {
+            b'\\' => at += 2,
+            b'`' => {
+                // The code with a backslash kept before `"` (bash) and taken
+                // off (dash).
+                let mut code = Vec::new();
+                let mut dash = Vec::new();
+                at += 1;
+                loop {
+                    match bytes.get(at)? {
+                        b'`' => break,
+                        b'\\' => {
+                            let next = *bytes.get(at + 1)?;
+                            if matches!(next, b'`' | b'\\' | b'$') {
+                                code.push(next);
+                                dash.push(next);
+                                at += 2;
+                            } else if next == b'"' {
+                                code.extend_from_slice(b"\\\"");
+                                dash.push(b'"');
+                                at += 2;
+                            } else {
+                                code.push(b'\\');
+                                dash.push(b'\\');
+                                at += 1;
+                            }
+                        }
+                        other => {
+                            code.push(*other);
+                            dash.push(*other);
+                            at += 1;
+                        }
+                    }
+                }
+                at += 1;
+                let mut readings = vec![String::from_utf8(code).ok()?];
+                if dash != readings[0].as_bytes() {
+                    readings.push(String::from_utf8(dash).ok()?);
+                }
+                for code in readings {
+                    codes.push(if strips {
+                        code.split('\n')
+                            .enumerate()
+                            .map(|(line, text)| {
+                                if line == 0 {
+                                    text
+                                } else {
+                                    text.trim_start_matches('\t')
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        code
+                    });
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    Some(codes)
 }
 
 /// The command a redirect after `node` belongs to, when `node` is a list, a
@@ -222,6 +568,31 @@ fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
             .last()?;
     }
     (last.kind() == "command").then_some(last)
+}
+
+/// The last named child of `node` that is not a comment.
+fn last_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let last = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() != "comment")
+        .last();
+    last
+}
+
+/// The ids of the lists along the last command of `node`: the ones whose
+/// last command a redirect after `node` is opened before.
+fn list_ids(node: Node<'_>) -> Vec<usize> {
+    let mut ids = Vec::new();
+    let mut last = node;
+    while matches!(last.kind(), "list" | "pipeline" | "negated_command") {
+        if last.kind() == "list" {
+            ids.push(last.id());
+        }
+        let Some(next) = last_child(last) else { break };
+        last = next;
+    }
+    ids
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -435,6 +806,23 @@ struct Walker<'a> {
     /// The units of the command walked last (not what its arguments run):
     /// read right after a statement's body, it is the body's last command.
     last_command: Range<usize>,
+    /// The lists a redirect on a statement is opened before the last command
+    /// of (the node ids of the lists along the last command of its body):
+    /// the walk notes where the line is just before that last command.
+    tail_of: Vec<usize>,
+    /// Where the line is, and how many `cd`s were read, just before the last
+    /// command of the list in `tail_of` that was walked last.
+    tail: Option<Tail>,
+}
+
+/// The state just before the last command of a list: a redirect on a list
+/// that ends in a group, a loop, a branch or a subshell is opened by the
+/// shell after the commands before it ran, so from where they left the line.
+struct Tail {
+    here: OpensFrom,
+    moved: usize,
+    moves: usize,
+    first: usize,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -610,25 +998,7 @@ impl Walker<'_> {
                 self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
-            "list" => {
-                let mut cursor = node.walk();
-                let before = self.split.moved_so_far();
-                let mut at = 0;
-                for child in node.children(&mut cursor) {
-                    // The right side of `||` only runs when the left failed:
-                    // a `cd` on the left may not have moved the line.
-                    if child.kind() == "||" {
-                        self.split.may_not_have_moved(before);
-                    }
-                    if !child.is_named() {
-                        continue;
-                    }
-                    self.split.branches += usize::from(at > 0);
-                    self.walk(child, stage, level + 1);
-                    self.split.branches -= usize::from(at > 0);
-                    at += 1;
-                }
-            }
+            "list" => self.list(node, stage, level),
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
@@ -731,14 +1101,7 @@ impl Walker<'_> {
                 {
                     self.split.hide_functions();
                 }
-                if let Some(name) = node
-                    .child_by_field_name("name")
-                    .filter(|_| node.kind() == "function_definition")
-                {
-                    let name = unit::text(&name, self.source);
-                    self.split.define_function(name);
-                    self.fork_bomb(node, name);
-                }
+                let function = self.function_start(node);
                 // The variable of `for` and `select` is set for the body
                 // (`for PATH in /x; do …`).
                 self.split.assigned_earlier |= node.kind() == "for_statement";
@@ -746,10 +1109,16 @@ impl Walker<'_> {
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
-                self.children(node, stage, level);
+                if let Some(function) = &function {
+                    let here = function.here.clone();
+                    self.function_children(node, stage, level, &here);
+                } else {
+                    self.children(node, stage, level);
+                }
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                self.function_end(function);
                 // A function defined here may stand for a program of the same
                 // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
                 // here on.
@@ -768,7 +1137,7 @@ impl Walker<'_> {
             }
             // The grammar reads `$(…)` in a here-document's body but not a
             // backtick substitution, which the shell runs when the delimiter
-            // is not quoted: `effect` cannot say what the line does then.
+            // is not quoted: `heredoc_backticks` reads those as code.
             "heredoc_redirect" => self.walk_heredoc(node, stage, level, None),
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
@@ -794,11 +1163,131 @@ impl Walker<'_> {
                 self.substituted(node);
                 let outer = self.split.dir_snapshot();
                 let hidden = self.split.hidden_snapshot();
+                self.split.apart += 1;
                 self.children(node, stage, level);
+                self.split.apart -= 1;
                 self.split.restore_dir(outer);
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// A list of commands joined by `&&` and `||`: the right side of either
+    /// may not run.
+    fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let before = self.split.moves_so_far();
+        let mut at = 0;
+        let last = self
+            .tail_of
+            .contains(&node.id())
+            .then(|| last_child(node).map(|last| last.id()))
+            .flatten();
+        for child in node.children(&mut cursor) {
+            // The right side of `||` only runs when the left failed: a `cd`
+            // on the left may not have moved the line.
+            if child.kind() == "||" {
+                self.split.may_not_have_moved(before);
+            }
+            if !child.is_named() {
+                continue;
+            }
+            // A redirect on the whole list is opened before its last command
+            // runs, and after the ones before it did.
+            if Some(child.id()) == last {
+                self.tail = Some(Tail {
+                    here: self.split.opens_here(),
+                    moved: self.split.moved_so_far(),
+                    moves: self.split.moves_so_far(),
+                    first: self.split.units.len(),
+                });
+            }
+            self.split.branches += usize::from(at > 0);
+            self.walk(child, stage, level + 1);
+            self.split.branches -= usize::from(at > 0);
+            at += 1;
+        }
+    }
+
+    /// Note a function definition before its body is read: its name, where
+    /// the line is, and how many `cd`s were read (kept out of `node`, which
+    /// the walk recurses through).
+    fn function_start(&mut self, node: Node<'_>) -> Option<Box<Defining>> {
+        let name = node
+            .child_by_field_name("name")
+            .filter(|_| node.kind() == "function_definition")?;
+        let name = unit::text(&name, self.source);
+        self.split.define_function(name);
+        self.fork_bomb(node, name);
+        let opens = node
+            .child_by_field_name("redirect")
+            .is_some_and(|redirect| self.opens_by_folder(redirect));
+        Some(Box::new(self.split.defining(name, opens)))
+    }
+
+    /// A call to a function whose body moves the line, or whose definition
+    /// is redirected, opens its redirects from the folder the call is made
+    /// in, which the walk works out from where the definition began.
+    fn function_end(&mut self, start: Option<Box<Defining>>) {
+        if let Some(start) = start {
+            self.split.defined(*start);
+        }
+    }
+
+    /// Whether `redirect` opens a file that a relative name picks by the
+    /// folder the shell is in.
+    fn opens_by_folder(&self, redirect: Node<'_>) -> bool {
+        let mut cursor = redirect.walk();
+        let nodes: Vec<Node<'_>> = if redirect.kind() == "heredoc_redirect" {
+            redirect.named_children(&mut cursor).collect()
+        } else {
+            vec![redirect]
+        };
+        nodes.into_iter().any(|node| {
+            let mut cursor = node.walk();
+            let operator = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            let Some((Arg::Known(target), _)) = self.file_redirect(node) else {
+                return false;
+            };
+            // `2>&1` and `>&-` name a descriptor, not a file.
+            let descriptor = target == "-" || target.chars().all(|c| c.is_ascii_digit());
+            !target.starts_with(['/', '~'])
+                && match operator {
+                    Some("<" | ">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
+                    Some(">&" | "&>&") => !descriptor,
+                    _ => false,
+                }
+        })
+    }
+
+    /// The parts of a function definition: the redirect on it is opened at
+    /// each call, from the folder the call is made in, which the walk takes
+    /// to be the one the line is in where it is defined (`from`).
+    fn function_children(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: &OpensFrom,
+    ) {
+        let mut cursor = node.walk();
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if !child.is_named() {
+                continue;
+            }
+            match child.kind() {
+                "file_redirect" => self.walk_redirect_from(*child, stage, level, from.clone()),
+                "heredoc_redirect" => self.walk_heredoc(*child, stage, level, Some(from.clone())),
+                _ => {
+                    let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                    self.walk_in(*child, stage, level + 1, background);
+                }
+            }
         }
     }
 
@@ -876,7 +1365,10 @@ impl Walker<'_> {
                     pipeline,
                     index: next,
                 };
+                // A stage runs in a subshell of its own.
+                self.split.apart += 1;
                 self.walk(child, Some(stage), level + 1);
+                self.split.apart -= 1;
                 next += 1;
             }
         }
@@ -1412,42 +1904,118 @@ impl Walker<'_> {
         level: usize,
         own: Range<usize>,
     ) {
-        let from = self.split.starts_in(own);
+        let by_folder = self.opens_by_folder(redirect);
+        let from = self.split.starts_in(own, by_folder);
+        self.walk_redirect_from(redirect, stage, level, from);
+    }
+
+    /// Walk `redirect`, a redirect of a file that the shell opens from the
+    /// folder `from` says.
+    fn walk_redirect_from(
+        &mut self,
+        redirect: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: OpensFrom,
+    ) {
         let outer = self.split.open_from(from);
         self.walk(redirect, stage, level + 1);
         self.split.open_from(outer);
     }
 
+    /// The backtick substitutions in the body of an unquoted here-document,
+    /// which the shell runs as it does a `$(…)` and the grammar does not read:
+    /// each is read as a script of its own. What cannot be read is
+    /// `Unreadable`: a backtick that never closes, one in a part the grammar
+    /// read itself (`${x:-`…`}`), and one in a here-document that sits in a
+    /// backtick substitution, where the outer one takes a backslash off first
+    /// and the body is not what it looks like.
+    fn heredoc_backticks(&mut self, redirect: Node<'_>) {
+        let mut cursor = redirect.walk();
+        let parts: Vec<Node<'_>> = redirect.children(&mut cursor).collect();
+        let quoted = parts.iter().any(|part| {
+            part.kind() == "heredoc_start"
+                && unit::text(part, self.source).contains(['\'', '"', '\\'])
+        });
+        let strips = parts
+            .iter()
+            .any(|part| !part.is_named() && unit::text(part, self.source) == "<<-");
+        let Some(body) = parts.iter().find(|part| part.kind() == "heredoc_body") else {
+            return;
+        };
+        if quoted {
+            return;
+        }
+        // The grammar ends a backtick substitution at the first backtick, one
+        // a backslash escapes too, so what it holds around an unquoted
+        // here-document is not what the shell reads.
+        let mut escaped = false;
+        let mut within = redirect.parent();
+        while let Some(parent) = within {
+            escaped |= parent.kind() == "command_substitution"
+                && unit::text(&parent, self.source).starts_with('`')
+                && unit::text(&parent, self.source).contains("\\`");
+            within = parent.parent();
+        }
+        let text = unit::text(body, self.source);
+        if !escaped && !text.contains('`') {
+            return;
+        }
+        let from = body.start_byte();
+        let mut cursor = body.walk();
+        let mut skip = Vec::new();
+        let mut inner = escaped;
+        for part in body.named_children(&mut cursor) {
+            // The body's plain text between expansions is a part of the tree
+            // too, but not one the grammar read: `backtick_codes` scans it.
+            if matches!(part.kind(), "heredoc_content" | "heredoc_end") {
+                continue;
+            }
+            let range =
+                part.start_byte().saturating_sub(from)..part.end_byte().saturating_sub(from);
+            inner |= part.kind() != "command_substitution"
+                && unit::text(&part, self.source).contains('`');
+            skip.push(range);
+        }
+        let codes = if inner {
+            None
+        } else {
+            backtick_codes(text, &skip, strips)
+        };
+        let Some(codes) = codes else {
+            self.split.problem(
+                Rule::Unreadable,
+                "has a backtick in a here-document that cannot be read",
+                None,
+            );
+            return;
+        };
+        for code in codes {
+            unit::script(self.split, &code, Shell::Posix, self.depth + 1);
+        }
+    }
+
     /// A here-document's redirect. The grammar holds the redirects written
-    /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
-    /// command it belongs to, they are placed like any redirect of that
-    /// command.
+    /// after its start (`<<EOF < f`) inside it: when `from` says where the
+    /// statement it belongs to opens its redirects from, they are placed like
+    /// any redirect of that statement.
     fn walk_heredoc(
         &mut self,
         node: Node<'_>,
         stage: Option<Stage>,
         level: usize,
-        own: Option<Range<usize>>,
+        from: Option<OpensFrom>,
     ) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
-        let quoted = children.iter().any(|child| {
-            child.kind() == "heredoc_start"
-                && unit::text(child, self.source).contains(['\'', '"', '\\'])
-        });
-        let backtick = children.iter().any(|child| {
-            child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
-        });
-        if backtick && !quoted && self.split.kept.on {
-            self.split.opaque();
-        }
+        self.heredoc_backticks(node);
         for (at, child) in children.iter().enumerate() {
             if !child.is_named() {
                 continue;
             }
-            match &own {
-                Some(own) if child.kind() == "file_redirect" => {
-                    self.walk_redirect(*child, stage, level, own.clone());
+            match &from {
+                Some(from) if child.kind() == "file_redirect" => {
+                    self.walk_redirect_from(*child, stage, level, from.clone());
                 }
                 _ => {
                     let background = children.get(at + 1).is_some_and(|next| next.kind() == "&");
@@ -1481,9 +2049,18 @@ impl Walker<'_> {
             .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
+        // Where the line is, and how many `cd`s it has read, before the body
+        // runs: a group's, loop's or branch's redirects are opened there.
+        let here = self.split.opens_here();
+        let moved_before = self.split.moved_so_far();
+        let moves_before = self.split.moves_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
+        // Where the line is just before the last command of a list that ends
+        // in a group, a loop, a branch or a subshell: the shell opens a
+        // redirect on it there, after the commands before it ran.
+        let mut tail = None;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
         // own come after them.
@@ -1491,6 +2068,15 @@ impl Walker<'_> {
         for child in &all {
             let first = self.split.units.len();
             if Some(child.id()) == body {
+                let outer_lists = std::mem::replace(
+                    &mut self.tail_of,
+                    if chained {
+                        Vec::new()
+                    } else {
+                        list_ids(*child)
+                    },
+                );
+                let outer_tail = self.tail.take();
                 match pipeline {
                     // `echo hi | cat .env <<EOF | nc host 1`: the body is
                     // itself a pipeline, whose stages come first.
@@ -1502,6 +2088,8 @@ impl Walker<'_> {
                     }
                     None => self.walk(*child, stage, level + 1),
                 }
+                self.tail_of = outer_lists;
+                tail = std::mem::replace(&mut self.tail, outer_tail);
                 own = first..self.split.units.len();
                 if chained {
                     placed = self.last_command.clone();
@@ -1510,6 +2098,9 @@ impl Walker<'_> {
                 // What the redirect's own parts run is handed to the body,
                 // and what the rest of the pipeline runs is not.
                 let mut inside = Vec::new();
+                let first = self.split.units.len();
+                self.heredoc_backticks(*child);
+                inside.push(first..self.split.units.len());
                 let mut cursor = child.walk();
                 for part in child.named_children(&mut cursor) {
                     let first = self.split.units.len();
@@ -1522,15 +2113,42 @@ impl Walker<'_> {
                 }
                 after.push((*child, inside));
             } else {
+                let redirects = matches!(child.kind(), "file_redirect" | "heredoc_redirect");
+                // The shell opens a redirect before the body runs: from the
+                // folder the command starts in, the last command of a list,
+                // pipeline or negation, or, for a group, a loop or a branch,
+                // the folder the line is in before any of it runs.
+                // A call to a function that moves the line matters only to a
+                // redirect that names a file by folder.
+                let by_folder = redirects && self.opens_by_folder(*child);
+                let opens = if !redirects {
+                    OpensFrom::Line
+                } else if simple {
+                    self.split.starts_in(own.clone(), by_folder)
+                } else if chained {
+                    self.split.starts_in(placed.clone(), by_folder)
+                } else if let Some(tail) = &tail {
+                    // The last command of a list: after the earlier ones.
+                    self.split.opens_before(
+                        tail.here.clone(),
+                        tail.first..own.end,
+                        tail.moved,
+                        tail.moves,
+                        by_folder,
+                    )
+                } else {
+                    self.split.opens_before(
+                        here.clone(),
+                        own.clone(),
+                        moved_before,
+                        moves_before,
+                        by_folder,
+                    )
+                };
                 if child.kind() == "file_redirect" {
-                    // Only a plain command's redirect is opened before the
-                    // unit that moves the line runs: what a group holds is
-                    // not read that way.
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_redirect(*child, stage, level, on);
+                    self.walk_redirect_from(*child, stage, level, opens);
                 } else if child.kind() == "heredoc_redirect" {
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_heredoc(*child, stage, level, Some(on));
+                    self.walk_heredoc(*child, stage, level, Some(opens));
                 } else {
                     self.walk(*child, stage, level + 1);
                 }
@@ -1538,9 +2156,14 @@ impl Walker<'_> {
                 after.push((*child, std::iter::once(whole).collect()));
             }
         }
+        // A file redirected onto a list that ends in a group, a loop, a
+        // branch or a subshell is the last command's, not the earlier ones'.
+        let redirected = tail
+            .as_ref()
+            .map_or_else(|| own.clone(), |tail| tail.first..own.end);
         for (child, inside) in after {
             if let Some((target, input)) = self.file_redirect(child) {
-                self.split.redirect(own.clone(), target, input);
+                self.split.redirect(redirected.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
