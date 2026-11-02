@@ -63,7 +63,12 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
     // nothing in it outside the subset (see `milo_guards_code::understand`).
     let read = match code.pieces.as_slice() {
         [Arg::Known(text)] if code.plain && !split.environment_set() => {
-            match reader::understand(language, text) {
+            let understood = if code.python2 {
+                reader::understand_python2(text)
+            } else {
+                reader::understand(language, text)
+            };
+            match understood {
                 reader::Understanding::NotUnderstood => None,
                 reader::Understanding::Understood { imports } => Some(imports),
             }
