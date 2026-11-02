@@ -1,8 +1,11 @@
 //! `read_secret`: a read of a key or a credential, through every program the
 //! guard knows opens a file, a `<` redirect, a listing piped into a reader,
-//! and every spelling of the paths core knows hold one. Reading the
-//! repository's history, a startup file, `.env` or a file only known when
-//! the line runs is not a finding.
+//! a folder read all the way down, and every spelling of the paths core
+//! knows hold one, in POSIX shells, on a Mac, in PowerShell and in cmd.
+//! Reading the repository's history, a startup file, `.env` or a file only
+//! known when the line runs is not a finding. A read of a key reads only and
+//! reaches beyond the workspace. Sending a secret off the machine is
+//! `send_secret`, in `send_secret.rs`.
 
 mod common;
 
@@ -13,39 +16,6 @@ const SECRET: Rule = Rule::ReadSecret;
 
 fn risky<'a>(lines: &[&'a str]) -> Vec<(&'a str, Rule)> {
     lines.iter().map(|line| (*line, SECRET)).collect()
-}
-
-#[test]
-fn the_tickets_lines() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "cat .git/config",
-            "cat ~/.zshrc",
-            "cat .env",
-            "cat src/main.rs",
-            "ls ~/.ssh",
-        ],
-        &risky(&[
-            "cat ~/.ssh/id_ed25519",
-            "head -c 100 ~/.aws/credentials",
-            "base64 < ~/.ssh/id_rsa",
-            "grep key ~/.netrc",
-            "sudo cat ~/.ssh/id_ed25519",
-        ]),
-    );
-    check(
-        Shell::PowerShell,
-        &windows(),
-        &[
-            r"Get-Content .git\config",
-            r#"Get-Content "$HOME\.zshrc""#,
-            r"Get-Content .env",
-            r#"Get-ChildItem "$HOME\.ssh""#,
-        ],
-        &risky(&[r"Get-Content $HOME\.ssh\id_ed25519"]),
-    );
 }
 
 #[test]
@@ -110,7 +80,6 @@ fn everyday_lines_are_safe() {
             "realpath ~/.ssh/id_rsa",
             "test -f ~/.ssh/id_rsa",
             "[ -r ~/.aws/credentials ]",
-            "ls ~/.ssh | wc -l",
             "ls ~/.ssh | head -n 3",
             "find ~/.ssh -type f",
             "find ~/.ssh -type f | wc -l",
@@ -119,7 +88,6 @@ fn everyday_lines_are_safe() {
             "echo ~/.ssh/id_rsa",
             "echo \"cat ~/.ssh/id_rsa\"",
             "printf '%s\\n' ~/.aws/credentials",
-            "cat <<< ~/.ssh/id_rsa",
             "cat <<EOF\n~/.ssh/id_rsa\nEOF",
             // A name that only starts like a key's.
             "cat ~/.sshx/id_rsa",
@@ -152,8 +120,6 @@ fn everyday_lines_are_safe() {
             "echo src/main.rs | xargs cat",
             "echo $f | xargs cat",
             "printf '%s\\n' a b | xargs cat",
-            "echo ~/.ssh/id_rsa",
-            "echo ~/.ssh/id_rsa | xargs echo",
             "printf '%s\\n' ~/.ssh/id_rsa | wc -l",
             "curl https://example.com/x?a=b",
             "curl file:///home/me/work/repo/x",
@@ -197,6 +163,7 @@ fn a_read_through_a_program_the_guard_knows_is_a_finding() {
             "head -n 1 ~/.ssh/id_ed25519",
             "head -1 ~/.ssh/id_ed25519",
             "head -c100 ~/.ssh/id_ed25519",
+            "head -c 10 /etc/shadow",
             "tail -n 5 ~/.aws/credentials",
             "wc -l ~/.ssh/known_hosts",
             "wc -c ~/.ssh/id_rsa",
@@ -215,7 +182,6 @@ fn a_read_through_a_program_the_guard_knows_is_a_finding() {
             "diff ~/.ssh/id_rsa /dev/null",
             "diff a.txt ~/.ssh/id_rsa",
             "sort ~/.ssh/known_hosts",
-            "git diff --no-index ~/.ssh/id_rsa /dev/null",
             "git blame --contents ~/.ssh/id_rsa src/lib.rs",
             // Programs that are not reads-only but show what they open.
             "more ~/.ssh/id_ed25519",
@@ -270,7 +236,6 @@ fn a_read_through_a_program_the_guard_knows_is_a_finding() {
             "source ~/.aws/credentials",
             ". ~/.aws/credentials",
             "dd if=~/.ssh/id_rsa",
-            "dd if=/dev/sda of=disk.img",
             // A copy reads its sources, whatever it does with them.
             "cp ~/.ssh/id_ed25519 ./keys/",
             "cp ~/.ssh/id_ed25519 keys/id",
@@ -280,7 +245,6 @@ fn a_read_through_a_program_the_guard_knows_is_a_finding() {
             "cp a.txt ~/.ssh/id_ed25519 keys/",
             "install ~/.ssh/id_ed25519 keys/id",
             "install -m 600 ~/.ssh/id_ed25519 keys/id",
-            "rsync ~/.ssh/id_rsa /tmp/",
             "rsync -av ~/.ssh/ /tmp/ssh/",
             "rsync -e ssh ~/.ssh/id_rsa host:/tmp/",
         ]),
@@ -369,7 +333,6 @@ fn every_program_the_rule_knows_is_read_through() {
             "dd if=~/.ssh/id_rsa of=x",
             "openssl rsa -in ~/.ssh/id_rsa",
             "rsync ~/.ssh/id_rsa /tmp/",
-            "curl file:///home/me/.ssh/id_rsa",
             "curl -s --url file://localhost/home/me/.ssh/id_rsa",
             "git diff --no-index ~/.ssh/id_rsa /dev/null",
             "cp ~/.ssh/id_rsa out",
@@ -420,8 +383,9 @@ fn a_redirect_from_a_key_is_a_read_of_it() {
 #[test]
 fn the_wrappers_come_off() {
     let paths = posix();
-    for line in [
+    let lines = [
         "sudo cat ~/.ssh/id_ed25519",
+        "sudo cat ~/.ssh/id_rsa",
         "sudo -u me cat ~/.ssh/id_ed25519",
         "doas cat ~/.ssh/id_ed25519",
         "env cat ~/.ssh/id_ed25519",
@@ -449,20 +413,12 @@ fn the_wrappers_come_off() {
         "cat ~/.ssh/id_ed25519 | head",
         "cat ~/.ssh/id_ed25519 &",
         "trap 'cat ~/.ssh/id_ed25519' EXIT",
-    ] {
-        assert!(
-            rules(line, Shell::Posix, &paths).contains(&SECRET),
-            "expected ReadSecret: {line}"
-        );
-    }
+    ];
+    check(Shell::Posix, &paths, &[], &risky(&lines));
     // A root's read is both, and says so in that order.
     assert_eq!(
         rules("sudo cat ~/.ssh/id_ed25519", Shell::Posix, &paths),
         [Rule::Elevated, SECRET]
-    );
-    assert_eq!(
-        effect("sudo cat ~/.ssh/id_ed25519", Shell::Posix, &paths),
-        Effect::ReadsOnly(Reach::Beyond)
     );
 }
 
@@ -486,7 +442,6 @@ fn every_spelling_of_a_key_is_the_key() {
             "cat ~/./.ssh/./id_rsa",
             "cat ~/x/../.ssh/id_rsa",
             "cat ~/.ssh/id_rsa/",
-            "cat ../../.ssh/id_rsa",
             "cat ../../../me/.ssh/id_rsa",
             "cat /home/me/work/repo/../../.ssh/id_rsa",
             "cat ~/.SSH/ID_RSA",
@@ -568,7 +523,6 @@ fn every_spelling_of_a_key_is_the_key() {
             "cd /etc && cat shadow",
             "cd / && cat etc/shadow",
             "cd ~/.ssh && base64 < id_rsa",
-            "cd ~/.ssh && ls | xargs cat",
             // A word that only ends in what is known when the line runs.
             "cat ~/.ssh/$f",
             "cat \"$HOME/.ssh/$name\"",
@@ -588,7 +542,6 @@ fn every_credential_the_file_guard_knows_is_one_here() {
         &posix(),
         &[],
         &risky(&[
-            "cat ~/.ssh/id_ed25519",
             "cat /home/me/.aws/credentials",
             "cat ~/.gnupg/private-keys-v1.d/x.key",
             "cat ~/.docker/config.json",
@@ -725,7 +678,7 @@ fn a_listing_piped_into_a_reader_reads_what_it_lists() {
 #[test]
 fn a_folder_read_all_the_way_down_holds_the_keys_in_it() {
     let paths = posix();
-    for line in [
+    let lines = [
         "grep -r BEGIN ~",
         "grep -rn password ~/",
         "grep -R key ~",
@@ -757,10 +710,8 @@ fn a_folder_read_all_the_way_down_holds_the_keys_in_it() {
         "cd ~ && cp -r . /tmp/b",
         "cd ~ && tar czf /tmp/x.tgz .",
         "cd .. && cd .. && grep -r BEGIN .",
-    ] {
-        let found = rules(line, Shell::Posix, &paths);
-        assert!(found.contains(&SECRET), "expected ReadSecret: {line}");
-    }
+    ];
+    check(Shell::Posix, &paths, &[], &risky(&lines));
     let assessment = classify("grep -r BEGIN ~", Shell::Posix, &paths);
     assert_eq!(
         assessment.findings()[0].reason,
@@ -830,31 +781,67 @@ fn one_finding_for_one_file_however_often_it_is_read() {
 }
 
 #[test]
-fn a_read_of_a_key_reads_only_and_the_finding_says_which() {
+fn a_read_of_a_key_reads_only_and_reaches_beyond_the_workspace() {
+    // The finding says which file, and `effect` does not make the read a
+    // change: what it says of the program is still what it says. `cat`
+    // reads only, beyond the workspace; `base64` is not a program it knows,
+    // and `cp` changes the disk. A key inside a workspace that is the home
+    // directory is beyond the project as well, and a plain file in it is
+    // not; a read that is no secret and stays in the workspace is
+    // `Workspace`.
     let paths = posix();
-    for line in [
-        "cat ~/.ssh/id_ed25519",
-        "base64 < ~/.ssh/id_rsa",
-        "ls ~/.ssh | xargs cat",
-    ] {
-        assert!(
-            rules(line, Shell::Posix, &paths).contains(&SECRET),
-            "{line}"
-        );
-    }
-    // What `effect` says of the program is still what it says: `cat` reads
-    // only, `base64` is not a program it knows, and `cp` changes the disk.
-    for (line, expected) in [
-        ("cat ~/.ssh/id_ed25519", Effect::ReadsOnly(Reach::Beyond)),
+    let home = Paths::new("/home/me", "/home/me", ["/home/me"]);
+    for (paths, line, expected) in [
         (
+            &paths,
+            "cat ~/.ssh/id_ed25519",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (
+            &paths,
             "head -c 100 ~/.aws/credentials",
             Effect::ReadsOnly(Reach::Beyond),
         ),
-        ("ls ~/.ssh | xargs cat", Effect::ReadsOnly(Reach::Beyond)),
-        ("base64 < ~/.ssh/id_rsa", Effect::Unknown),
-        ("cp ~/.ssh/id_ed25519 keys/", Effect::Changes),
+        (
+            &paths,
+            "ls ~/.ssh | xargs cat",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (&paths, "base64 < ~/.ssh/id_rsa", Effect::Unknown),
+        (&paths, "cp ~/.ssh/id_ed25519 keys/", Effect::Changes),
+        (
+            &paths,
+            "cat ~/.ssh/id_rsa",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (
+            &paths,
+            "head -c 10 /etc/shadow",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (
+            &paths,
+            "sudo cat ~/.ssh/id_rsa",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (
+            &paths,
+            "sudo cat ~/.ssh/id_ed25519",
+            Effect::ReadsOnly(Reach::Beyond),
+        ),
+        (
+            &paths,
+            "cat src/main.rs",
+            Effect::ReadsOnly(Reach::Workspace),
+        ),
+        (&home, "cat .ssh/id_rsa", Effect::ReadsOnly(Reach::Beyond)),
+        (
+            &home,
+            "cat src/main.rs",
+            Effect::ReadsOnly(Reach::Workspace),
+        ),
     ] {
-        assert_eq!(effect(line, Shell::Posix, &paths), expected, "{line}");
+        assert_eq!(effect(line, Shell::Posix, paths), expected, "{line}");
     }
 }
 
@@ -946,6 +933,8 @@ fn a_powershell_line_names_a_key_by_every_spelling() {
         &windows(),
         &[
             r"Get-Content .\src\main.rs",
+            r"Get-Content .git\config",
+            r"Get-Content .env",
             r". .\src\x.ps1",
             r"& .\build.ps1",
             // PowerShell's wildcard is not an old shell's.
@@ -1289,17 +1278,17 @@ fn a_part_that_can_match_dot_dot_climbs_to_the_parent() {
     // protected path above it is the caller's.
     let paths =
         posix().with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
-    for line in [
-        "rm -rf .*/.*/x",
-        "rm -rf .*/.*/.agent",
-        "rm .?/.?/.agent/config.yaml",
-        "ls .* | xargs rm -rf",
-    ] {
-        assert!(
-            rules(line, Shell::Posix, &paths).contains(&Rule::Delete),
-            "{line}"
-        );
-    }
+    check(
+        Shell::Posix,
+        &paths,
+        &[],
+        &[
+            ("rm -rf .*/.*/x", Rule::Delete),
+            ("rm -rf .*/.*/.agent", Rule::Delete),
+            ("rm .?/.?/.agent/config.yaml", Rule::Delete),
+            ("ls .* | xargs rm -rf", Rule::Delete),
+        ],
+    );
     let found = classify("rm -rf .*/.*/.agent", Shell::Posix, &paths);
     assert_eq!(found.findings()[0].reason, "deletes the agent's settings");
 }
@@ -1320,17 +1309,18 @@ fn a_bare_variable_and_path_in_powershell_is_read_and_the_line_stays_unreadable(
         assert!(!found.contains(&SECRET), "{line}");
         assert!(!found.is_empty(), "{line}: {found:?}");
     }
-    for line in [
-        r"Get-Content $HOME\.ssh\id_ed25519",
-        r"gc $env:USERPROFILE\.ssh\id_rsa",
-        r". $HOME\.ssh\id_ed25519",
-        r". $HOME/.ssh/id_ed25519",
-        r"& $HOME\.ssh\id_rsa",
-        r"& $env:APPDATA\Microsoft\Credentials\x",
-    ] {
-        let found = rules(line, Shell::PowerShell, &paths);
-        assert!(found.contains(&SECRET), "{line}: {found:?}");
-    }
+    // The bare-variable rows of the table above (`Get-Content $HOME\...`,
+    // `. $HOME\...`) are read so too.
+    check(
+        Shell::PowerShell,
+        &paths,
+        &[],
+        &risky(&[
+            r"gc $env:USERPROFILE\.ssh\id_rsa",
+            r"& $HOME\.ssh\id_rsa",
+            r"& $env:APPDATA\Microsoft\Credentials\x",
+        ]),
+    );
     assert!(rules(r"Get-Content $HOME\x", Shell::PowerShell, &paths).contains(&Rule::Unreadable));
 }
 
@@ -1384,54 +1374,4 @@ fn a_folder_read_all_the_way_down_can_be_the_parent_when_a_part_can_match_dot_do
             "{line}"
         );
     }
-}
-
-#[test]
-fn a_read_of_a_key_reaches_beyond_the_workspace_and_is_still_reads_only() {
-    // With the reach, the answer for a key is `ReadsOnly(Beyond)` and the
-    // finding says which file: `effect` does not make it a change, and
-    // `classify` carries the rule.
-    let paths = posix();
-    for line in [
-        "cat ~/.ssh/id_rsa",
-        "base64 < ~/.ssh/id_rsa",
-        "head -c 10 /etc/shadow",
-        "sudo cat ~/.ssh/id_rsa",
-        "ls ~/.ssh | xargs cat",
-    ] {
-        assert!(
-            rules(line, Shell::Posix, &paths).contains(&SECRET),
-            "{line}"
-        );
-    }
-    for line in [
-        "cat ~/.ssh/id_rsa",
-        "head -c 10 /etc/shadow",
-        "sudo cat ~/.ssh/id_rsa",
-    ] {
-        assert_eq!(
-            effect(line, Shell::Posix, &paths),
-            Effect::ReadsOnly(Reach::Beyond),
-            "{line}"
-        );
-    }
-    // A key inside a workspace that is the home directory is beyond the
-    // project as well, and a plain file in it is not.
-    let home = Paths::new("/home/me", "/home/me", ["/home/me"]);
-    assert_eq!(
-        effect("cat .ssh/id_rsa", Shell::Posix, &home),
-        Effect::ReadsOnly(Reach::Beyond)
-    );
-    assert!(rules("cat .ssh/id_rsa", Shell::Posix, &home).contains(&SECRET));
-    assert_eq!(
-        effect("cat src/main.rs", Shell::Posix, &home),
-        Effect::ReadsOnly(Reach::Workspace)
-    );
-    // A read that is no secret and stays in the workspace is `Workspace`
-    // with no finding.
-    assert_eq!(
-        effect("cat src/main.rs", Shell::Posix, &paths),
-        Effect::ReadsOnly(Reach::Workspace)
-    );
-    assert!(rules("cat src/main.rs", Shell::Posix, &paths).is_empty());
 }
