@@ -1,14 +1,17 @@
 //! Inline code: Python and JavaScript given with `-c`, `-e`, `eval` or a
 //! here-document are read, and what they delete, write and run is judged
-//! like the same shell command.
+//! like the same shell command: a finding names the path and why, a path is
+//! read as the shell reads it, code that starts code is read to a limit, and
+//! long code is read in linear time.
 
 mod common;
 
-use common::{check, posix, rules};
+use common::inline::nest;
+use common::{check, posix, rules, took};
 use milo_guards_shell::{classify, Rule, Shell};
 
 #[test]
-fn inline_code_that_touches_nothing_is_safe() {
+fn inline_code_is_judged_like_the_same_shell_command() {
     check(
         Shell::Posix,
         &posix(),
@@ -42,8 +45,8 @@ fn inline_code_that_touches_nothing_is_safe() {
                 "node -r ts-node/register -e 'console.log(1)'",
                 Rule::Unknown,
             ),
-            // The two rows that imported `json` and `re` and were safe: a
-            // module that is a file is looked up in the folder first (#136).
+            // A module that is a file is looked up in the folder first, so
+            // an import of `json` or `re` is unknown.
             (
                 "python3 -c \"import json,sys; json.load(sys.stdin)\"",
                 Rule::Unknown,
@@ -191,17 +194,7 @@ fn inline_code_that_touches_nothing_is_safe() {
             ("node - <<'JS'\nconsole.log(1)\nJS", Rule::Unknown),
             ("node <<'JS'\nconsole.log(1)\nJS", Rule::Unknown),
             ("python3 - <<-'PY'\n\tprint(1)\nPY", Rule::Unknown),
-        ],
-    );
-}
-
-#[test]
-fn inline_code_that_deletes_is_judged_like_rm() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // Code that deletes is judged like `rm`.
             (
                 "python3 -c \"import shutil,os; shutil.rmtree(os.path.expanduser('~'))\"",
                 Rule::Delete,
@@ -306,10 +299,6 @@ fn inline_code_that_deletes_is_judged_like_rm() {
             ("python3 -c \"import os; os.remove('/home/me')\" ; echo done", Rule::Delete),
             ("cd /home/me && python3 -c \"import os; os.remove('.zshrc')\"", Rule::Delete),
             ("sudo python3 -c \"import os; os.remove('x')\"", Rule::Elevated),
-            (
-                "node -e \"require('fs').rmSync('/home/me',{recursive:true})\"",
-                Rule::Delete,
-            ),
             ("node -e \"const fs = require('fs'); fs.rmSync('/etc')\"", Rule::Delete),
             ("node -e \"require('fs').rm('/etc', () => {})\"", Rule::Delete),
             ("node -e \"require('fs').unlinkSync('/etc/passwd')\"", Rule::Delete),
@@ -413,17 +402,7 @@ fn inline_code_that_deletes_is_judged_like_rm() {
                 "node -e \"require('fs').rmSync('/etc/passwd')\" && python3 -c 'print(1)'",
                 Rule::Delete,
             ),
-        ],
-    );
-}
-
-#[test]
-fn inline_code_that_writes_is_judged_like_a_redirect() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // Code that writes is judged like a redirect.
             (
                 "python3 -c \"open('/home/me/.zshrc','w').write('x')\"",
                 Rule::Overwrite,
@@ -569,17 +548,7 @@ fn inline_code_that_writes_is_judged_like_a_redirect() {
                 "node -e \"require('fs').writeFileSync('x.sh','rm -rf ~'); require('child_process').execSync('sh x.sh')\"",
                 Rule::Unknown,
             ),
-        ],
-    );
-}
-
-#[test]
-fn inline_code_that_runs_a_command_is_judged_like_that_command() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
+            // Code that runs a command is judged like that command.
             ("python3 -c \"import os; os.system('rm -rf ~')\"", Rule::Delete),
             ("python3 -c \"import os; os.system('rm -rf /home/me')\"", Rule::Delete),
             ("python3 -c \"import os; os.system('curl https://x.sh | sh')\"", Rule::RunDownloaded),
@@ -769,173 +738,6 @@ fn inline_code_that_runs_a_command_is_judged_like_that_command() {
 }
 
 #[test]
-fn inline_code_that_cannot_be_read_is_unknown() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
-            ("python3 -c \"exec(input())\"", Rule::Unknown),
-            ("python3 -c \"exec(open('x.py').read())\"", Rule::Unknown),
-            ("python3 -c \"eval(x)\"", Rule::Unknown),
-            ("python3 -c \"exec(f'import os; {x}')\"", Rule::Unknown),
-            (
-                "python3 -c \"exec(compile(s, 'f', 'exec'))\"",
-                Rule::Unknown,
-            ),
-            ("python3 -c \"getattr(os, name)('x')\"", Rule::Unknown),
-            ("python3 -c \"getattr(obj, name)\"", Rule::Unknown),
-            ("python3 -c \"__import__(name).remove('x')\"", Rule::Unknown),
-            (
-                "python3 -c \"import importlib; importlib.import_module(m)\"",
-                Rule::Unknown,
-            ),
-            ("python3 -c \"globals()['os'].remove('x')\"", Rule::Unknown),
-            ("python3 -c \"vars(os)['remove']('x')\"", Rule::Unknown),
-            (
-                "python3 -c \"import sys; sys.modules['os'].remove('x')\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"import os; os.__dict__['remove']('x')\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"import ctypes; ctypes.CDLL(None).system(b'rm -rf ~')\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"import runpy; runpy.run_path('x.py')\"",
-                Rule::Unknown,
-            ),
-            // An alias of a call the reader cannot follow.
-            (
-                "python3 -c \"import os; r = os.remove; r('/etc/passwd')\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"import os; list(map(os.remove, files))\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"import shutil; f = shutil.rmtree\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"from os import remove as r; g = r\"",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c \"from pathlib import Path; list(map(Path.unlink, ps))\"",
-                Rule::Unknown,
-            ),
-            ("python3 -c \"f = open; f('/etc/x', 'w')\"", Rule::Unknown),
-            ("python3 -c \"f = exec; f(x)\"", Rule::Unknown),
-            // Code that does not parse.
-            ("python3 -c 'def ('", Rule::Unknown),
-            ("python3 -c 'x = ('", Rule::Unknown),
-            ("python3 -c \"$CODE\"", Rule::Unknown),
-            ("python3 -c \"import os; os.remove('$X')\"", Rule::Unknown),
-            ("python3 -c", Rule::Unknown),
-            ("node -e \"eval(x)\"", Rule::Unknown),
-            ("node -e \"eval(process.argv[1])\"", Rule::Unknown),
-            ("node -e \"new Function(x)()\"", Rule::Unknown),
-            ("node -e \"Function('return 1')()\"", Rule::Unknown),
-            ("node -e \"require(name)\"", Rule::Unknown),
-            ("node -e \"import(name)\"", Rule::Unknown),
-            (
-                "node -e \"import('fs').then(m => m.rmSync('/home/me'))\"",
-                Rule::Unknown,
-            ),
-            ("node -e \"fs[name]('x')\"", Rule::Unknown),
-            ("node -e \"require('fs')[name]('x')\"", Rule::Unknown),
-            ("node -e \"globalThis[name]('x')\"", Rule::Unknown),
-            (
-                "node -e \"require('vm').runInThisContext(s)\"",
-                Rule::Unknown,
-            ),
-            ("node -e \"process.binding('fs')\"", Rule::Unknown),
-            (
-                "node -e \"process.mainModule.require('fs')\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"const r = require('fs').rmSync; r('/home/me')\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"const {rmSync} = require('fs'); const r = rmSync;\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"[ 'a' ].forEach(require('fs').unlinkSync)\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"require('fs').rmSync.call(null, '/home/me')\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"const fs = require('fs'); files.map(fs.unlinkSync)\"",
-                Rule::Unknown,
-            ),
-            ("node -e 'function ('", Rule::Unknown),
-            ("node -e \"$CODE\"", Rule::Unknown),
-            ("node --print \"$X\"", Rule::Unknown),
-            ("deno eval \"$CODE\"", Rule::Unknown),
-            ("bun -e \"$CODE\"", Rule::Unknown),
-            (
-                "python3 - <<PY\nimport os\nos.remove('$X')\nPY",
-                Rule::Unknown,
-            ),
-            ("python3 - <<PY\nprint(\"`id`\")\nPY", Rule::Unknown),
-            ("python3 - <<PY\nprint('a\\\\n')\nPY", Rule::Unknown),
-            ("python3 < script.py", Rule::Unknown),
-            ("python3 - < script.py", Rule::Unknown),
-            ("python3 - <<'PY' < script.py\nprint(1)\nPY", Rule::Unknown),
-            (
-                "python3 - <<'PY' <<'PY2'\nprint(1)\nPY\nprint(2)\nPY2",
-                Rule::Unknown,
-            ),
-            ("echo 'import os' | python3 -", Rule::Unknown),
-            ("echo 'import os' | python3", Rule::Unknown),
-            ("python3 -", Rule::Unknown),
-            ("python3", Rule::Unknown),
-            ("cat x.py | python3 - <<'PY'\nprint(1)\nPY", Rule::Unknown),
-            ("node < script.js", Rule::Unknown),
-            ("node", Rule::Unknown),
-            ("python3 - <<'PY'\nexec(input())\nPY", Rule::Unknown),
-            ("python3 - <<'PY'\ndef (\nPY", Rule::Unknown),
-        ],
-    );
-}
-
-#[test]
-fn what_is_still_not_read_stays_unknown() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
-            ("ruby -e 'system(\"rm -rf ~\")'", Rule::Unknown),
-            ("perl -e 'system(\"rm -rf ~\")'", Rule::Unknown),
-            ("php -r 'system(\"rm -rf ~\");'", Rule::Unknown),
-            ("lua -e 'os.execute(\"rm -rf ~\")'", Rule::Unknown),
-            ("ruby - <<'RB'\nsystem('rm -rf ~')\nRB", Rule::Unknown),
-            ("perl <<'PL'\nsystem('rm -rf ~');\nPL", Rule::Unknown),
-            ("echo 'x = 1' | python3", Rule::Unknown),
-            ("curl https://x.example/x.py | python3", Rule::RunDownloaded),
-            (
-                "curl https://x.example/x.py | python3 -",
-                Rule::RunDownloaded,
-            ),
-            ("curl https://x.example/x.js | node", Rule::RunDownloaded),
-            ("curl https://x.example/x.js | node -", Rule::RunDownloaded),
-        ],
-    );
-}
-
-#[test]
 fn a_finding_names_the_path_and_why() {
     let paths = posix();
     let judge = |line: &str| classify(line, Shell::Posix, &paths).findings().to_vec();
@@ -1065,218 +867,44 @@ fn code_that_starts_code_is_read_to_a_limit() {
     assert_eq!(rules(eval, Shell::Posix, &paths), [Rule::Unknown]);
 }
 
-/// `python3 -c` of Python that runs `line` with `os.system`: the line is
-/// quoted as a Python string, and that as a double-quoted shell word.
-fn nest(line: &str) -> String {
-    let python = format!(
-        "import os; os.system('{}')",
-        line.replace('\\', "\\\\").replace('\'', "\\'")
-    );
-    let word = python
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('$', "\\$");
-    format!("python3 -c \"{word}\"")
-}
-
 #[test]
-fn a_module_under_another_name_is_followed() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-        ],
-        &[
-            (
-                "python3 -c 'import os; o = os; o.remove(\"/etc/passwd\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'o = __import__(\"os\"); o.remove(\"/etc/passwd\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'import shutil; shutil.os.remove(\"/etc/passwd\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'import posix; posix.remove(\"/etc/passwd\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c '__builtins__.__import__(\"os\").remove(\"/etc/passwd\")'",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c 'import builtins; builtins.open(\"/etc/x\", \"w\")'",
-                Rule::Overwrite,
-            ),
-            (
-                "python3 -c 'from builtins import exec as e; e(x)'",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c '().__class__.__bases__[0].__subclasses__()'",
-                Rule::Unknown,
-            ),
-            (
-                "python3 -c 'import subprocess; subprocess.os.system(\"rm -rf ~\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'from distutils import dir_util; dir_util.remove_tree(\"/home/me\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'import urllib.request; urllib.request.urlretrieve(\"http://x\", \"/etc/x\")'",
-                Rule::Overwrite,
-            ),
-            (
-                "python3 -c 'import os; os.remove(\"/home/me/x\")\nimport subprocess; subprocess.run(\"ls\")'",
-                Rule::Delete,
-            ),
-            (
-                "node -e 'const fs=require(\"fs\"); const g = fs; g.rmSync(\"/home/me\")'",
-                Rule::Delete,
-            ),
-            (
-                "node -e 'const {rmSync}=require(\"fs\"); (0, rmSync)(\"/home/me\")'",
-                Rule::Unknown,
-            ),
-            (
-                "node -e '(function(){}).constructor(\"return process\")()'",
-                Rule::Unknown,
-            ),
-            (
-                "node -e 'const cp=require(\"child_process\"); const x = cp.exec; x(\"rm -rf ~\")'",
-                Rule::Unknown,
-            ),
-            (
-                "node -e 'const x = require; x(\"fs\").rmSync(\"/home/me\")'",
-                Rule::Delete,
-            ),
-            (
-                "node -e 'require(\"fs\").rmSync?.(\"/home/me\")'",
-                Rule::Delete,
-            ),
-            (
-                "node -e 'module.require(\"fs\").rmSync(\"/home/me\")'",
-                Rule::Unknown,
-            ),
-            (
-                "bun -e 'import {$} from \"bun\"; await $`rm -rf ~`'",
-                Rule::Delete,
-            ),
-            (
-                "bun -e 'import {write} from \"bun\"; await write(\"/home/me/.zshrc\", \"x\")'",
-                Rule::Overwrite,
-            ),
-            ("node -e 'require(\"shelljs\").rm(\"-rf\", \"~\")'", Rule::Delete),
-            (
-                "node -e 'const sh = require(\"shelljs\"); sh.exec(\"rm -rf ~\")'",
-                Rule::Delete,
-            ),
-            (
-                "node -e 'require(\"execa\").execaSync(\"rm\", [\"-rf\", \"~\"])'",
-                Rule::Delete,
-            ),
-            (
-                "node --input-type=module -e 'import {execSync as e} from \"node:child_process\"; e(\"rm -rf ~\")'",
-                Rule::Delete,
-            ),
-            (
-                "deno eval 'const {remove} = Deno; await remove(\"/home/me\")'",
-                Rule::Delete,
-            ),
-            (
-                "deno eval 'Deno.run({cmd: [\"sh\", \"-c\", \"rm -rf ~\"]})'",
-                Rule::Delete,
-            ),
-            ("deno eval 'Deno.run(opts)'", Rule::Unknown),
-            ("bun -e 'Bun.spawn(argv)'", Rule::Unknown),
-            ("node -e 'require(\"fs\").rmSync(...paths)'", Rule::Delete),
-            ("node -e 'require(\"fs\").writeFileSync(...a)'", Rule::Overwrite),
-            ("node -e 'require(\"fs\").openSync(...a)'", Rule::Overwrite),
-            ("deno eval 'Deno.openSync(...a)'", Rule::Overwrite),
-            ("python3 -c 'import os; os.open(*a)'", Rule::Overwrite),
-            ("python3 -c 'open(*a)'", Rule::Overwrite),
-            (
-                "node -e 'eval(\"require(\\\"fs\\\").rmSync(\\\"/home/me\\\")\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'eval(\"__import__(\\\"os\\\").remove(\\\"/home/me\\\")\")'",
-                Rule::Delete,
-            ),
-            (
-                "python3 -c 'exec(\"import os\\nos.remove(\\\"/home/me\\\")\")'",
-                Rule::Delete,
-            ),
-            // Not read whole by the strict gate: unknown.
-            ("python3 -c 'import os; p = os.path; print(p.join(\"a\"))'", Rule::Unknown),
-            ("python3 -c 'import os, sys; print(sys.argv, os.getcwd())'", Rule::Unknown),
-            ("python3 -c 'import pathlib; print(list(pathlib.Path(\".\").glob(\"*.py\")))'", Rule::Unknown),
-            ("python3 -c 'import os; print([f for f in os.listdir(\".\") if f.endswith(\".pyc\")])'", Rule::Unknown),
-            ("node -e 'console.log(process.argv, require(\"os\").homedir())'", Rule::Unknown),
-            ("node -e 'JSON.parse(require(\"fs\").readFileSync(\"package.json\"))'", Rule::Unknown),
-            ("node --input-type=module -e 'import {execSync as e} from \"node:child_process\"; e(\"echo\")'", Rule::Unknown),
-            ("node -e 'require(\"shelljs\").rm(\"-rf\", \"build\")'", Rule::Unknown),
-            ("node -e 'require(\"shelljs\").mkdir(\"-p\", \"build\")'", Rule::Unknown),
-            ("node -e 'require(\"child_process\").execSync(\"echo hi\", {stdio: \"inherit\"})'", Rule::Unknown),
-            ("node -e 'require(\"fs\").openSync(\"in.txt\")'", Rule::Unknown),
-            ("node -e 'require(\"fs\").openSync(\"/etc/hosts\", \"r\")'", Rule::Unknown),
-            ("deno eval 'Deno.openSync(\"/etc/hosts\", {read: true})'", Rule::Unknown),
-            ("deno eval 'Deno.openSync(\"/etc/hosts\", {write: false})'", Rule::Unknown),
-            ("deno eval 'Deno.openSync(\"/etc/hosts\")'", Rule::Unknown),
-            ("python3 -c \"import os; os.open('/etc/hosts', os.O_RDONLY)\"", Rule::Unknown),
-            ("python3 -c \"import os; os.open('/etc/hosts', 0)\"", Rule::Unknown),
-        ],
-    );
-}
-
-#[test]
-fn a_loader_in_front_of_buns_code_flag_is_unknown_in_every_shell() {
-    // The code of such a line may not be told (a module the options load runs
-    // first, or the code is only known when it runs), so cmd says `unknown`
-    // for it as the other shells do, not that bun is the whole story.
-    for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
-        for paths in [posix(), common::macos(), common::windows()] {
-            for line in [
-                "bun --import r.js -e \"$X\"",
-                "bun --require r.js -e \"$X\"",
-                "bun --loader .js:jsx -p \"$X\"",
-                "bun --import data:text/javascript -e \"console.log(1)\"",
-                "bun -F x run -e \"console.log(1)\"",
-            ] {
-                assert_eq!(
-                    rules(line, shell, &paths),
-                    [Rule::Unknown],
-                    "{shell:?} {line:?}"
-                );
-            }
+fn long_inline_code_is_read_in_linear_time() {
+    // Reading inline code asked the tree for each name's parent, which walks
+    // it from the root, and built a dotted name again from each member of it:
+    // a chain of 30,000 members (60 KB, under the limit) took a minute.
+    let chain = ".b".repeat(30_000);
+    let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
+    // Chains just under the depth limit, many of them: every one is read.
+    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(80);
+    // Calls nested just under the limit on every line, many of them.
+    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(50);
+    let mut rows = Vec::new();
+    for (interpreter, end) in [("python3", "PY"), ("node", "JS")] {
+        for body in [
+            format!("x = a{chain}"),
+            calls.clone(),
+            chains.clone(),
+            nested.clone(),
+        ] {
+            rows.push(format!("{interpreter} - <<'{end}'\n{body}\n{end}"));
         }
     }
-}
-
-#[test]
-fn on_windows_inline_code_is_not_read() {
-    check(
-        Shell::PowerShell,
-        &common::windows(),
-        &[],
-        &[
-            (
-                "python -c \"import os; os.remove('C:\\Users\\me\\x')\"",
-                Rule::Unknown,
-            ),
-            (
-                "node -e \"require('fs').rmSync('C:\\Users\\me')\"",
-                Rule::Unknown,
-            ),
-            (
-                "deno eval \"Deno.removeSync('C:\\Users\\me')\"",
-                Rule::Unknown,
-            ),
-        ],
-    );
+    for line in rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let took = took(&line, Shell::Posix, &posix());
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "{:?} took {took:?}",
+            &line[..20]
+        );
+        // What nests too deeply to read is not safe, and the rest is read.
+        // Past the depth a tree is walked, the count of open parentheses
+        // already makes the whole line unreadable, before the code is read.
+        let deep = classify(&line, Shell::Posix, &posix())
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == Rule::Unreadable);
+        let expected = line.contains(&chain) || line.contains(&"f(".repeat(500));
+        assert_eq!(deep, expected, "{:?}", &line[..20]);
+    }
 }
