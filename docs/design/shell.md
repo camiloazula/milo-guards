@@ -680,10 +680,11 @@ the same line. It is `stop_system` when the line stops more than a name:
   `kill -1234`; `-1` is every process). The inline calls `os.kill`, `os.killpg`,
   `process.kill` and `Deno.kill` read the same way (`os.kill(0, 9)`). An id
   only known when it runs (`kill $pid`, `kill $(pgrep x)`, `xargs kill`), or too
-  long for a process id, may be any of them, so it is `stop_system` too. An
-  ordinary id (`kill 4242`), a job (`kill %1`), `$!`, `$$`, `$PPID`, signal 0
-  (`kill -0 $pid`, which sends nothing) and `kill -l` are safe; `kill 1` is
-  `stop_system`.
+  long for a process id, may be any of them, so it is `stop_system` too, and
+  so is a negative expansion such as `kill -- -$$`, the caller's own group,
+  and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
+  job (`kill %1`), `$!`, `$$`, signal 0 (`kill -0 $pid`, which sends nothing)
+  and `kill -l` are safe; `kill 1` is `stop_system`.
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name

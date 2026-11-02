@@ -40,6 +40,17 @@ fn killing_process_zero_or_a_group_is_stopping_the_caller() {
             ("kill 99999999999999999999", Rule::StopSystem),
             ("kill 4294967296", Rule::StopSystem),
             ("kill '*'", Rule::StopSystem),
+            ("kill -- -$$", Rule::StopSystem),
+            ("kill -9 -- -$$", Rule::StopSystem),
+            ("kill -$$", Rule::StopSystem),
+            ("kill -9 -$$", Rule::StopSystem),
+            ("kill -TERM -$$", Rule::StopSystem),
+            ("kill -s TERM -$$", Rule::StopSystem),
+            ("sh -c 'kill -- -$$'", Rule::StopSystem),
+            ("bash -c 'kill -9 -$$'", Rule::StopSystem),
+            ("trap 'kill -- -$$' EXIT", Rule::StopSystem),
+            ("trap 'kill -TERM -$$' EXIT", Rule::StopSystem),
+            ("set -m; kill -- -$$", Rule::StopSystem),
         ],
     );
 }
@@ -66,11 +77,14 @@ fn killing_an_ordinary_process_or_a_job_is_unchanged() {
             "kill $!",
             "kill \"$!\"",
             "kill $$",
-            "kill $PPID",
         ],
         &[
             ("kill 1", Rule::StopSystem),
             ("kill -9 -1", Rule::StopSystem),
+            ("kill $PPID", Rule::StopSystem),
+            ("kill -9 $PPID", Rule::StopSystem),
+            ("kill -9 \"$PPID\"", Rule::StopSystem),
+            ("kill -9 ${PPID}", Rule::StopSystem),
         ],
     );
 }

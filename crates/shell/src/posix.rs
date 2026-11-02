@@ -1763,7 +1763,22 @@ impl Walker<'_> {
                 let mut template = String::new();
                 let mut partial = false;
                 let mut cursor = node.walk();
-                for part in node.named_children(&mut cursor) {
+                for part in node.children(&mut cursor) {
+                    // The grammar leaves a `$$` out of the named parts when
+                    // dashes come before it (`-$$`, `kill -- -$$`): the
+                    // shell's own process id, which `kill` reads as its own
+                    // process group. After other text (`/tmp/x$$`) it only
+                    // names a file, and is left as it was read.
+                    if !part.is_named() {
+                        if unit::text(&part, self.source) == "$$"
+                            && !value.is_empty()
+                            && value.bytes().all(|b| b == b'-')
+                        {
+                            partial = true;
+                            template.push_str("$$");
+                        }
+                        continue;
+                    }
                     match self.arg(part) {
                         Arg::Known(text) => {
                             value.push_str(&text);

@@ -486,10 +486,11 @@ fn process_id(text: &str) -> Option<Id> {
 }
 
 /// Whether an id only known when it runs is always a process: `$!` (the
-/// last background job), `$$` and `$PPID`, quoted or not.
+/// last background job) and `$$`, quoted or not. `$PPID` is not: it is the
+/// program that ran the line, usually the caller itself.
 fn is_positive_expansion(text: &str) -> bool {
     let text = text.trim_matches(['"', '\'']);
-    matches!(text, "$!" | "$$" | "$PPID" | "${!}" | "${$}" | "${PPID}")
+    matches!(text, "$!" | "$$" | "${!}" | "${$}")
 }
 
 /// `chmod`/`chown` operands: the mode or owner first, the files after.
