@@ -2102,6 +2102,27 @@ backslash-newline: every shell keeps its tabs (`DR\` then a tab and `OP`
 is `DR`, a tab and `OP`). A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
 
+The grammar reads a `$(…)` in an unquoted body but not a backtick
+substitution, which the shell runs just the same, for every reader of the
+here-document (`cat <<EOF` + newline + `` `rm -rf ~/x` `` + newline + `EOF`
+deletes). The guard finds them itself and reads the code of each as a script
+of its own, so its commands are judged and count for `effect`. A backtick ends
+at the first one no backslash escapes, whatever quotes lie between, and the
+code takes one backslash off `` \` ``, `\\` and `\$` (any other backslash
+stays), as every POSIX shell does. Shells differ on `\"`: bash keeps the
+backslash, dash takes it off (it reads the body as the inside of double
+quotes), so a code that holds one is read both ways and what either shell runs
+counts (`` `echo "x\"; rm -rf /home/me; echo \"y"` `` is one echoed string
+to bash and three commands to dash). With `<<-` the tabs of the lines after the
+first are taken off. The plain text between a body's expansions is scanned
+like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
+escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads
+as before. What cannot be read is `Unreadable`: a backtick
+that never closes, code that does not parse, a backtick inside a `${…}` (or
+another part the grammar read for itself), and an unquoted here-document in a
+backtick substitution that holds an escaped backtick, where the outer
+substitution takes a backslash off first and the body is not what it shows.
+
 The body of an unquoted delimiter is joined the same way when the guard splits
 the line, also one inside `"$(…)"` or a backtick in double quotes: a
 backslash-newline in it is taken out before the body is read, so `$(r\` then
@@ -2873,9 +2894,11 @@ when it runs, is `Unknown`.
   setting, unless its name could be one that changes what runs (`PATH`, or in
   zsh `path`).
 - A PowerShell method call (`[IO.File]::ReadAllText(...)`, `$x.Delete()`) is
-  no unit, and the rules know only some of them: it is `Unknown`. So is a
-  backtick substitution in an unquoted here-document, which the grammar does
-  not read and the shell runs.
+  no unit, and the rules know only some of them: it is `Unknown`. A backtick
+  substitution in an unquoted here-document, which the grammar does not read
+  and the shell runs, is read as code by the guard (see Data in a database),
+  so it counts for what its commands do, and for `Unknown` when it cannot be
+  read.
 - **A path known only when it runs makes the line `Unknown`.** A reader's file
   operand or the source of a `<` redirect (`cat $f`, `cat < "$F"`, `cat
   "$(pwd)/x"`, `grep x "$f"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may
