@@ -457,9 +457,15 @@ folder; a redirect that names none (`2>&1`, `>&2`, `> /dev/null`, `~/x`) is
 placed from where the line is. A `cd` that never reaches the line does not
 count as the body moving it: one in a subshell `( … )` or a `$( … )` does not
 move the statement (`for d in */; do (cd "$d" && make); done > ../log` opens
-`../log` from where the line is), and one in a pipeline stage or the
-background does not make a function one that moves the line (`f() { cd sub |
-cat; }; f; f > log`). A redirect written on the
+`../log` from where the line is). A `cd` behind `command`, `builtin` or `time`,
+in any stage of a pipeline (zsh runs the last in this shell), in the background
+or behind `env` or `nohup` may or may not reach the line, so the walk counts it
+as moving it, and a function with one is a function that moves the line: `f() {
+command cd sub; cat; }; f < ../../.ssh/id_rsa`, `f() { cd sub & cat; }; f <
+../../.ssh/id_rsa` and `f() { cd sub | cat; }; f; f > log` are read like the
+same with a plain `cd`. A redirect placed from the folders of more than a few
+dozen functions that move the line, each defined in another folder, is
+`unknown`, not judged from each of them. A redirect written on the
 definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
 call, before the body, so it is placed like a group's, from the folder the line
 is in where the function is defined, not from where the body ends; a name

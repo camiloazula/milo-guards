@@ -628,9 +628,7 @@ impl Walker<'_> {
             return;
         }
         self.split.branches += usize::from(background);
-        self.split.apart += usize::from(background);
         self.node(node, stage, level);
-        self.split.apart -= usize::from(background);
         self.split.branches -= usize::from(background);
     }
 

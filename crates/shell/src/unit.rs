@@ -228,13 +228,86 @@ impl Unit {
     }
 }
 
-/// Whether `unit` may be a call to the function `name`: the program is the
-/// name, or its path ends in it (the key is in lower case, so a function
-/// whose name differs only in case counts too).
-fn calls(unit: &Unit, name: &str) -> bool {
-    unit.shell == Shell::Posix
-        && (unit.program.known() == Some(name)
-            || unit.key().is_some_and(|key| key.eq_ignore_ascii_case(name)))
+/// The functions that [`Split::reaching`] keeps, by name, and the first unit
+/// that may call each name, so that which functions a unit may call, and
+/// whether a name was called before, are lookups and not a read of every
+/// function or every earlier unit.
+///
+/// A unit may call a function when its program is the function's name, or
+/// its path ends in it (the key is in lower case, so a function whose name
+/// differs only in case counts too).
+#[derive(Debug, Default)]
+struct Names {
+    /// The functions by their name as written.
+    exact: HashMap<String, Vec<usize>>,
+    /// The functions by their name in lower case.
+    lower: HashMap<String, Vec<usize>>,
+    /// The first unit whose program is the name as written, and the first
+    /// whose key is the name.
+    first_exact: HashMap<String, usize>,
+    first_key: HashMap<String, usize>,
+}
+
+impl Names {
+    /// Note that the function `name` is `at` in [`Split::reaching`].
+    fn add(&mut self, name: &str, at: usize) {
+        self.exact.entry(name.to_string()).or_default().push(at);
+        self.lower
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(at);
+    }
+
+    /// Note that the unit `unit` is the one at `at`, and give the functions
+    /// it may call, each once and in the order they were added.
+    fn note(&mut self, unit: &Unit, at: usize) -> Vec<usize> {
+        if unit.shell != Shell::Posix {
+            return Vec::new();
+        }
+        let key = unit.key();
+        let found = self.find(unit.program.known(), key.as_deref());
+        if let Some(program) = unit.program.known() {
+            if !self.first_exact.contains_key(program) {
+                self.first_exact.insert(program.to_string(), at);
+            }
+        }
+        if let Some(key) = key {
+            self.first_key.entry(key).or_insert(at);
+        }
+        found
+    }
+
+    /// The functions a unit that is already noted may call.
+    fn calling(&self, unit: &Unit) -> Vec<usize> {
+        if unit.shell != Shell::Posix {
+            return Vec::new();
+        }
+        self.find(unit.program.known(), unit.key().as_deref())
+    }
+
+    /// The functions named `program`, or whose lower case name is `key`.
+    fn find(&self, program: Option<&str>, key: Option<&str>) -> Vec<usize> {
+        let mut found: Vec<usize> = program
+            .and_then(|program| self.exact.get(program))
+            .into_iter()
+            .chain(key.and_then(|key| self.lower.get(key)))
+            .flatten()
+            .copied()
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The first unit that may call the function `name`.
+    fn first_call(&self, name: &str) -> Option<usize> {
+        let by_name = self.first_exact.get(name).copied();
+        let by_key = self.first_key.get(&name.to_ascii_lowercase()).copied();
+        match (by_name, by_key) {
+            (Some(one), Some(other)) => Some(one.min(other)),
+            (one, other) => one.or(other),
+        }
+    }
 }
 
 /// The name rules know a program by.
@@ -388,9 +461,9 @@ pub(crate) struct Defining {
     name: String,
     /// Where the line is when the definition begins.
     dir: Option<Arg>,
-    /// How many `cd`s this shell itself had run (see [`Split::own_moves`]),
-    /// and how many units the walk had.
-    own_moves: usize,
+    /// How many `cd`s this shell had run, as the walk counts them (a
+    /// subshell gives them back), and how many units the walk had.
+    moves: usize,
     first: usize,
     /// Whether where the line is then is not certain (see
     /// [`Split::opens_here`]).
@@ -567,15 +640,6 @@ pub(crate) struct Split {
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
     pub(crate) branches: usize,
-    /// How deep the line is inside a command that runs in the background,
-    /// where a `cd` does not move this shell.
-    pub(crate) apart: usize,
-    /// How many `cd`s run in this shell itself have been read so far: not
-    /// one in a pipeline stage, the background or behind a wrapper, which
-    /// run in a process of their own. A subshell gives the count back, as
-    /// it does the directory: it tells whether a function body moves the
-    /// line.
-    own_moves: usize,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -601,6 +665,10 @@ pub(crate) struct Split {
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
     reaching: Vec<Reaching>,
+    /// Where each of them is by name, and where each name is first called.
+    names: Names,
+    /// How many of them have a body that moves the line.
+    moving: usize,
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
@@ -723,7 +791,6 @@ pub(crate) struct Place {
     drive: Option<char>,
     drive_guess: bool,
     moves: usize,
-    own_moves: usize,
     later: usize,
     maybe_moved: bool,
 }
@@ -898,9 +965,6 @@ impl Split {
         if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
-            if self.apart == 0 && unit.stage.is_none() && unit.wrappers.is_empty() {
-                self.own_moves += 1;
-            }
             let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
             // Once the line makes a drive, a drive letter may name it: the
             // place is only known when it runs.
@@ -1083,7 +1147,7 @@ impl Split {
     /// and the line was surely there when it was defined. When it is not
     /// certain, the call starts in a folder only known when it runs.
     fn function_starts(&mut self, units: Range<usize>, moved_at: usize) -> Vec<Option<Arg>> {
-        if !self.reaching.iter().any(|function| function.moves) {
+        if self.moving == 0 {
             return Vec::new();
         }
         // As for [`Self::starts_in`], a range is read once however many
@@ -1094,27 +1158,40 @@ impl Split {
         }
         let mut starts = Vec::new();
         let mut unsure = Vec::new();
-        for unit in self.units.get(units.clone()).into_iter().flatten() {
-            for function in self.reaching.iter().filter(|function| function.moves) {
-                if !calls(unit, &function.name) {
+        let mut over = false;
+        'units: for unit in self.units.get(units.clone()).into_iter().flatten() {
+            for index in self.names.calling(unit) {
+                let Some(function) = self.reaching.get(index).filter(|function| function.moves)
+                else {
                     continue;
+                };
+                if !starts.contains(&function.dir) {
+                    if starts.len() >= MAX_CALL_STARTS {
+                        over = true;
+                        break 'units;
+                    }
+                    starts.push(function.dir.clone());
                 }
-                starts.push(function.dir.clone());
                 let before = self
-                    .units
-                    .get(..units.start)
-                    .into_iter()
-                    .flatten()
-                    .any(|earlier| calls(earlier, &function.name));
+                    .names
+                    .first_call(&function.name)
+                    .is_some_and(|first| first < units.start);
                 if function.unsure || before || function.moved != moved_at || self.repeats > 0 {
                     // The line may have been where it began when the
                     // definition was read.
-                    if function.unsure {
+                    if function.unsure && !starts.contains(&None) {
                         starts.push(None);
                     }
                     unsure.push(function.name.clone());
                 }
             }
+        }
+        if over {
+            self.problem(
+                Rule::Unknown,
+                "redirects calls to more functions that move the line, each from another folder, than it reads",
+                None,
+            );
         }
         for name in unsure {
             self.problem(
@@ -1285,7 +1362,7 @@ impl Split {
         Defining {
             name: name.to_string(),
             dir: self.dir.clone(),
-            own_moves: self.own_moves,
+            moves: self.moves,
             first: self.units.len(),
             unsure: self.maybe_moved || self.repeats > 0,
             opens,
@@ -1301,21 +1378,29 @@ impl Split {
         let Defining {
             name,
             dir,
-            own_moves,
+            moves: moves_before,
             first,
             unsure,
             opens,
             ..
         } = defining;
-        // A `cd` in a subshell, a substitution, a pipeline stage or the
-        // background leaves the line where it is.
-        let moves = self.own_moves != own_moves
+        // The walk moves its own line for every `cd` it reads, so a body
+        // moves it as far as the walk is concerned unless a subshell or a
+        // substitution gave the `cd` back. A `cd` in a pipeline stage, the
+        // background or behind a wrapper may or may not reach the line; the
+        // walk reads it as moving, and the call is placed from the folder
+        // of the definition and from where the walk's line is.
+        let moves = self.moves != moves_before
             || self.units.get(first..).into_iter().flatten().any(|unit| {
-                self.reaching
-                    .iter()
-                    .any(|function| function.moves && calls(unit, &function.name))
+                self.names.calling(unit).into_iter().any(|index| {
+                    self.reaching
+                        .get(index)
+                        .is_some_and(|function| function.moves)
+                })
             });
         if moves || opens {
+            self.names.add(&name, self.reaching.len());
+            self.moving += usize::from(moves);
             self.reaching.push(Reaching {
                 name,
                 dir,
@@ -1338,11 +1423,11 @@ impl Split {
     fn note_call(&mut self, unit: &Unit) {
         let (moved, repeats) = (self.moved, self.repeats);
         let mut unsure = Vec::new();
-        for function in self
-            .reaching
-            .iter_mut()
-            .filter(|function| calls(unit, &function.name))
-        {
+        let at = self.units.len();
+        for index in self.names.note(unit, at) {
+            let Some(function) = self.reaching.get_mut(index) else {
+                continue;
+            };
             if function.opens && !function.flagged {
                 function.looped |= repeats > 0;
                 let again = function.moves && (function.calls > 0 || repeats > 0);
@@ -1665,7 +1750,6 @@ impl Split {
             drive: self.drive,
             drive_guess: self.drive_guess,
             moves: self.moves,
-            own_moves: self.own_moves,
             later: self.later.len(),
             maybe_moved: self.maybe_moved,
         }
@@ -1689,7 +1773,6 @@ impl Split {
         self.drive = place.drive;
         self.drive_guess = place.drive_guess;
         self.moves = place.moves;
-        self.own_moves = place.own_moves;
         self.maybe_moved = place.maybe_moved;
     }
 
@@ -2078,6 +2161,12 @@ const MAX_HEREDOCS: usize = 256;
 /// grammar takes time that grows with the square of the chain to find that
 /// out (seconds, at the length limit).
 const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+
+/// The most folders a redirect is placed from for the calls it covers to
+/// functions that move the line: each is a place the redirect is judged
+/// from, and a line that calls more than this many (each from another
+/// folder) under one redirect is unknown, not read from them all.
+const MAX_CALL_STARTS: usize = 32;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:

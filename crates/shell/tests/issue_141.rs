@@ -9,7 +9,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::{check, path_disagreement, posix};
-use milo_guards_shell::{effect_paths, How, ReadPath, Rule, Shell};
+use milo_guards_shell::{classify, effect_paths, How, ReadPath, Rule, Shell};
 
 fn exact(path: &str) -> ReadPath {
     ReadPath {
@@ -461,8 +461,10 @@ fn a_cd_that_never_reaches_the_line_does_not_move_it() {
         Shell::Posix,
         &posix(),
         &[
-            // A subshell, a substitution, a pipeline stage or the
-            // background run the `cd` in a process of their own.
+            // A subshell or a substitution runs the `cd` in a process of its
+            // own and gives the line back. (A `cd` in a pipeline stage or the
+            // background may or may not reach the line, so a function with
+            // one counts as moving it: see the rows after this test.)
             "cd repos || exit 1; for d in */; do (cd \"$d\" && git pull); done > ../pull.log",
             "git fetch && cd repos && for d in */; do (cd \"$d\" && git status); done > ../status.txt",
             "npm ci && cd frontend && (cd app && npm test) > ../test.log",
@@ -471,8 +473,6 @@ fn a_cd_that_never_reaches_the_line_does_not_move_it() {
             "cd sub; (cd x && make) || echo failed; { ls; } > ../log",
             "f() { (cd sub && make); }; f; f > log.txt",
             "f() { x=$(cd sub && pwd); }; f; f > log.txt",
-            "f() { cd sub | cat; }; f; f > log.txt",
-            "f() { cd sub & }; f; f > log.txt",
             "f() ( cd sub; make ); f; f > log.txt",
         ],
         &[
@@ -533,6 +533,157 @@ fn a_redirect_that_names_no_file_by_folder_on_a_moving_call_is_placed_from_the_l
                 Rule::Unknown,
             ),
         ],
+    );
+}
+
+#[test]
+fn a_cd_behind_a_wrapper_or_in_a_stage_still_makes_the_function_one_that_moves_the_line() {
+    // `command`, `builtin` and `time` run the `cd` in this shell, and zsh
+    // runs the last stage of a pipeline in this shell too, so the body
+    // moves the line. The call opens its redirect from the folder of the
+    // call, which is the folder of the definition (/home/me/work/repo).
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "f() { command cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { builtin cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { time cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { ls | cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { cat | while read l; do cd sub; done; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            ("f() { command cd sub; }; f > ../x", Rule::Overwrite),
+            ("f() { builtin cd sub; ls; }; f > ../x", Rule::Overwrite),
+            (
+                "f() { command cd ..; }; f; f; f < .ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            ("f() { builtin cd sub; }; f; f > log.txt", Rule::Unknown),
+            ("f() { command cd sub; }; cd x; f > log.txt", Rule::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn a_cd_in_the_background_behind_env_or_in_a_stage_still_makes_the_function_one_that_moves_the_line(
+) {
+    // The walk moves its own line for each of these `cd`s, so the call is
+    // placed from the folder of the definition too, where the redirect
+    // really opens.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "f() { env cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { nohup cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { cd sub & cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { cd sub | cat; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            ("f() { cd sub & }; f < ../../.ssh/id_rsa", Rule::ReadSecret),
+            (
+                "f() { cd sub | cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() { env cd sub; }; f; f < ../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            ("f() { cd sub & }; f > ../x", Rule::Overwrite),
+            ("f() { env cd sub; }; f > ../x", Rule::Overwrite),
+            // Called twice, the second call may start anywhere.
+            ("f() { cd sub | cat; }; f; f > log.txt", Rule::Unknown),
+            ("f() { cd sub & }; f; f > log.txt", Rule::Unknown),
+        ],
+    );
+}
+
+/// The text `piece` makes for each number below `count`, one after the other.
+fn repeated(count: usize, piece: impl Fn(usize) -> String) -> String {
+    let mut text = String::new();
+    for index in 0..count {
+        text.push_str(&piece(index));
+    }
+    text
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
+    // A group that calls many functions with several redirects on it, and
+    // one redirected call for each of as many definitions: neither reads
+    // every function, or every earlier unit, again for each call. (Each
+    // definition moves to an absolute folder: a relative one makes the line
+    // a little deeper each time, and a path that deep costs time of its own.)
+    let count = 1_600;
+    let definitions = repeated(count, |i| format!("f{i}() {{ cd /a; }}; "));
+    let calls = repeated(count, |i| format!("f{i}; "));
+    let group = format!("{definitions}{{ {calls}}} < x > y 2> z < w");
+    let each = repeated(count, |i| format!("f{i}() {{ cd /a; }}; f{i} < x; "));
+    for line in [group, each] {
+        assert!(line.len() < 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let rules = common::rules(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(4),
+            "{} bytes took {took:?}",
+            line.len()
+        );
+        assert!(!rules.is_empty(), "a long line of calls is read as safe");
+    }
+}
+
+#[test]
+fn a_redirect_on_calls_to_many_functions_from_other_folders_is_unknown() {
+    // Each function was defined in another folder, and the redirect is
+    // placed from each of them: past a few dozen, the line is unknown and
+    // not judged from every one.
+    let definitions = repeated(100, |i| format!("f{i}() {{ cd a; }}; "));
+    let calls = repeated(100, |i| format!("f{i}; "));
+    let line = format!("{definitions}{{ {calls}}} < x");
+    let assessment = classify(&line, Shell::Posix, &posix());
+    assert!(
+        assessment
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == Rule::Unknown
+                && finding.reason.contains("more functions that move the line")),
+        "{:?}",
+        assessment.findings()
     );
 }
 

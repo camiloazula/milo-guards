@@ -361,9 +361,7 @@ impl Walker<'_> {
                 .next_named_sibling()
                 .is_some_and(|next| next.kind() == "background_operator");
             self.split.branches += usize::from(job);
-            self.split.apart += usize::from(job);
             self.walk(child, stage, level + 1);
-            self.split.apart -= usize::from(job);
             self.split.branches -= usize::from(job);
         }
     }
