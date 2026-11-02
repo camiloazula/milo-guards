@@ -100,7 +100,79 @@ fn a_read_on_a_cd_is_judged_like_the_same_read_without_it() {
                 Rule::ReadSecret,
             ),
             // Still found after a `cd` that comes first.
-            ("cd a && cd b < ../../../../.ssh/id_rsa", Rule::ReadSecret),
+            ("cd a && cd b < ../../../.ssh/id_rsa", Rule::ReadSecret),
+        ],
+    );
+}
+
+#[test]
+fn a_read_on_a_cd_after_and_or_a_pipe_or_a_not_is_placed_from_where_it_starts() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // The key is not at `a/b/../../../../.ssh`: `b` is opened from
+            // `a`, which gives `/home/.ssh/id_rsa`.
+            "cd a && cd b < ../../../../.ssh/id_rsa",
+            // After the `cd`, the folder is the one it went to.
+            "ls && cd sub && cat < ../../.ssh/id_rsa",
+            "ls && cd sub < ../x",
+            "true | cd sub < ../x",
+            "! cd sub < ../x",
+        ],
+        &[
+            ("ls && cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("true && cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("ls || cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("true | cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("! cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("ls; cd sub < ../../.ssh/id_rsa", Rule::ReadSecret),
+            ("cd ~ && cd sub < .ssh/id_rsa", Rule::ReadSecret),
+            ("cd ~/.ssh && cd ~ < id_rsa", Rule::ReadSecret),
+            ("cd ~/.ssh && cd /tmp < id_rsa", Rule::ReadSecret),
+            ("cd ~ && cd sub < .ssh/id_rsa | cat", Rule::ReadSecret),
+            ("cd ~ && cd sub < .ssh/id_rsa && true", Rule::ReadSecret),
+        ],
+    );
+}
+
+#[test]
+fn a_write_on_a_cd_after_and_or_a_pipe_or_a_not_is_placed_from_where_it_starts() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "ls && cd sub > out.txt",
+            "cd ~ && cd /tmp > work/repo/out.txt",
+        ],
+        &[
+            ("cd ~ && cd /tmp > .bashrc", Rule::Overwrite),
+            ("cd ~/.ssh && cd /tmp > authorized_keys", Rule::Overwrite),
+            ("cd ~; cd /tmp > .bashrc", Rule::Overwrite),
+        ],
+    );
+}
+
+#[test]
+fn the_paths_of_a_cd_after_and_or_a_pipe_or_a_not_are_placed_from_where_it_starts() {
+    let repo = "/home/me/work/repo";
+    lists(
+        Shell::Posix,
+        &[
+            (
+                "true && cd sub < ../../.ssh/id_rsa",
+                vec![
+                    exact(&format!("{repo}/../../.ssh/id_rsa")),
+                    exact(&format!("{repo}/sub")),
+                ],
+            ),
+            (
+                "true | cd sub < ../../.ssh/id_rsa",
+                vec![
+                    exact(&format!("{repo}/../../.ssh/id_rsa")),
+                    exact(&format!("{repo}/sub")),
+                ],
+            ),
         ],
     );
 }

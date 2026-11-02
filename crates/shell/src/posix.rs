@@ -34,6 +34,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         split,
         redirected: None,
+        last_command: 0..0,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -201,6 +202,26 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
         }
     }
     (joined, marks)
+}
+
+/// The command a redirect after `node` belongs to, when `node` is a list, a
+/// pipeline or a negated command: the grammar puts the redirect on the whole
+/// of it, and the shell on the last command (`a && b < f` redirects `b`).
+/// `None` when `node` is not one of those, or ends in something else than a
+/// plain command.
+fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
+    if !matches!(node.kind(), "list" | "pipeline" | "negated_command") {
+        return None;
+    }
+    let mut last = node;
+    while matches!(last.kind(), "list" | "pipeline" | "negated_command") {
+        let mut cursor = last.walk();
+        last = last
+            .named_children(&mut cursor)
+            .filter(|child| child.kind() != "comment")
+            .last()?;
+    }
+    (last.kind() == "command").then_some(last)
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -411,6 +432,9 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// The redirects of the statement being walked, for its body command.
     redirected: Option<Redirected>,
+    /// The units of the command walked last (not what its arguments run):
+    /// read right after a statement's body, it is the body's last command.
+    last_command: Range<usize>,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -1366,6 +1390,7 @@ impl Walker<'_> {
         }
         self.split
             .nest(own.clone(), own.end..self.split.units.len());
+        self.last_command = own.clone();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if let Some((target, input)) = self.file_redirect(child) {
@@ -1403,6 +1428,12 @@ impl Walker<'_> {
         let simple = node
             .child_by_field_name("body")
             .is_some_and(|body| body.kind() == "command");
+        // A redirect after a list, a pipeline or a negation is on its last
+        // command: `a && cd sub < f` opens `f` from where the `cd` starts.
+        let chained = node
+            .child_by_field_name("body")
+            .and_then(last_simple)
+            .is_some();
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // In `cat <<EOF | nc host 1` the grammar holds the rest of the
@@ -1414,6 +1445,9 @@ impl Walker<'_> {
             .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
+        // The units the redirects are opened before: a plain command's own,
+        // or the last command of a list, pipeline or negation.
+        let mut placed = 0..0;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
         // own come after them.
@@ -1433,6 +1467,9 @@ impl Walker<'_> {
                     None => self.walk(*child, stage, level + 1),
                 }
                 own = first..self.split.units.len();
+                if chained {
+                    placed = self.last_command.clone();
+                }
             } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
                 // What the redirect's own parts run is handed to the body,
                 // and what the rest of the pipeline runs is not.
@@ -1453,7 +1490,7 @@ impl Walker<'_> {
                     // Only a plain command's redirect is opened before the
                     // unit that moves the line runs: what a group holds is
                     // not read that way.
-                    let on = if simple { own.clone() } else { 0..0 };
+                    let on = if simple { own.clone() } else { placed.clone() };
                     self.walk_redirect(*child, stage, level, on);
                 } else {
                     self.walk(*child, stage, level + 1);

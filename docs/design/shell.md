@@ -415,7 +415,10 @@ the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
 `<cwd>/.ssh/id_rsa`, and `cd sub > ../x` writes `<cwd>/../x`. The same holds in
 cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
 The redirect of the next command is placed from where the line now is. In a
-POSIX shell only a redirect on the command itself is read this way: a file a
+POSIX shell only a redirect on the command itself is read this way, and that
+includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
+`cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
+and it is read as the last command's): a file a
 group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
 still placed from where the line is when its body ends. In PowerShell only the
 redirects of the command itself are placed so: a redirect inside a `$()` in its
