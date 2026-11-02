@@ -127,6 +127,11 @@ pub(crate) struct Unit {
     /// own members (`$_.Parent`, `$_ + 1`): not the processes the pipeline
     /// hands it.
     pub(crate) unread_item: bool,
+    /// For a `Stop-Process`, whether each argument holds a `Get-Process`
+    /// listing, which the listing rules judge (`-Id (Get-Process node).Id`):
+    /// in step with `args`, and empty for any other unit, or one that
+    /// lost them, in which no argument counts as read this way.
+    pub(crate) listed: Vec<bool>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -209,6 +214,7 @@ impl Unit {
             downloaded: false,
             listings: Vec::new(),
             unread_item: false,
+            listed: Vec::new(),
             depth: 0,
         }
     }

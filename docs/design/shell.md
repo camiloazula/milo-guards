@@ -792,9 +792,15 @@ the same line. It is `stop_system` when the line stops more than a name:
   `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
   "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
   `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
-  stops the programs that hang, are read; with `/IM`, `/PID` or an
-  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
-  names are judged.
+  stops the programs that hang, are read, and so is `PID eq 1234`, which
+  names one process and is judged as `/PID 1234` is (`PID eq 0` is not
+  safe); with `/IM`, `/PID`, an `IMAGENAME eq` or a `PID eq` filter, the other
+  filters only narrow what is named, and the names are judged. `tskill`, the
+  Terminal Services way to end a process, is read like `taskkill`: its word
+  that is not an option (`/a`, `/v`, `/server:name` and `/id:n` start with a
+  slash) is a name when it is not a number, judged as `/IM` is, and an id
+  otherwise, judged as `/PID` is (`tskill node` and `tskill 1234` are safe,
+  `tskill explorer`, `tskill 0` and `tskill $n` are `stop_system`).
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
   `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
@@ -809,7 +815,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
   server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
   -I`). The expression is read with its syntax, never skipped for having
-  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  some (that is `pkill`'s and `killall`'s POSIX syntax; PowerShell's `-match`
+  is .NET's, see the `Where-Object` item below): `.`, a `[…]` set and an escape are one character, a group and `|` are
   read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
   and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
   (an escape, a collating element, `\b`, a back reference) it is read as
@@ -842,11 +849,35 @@ the same line. It is `stop_system` when the line stops more than a name:
   lists: `Get-Process node | Stop-Process` is the name `node`, and any other
   first stage (`$procs | Stop-Process`) is known only when it runs. A
   `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
-  `Stop-Process -Id` does, and is safe; one given no name lists every
-  process. A stage between the listing and `Stop-Process` is never "every
+  `Stop-Process -Id` does, and its ids are judged as that is (see the next item);
+  one given no name lists every process. A stage between the listing and `Stop-Process` is never "every
   process": `Where-Object` is read when it only compares `Name` or
-  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
-  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `ProcessName` with `-eq`, `-like` or `-match` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name; a
+  `-match` pattern written out is a regular expression searched for in each
+  name, read as `pkill` reads one except where .NET differs (below), so
+  `-match 'node'` is `-like '*node*'`
+  (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
+  it runs are `stop_system`, as is `-notmatch`). A `-match` pattern is a .NET
+  expression, and the guard reads it only in the POSIX ERE subset. Two things
+  are read the .NET way: a `/` is a plain character (a process name holds no
+  folder, so `'/?explorer'` and `'svc/*host'` are `stop_system`, the `?` or
+  `*` applying to the `/`), and an anchor takes a quantifier that makes it
+  optional (`'^*explorer'`, `'$?explorer'`, `'^{0,1}svchost'` match like the
+  name without it). A pattern outside the subset is not read: one with a
+  `(?` in it (a lookaround, an inline option, a comment, a named group, a
+  conditional) or an escape that is a letter or digit other than `\d \D \w \W
+  \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
+  read, and the filter is "picked by a filter only known when it runs"
+  (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
+  a backslash inside a bracket expression (.NET reads `[\]o]` as the set `]`
+  and `o`, where POSIX closes the set at the first `]`), one with a `[`
+  inside a bracket expression (.NET reads `[:`, `[.` and `[=` as a plain `[`
+  and closes the set at the next `]`, where POSIX reads a class or a
+  collating element up to `:]`, `.]` or `=]`, and `[a-z-[0]]` is a set minus
+  another) and one with a
+  character that is not ASCII (.NET ignores case by the current culture, so
+  `İ` can stand for `i` and `ſ` for `s`, and the guard folds ASCII only);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
   `-Property Name`) keep some of the same processes; a `Select-Object` given
   `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
@@ -859,8 +890,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
   `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
   of a pipeline that starts with `Get-Process`. Any other `-Id` or
-  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
-  processes the guard does not read and is safe. Only a member that is the
+  `-InputObject` value is judged as an id (see the next item).
+  Only a member that is the
   process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
   any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
   as `-ExpandProperty` does, and is any other stage: `Stop-Process
@@ -878,11 +909,58 @@ the same line. It is `stop_system` when the line stops more than a name:
   (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
   processes only known when it runs". After a first stage that is not a
   `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
-  `$_` is not a process and the value is read as any other `-Id`. A
+  `$_` is not a process and the value is read as any other `-Id`; the item
+  itself (`$procs | % { Stop-Process -Id $_.Id }`) is "stops processes only
+  known when it runs". A
   `Get-Process` anywhere else in the arguments, inside another command or a
   block, is read as one such listing, once, however many there are: the
   arguments are read in one pass that never goes below a command, so the time
   is the line's length however deeply they nest.
+- **A process picked by an id, or through a method.** An id is safe when it
+  is written out in digits: `Stop-Process -Id 1234`, `Stop-Process 1234,5678`,
+  `kill 4242`, `taskkill /PID 1234`, `Get-Process -Id 1234 | Stop-Process`,
+  and `$PID`, the shell that runs the line. Anything else is a process only
+  known when it runs, and may be any process the system needs, so it is
+  `stop_system`: a variable (`Stop-Process -Id $id`, `-InputObject $p`), a
+  file's text (`-Id (Get-Content app.pid)`), another cmdlet's listing
+  (`-Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess`, the PowerShell
+  of `kill $(lsof -ti:3000)`), the item of a `ForEach-Object` block that no
+  `Get-Process` feeds, and a word that is not a number (`0x10`, `-1`,
+  `'1234,5678'`, one too long for an id). An id of 0 is the caller's own
+  process group where PowerShell runs on Linux or macOS, and 1 is the first
+  process of the system, as for `kill`: both are `stop_system`
+  (`Stop-Process -Id 0`, `taskkill /PID 1`). `taskkill /PID` and the
+  `processid` of `wmic process where processid=1234 delete` are judged the
+  same way, and so are the ids a `Get-Process -Id` listing is given. A
+  listing counts as the argument only when it is all the argument is: in
+  `-Id ((Get-Process node).Id, $x)` and `-Id (Get-Process node).Id, $x` the
+  `$x` is judged as an id of its own.
+
+  A method called on a process stops it as `Stop-Process` does: `Kill`,
+  `Terminate` (the WMI one) and `CloseMainWindow`, which asks a window to
+  close. The call is judged as the `Stop-Process` of its object. The object is
+  read for sure in three shapes: a `Get-Process` listing (`(Get-Process
+  node).Kill()`, `Get-Process node | % { $_.Kill() }`, `Get-Process node |
+  % Kill`, also `ForEach-Object -MemberName Kill`), judged by its name as the
+  pipeline is; `[System.Diagnostics.Process]::GetProcessById(1234)` with the
+  id in digits, judged as an id; and the item of a block after a listing.
+  Every other object may be any process: `$p.Kill()`, `$procs | % { $_.Kill()
+  }`, `(Get-Process node).Parent.Kill()`, `(Get-Process node)[0].Kill()`,
+  `[System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }`,
+  `(Get-WmiObject Win32_Process).Terminate()`. `Invoke-CimMethod` and
+  `Invoke-WmiMethod` (also `icim`, `iwmi`) given `Terminate`, and `wmic
+  process … call terminate` and `… delete`, stop the processes an instance or
+  a `where` clause picks: `wmic process where name="node.exe" call terminate`
+  is the name `node.exe`, and `where processid=1234` is an id; no `where`, a
+  `like`, a second condition, or a value only known when it runs is
+  `stop_system` (in PowerShell a word of the clause that holds a `$` or a
+  backtick is such a value, `wmic process where name=$n call terminate`; in
+  cmd a `$` is a character of the name), and `process` is the alias of the
+  class `path win32_process` (or `cim_process`), so `wmic path win32_process
+  where name="explorer.exe" delete` is read as `wmic process where
+  name="explorer.exe" delete`. The CIM or WMI method is also `stop_system` (the instances come from a
+  listing the guard does not follow). The array's `.ForEach('Kill')` is a
+  line the grammar does not read, so it is `unreadable`.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
   `stop_system` however it is called, even when the line only defines it, and

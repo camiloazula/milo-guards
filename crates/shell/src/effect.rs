@@ -1157,7 +1157,7 @@ fn cmd(key: &str, unit: &Unit) -> Kind {
         "dir" | "type" | "findstr" | "echo" | "cd" | "chdir" => Kind::Reads,
         "del" | "erase" | "rd" | "rmdir" | "md" | "mkdir" | "copy" | "xcopy" | "move" | "ren"
         | "rename" | "robocopy" | "attrib" | "icacls" | "takeown" | "format" | "diskpart"
-        | "reg" | "taskkill" | "shutdown" => Kind::Changes,
+        | "reg" | "taskkill" | "tskill" | "shutdown" => Kind::Changes,
         "git" => git(&unit.args),
         key if TOOLS.contains(&key) => Kind::Changes,
         _ => Kind::Unknown,

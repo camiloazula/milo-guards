@@ -414,6 +414,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,
+        listed: Vec::new(),
         depth: unit.depth,
     }))
 }
@@ -994,6 +995,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,
+        listed: Vec::new(),
         depth: unit.depth,
     }
 }
