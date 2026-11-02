@@ -299,16 +299,21 @@ fn escape(escaped: char) -> Re {
 /// something the POSIX reading here would take for plain text: a group that
 /// starts with `(?` (a lookaround, an option, a comment, a named group, a
 /// conditional) or an escape that is a letter or digit other than `\d \D \w
-/// \W \s \S \b \B` (`\x6f`, `\157`, `\cO`, `o`, `\p{L}`, `\k<n>`). Such a
-/// pattern is not read at all.
+/// \W \s \S \b \B` (`\x6f`, `\157`, `\cO`, `o`, `\p{L}`, `\k<n>`), a backslash
+/// inside a bracket expression (.NET reads it as an escape, so `[\]o]` is the
+/// set `]` and `o`, where POSIX closes the set at the first `]`), or a
+/// character that is not ASCII (.NET ignores case by the current culture, so
+/// `İ` and `ſ` can stand for `i` and `s`). Such a pattern is not read at all.
 pub(super) fn dotnet_only(pattern: &str) -> bool {
-    if pattern.contains("(?") {
+    if pattern.contains("(?") || !pattern.is_ascii() {
         return true;
     }
-    let mut chars = pattern.chars();
+    let mut chars = pattern.chars().peekable();
+    let mut in_set = false;
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
+        match c {
+            '\\' if in_set => return true,
+            '\\' => match chars.next() {
                 Some(escaped)
                     if escaped.is_alphanumeric()
                         && !matches!(escaped, 'd' | 'D' | 'w' | 'W' | 's' | 'S' | 'b' | 'B') =>
@@ -316,7 +321,24 @@ pub(super) fn dotnet_only(pattern: &str) -> bool {
                     return true;
                 }
                 _ => {}
+            },
+            '[' if !in_set => {
+                in_set = true;
+                // A `]` first in the set, after a `^` or not, is a member.
+                chars.next_if_eq(&'^');
+                chars.next_if_eq(&']');
             }
+            // A POSIX class (`[:alpha:]`) inside a set is skipped whole.
+            '[' if chars.peek() == Some(&':') => {
+                while let Some(skipped) = chars.next() {
+                    if skipped == ':' && chars.peek() == Some(&']') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            ']' => in_set = false,
+            _ => {}
         }
     }
     false

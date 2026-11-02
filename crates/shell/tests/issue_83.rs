@@ -811,6 +811,117 @@ fn a_match_pattern_is_a_dotnet_expression_read_only_in_the_posix_subset() {
 }
 
 #[test]
+fn a_match_pattern_with_a_backslash_in_a_set_or_a_non_ascii_letter_is_not_read() {
+    // .NET reads a backslash inside `[...]` as an escape, so `[\]o]` is the
+    // set `]` and `o`; the POSIX reading closes the set at the first `]`.
+    // .NET also ignores case by the current culture, so `İ` (U+0130) and `ſ`
+    // (U+017F) can stand for `i` and `s`; the guard folds ASCII only.
+    check(
+        Shell::PowerShell,
+        &windows(),
+        &[
+            r"Get-Process | Where-Object { $_.Name -match 'node[0-9]+' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match '^[nN]ode$' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'no[d]e' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'no[^x]e\.exe' } | Stop-Process",
+            r"Get-Process | Where-Object { $_.Name -match 'node\[a' } | Stop-Process",
+        ],
+        &[
+            // A backslash in a bracket expression.
+            (
+                r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '^[\]a-z]+$' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'ls[\]a]ss' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[\]o]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[o\]]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[^\]x]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[n-p\]]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'node|expl[\]o]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object Name -match 'expl[\]o]rer' | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[]\]o]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match 'expl[^]\]x]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '[[:alpha:]\]o]rer' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | % Kill",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | ForEach-Object { $_.Kill() }",
+                Rule::StopSystem,
+            ),
+            (
+                r"Get-Process | Where { $_.Name -match '[\]a-z]' } | kill",
+                Rule::StopSystem,
+            ),
+            // A letter that is not ASCII.
+            (
+                "Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -match 'İnit' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -match 'İ' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -match 'lſass' } | Stop-Process",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | % Kill",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object { $_.Name -match 'İ' } | ForEach-Object { $_.Kill() }",
+                Rule::StopSystem,
+            ),
+            (
+                "Get-Process | Where-Object Name -match 'İnit' | Stop-Process",
+                Rule::StopSystem,
+            ),
+        ],
+    );
+}
+
+#[test]
 fn wmic_in_powershell_does_not_read_a_value_with_a_variable_in_it() {
     check(
         Shell::PowerShell,

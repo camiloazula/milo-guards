@@ -799,7 +799,11 @@ the same line. It is `stop_system` when the line stops more than a name:
   conditional) or an escape that is a letter or digit other than `\d \D \w \W
   \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
   read, and the filter is "picked by a filter only known when it runs"
-  (`-match '^(?!node)'` picks every process but `node`);
+  (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
+  a backslash inside a bracket expression (.NET reads `[\]o]` as the set `]`
+  and `o`, where POSIX closes the set at the first `]`) and one with a
+  character that is not ASCII (.NET ignores case by the current culture, so
+  `İ` can stand for `i` and `ſ` for `s`, and the guard folds ASCII only);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
   `-Property Name`) keep some of the same processes; a `Select-Object` given
   `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
