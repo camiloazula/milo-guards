@@ -8,7 +8,7 @@ use tree_sitter::{Node, TreeCursor};
 use crate::dotglob;
 use crate::launch;
 use crate::startup;
-use crate::unit::{self, Arg, Flag, OpensFrom, Split, Stage, Unit};
+use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -739,7 +739,12 @@ impl Walker<'_> {
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
-                self.children(node, stage, level);
+                if let Some(function) = &function {
+                    let here = function.here.clone();
+                    self.function_children(node, stage, level, &here);
+                } else {
+                    self.children(node, stage, level);
+                }
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
@@ -799,27 +804,80 @@ impl Walker<'_> {
     /// Note a function definition before its body is read: its name, where
     /// the line is, and how many `cd`s were read (kept out of `node`, which
     /// the walk recurses through).
-    fn function_start(&mut self, node: Node<'_>) -> Option<Box<(String, Option<Arg>, usize)>> {
+    fn function_start(&mut self, node: Node<'_>) -> Option<Box<Defining>> {
         let name = node
             .child_by_field_name("name")
             .filter(|_| node.kind() == "function_definition")?;
         let name = unit::text(&name, self.source);
         self.split.define_function(name);
         self.fork_bomb(node, name);
-        Some(Box::new((
-            name.to_string(),
-            self.split.line_dir(),
-            self.split.moved_so_far(),
-        )))
+        let opens = node
+            .child_by_field_name("redirect")
+            .is_some_and(|redirect| self.opens_by_folder(redirect));
+        Some(Box::new(self.split.defining(name, opens)))
     }
 
-    /// A call to a function whose body moved the line opens its redirects
-    /// before that, from where the definition began.
-    fn function_end(&mut self, start: Option<Box<(String, Option<Arg>, usize)>>) {
+    /// A call to a function whose body moves the line, or whose definition
+    /// is redirected, opens its redirects from the folder the call is made
+    /// in, which the walk works out from where the definition began.
+    fn function_end(&mut self, start: Option<Box<Defining>>) {
         if let Some(start) = start {
-            let (name, dir, moved) = *start;
-            if self.split.moved_so_far() != moved {
-                self.split.move_by_function(&name, dir);
+            self.split.defined(*start);
+        }
+    }
+
+    /// Whether `redirect` opens a file that a relative name picks by the
+    /// folder the shell is in.
+    fn opens_by_folder(&self, redirect: Node<'_>) -> bool {
+        let mut cursor = redirect.walk();
+        let nodes: Vec<Node<'_>> = if redirect.kind() == "heredoc_redirect" {
+            redirect.named_children(&mut cursor).collect()
+        } else {
+            vec![redirect]
+        };
+        nodes.into_iter().any(|node| {
+            let mut cursor = node.walk();
+            let operator = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            let Some((Arg::Known(target), _)) = self.file_redirect(node) else {
+                return false;
+            };
+            // `2>&1` and `>&-` name a descriptor, not a file.
+            let descriptor = target == "-" || target.chars().all(|c| c.is_ascii_digit());
+            !target.starts_with(['/', '~'])
+                && match operator {
+                    Some("<" | ">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
+                    Some(">&" | "&>&") => !descriptor,
+                    _ => false,
+                }
+        })
+    }
+
+    /// The parts of a function definition: the redirect on it is opened at
+    /// each call, from the folder the call is made in, which the walk takes
+    /// to be the one the line is in where it is defined (`from`).
+    fn function_children(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: &OpensFrom,
+    ) {
+        let mut cursor = node.walk();
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if !child.is_named() {
+                continue;
+            }
+            match child.kind() {
+                "file_redirect" => self.walk_redirect_from(*child, stage, level, from.clone()),
+                "heredoc_redirect" => self.walk_heredoc(*child, stage, level, Some(from.clone())),
+                _ => {
+                    let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                    self.walk_in(*child, stage, level + 1, background);
+                }
             }
         }
     }
@@ -1572,8 +1630,8 @@ impl Walker<'_> {
                 } else if chained {
                     self.split.starts_in(placed.clone())
                 } else {
-                    let moved = self.split.moved_so_far() != moved_before;
-                    self.split.opens_before(here.clone(), own.clone(), moved)
+                    self.split
+                        .opens_before(here.clone(), own.clone(), moved_before)
                 };
                 if child.kind() == "file_redirect" {
                     self.walk_redirect_from(*child, stage, level, opens);

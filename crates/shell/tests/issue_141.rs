@@ -256,6 +256,135 @@ fn a_write_on_a_group_a_loop_or_a_function_call_is_placed_from_where_it_starts()
 }
 
 #[test]
+fn a_redirect_on_a_call_made_from_another_folder_than_the_definition_is_not_certain() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Nothing has moved the line since the definition, and the
+            // function has not been called before.
+            "f() { cd sub; cat; }; f < ../x",
+            "cd a; f() { cd sub; }; f < ../x",
+            "f() { cd sub; }; { f; } < ../x",
+        ],
+        &[
+            // A `cd` between the definition and the call: the walk applied
+            // the body's `cd` once, at the definition, so neither the folder
+            // of the definition nor where the walk's line is can be the
+            // one. Each of these reads /home/me/.ssh/id_rsa from
+            // /home/me/work/repo.
+            (
+                "f() { cd sub; cat; }; cd x; f < ../../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            (
+                "f() { cd sub; cat; }; cd ..; f < ../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            (
+                "f() { cd sub; cat; }; cd x; { f; } < ../../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            // The function was called before, so the line is not where the
+            // definition was read.
+            (
+                "f() { cd sub; cat; }; f; f; f < ../../../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            ("f() { cd sub; }; f; f > ../x", Rule::Unknown),
+            // A function that calls one that moves the line moves it too.
+            (
+                "f() { cd sub; }; g() { f; }; g; g < ../../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            // The line was not surely where the definition was read.
+            (
+                "ls || cd a; f() { cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            (
+                "ls || cd a; f() { cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "if x; then cd a; fi; f() { cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+            (
+                "if x; then cd a; fi; f() { cd sub; cat; }; f < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "for i in 1 2; do f() { cd sub; cat; }; f < ../../.ssh/id_rsa; done",
+                Rule::Unknown,
+            ),
+            // A call in a loop starts where the last pass left the line.
+            (
+                "f() { cd sub; }; for i in 1 2; do f < ../../.ssh/id_rsa; done",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_redirect_on_a_function_definition_is_opened_at_each_call_from_where_it_was_defined() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A file the call reaches from the folder the line is in.
+            "f() { cd sub; ls; } > out.txt; f",
+            "f() { echo hi; } > out.txt; f",
+            "f() { echo hi; } > out.txt; f; f",
+            "f() { cat; } < ../x; f",
+            // Not named by a folder: the call may be made anywhere.
+            "f() { echo hi; } > /dev/null 2>&1; cd src; f",
+            "f() { echo hi; } > /home/me/work/repo/out.txt; cd src; f",
+            "f() { echo hi; } 2>&1; cd src; f",
+            // A function that is not called.
+            "f() { echo hi; } > out.txt; cd src",
+            "cd src; f() { echo hi; } > out.txt; f",
+        ],
+        &[
+            // The body's `cd` does not move where the redirect is opened.
+            (
+                "f() { cd sub; cat; } < ../../.ssh/id_rsa; f",
+                Rule::ReadSecret,
+            ),
+            (
+                "function f { cd sub; cat; } < ../../.ssh/id_rsa; f",
+                Rule::ReadSecret,
+            ),
+            (
+                "f() ( cd sub; cat ) < ../../.ssh/id_rsa; f",
+                Rule::ReadSecret,
+            ),
+            ("f() { cd sub; ls; } > ../x; f", Rule::Overwrite),
+            ("f() { cd sub; ls; } >> ../x; f", Rule::Overwrite),
+            ("f() { cd sub; ls; } 2> ../x; f", Rule::Overwrite),
+            ("f() { cd sub; } > ../x; f", Rule::Overwrite),
+            ("function f { cd sub; ls; } > ../x; f", Rule::Overwrite),
+            ("cd a; f() { cd sub; ls; } > ../../x; f", Rule::Overwrite),
+            // The folder the call is made in is not the one the line is in
+            // where the function is defined.
+            ("f() { echo hi; } > out.txt; cd src; f", Rule::Unknown),
+            ("f() { cat; } < ../.ssh/id_rsa; cd ..; f", Rule::Unknown),
+            ("f() { cd sub; } > out.txt; f; f", Rule::Unknown),
+            (
+                "f() { echo hi; } > out.txt; for d in a b; do f; cd $d; done",
+                Rule::Unknown,
+            ),
+            ("ls || cd a; f() { echo hi; } > out.txt; f", Rule::Unknown),
+            (
+                "f() { echo hi; } > out.txt; g() { cd sub; f; }; g",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
 fn the_paths_of_a_group_are_placed_from_where_it_starts() {
     let repo = "/home/me/work/repo";
     let paths = posix();

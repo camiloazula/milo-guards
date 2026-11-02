@@ -382,6 +382,53 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A function definition, noted where it begins (see [`Split::defining`]).
+#[derive(Debug)]
+pub(crate) struct Defining {
+    name: String,
+    /// Where the line is when the definition begins.
+    dir: Option<Arg>,
+    /// How many `cd`s the walk had read, and how many units it had.
+    moved: usize,
+    first: usize,
+    /// Whether where the line is then is not certain (see
+    /// [`Split::opens_here`]).
+    unsure: bool,
+    /// Whether the definition has a redirect of a file named by a folder.
+    opens: bool,
+    /// Where the definition's redirect opens its file from: at each call,
+    /// from the folder the call is made in.
+    pub(crate) here: OpensFrom,
+}
+
+/// A function that a call reaches from a folder the walk cannot always name:
+/// its body moves the line, which the walk applies once, where the function
+/// is defined; or its definition is redirected, which is opened at each call.
+#[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact about the function that the walk latches"
+)]
+struct Reaching {
+    name: String,
+    /// Where the line was when the definition began.
+    dir: Option<Arg>,
+    /// How many `cd`s the walk had read when the definition ended.
+    moved: usize,
+    /// Whether where the line was then is not certain.
+    unsure: bool,
+    /// Whether the body moves the line, or calls a function that does.
+    moves: bool,
+    /// Whether the definition has a redirect of a file named by a folder.
+    opens: bool,
+    /// How many units that may call it the walk has read.
+    calls: usize,
+    /// Whether it is called in a loop or a function body.
+    looped: bool,
+    /// Whether a finding has said so already.
+    flagged: bool,
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 #[allow(
@@ -540,9 +587,10 @@ pub(crate) struct Split {
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
-    /// The functions whose body moves the line, each with the folder the
-    /// line was in where it was defined.
-    moving_functions: Vec<(String, Option<Arg>)>,
+    /// The functions whose body moves the line, or whose definition is
+    /// redirected, which a call reaches from a folder the walk cannot always
+    /// name.
+    reaching: Vec<Reaching>,
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
@@ -783,6 +831,7 @@ impl Split {
         unit.dir.clone_from(&self.dir);
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
+        self.note_call(&unit);
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
@@ -1012,9 +1061,15 @@ impl Split {
 
     /// The folders the functions called in `units` that move the line were
     /// defined in: a call opens its redirects before the body runs, from
-    /// where the line is then, which the walk takes to be one of these.
-    fn function_starts(&mut self, units: Range<usize>) -> Vec<Option<Arg>> {
-        if self.moving_functions.is_empty() {
+    /// where the line is then, which the walk takes to be one of these. The
+    /// walk applies the body's `cd` once, where the function is defined, so
+    /// that is the folder the call starts in only when nothing has moved the
+    /// line since (`moved_at` is how many `cd`s had been read when the
+    /// redirected statement began), the function has not been called before,
+    /// and the line was surely there when it was defined. When it is not
+    /// certain, the call starts in a folder only known when it runs.
+    fn function_starts(&mut self, units: Range<usize>, moved_at: usize) -> Vec<Option<Arg>> {
+        if !self.reaching.iter().any(|function| function.moves) {
             return Vec::new();
         }
         // As for [`Self::starts_in`], a range is read once however many
@@ -1023,18 +1078,37 @@ impl Split {
         if let Some(starts) = self.called.get(&key) {
             return starts.clone();
         }
-        let starts: Vec<Option<Arg>> = self
-            .units
-            .get(units)
-            .into_iter()
-            .flatten()
-            .flat_map(|unit| {
-                self.moving_functions
-                    .iter()
-                    .filter(|(name, _)| calls(unit, name))
-                    .map(|(_, dir)| dir.clone())
-            })
-            .collect();
+        let mut starts = Vec::new();
+        let mut unsure = Vec::new();
+        for unit in self.units.get(units.clone()).into_iter().flatten() {
+            for function in self.reaching.iter().filter(|function| function.moves) {
+                if !calls(unit, &function.name) {
+                    continue;
+                }
+                starts.push(function.dir.clone());
+                let before = self
+                    .units
+                    .get(..units.start)
+                    .into_iter()
+                    .flatten()
+                    .any(|earlier| calls(earlier, &function.name));
+                if function.unsure || before || function.moved != moved_at || self.repeats > 0 {
+                    // The line may have been where it began when the
+                    // definition was read.
+                    if function.unsure {
+                        starts.push(None);
+                    }
+                    unsure.push(function.name.clone());
+                }
+            }
+        }
+        for name in unsure {
+            self.problem(
+                Rule::Unknown,
+                "redirects a call to a function that moves the line from a folder only known when it runs",
+                Some(&name),
+            );
+        }
         self.called.insert(key, starts.clone());
         starts
     }
@@ -1043,13 +1117,16 @@ impl Split {
     /// `units` open their files from, before any of it runs: `start` (see
     /// [`Self::opens_here`]) when the body moves the line, and the folder a
     /// function it calls was defined in when that moves the line.
+    /// `moved_before` is how many `cd`s had been read when the statement
+    /// began.
     pub(crate) fn opens_before(
         &mut self,
         start: OpensFrom,
         units: Range<usize>,
-        moved: bool,
+        moved_before: usize,
     ) -> OpensFrom {
-        let mut dirs = self.function_starts(units);
+        let moved = self.moved != moved_before;
+        let mut dirs = self.function_starts(units, moved_before);
         if dirs.is_empty() {
             return if moved { start } else { OpensFrom::Line };
         }
@@ -1088,7 +1165,7 @@ impl Split {
         let Some((index, unit)) =
             mover.and_then(|index| self.units.get(index).map(|unit| (index, unit)))
         else {
-            let starts = self.function_starts(key.0..key.1);
+            let starts = self.function_starts(key.0..key.1, self.moved);
             return if starts.is_empty() {
                 OpensFrom::Line
             } else {
@@ -1164,15 +1241,106 @@ impl Split {
         }
     }
 
-    /// Where the `cd`s read so far moved the line to.
-    pub(crate) fn line_dir(&self) -> Option<Arg> {
-        self.dir.clone()
+    /// Note that the definition of the function `name` begins; `opens` says
+    /// its redirect names a file by a folder (see [`Self::defined`]).
+    pub(crate) fn defining(&self, name: &str, opens: bool) -> Defining {
+        Defining {
+            name: name.to_string(),
+            dir: self.dir.clone(),
+            moved: self.moved,
+            first: self.units.len(),
+            unsure: self.maybe_moved || self.repeats > 0,
+            opens,
+            here: self.opens_here(),
+        }
     }
 
-    /// Note that the function `name`, defined with the line in `dir`, moves
-    /// the line when it is called.
-    pub(crate) fn move_by_function(&mut self, name: &str, dir: Option<Arg>) {
-        self.moving_functions.push((name.to_string(), dir));
+    /// Note that the definition which began at `defining` has been read. A
+    /// call to a function whose body moves the line, or that calls one that
+    /// does, or whose definition is redirected, starts in a folder the walk
+    /// has to work out from where the function was defined.
+    pub(crate) fn defined(&mut self, defining: Defining) {
+        let Defining {
+            name,
+            dir,
+            moved,
+            first,
+            unsure,
+            opens,
+            ..
+        } = defining;
+        let moves = self.moved != moved
+            || self.units.get(first..).into_iter().flatten().any(|unit| {
+                self.reaching
+                    .iter()
+                    .any(|function| function.moves && calls(unit, &function.name))
+            });
+        if moves || opens {
+            self.reaching.push(Reaching {
+                name,
+                dir,
+                moved: self.moved,
+                unsure,
+                moves,
+                opens,
+                calls: 0,
+                looped: false,
+                flagged: false,
+            });
+        }
+    }
+
+    /// Note a unit that may be a call to a function whose definition is
+    /// redirected: the redirect is opened at each call, from the folder the
+    /// call is made in, which is where the definition was read only when
+    /// nothing has moved the line since, no earlier call moved it, and the
+    /// line was surely there when it was defined.
+    fn note_call(&mut self, unit: &Unit) {
+        let (moved, repeats) = (self.moved, self.repeats);
+        let mut unsure = Vec::new();
+        for function in self
+            .reaching
+            .iter_mut()
+            .filter(|function| calls(unit, &function.name))
+        {
+            if function.opens && !function.flagged {
+                function.looped |= repeats > 0;
+                let again = function.moves && (function.calls > 0 || repeats > 0);
+                if function.unsure || function.moved != moved || again {
+                    function.flagged = true;
+                    unsure.push(function.name.clone());
+                }
+            }
+            function.calls += 1;
+        }
+        for name in unsure {
+            self.problem(
+                Rule::Unknown,
+                "calls a function whose redirect opens a file from a folder only known when it runs",
+                Some(&name),
+            );
+        }
+    }
+
+    /// After the whole line is read: a function whose redirected definition
+    /// is called in a loop or a function body is called again after any `cd`
+    /// that comes later in it.
+    fn settle_functions(&mut self) {
+        let moved = self.moved;
+        let mut unsure = Vec::new();
+        for function in &mut self.reaching {
+            if function.opens && function.looped && !function.flagged && function.moved != moved {
+                function.flagged = true;
+                unsure.push(function.name.clone());
+            }
+        }
+        for name in unsure {
+            self.problem(
+                Rule::Unknown,
+                "calls a function whose redirect opens a file from a folder only known when it runs",
+                Some(&name),
+            );
+        }
     }
 
     /// Add a redirect's write, made where the line has moved to, or from
@@ -1963,6 +2131,7 @@ pub(crate) fn split(
     }
     split.hide_bodies();
     split.settle_later();
+    split.settle_functions();
     split.settle_pwd();
     split
 }

@@ -433,10 +433,23 @@ where the line is when the statement ends too if the statement is in a loop or
 a function body, and where the line began too if an earlier `cd` may not have
 moved it. A redirect on a call to a function whose body moves the line
 (`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
-well; the folder the line is in when the function is called is not followed
-through the definition, so it is placed from the folder the function was
-defined in and from where the line is when the redirect is read, and a `cd`
-between the definition and the call is not counted. In PowerShell only the
+well, from the folder the line is in when the function is called. The walk
+applies the body's `cd` once, where the function is defined, so it cannot name
+that folder after the definition unless nothing has moved the line since: it
+places the redirect from the folder the function was defined in and from where
+the line is when the redirect is read when no `cd` was read between the
+definition and the call, the function was not called before, and the line was
+surely where the definition was read. Otherwise (`f() { cd sub; cat; }; cd x; f
+< ../../../.ssh/id_rsa`, `f; f < …`, `ls || cd a; f() { …; }; f < …`, a call in
+a loop, a call to a function that calls one that moves the line) the folder is
+only known when it runs, and the line is `unknown`. A redirect written on the
+definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
+call, before the body, so it is placed like a group's, from the folder the line
+is in where the function is defined, not from where the body ends; a name
+relative to the folder (not `/dev/null`, `~/x` or `2>&1`) that a call reaches
+after a `cd`, a second call of a function that moves the line, a call in a loop
+that later moves the line, or from a definition the line may not have reached,
+is `unknown` too. In PowerShell only the
 redirects of the command itself are placed so: a redirect inside a `$()` in its
 arguments is placed from where the line is there, and so is a redirect that
 follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
