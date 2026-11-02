@@ -151,6 +151,9 @@ fn a_redirect_in_a_word_is_never_reads_only() {
             "Write-Output x 1> ..\\x.txt",
             "git log --format=%h>..\\x.txt",
             "echo -a=b>..\\x.txt",
+            // The discard is changes whatever the redirect is.
+            "git reset 1> --hard",
+            "git reset x> --hard",
         ],
     );
     check_effect(
@@ -158,13 +161,6 @@ fn a_redirect_in_a_word_is_never_reads_only() {
         &windows(),
         Effect::Unknown,
         &["echo x 1>", "echo x a>b>c", "echo x 1> -a"],
-    );
-    // The discard is changes whatever the redirect is.
-    check_effect(
-        Shell::PowerShell,
-        &windows(),
-        Effect::Changes,
-        &["git reset 1> --hard", "git reset x> --hard"],
     );
 }
 
