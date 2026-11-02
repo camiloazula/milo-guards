@@ -1,5 +1,6 @@
 //! What the tables share: the directories commands run with, a check that
-//! names every row that came out wrong at once, the makers of the paths a
+//! names every row that came out wrong at once (and one that a row breaks one
+//! rule and not another), the makers of the paths a
 //! reads-only line lists, a clock for the timed tests, and (in [`inline`])
 //! the builders of inline-code rows.
 
@@ -186,6 +187,25 @@ fn stays(path: &str, paths: &Paths, windows: bool) -> bool {
         .map(|folder| folder.to_string_lossy().into_owned())
         .chain(temporary)
         .any(|folder| inside(path, &folder))
+}
+
+/// Every `lines` row breaks `has` and does not break `lacks`; the rows that
+/// do not are named together.
+pub fn only(shell: Shell, paths: &Paths, has: Rule, lacks: Rule, lines: &[&str]) {
+    let wrong: Vec<String> = lines
+        .iter()
+        .filter_map(|line| {
+            let found = rules(line, shell, paths);
+            (!found.contains(&has) || found.contains(&lacks))
+                .then(|| format!("expected {has:?} without {lacks:?}: {line}\n    got {found:?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} rows wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
 
 /// `effect` of each `lines` row is `expected`; the rows that are not are
