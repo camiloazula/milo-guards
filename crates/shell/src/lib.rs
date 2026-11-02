@@ -149,6 +149,10 @@ pub enum Rule {
     RunInput,
     /// Shuts the computer down, restarts it, or stops every process.
     StopSystem,
+    /// Stops a process the guard cannot name for sure: an id or a name only
+    /// known when it runs, a listing, a substitution or an object it does not
+    /// follow. It may be any process, the ones `stop_system` names included.
+    StopUnknown,
     /// Sends a key, a credential or the environment off the machine.
     SendSecret,
     /// Deletes data in a database.
@@ -164,7 +168,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order the design page lists them.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Delete,
         Self::WipeDisk,
         Self::Overwrite,
@@ -178,6 +182,7 @@ impl Rule {
         Self::RunDownloaded,
         Self::RunInput,
         Self::StopSystem,
+        Self::StopUnknown,
         Self::SendSecret,
         Self::DropData,
         Self::DestroyResources,
@@ -204,6 +209,7 @@ impl Rule {
             Self::RunDownloaded => "run_downloaded",
             Self::RunInput => "run_input",
             Self::StopSystem => "stop_system",
+            Self::StopUnknown => "stop_unknown",
             Self::SendSecret => "send_secret",
             Self::DropData => "drop_data",
             Self::DestroyResources => "destroy_resources",

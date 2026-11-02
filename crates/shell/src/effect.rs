@@ -263,6 +263,7 @@ fn rule_effect(rule: Rule) -> Kind {
         | Rule::Permissions
         | Rule::SystemSettings
         | Rule::StopSystem
+        | Rule::StopUnknown
         | Rule::DropData
         | Rule::DestroyResources => Kind::Changes,
         Rule::RunDownloaded | Rule::RunInput | Rule::Unknown | Rule::Unreadable => Kind::Unknown,

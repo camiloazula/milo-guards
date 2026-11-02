@@ -23,6 +23,7 @@ fn expected(rule: Rule) -> &'static str {
         Rule::RunDownloaded => "run_downloaded",
         Rule::RunInput => "run_input",
         Rule::StopSystem => "stop_system",
+        Rule::StopUnknown => "stop_unknown",
         Rule::SendSecret => "send_secret",
         Rule::DropData => "drop_data",
         Rule::DestroyResources => "destroy_resources",

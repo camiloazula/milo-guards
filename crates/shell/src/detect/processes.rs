@@ -222,7 +222,7 @@ impl Checker<'_> {
     fn stop_named(&mut self, name: &Arg, kind: Names) {
         let Some(text) = name.known() else {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes named only when it runs",
                 Some(name),
             );
@@ -286,7 +286,7 @@ impl Checker<'_> {
             let Some(text) = filter.known() else {
                 if !named {
                     self.add(
-                        Rule::StopSystem,
+                        Rule::StopUnknown,
                         "stops processes picked by a filter only known when it runs",
                         Some(filter),
                     );
@@ -384,7 +384,7 @@ impl Checker<'_> {
                 .is_some_and(|stage| stage.index > 0 && self.pipeline(stage.pipeline).is_some());
             if unit.unread_item && listed {
                 self.add(
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                     "stops processes only known when it runs",
                     None,
                 );
@@ -414,7 +414,7 @@ impl Checker<'_> {
                 // is not a process the guard can name.
                 if !judged {
                     self.add(
-                        Rule::StopSystem,
+                        Rule::StopUnknown,
                         "stops processes only known when it runs",
                         None,
                     );
@@ -427,7 +427,7 @@ impl Checker<'_> {
         };
         if !self.judge_before(stage) {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes only known when it runs",
                 None,
             );
@@ -458,7 +458,7 @@ impl Checker<'_> {
             .collect();
         let unread = |this: &mut Self| {
             this.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes picked by a filter only known when it runs",
                 clause.first().copied(),
             );
@@ -500,7 +500,7 @@ impl Checker<'_> {
                 .is_some_and(|text| text.eq_ignore_ascii_case("terminate"))
         }) {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes through a WMI method, picked only when it runs",
                 Some(method),
             );
@@ -545,7 +545,7 @@ impl Checker<'_> {
         };
         if !read {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes only known when it runs",
                 Some(id),
             );
@@ -597,7 +597,7 @@ impl Checker<'_> {
         // A stage that may hand on processes the listing did not.
         if between.iter().any(|stage| matches!(stage, Between::Other)) {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes only known when it runs",
                 None,
             );
@@ -646,7 +646,7 @@ impl Checker<'_> {
         }
         if !read {
             self.add(
-                Rule::StopSystem,
+                Rule::StopUnknown,
                 "stops processes picked by a filter only known when it runs",
                 None,
             );
