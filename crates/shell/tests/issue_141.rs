@@ -668,6 +668,104 @@ fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time() {
+    // The same name defined again and again, then called under a redirect:
+    // a later definition replaces the earlier, so a call does not read every
+    // definition of the name, and the name is not reported once for each.
+    let same = repeated(2_700, |_| "f(){ cd /;};".to_string());
+    let cases = repeated(1_350, |_| "f(){ cd /;};F(){ cd /;};".to_string());
+    let group = repeated(15_000, |_| "f;".to_string());
+    let calls = repeated(7_000, |_| "f<x;".to_string());
+    let lines = [
+        format!("{same}{{ {group}}} > y"),
+        format!("{cases}{{ {group}}} > y"),
+        format!("{same}{calls}"),
+        format!("{cases}{calls}"),
+    ];
+    for line in lines {
+        assert!(line.len() < 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(4),
+            "{} bytes took {took:?}",
+            line.len()
+        );
+        assert!(
+            !assessment.findings().is_empty(),
+            "a long line of calls is read as safe"
+        );
+        // One finding for each reason and name, not one for each call.
+        assert!(
+            assessment.findings().len() < 16,
+            "{} findings",
+            assessment.findings().len()
+        );
+    }
+}
+
+#[test]
+fn a_line_that_defines_many_functions_that_move_the_line_is_unknown_once() {
+    // Past the most functions that move the line a line may define (a name
+    // defined again counts again), the redirects on its calls are unknown,
+    // once, and not placed from where each function was defined.
+    let cap = |line: &str| {
+        classify(line, Shell::Posix, &posix())
+            .findings()
+            .iter()
+            .filter(|finding| {
+                finding.rule == Rule::Unknown
+                    && finding
+                        .reason
+                        .contains("defines more functions that move the line")
+            })
+            .count()
+    };
+    let distinct = repeated(300, |i| format!("f{i}() {{ cd /; }}; "));
+    let same = repeated(300, |_| "f() { cd /; }; ".to_string());
+    let cases = repeated(150, |_| "f() { cd /; }; F() { cd /; }; ".to_string());
+    for definitions in [distinct, same, cases] {
+        let one = format!("{definitions}f0 < x; f < y; f < z; F < w");
+        assert_eq!(cap(&one), 1, "{one}");
+        let group = format!("{definitions}{{ f; f; }} > x");
+        assert_eq!(cap(&group), 1, "{group}");
+    }
+    // Under it, the same names are worked out.
+    let few = repeated(20, |_| "f() { cd /; }; ".to_string());
+    assert_eq!(cap(&format!("{few}f < x; {{ f; }} > y")), 0);
+}
+
+#[test]
+fn a_name_that_is_defined_and_called_many_times_is_reported_once() {
+    // Each call of a function whose definition is redirected, and whose
+    // folder is only known when it runs, says so for the name once.
+    let reported = |line: &str, name: &str| {
+        classify(line, Shell::Posix, &posix())
+            .findings()
+            .iter()
+            .filter(|finding| {
+                finding.rule == Rule::Unknown && finding.target.as_deref() == Some(name)
+            })
+            .count()
+    };
+    let definitions = repeated(5, |_| "f() { cd sub | cat; }; ".to_string());
+    let calls = repeated(5, |_| "f; ".to_string());
+    let line = format!("{definitions}{calls}f > log.txt; f > log.txt");
+    assert_eq!(reported(&line, "f"), 1, "{line}");
+    let line = format!("{definitions}{{ {calls}}} > log.txt");
+    assert_eq!(reported(&line, "f"), 1, "{line}");
+}
+
+#[test]
 fn a_redirect_on_calls_to_many_functions_from_other_folders_is_unknown() {
     // Each function was defined in another folder, and the redirect is
     // placed from each of them: past a few dozen, the line is unknown and

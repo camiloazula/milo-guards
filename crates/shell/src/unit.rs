@@ -238,10 +238,14 @@ impl Unit {
 /// differs only in case counts too).
 #[derive(Debug, Default)]
 struct Names {
-    /// The functions by their name as written.
-    exact: HashMap<String, Vec<usize>>,
-    /// The functions by their name in lower case.
-    lower: HashMap<String, Vec<usize>>,
+    /// The function of each name as written. A later definition of the same
+    /// name replaces the earlier one, as it does in the shell, so that a
+    /// name defined many times is one entry and not as many as there are
+    /// definitions.
+    exact: HashMap<String, usize>,
+    /// The functions by their name in lower case, each by the name as
+    /// written (see `exact`).
+    lower: HashMap<String, HashMap<String, usize>>,
     /// The first unit whose program is the name as written, and the first
     /// whose key is the name.
     first_exact: HashMap<String, usize>,
@@ -249,13 +253,14 @@ struct Names {
 }
 
 impl Names {
-    /// Note that the function `name` is `at` in [`Split::reaching`].
+    /// Note that the function `name` is `at` in [`Split::reaching`], in
+    /// place of an earlier function of the same name.
     fn add(&mut self, name: &str, at: usize) {
-        self.exact.entry(name.to_string()).or_default().push(at);
+        self.exact.insert(name.to_string(), at);
         self.lower
             .entry(name.to_ascii_lowercase())
             .or_default()
-            .push(at);
+            .insert(name.to_string(), at);
     }
 
     /// Note that the unit `unit` is the one at `at`, and give the functions
@@ -290,8 +295,11 @@ impl Names {
         let mut found: Vec<usize> = program
             .and_then(|program| self.exact.get(program))
             .into_iter()
-            .chain(key.and_then(|key| self.lower.get(key)))
-            .flatten()
+            .chain(
+                key.and_then(|key| self.lower.get(key))
+                    .into_iter()
+                    .flat_map(HashMap::values),
+            )
             .copied()
             .collect();
         found.sort_unstable();
@@ -667,8 +675,11 @@ pub(crate) struct Split {
     reaching: Vec<Reaching>,
     /// Where each of them is by name, and where each name is first called.
     names: Names,
-    /// How many of them have a body that moves the line.
+    /// How many definitions of them have a body that moves the line.
     moving: usize,
+    /// Whether a finding has said that `moving` is past
+    /// [`MAX_MOVING_FUNCTIONS`].
+    moving_flagged: bool,
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
@@ -1156,6 +1167,20 @@ impl Split {
         if let Some(starts) = self.called.get(&key) {
             return starts.clone();
         }
+        if self.moving > MAX_MOVING_FUNCTIONS {
+            // However the names are kept, a line that defines this many is
+            // not worked out call by call.
+            if !self.moving_flagged {
+                self.moving_flagged = true;
+                self.problem(
+                    Rule::Unknown,
+                    "defines more functions that move the line than it reads, so the redirects on a call to one are placed from a folder only known when it runs",
+                    None,
+                );
+            }
+            self.called.insert(key, Vec::new());
+            return Vec::new();
+        }
         let mut starts = Vec::new();
         let mut unsure = Vec::new();
         let mut over = false;
@@ -1193,13 +1218,10 @@ impl Split {
                 None,
             );
         }
-        for name in unsure {
-            self.problem(
-                Rule::Unknown,
-                "redirects a call to a function that moves the line from a folder only known when it runs",
-                Some(&name),
-            );
-        }
+        self.problems_once(
+            unsure,
+            "redirects a call to a function that moves the line from a folder only known when it runs",
+        );
         self.called.insert(key, starts.clone());
         starts
     }
@@ -1438,12 +1460,21 @@ impl Split {
             }
             function.calls += 1;
         }
-        for name in unsure {
-            self.problem(
-                Rule::Unknown,
-                "calls a function whose redirect opens a file from a folder only known when it runs",
-                Some(&name),
-            );
+        self.problems_once(
+            unsure,
+            "calls a function whose redirect opens a file from a folder only known when it runs",
+        );
+    }
+
+    /// Say `reason` of each of `names`, once for each name however many
+    /// calls or definitions found it.
+    fn problems_once(&mut self, names: Vec<String>, reason: &str) {
+        let mut seen = HashSet::new();
+        for name in names {
+            if !seen.contains(&name) {
+                self.problem(Rule::Unknown, reason, Some(&name));
+                seen.insert(name);
+            }
         }
     }
 
@@ -1459,13 +1490,10 @@ impl Split {
                 unsure.push(function.name.clone());
             }
         }
-        for name in unsure {
-            self.problem(
-                Rule::Unknown,
-                "calls a function whose redirect opens a file from a folder only known when it runs",
-                Some(&name),
-            );
-        }
+        self.problems_once(
+            unsure,
+            "calls a function whose redirect opens a file from a folder only known when it runs",
+        );
     }
 
     /// Add a redirect's write, made where the line has moved to, or from
@@ -2167,6 +2195,12 @@ const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
 /// from, and a line that calls more than this many (each from another
 /// folder) under one redirect is unknown, not read from them all.
 const MAX_CALL_STARTS: usize = 32;
+
+/// The most functions that move the line a line may define (a name defined
+/// again counts again) before the redirects on its calls are unknown
+/// instead of placed from where each function was defined: a line that
+/// defines more is not one a person wrote to be read call by call.
+const MAX_MOVING_FUNCTIONS: usize = 256;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:
