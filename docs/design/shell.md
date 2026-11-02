@@ -740,9 +740,15 @@ the same line. It is `stop_system` when the line stops more than a name:
   `tskill explorer`, `tskill 0` and `tskill $n` are `stop_system`).
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
-  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `wininit`, `lsass`, `smss`, `services`, `svchost`, and the ones whose loss
+  ends the session or locks you out: `sshd`, the macOS `cfprefsd` and
+  `SystemUIServer`, the Linux `Xorg`, `gnome-shell`, `plasmashell`,
+  `kwin_x11`, `kwin_wayland`, `dbus-daemon` and `systemd-logind`, and the
+  Windows `dwm`; in any case and with
   `.exe` or a folder in front (`killall /sbin/init` picks the process by its
-  file, so the last part of the name is the name). `pkill` and `killall
+  file, so the last part of the name is the name). The list is short and plain:
+  a name the guard cannot read for sure is the next item, not a longer list.
+  `pkill` and `killall
   -r`/`-m` search their regular expression in the name, so it is compared two
   ways, per alternative: whole, without its anchors and brackets (`^init$`,
   `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
@@ -765,8 +771,9 @@ the same line. It is `stop_system` when the line stops more than a name:
   and all, in the usual command lines of the system processes
   (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
   the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
-  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
-  two with (its jobs for them run `loginwindow console` and `WindowServer
+  `/usr/lib/systemd/systemd`, and one path for each of the others, such as
+  `/usr/sbin/sshd` and `/usr/bin/gnome-shell`), with the arguments launchd
+  starts the first two with (its jobs for them run `loginwindow console` and `WindowServer
   -daemon`), and a match that is still going at the end of the line and can
   go on into a space counts, since any further arguments are not known:
   `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
@@ -775,7 +782,15 @@ the same line. It is `stop_system` when the line stops more than a name:
   vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
   not. `killall` without
   `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
-  matches one is the same (`Stop-Process -Name s*`).
+  matches one is the same (`Stop-Process -Name s*`). A service manager that
+  stops one is read through the same list: `systemctl stop` or `kill` of
+  `systemd-logind`, `sshd` (also `ssh`, which is its unit on Debian) or `dbus`,
+  `service … stop` of them, and `launchctl kill` or `stop` of a label that has
+  such a name in it (`system/com.apple.WindowServer`,
+  `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, and so is a `launchctl
+  kill` or `stop` whose target is only known when it runs; the target of any
+  other label (`gui/501/com.me.worker`) is the user's own.
+  `systemctl restart` is not a stop and stays safe.
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
   `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -912,7 +927,13 @@ the same line. It is `stop_system` when the line stops more than a name:
 `-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
 and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
 (`--pa 1` is `--parent 1`; a prefix that fits several is read as the
-riskier). Options written after the first name are read both ways, because
+riskier). psmisc `killall` also takes its long options with one dash
+(`killall -user me`, `-ignore-case`, `-context x`), where the BSD one reads
+the same word as letters (`-u ser`), so a `killall` line is read both ways and
+the riskier counts: `killall -user me` and `killall -context x` (no name, so
+every process the filter picks) and `killall -ignore-case -r WINDOW` are
+`stop_system`, `killall -user me node` is not. A signal (`-HUP`) is never a
+long option. Options written after the first name are read both ways, because
 the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
 and `pkill` stop reading options at the first name, so every later word is a
 name too, a `-u` and its user included. Every word after the first name is
@@ -1077,7 +1098,11 @@ of their strictest, so each family below was added on that test.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
-  `restart`, `enable` and `reload` are safe too. The exception is a unit
+  `restart`, `enable` and `reload` are safe too. One exception is a unit or
+  label that runs a process the system needs (`systemctl stop systemd-logind`,
+  `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
+  as stopping the process is (see
+  [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
   that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
   `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends

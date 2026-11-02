@@ -42,8 +42,9 @@ enum Names {
 }
 
 /// Processes the system needs, as they are named without `.exe`: stopping
-/// one logs you out, freezes the screen or takes the machine down.
-const SYSTEM_PROCESSES: [&str; 15] = [
+/// one logs you out, locks you out of a remote machine, freezes the screen
+/// or takes the machine down.
+const SYSTEM_PROCESSES: [&str; 26] = [
     "launchd",
     "systemd",
     "init",
@@ -59,6 +60,20 @@ const SYSTEM_PROCESSES: [&str; 15] = [
     "smss",
     "services",
     "svchost",
+    // The remote login, the macOS preferences and menu bar, the Linux
+    // display server, desktops and login session, and the Windows
+    // compositor.
+    "sshd",
+    "cfprefsd",
+    "SystemUIServer",
+    "Xorg",
+    "gnome-shell",
+    "plasmashell",
+    "kwin_x11",
+    "kwin_wayland",
+    "dbus-daemon",
+    "systemd-logind",
+    "dwm",
 ];
 
 /// The command lines the system processes usually start with: the program
@@ -68,13 +83,24 @@ const SYSTEM_PROCESSES: [&str; 15] = [
 /// end is read as more arguments, which are not known. `pkill -f` searches
 /// these as a whole, so a pattern that is part of one (`/System/Library`,
 /// `console`, `-daemon`) stops the process.
-const SYSTEM_COMMAND_LINES: [&str; 6] = [
+const SYSTEM_COMMAND_LINES: [&str; 17] = [
     "/sbin/launchd",
     "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console",
     "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon",
     "/sbin/init",
     "/lib/systemd/systemd",
     "/usr/lib/systemd/systemd",
+    "/usr/sbin/sshd",
+    "/usr/sbin/cfprefsd daemon",
+    "/System/Library/CoreServices/SystemUIServer.app/Contents/MacOS/SystemUIServer",
+    "/usr/lib/xorg/Xorg",
+    "/usr/bin/gnome-shell",
+    "/usr/bin/plasmashell",
+    "/usr/bin/kwin_x11",
+    "/usr/bin/kwin_wayland",
+    "/usr/bin/dbus-daemon",
+    "/lib/systemd/systemd-logind",
+    "/usr/lib/systemd/systemd-logind",
 ];
 
 /// `Stop-Process`'s own parameters.
@@ -102,7 +128,19 @@ const GET_PROCESS: [Param; 7] = [
 impl Checker<'_> {
     /// `killall`: names as written, or regular expressions with `-r`.
     pub(super) fn killall(&mut self, args: &[Arg]) {
-        let options = Options::read(args, "suyoZctn", &KILLALL_LONGS);
+        // psmisc's `killall` also takes its long options with one dash
+        // (`-user me`, `-ignore-case`, `-context x`), which the BSD one
+        // reads as letters, so a line is read both ways and the riskier
+        // counts.
+        let letters = Options::read(args, "suyoZctn", &KILLALL_LONGS, false);
+        let words = Options::read(args, "suyoZctn", &KILLALL_LONGS, true);
+        self.killall_options(&letters);
+        if words != letters {
+            self.killall_options(&words);
+        }
+    }
+
+    fn killall_options(&mut self, options: &Options<'_>) {
         let kind = if options.has("r") || options.has("m") || options.has("regexp") {
             Names::Regex {
                 exact: false,
@@ -132,7 +170,7 @@ impl Checker<'_> {
 
     /// `pkill`: regular expressions, searched for in each name.
     pub(super) fn pkill(&mut self, args: &[Arg]) {
-        let options = Options::read(args, "uUGgPstFjMNqrO", &PKILL_LONGS);
+        let options = Options::read(args, "uUGgPstFjMNqrO", &PKILL_LONGS, false);
         if options.has("v") || options.has("inverse") {
             // Everything but what matches: what a pattern or a selection
             // (`-P 1234`, `-F pids.txt`, `-t tty`) names is the only thing
@@ -759,6 +797,20 @@ const PKILL_LONGS: [Long; 23] = [
     Long::flag("ignore-ancestors"),
 ];
 
+/// The long options `name` is, written in full or as a prefix that fits.
+/// A prefix that fits several is an error to the program; it is read as all
+/// of them, so that the riskier reading counts.
+fn matching<'l>(name: &str, longs: &'l [Long]) -> Vec<&'l Long> {
+    match longs.iter().find(|full| full.name == name) {
+        Some(full) => vec![full],
+        None if name.is_empty() => Vec::new(),
+        None => longs
+            .iter()
+            .filter(|full| full.name.starts_with(name))
+            .collect(),
+    }
+}
+
 /// A long option, and whether it takes a value.
 struct Long {
     name: &'static str,
@@ -778,6 +830,7 @@ impl Long {
 /// The options and operands of `killall` or `pkill`, read as they read
 /// them: bundled letters, `-u me` or `-ume`, `--user me` or `--user=me`,
 /// a signal (`-9`, `-HUP`), and long options that may be abbreviated.
+#[derive(PartialEq)]
 struct Options<'a> {
     operands: Vec<&'a Arg>,
     /// Every option given, by its short letter or full long name, and the
@@ -786,7 +839,9 @@ struct Options<'a> {
 }
 
 impl<'a> Options<'a> {
-    fn read(args: &'a [Arg], short_values: &str, longs: &[Long]) -> Self {
+    /// With `long_only`, a word with one dash that fits a long option is
+    /// that option (`killall -user me`), and letters otherwise.
+    fn read(args: &'a [Arg], short_values: &str, longs: &[Long], long_only: bool) -> Self {
         let mut options = Self {
             operands: Vec::new(),
             given: Vec::new(),
@@ -801,43 +856,51 @@ impl<'a> Options<'a> {
             if text == "--" {
                 reading = false;
             } else if let Some(long) = text.strip_prefix("--") {
-                let name = long.split_once('=').map_or(long, |(name, _)| name);
-                // `getopt_long` takes the name as written, or else any
-                // prefix that fits a long option. A prefix that fits several
-                // is an error to the program; it is read as all of them, so
-                // that the riskier reading counts.
-                let exact = longs.iter().find(|full| full.name == name);
-                let found: Vec<&Long> = match exact {
-                    Some(full) => vec![full],
-                    None if name.is_empty() => Vec::new(),
-                    None => longs
-                        .iter()
-                        .filter(|full| full.name.starts_with(name))
-                        .collect(),
-                };
-                if found.is_empty() {
-                    options.given.push((name.to_string(), None));
-                } else {
-                    let value = if found.iter().any(|full| full.value) {
-                        match long.split_once('=') {
-                            Some((_, value)) => Some(Arg::Known(value.to_string())),
-                            None => iter.next().cloned(),
-                        }
-                    } else {
-                        None
-                    };
-                    for full in found {
-                        let value = value.clone().filter(|_| full.value);
-                        options.given.push((full.name.to_string(), value));
-                    }
-                }
+                options.long(long, longs, &mut iter);
             } else if text.len() > 1 && text.starts_with('-') {
-                options.bundle(&text[1..], short_values, &mut iter);
+                // With one dash, the word is a long option when it fits one
+                // (and is not a signal) and letters otherwise, as
+                // `getopt_long_only` reads it.
+                let word = &text[1..];
+                let fits = word.chars().count() > 1
+                    && !is_signal(word)
+                    && !matching(word.split_once('=').map_or(word, |(name, _)| name), longs)
+                        .is_empty();
+                if long_only && fits {
+                    options.long(word, longs, &mut iter);
+                } else {
+                    options.bundle(word, short_values, &mut iter);
+                }
             } else {
                 options.operand(arg, iter.as_slice());
             }
         }
         options
+    }
+
+    /// A long option, written after `--` (or after one `-`, when it fits
+    /// one). `getopt_long` takes the name as written, or else any prefix
+    /// that fits a long option; a prefix that fits several is read as all of
+    /// them (see [`matching`]).
+    fn long(&mut self, long: &str, longs: &[Long], iter: &mut std::slice::Iter<'a, Arg>) {
+        let name = long.split_once('=').map_or(long, |(name, _)| name);
+        let found = matching(name, longs);
+        if found.is_empty() {
+            self.given.push((name.to_string(), None));
+            return;
+        }
+        let value = if found.iter().any(|full| full.value) {
+            match long.split_once('=') {
+                Some((_, value)) => Some(Arg::Known(value.to_string())),
+                None => iter.next().cloned(),
+            }
+        } else {
+            None
+        };
+        for full in found {
+            let value = value.clone().filter(|_| full.value);
+            self.given.push((full.name.to_string(), value));
+        }
     }
 
     /// The first operand, and every word after it: macOS and BSD `killall`
@@ -967,6 +1030,25 @@ fn picks_without_pattern(options: &Options<'_>) -> bool {
 fn process_name(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// Whether a systemd unit (`systemd-logind`, `systemd-logind.service`) runs
+/// a process the system needs. The units `ssh` and `dbus` are named apart
+/// from their programs (`sshd`, `dbus-daemon`) on most distributions.
+pub(super) fn is_system_unit(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let unit = lower.strip_suffix(".service").unwrap_or(&lower);
+    matches!(unit, "ssh" | "dbus") || names_system_process(unit, Names::Literal)
+}
+
+/// Whether a launchd label or target (`com.apple.WindowServer`,
+/// `system/com.apple.WindowServer`, `gui/501/com.apple.cfprefsd.xpc.agent`)
+/// runs a process the system needs: its name is a part of the label.
+pub(super) fn is_system_label(target: &str) -> bool {
+    let label = target.rsplit('/').next().unwrap_or(target);
+    label
+        .split('.')
+        .any(|part| names_system_process(part, Names::Literal))
 }
 
 /// Whether `text` names a process the system needs, or (for a wildcard
