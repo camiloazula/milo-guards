@@ -130,6 +130,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
+    // A file a redirect wrote from a folder the line may not end up in, which
+    // a later run may be from.
+    for write in &split.later_writes {
+        checker.written(write.dir.as_ref(), &write.target, write.shell);
+    }
     checker.flow = checker.trace();
     // What each step adds to `found` is what that step found: the findings
     // from `split.findings` come first, and are the line's own.
