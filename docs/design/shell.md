@@ -37,8 +37,9 @@ A line is judged in three steps.
 The modules follow the steps. `posix`, `powershell` and `cmd` split a line with
 their grammar. `launch` takes wrappers off and reads scripts handed to shells.
 `unit` holds the unit and the helpers that read its arguments. `detect` holds
-the rules. `path` is the shell's side of the path model. `inline` reads the code
-an interpreter is given inline (see [Inline code](#inline-code)).
+the rules. `path` is the shell's side of the path model. `inline` finds the code
+an interpreter is given inline and turns what `milo-guards-code` reads in it into
+units (see [Inline code](#inline-code) and [Code](code.md)).
 
 ## Splitting
 
@@ -149,7 +150,8 @@ these runner parts of `bun`, `deno` and `dx` are read as in the other shells
 (`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
 `dx rimraf C:\`); what they read of an interpreter (a script from the input
 that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
-there. `deno -v` and `deno --help=full` only
+there, also when the code cannot be told (a loader in front of `-e`, as in
+`bun --import r.js -e "$X"`). `deno -v` and `deno --help=full` only
 print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
@@ -1264,8 +1266,17 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 ## Inline code
 
 Python and JavaScript given inline are read with their own tree-sitter
-grammars (`inline`, apart from the shell splitters) and judged with the same
-rules and the same path model as the shell commands that do the same. Two
+grammars, by the `milo-guards-code` crate ([Code](code.md)), and judged with the
+same rules and the same path model as the shell commands that do the same. The
+shell guard finds the code on a line (`inline`, apart from the shell
+splitters) and turns what the reader found into its own units and findings
+(`inline/apply.rs`); it depends on the crate behind its `inline` feature, on by
+default. With the feature off the line is still found, but none of the code is
+read and no grammar is built: every inline line is `unknown` with the reason
+`runs code the guard does not read fully`, whatever the code is (a delete in it
+is not said), and a module an option loads (`--import`, `-r`, `NODE_OPTIONS`,
+`PYTHONPATH`) is never told from the workspace's own, so it is `unknown` too.
+`just no-inline` builds that and holds it (`tests/inline_off.rs`). Two
 questions are answered apart:
 
 - **What the code is found to do.** The reader finds the calls that delete,
@@ -1281,7 +1292,7 @@ questions are answered apart:
   the start of the code as the target. It is said once for the line, and not
   when the line already has a finding, which already asks.
 
-**Read whole.** A line with inline code is safe only when all six hold:
+**Read whole.** A line with inline code is safe only when all four hold:
 
 1. **The code is written whole on the line**, as the one word after its flag:
    `python -c CODE` (`python3`, `python3.12`, `python2`), `node -e CODE`
@@ -1316,62 +1327,28 @@ questions are answered apart:
    where it is written, and a delete in it is still found.
    An option of `bun run` that carries code (`bun -F x run -e CODE`) is
    an option and a subcommand around the code, not read whole.
-3. **It parses and holds a statement.** A parse error (`python3 -c 'if 1:'`),
-   code that is empty or only comments, and an empty block (`node -e '{}'`,
-   `if (1) {}`) are not read whole.
-4. **It runs straight through.** Its statements are expression statements,
-   assignments to a plain name (`x = 1`, `a, b = 1, 2`, `x += 1`, `const`,
-   `let`, `var`) and `if` with `else`. A `def`, `class`, `lambda`, arrow
-   function, `function`, loop, comprehension, generator expression, `try`,
-   `with`, `switch`, `match`, `async`, `await`, `yield`, decorator, `new`,
-   spread or `*args` is not.
-5. **Every call is on the list**, and is a call: a name on the list used as a
-   value (`x = print; x(1)`, `map(open, paths)`) is not read.
-   - Python: `print`, `len`, `str`, `int`, `float`, `bool`, `repr`, `abs`,
-     `min`, `max`, `sum`, `round`, `sorted`, `reversed`, `list`, `tuple`,
-     `dict`, `set`, `frozenset`, `range`, `enumerate`, `zip`, `any`, `all`,
-     `ord`, `chr`, `hex`, `bin`, `oct`, `divmod`, `pow`, `bytes`, `bytearray`,
-     `format`, `ascii`, `iter`, `next`, `complex`, `slice`; `open`, which the
-     reader judges by its path and mode; `json.dumps`, `loads`, `load`, `dump`;
-     `re.compile`, `match`, `search`, `fullmatch`, `sub`, `subn`, `split`,
-     `findall`, `finditer`, `escape`; `math.*`; and a method of a value the
-     code made (a string, a list, a file from `open`, `sys.stdin`).
-   - JavaScript: `parseInt`, `parseFloat`, `String`, `Number`, `Boolean`,
-     `isNaN`, `isFinite`; `console.log`, `error`, `warn`, `info`, `debug`;
-     `JSON.stringify` and `parse`; `Math.abs`, `ceil`, `floor`, `round`, `max`,
-     `min`, `pow`, `sqrt`, `trunc`, `sign`, `cbrt`, `hypot`, `log`, `log2`,
-     `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `random`, `PI`, `E`;
-     and the methods `toString`, `toUpperCase`, `toLowerCase`, `trim`,
-     `trimStart`, `trimEnd`, `split`, `join`, `slice`, `substring`, `indexOf`,
-     `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `replace`,
-     `replaceAll`, `repeat`, `padStart`, `padEnd`, `concat`, `charAt`,
-     `charCodeAt`, `push`, `pop`, `shift`, `unshift`, `reverse`, `sort`, `at`,
-     `toFixed`, `test` and `match`; the only other member is `length`.
-   - Anything else is not: `os.getcwd`, `os.listdir`, `sys.exit`,
-     `sys.stdout.write`, `time.sleep`, `input`, `dir`, `id`, `hash`, `exit`,
-     `getattr`, `glob.*`, `platform.*`, `base64.*`; `process.*`, `setTimeout`,
-     `new Date()`, `Date.now()`, `Buffer.from`, `Object.*`, `require("fs").*`,
-     `Bun.*`, `Deno.*`; a call of a name nothing bound, of a name the code
-     set, of a call (`f()()`), or with a spread (`print(*args)`).
-6. **No import, run-time code or environment write is outside the list.**
-   Python imports only `json`, `math`, `re` and `sys`, plainly: no alias
-   (`import json as j`), no `from … import`; the only members of `sys` are
-   `stdin` and `argv`. JavaScript has no `import`, `require` or `import()`.
-   No `eval`, `exec`, `compile`, `__import__` or `Function`; no write to
-   `os.environ`, `process.env` or a member of a module (`console.log = 1`); no
-   name the code sets is a name above, or starts with an underscore; no member
-   starts with one (`().__class__`); and every name is plain ASCII letters,
-   digits, `_` and `$`, as Python reads a name in its NFKC form (a full-width
-   `＿＿class＿＿` is `__class__`) and JavaScript reads `console` as
-   `console`, so neither is the name the checks see. A name the code did not
-   set is not read whole either, so `os.getcwd()` with no `import os` is not,
-   and a module on the list is a name only once the code imports it:
-   `print(math.pi)` and `json.dumps(1)` with no import are not read whole
-   (they only fail, but the guard does not say so). Python puts the folder
+3. **The reader understands it** (`milo_guards_code::understand`, the strict
+   subset in [Code](code.md#the-strict-subset)). It parses and holds a
+   statement (a parse error, `python3 -c 'if 1:'`, code that is empty or only
+   comments, and an empty block, `node -e '{}'`, are not read whole); it runs
+   straight through, with only expression statements, assignments to a plain
+   name and `if` with `else` (no `def`, `class`, lambda, arrow function, loop,
+   comprehension, `try`, `with`, `switch`, `match`, `async`, `await`,
+   decorator, `new`, spread); every call is a call on a short list that only
+   computes (`print`, `len`, `json.dumps`, `console.log`, `Math.max`, the
+   methods of a string or a list) or `open`, which the reader judges by its
+   path and mode (a name on the list used as a value, `x = print; x(1)`, is
+   not); and no import, run-time code or environment write is outside the
+   list (Python imports only `json`, `math`, `re` and `sys`, plainly;
+   JavaScript has no `import` or `require`; no `eval`, `exec`, `compile` or
+   `Function`; no name that starts with an underscore or is not plain ASCII; a
+   name the code did not set is not read whole). `os.getcwd()`, `sys.exit()`,
+   `input()`, `process.env` and `new Date()` are not on the list.
+4. **The folder Python runs in is the workspace's own.** Python puts the folder
    the code runs in ahead of the standard library, so `import json` loads
    `./json.py` from it, and so does code with no `import` (an uncaught
-   exception imports `traceback`, the `idna` codec imports `stringprep`).
-   Python code is read whole only when that
+   exception imports `traceback`, the `idna` codec imports `stringprep`: this
+   is `Understood { imports: true }`). Python code is read whole only when that
    folder is inside a workspace folder, the workspace's own code: the working
    directory, or where the line has moved to by `cd`. After a `cd` out of the
    workspace (`cd /tmp/x && python3 -c 'import json'`, `cd ..`), to a place
@@ -1386,7 +1363,7 @@ questions are answered apart:
 `python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import os;
 print(os.getcwd())'`, `node -p 'process.env'`, `python3 -c 'def f(): return 1'`,
 `PYTHONPATH=. python3 -c 'print(1)'` and `python3 - <<'PY' … PY` with nothing
-found in it are `unknown`. Code outside the six is still read, and a delete,
+found in it are `unknown`. Code outside the four is still read, and a delete,
 an overwrite or a key it is found to touch is still said: `python3 - <<'PY'`
 with `shutil.rmtree('/home/me')` in it is `delete`. What it is not is safe
 because nothing was found.
@@ -1398,20 +1375,13 @@ makes is a unit of its own that changes things (`Changes`). `python3 -c
 `tests/inline.rs` goes through `effect` with the shared `check`, which holds
 this to `classify`.
 
-**What is found.** Whatever the code comes from, the reader finds these, with
+**What is found.** Whatever the code comes from, the reader finds the calls
+that delete, write, read, move, link, change permissions, run and kill, with
 calls found by their name once what `import`, `require` and destructuring bound
 is put back (`from os import remove as rm`, `const { rm } = require('fs')`,
-`o = os`, `getattr(os, 'remove')`):
-
-| Does | Python | JavaScript (Node, Bun, Deno) |
-| --- | --- | --- |
-| Deletes | `os.remove`, `unlink`, `rmdir`, `removedirs`, `shutil.rmtree`, `Path.unlink`, `Path.rmdir` | `fs.rmSync`, `rm`, `unlinkSync`, `unlink`, `rmdirSync`, `fs.promises.rm`, `Deno.remove`, `Bun.file(…).delete()`, `rimraf` |
-| Writes | `open(path, mode)` with a mode that writes (`w`, `a`, `x`, `+`, or one only known when it runs), `Path.write_text`, `write_bytes`, `touch`, `mkdir`, `os.makedirs`, `shutil.copy*` (the destination), `extractall`, `urlretrieve` | `fs.writeFileSync`, `appendFileSync`, `createWriteStream`, `mkdirSync`, `openSync` with writing flags, `copyFileSync` (the destination), their async and `promises` forms, `Deno.writeTextFile`, `Bun.write` |
-| Moves | `shutil.move`, `os.rename`, `os.replace`, `Path.rename` | `fs.renameSync`, `fs.promises.rename`, `Deno.rename` |
-| Links, permissions | `os.symlink`, `os.link`, `os.chmod`, `os.chown`, `shutil.copymode` | `fs.symlinkSync`, `chmodSync`, `chownSync`, `Deno.chmod` |
-| Runs | `os.system`, `os.popen`, `subprocess.run`/`call`/`Popen`/`check_call`/`check_output` | `child_process.exec`/`execSync`/`spawn`/`spawnSync`/`execFile`, `Deno.Command`, `Bun.spawn`, `execa`, `cross-spawn` |
-| Kills | `os.kill`, `os.killpg` | `process.kill`, `Deno.kill` |
-| Reads | `open(path)` with a mode that reads, `Path.read_text`, `read_bytes`, the source of `shutil.copy*`, `tarfile`, `fileinput`, `linecache`, `ConfigParser.read`, `netrc` | `fs.readFileSync`, `readFile`, `createReadStream`, `openSync` with reading flags, `Deno.readTextFile`, `Bun.file` |
+`o = os`, `getattr(os, 'remove')`): the table of calls is in
+[Code](code.md#what-the-reader-finds). The shell guard turns each act into
+the unit that does the same:
 
 A literal command string is split in the shell grammar and judged like a
 nested `bash -c`; a literal argument list (`subprocess.run(['rm', '-rf',
@@ -2914,7 +2884,11 @@ lines and a list of risky lines with the rule each must break. A new rule
 comes with rows of both kinds.
 
 `tests/inline.rs` is the same for inline Python and JavaScript, with a table for
-what is safe, what each rule finds and what stays `unknown`.
+what is safe, what each rule finds and what stays `unknown`. They judge lines
+through the reader; the reader's own tables (the acts a piece of code gives,
+what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
+`tests/inline_off.rs` holds every inline line to `unknown` with the feature off
+and is only compiled there (`just no-inline`).
 
 `tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
 line of `posix.rs` and `windows.rs` also goes through `effect`: the shared

@@ -556,15 +556,32 @@ fn folder_of(path: &str) -> Option<&str> {
         .find(|part| !part.is_empty() && *part != ".")
 }
 
+/// The crates that read code of another language for a guard (`code`), not
+/// guards: they say what the code does, never whether that is risky. A guard
+/// may build on one, as it does on its other parsers; a reader builds on the
+/// core and its own parsers like a guard does, and on no guard and no other
+/// reader.
+const READERS: [&str; 1] = ["code"];
+
+/// Whether `package` names a reader's crate (`milo-guards-code`).
+fn is_reader_package(package: &str) -> bool {
+    package
+        .strip_prefix("milo-guards-")
+        .is_some_and(|folder| READERS.contains(&folder))
+}
+
 /// Whether `package` names a guard's own crate or the front door.
 fn is_guard_package(package: &str) -> bool {
-    (package.starts_with("milo-guards-") && package != "milo-guards-core")
+    (package.starts_with("milo-guards-")
+        && package != "milo-guards-core"
+        && !is_reader_package(package))
         || package == "milo-local-guards"
 }
 
-/// Why `dep`, declared by crate `owner`, is another guard or the front door:
-/// by its key, by the crate it renames, or by the folder it points to.
-/// `workspace` holds the root manifest's `[workspace.dependencies]`.
+/// Why `dep`, declared by crate `owner`, is another guard or the front door
+/// (or, for a reader, another reader): by its key, by the crate it renames,
+/// or by the folder it points to. `workspace` holds the root manifest's
+/// `[workspace.dependencies]`.
 fn other_guard(
     dep: &Dependency,
     owner: &str,
@@ -575,14 +592,21 @@ fn other_guard(
     if dep.workspace {
         declared.extend(workspace.get(dep.name.as_str()));
     }
+    // A guard may build on a reader; a reader may build on none.
+    let owner_reads = READERS.contains(&owner);
     for dep in declared {
         for name in std::iter::once(dep.name.as_str()).chain(dep.package.as_deref()) {
-            if is_guard_package(name) {
+            if is_guard_package(name) || (owner_reads && is_reader_package(name)) {
                 return Some(format!("`{name}`"));
             }
         }
         if let Some(folder) = dep.path.as_deref().and_then(folder_of) {
-            if folder != owner && folder != "core" && folders.iter().any(|name| name == folder) {
+            let reader = READERS.contains(&folder) && !owner_reads;
+            if folder != owner
+                && folder != "core"
+                && !reader
+                && folders.iter().any(|name| name == folder)
+            {
                 return Some(format!(
                     "the crate in `crates/{folder}` (path `{}`)",
                     dep.path.as_deref().unwrap_or_default()
@@ -621,8 +645,9 @@ fn wrong_dependencies(
                 let other = other_guard(dep, name, folders, &workspace)?;
                 Some(format!(
                     "crates/{name} depends on `{}`, which is {other}: a guard depends on \
-                     `milo-guards-core` only, and the front door depends on the guards, \
-                     never the other way",
+                     `milo-guards-core`, its own parsers and a code reader only (a reader \
+                     on the core and its parsers), and the front door depends on the \
+                     guards, never the other way",
                     dep.name
                 ))
             })
@@ -889,4 +914,53 @@ milo-guards-core = { workspace = true, features = [\"testing\"] }
     let core = wrong_dependencies("core", "[dependencies]\nserde = \"1\"\n", root, &folders);
     assert_eq!(core.len(), 1, "{core:?}");
     assert!(wrong_dependencies("core", "[package]\nname = \"x\"\n", root, &folders).is_empty());
+}
+
+#[test]
+fn a_guard_may_build_on_a_code_reader_and_a_reader_on_no_guard() {
+    let folders: Vec<String> = ["core", "guards", "shell", "code", "files"]
+        .map(String::from)
+        .to_vec();
+    let root = "\
+[workspace.dependencies]
+milo-guards-core = { path = \"crates/core\" }
+milo-guards-code = { path = \"crates/code\" }
+milo-guards-shell = { path = \"crates/shell\" }
+sneaky = { package = \"milo-guards-code\", path = \"crates/code\" }
+";
+    // A guard builds on a reader, in every form the manifest can name it.
+    for dep in [
+        "milo-guards-code = { workspace = true, optional = true }",
+        "milo-guards-code.workspace = true",
+        "renamed = { package = \"milo-guards-code\", version = \"1\" }",
+        "renamed = { path = \"../code\" }",
+        "sneaky.workspace = true",
+    ] {
+        let manifest = format!("[dependencies]\n{dep}\n");
+        assert!(
+            wrong_dependencies("files", &manifest, root, &folders).is_empty(),
+            "{dep}"
+        );
+    }
+    // A reader builds on the core and its parsers, and on no guard, no other
+    // reader and not the front door.
+    let parsers = "[dependencies]\nmilo-guards-core.workspace = true\ntree-sitter = \"0.26\"\n";
+    assert!(wrong_dependencies("code", parsers, root, &folders).is_empty());
+    for dep in [
+        "milo-guards-shell.workspace = true",
+        "milo-local-guards = \"1\"",
+        "renamed = { path = \"../shell\" }",
+        "renamed = { package = \"milo-guards-shell\", version = \"1\" }",
+        "renamed = { path = \"../files\" }",
+    ] {
+        let manifest = format!("[dependencies]\n{dep}\n");
+        assert_eq!(
+            wrong_dependencies("code", &manifest, root, &folders).len(),
+            1,
+            "{dep}"
+        );
+    }
+    assert!(is_reader_package("milo-guards-code"));
+    assert!(!is_reader_package("milo-guards-shell"));
+    assert!(!is_guard_package("milo-guards-code"));
 }

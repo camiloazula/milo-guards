@@ -12,16 +12,23 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["inline"]
+# Reads the Python and JavaScript a line gives an interpreter inline
+# (`python3 -c`, `node -e`, a here-document), with `milo-guards-code`. Off,
+# the guard still finds such a line but reads none of the code: every inline
+# line is `unknown`, and neither grammar is built.
+inline = ["dep:milo-guards-code"]
+
 [dependencies]
 milo-guards-core.workspace = true
+milo-guards-code = { workspace = true, optional = true }
 # The grammars and the runtime they share: the workspace manifest holds the
 # runtime at 0.26 and says why.
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 tree-sitter-powershell.workspace = true
 tree-sitter-batch.workspace = true
-tree-sitter-python.workspace = true
-tree-sitter-javascript.workspace = true
 
 [dev-dependencies]
 milo-guards-core = { workspace = true, features = ["testing"] }

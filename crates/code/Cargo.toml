@@ -1,0 +1,20 @@
+[package]
+publish = false
+name = "milo-guards-code"
+description = "Reads Python and JavaScript code and says what it is certain to do to files and what it runs, or that it does not understand it."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The grammars and the runtime they share: the workspace manifest holds the
+# runtime at 0.26 and says why. They are this crate's "own parsers".
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-javascript.workspace = true

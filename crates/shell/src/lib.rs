@@ -13,10 +13,12 @@
 //!    `powershell -Command`, `Invoke-Expression`) has that script split in
 //!    its own grammar.
 //!    Python and JavaScript given inline (`python3 -c`, `node -e`, a
-//!    here-document fed to `python3 -`) are read with their own grammars, and
-//!    what they delete, write and run is judged like the same shell command.
-//!    A line is safe for such code only when it is read whole (written on the
-//!    line, plain statements, calls on a short list); any other is `unknown`.
+//!    here-document fed to `python3 -`) are read with their own grammars (the
+//!    `milo-guards-code` crate, behind the `inline` feature, on by default),
+//!    and what they delete, write and run is judged like the same shell
+//!    command. A line is safe for such code only when it is read whole
+//!    (written on the line, plain statements, calls on a short list); any
+//!    other is `unknown`, and so is every one when the feature is off.
 //! 2. **Detect** with rules that read a unit's program, flags, operands and
 //!    redirects, never the raw text, and judge each path by where it
 //!    resolves against [`Paths`].

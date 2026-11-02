@@ -36,13 +36,15 @@ while it fails. It runs, in order, over the whole workspace:
 | `just timing` | every test, in an optimized build (`cargo test --release --workspace --all-features --locked`): the tests that time the guard compare against limits that describe an optimized build, so they are ignored under coverage (`cfg(coverage)`) and run here |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
+| `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
 | `just deny` | the dependency gates in `deny.toml`: permissive licences only, crates.io only, no banned crates (`cargo deny check bans licenses sources`) |
 
 The code is compiled by clippy's check pass, by the one instrumented build
 every unit and integration test but the timing tests runs from, and by one
 optimized build that runs every test; the doctests and rustdoc build what they
-need on top. `just test` runs every test, doctests included, without
-coverage, quicker while working.
+need on top, and the shell guard is built once more without its `inline`
+feature (`just no-inline`). `just test` runs every test, doctests included,
+without coverage, quicker while working.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database
 (`cargo deny check advisories`), which needs the network and changes without a

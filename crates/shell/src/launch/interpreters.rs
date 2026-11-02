@@ -419,7 +419,8 @@ fn bun_inline(text: &str) -> bool {
 /// (`bun run -`); `bun x` is a package runner; `bun exec` runs its
 /// arguments as a shell script; a file or a subcommand is its own business.
 pub(super) fn bun(unit: &Unit) -> Launch {
-    only_runs(unit, with_code("bun", unit, bun_launch(unit)))
+    let evals = unit.args.iter().filter_map(Arg::known).any(bun_evals);
+    only_runs(unit, evals, with_code("bun", unit, bun_launch(unit)))
 }
 
 /// A `bun` or `deno` line that reads inline code (`bun -e CODE`, `deno eval
@@ -450,16 +451,19 @@ fn repl(unit: &Unit) -> Launch {
 /// (a package runner, a delete tool, an npm specifier, `bun run name`), and
 /// not what it reads of a POSIX shell, which cmd lines do not get. Inline
 /// code and what is piped into the program are not read there either, which
-/// comes back as `unknown`.
-fn only_runs(unit: &Unit, launch: Launch) -> Launch {
+/// comes back as `unknown`. `evals` is whether the line carries a flag that
+/// runs inline code: when the code itself cannot be told (a module the
+/// options load, a subcommand in between), the line still runs code the
+/// guard does not read, and stays `unknown` in cmd as it is in the others.
+fn only_runs(unit: &Unit, evals: bool, launch: Launch) -> Launch {
     match launch {
         Launch::Replace(_) | Launch::Inline(..) => launch,
         Launch::Either(first, second) => Launch::Either(
-            Box::new(only_runs(unit, *first)),
-            Box::new(only_runs(unit, *second)),
+            Box::new(only_runs(unit, evals, *first)),
+            Box::new(only_runs(unit, evals, *second)),
         ),
         _ if unit.shell != Shell::Cmd => launch,
-        Launch::Reads(_) if super::piped(unit) => launch,
+        Launch::Reads(_) if evals || super::piped(unit) => launch,
         _ => Launch::Itself,
     }
 }
@@ -567,7 +571,7 @@ fn is_file(arg: &Arg) -> bool {
 /// default is `run`: `deno npm:pkg`); `deno x` is a package runner; a file or
 /// another subcommand is its own business.
 pub(super) fn deno(unit: &Unit) -> Launch {
-    only_runs(unit, with_code("deno", unit, deno_launch(unit)))
+    only_runs(unit, false, with_code("deno", unit, deno_launch(unit)))
 }
 
 fn deno_launch(unit: &Unit) -> Launch {
