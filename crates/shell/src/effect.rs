@@ -703,6 +703,9 @@ fn posix(key: &str, unit: &Unit) -> Kind {
         "ls" | "cat" | "head" | "tail" | "wc" | "stat" | "pwd" | "echo" | "grep" | "egrep"
         | "fgrep" | "diff" | "du" | "df" | "which" | "realpath" | "basename" | "dirname"
         | "true" | "false" | "test" | "[" => Kind::Reads,
+        // A `pushd` that moves is read by `moves_to`; one that does not
+        // (`-n`) only changes the stack of folders.
+        "pushd" => Kind::Reads,
         // `printf -v NAME` sets a variable.
         "printf" => match args.first().map(Arg::known) {
             Some(Some(first)) if first.starts_with("-v") => Kind::Unknown,

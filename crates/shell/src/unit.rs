@@ -1501,19 +1501,7 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
             Some(target) => Some((*target).clone()),
             None => Some(Arg::Known("~".to_string())),
         },
-        // `pushd` alone swaps the top of the stack and `pushd +1` rotates
-        // it: neither names where it goes.
-        (Shell::Posix, "pushd") => match unit.args.first() {
-            Some(Arg::Known(target))
-                if !(target.starts_with(['+', '-'])
-                    && target.len() > 1
-                    && target[1..].chars().all(|c| c.is_ascii_digit())) =>
-            {
-                Some(Arg::Known(target.clone()))
-            }
-            Some(other) => Some(Arg::Unknown(other.text().to_string())),
-            None => Some(Arg::Unknown(key)),
-        },
+        (Shell::Posix, "pushd") => pushd_target(&unit.args, &key),
         (Shell::Posix | Shell::Cmd, "popd") | (Shell::PowerShell, "pop-location") => {
             Some(Arg::Unknown(key))
         }
@@ -1556,6 +1544,47 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         }
         _ => None,
     }
+}
+
+/// Where a POSIX `pushd` moves to, `None` when it does not move.
+///
+/// Its options come before the folder, as `cd`'s do: `-n` (the stack is
+/// changed and the shell stays where it is), and `-L` and `-P` (how a link
+/// in the folder is followed, which a shell may take and another refuse:
+/// read as taken). Neither is the folder. What names no folder is not
+/// guessed at: `pushd` alone swaps the top of the stack, `pushd +1` and
+/// `pushd -1` rotate it, `-` goes back, and an option the guard does not
+/// know (`-q`, `--help`) or a word only known when the line runs may be
+/// any of them, so the folder is only known when it runs. `--` ends the
+/// options.
+fn pushd_target(args: &[Arg], key: &str) -> Option<Arg> {
+    let mut stays = false;
+    let mut rest = args.iter();
+    // What the line moves to when `word` is the last the guard reads: not
+    // at all after `-n`, else to `word`.
+    let then = |stays: bool, word: Arg| (!stays).then_some(word);
+    while let Some(arg) = rest.next() {
+        let Some(text) = arg.known() else {
+            return then(stays, Arg::Unknown(arg.text().to_string()));
+        };
+        if text == "--" {
+            let folder = rest.next().cloned();
+            return then(
+                stays,
+                folder.unwrap_or_else(|| Arg::Unknown(key.to_string())),
+            );
+        }
+        let flags = text.strip_prefix('-').filter(|flags| !flags.is_empty());
+        if flags.is_some_and(|flags| flags.chars().all(|c| matches!(c, 'n' | 'L' | 'P'))) {
+            stays |= flags.is_some_and(|flags| flags.contains('n'));
+        } else if text.starts_with(['-', '+']) {
+            // A stack index, `-` (the folder before), or an option unknown.
+            return then(stays, Arg::Unknown(text.to_string()));
+        } else {
+            return then(stays, arg.clone());
+        }
+    }
+    then(stays, Arg::Unknown(key.to_string()))
 }
 
 /// How deep shells may start shells (`bash -c "sh -c '…'"`) before the line
