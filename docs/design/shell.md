@@ -411,6 +411,17 @@ is a file name like any other, joined to where the `cd` went.
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 
+In a POSIX shell `pushd` has options before its folder, as `cd` has, and none
+of them is the folder: `-L` and `-P` are skipped (`pushd -P ~/.ssh && cat
+id_rsa` reads `~/.ssh/id_rsa`, a secret, like `cd -P ~/.ssh`), and `-n` changes
+the stack of folders without moving, so `pushd -n ~/.ssh && cat id_rsa` reads
+`<cwd>/id_rsa` and lists no option as a path. `--` ends the options. Where a
+`pushd` goes is only known when it runs when it has no folder (`pushd` alone
+swaps the top of the stack), a stack index (`+1`, `-1`), `-` (the folder
+before), a word only known when the line runs before the folder, or an option
+the guard does not know (`-q`, `--help`): every relative path after it is
+unknown too.
+
 In PowerShell a bare `NUL` or `CON` is the device only on the file system.
 After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
 a place only known when it runs (it may be a registry key), it is an ordinary

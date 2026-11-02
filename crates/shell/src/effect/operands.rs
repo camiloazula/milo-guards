@@ -229,6 +229,7 @@ pub(super) fn takes_no_paths(shell: Shell, key: &str) -> bool {
                 | "dirname"
                 | "which"
                 | "pwd"
+                | "pushd"
         ),
         Shell::PowerShell => matches!(
             key,
