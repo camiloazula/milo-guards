@@ -1787,6 +1787,11 @@ impl Walker<'_> {
         let mut skip = Vec::new();
         let mut inner = escaped;
         for part in body.named_children(&mut cursor) {
+            // The body's plain text between expansions is a part of the tree
+            // too, but not one the grammar read: `backtick_codes` scans it.
+            if matches!(part.kind(), "heredoc_content" | "heredoc_end") {
+                continue;
+            }
             let range =
                 part.start_byte().saturating_sub(from)..part.end_byte().saturating_sub(from);
             inner |= part.kind() != "command_substitution"

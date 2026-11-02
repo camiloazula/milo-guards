@@ -2031,8 +2031,10 @@ of its own, so its commands are judged and count for `effect`. A backtick ends
 at the first one no backslash escapes, whatever quotes lie between, and the
 code takes one backslash off `` \` ``, `\\` and `\$` (any other backslash
 stays), as every POSIX shell does; with `<<-` the tabs of the lines after the
-first are taken off. A body with an escaped backtick only (`` \`x\` ``) runs
-nothing and reads as before. What cannot be read is `Unreadable`: a backtick
+first are taken off. The plain text between a body's expansions is scanned
+like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
+escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads
+as before. What cannot be read is `Unreadable`: a backtick
 that never closes, code that does not parse, a backtick inside a `${…}` (or
 another part the grammar read for itself), and an unquoted here-document in a
 backtick substitution that holds an escaped backtick, where the outer

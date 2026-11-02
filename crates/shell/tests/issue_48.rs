@@ -139,3 +139,28 @@ fn a_here_document_that_runs_nothing_reads_as_before() {
         &[],
     );
 }
+
+#[test]
+fn a_backtick_in_the_text_after_an_expansion_is_read_as_code_not_as_a_part() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "cat > version.txt <<EOF\nversion=$VERSION\nbuilt=`date`\nEOF",
+            "cat <<EOF\nHello $USER, today is `date +%A`.\nEOF",
+            "cat <<EOF\n`echo $HOME`\nEOF",
+            "cat <<EOF\n$(pwd) `ls`\nEOF",
+            "git commit -m \"$(cat <<EOF\nRelease $VERSION\n\nAdds \\`--flag\\` to the parser.\nEOF\n)\"",
+            "gh pr create --title x --body \"$(cat <<EOF\nCloses #$ISSUE\n\nUse \\`foo\\` here.\nEOF\n)\"",
+            "cat <<EOF\nPath: ${PWD}\nRun `make` next.\nEOF",
+            "cat <<EOF\nTotal: $((1+2)) files, see `ls`\nEOF",
+            // An escaped backtick after an expansion is text.
+            "cat <<EOF\n$(pwd) \\`x\\`\nEOF",
+        ],
+        &[
+            ("cat <<EOF\n$USER `rm -rf /home/me`\nEOF", Rule::Delete),
+            ("cat <<EOF\n${PWD} `rm -rf /home/me`\nEOF", Rule::Delete),
+            ("cat <<EOF\n$(pwd) `rm -rf /home/me` $USER\nEOF", Rule::Delete),
+        ],
+    );
+}
