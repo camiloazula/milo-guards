@@ -229,13 +229,12 @@ dependencies = [
 name = "milo-guards-shell"
 version = "0.1.0"
 dependencies = [
+ "milo-guards-code",
  "milo-guards-core",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-batch",
- "tree-sitter-javascript",
  "tree-sitter-powershell",
- "tree-sitter-python",
 ]
 
 [[package]]

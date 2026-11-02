@@ -14,14 +14,14 @@ workspace = true
 
 [dependencies]
 milo-guards-core.workspace = true
+# Reads the Python and JavaScript a line gives an interpreter inline.
+milo-guards-code.workspace = true
 # The grammars and the runtime they share: the workspace manifest holds the
 # runtime at 0.26 and says why.
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 tree-sitter-powershell.workspace = true
 tree-sitter-batch.workspace = true
-tree-sitter-python.workspace = true
-tree-sitter-javascript.workspace = true
 
 [dev-dependencies]
 milo-guards-core = { workspace = true, features = ["testing"] }
