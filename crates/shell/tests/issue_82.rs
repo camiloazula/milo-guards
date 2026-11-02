@@ -59,8 +59,8 @@ fn the_processes_the_system_needs_are_stop_system_by_name() {
             ("pkill -f 'systemd-logind'", Rule::StopSystem),
             ("pkill -f /usr/lib/xorg", Rule::StopSystem),
             // A name only known when it runs follows the existing rule.
-            ("killall $NAME", Rule::StopSystem),
-            ("pkill \"$PATTERN\"", Rule::StopSystem),
+            ("killall $NAME", Rule::StopUnknown),
+            ("pkill \"$PATTERN\"", Rule::StopUnknown),
         ],
     );
 }
@@ -179,8 +179,8 @@ fn a_service_manager_that_stops_one_is_read_through_the_same_list() {
                 Rule::StopSystem,
             ),
             // A target only known when it runs follows the existing rule.
-            ("launchctl kill TERM $target", Rule::StopSystem),
-            ("launchctl stop \"$label\"", Rule::StopSystem),
+            ("launchctl kill TERM $target", Rule::StopUnknown),
+            ("launchctl stop \"$label\"", Rule::StopUnknown),
         ],
     );
 }
@@ -276,7 +276,7 @@ fn the_windows_compositor_and_the_remote_login_are_stop_system() {
             ("taskkill /IM sshd.exe", Rule::StopSystem),
             ("taskkill /FI \"IMAGENAME eq dwm.exe\"", Rule::StopSystem),
             ("tskill dwm", Rule::StopSystem),
-            ("Stop-Process -Name $n", Rule::StopSystem),
+            ("Stop-Process -Name $n", Rule::StopUnknown),
         ],
     );
 }

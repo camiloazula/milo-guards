@@ -88,6 +88,8 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         found: split.findings.clone(),
         written: HashSet::new(),
         unplaced_write: false,
+        patterns: Vec::new(),
+        anywhere: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
         stages: HashMap::new(),
@@ -123,8 +125,15 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
         }
+        let by_cmdlet = writes_by_cmdlet(unit);
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
+            // A file a write cmdlet names only when it runs (`$x` in `Set-Content
+            // a.txt,$x y`, which is not told from the value of `Set-Content a.txt
+            // $x`) may be any file: a script the line runs may be it.
+            if by_cmdlet && matches!(target, Arg::Unknown(_) | Arg::Template { .. }) {
+                checker.anywhere = true;
+            }
         }
     }
     for write in &split.writes {
@@ -185,6 +194,45 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     }
 }
 
+/// The most distinct patterns the line is read for: each script the line
+/// runs is matched against every one of them (and PowerShell tries a name
+/// with each of the executable extensions), so the work of a line grows with
+/// the patterns it writes by and the scripts it runs. Past this many, the
+/// line is read as writing any file.
+const MAX_PATTERNS: usize = 8;
+
+/// The longest file name part of a pattern the line is read for: matching
+/// costs the length of the pattern times the length of the name. A longer one
+/// is read as writing any file.
+const MAX_PATTERN_LEN: usize = 64;
+
+/// The longest name of a script that is matched against the patterns, for
+/// the same reason. No file has a longer one, but the guard does not rely on
+/// that: a run of one is read as of a file the pattern may match.
+const MAX_NAME_LEN: usize = 255;
+
+/// A pattern the line writes by (`Set-Content *.ps1 x`): every file it
+/// matches is written.
+#[derive(PartialEq)]
+struct WrittenPattern {
+    /// The key of the folder it is in; `None` when that cannot be placed.
+    folder: Option<String>,
+    /// The file name part, which holds the wildcard.
+    name: String,
+    /// The shell that wrote it, which says how it is read.
+    shell: Shell,
+}
+
+/// `path` as the folder it is in (the working folder, `.`, when it has no
+/// separator) and its file name.
+fn split_name(path: &str, shell: Shell) -> (String, &str) {
+    match path.rsplit_once(separators(shell)) {
+        Some(("", name)) => ("/".to_string(), name),
+        Some((folder, name)) => (folder.to_string(), name),
+        None => (".".to_string(), path),
+    }
+}
+
 struct Checker<'a> {
     split: &'a Split,
     resolver: &'a Resolver,
@@ -196,6 +244,13 @@ struct Checker<'a> {
     /// when it runs, or after a `cd` to such a place): it has no key, but
     /// may be a script the line runs.
     unplaced_write: bool,
+    /// The file name part of each pattern the line writes by (`*.ps1`), with
+    /// the shell that wrote it: every file it matches is written.
+    patterns: Vec<WrittenPattern>,
+    /// Whether the line writes a file that is any file: a name a write
+    /// cmdlet takes only when it runs, or more patterns, or longer ones,
+    /// than are read ([`MAX_PATTERNS`]). Any script the line runs may be it.
+    anywhere: bool,
     /// For each pipeline, the first stage that downloads.
     downloaders: HashMap<usize, usize>,
     /// The first unit at each pipeline stage, by its index in the split.
@@ -248,7 +303,61 @@ impl Checker<'_> {
             self.written.insert(key);
         } else if self.resolver.unplaced(dir, target, shell) {
             self.unplaced_write = true;
+        } else if let Arg::Known(text) = target {
+            // A pattern writes every file it matches: a script of that
+            // name is one the line may write.
+            if glob::has_wildcard(text) {
+                let (folder, name) = split_name(text, shell);
+                // A folder that cannot be placed (a pattern in it too) is
+                // any folder.
+                let folder = self.resolver.file_key(dir, &Arg::Known(folder), shell);
+                let pattern = WrittenPattern {
+                    folder,
+                    name: name.to_string(),
+                    shell,
+                };
+                // The same pattern again adds nothing; too many, or one too
+                // long to match cheaply, is any file.
+                if pattern.name.len() > MAX_PATTERN_LEN {
+                    self.anywhere = true;
+                } else if !self.patterns.contains(&pattern) {
+                    if self.patterns.len() < MAX_PATTERNS {
+                        self.patterns.push(pattern);
+                    } else {
+                        self.anywhere = true;
+                    }
+                }
+            }
         }
+    }
+
+    /// Whether the line may write the file `script` names from `dir`, other
+    /// than by a name it can read: it writes any file (see
+    /// [`Self::anywhere`]), or by a pattern whose folder is the script's and
+    /// whose name matches its name. Each call costs a bounded amount: at most
+    /// [`MAX_PATTERNS`] matches of at most [`MAX_PATTERN_LEN`] bytes against
+    /// a name of at most [`MAX_NAME_LEN`].
+    fn pattern_written(&self, dir: Option<&Arg>, script: &str, shell: Shell) -> bool {
+        if self.anywhere {
+            return true;
+        }
+        if self.patterns.is_empty() {
+            return false;
+        }
+        let (folder, name) = split_name(script, shell);
+        if name.len() > MAX_NAME_LEN {
+            return true;
+        }
+        let folder = self.resolver.file_key(dir, &Arg::Known(folder), shell);
+        self.patterns.iter().any(|pattern| {
+            let flavour = if pattern.shell == Shell::Posix {
+                Flavour::Posix
+            } else {
+                Flavour::Windows
+            };
+            (pattern.folder.is_none() || folder.is_none() || pattern.folder == folder)
+                && glob::matches(&pattern.name, name, flavour, true)
+        })
     }
 
     fn add(&mut self, rule: Rule, reason: impl Into<String>, target: Option<&Arg>) {
@@ -783,9 +892,11 @@ impl Checker<'_> {
 
     /// Whether the line writes the file `name` names from where `unit` runs.
     fn names_written(&self, unit: &Unit, name: &str) -> bool {
-        self.resolver
-            .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
-            .is_some_and(|wanted| self.written.contains(&wanted))
+        self.pattern_written(unit.dir.as_ref(), name, unit.shell)
+            || self
+                .resolver
+                .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
+                .is_some_and(|wanted| self.written.contains(&wanted))
     }
 
     fn add_run_written(&mut self, script: &Arg) {
@@ -841,6 +952,13 @@ impl Checker<'_> {
                 "runs a script only known when it runs",
                 Some(script),
             );
+            return;
+        }
+        if script
+            .known()
+            .is_some_and(|text| self.pattern_written(dir, text, unit.shell))
+        {
+            self.add_run_written(script);
             return;
         }
         let Some(wanted) = self.resolver.file_key(dir, script, unit.shell) else {
@@ -1223,22 +1341,28 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
         }
         "copy-item" | "move-item" => {
             let params = Params::read(args);
-            let sources = params.values(&["path", "literalpath"]);
-            params
+            let mut sources = params.values(&["path", "literalpath"]);
+            let mut positional = params.positional.iter().copied();
+            // `Copy-Item a b` is `-Path a -Destination b`: a positional
+            // is the source first, then the destination, each only where
+            // no parameter names it.
+            if sources.is_empty() {
+                sources.extend(positional.next());
+            }
+            let destination = params
                 .values(&["destination"])
                 .first()
-                .map_or_else(Vec::new, |destination| {
-                    into_folder(&or_here(destination), &sources)
-                })
+                .copied()
+                .or_else(|| positional.next());
+            destination.map_or_else(Vec::new, |destination| {
+                into_folder(&or_here(destination), &sources)
+            })
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
         }
-        "set-content" | "add-content" | "out-file" | "tee-object" => Params::read(args)
-            .values(&["path", "literalpath", "filepath"])
-            .into_iter()
-            .cloned()
-            .collect(),
+        "set-content" | "add-content" | "out-file" | "tee-object" => content_files(args),
+        "new-item" => new_item_files(args),
         "dd" => args
             .iter()
             .filter_map(|arg| arg.known()?.strip_prefix("of="))
@@ -1246,6 +1370,98 @@ fn written_by(unit: &Unit) -> Vec<Arg> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The files `Set-Content`, `Add-Content`, `Out-File` and `Tee-Object`
+/// write: the one `-Path`, `-LiteralPath` or `-FilePath` names, or, with none
+/// given, the first operand (`Set-Content i.ps1 x`). The parser hands a list
+/// of paths (`a.ps1,b.ps1`) over as separate words, which cannot be told from
+/// a file and its value (`a.txt x.ps1`): so any other operand is a file too
+/// (one only known when it runs as well: `Set-Content a.txt,$x y` names a
+/// file that cannot be placed, see [`writes_by_cmdlet`]), and so is any
+/// operand when a parameter the guard cannot tell takes a value or not may
+/// have taken the first.
+fn content_files(args: &[Arg]) -> Vec<Arg> {
+    let params = Params::read(args);
+    let mut files: Vec<Arg> = params
+        .values(&["path", "literalpath", "filepath"])
+        .into_iter()
+        .cloned()
+        .collect();
+    let unclear = params.unclear();
+    for (at, operand) in params.positional.iter().enumerate() {
+        let first = at == 0 && files.is_empty();
+        if first || unclear || is_name(operand) {
+            files.push((*operand).clone());
+        }
+    }
+    files
+}
+
+/// Whether `arg` is a word that can be a file's name: one the guard reads, or
+/// one only known when it runs. Not the pipeline's input or `$null`.
+fn is_name(arg: &Arg) -> bool {
+    matches!(arg, Arg::Known(_) | Arg::Unknown(_) | Arg::Template { .. })
+}
+
+/// The cmdlets whose files [`written_by`] reads from their operands, where a
+/// word in a list of paths is not told from a value: a file one of them names
+/// only when it runs may be any file.
+fn writes_by_cmdlet(unit: &Unit) -> bool {
+    matches!(
+        unit.key().as_deref(),
+        Some("set-content" | "add-content" | "out-file" | "tee-object" | "new-item")
+    )
+}
+
+/// The most files `New-Item` is read to create at once: each path is made with
+/// each name, so a line of many of both is read as one file that is not
+/// known.
+const MAX_NEW_ITEMS: usize = 64;
+
+/// The files `New-Item` creates: its path (named, or the first operand), or,
+/// with `-Name`, each name inside that folder (the working folder when no
+/// path is given). Any other operand is one more path, or one more name (a
+/// list is handed over as separate words). A part only known when it runs is
+/// kept as it is: the file cannot be placed, and any run of a script on the
+/// line is judged for it (see [`writes_by_cmdlet`]).
+fn new_item_files(args: &[Arg]) -> Vec<Arg> {
+    let params = Params::read(args);
+    let mut folders = params.values(&["path", "literalpath"]);
+    let mut names = params.values(&["name"]);
+    let mut operands = params.positional.iter().copied();
+    if names.is_empty() {
+        if folders.is_empty() {
+            folders.extend(operands.next());
+        }
+        folders.extend(operands.filter(|operand| is_name(operand)));
+        return folders.into_iter().cloned().collect();
+    }
+    // With `-Name` the first operand is the folder, or the first of a list
+    // of names: it is read as both when no `-Path` says which.
+    let here = Arg::Known(".".to_string());
+    if folders.is_empty() {
+        folders.push(&here);
+        folders.extend(operands.clone().next());
+    }
+    names.extend(operands.filter(|operand| is_name(operand)));
+    if folders.len().saturating_mul(names.len()) > MAX_NEW_ITEMS {
+        return vec![Arg::Unknown("the files New-Item creates".to_string())];
+    }
+    let mut files = Vec::new();
+    for folder in folders {
+        for name in &names {
+            match (folder, name) {
+                (Arg::Known(folder), Arg::Known(name)) => {
+                    let folder = folder.trim_end_matches(['/', '\\']);
+                    files.push(Arg::Known(format!("{folder}/{name}")));
+                }
+                (Arg::Known(_), unknown) => files.push((*unknown).clone()),
+                (unknown, _) => files.push(unknown.clone()),
+            }
+        }
+    }
+    files
 }
 
 /// A `$null` destination of `Copy-Item` or `Move-Item` is no destination, so

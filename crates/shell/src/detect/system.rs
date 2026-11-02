@@ -398,14 +398,14 @@ impl Checker<'_> {
                         self.add(Rule::StopSystem, "stops a whole process group", Some(arg));
                     }
                     Some(Id::Unreadable) => self.add(
-                        Rule::StopSystem,
+                        Rule::StopUnknown,
                         "may stop a whole process group",
                         Some(arg),
                     ),
                     // A word, which `kill` refuses; a pattern may expand to
                     // an id.
                     None if text.contains(['*', '?', '[', '{']) => self.add(
-                        Rule::StopSystem,
+                        Rule::StopUnknown,
                         "may stop a whole process group",
                         Some(arg),
                     ),
@@ -413,7 +413,7 @@ impl Checker<'_> {
                 },
                 None if is_positive_expansion(arg.text()) => {}
                 None => self.add(
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                     "may stop a whole process group",
                     Some(arg),
                 ),

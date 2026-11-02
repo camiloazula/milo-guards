@@ -141,10 +141,10 @@ fn stopping_every_process_or_one_the_system_needs_is_risky() {
             ("pkill 'node|systemd'", Rule::StopSystem),
             ("pkill Explorer", Rule::StopSystem),
             // A name only known when it runs.
-            ("killall $NAME", Rule::StopSystem),
-            ("pkill \"$PATTERN\"", Rule::StopSystem),
-            ("pkill -f $(cat pattern)", Rule::StopSystem),
-            ("echo node | xargs pkill", Rule::StopSystem),
+            ("killall $NAME", Rule::StopUnknown),
+            ("pkill \"$PATTERN\"", Rule::StopUnknown),
+            ("pkill -f $(cat pattern)", Rule::StopUnknown),
+            ("echo node | xargs pkill", Rule::StopUnknown),
             // Behind a wrapper or a nested script.
             ("sudo killall WindowServer", Rule::StopSystem),
             ("bash -c 'pkill -f .'", Rule::StopSystem),
@@ -408,7 +408,7 @@ fn stopping_processes_in_powershell_is_judged_like_the_others() {
             ("Stop-Process -Name '[a-z]*'", Rule::StopSystem),
             ("Stop-Process -Name s*", Rule::StopSystem),
             ("Stop-Process -Name expl*", Rule::StopSystem),
-            ("Stop-Process -Name $name", Rule::StopSystem),
+            ("Stop-Process -Name $name", Rule::StopUnknown),
             ("Stop-Process -Name e?plorer", Rule::StopSystem),
             ("Stop-Process -Name 'explore[r]'", Rule::StopSystem),
             ("kill -Name explorer", Rule::StopSystem),
@@ -419,12 +419,12 @@ fn stopping_processes_in_powershell_is_judged_like_the_others() {
             ("Get-Process explorer | Stop-Process", Rule::StopSystem),
             (
                 "Get-Process | Where-Object CPU -gt 100 | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("$procs | Stop-Process", Rule::StopSystem),
+            ("$procs | Stop-Process", Rule::StopUnknown),
             (
                 "Get-CimInstance Win32_Process | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             ("taskkill /IM explorer.exe /F", Rule::StopSystem),
             ("taskkill /F /T /IM winlogon.exe", Rule::StopSystem),
@@ -440,8 +440,8 @@ fn stopping_processes_in_powershell_is_judged_like_the_others() {
                 "taskkill /F /FI \"IMAGENAME ne node.exe\"",
                 Rule::StopSystem,
             ),
-            ("taskkill /F /IM $name", Rule::StopSystem),
-            ("taskkill /F /FI $filter", Rule::StopSystem),
+            ("taskkill /F /IM $name", Rule::StopUnknown),
+            ("taskkill /F /FI $filter", Rule::StopUnknown),
             (
                 "powershell -Command \"Stop-Process -Name *\"",
                 Rule::StopSystem,
@@ -778,7 +778,7 @@ fn stop_process_reads_its_own_parameters() {
             ("kill -n *", Rule::StopSystem),
             ("kill -ProcessName winlogon", Rule::StopSystem),
             ("Stop-Process -N node,explorer", Rule::StopSystem),
-            ("Stop-Process -N $n", Rule::StopSystem),
+            ("Stop-Process -N $n", Rule::StopUnknown),
         ],
     );
 }
@@ -805,13 +805,13 @@ fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
             // is not.
             (
                 "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("Stop-Process -InputObject $p", Rule::StopSystem),
-            ("$procs | % { Stop-Process -Id $_.Id }", Rule::StopSystem),
+            ("Stop-Process -InputObject $p", Rule::StopUnknown),
+            ("$procs | % { Stop-Process -Id $_.Id }", Rule::StopUnknown),
             (
                 "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id $_.OwningProcess }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject (Get-Process) -Force",
@@ -826,11 +826,11 @@ fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
             ("Stop-Process (Get-Process)", Rule::StopSystem),
             (
                 "Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process).Where({ $_.CPU -gt 1 }).Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | % { Stop-Process -InputObject $_ }",
@@ -850,7 +850,7 @@ fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
             ),
             (
                 "Get-Process | Where-Object CPU -gt 1 | % { Stop-Process -Id $_.Id }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | % { if ($_.CPU -gt 1) { Stop-Process -Id $_.Id } }",
@@ -859,22 +859,25 @@ fn stop_process_given_a_listing_is_judged_like_the_pipeline() {
         ],
     );
     let windows = windows();
-    for (line, reason_text) in [
+    for (line, rule, reason_text) in [
         (
             "Stop-Process -InputObject (Get-Process)",
+            Rule::StopSystem,
             "stops every process",
         ),
         (
             "Get-Process | % { Stop-Process -Id $_.Id }",
+            Rule::StopSystem,
             "stops every process",
         ),
         (
             "Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id",
+            Rule::StopUnknown,
             "stops processes picked by a filter only known when it runs",
         ),
     ] {
         assert_eq!(
-            reason(line, Shell::PowerShell, &windows, Rule::StopSystem).as_deref(),
+            reason(line, Shell::PowerShell, &windows, rule).as_deref(),
             Some(reason_text),
             "{line}"
         );
@@ -906,7 +909,7 @@ fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
             // A variable picks the processes only when it runs (issue 83).
             (
                 "Get-Process -InputObject $x | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -eq 'explorer' } | Stop-Process",
@@ -919,35 +922,35 @@ fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
             ("gps | ? Name -eq svchost | kill", Rule::StopSystem),
             (
                 "Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -ne 'node' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -eq 'a' -or $_.CPU -gt 1 } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -eq $n } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Id -eq 5 } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Select-Object -First 1 | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | ForEach-Object { $_ } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | ForEach-Object { Get-Process } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process; Get-Process | Stop-Process",
@@ -956,27 +959,35 @@ fn a_listing_picked_by_id_or_filtered_is_not_every_process() {
         ],
     );
     let windows = windows();
-    for (line, reason_text) in [
+    for (line, rule, reason_text) in [
         (
             "Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process",
+            Rule::StopUnknown,
             "stops processes picked by a filter only known when it runs",
         ),
         (
             "Get-Process | Select-Object -First 1 | Stop-Process",
+            Rule::StopUnknown,
             "stops processes picked by a filter only known when it runs",
         ),
         (
             "Get-Process | ForEach-Object { $_ } | Stop-Process",
+            Rule::StopUnknown,
             "stops processes only known when it runs",
         ),
         (
             "Get-Process | Where-Object { $_.Name -eq 'explorer' } | Stop-Process",
+            Rule::StopSystem,
             "stops a process the system needs",
         ),
-        ("Get-Process | Stop-Process", "stops every process"),
+        (
+            "Get-Process | Stop-Process",
+            Rule::StopSystem,
+            "stops every process",
+        ),
     ] {
         assert_eq!(
-            reason(line, Shell::PowerShell, &windows, Rule::StopSystem).as_deref(),
+            reason(line, Shell::PowerShell, &windows, rule).as_deref(),
             Some(reason_text),
             "{line}"
         );
@@ -1445,35 +1456,35 @@ fn select_object_that_hands_on_other_objects_is_not_a_narrowing() {
         &[
             (
                 "Get-Process node | Select-Object -ExpandProperty Parent | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | select -exp Parent | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | select -ExpandProperty:Parent | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | select -expa Parent | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | select @{n='x';e={$_.Parent}} | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | Select-Object -Property @{Name='P';Expression={$_.Parent}} | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject (Get-Process node | select -exp Parent)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | select -exp Parent | Select-Object -First 1 | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -1531,7 +1542,7 @@ fn killall_c_is_a_name_and_t_picks_a_terminal() {
             ("killall -m -c .", Rule::StopSystem),
             ("killall -t ttys000", Rule::StopSystem),
             ("killall -cloginwindow", Rule::StopSystem),
-            ("killall -c $NAME", Rule::StopSystem),
+            ("killall -c $NAME", Rule::StopUnknown),
         ],
     );
 }
@@ -1764,44 +1775,47 @@ fn a_member_read_off_a_listing_is_the_listing_only_for_id_and_name() {
         &[
             (
                 "Stop-Process -InputObject (Get-Process notepad).Parent",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject (Get-Process -Id $PID).Parent",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process node).Parent.Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject ((Get-Process node).Parent)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("(Get-Process node).Parent | Stop-Process", Rule::StopSystem),
+            (
+                "(Get-Process node).Parent | Stop-Process",
+                Rule::StopUnknown,
+            ),
             (
                 "Stop-Process -Id (Get-Process node | Select-Object -ExpandProperty Parent).Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id ((Get-Process node).Parent.Id)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process node).Threads.Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process node).ParentX",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process -Id (Get-Process explorer).Id).Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Content pid.txt | % { (Get-Process $_).Parent.Id })",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -1815,7 +1829,7 @@ fn a_nested_listing_is_one_finding_and_a_command_with_none_is_not_one() {
     let stops: Vec<_> = findings
         .findings()
         .iter()
-        .filter(|finding| finding.rule == Rule::StopSystem)
+        .filter(|finding| finding.rule == Rule::StopUnknown)
         .collect();
     assert!(!stops.is_empty(), "{line}");
     check(
@@ -1825,14 +1839,14 @@ fn a_nested_listing_is_one_finding_and_a_command_with_none_is_not_one() {
         &[
             // No listing in them, so no listing finding, but a file's text
             // is an id only known when it runs (issue 83).
-            ("Stop-Process -Id (Get-Content pid.txt)", Rule::StopSystem),
+            ("Stop-Process -Id (Get-Content pid.txt)", Rule::StopUnknown),
             (
                 "Stop-Process -Id (cat pid.txt | Select-Object -First 1)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Foo (Get-Process explorer).Id)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -1913,35 +1927,35 @@ fn a_member_of_the_item_other_than_the_process_s_own_is_another_process() {
             // and its member is an id only known when it runs (issue 83).
             (
                 "Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id ($_.OwningProcess) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -InputObject $_.Parent }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process $_.Parent }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -Id $_.Parent.Id -Force }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -Id $_.Threads.Id }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -Id ($_.Parent.Id) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -Id ($_.Id + 1) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process notepad | % { Stop-Process -Id $_.Id, $_.Parent.Id }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -1988,23 +2002,23 @@ fn a_wrapped_item_in_a_block_is_read_like_the_item() {
             // Not the item or one of its own members: only known when it runs.
             (
                 "Get-Process node | % { Stop-Process -Id (-not $_.Id) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | % { Stop-Process -Id ($_.Id + 1) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | % { Stop-Process -Id \"1$($_.Id)\" }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | % { Stop-Process -Id ([int]$_.Parent.Id) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process node | % { Stop-Process -Id $(Get-Process explorer | % { $_.Id }) }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
