@@ -429,9 +429,72 @@ The redirect of the next command is placed from where the line now is. In a
 POSIX shell only a redirect on the command itself is read this way, and that
 includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
-and it is read as the last command's): a file a
-group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
-still placed from where the line is when its body ends. In PowerShell only the
+and it is read as the last command's). The file a group, a loop, a branch or a
+subshell is redirected from is opened before its body runs, so it is placed from
+the folder the line is in when that statement begins, not from the one a `cd` in
+the body leaves it in. When the statement is the last command of a list (`cd ~
+&& { cat; } < .ssh/id_rsa`, `cd ~ && while read l; do …; done < f`), the grammar
+puts the redirect on the whole list, but the shell opens it after the commands
+before it ran, so "when the statement begins" is after them: the folder and the
+count of `cd`s are taken just before that last command, not before the list,
+and the redirect is on that last command only (the key above is read from
+`~`, and a `send_secret` pipe after it finds it). A `cd` before it that may not
+have run (after `||`, or the right side of `&&` or `||`) makes the folder
+uncertain, as for a `cd` above. A pipeline's last stage starts where the
+pipeline starts (`cd ~ | { cat; } < .ssh/id_rsa` opens it from the folder the
+line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
+l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
+../../.ssh/id_rsa` does (`read_secret`), `{ cd sub; ls; } > ../x` writes
+`<cwd>/../x`, while `{ cd ../..; cat; } < .ssh/id_rsa` reads `<cwd>/.ssh/id_rsa`
+and `{ cd ../..; ls; } > x` writes `<cwd>/x`. When that folder is not certain,
+the redirect is placed from every folder that may be it, as for a `cd` above:
+where the line is when the statement ends too if the statement is in a loop or
+a function body, and where the line began too if an earlier `cd` may not have
+moved it. A redirect on a call to a function whose body moves the line
+(`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
+well, from the folder the line is in when the function is called. The walk
+applies the body's `cd` once, where the function is defined, so it cannot name
+that folder after the definition unless nothing has moved the line since: it
+places the redirect from the folder the function was defined in and from where
+the line is when the redirect is read when no `cd` was read between the
+definition and the call, the function was not called before, and the line was
+surely where the definition was read. Otherwise (`f() { cd sub; cat; }; cd x; f
+< ../../../.ssh/id_rsa`, `f; f < …`, `ls || cd a; f() { …; }; f < …`, a call in
+a loop, a call to a function that calls one that moves the line) the folder is
+only known when it runs, and the line is `unknown` for a name relative to the
+folder; a redirect that names none (`2>&1`, `>&2`, `> /dev/null`, `~/x`) is
+placed from where the line is. A `cd` that never reaches the line does not
+count as the body moving it: one in a subshell `( … )` or a `$( … )` does not
+move the statement (`for d in */; do (cd "$d" && make); done > ../log` opens
+`../log` from where the line is). A `cd` behind `command`, `builtin` or `time`,
+in any stage of a pipeline (zsh runs the last in this shell), in the background
+or behind `env` or `nohup` may or may not reach the line, so the walk counts it
+as moving it, and a function with one is a function that moves the line: `f() {
+command cd sub; cat; }; f < ../../.ssh/id_rsa`, `f() { cd sub & cat; }; f <
+../../.ssh/id_rsa` and `f() { cd sub | cat; }; f; f > log` are read like the
+same with a plain `cd`. A redirect placed from the folders of more than a few
+dozen functions that move the line, each defined in another folder, is
+`unknown`, not judged from each of them. A later definition of a function
+that the line surely runs in its own shell replaces the earlier one of the same
+name, so a name defined many times is read once, and `unknown` once however
+many calls reach it. One that may not run there is kept beside the earlier one,
+since the earlier one may be the function a call reaches: the right side of
+`&&` or `||`, a branch of `if` or `case`, a loop, a function body, the
+background, a subshell `( … )`, a `$( … )` or `<( … )`, a pipeline stage and a
+script in a process of its own (`bash -c`). So `f() { :; } > .bashrc; cd ~;
+false && f() { cd .; }; f`, `… ; (f() { cd .; }); f` and `… ; f() { cd .; } & f`
+are `unknown` and `f() { echo x; } > .bashrc; cd ~; f() { cd .; }; f` is not. A
+line that defines more than a few hundred functions that move the line or whose
+definition is redirected (a name defined again counts again, kept or replaced)
+is `unknown`, and says so once, instead of placed from where each function was
+defined. A redirect written on the
+definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
+call, before the body, so it is placed like a group's, from the folder the line
+is in where the function is defined, not from where the body ends; a name
+relative to the folder (not `/dev/null`, `~/x` or `2>&1`) that a call reaches
+after a `cd`, a second call of a function that moves the line, a call in a loop
+that later moves the line, or from a definition the line may not have reached,
+is `unknown` too. In PowerShell only the
 redirects of the command itself are placed so: a redirect inside a `$()` in its
 arguments is placed from where the line is there, and so is a redirect that
 follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >

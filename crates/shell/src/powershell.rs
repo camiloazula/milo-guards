@@ -301,7 +301,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
-                let before = self.split.moved_so_far();
+                let before = self.split.moves_so_far();
                 let mut cursor = node.walk();
                 let mut at = 0;
                 for child in node.named_children(&mut cursor) {
@@ -540,7 +540,7 @@ impl Walker<'_> {
         let from = if state.moved {
             OpensFrom::Line
         } else {
-            self.split.starts_in(state.own.clone())
+            self.split.starts_in(state.own.clone(), true)
         };
         let outer = self.split.open_from(from);
         match bare {

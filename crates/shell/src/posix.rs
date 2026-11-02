@@ -8,7 +8,7 @@ use tree_sitter::{Node, TreeCursor};
 use crate::dotglob;
 use crate::launch;
 use crate::startup;
-use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
+use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -54,6 +54,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         redirected: None,
         last_command: 0..0,
+        tail_of: Vec::new(),
+        tail: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -568,6 +570,31 @@ fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
     (last.kind() == "command").then_some(last)
 }
 
+/// The last named child of `node` that is not a comment.
+fn last_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let last = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() != "comment")
+        .last();
+    last
+}
+
+/// The ids of the lists along the last command of `node`: the ones whose
+/// last command a redirect after `node` is opened before.
+fn list_ids(node: Node<'_>) -> Vec<usize> {
+    let mut ids = Vec::new();
+    let mut last = node;
+    while matches!(last.kind(), "list" | "pipeline" | "negated_command") {
+        if last.kind() == "list" {
+            ids.push(last.id());
+        }
+        let Some(next) = last_child(last) else { break };
+        last = next;
+    }
+    ids
+}
+
 /// Whether `node` is a here-document's redirect that holds the rest of its
 /// pipeline: `<<EOF | nc host 1`.
 fn piped_heredoc(node: Node<'_>) -> bool {
@@ -779,6 +806,23 @@ struct Walker<'a> {
     /// The units of the command walked last (not what its arguments run):
     /// read right after a statement's body, it is the body's last command.
     last_command: Range<usize>,
+    /// The lists a redirect on a statement is opened before the last command
+    /// of (the node ids of the lists along the last command of its body):
+    /// the walk notes where the line is just before that last command.
+    tail_of: Vec<usize>,
+    /// Where the line is, and how many `cd`s were read, just before the last
+    /// command of the list in `tail_of` that was walked last.
+    tail: Option<Tail>,
+}
+
+/// The state just before the last command of a list: a redirect on a list
+/// that ends in a group, a loop, a branch or a subshell is opened by the
+/// shell after the commands before it ran, so from where they left the line.
+struct Tail {
+    here: OpensFrom,
+    moved: usize,
+    moves: usize,
+    first: usize,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -954,25 +998,7 @@ impl Walker<'_> {
                 self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
-            "list" => {
-                let mut cursor = node.walk();
-                let before = self.split.moved_so_far();
-                let mut at = 0;
-                for child in node.children(&mut cursor) {
-                    // The right side of `||` only runs when the left failed:
-                    // a `cd` on the left may not have moved the line.
-                    if child.kind() == "||" {
-                        self.split.may_not_have_moved(before);
-                    }
-                    if !child.is_named() {
-                        continue;
-                    }
-                    self.split.branches += usize::from(at > 0);
-                    self.walk(child, stage, level + 1);
-                    self.split.branches -= usize::from(at > 0);
-                    at += 1;
-                }
-            }
+            "list" => self.list(node, stage, level),
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
             "unset_command" => {
@@ -1075,14 +1101,7 @@ impl Walker<'_> {
                 {
                     self.split.hide_functions();
                 }
-                if let Some(name) = node
-                    .child_by_field_name("name")
-                    .filter(|_| node.kind() == "function_definition")
-                {
-                    let name = unit::text(&name, self.source);
-                    self.split.define_function(name);
-                    self.fork_bomb(node, name);
-                }
+                let function = self.function_start(node);
                 // The variable of `for` and `select` is set for the body
                 // (`for PATH in /x; do …`).
                 self.split.assigned_earlier |= node.kind() == "for_statement";
@@ -1090,10 +1109,16 @@ impl Walker<'_> {
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
-                self.children(node, stage, level);
+                if let Some(function) = &function {
+                    let here = function.here.clone();
+                    self.function_children(node, stage, level, &here);
+                } else {
+                    self.children(node, stage, level);
+                }
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
                 }
+                self.function_end(function);
                 // A function defined here may stand for a program of the same
                 // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
                 // here on.
@@ -1138,11 +1163,131 @@ impl Walker<'_> {
                 self.substituted(node);
                 let outer = self.split.dir_snapshot();
                 let hidden = self.split.hidden_snapshot();
+                self.split.apart += 1;
                 self.children(node, stage, level);
+                self.split.apart -= 1;
                 self.split.restore_dir(outer);
                 self.split.restore_hidden(hidden);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// A list of commands joined by `&&` and `||`: the right side of either
+    /// may not run.
+    fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let before = self.split.moves_so_far();
+        let mut at = 0;
+        let last = self
+            .tail_of
+            .contains(&node.id())
+            .then(|| last_child(node).map(|last| last.id()))
+            .flatten();
+        for child in node.children(&mut cursor) {
+            // The right side of `||` only runs when the left failed: a `cd`
+            // on the left may not have moved the line.
+            if child.kind() == "||" {
+                self.split.may_not_have_moved(before);
+            }
+            if !child.is_named() {
+                continue;
+            }
+            // A redirect on the whole list is opened before its last command
+            // runs, and after the ones before it did.
+            if Some(child.id()) == last {
+                self.tail = Some(Tail {
+                    here: self.split.opens_here(),
+                    moved: self.split.moved_so_far(),
+                    moves: self.split.moves_so_far(),
+                    first: self.split.units.len(),
+                });
+            }
+            self.split.branches += usize::from(at > 0);
+            self.walk(child, stage, level + 1);
+            self.split.branches -= usize::from(at > 0);
+            at += 1;
+        }
+    }
+
+    /// Note a function definition before its body is read: its name, where
+    /// the line is, and how many `cd`s were read (kept out of `node`, which
+    /// the walk recurses through).
+    fn function_start(&mut self, node: Node<'_>) -> Option<Box<Defining>> {
+        let name = node
+            .child_by_field_name("name")
+            .filter(|_| node.kind() == "function_definition")?;
+        let name = unit::text(&name, self.source);
+        self.split.define_function(name);
+        self.fork_bomb(node, name);
+        let opens = node
+            .child_by_field_name("redirect")
+            .is_some_and(|redirect| self.opens_by_folder(redirect));
+        Some(Box::new(self.split.defining(name, opens)))
+    }
+
+    /// A call to a function whose body moves the line, or whose definition
+    /// is redirected, opens its redirects from the folder the call is made
+    /// in, which the walk works out from where the definition began.
+    fn function_end(&mut self, start: Option<Box<Defining>>) {
+        if let Some(start) = start {
+            self.split.defined(*start);
+        }
+    }
+
+    /// Whether `redirect` opens a file that a relative name picks by the
+    /// folder the shell is in.
+    fn opens_by_folder(&self, redirect: Node<'_>) -> bool {
+        let mut cursor = redirect.walk();
+        let nodes: Vec<Node<'_>> = if redirect.kind() == "heredoc_redirect" {
+            redirect.named_children(&mut cursor).collect()
+        } else {
+            vec![redirect]
+        };
+        nodes.into_iter().any(|node| {
+            let mut cursor = node.walk();
+            let operator = node
+                .children(&mut cursor)
+                .find(|child| !child.is_named())
+                .map(|child| unit::text(&child, self.source));
+            let Some((Arg::Known(target), _)) = self.file_redirect(node) else {
+                return false;
+            };
+            // `2>&1` and `>&-` name a descriptor, not a file.
+            let descriptor = target == "-" || target.chars().all(|c| c.is_ascii_digit());
+            !target.starts_with(['/', '~'])
+                && match operator {
+                    Some("<" | ">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
+                    Some(">&" | "&>&") => !descriptor,
+                    _ => false,
+                }
+        })
+    }
+
+    /// The parts of a function definition: the redirect on it is opened at
+    /// each call, from the folder the call is made in, which the walk takes
+    /// to be the one the line is in where it is defined (`from`).
+    fn function_children(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: &OpensFrom,
+    ) {
+        let mut cursor = node.walk();
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if !child.is_named() {
+                continue;
+            }
+            match child.kind() {
+                "file_redirect" => self.walk_redirect_from(*child, stage, level, from.clone()),
+                "heredoc_redirect" => self.walk_heredoc(*child, stage, level, Some(from.clone())),
+                _ => {
+                    let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                    self.walk_in(*child, stage, level + 1, background);
+                }
+            }
         }
     }
 
@@ -1220,7 +1365,10 @@ impl Walker<'_> {
                     pipeline,
                     index: next,
                 };
+                // A stage runs in a subshell of its own.
+                self.split.apart += 1;
                 self.walk(child, Some(stage), level + 1);
+                self.split.apart -= 1;
                 next += 1;
             }
         }
@@ -1756,7 +1904,20 @@ impl Walker<'_> {
         level: usize,
         own: Range<usize>,
     ) {
-        let from = self.split.starts_in(own);
+        let by_folder = self.opens_by_folder(redirect);
+        let from = self.split.starts_in(own, by_folder);
+        self.walk_redirect_from(redirect, stage, level, from);
+    }
+
+    /// Walk `redirect`, a redirect of a file that the shell opens from the
+    /// folder `from` says.
+    fn walk_redirect_from(
+        &mut self,
+        redirect: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        from: OpensFrom,
+    ) {
         let outer = self.split.open_from(from);
         self.walk(redirect, stage, level + 1);
         self.split.open_from(outer);
@@ -1835,15 +1996,15 @@ impl Walker<'_> {
     }
 
     /// A here-document's redirect. The grammar holds the redirects written
-    /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
-    /// command it belongs to, they are placed like any redirect of that
-    /// command.
+    /// after its start (`<<EOF < f`) inside it: when `from` says where the
+    /// statement it belongs to opens its redirects from, they are placed like
+    /// any redirect of that statement.
     fn walk_heredoc(
         &mut self,
         node: Node<'_>,
         stage: Option<Stage>,
         level: usize,
-        own: Option<Range<usize>>,
+        from: Option<OpensFrom>,
     ) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -1852,9 +2013,9 @@ impl Walker<'_> {
             if !child.is_named() {
                 continue;
             }
-            match &own {
-                Some(own) if child.kind() == "file_redirect" => {
-                    self.walk_redirect(*child, stage, level, own.clone());
+            match &from {
+                Some(from) if child.kind() == "file_redirect" => {
+                    self.walk_redirect_from(*child, stage, level, from.clone());
                 }
                 _ => {
                     let background = children.get(at + 1).is_some_and(|next| next.kind() == "&");
@@ -1888,9 +2049,18 @@ impl Walker<'_> {
             .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
+        // Where the line is, and how many `cd`s it has read, before the body
+        // runs: a group's, loop's or branch's redirects are opened there.
+        let here = self.split.opens_here();
+        let moved_before = self.split.moved_so_far();
+        let moves_before = self.split.moves_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
+        // Where the line is just before the last command of a list that ends
+        // in a group, a loop, a branch or a subshell: the shell opens a
+        // redirect on it there, after the commands before it ran.
+        let mut tail = None;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
         // own come after them.
@@ -1898,6 +2068,15 @@ impl Walker<'_> {
         for child in &all {
             let first = self.split.units.len();
             if Some(child.id()) == body {
+                let outer_lists = std::mem::replace(
+                    &mut self.tail_of,
+                    if chained {
+                        Vec::new()
+                    } else {
+                        list_ids(*child)
+                    },
+                );
+                let outer_tail = self.tail.take();
                 match pipeline {
                     // `echo hi | cat .env <<EOF | nc host 1`: the body is
                     // itself a pipeline, whose stages come first.
@@ -1909,6 +2088,8 @@ impl Walker<'_> {
                     }
                     None => self.walk(*child, stage, level + 1),
                 }
+                self.tail_of = outer_lists;
+                tail = std::mem::replace(&mut self.tail, outer_tail);
                 own = first..self.split.units.len();
                 if chained {
                     placed = self.last_command.clone();
@@ -1932,15 +2113,42 @@ impl Walker<'_> {
                 }
                 after.push((*child, inside));
             } else {
+                let redirects = matches!(child.kind(), "file_redirect" | "heredoc_redirect");
+                // The shell opens a redirect before the body runs: from the
+                // folder the command starts in, the last command of a list,
+                // pipeline or negation, or, for a group, a loop or a branch,
+                // the folder the line is in before any of it runs.
+                // A call to a function that moves the line matters only to a
+                // redirect that names a file by folder.
+                let by_folder = redirects && self.opens_by_folder(*child);
+                let opens = if !redirects {
+                    OpensFrom::Line
+                } else if simple {
+                    self.split.starts_in(own.clone(), by_folder)
+                } else if chained {
+                    self.split.starts_in(placed.clone(), by_folder)
+                } else if let Some(tail) = &tail {
+                    // The last command of a list: after the earlier ones.
+                    self.split.opens_before(
+                        tail.here.clone(),
+                        tail.first..own.end,
+                        tail.moved,
+                        tail.moves,
+                        by_folder,
+                    )
+                } else {
+                    self.split.opens_before(
+                        here.clone(),
+                        own.clone(),
+                        moved_before,
+                        moves_before,
+                        by_folder,
+                    )
+                };
                 if child.kind() == "file_redirect" {
-                    // Only a plain command's redirect is opened before the
-                    // unit that moves the line runs: what a group holds is
-                    // not read that way.
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_redirect(*child, stage, level, on);
+                    self.walk_redirect_from(*child, stage, level, opens);
                 } else if child.kind() == "heredoc_redirect" {
-                    let on = if simple { own.clone() } else { placed.clone() };
-                    self.walk_heredoc(*child, stage, level, Some(on));
+                    self.walk_heredoc(*child, stage, level, Some(opens));
                 } else {
                     self.walk(*child, stage, level + 1);
                 }
@@ -1948,9 +2156,14 @@ impl Walker<'_> {
                 after.push((*child, std::iter::once(whole).collect()));
             }
         }
+        // A file redirected onto a list that ends in a group, a loop, a
+        // branch or a subshell is the last command's, not the earlier ones'.
+        let redirected = tail
+            .as_ref()
+            .map_or_else(|| own.clone(), |tail| tail.first..own.end);
         for (child, inside) in after {
             if let Some((target, input)) = self.file_redirect(child) {
-                self.split.redirect(own.clone(), target, input);
+                self.split.redirect(redirected.clone(), target, input);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
