@@ -2031,7 +2031,12 @@ also one inside `"$(…)"` or a backtick in double quotes (`git commit -m
 "$(cat <<'EOF' …)"` is how an agent writes one): the quoting starts afresh
 inside a substitution. A line that is the delimiter in quotes or with a
 backslash (`'EOF'`) ends the body for neither the grammar nor the shell, but
-is refused too, so that one rule covers every spelling.
+is refused too, so that one rule covers every spelling. A quoted delimiter is
+read through its closing quote (`<<'E;F'` is `E;F`, `<<"E O"` is `E O`), and a
+parenthesis in a `${…}` is not counted as the end of the `$(…)` around it. Text
+whose quotes or substitutions never close is a text a shell refuses, so the
+scan that joins the lines has misread it and what follows was not joined: it is
+`Unreadable`.
 
 What a stage says is worked out once and read once for each client language,
 whatever the number of clients after it, so the time grows with the line and

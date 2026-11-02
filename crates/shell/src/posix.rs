@@ -12,7 +12,7 @@ use crate::unit::{self, Arg, Flag, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let (text, marks, near) = join_continuations(text);
+    let (text, marks, near, open) = join_continuations(text);
     let text = text.as_str();
     // The grammar ends such a here-document at the near line, where the shell
     // does not: what the program reads is not what the guard reads.
@@ -27,6 +27,16 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let Some(tree) = unit::parse(split, text, &language) else {
         return;
     };
+    // The grammar may read quotes that never close, and then says so; if it
+    // does not, the scan above has misread the text, and what follows its
+    // stopping place was not joined.
+    if open && !tree.root_node().has_error() {
+        split.problem(
+            Rule::Unreadable,
+            "has quotes or a substitution that never close",
+            None,
+        );
+    }
     let (names, looped) = assigned(tree.root_node(), text);
     for name in names {
         split.reassign(&name);
@@ -93,12 +103,15 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
 /// given back as the offset in the new text where it was, the end of its
 /// word, for [`Walker::qualified`].
-fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
+fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     let chars: Vec<char> = text.chars().collect();
     let mut marks = Vec::new();
     // Whether a body has a line only near its delimiter (see
     // [`near_delimiter`]).
     let mut near = false;
+    // Whether quotes or a substitution never close: a shell refuses such
+    // text, so the scan has misread it, and what follows was not joined.
+    let mut open = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
     // Whether the open single quotes are `$'…'`, where a backslash escapes the
@@ -126,6 +139,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             }
             continue;
         }
+        let in_brace = matches!(subs.last(), Some((Sub::Brace, _)));
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
@@ -169,8 +183,22 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                 subs.push((Sub::Paren(1), double));
                 double = false;
             }
+            // A `${…}`: a parenthesis in it (`${x/(/y}`, `${x%(*}`) is text,
+            // not the end of the substitution around it. The quotes in it
+            // are the ones of the word around it, so it ends at a `}` in the
+            // same state.
+            '$' if chars.get(at) == Some(&'{') => {
+                joined.push_str("${");
+                at += 1;
+                subs.push((Sub::Brace, double));
+            }
+            '}' if matches!(subs.last(), Some((Sub::Brace, outer)) if *outer == double) => {
+                joined.push(c);
+                subs.pop();
+            }
             // Arithmetic, `((…))`, unless already in some.
             '(' if !double
+                && !in_brace
                 && chars.get(at) == Some(&'(')
                 && !matches!(subs.last(), Some((Sub::Arith(_), _))) =>
             {
@@ -188,13 +216,13 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                     double = false;
                 }
             }
-            '(' if !double => {
+            '(' if !double && !in_brace => {
                 if let Some((Sub::Paren(depth) | Sub::Arith(depth), _)) = subs.last_mut() {
                     *depth += 1;
                 }
                 joined.push(c);
             }
-            ')' if !double => {
+            ')' if !double && !in_brace => {
                 joined.push(c);
                 if let Some((Sub::Paren(depth) | Sub::Arith(depth), outer)) = subs.last_mut() {
                     *depth = depth.saturating_sub(1);
@@ -205,6 +233,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                 }
             }
             '#' if !double
+                && !in_brace
                 && joined
                     .chars()
                     .last()
@@ -221,6 +250,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             // here-document: a word and the end of the line after it could be
             // either, and is not guessed at.
             '<' if !double
+                && !in_brace
                 && chars.get(at) == Some(&'<')
                 && matches!(subs.last(), Some((Sub::Arith(_), _))) =>
             {
@@ -230,6 +260,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             // `<<WORD` (not `<<<`): a here-document whose body starts on
             // the next line.
             '<' if !double
+                && !in_brace
                 && chars.get(at) == Some(&'<')
                 && chars.get(at + 1) != Some(&'<')
                 && at.checked_sub(2).and_then(|before| chars.get(before)) != Some(&'<') =>
@@ -245,16 +276,49 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                     joined.push(space);
                     at += 1;
                 }
+                // The word: a quoted part is read through its closing quote
+                // (`<<'E;F'` is `E;F`), the rest stops at a space or an
+                // operator.
                 let mut word = String::new();
                 while let Some(&next) = chars.get(at) {
                     if next.is_whitespace() || ";&|<>()".contains(next) {
                         break;
                     }
                     joined.push(next);
-                    if !matches!(next, '\'' | '"' | '\\') {
-                        word.push(next);
-                    }
                     at += 1;
+                    match next {
+                        '\\' => {
+                            if let Some(&escaped) = chars.get(at).filter(|c| **c != '\n') {
+                                joined.push(escaped);
+                                word.push(escaped);
+                                at += 1;
+                            }
+                        }
+                        '\'' | '"' => {
+                            let mut closed = false;
+                            while let Some(&inner) = chars.get(at) {
+                                joined.push(inner);
+                                at += 1;
+                                if inner == next {
+                                    closed = true;
+                                    break;
+                                }
+                                if inner == '\\' && next == '"' {
+                                    if let Some(&escaped) = chars.get(at) {
+                                        joined.push(escaped);
+                                        word.push(escaped);
+                                        at += 1;
+                                    }
+                                    continue;
+                                }
+                                word.push(inner);
+                            }
+                            // A quote that never closes is not a word the
+                            // shell would take.
+                            open |= !closed;
+                        }
+                        _ => word.push(next),
+                    }
                 }
                 if !word.is_empty() {
                     bodies.push((word, tabs));
@@ -289,7 +353,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             _ => joined.push(c),
         }
     }
-    (joined, marks, near)
+    open |= single || double || !subs.is_empty();
+    (joined, marks, near, open)
 }
 
 /// An open `$(…)`, `$((…))` or `((…))` (with the depth of the parentheses in
@@ -299,6 +364,8 @@ enum Sub {
     Paren(usize),
     Arith(usize),
     Backtick,
+    /// A `${…}`, in which a parenthesis is not counted.
+    Brace,
 }
 
 /// Whether the quote that follows `before` opens `$'…'`: a `$` that is not

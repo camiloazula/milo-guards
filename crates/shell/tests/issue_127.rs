@@ -283,6 +283,103 @@ fn an_escaped_quote_in_ansi_c_quotes_does_not_end_them() {
     );
 }
 
+/// A quoted delimiter is read through its closing quote, whatever it holds
+/// (`<<'E;F'` is `E;F`): reading it short left the rest of the quote open, and
+/// the body then copied everything after it, so a backslash-newline in the
+/// lines below was never joined.
+#[test]
+fn a_quoted_delimiter_with_an_operator_or_space_is_read_whole() {
+    let tail = "\nr\\\nm -rf /home/me";
+    let rows: Vec<(String, Rule)> = [
+        ("'E;F'", "E;F"),
+        ("'E O'", "E O"),
+        ("\"E O\"", "E O"),
+        ("'E)'", "E)"),
+        ("'E&F'", "E&F"),
+        ("'E>F'", "E>F"),
+        ("'E(F'", "E(F"),
+        ("'E|F'", "E|F"),
+    ]
+    .iter()
+    .flat_map(|(quoted, word)| {
+        [
+            format!("echo \"$(cat <<{quoted}\nx\n{word}\n)\"{tail}"),
+            format!("echo \"`cat <<{quoted}\nx\n{word}\n`\"{tail}"),
+        ]
+    })
+    .map(|line| (line, Rule::Delete))
+    .collect();
+    let rows: Vec<(&str, Rule)> = rows
+        .iter()
+        .map(|(line, rule)| (line.as_str(), *rule))
+        .collect();
+    check(
+        Shell::Posix,
+        &posix(),
+        &["echo \"$(cat <<'E;F'\nx\nE;F\n)\"", "cat <<'E O'\nx\nE O"],
+        &rows,
+    );
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            // The issue's own line after such a prefix.
+            (
+                "echo \"$(cat <<'E;F'\nx\nE;F\n)\"\npsql <<'EOF'\nselect 1;\n EOF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            // A quote that never closes is not read.
+            ("cat <<'E;F\nx\nE;F", Rule::Unreadable),
+        ],
+    );
+}
+
+/// A parenthesis in `${…}` (`${x/(/y}`) is text: counting it kept the `)` that
+/// ends `$(` from being seen, and a later `'` in the double-quoted rest then
+/// opened single quotes to the end of the text.
+#[test]
+fn a_parenthesis_in_an_expansion_in_a_substitution_is_not_counted() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo \"$(echo ${x/(/y}) it's\"",
+            "echo \"$(echo ${x%(*}) it's\"\nls",
+        ],
+        &[
+            (
+                "echo \"$(echo ${x/(/y}) it's\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(echo ${x%(*}) it's\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(echo ${x#*(}) it's\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(echo ${x//(/}) it's\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(echo ${x/(/y})\" && echo \"it's\" && r\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            // Without the double quotes.
+            (
+                "echo $(echo ${x/(/y}) \"it's\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            // Text the scan cannot close is not judged.
+            ("echo \"$(echo ${x/(/y}) it's\n", Rule::Unreadable),
+            ("echo 'a", Rule::Unreadable),
+        ],
+    );
+}
+
 #[test]
 fn a_here_document_that_ends_exactly_reads_as_before() {
     check(
