@@ -452,7 +452,14 @@ definition and the call, the function was not called before, and the line was
 surely where the definition was read. Otherwise (`f() { cd sub; cat; }; cd x; f
 < ../../../.ssh/id_rsa`, `f; f < …`, `ls || cd a; f() { …; }; f < …`, a call in
 a loop, a call to a function that calls one that moves the line) the folder is
-only known when it runs, and the line is `unknown`. A redirect written on the
+only known when it runs, and the line is `unknown` for a name relative to the
+folder; a redirect that names none (`2>&1`, `>&2`, `> /dev/null`, `~/x`) is
+placed from where the line is. A `cd` that never reaches the line does not
+count as the body moving it: one in a subshell `( … )` or a `$( … )` does not
+move the statement (`for d in */; do (cd "$d" && make); done > ../log` opens
+`../log` from where the line is), and one in a pipeline stage or the
+background does not make a function one that moves the line (`f() { cd sub |
+cat; }; f; f > log`). A redirect written on the
 definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
 call, before the body, so it is placed like a group's, from the folder the line
 is in where the function is defined, not from where the body ends; a name

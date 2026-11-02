@@ -71,7 +71,7 @@ impl Walker<'_> {
             // left may not have moved the line.
             "cond_exec" => {
                 let mut cursor = node.walk();
-                let before = self.split.moved_so_far();
+                let before = self.split.moves_so_far();
                 let mut at = 0;
                 for child in node.children(&mut cursor) {
                     if child.kind() == "||" {
@@ -107,7 +107,7 @@ impl Walker<'_> {
                 // from the folder it starts in.
                 let from = own
                     .clone()
-                    .map_or(OpensFrom::Line, |own| self.split.starts_in(own));
+                    .map_or(OpensFrom::Line, |own| self.split.starts_in(own, true));
                 let before = self.split.open_from(from);
                 for child in children
                     .iter()

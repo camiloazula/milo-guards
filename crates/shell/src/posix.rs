@@ -477,6 +477,7 @@ struct Walker<'a> {
 struct Tail {
     here: OpensFrom,
     moved: usize,
+    moves: usize,
     first: usize,
 }
 
@@ -627,7 +628,9 @@ impl Walker<'_> {
             return;
         }
         self.split.branches += usize::from(background);
+        self.split.apart += usize::from(background);
         self.node(node, stage, level);
+        self.split.apart -= usize::from(background);
         self.split.branches -= usize::from(background);
     }
 
@@ -830,7 +833,7 @@ impl Walker<'_> {
     /// may not run.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        let before = self.split.moved_so_far();
+        let before = self.split.moves_so_far();
         let mut at = 0;
         let last = self
             .tail_of
@@ -852,6 +855,7 @@ impl Walker<'_> {
                 self.tail = Some(Tail {
                     here: self.split.opens_here(),
                     moved: self.split.moved_so_far(),
+                    moves: self.split.moves_so_far(),
                     first: self.split.units.len(),
                 });
             }
@@ -1553,7 +1557,8 @@ impl Walker<'_> {
         level: usize,
         own: Range<usize>,
     ) {
-        let from = self.split.starts_in(own);
+        let by_folder = self.opens_by_folder(redirect);
+        let from = self.split.starts_in(own, by_folder);
         self.walk_redirect_from(redirect, stage, level, from);
     }
 
@@ -1638,6 +1643,7 @@ impl Walker<'_> {
         // runs: a group's, loop's or branch's redirects are opened there.
         let here = self.split.opens_here();
         let moved_before = self.split.moved_so_far();
+        let moves_before = self.split.moves_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
@@ -1699,19 +1705,32 @@ impl Walker<'_> {
                 // folder the command starts in, the last command of a list,
                 // pipeline or negation, or, for a group, a loop or a branch,
                 // the folder the line is in before any of it runs.
+                // A call to a function that moves the line matters only to a
+                // redirect that names a file by folder.
+                let by_folder = redirects && self.opens_by_folder(*child);
                 let opens = if !redirects {
                     OpensFrom::Line
                 } else if simple {
-                    self.split.starts_in(own.clone())
+                    self.split.starts_in(own.clone(), by_folder)
                 } else if chained {
-                    self.split.starts_in(placed.clone())
+                    self.split.starts_in(placed.clone(), by_folder)
                 } else if let Some(tail) = &tail {
                     // The last command of a list: after the earlier ones.
-                    self.split
-                        .opens_before(tail.here.clone(), tail.first..own.end, tail.moved)
+                    self.split.opens_before(
+                        tail.here.clone(),
+                        tail.first..own.end,
+                        tail.moved,
+                        tail.moves,
+                        by_folder,
+                    )
                 } else {
-                    self.split
-                        .opens_before(here.clone(), own.clone(), moved_before)
+                    self.split.opens_before(
+                        here.clone(),
+                        own.clone(),
+                        moved_before,
+                        moves_before,
+                        by_folder,
+                    )
                 };
                 if child.kind() == "file_redirect" {
                     self.walk_redirect_from(*child, stage, level, opens);

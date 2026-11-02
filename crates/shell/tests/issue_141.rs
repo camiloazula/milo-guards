@@ -456,6 +456,87 @@ fn a_redirect_on_a_list_that_ends_in_a_group_is_placed_from_where_the_last_comma
 }
 
 #[test]
+fn a_cd_that_never_reaches_the_line_does_not_move_it() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A subshell, a substitution, a pipeline stage or the
+            // background run the `cd` in a process of their own.
+            "cd repos || exit 1; for d in */; do (cd \"$d\" && git pull); done > ../pull.log",
+            "git fetch && cd repos && for d in */; do (cd \"$d\" && git status); done > ../status.txt",
+            "npm ci && cd frontend && (cd app && npm test) > ../test.log",
+            "cd sub || exit 1; (cd x && make) > ../log",
+            "ls && cd repos && for d in */; do echo \"$(cd \"$d\" && pwd)\"; done > ../dirs.txt",
+            "cd sub; (cd x && make) || echo failed; { ls; } > ../log",
+            "f() { (cd sub && make); }; f; f > log.txt",
+            "f() { x=$(cd sub && pwd); }; f; f > log.txt",
+            "f() { cd sub | cat; }; f; f > log.txt",
+            "f() { cd sub & }; f; f > log.txt",
+            "f() ( cd sub; make ); f; f > log.txt",
+        ],
+        &[
+            // A `cd` that does reach the line still moves it.
+            (
+                "cd repos || exit 1; for d in */; do cd \"$d\"; done > ../pull.log",
+                Rule::Overwrite,
+            ),
+            ("f() { cd sub; make; }; cd x; f > log.txt", Rule::Unknown),
+            (
+                "f() { (cd a); cd sub; }; cd x; f > log.txt",
+                Rule::Unknown,
+            ),
+            (
+                "{ cd sub; (cd x); } < ../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+            (
+                "cd a; { (cd x); cd b; } < ../../../.ssh/id_rsa",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_redirect_that_names_no_file_by_folder_on_a_moving_call_is_placed_from_the_line() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "run() { cd \"$1\" && npm test; }; run a 2>&1; run b 2>&1",
+            "t() { cd \"$1\" && cargo test; }; t a 2>&1 | tail; t b 2>&1 | tail",
+            "run() { cd \"$1\" && npm test; }; run a > /dev/null; run b > /dev/null",
+            "f() { cd sub; }; cd x; f 2>/dev/null",
+            "b() { cd app && make; }; cd ..; b > /tmp/log",
+            "build() { cd app && make; }; build; build 2>&1 | tee log",
+            "f() { cd sub; }; f; f < /dev/null",
+            "f() { cd sub; }; f; f >&2",
+            "f() { cd sub; }; f; f >&-",
+            "f() { cd sub; }; f; { f; } 2>&1",
+            "f() { cd sub; }; f; if true; then f; fi > /dev/null",
+        ],
+        &[
+            // A name relative to the folder still is.
+            ("f() { cd sub; }; f; f > log.txt", Rule::Unknown),
+            ("f() { cd sub; }; cd x; f 2>&1 > log.txt", Rule::Unknown),
+            (
+                "f() { cd sub; }; cd x; f > /dev/null < in.txt",
+                Rule::Unknown,
+            ),
+            (
+                "f() { cd sub; }; f; f <<EOF > log.txt\nx\nEOF",
+                Rule::Unknown,
+            ),
+            (
+                "f() { cd sub; cat; }; cd x; f 2>&1 < ../../../.ssh/id_rsa",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}
+
+#[test]
 fn the_paths_of_a_group_are_placed_from_where_it_starts() {
     let repo = "/home/me/work/repo";
     let paths = posix();

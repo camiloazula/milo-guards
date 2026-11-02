@@ -388,8 +388,9 @@ pub(crate) struct Defining {
     name: String,
     /// Where the line is when the definition begins.
     dir: Option<Arg>,
-    /// How many `cd`s the walk had read, and how many units it had.
-    moved: usize,
+    /// How many `cd`s this shell itself had run (see [`Split::own_moves`]),
+    /// and how many units the walk had.
+    own_moves: usize,
     first: usize,
     /// Whether where the line is then is not certain (see
     /// [`Split::opens_here`]).
@@ -566,6 +567,15 @@ pub(crate) struct Split {
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
     pub(crate) branches: usize,
+    /// How deep the line is inside a command that runs in the background,
+    /// where a `cd` does not move this shell.
+    pub(crate) apart: usize,
+    /// How many `cd`s run in this shell itself have been read so far: not
+    /// one in a pipeline stage, the background or behind a wrapper, which
+    /// run in a process of their own. A subshell gives the count back, as
+    /// it does the directory: it tells whether a function body moves the
+    /// line.
+    own_moves: usize,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -713,6 +723,7 @@ pub(crate) struct Place {
     drive: Option<char>,
     drive_guess: bool,
     moves: usize,
+    own_moves: usize,
     later: usize,
     maybe_moved: bool,
 }
@@ -887,6 +898,9 @@ impl Split {
         if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
+            if self.apart == 0 && unit.stage.is_none() && unit.wrappers.is_empty() {
+                self.own_moves += 1;
+            }
             let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
             // Once the line makes a drive, a drive letter may name it: the
             // place is only known when it runs.
@@ -1118,15 +1132,23 @@ impl Split {
     /// [`Self::opens_here`]) when the body moves the line, and the folder a
     /// function it calls was defined in when that moves the line.
     /// `moved_before` is how many `cd`s had been read when the statement
-    /// began.
+    /// began, and `moves_before` how many this shell had run: the body moves
+    /// the line only if it ran one that a subshell did not give back.
+    /// `by_folder` is as for [`Self::starts_in`].
     pub(crate) fn opens_before(
         &mut self,
         start: OpensFrom,
         units: Range<usize>,
         moved_before: usize,
+        moves_before: usize,
+        by_folder: bool,
     ) -> OpensFrom {
-        let moved = self.moved != moved_before;
-        let mut dirs = self.function_starts(units, moved_before);
+        let moved = self.moves != moves_before;
+        let mut dirs = if by_folder {
+            self.function_starts(units, moved_before)
+        } else {
+            Vec::new()
+        };
         if dirs.is_empty() {
             return if moved { start } else { OpensFrom::Line };
         }
@@ -1143,8 +1165,11 @@ impl Split {
     /// Where the redirects on `units` open their files from: the folder the
     /// first of them that moves the line (`cd`, `pushd`, `Set-Location`)
     /// starts in, as the shell opens them before it runs; where the line is
-    /// when none of them moves it.
-    pub(crate) fn starts_in(&mut self, units: Range<usize>) -> OpensFrom {
+    /// when none of them moves it. `by_folder` says the redirect names a file
+    /// by the folder it is opened from; one that does not (`2>&1`,
+    /// `> /dev/null`) is not placed from the folder of a call to a function
+    /// that moves the line.
+    pub(crate) fn starts_in(&mut self, units: Range<usize>, by_folder: bool) -> OpensFrom {
         // The units are only added to: a range holds the same units each
         // time it is asked for.
         let key = (units.start, units.end);
@@ -1165,7 +1190,11 @@ impl Split {
         let Some((index, unit)) =
             mover.and_then(|index| self.units.get(index).map(|unit| (index, unit)))
         else {
-            let starts = self.function_starts(key.0..key.1, self.moved);
+            let starts = if by_folder {
+                self.function_starts(key.0..key.1, self.moved)
+            } else {
+                Vec::new()
+            };
             return if starts.is_empty() {
                 OpensFrom::Line
             } else {
@@ -1183,13 +1212,22 @@ impl Split {
     /// somewhere else than it thinks, when `moved` (how many `cd`s it had
     /// read when the part began) is not how many it has read now: for the
     /// left side of `||`, which only runs the right side when it failed.
-    pub(crate) fn may_not_have_moved(&mut self, moved: usize) {
-        if self.moved != moved {
+    pub(crate) fn may_not_have_moved(&mut self, moves: usize) {
+        if self.moves != moves {
             self.maybe_moved = true;
         }
     }
 
-    /// How many `cd`s the walk has read, for [`Self::may_not_have_moved`].
+    /// How many `cd`s this shell has run so far, for
+    /// [`Self::may_not_have_moved`] and [`Self::opens_before`]: a subshell
+    /// gives the count back, as it does the directory, so a `cd` in one has
+    /// not moved the line.
+    pub(crate) fn moves_so_far(&self) -> usize {
+        self.moves
+    }
+
+    /// How many `cd`s the walk has read, in a subshell or not, for
+    /// [`Self::opens_before`].
     pub(crate) fn moved_so_far(&self) -> usize {
         self.moved
     }
@@ -1247,7 +1285,7 @@ impl Split {
         Defining {
             name: name.to_string(),
             dir: self.dir.clone(),
-            moved: self.moved,
+            own_moves: self.own_moves,
             first: self.units.len(),
             unsure: self.maybe_moved || self.repeats > 0,
             opens,
@@ -1263,13 +1301,15 @@ impl Split {
         let Defining {
             name,
             dir,
-            moved,
+            own_moves,
             first,
             unsure,
             opens,
             ..
         } = defining;
-        let moves = self.moved != moved
+        // A `cd` in a subshell, a substitution, a pipeline stage or the
+        // background leaves the line where it is.
+        let moves = self.own_moves != own_moves
             || self.units.get(first..).into_iter().flatten().any(|unit| {
                 self.reaching
                     .iter()
@@ -1625,6 +1665,7 @@ impl Split {
             drive: self.drive,
             drive_guess: self.drive_guess,
             moves: self.moves,
+            own_moves: self.own_moves,
             later: self.later.len(),
             maybe_moved: self.maybe_moved,
         }
@@ -1648,6 +1689,7 @@ impl Split {
         self.drive = place.drive;
         self.drive_guess = place.drive_guess;
         self.moves = place.moves;
+        self.own_moves = place.own_moves;
         self.maybe_moved = place.maybe_moved;
     }
 
