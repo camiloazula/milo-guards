@@ -429,9 +429,72 @@ The redirect of the next command is placed from where the line now is. In a
 POSIX shell only a redirect on the command itself is read this way, and that
 includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
-and it is read as the last command's): a file a
-group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
-still placed from where the line is when its body ends. In PowerShell only the
+and it is read as the last command's). The file a group, a loop, a branch or a
+subshell is redirected from is opened before its body runs, so it is placed from
+the folder the line is in when that statement begins, not from the one a `cd` in
+the body leaves it in. When the statement is the last command of a list (`cd ~
+&& { cat; } < .ssh/id_rsa`, `cd ~ && while read l; do …; done < f`), the grammar
+puts the redirect on the whole list, but the shell opens it after the commands
+before it ran, so "when the statement begins" is after them: the folder and the
+count of `cd`s are taken just before that last command, not before the list,
+and the redirect is on that last command only (the key above is read from
+`~`, and a `send_secret` pipe after it finds it). A `cd` before it that may not
+have run (after `||`, or the right side of `&&` or `||`) makes the folder
+uncertain, as for a `cd` above. A pipeline's last stage starts where the
+pipeline starts (`cd ~ | { cat; } < .ssh/id_rsa` opens it from the folder the
+line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
+l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
+../../.ssh/id_rsa` does (`read_secret`), `{ cd sub; ls; } > ../x` writes
+`<cwd>/../x`, while `{ cd ../..; cat; } < .ssh/id_rsa` reads `<cwd>/.ssh/id_rsa`
+and `{ cd ../..; ls; } > x` writes `<cwd>/x`. When that folder is not certain,
+the redirect is placed from every folder that may be it, as for a `cd` above:
+where the line is when the statement ends too if the statement is in a loop or
+a function body, and where the line began too if an earlier `cd` may not have
+moved it. A redirect on a call to a function whose body moves the line
+(`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
+well, from the folder the line is in when the function is called. The walk
+applies the body's `cd` once, where the function is defined, so it cannot name
+that folder after the definition unless nothing has moved the line since: it
+places the redirect from the folder the function was defined in and from where
+the line is when the redirect is read when no `cd` was read between the
+definition and the call, the function was not called before, and the line was
+surely where the definition was read. Otherwise (`f() { cd sub; cat; }; cd x; f
+< ../../../.ssh/id_rsa`, `f; f < …`, `ls || cd a; f() { …; }; f < …`, a call in
+a loop, a call to a function that calls one that moves the line) the folder is
+only known when it runs, and the line is `unknown` for a name relative to the
+folder; a redirect that names none (`2>&1`, `>&2`, `> /dev/null`, `~/x`) is
+placed from where the line is. A `cd` that never reaches the line does not
+count as the body moving it: one in a subshell `( … )` or a `$( … )` does not
+move the statement (`for d in */; do (cd "$d" && make); done > ../log` opens
+`../log` from where the line is). A `cd` behind `command`, `builtin` or `time`,
+in any stage of a pipeline (zsh runs the last in this shell), in the background
+or behind `env` or `nohup` may or may not reach the line, so the walk counts it
+as moving it, and a function with one is a function that moves the line: `f() {
+command cd sub; cat; }; f < ../../.ssh/id_rsa`, `f() { cd sub & cat; }; f <
+../../.ssh/id_rsa` and `f() { cd sub | cat; }; f; f > log` are read like the
+same with a plain `cd`. A redirect placed from the folders of more than a few
+dozen functions that move the line, each defined in another folder, is
+`unknown`, not judged from each of them. A later definition of a function
+that the line surely runs in its own shell replaces the earlier one of the same
+name, so a name defined many times is read once, and `unknown` once however
+many calls reach it. One that may not run there is kept beside the earlier one,
+since the earlier one may be the function a call reaches: the right side of
+`&&` or `||`, a branch of `if` or `case`, a loop, a function body, the
+background, a subshell `( … )`, a `$( … )` or `<( … )`, a pipeline stage and a
+script in a process of its own (`bash -c`). So `f() { :; } > .bashrc; cd ~;
+false && f() { cd .; }; f`, `… ; (f() { cd .; }); f` and `… ; f() { cd .; } & f`
+are `unknown` and `f() { echo x; } > .bashrc; cd ~; f() { cd .; }; f` is not. A
+line that defines more than a few hundred functions that move the line or whose
+definition is redirected (a name defined again counts again, kept or replaced)
+is `unknown`, and says so once, instead of placed from where each function was
+defined. A redirect written on the
+definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
+call, before the body, so it is placed like a group's, from the folder the line
+is in where the function is defined, not from where the body ends; a name
+relative to the folder (not `/dev/null`, `~/x` or `2>&1`) that a call reaches
+after a `cd`, a second call of a function that moves the line, a call in a loop
+that later moves the line, or from a definition the line may not have reached,
+is `unknown` too. In PowerShell only the
 redirects of the command itself are placed so: a redirect inside a `$()` in its
 arguments is placed from where the line is there, and so is a redirect that
 follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
@@ -683,6 +746,31 @@ the same line. It is `stop_system` when the line stops more than a name:
   and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
   after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
   process but the ones named) are always `stop_system`.
+- **Process 0, a group, or an id it cannot read.** `kill` of 0 signals every
+  process in the caller's own group, the program that ran the line included
+  (`kill 0`, `kill -9 0`), and of a negative id a whole group (`kill -- -1234`,
+  `kill -1234`; `-1` is every process). The inline calls `os.kill`, `os.killpg`,
+  `process.kill` and `Deno.kill` read the same way (`os.kill(0, 9)`). An id
+  only known when it runs (`kill $pid`, `kill $(pgrep x)`, `xargs kill`), or too
+  long for a process id, may be any of them, so it is `stop_system` too, and
+  so is a negative expansion such as `kill -- -$$`, the caller's own group,
+  and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
+  job (`kill %1`), `$!`, `$$`, signal 0 (`kill -0 $pid`, which sends nothing)
+  and `kill -l` are safe; `kill 1` is `stop_system`. The `kill` program
+  reorders its words and reads a signal option after an id (`kill -0 4242 -s 9
+  -1` is SIGKILL to every process), so the guard does not model that order. A
+  line is signal 0 in one plain shape only: the first word after `kill` is
+  exactly `-0`, `-s 0`, `-n 0` or `--signal=0`, and every later word is a
+  literal positive decimal id, a job, `$!`, `$$`, `$PPID`, or a plain variable
+  (`$pid`, `"$pid"`, `${pid}`): `kill -0 4242`, `kill -0 $pid` and `kill -s 0
+  %1`. No other option, no `--`, no brace list, wildcard or substitution and
+  no dash anywhere else is allowed, and such a line is judged by its ids as
+  any other: `kill -0 0`, `kill -0 -1234`, `kill -0 -1 -s 9`, `kill -0 -q 1
+  -s 9 -1`, `kill -0 {-s,KILL} -1`, `kill -0 * -1` and `kill -0 "$(cat
+  app.pid)"` are `stop_system`. The options of any other line are read as the
+  shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to `--`
+  or the first other word, and the listing options `-l`, `-L` and `--list`
+  count only as the first word (`kill -9 -l -1` still stops every process).
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name
@@ -704,14 +792,26 @@ the same line. It is `stop_system` when the line stops more than a name:
   `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
   "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
   `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
-  stops the programs that hang, are read; with `/IM`, `/PID` or an
-  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
-  names are judged.
+  stops the programs that hang, are read, and so is `PID eq 1234`, which
+  names one process and is judged as `/PID 1234` is (`PID eq 0` is not
+  safe); with `/IM`, `/PID`, an `IMAGENAME eq` or a `PID eq` filter, the other
+  filters only narrow what is named, and the names are judged. `tskill`, the
+  Terminal Services way to end a process, is read like `taskkill`: its word
+  that is not an option (`/a`, `/v`, `/server:name` and `/id:n` start with a
+  slash) is a name when it is not a number, judged as `/IM` is, and an id
+  otherwise, judged as `/PID` is (`tskill node` and `tskill 1234` are safe,
+  `tskill explorer`, `tskill 0` and `tskill $n` are `stop_system`).
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
-  `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
+  `wininit`, `lsass`, `smss`, `services`, `svchost`, and the ones whose loss
+  ends the session or locks you out: `sshd`, the macOS `cfprefsd` and
+  `SystemUIServer`, the Linux `Xorg`, `gnome-shell`, `plasmashell`,
+  `kwin_x11`, `kwin_wayland`, `dbus-daemon` and `systemd-logind`, and the
+  Windows `dwm`; in any case and with
   `.exe` or a folder in front (`killall /sbin/init` picks the process by its
-  file, so the last part of the name is the name). `pkill` and `killall
+  file, so the last part of the name is the name). The list is short and plain:
+  a name the guard cannot read for sure is the next item, not a longer list.
+  `pkill` and `killall
   -r`/`-m` search their regular expression in the name, so it is compared two
   ways, per alternative: whole, without its anchors and brackets (`^init$`,
   `/sbin/init`, `Explorer`); and as a regular expression, asking whether it
@@ -721,7 +821,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   a trailing `$` to end with it, `-x` both. The case counts, so `pkill -f
   server` is not `WindowServer`, unless it is ignored (`pkill -i`, `killall
   -I`). The expression is read with its syntax, never skipped for having
-  some: `.`, a `[…]` set and an escape are one character, a group and `|` are
+  some (that is `pkill`'s and `killall`'s POSIX syntax; PowerShell's `-match`
+  is .NET's, see the `Where-Object` item below): `.`, a `[…]` set and an escape are one character, a group and `|` are
   read as they are, a `*`, `?` or `{0,…}` lets what it follows match nothing
   and `*`, `+` or `{n,m}` repeat it. Where the syntax is only known roughly
   (an escape, a collating element, `\b`, a back reference) it is read as
@@ -733,8 +834,9 @@ the same line. It is `stop_system` when the line stops more than a name:
   and all, in the usual command lines of the system processes
   (`/sbin/launchd`, `/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console`,
   the `WindowServer -daemon` in SkyLight, `/sbin/init`, `/lib/systemd/systemd`,
-  `/usr/lib/systemd/systemd`), with the arguments launchd starts the first
-  two with (its jobs for them run `loginwindow console` and `WindowServer
+  `/usr/lib/systemd/systemd`, and one path for each of the others, such as
+  `/usr/sbin/sshd` and `/usr/bin/gnome-shell`), with the arguments launchd
+  starts the first two with (its jobs for them run `loginwindow console` and `WindowServer
   -daemon`), and a match that is still going at the end of the line and can
   go on into a space counts, since any further arguments are not known:
   `pkill -f /System/Library`, `pkill -f System`, `pkill -f console`, `pkill
@@ -743,7 +845,15 @@ the same line. It is `stop_system` when the line stops more than a name:
   vite`, `pkill -f 'rails console'` and `pkill -f ./target/debug/myapp` are
   not. `killall` without
   `-r` compares whole names only. A PowerShell or `taskkill` wildcard that
-  matches one is the same (`Stop-Process -Name s*`).
+  matches one is the same (`Stop-Process -Name s*`). A service manager that
+  stops one is read through the same list: `systemctl stop` or `kill` of
+  `systemd-logind`, `sshd` (also `ssh`, which is its unit on Debian) or `dbus`,
+  `service … stop` of them, and `launchctl kill` or `stop` of a label that has
+  such a name in it (`system/com.apple.WindowServer`,
+  `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, and so is a `launchctl
+  kill` or `stop` whose target is only known when it runs; the target of any
+  other label (`gui/501/com.me.worker`) is the user's own.
+  `systemctl restart` is not a stop and stays safe.
 - **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
   `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -754,11 +864,35 @@ the same line. It is `stop_system` when the line stops more than a name:
   lists: `Get-Process node | Stop-Process` is the name `node`, and any other
   first stage (`$procs | Stop-Process`) is known only when it runs. A
   `Get-Process` that is given `-Id` or `-InputObject` picks processes, as
-  `Stop-Process -Id` does, and is safe; one given no name lists every
-  process. A stage between the listing and `Stop-Process` is never "every
+  `Stop-Process -Id` does, and its ids are judged as that is (see the next item);
+  one given no name lists every process. A stage between the listing and `Stop-Process` is never "every
   process": `Where-Object` is read when it only compares `Name` or
-  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
-  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `ProcessName` with `-eq`, `-like` or `-match` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name; a
+  `-match` pattern written out is a regular expression searched for in each
+  name, read as `pkill` reads one except where .NET differs (below), so
+  `-match 'node'` is `-like '*node*'`
+  (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
+  it runs are `stop_system`, as is `-notmatch`). A `-match` pattern is a .NET
+  expression, and the guard reads it only in the POSIX ERE subset. Two things
+  are read the .NET way: a `/` is a plain character (a process name holds no
+  folder, so `'/?explorer'` and `'svc/*host'` are `stop_system`, the `?` or
+  `*` applying to the `/`), and an anchor takes a quantifier that makes it
+  optional (`'^*explorer'`, `'$?explorer'`, `'^{0,1}svchost'` match like the
+  name without it). A pattern outside the subset is not read: one with a
+  `(?` in it (a lookaround, an inline option, a comment, a named group, a
+  conditional) or an escape that is a letter or digit other than `\d \D \w \W
+  \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
+  read, and the filter is "picked by a filter only known when it runs"
+  (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
+  a backslash inside a bracket expression (.NET reads `[\]o]` as the set `]`
+  and `o`, where POSIX closes the set at the first `]`), one with a `[`
+  inside a bracket expression (.NET reads `[:`, `[.` and `[=` as a plain `[`
+  and closes the set at the next `]`, where POSIX reads a class or a
+  collating element up to `:]`, `.]` or `=]`, and `[a-z-[0]]` is a set minus
+  another) and one with a
+  character that is not ASCII (.NET ignores case by the current culture, so
+  `İ` can stand for `i` and `ſ` for `s`, and the guard folds ASCII only);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
   `-Property Name`) keep some of the same processes; a `Select-Object` given
   `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
@@ -771,8 +905,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
   `$_.Id` given to `-Id` or `-InputObject` inside a `ForEach-Object` block
   of a pipeline that starts with `Get-Process`. Any other `-Id` or
-  `-InputObject` value (`$pid`, `(Get-NetTCPConnection …).OwningProcess`) picks
-  processes the guard does not read and is safe. Only a member that is the
+  `-InputObject` value is judged as an id (see the next item).
+  Only a member that is the
   process's own passes the listing on: `.Id`, `.Name` and `.ProcessName`, in
   any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
   as `-ExpandProperty` does, and is any other stage: `Stop-Process
@@ -790,11 +924,58 @@ the same line. It is `stop_system` when the line stops more than a name:
   (`($_.Id + 1)`, `"1$($_.Id)"`, `-not $_`, a block of its own) is "stops
   processes only known when it runs". After a first stage that is not a
   `Get-Process` (`Get-NetTCPConnection … | % { Stop-Process -Id $_.OwningProcess }`)
-  `$_` is not a process and the value is read as any other `-Id`. A
+  `$_` is not a process and the value is read as any other `-Id`; the item
+  itself (`$procs | % { Stop-Process -Id $_.Id }`) is "stops processes only
+  known when it runs". A
   `Get-Process` anywhere else in the arguments, inside another command or a
   block, is read as one such listing, once, however many there are: the
   arguments are read in one pass that never goes below a command, so the time
   is the line's length however deeply they nest.
+- **A process picked by an id, or through a method.** An id is safe when it
+  is written out in digits: `Stop-Process -Id 1234`, `Stop-Process 1234,5678`,
+  `kill 4242`, `taskkill /PID 1234`, `Get-Process -Id 1234 | Stop-Process`,
+  and `$PID`, the shell that runs the line. Anything else is a process only
+  known when it runs, and may be any process the system needs, so it is
+  `stop_system`: a variable (`Stop-Process -Id $id`, `-InputObject $p`), a
+  file's text (`-Id (Get-Content app.pid)`), another cmdlet's listing
+  (`-Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess`, the PowerShell
+  of `kill $(lsof -ti:3000)`), the item of a `ForEach-Object` block that no
+  `Get-Process` feeds, and a word that is not a number (`0x10`, `-1`,
+  `'1234,5678'`, one too long for an id). An id of 0 is the caller's own
+  process group where PowerShell runs on Linux or macOS, and 1 is the first
+  process of the system, as for `kill`: both are `stop_system`
+  (`Stop-Process -Id 0`, `taskkill /PID 1`). `taskkill /PID` and the
+  `processid` of `wmic process where processid=1234 delete` are judged the
+  same way, and so are the ids a `Get-Process -Id` listing is given. A
+  listing counts as the argument only when it is all the argument is: in
+  `-Id ((Get-Process node).Id, $x)` and `-Id (Get-Process node).Id, $x` the
+  `$x` is judged as an id of its own.
+
+  A method called on a process stops it as `Stop-Process` does: `Kill`,
+  `Terminate` (the WMI one) and `CloseMainWindow`, which asks a window to
+  close. The call is judged as the `Stop-Process` of its object. The object is
+  read for sure in three shapes: a `Get-Process` listing (`(Get-Process
+  node).Kill()`, `Get-Process node | % { $_.Kill() }`, `Get-Process node |
+  % Kill`, also `ForEach-Object -MemberName Kill`), judged by its name as the
+  pipeline is; `[System.Diagnostics.Process]::GetProcessById(1234)` with the
+  id in digits, judged as an id; and the item of a block after a listing.
+  Every other object may be any process: `$p.Kill()`, `$procs | % { $_.Kill()
+  }`, `(Get-Process node).Parent.Kill()`, `(Get-Process node)[0].Kill()`,
+  `[System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }`,
+  `(Get-WmiObject Win32_Process).Terminate()`. `Invoke-CimMethod` and
+  `Invoke-WmiMethod` (also `icim`, `iwmi`) given `Terminate`, and `wmic
+  process … call terminate` and `… delete`, stop the processes an instance or
+  a `where` clause picks: `wmic process where name="node.exe" call terminate`
+  is the name `node.exe`, and `where processid=1234` is an id; no `where`, a
+  `like`, a second condition, or a value only known when it runs is
+  `stop_system` (in PowerShell a word of the clause that holds a `$` or a
+  backtick is such a value, `wmic process where name=$n call terminate`; in
+  cmd a `$` is a character of the name), and `process` is the alias of the
+  class `path win32_process` (or `cim_process`), so `wmic path win32_process
+  where name="explorer.exe" delete` is read as `wmic process where
+  name="explorer.exe" delete`. The CIM or WMI method is also `stop_system` (the instances come from a
+  listing the guard does not follow). The array's `.ForEach('Kill')` is a
+  line the grammar does not read, so it is `unreadable`.
 - **A fork bomb.** A function that calls itself in the background or as one
   side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
   `stop_system` however it is called, even when the line only defines it, and
@@ -809,7 +990,13 @@ the same line. It is `stop_system` when the line stops more than a name:
 `-SIGHUP`, `-USR1`; any other run of capitals is options, so `-P1` is `-P 1`
 and `-U0` is `-U 0`), long options abbreviated to any prefix that fits one
 (`--pa 1` is `--parent 1`; a prefix that fits several is read as the
-riskier). Options written after the first name are read both ways, because
+riskier). psmisc `killall` also takes its long options with one dash
+(`killall -user me`, `-ignore-case`, `-context x`), where the BSD one reads
+the same word as letters (`-u ser`), so a `killall` line is read both ways and
+the riskier counts: `killall -user me` and `killall -context x` (no name, so
+every process the filter picks) and `killall -ignore-case -r WINDOW` are
+`stop_system`, `killall -user me node` is not. A signal (`-HUP`) is never a
+long option. Options written after the first name are read both ways, because
 the programs differ: GNU `pkill` reads on, while the macOS and BSD `killall`
 and `pkill` stop reading options at the first name, so every later word is a
 name too, a `-u` and its user included. Every word after the first name is
@@ -974,7 +1161,11 @@ of their strictest, so each family below was added on that test.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
-  `restart`, `enable` and `reload` are safe too. The exception is a unit
+  `restart`, `enable` and `reload` are safe too. One exception is a unit or
+  label that runs a process the system needs (`systemctl stop systemd-logind`,
+  `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
+  as stopping the process is (see
+  [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
   that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
   `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
@@ -2049,6 +2240,27 @@ backslash-newline: every shell keeps its tabs (`DR\` then a tab and `OP`
 is `DR`, a tab and `OP`). A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
 
+The grammar reads a `$(…)` in an unquoted body but not a backtick
+substitution, which the shell runs just the same, for every reader of the
+here-document (`cat <<EOF` + newline + `` `rm -rf ~/x` `` + newline + `EOF`
+deletes). The guard finds them itself and reads the code of each as a script
+of its own, so its commands are judged and count for `effect`. A backtick ends
+at the first one no backslash escapes, whatever quotes lie between, and the
+code takes one backslash off `` \` ``, `\\` and `\$` (any other backslash
+stays), as every POSIX shell does. Shells differ on `\"`: bash keeps the
+backslash, dash takes it off (it reads the body as the inside of double
+quotes), so a code that holds one is read both ways and what either shell runs
+counts (`` `echo "x\"; rm -rf /home/me; echo \"y"` `` is one echoed string
+to bash and three commands to dash). With `<<-` the tabs of the lines after the
+first are taken off. The plain text between a body's expansions is scanned
+like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
+escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads
+as before. What cannot be read is `Unreadable`: a backtick
+that never closes, code that does not parse, a backtick inside a `${…}` (or
+another part the grammar read for itself), and an unquoted here-document in a
+backtick substitution that holds an escaped backtick, where the outer
+substitution takes a backslash off first and the body is not what it shows.
+
 The body of an unquoted delimiter is joined the same way when the guard splits
 the line, also one inside `"$(…)"` or a backtick in double quotes: a
 backslash-newline in it is taken out before the body is read, so `$(r\` then
@@ -2820,9 +3032,11 @@ when it runs, is `Unknown`.
   setting, unless its name could be one that changes what runs (`PATH`, or in
   zsh `path`).
 - A PowerShell method call (`[IO.File]::ReadAllText(...)`, `$x.Delete()`) is
-  no unit, and the rules know only some of them: it is `Unknown`. So is a
-  backtick substitution in an unquoted here-document, which the grammar does
-  not read and the shell runs.
+  no unit, and the rules know only some of them: it is `Unknown`. A backtick
+  substitution in an unquoted here-document, which the grammar does not read
+  and the shell runs, is read as code by the guard (see Data in a database),
+  so it counts for what its commands do, and for `Unknown` when it cannot be
+  read.
 - **A path known only when it runs makes the line `Unknown`.** A reader's file
   operand or the source of a `<` redirect (`cat $f`, `cat < "$F"`, `cat
   "$(pwd)/x"`, `grep x "$f"`, `type %X%`, `Get-Content $x`, `cat ~root/x`) may
