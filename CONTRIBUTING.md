@@ -75,6 +75,9 @@ cargo install cargo-deny       # for just deny and just advisories
 - A new rule comes with table tests of safe and risky lines
   ([GUIDELINES.md](GUIDELINES.md)), and a rule's wire name never changes once
   a caller uses it.
+- A test goes in the file named by what it checks, never in one named after
+  a ticket or a review; a fix adds rows to that file
+  ([GUIDELINES.md](GUIDELINES.md#tests)).
 - Nothing is released yet, and the repository is private. Callers depend on a
   git commit.
 

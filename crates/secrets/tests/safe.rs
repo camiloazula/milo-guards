@@ -5,9 +5,20 @@
 
 mod common;
 
-use common::fill;
+use common::{base64url, fill, nothing_wrong, s};
 use milo_guards_core::testing::check;
 use milo_guards_secrets::{find, Rule};
+
+/// Every row is Safe.
+fn assert_safe(rows: &[String]) {
+    for row in rows {
+        assert!(
+            find(row).is_safe(),
+            "{row:?}\n  got {:?}",
+            find(row).findings()
+        );
+    }
+}
 
 #[test]
 fn hashes_ids_and_encoded_data_are_safe() {
@@ -333,6 +344,7 @@ fn a_stand_in_is_safe_by_the_shape_of_the_whole_value() {
         "x = connect(host, token=DEFAULT_TOKEN)",
         "options = {token: DEFAULT_TOKEN}",
         "def auth(self, password=None, token=DEFAULT_TOKEN):",
+        "token = DEFAULT_TOKEN",
         "CLIENT_SECRET=REPLACE_ME",
         "export API_KEY=YOUR_API_KEY_HERE",
         "API_KEY=YOUR_API_KEY_HERE",
@@ -501,4 +513,237 @@ fn a_placeholder_key_is_safe_by_what_follows_the_providers_prefix() {
     ] {
         assert!(!find(&key).is_safe(), "{key}");
     }
+}
+
+#[test]
+fn the_files_of_a_code_base_that_look_like_a_secret_are_safe() {
+    let mut bad = Vec::new();
+    for (label, text) in [
+        (
+            "git sha",
+            "commit 3f786850e387550fdab836ed7e6dc881de23001b\nMerge: a1b2c3d e4f5a6b",
+        ),
+        (
+            "uuid",
+            "id = \"550e8400-e29b-41d4-a716-446655440000\"",
+        ),
+        ("npm integrity", "\"integrity\": \"sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==\""),
+        ("sri", "<script src=\"x.js\" integrity=\"sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC\" crossorigin=\"anonymous\"></script>"),
+        ("go.sum", "golang.org/x/text v0.3.7 h1:olpwvP2KacW1ZWvsR7uQhoyTYvKAupfQrRGBFM352Gk=\ngolang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ="),
+        (
+            "docker digest",
+            "image: nginx@sha256:0d17b565c37bcbd895e9d92315a05c1c3c9a29f762b011a10c54a66cd53c9b31",
+        ),
+        (
+            "css",
+            ".a{color:#ff00aa;background:#0a0b0c}.b{color:rgba(0,0,0,.5)}",
+        ),
+        ("minified js", "!function(e,t){\"object\"==typeof exports?module.exports=t():e.x=t()}(this,function(){var n={token:void 0,key:function(e){return e+1}};return n.passwordField=\"pwd1\",n});"),
+        ("base64 fixture", "const FIXTURE: &str = \"SGVsbG8sIFdvcmxkISBUaGlzIGlzIGEgZml4dHVyZSBmb3IgdGVzdGluZyAwMTIzNDU2Nzg5\";"),
+        (
+            "placeholder <your-key>",
+            "api_key = \"<your-key>\"",
+        ),
+        (
+            "placeholder xxxx",
+            "API_KEY=xxxxxxxxxxxxxxxx\nTOKEN=XXXXXXXXXX",
+        ),
+        (
+            "placeholder ${}",
+            "password: ${DB_PASSWORD}\ntoken = \"${API_KEY}\"",
+        ),
+        (
+            "placeholder changeme",
+            "password=changeme\nPASSWORD: changeme123",
+        ),
+        (
+            "placeholder your-api-key-here",
+            "OPENAI_API_KEY=your-api-key-here",
+        ),
+        ("placeholder sk-...", "OPENAI_API_KEY=sk-..."),
+        (
+            "placeholder ghp_xxx",
+            "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        ),
+        (
+            "placeholder dummy",
+            "password = \"dummy_password\"\nsecret: test-secret-value",
+        ),
+        (
+            "placeholder REPLACE_ME",
+            "CLIENT_SECRET=REPLACE_ME\nAPI_TOKEN=TODO",
+        ),
+        (
+            "placeholder <token>",
+            "Authorization: Bearer <token>\nAuthorization: Bearer YOUR_TOKEN_HERE",
+        ),
+        ("rust code", "fn login(password: &str) -> Result<Token, Error> {\n    let token = self.client.token()?;\n    let secret_key = config.secret_key.clone();\n    let api_key = env::var(\"API_KEY\")?;\n    if password == stored_password { }\n}"),
+        ("python code", "def auth(self, password=None, token=DEFAULT_TOKEN):\n    self.token = token or os.environ['TOKEN']\n    secret = get_secret('name')\n"),
+        (
+            "kwargs",
+            "client = Client(api_key=api_key, secret_key=settings.SECRET_KEY, token=token)",
+        ),
+        (
+            "ts types",
+            "interface Creds { password: string; token?: string; apiKey: string | undefined }",
+        ),
+        (
+            "semver/date",
+            "version 2024.10.31 released 2024-10-31T12:00:00Z build 20241031",
+        ),
+        (
+            "cargo.lock checksum",
+            "checksum = \"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90\"",
+        ),
+        ("yarn.lock", "  resolved \"https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz#679591c564c3bffaae8454cf0b3df370c3d6911c\""),
+        ("pnpm lock", "  /lodash@4.17.21:\n    resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}"),
+        (
+            "token count",
+            "max_tokens: 4096\ntotal_tokens=123456\nprompt_token_count: 99",
+        ),
+        (
+            "csrf meta",
+            "<meta name=\"csrf-token\" content=\"{{ csrf_token() }}\">",
+        ),
+        ("ssh pubkey", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl user@laptop"),
+        ("public key pem", "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfakefakefakefakefakefakefakefakefakefake\n-----END PUBLIC KEY-----"),
+        ("cert pem", "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUfakefakefakefakefakefakefakefake0123456789\n-----END CERTIFICATE-----"),
+        (
+            "hex color long",
+            "fill=\"#aabbcc\" stroke=\"#112233\"",
+        ),
+        (
+            "k8s configmap",
+            "data:\n  key: value\n  token_ttl: 3600s\n  password_min_length: 12",
+        ),
+        ("aws example", "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+        (
+            "url with port",
+            "http://localhost:8080/api and https://user@github.com/x and git@github.com:org/repo.git",
+        ),
+        (
+            "ipv6/time",
+            "at 12:30:45 on ::1 and fe80::1 and std::string::String",
+        ),
+        (
+            "jwt-like doc",
+            "A JWT looks like eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+        ),
+        (
+            "password in prose",
+            "Your password: must be 12 characters long. The token: expires in 3600 seconds.",
+        ),
+        (
+            "env var refs",
+            "export TOKEN=$(cat /run/secrets/token)\nPASSWORD=\"$(vault read -field=pw secret/db)\"",
+        ),
+        ("build number", "build +20240101"),
+        ("base64 image", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="),
+        (
+            "windows path",
+            "C:\\Users\\fake\\AppData\\Local\\token_cache.bin",
+        ),
+        (
+            "sql",
+            "SELECT password_hash FROM users WHERE token = $1 AND secret IS NULL;",
+        ),
+        (
+            "password=****",
+            "password=********\nsecret: \"••••••••\"",
+        ),
+        ("go struct tags", "Password string `json:\"password\" yaml:\"password\"`\nToken string `json:\"token,omitempty\"`"),
+        (
+            "generic: key with digit word",
+            "secret_name: prod-db-2\ntoken_type: bearer1",
+        ),
+        (
+            "helm values",
+            "auth:\n  secretKey: postgres-password\n  existingSecret: my-secret",
+        ),
+        (
+            "github actions",
+            "token: ${{ secrets.GITHUB_TOKEN }}\npassword: ${{ secrets.PW }}",
+        ),
+        (
+            "terraform",
+            "password = var.db_password\nsecret_key = random_password.x.result",
+        ),
+    ] {
+        s(&mut bad, label, text);
+    }
+    nothing_wrong(&bad);
+}
+
+#[test]
+fn a_dotted_chain_of_identifiers_is_not_a_discord_token() {
+    assert_safe(&[
+        "const r = NavigationControllerDelegate.handler.processIncomingNavigationRequest(x);"
+            .to_string(),
+        "Navigation_Controller_Deleg.handler.processIncomingNavigationRequest()".to_string(),
+        "OrderProcessingPipelineFactory.builder.createDefaultOrderProcessingPipeline(cfg)"
+            .to_string(),
+        "ModelViewControllerBinding.target.updateObservedModelViewControllerState".to_string(),
+        // The first part decodes to letters, not to an id.
+        format!(
+            "see {}.GaBcDe.{}",
+            base64url("abcdefghijklmnopqr"),
+            fill("FakeDiscordTok_-9", 38)
+        ),
+        // Digits and letters: not an id either.
+        format!(
+            "x = {}.GaBcDe.{}",
+            base64url("12345678901234567x"),
+            fill("FakeDiscordTok_-9", 38)
+        ),
+        // An id that is too short, and one that is too long, are not a user's.
+        format!(
+            "{}.GaBcDe.{}",
+            base64url("1234567890123456"),
+            fill("FakeDiscordTok_-9", 38)
+        ),
+        format!(
+            "{}.GaBcDe.{}",
+            base64url("1234567890123456789012"),
+            fill("FakeDiscordTok_-9", 38)
+        ),
+    ]);
+}
+
+#[test]
+fn a_quoted_word_of_a_locale_file_is_no_password() {
+    assert_safe(&[
+        "{ \"password\": \"Contraseña\", \"confirm_password\": \"Confirmar\" }".to_string(),
+        "\"forgot_password\": \"Forgot?\"".to_string(),
+        "\"forgot_password\": \"Forgot!\"".to_string(),
+        "{\"password\": \"Passwort\", \"new_password\": \"Neues\"}".to_string(),
+        "{\"password_confirmation\": \"Confirmación\"}".to_string(),
+        "{\"secret\": \"Geheimnis\"}".to_string(),
+        "  \"reset_password\": \"Réinitialiser\",".to_string(),
+        "{\n  \"login\": \"Login\",\n  \"password\": \"Mot de passe\"\n}".to_string(),
+    ]);
+}
+
+#[test]
+fn a_cursor_of_pagination_is_no_token() {
+    assert_safe(&[
+        "\"next_page_token\": \"CgsIABCDEF12345\"".to_string(),
+        "{\"nextPageToken\": \"CgsIABCDEF12345\"}".to_string(),
+        "{\"prev_page_token\": \"CgsIABCDEF12345\"}".to_string(),
+        "{\"NextToken\": \"AAAAAAAAAAABBBBBBBBBB1234567890\"}".to_string(),
+        "\"continuation_token\": \"eyJhIjoxfQ12345\"".to_string(),
+        "next_page_token=CgsIABCDEF12345".to_string(),
+        "params.next_page_token = \"CgsIABCDEF12345\";".to_string(),
+        "pagination_token: Zm9vYmFyMDEyMzQ1".to_string(),
+    ]);
+}
+
+#[test]
+fn a_short_quoted_token_is_no_token() {
+    assert_safe(&[
+        "let token = \"abc123\";".to_string(),
+        "let token = \"abc1234\";".to_string(),
+        "token = 'x9y8z7'".to_string(),
+        "api_key = \"k3y123\"".to_string(),
+        "{\"token\": \"t0k3n99\"}".to_string(),
+    ]);
 }

@@ -3256,13 +3256,22 @@ through the front door, which has no logic and no example of its own.
 
 ## Tests
 
-The tests are tables: `tests/posix.rs` for POSIX lines, `tests/windows.rs` for
-PowerShell and cmd, built on core's test kit. Each table has a list of safe
-lines and a list of risky lines with the rule each must break. A new rule
-comes with rows of both kinds.
+The tests are tables, one file for each thing they check, named by it (the
+rule is in [Guidelines](../../GUIDELINES.md#tests)): `tests/posix.rs` for POSIX
+lines, `tests/windows.rs` for PowerShell and cmd, built on core's test kit, and
+beside them a file for each part of the guard (`cd.rs`, `posix_wildcards.rs`,
+`stop_processes.rs`, `drop_data.rs`, `here_documents.rs` and the rest). Each
+table has a list of safe lines and a list of risky lines with the rule each
+must break. A new rule comes with rows of both kinds, and a fix adds rows to
+the file of what it checks. The everyday lines that must stay safe go through
+the front door, in `crates/guards/tests/everyday.rs`, which holds each of them
+to the same agreement checks.
 
 `tests/inline.rs` is the same for inline Python and JavaScript, with a table for
-what is safe, what each rule finds and what stays `unknown`. They judge lines
+what is safe, what each rule finds and what stays `unknown`; the `inline_*.rs`
+files beside it hold how code reaches an interpreter, the names and modules
+the reader follows, what is read whole, file calls, started programs, reads of
+a key and the working directory of the code. They judge lines
 through the reader; the reader's own tables (the acts a piece of code gives,
 what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
 `tests/inline_off.rs` holds every inline line to `unknown` with the feature off
@@ -3275,38 +3284,42 @@ reason judge their lines with the shared `classify` of `tests/common`, which
 does it too. A line `classify` finds risky for anything but an elevation or a
 read of a key must not be `ReadsOnly`. The same check runs `explain` over each
 row: its findings and assessment must be `classify`'s, and its tree must show
-every finding. `tests/issue_15.rs` holds what `explain` shows.
+every finding. `tests/explain.rs` holds what `explain` shows.
 
-`tests/secrets.rs` holds the rows of `read_secret`: the everyday lines that
+`tests/read_secret.rs` holds the rows of `read_secret`: the everyday lines that
 stay safe, a line for every program the rule knows, a redirect, a listing
 piped into a reader, every spelling of a key in a POSIX shell, on a Mac, in
 PowerShell and in cmd, and what the kernel serves; its rows go through the same
-`effect` check. The front door's
+`effect` check. `tests/send_secret.rs` holds the rows of `send_secret`. The
+front door's
 `crates/guards/tests/agree.rs` holds the shell and the file guard to one
 answer (see [Reading a key](#reading-a-key)).
 
-`tests/reach.rs` keeps every probe the review of `Reach` ran, read in a workspace
+`tests/reach.rs` has the rows of `Reach` for a POSIX line, read in a workspace
 with nothing protected, one with a protected `.agent`, one that is the home
-folder and one that holds a folder of logins, in POSIX, PowerShell and cmd; the
-rest of `Reach`'s rows are in `tests/effect.rs`, and core's `reaches_secret`
-has its own in `crates/core/tests/reaches_secret.rs`.
+folder and one that holds a folder of logins, and `tests/reach_windows.rs` the
+same for PowerShell and cmd; the plain readers of the plain workspace are in
+`tests/effect.rs`, and core's `reaches_secret` has its own in
+`crates/core/tests/reaches_secret.rs`.
 `tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
 one that checks every way of reading against a table of links playing the disk,
 the way the docs tell a caller to;
-`tests/issue_66.rs` has the rows of the `..` the list keeps (a link before a
+`tests/paths_links.rs` has the rows of the `..` the list keeps (a link before a
 `..`, every way of reading, a `cd` listed folded and kept, an absolute operand
 after a `cd`, PowerShell and cmd); and
 every row of every table is also held to agree with `effect` on whether it has
 a list (`common::path_disagreement`). Core's `absolute` has its own in
-`crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/issue_66.rs`.
+`crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/opened.rs`.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
 until it is named there. Three files feed the guard random and extreme lines and
 check what no line may do to it, for each of the three shells. `tests/robust.rs`
-holds six tests (seeded noise that never panics, a line too long or too nested
-being unreadable, a line whose nested scripts are read too often being
-unreadable, and three that time a nasty line against a 200 ms bound);
+holds seeded noise that never panics, a line too long or too nested being
+unreadable, a line whose nested scripts are read too often being unreadable,
+too many here-documents, a too-long cmd chain and too-deep nesting not being
+read while everyday lines with many `<<` or `&` are, and the tests that time
+a nasty line against a 200 ms bound;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run

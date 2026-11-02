@@ -1,4 +1,6 @@
-//! The ticket's tables: what is safe, what is risky and under which rule,
+//! A URL judged by its host and scheme: what is safe, what is risky and under
+//! which rule (a local machine, an address in no public range, a metadata
+//! service, credentials, a scheme that is not the web, what cannot be read),
 //! and the words and the target each finding carries.
 
 use milo_guards_core::testing::{check, posix, rules};
@@ -54,50 +56,12 @@ fn a_public_host_over_the_web_is_safe() {
 }
 
 #[test]
-fn the_ticket_rows_are_what_it_says() {
-    check(
-        &[
-            "https://example.com/",
-            "https://docs.rs/url",
-            "http://93.184.216.34/",
-            "https://例え.jp/",
-            "https://example.com:8443/api?x=1",
-        ],
-        &[
-            ("http://localhost:9090/", Rule::LocalAddress),
-            ("http://127.1/", Rule::LocalAddress),
-            ("http://2130706433/", Rule::LocalAddress),
-            ("http://0177.0.0.1/", Rule::LocalAddress),
-            ("http://0x7f000001/", Rule::LocalAddress),
-            ("http://[::ffff:127.0.0.1]/", Rule::LocalAddress),
-            ("http://192.168.1.1/", Rule::LocalAddress),
-            ("http://10.0.0.5:8080/", Rule::LocalAddress),
-            ("http://printer.local/", Rule::LocalAddress),
-            ("http://box/", Rule::LocalAddress),
-            ("http://169.254.169.254/latest/meta-data/", Rule::Metadata),
-            ("http://metadata.google.internal/", Rule::Metadata),
-            ("https://me:hunter2@example.com/", Rule::Credentials),
-            ("file:///home/me/.ssh/id_rsa", Rule::LocalFile),
-            ("ftp://example.com/", Rule::Scheme),
-            ("javascript:alert(1)", Rule::Scheme),
-            ("", Rule::Unreadable),
-            ("http://", Rule::Unreadable),
-            ("not a url", Rule::Unreadable),
-            (
-                &format!("http://example.com/{}", "a".repeat(70_000)),
-                Rule::Unreadable,
-            ),
-        ],
-        on_posix,
-    );
-}
-
-#[test]
 fn a_local_machine_is_a_local_address() {
     check(
         &[],
         &[
             ("http://localhost/", Rule::LocalAddress),
+            ("http://localhost:9090/", Rule::LocalAddress),
             ("http://LOCALHOST/", Rule::LocalAddress),
             ("http://localhost./", Rule::LocalAddress),
             ("http://foo.localhost/", Rule::LocalAddress),
@@ -112,9 +76,11 @@ fn a_local_machine_is_a_local_address() {
             ("http://0/", Rule::LocalAddress),
             ("http://10.0.0.1/", Rule::LocalAddress),
             ("http://10.255.255.255/", Rule::LocalAddress),
+            ("http://10.0.0.5:8080/", Rule::LocalAddress),
             ("http://172.16.0.1/", Rule::LocalAddress),
             ("http://172.31.255.255/", Rule::LocalAddress),
             ("http://192.168.0.1/", Rule::LocalAddress),
+            ("http://192.168.1.1/", Rule::LocalAddress),
             ("http://169.254.1.1/", Rule::LocalAddress),
             ("http://100.64.0.1/", Rule::LocalAddress),
             ("http://100.127.255.255/", Rule::LocalAddress),
@@ -125,10 +91,12 @@ fn a_local_machine_is_a_local_address() {
             ("http://[fec0::1]/", Rule::LocalAddress),
             ("http://router.lan/", Rule::LocalAddress),
             ("http://nas.home.arpa/", Rule::LocalAddress),
+            ("http://printer.local/", Rule::LocalAddress),
             ("http://printer.local./", Rule::LocalAddress),
             ("http://api.internal/", Rule::LocalAddress),
             ("http://host.docker.internal:8080/", Rule::LocalAddress),
             ("http://intranet/", Rule::LocalAddress),
+            ("http://box/", Rule::LocalAddress),
             ("http://wiki.corp/", Rule::LocalAddress),
             ("http://app.test/", Rule::LocalAddress),
             ("http://nas.localdomain/", Rule::LocalAddress),
@@ -209,6 +177,7 @@ fn a_metadata_service_wins_over_a_local_address() {
     for url in [
         "http://169.254.169.254/latest/meta-data/",
         "http://169.254.169.254:80/",
+        "http://metadata.google.internal/",
         "http://metadata.google.internal/computeMetadata/v1/",
         "http://metadata/",
         "http://[fd00:ec2::254]/latest/meta-data/",
@@ -418,6 +387,10 @@ fn what_cannot_be_read_is_unreadable() {
             ("http://127.0.0.1\n.example.com/", Rule::Unreadable),
             (
                 &format!("https://example.com/{}", "a".repeat(8_200)),
+                Rule::Unreadable,
+            ),
+            (
+                &format!("http://example.com/{}", "a".repeat(70_000)),
                 Rule::Unreadable,
             ),
             (

@@ -62,7 +62,7 @@ fn fold(path: &str, separator: char) -> String {
 fn a_posix_path_keeps_every_dotdot_where_it_was_written() {
     let paths = posix();
     for (text, want) in [
-        // The issue's line: after a link, `..` is the parent of its target.
+        // After a link, `..` is the parent of its target.
         ("link/../etc/hosts", "/home/me/work/repo/link/../etc/hosts"),
         ("src/../README.md", "/home/me/work/repo/src/../README.md"),
         ("./src/../a", "/home/me/work/repo/src/../a"),

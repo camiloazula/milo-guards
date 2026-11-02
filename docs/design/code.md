@@ -229,6 +229,7 @@ out of the strict subset, and the code that stays inside it. `modules.rs` holds
 the module specifiers and coding declarations. `robust.rs` runs seeded noise
 through both grammars (no panic, the same answer twice, understood code only
 ever opens a file) and checks that very deep, very long and growing code ends.
-The shell guard's own tables (`crates/shell/tests/inline.rs`, `issue_9.rs` and
-the rest) judge whole lines through the reader and hold the verdicts: the
+The shell guard's own tables (`crates/shell/tests/inline.rs`, the
+`inline_*.rs` files beside it and the rest) judge whole lines through the
+reader and hold the verdicts: the
 reader moved out of the shell guard with none of them changing.
