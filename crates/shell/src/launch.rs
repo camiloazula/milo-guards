@@ -449,6 +449,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         downloaded: false,
         listings: Vec::new(),
         unread_item: false,
+        listed: Vec::new(),
         depth,
     }
 }

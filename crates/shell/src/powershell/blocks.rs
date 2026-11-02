@@ -240,6 +240,10 @@ const HOOKS: [&str; 4] = [
 /// a comma list into one argument each, and a block or a splat is told by
 /// its node, not by its text.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the grammar tells of the argument; none combine into a state"
+)]
 pub(super) struct Shape {
     /// A script block written out.
     pub block: bool,
@@ -248,6 +252,9 @@ pub(super) struct Shape {
     /// Not the first of a comma list (`-ArgumentList $x, $y`: `$y`), so it
     /// belongs to what the list belongs to.
     pub joined: bool,
+    /// Holds a `Get-Process` listing, which the rules for stopping processes
+    /// judge (`Stop-Process -Id (Get-Process node).Id`).
+    pub listing: bool,
 }
 
 /// An argument and its shape.
@@ -306,7 +313,9 @@ fn names(name: &str, fulls: &[&str]) -> bool {
 }
 
 /// A cmdlet's block that is not written out is code the guard does not read,
-/// and so is what a splat may hold.
+/// and so is what a splat may hold. True when it is a `ForEach-Object` that
+/// calls a method which stops a process on each item (`% Kill`), which the
+/// caller judges as the `Stop-Process` it stands for.
 pub(super) fn check(
     split: &mut Split,
     key: &str,
@@ -314,10 +323,11 @@ pub(super) fn check(
     shapes: &[Shape],
     command: &str,
     depth: usize,
-) {
+) -> bool {
     let Some(cmdlet) = CMDLETS.iter().find(|cmdlet| cmdlet.name == key) else {
-        return;
+        return false;
     };
+    let mut stops = false;
     let items: Vec<Item<'_>> = args
         .iter()
         .zip(shapes)
@@ -435,7 +445,7 @@ pub(super) fn check(
         } else {
             arguments.extend(positional.iter());
         }
-        member_names(split, &members, &arguments, command, depth);
+        stops = member_names(split, &members, &arguments, command, depth);
     }
     // A splat holds parameters the line does not write out: a block, or one
     // more than the one written. The cmdlets that run one block only are
@@ -450,20 +460,23 @@ pub(super) fn check(
             Some(command),
         );
     }
+    stops
 }
 
 /// A member name `ForEach-Object` is given (`% Invoke`, `-MemberName Delete`)
 /// is a property or a method it calls on each item, with `arguments`: a
 /// method that runs code or deletes is as risky as `.Invoke()` and
 /// `.Delete()` written out, and so are the ones that build code from text
-/// and the hooks set by name.
+/// and the hooks set by name. True when one of them stops a process
+/// ([`stops_process`]), which is left to the caller to judge by the items.
 fn member_names(
     split: &mut Split,
     members: &[&Arg],
     arguments: &[&Item<'_>],
     command: &str,
     depth: usize,
-) {
+) -> bool {
+    let mut stops = false;
     for name in members.iter().map(|arg| arg.known()) {
         let Some(name) = name else {
             // A name only known when it runs may be any method.
@@ -475,6 +488,10 @@ fn member_names(
             continue;
         };
         let name = bare(name);
+        if stops_process(&name) {
+            stops = true;
+            continue;
+        }
         if matches!(
             name.as_str(),
             "newscriptblock" | "invokescript" | "expandstring"
@@ -514,6 +531,14 @@ fn member_names(
             split.problem(rule, reason, Some(command));
         }
     }
+    stops
+}
+
+/// Whether a method (lower case) stops the process it is called on:
+/// `Kill`, `Terminate` (WMI's) and `CloseMainWindow`, which asks a process
+/// to close. A call of one is judged as the `Stop-Process` of its object.
+pub(super) fn stops_process(method: &str) -> bool {
+    matches!(method, "kill" | "terminate" | "closemainwindow")
 }
 
 /// A member name without the quotes it was written in, in lower case.
