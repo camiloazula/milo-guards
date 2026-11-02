@@ -188,6 +188,93 @@ struct Redirects {
     seen: usize,
     /// Whether an argument that came before has moved the line.
     moved: bool,
+    /// Whether the last word was a redirect operator alone (`1>`), so that
+    /// the next argument is the file it writes.
+    pending: bool,
+}
+
+/// What a bare word (a generic token) holds of a redirect. The grammar reads
+/// only `>`, `>>`, `2>` to `6>`, `*>` and their doubled forms as operators;
+/// a `1>`, a `7>` or a `>` glued to its word (`x>f`) is lexed as part of a
+/// word, which PowerShell reads as a redirect.
+#[derive(Debug, PartialEq, Eq)]
+enum Bare<'t> {
+    /// No `>` in it.
+    Plain,
+    /// A redirect: `word` is what comes before the operator and stays an
+    /// argument (`x` in `x>f`, nothing for `1>f` or `*>f`), `target` the
+    /// file glued to it, or empty when the next argument is the file.
+    Redirect { word: &'t str, target: &'t str },
+    /// A `>` the guard cannot place: in a quote or after an escape, or more
+    /// than one in the word (`a>b>c`).
+    Unclear,
+}
+
+/// Where the first `>` of a word is, read outside its quotes.
+enum Arrow {
+    /// At this byte, outside every quote.
+    At(usize),
+    /// Every `>` is text, in a closed quote (`--format="%an <%ae>"`).
+    Quoted,
+    /// A `>` the guard cannot place: in a quote that is not closed or that
+    /// holds `$(` or a backtick, or after an escape.
+    Unclear,
+}
+
+/// Find the first `>` of a word that is outside its quotes. PowerShell reads
+/// one inside a closed `'...'` or `"..."` as text.
+fn first_arrow(text: &str) -> Arrow {
+    let mut quote: Option<(char, usize)> = None;
+    for (index, c) in text.char_indices() {
+        match quote {
+            Some((open, start)) if c == open => {
+                let inside = &text[start..index];
+                if open == '"' && (inside.contains("$(") || inside.contains('`')) {
+                    return Arrow::Unclear;
+                }
+                quote = None;
+            }
+            Some(_) => {}
+            None => match c {
+                '>' => return Arrow::At(index),
+                '\'' | '"' => quote = Some((c, index + 1)),
+                '`' => return Arrow::Unclear,
+                _ => {}
+            },
+        }
+    }
+    if quote.is_some() {
+        Arrow::Unclear
+    } else {
+        Arrow::Quoted
+    }
+}
+
+/// Read the redirect in the text of a bare word.
+fn bare_redirect(text: &str) -> Bare<'_> {
+    if !text.contains('>') {
+        return Bare::Plain;
+    }
+    let at = match first_arrow(text) {
+        Arrow::At(at) => at,
+        Arrow::Quoted => return Bare::Plain,
+        Arrow::Unclear => return Bare::Unclear,
+    };
+    let (head, rest) = text.split_at(at);
+    let target = rest
+        .strip_prefix(">>")
+        .or_else(|| rest.strip_prefix('>'))
+        .unwrap_or_default();
+    if head.contains(['`', '"', '\'', '$']) || target.contains(['>', '`', '"', '\'']) {
+        return Bare::Unclear;
+    }
+    // A stream number or `*` before the operator is part of it.
+    let word = if matches!(head, "1" | "2" | "3" | "4" | "5" | "6" | "*") {
+        ""
+    } else {
+        head
+    };
+    Bare::Redirect { word, target }
 }
 
 struct Walker<'a> {
@@ -377,6 +464,7 @@ impl Walker<'_> {
             seen: own.end,
             own,
             moved: false,
+            pending: false,
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -389,11 +477,58 @@ impl Walker<'_> {
                 self.command_child(child, level + 1, &mut state);
             }
         }
+        // `echo x 1>` with no file after it.
+        if state.pending {
+            self.unclear_redirect(node);
+        }
+    }
+
+    /// A word that may be a redirect, which the guard cannot place.
+    fn unclear_redirect(&mut self, node: Node<'_>) {
+        self.split.problem(
+            Rule::Unknown,
+            "has a word that may be a redirect the guard cannot read",
+            Some(unit::text(&node, self.source)),
+        );
     }
 
     /// One part of a command (see [`Self::command_children`]).
     fn command_child(&mut self, child: Node<'_>, level: usize, state: &mut Redirects) {
-        if child.kind() != "redirection" {
+        let kind = child.kind();
+        let text = unit::text(&child, self.source);
+        // A parameter after a `1>` (`1> --hard`) may or may not be the file
+        // it writes: the guard keeps it an argument and cannot place the
+        // redirect.
+        if state.pending && kind == "command_parameter" {
+            state.pending = false;
+            self.unclear_redirect(child);
+        }
+        // The file a `1>` is followed by.
+        let target = state.pending && !matches!(kind, "command_argument_sep" | "comment");
+        let bare = match kind {
+            "generic_token" | "command_parameter" if !target => bare_redirect(text),
+            // A name or a list that holds a `>` (`echo>f`, `x>a,b`).
+            // Also after `&` or `.`, where the name is wrapped in a
+            // `command_name_expr`.
+            "command_name" | "command_name_expr" if !target && text.contains('>') => Bare::Unclear,
+            "array_literal_expression" if !target => {
+                let mut arrow = false;
+                unit::for_each_node(child, |inner| {
+                    arrow |= inner.kind() == "generic_token"
+                        && unit::text(&inner, self.source).contains('>');
+                });
+                if arrow {
+                    Bare::Unclear
+                } else {
+                    Bare::Plain
+                }
+            }
+            _ => Bare::Plain,
+        };
+        if bare == Bare::Unclear {
+            self.unclear_redirect(child);
+        }
+        if kind != "redirection" && !target && !matches!(bare, Bare::Redirect { .. }) {
             self.walk(child, None, level);
             return;
         }
@@ -408,8 +543,37 @@ impl Walker<'_> {
             self.split.starts_in(state.own.clone())
         };
         let outer = self.split.open_from(from);
-        self.walk(child, None, level);
+        match bare {
+            Bare::Redirect { target: "", .. } => state.pending = true,
+            Bare::Redirect { target, .. } => {
+                let file = self.glued_target(target);
+                self.split.write(Shell::PowerShell, file);
+            }
+            _ if target => {
+                state.pending = false;
+                let file = self.expr(child);
+                self.split.write(Shell::PowerShell, file);
+                self.walk(child, None, level);
+            }
+            _ => self.walk(child, None, level),
+        }
         self.split.open_from(outer);
+    }
+
+    /// The file glued to a redirect operator (`..\x.txt` in `1>..\x.txt`):
+    /// a variable by itself is read as one, and anything else with a `$` in
+    /// it is only known when it runs.
+    fn glued_target(&self, text: &str) -> Arg {
+        if !text.contains('$') {
+            Arg::Known(unescape(text))
+        } else if text
+            .strip_prefix('$')
+            .is_some_and(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            self.variable(text)
+        } else {
+            Arg::Unknown(text.to_string())
+        }
     }
 
     /// The unit `node` runs; its key, for the walk to know a
@@ -424,6 +588,8 @@ impl Walker<'_> {
         let program_key = program
             .known()
             .map(|program| unit::key(program, Shell::PowerShell));
+        // Whether the last word was a redirect operator alone (`1>`).
+        let mut file_next = false;
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -436,6 +602,27 @@ impl Walker<'_> {
                         unit::script(self.split, rest, Shell::PowerShell, self.depth + 1);
                     }
                     continue;
+                }
+                // A `1>` word and the file after it are a redirect, not
+                // arguments (see `command_child`).
+                // A parameter is not taken for the file (see `command_child`):
+                // it stays an argument.
+                if file_next && element.kind() == "command_parameter" {
+                    file_next = false;
+                } else if file_next && !matches!(element.kind(), "command_argument_sep" | "comment")
+                {
+                    file_next = false;
+                    continue;
+                }
+                if matches!(element.kind(), "generic_token" | "command_parameter") {
+                    if let Bare::Redirect { word, target } = bare_redirect(source) {
+                        if !word.is_empty() {
+                            args.push(Arg::Known(unescape(word)));
+                            shapes.push(blocks::Shape::default());
+                        }
+                        file_next = target.is_empty();
+                        continue;
+                    }
                 }
                 downloads |= self.downloads(element);
                 match element.kind() {
