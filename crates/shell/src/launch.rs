@@ -5,6 +5,7 @@
 //! runner (`npx`, `uvx`, `bunx`) is a wrapper for the program it names.
 
 use crate::dotglob;
+use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
 use crate::startup;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
@@ -54,6 +55,8 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It runs `code`, given inline, in `language`.
+    Inline(Language, Code),
     /// It runs a script it downloads.
     Downloaded,
     /// It runs commands the grammar cannot read, said in the reason.
@@ -65,8 +68,58 @@ pub(super) enum Launch {
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     let outer = split.scope_hidden(false);
+    // What a wrapper in front of the program sets is the program's only.
+    let options = split.node_options.len();
+    let paths = split.python_path.len();
+    let environment = split.environment;
     add_unit(split, unit, depth);
+    split.node_options.truncate(options);
+    split.python_path.truncate(paths);
+    split.environment = environment;
     split.unscope_hidden(outer);
+}
+
+/// Whether the wrapper `key` may hand the program it runs an environment of
+/// its own (`env FOO=1`, `sudo FOO=1`, `xargs`): every wrapper but the few
+/// that only change how the program runs (`time`, `nice`, `timeout`).
+fn sets_environment(key: &str) -> bool {
+    !matches!(
+        key,
+        "time"
+            | "nice"
+            | "ionice"
+            | "nohup"
+            | "builtin"
+            | "timeout"
+            | "gtimeout"
+            | "command"
+            | "exec"
+            | "setsid"
+            | "unbuffer"
+            | "stdbuf"
+            | "caffeinate"
+            | "and"
+            | "or"
+            | "not"
+            | "noglob"
+            | "nocorrect"
+            | "-"
+    )
+}
+
+/// Whether node, given code inline or from its input, is told to run code
+/// from a `data:` URL that is not read: by its own options, or by the
+/// `NODE_OPTIONS` it is given. Python is the same when `PYTHONPATH` puts a
+/// folder outside the workspace where its imports look.
+fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
+    match inline::language(key) {
+        Some(Language::JavaScript) if matches!(key, "node" | "nodejs") => {
+            inline::loads_foreign_code(&unit.args)
+                || inline::options_load_foreign_code(&split.node_options)
+        }
+        Some(Language::Python) => inline::path_loads_foreign_code(&split.python_path),
+        _ => false,
+    }
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
@@ -142,6 +195,13 @@ fn add_launched(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                split.environment += usize::from(sets_environment(&key));
+                split
+                    .node_options
+                    .extend(wrappers::node_options(&unit.args, start));
+                split
+                    .python_path
+                    .extend(wrappers::python_path(&unit.args, start));
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
@@ -157,10 +217,24 @@ fn add_launched(
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
+                split.environment += usize::from(sets_environment(&key));
+                split
+                    .node_options
+                    .extend(wrappers::node_options(&unit.args, start));
+                split
+                    .python_path
+                    .extend(wrappers::python_path(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
-            Launch::Replace(replacement) => unit = *replacement,
+            Launch::Replace(replacement) => {
+                // A package runner puts a venv or `node_modules/.bin` on
+                // `PATH`, passes npm's config on as environment variables
+                // and loads `--env-file`; `bun run` loads `.env`. What it
+                // starts has an environment the line does not show.
+                split.environment += 1;
+                unit = *replacement;
+            }
             Launch::Script(shell, script) => {
                 // A shell started with the option on (`bash -O dotglob -c`,
                 // `zsh -o globdots -c`) runs its script with it on.
@@ -242,6 +316,24 @@ fn add_launched(
                 }
                 return;
             }
+            Launch::Inline(language, code) => {
+                // The paths in the code are read as POSIX ones, and a command it
+                // runs as a POSIX shell line: on Windows they are neither.
+                if unit.shell != Shell::Posix {
+                    unit.reads = Reads::Interpreter;
+                    split.push(unit);
+                    return;
+                }
+                // Code node is told to run from a `data:` URL first is not read.
+                if loads_foreign(&key, &unit, split) {
+                    unit.reads = Reads::Interpreter;
+                    split.push(unit);
+                    return;
+                }
+                split.push(unit);
+                inline::apply_all(split, language, &code, depth + 1);
+                return;
+            }
             Launch::Encoded => {
                 split.problem(
                     Rule::Unknown,
@@ -257,6 +349,22 @@ fn add_launched(
                 return;
             }
             Launch::Reads(reads) => {
+                // An interpreter given a here-document or here-string of plain
+                // text reads that as its code, unless node is also told to load
+                // code from a `data:` URL first: that code runs and is not read,
+                // so the line stays unknown whatever its input holds.
+                let data = loads_foreign(&key, &unit, split);
+                let source = match (reads, inline::language(&key), &unit.stdin) {
+                    (Reads::Interpreter, Some(language), Some(Arg::Known(code))) if !data => {
+                        Some((language, code.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((language, code)) = source {
+                    split.push(unit);
+                    inline::apply_input(split, language, &code, depth + 1);
+                    return;
+                }
                 unit.reads = reads;
                 split.push(unit);
                 return;
@@ -303,6 +411,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         args,
         mut wrappers,
         stage,
+        stdin,
         startup,
         depth,
         ..
@@ -332,6 +441,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         wrappers,
         stage,
         reads: Reads::Nothing,
+        stdin,
         dir: None,
         hidden: false,
         startup,
@@ -568,8 +678,13 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "bun" => bun(unit),
         "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
-        key if posix && (INTERPRETERS.contains(&key) || key.starts_with("python3.")) => {
-            interpreter(key, args)
+        // Also under cmd and PowerShell: the code they are given is not
+        // read there, which comes back as `unknown`. A line with nothing to
+        // run (`python --version`, a bare `python`) reads its input only
+        // where it did before: under any but cmd, and anywhere when
+        // something is piped into it.
+        key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
+            interpreter(key, args, posix || piped(unit))
         }
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
@@ -595,6 +710,11 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         _ => Launch::Itself,
     }
+}
+
+/// Whether another program's output is piped into the unit.
+fn piped(unit: &Unit) -> bool {
+    unit.stage.is_some_and(|stage| stage.index > 0)
 }
 
 /// What `coproc` runs: the first word past an optional name, the `{` words

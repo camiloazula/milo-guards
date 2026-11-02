@@ -428,13 +428,13 @@ fn an_expanded_bash_env_name_is_the_file_where_it_was_assigned() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
+)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
 fn a_line_that_sets_bash_env_over_and_over_is_judged_within_a_bound() {
     let distinct = names("BASH_ENV=e", ";", 2500);
@@ -1226,13 +1226,13 @@ fn pwd_follows_the_folder_a_cd_or_a_subshell_leaves_the_line_in() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
 #[cfg_attr(
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
+)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
 )]
 fn a_long_chain_of_cds_is_judged_within_a_bound() {
     let lines = [
