@@ -402,8 +402,10 @@ fn a_here_document_that_ends_exactly_reads_as_before() {
 
 /// The shell joins each backslash-newline in the body of an unquoted
 /// here-document before it expands the body and before it looks for the end
-/// line, so `$(r\<newline>m -rf …)` in it runs `rm`, and `EO\<newline>F` ends
-/// it. A quoted delimiter feeds the body as it is.
+/// line, so `$(r\<newline>m -rf …)` in it runs `rm`. A line that takes in a
+/// backslash-newline and is, or is near, the delimiter is Unreadable: bash, sh
+/// and zsh end the body there, dash and ksh do not. A quoted delimiter feeds
+/// the body as it is.
 #[test]
 fn a_backslash_newline_in_an_unquoted_here_document_body_is_joined() {
     check(
@@ -437,29 +439,127 @@ fn a_backslash_newline_in_an_unquoted_here_document_body_is_joined() {
                 "echo \"`cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n`\"",
                 Rule::Delete,
             ),
-            // A delimiter joined across lines ends the body, and what comes
-            // after it runs.
+            // A line that takes in a backslash-newline and then is the
+            // delimiter: bash, sh and zsh end the body there, dash and ksh
+            // do not, so the line is Unreadable.
             (
                 "echo \"$(cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n)\"",
-                Rule::Delete,
+                Rule::Unreadable,
             ),
             (
                 "echo \"$(cat <<EOF\nx\nE\\\nOF\nr\\\nm -rf /home/me\nEOF\n)\"",
-                Rule::Delete,
+                Rule::Unreadable,
             ),
             (
                 "echo \"`cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n`\"",
-                Rule::Delete,
-            ),
-            // With `<<-` the tabs come off the line that goes on.
-            (
-                "echo \"$(cat <<-EOF\n\tx\n\tEO\\\n\tF\nr\\\nm -rf /home/me\nEOF\n)\"",
-                Rule::Delete,
+                Rule::Unreadable,
             ),
             // The top-level form.
             ("cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF", Rule::Delete),
             ("cat <<-EOF\nx $(r\\\nm -rf /home/me)\n\tEOF", Rule::Delete),
             ("cat <<-EOF\n$(rm -rf /home/me)\n\tEOF", Rule::Delete),
+        ],
+    );
+}
+
+/// Bash, sh and zsh join a backslash-newline before they compare a body line
+/// with the delimiter; dash and ksh do not. So a line that took one in and is
+/// (joined, or in any piece) the delimiter or near it ends the body for some
+/// shells and not for others: Unreadable. With `<<-` the tabs of the line that
+/// goes on stay in every shell, so `\tEO\<newline>\tF` is no delimiter.
+#[test]
+fn a_continued_body_line_that_is_or_is_near_the_delimiter_is_unreadable() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // Continuations that come nowhere near the delimiter.
+            "cat <<EOF\nlong \\\nline\nEOF",
+            "cat <<-EOF\n\tx\\\n\ty\n\tEOF",
+            "git commit -m \"$(cat <<EOF\nmsg \\\nmore\nEOF\n)\"",
+            // The tabs stay after a backslash-newline, so this line is not the
+            // delimiter in any shell, and `rm` is body text.
+            "echo \"$(cat <<-EOF\n\tx\n\tEO\\\n\tF\nr\\\nm -rf /home/me\nEOF\n)\"",
+            // A quoted delimiter feeds the body as it is.
+            "cat <<'EOF'\nEO\\\nF\nEOF",
+        ],
+        &[
+            // Joined, the line is the delimiter.
+            (
+                "psql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            (
+                "mysql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            (
+                "sh <<EOF\necho a\nE\\\nOF\nrm -rf /home/me\nEOF",
+                Rule::Unreadable,
+            ),
+            // `<<-`: the tab is in front of the first piece only, and the
+            // joined line is the delimiter after the tab comes off.
+            (
+                "psql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF",
+                Rule::Unreadable,
+            ),
+            (
+                "mysql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF",
+                Rule::Unreadable,
+            ),
+            // A line that is the delimiter once joined from an empty piece.
+            (
+                "psql <<EOF\nselect 1;\nEOF\\\n\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            // A piece is the delimiter (dash and ksh end the body there).
+            (
+                "psql <<EOF\nselect 1;\nx\\\nEOF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            (
+                "mysql <<EOF\nselect 1;\nx\\\nEOF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            // Near the delimiter, joined or in a piece.
+            (
+                "psql <<EOF\nselect 1;\nEOF\\\n ;x\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            (
+                "psql <<EOF\nselect 1;\nx\\\n EOF\ndrop table t;\nEOF",
+                Rule::Unreadable,
+            ),
+            // Inside a double-quoted substitution.
+            (
+                "echo \"$(psql <<EOF\nselect 1;\nEO\\\nF\ndrop table t;\nEOF\n)\"",
+                Rule::Unreadable,
+            ),
+            (
+                "echo \"$(psql <<-EOF\n\tselect 1;\n\tEO\\\nF\n\tdrop table t;\n\tEOF\n)\"",
+                Rule::Unreadable,
+            ),
+        ],
+    );
+}
+
+/// With `<<-` a line that goes on after a backslash-newline keeps its tabs, so
+/// the body goes on to the real end line and the statements in it are read.
+#[test]
+fn the_tabs_of_a_continued_line_stay_with_a_dash_here_document() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "psql <<-EOF\n\tselect 1;\n\tEO\\\n\tF\n\tdrop table t;\n\tEOF",
+                Rule::DropData,
+            ),
+            (
+                "mysql <<-EOF\n\tselect 1;\n\tEO\\\n\tF\n\tdrop table t;\n\tEOF",
+                Rule::DropData,
+            ),
         ],
     );
 }

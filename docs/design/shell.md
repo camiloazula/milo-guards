@@ -2018,14 +2018,20 @@ is `\!`, `\$x` is `$x`), and `$$` is the shell's process id (so `SELECT $$ ;
 DROP TABLE t; $$` runs the `DROP`). What is left of an unescaped `$` or
 backtick is an expansion, as in a double-quoted word, so the body is a
 template; a body with both an escaped and an expanding `$` or backtick is
-`unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
+`unknown`. `<<-` takes the tabs off each line first, except a line that goes on after a
+backslash-newline: every shell keeps its tabs (`DR\` then a tab and `OP`
+is `DR`, a tab and `OP`). A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
 
 The body of an unquoted delimiter is joined the same way when the guard splits
 the line, also one inside `"$(…)"` or a backtick in double quotes: a
-backslash-newline in it is taken out before the body is read and before its
-lines are compared with the delimiter, so `$(r\` then `m -rf …)` in it is
-`rm`, and `EO\` then `F` ends it (for `<<-`, after leading tabs). A quoted
+backslash-newline in it is taken out before the body is read, so `$(r\` then
+`m -rf …)` in it is `rm`. With `<<-` the tabs of the line that goes on stay (all
+of bash, sh, dash, ksh and zsh keep them), so `\tEO\` then `\tF` is no end
+line. Where shells differ is a line that took in a backslash-newline and then
+is, or is near, the delimiter (`EO\` then `F`): bash, sh and zsh compare the
+joined line and end the body there, dash and ksh do not. Such a line, joined or
+in any piece of it (`x\` then `EOF`), makes the line `Unreadable`. A quoted
 delimiter's body is copied as it is.
 
 The shell ends a here-document only at a line that is exactly the delimiter

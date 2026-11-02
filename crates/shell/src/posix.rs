@@ -99,8 +99,11 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 /// it stays. Such a body is copied as it is, so a quote in it (`don't`)
 /// cannot leave the rest of the line looking quoted. The body of an unquoted
 /// delimiter is fed to the shell as the inside of a double-quoted word: a
-/// backslash-newline in it is joined, before the body is expanded and before
-/// its lines are compared with the delimiter (`EO\<newline>F` ends it).
+/// backslash-newline in it is joined, before the body is expanded. A line that
+/// took one in and is, or is near, the delimiter (joined, or in any piece) is
+/// refused: bash, sh and zsh compare the joined line, dash and ksh do not, so
+/// they disagree on where the body ends. With `<<-` the tabs of the line that
+/// goes on stay, as in every shell.
 ///
 /// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
@@ -335,6 +338,9 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                 for (delimiter, tabs, quoted) in std::mem::take(&mut bodies) {
                     while at < chars.len() {
                         let mut line = String::new();
+                        // Where in `line` each backslash-newline was taken
+                        // out: the pieces of the physical lines.
+                        let mut cuts: Vec<usize> = Vec::new();
                         while let Some(&c) = chars.get(at).filter(|c| **c != '\n') {
                             at += 1;
                             if c != '\\' || quoted {
@@ -342,18 +348,15 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                             } else if let Some(&next) = chars.get(at) {
                                 // An unquoted body: a backslash-newline is
                                 // joined, any other escape (`\\`) is kept
-                                // whole, so `\\<newline>` is not one.
+                                // whole, so `\\<newline>` is not one. The
+                                // tabs of the line that goes on stay, also
+                                // with `<<-`: shells keep them.
                                 at += 1;
-                                if next != '\n' {
+                                if next == '\n' {
+                                    cuts.push(line.len());
+                                } else {
                                     line.push(c);
                                     line.push(next);
-                                } else if tabs {
-                                    // `<<-` takes the tabs off the line
-                                    // that goes on, as the guard reads it
-                                    // (some shells keep them).
-                                    while chars.get(at) == Some(&'\t') {
-                                        at += 1;
-                                    }
                                 }
                             } else {
                                 line.push(c);
@@ -369,6 +372,23 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                         } else {
                             line.as_str()
                         };
+                        // A line that took in a backslash-newline: bash, sh
+                        // and zsh join it before they compare it with the
+                        // delimiter, dash and ksh do not (and then end the
+                        // body at a piece that is the delimiter). If the
+                        // joined line or any piece is, or is near, the
+                        // delimiter, the shells disagree on where the body
+                        // ends, so the line is refused.
+                        if !cuts.is_empty() {
+                            let mut start = 0;
+                            let mut pieces = Vec::new();
+                            for cut in cuts.iter().copied().chain([line.len()]) {
+                                pieces.push(line.get(start..cut).unwrap_or_default());
+                                start = cut;
+                            }
+                            near |= near_delimiter(content, &delimiter)
+                                || pieces.iter().any(|piece| near_delimiter(piece, &delimiter));
+                        }
                         if content == delimiter {
                             break;
                         }
