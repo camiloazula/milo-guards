@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::{posix, rules};
+use common::{macos, posix, rules, windows};
 use milo_guards_shell::{effect, Effect, Rule, Shell};
 
 /// Lines whose code the guard reads when the feature is on, and finds
@@ -73,6 +73,59 @@ fn an_inline_line_is_never_reads_only() {
             matches!(answer, Effect::Unknown | Effect::Changes),
             "{line:?}: {answer:?}"
         );
+    }
+}
+
+/// Lines for every shell, with the quotes each of them reads as one word, and
+/// with a module or loader option in front of bun's code flag.
+const EVERY_SHELL: [&str; 14] = [
+    "python3 -c \"print(1)\"",
+    "python -c \"import shutil; shutil.rmtree('/home/me')\"",
+    "node -e \"console.log(1)\"",
+    "node -p \"process.version\"",
+    "node -e \"require('fs').rmSync('/home/me', {recursive: true})\"",
+    "bun -e \"console.log(1)\"",
+    "bun --print \"1+1\"",
+    "deno eval \"console.log(1)\"",
+    "bun --import r.js -e \"require('fs').rmSync('/home/me',{recursive:true})\"",
+    "bun --import r.js -e \"$X\"",
+    "bun --require r.js -e \"$X\"",
+    "bun --loader .js:jsx -p \"$X\"",
+    "bun -r ./x.js -e 'console.log(1)'",
+    "bun --import data:text/javascript -e \"console.log(1)\"",
+];
+
+#[test]
+fn every_inline_line_is_unknown_in_every_shell() {
+    // cmd and PowerShell lines are not read with the feature on either, and
+    // a line that runs code is unknown there as it is under a POSIX shell,
+    // whichever path setup the caller has.
+    let wrong: Vec<String> = [Shell::Posix, Shell::PowerShell, Shell::Cmd]
+        .into_iter()
+        .flat_map(|shell| {
+            [posix(), macos(), windows()]
+                .into_iter()
+                .flat_map(move |paths| {
+                    EVERY_SHELL.iter().filter_map(move |line| {
+                        let found = rules(line, shell, &paths);
+                        (found != [Rule::Unknown]).then(|| format!("{shell:?} {line:?}: {found:?}"))
+                    })
+                })
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn an_inline_line_is_never_reads_only_in_any_shell() {
+    for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+        for line in EVERY_SHELL {
+            let answer = effect(line, shell, &posix());
+            assert!(
+                matches!(answer, Effect::Unknown | Effect::Changes),
+                "{shell:?} {line:?}: {answer:?}"
+            );
+        }
     }
 }
 

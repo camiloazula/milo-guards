@@ -150,7 +150,8 @@ these runner parts of `bun`, `deno` and `dx` are read as in the other shells
 (`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
 `dx rimraf C:\`); what they read of an interpreter (a script from the input
 that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
-there. `deno -v` and `deno --help=full` only
+there, also when the code cannot be told (a loader in front of `-e`, as in
+`bun --import r.js -e "$X"`). `deno -v` and `deno --help=full` only
 print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
