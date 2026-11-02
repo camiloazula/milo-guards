@@ -684,7 +684,11 @@ the same line. It is `stop_system` when the line stops more than a name:
   so is a negative expansion such as `kill -- -$$`, the caller's own group,
   and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
   job (`kill %1`), `$!`, `$$`, signal 0 (`kill -0 $pid`, which sends nothing)
-  and `kill -l` are safe; `kill 1` is `stop_system`.
+  and `kill -l` are safe; `kill 1` is `stop_system`. The options are read as
+  the shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to
+  `--` or the first other word, so a line is signal 0 only when every signal
+  it names is 0: `kill -s 0 -s KILL -1` and `kill -0 -s KILL 0` send a real
+  signal and are `stop_system`.
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name

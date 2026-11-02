@@ -305,38 +305,70 @@ impl Checker<'_> {
     /// whether a process is there) are everyday work.
     fn kill(&mut self, args: &[Arg]) {
         let mut rest = args;
-        let first = rest.first().and_then(Arg::known);
-        match first {
-            Some("-s" | "-n") => {
-                if rest.get(1).and_then(Arg::known).is_some_and(is_signal_zero) {
-                    return;
-                }
-                rest = rest.get(2..).unwrap_or_default();
-            }
-            Some(text) if text.starts_with("--") && text != "--" => {
+        // The options are read as the shell's own loop reads them: `-s SIG`,
+        // `-n SIG`, `-sNAME` and `-nNUM` at any point, the last one winning,
+        // and a bare `-SIG` while no signal is named yet; a later bare one,
+        // `--`, or any other word ends them. So a signal 0 first does not
+        // make the line one that sends nothing (`kill -s 0 -s KILL -1`): it
+        // does only when every signal read is 0.
+        let mut sends = false;
+        let mut zero = false;
+        let mut named = false;
+        while let Some(text) = rest.first().and_then(Arg::known) {
+            // The signal this word names; `None` is a signal only known when it
+            // runs.
+            let signal: Option<&str>;
+            let mut used = 1;
+            if matches!(text, "-s" | "-n") {
+                signal = rest.get(1).and_then(Arg::known);
+                used = 2;
+            } else if text == "--" || text.len() < 2 || !text.starts_with('-') {
+                break;
+            } else if text.starts_with("--") {
                 // `--list` names signals; another long option has its value,
                 // a name or a number, which is not read as an id either way.
                 if text == "--list" {
                     return;
                 }
                 rest = &rest[1..];
-            }
-            Some(text) if text.len() > 1 && text.starts_with('-') && text != "--" => {
+                break;
+            } else {
                 let name = &text[1..];
-                if matches!(name, "l" | "L") || is_signal_zero(name) {
+                if matches!(name, "l" | "L") {
                     return;
                 }
-                // A number past the last signal is not one: an id.
-                let past_signals = name.bytes().all(|b| b.is_ascii_digit())
-                    && name
-                        .trim_start_matches('0')
-                        .parse::<u8>()
-                        .map_or(true, |number| number > 64);
-                if !past_signals {
-                    rest = &rest[1..];
+                let attached = name.strip_prefix('s').or_else(|| {
+                    name.strip_prefix('n')
+                        .filter(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+                });
+                if attached.is_some() {
+                    // `-sNAME`, `-nNUM`.
+                    signal = attached;
+                } else {
+                    // A bare signal once one is named, or a number past the
+                    // last signal, is not one: an id.
+                    let past_signals = name.bytes().all(|b| b.is_ascii_digit())
+                        && !is_signal_zero(name)
+                        && name
+                            .trim_start_matches('0')
+                            .parse::<u8>()
+                            .map_or(true, |number| number > 64);
+                    if named || past_signals {
+                        break;
+                    }
+                    signal = Some(name);
                 }
             }
-            _ => {}
+            named = true;
+            if signal.is_some_and(is_signal_zero) {
+                zero = true;
+            } else {
+                sends = true;
+            }
+            rest = rest.get(used..).unwrap_or_default();
+        }
+        if zero && !sends {
+            return;
         }
         if rest.first().and_then(Arg::known) == Some("--") {
             rest = &rest[1..];

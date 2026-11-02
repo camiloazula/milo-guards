@@ -72,6 +72,13 @@ fn killing_an_ordinary_process_or_a_job_is_unchanged() {
             "kill -0 0",
             "kill -0 $pid",
             "kill -s 0 $pid",
+            "kill -0 -9 0",
+            "kill -0 -1234",
+            "kill -0 -- -1",
+            "kill -s 0 -- -1",
+            "kill -s 0 -$$ -1",
+            "kill -0 -$$ 1",
+            "kill -l -s 9 -1",
             "kill -l",
             "kill -L",
             "kill $!",
@@ -85,6 +92,35 @@ fn killing_an_ordinary_process_or_a_job_is_unchanged() {
             ("kill -9 $PPID", Rule::StopSystem),
             ("kill -9 \"$PPID\"", Rule::StopSystem),
             ("kill -9 ${PPID}", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_signal_0_read_first_does_not_hide_a_later_signal_option() {
+    // The shell keeps reading signal options after the first, the last one
+    // winning, so these send a real signal.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("kill -s 0 -s KILL -1", Rule::StopSystem),
+            ("kill -s 0 -s KILL 1", Rule::StopSystem),
+            ("kill -s 0 -s KILL -- -1", Rule::StopSystem),
+            ("kill -s 0 -sKILL -1", Rule::StopSystem),
+            ("kill -n 0 -n 9 -1", Rule::StopSystem),
+            ("kill -0 -s KILL -1", Rule::StopSystem),
+            ("kill -0 -s KILL 1", Rule::StopSystem),
+            ("kill -s 0 -s KILL 0", Rule::StopSystem),
+            ("kill -n 0 -n 9 0", Rule::StopSystem),
+            ("kill -0 -s KILL 0", Rule::StopSystem),
+            ("kill -0 -sKILL 0", Rule::StopSystem),
+            ("kill -0 -n 9 0", Rule::StopSystem),
+            ("kill -0 -n9 0", Rule::StopSystem),
+            ("kill -00 -s 9 0", Rule::StopSystem),
+            ("kill -s 0 -s 9 -- -1234", Rule::StopSystem),
+            ("kill -s 0 -s $SIG 0", Rule::StopSystem),
         ],
     );
 }
