@@ -301,26 +301,25 @@ impl Checker<'_> {
     /// the line included, and one to a negative id goes to a whole group
     /// (`-1`: every process). An id only known when it runs may be any of
     /// them, so it is judged the same way. A job (`%1`), an ordinary
-    /// process, and signal 0 (which sends nothing: `kill -0 $pid` asks
-    /// whether a process is there) are everyday work.
+    /// process, and a line that is plainly signal 0 (which sends nothing:
+    /// `kill -0 $pid` asks whether a process is there) are everyday work.
     fn kill(&mut self, args: &[Arg]) {
+        // The `kill` program reorders its words and reads a signal option
+        // after an id, so how a line is read is not modelled: it is signal 0
+        // only in the one plain shape below, and every other line is judged
+        // by its ids.
+        if is_plain_signal_zero(args) {
+            return;
+        }
         let mut rest = args;
         // The options are read as the shell's own loop reads them: `-s SIG`,
-        // `-n SIG`, `-sNAME` and `-nNUM` at any point, the last one winning,
-        // and a bare `-SIG` while no signal is named yet; a later bare one,
-        // `--`, or any other word ends them. So a signal 0 first does not
-        // make the line one that sends nothing (`kill -s 0 -s KILL -1`): it
-        // does only when every signal read is 0.
-        let mut sends = false;
-        let mut zero = false;
+        // `-n SIG`, `-sNAME` and `-nNUM` at any point, and a bare `-SIG`
+        // while no signal is named yet; a later bare one, `--`, or any other
+        // word ends them.
         let mut named = false;
         while let Some(text) = rest.first().and_then(Arg::known) {
-            // The signal this word names; `None` is a signal only known when it
-            // runs.
-            let signal: Option<&str>;
             let mut used = 1;
             if matches!(text, "-s" | "-n") {
-                signal = rest.get(1).and_then(Arg::known);
                 used = 2;
             } else if text == "--" || text.len() < 2 || !text.starts_with('-') {
                 break;
@@ -328,12 +327,10 @@ impl Checker<'_> {
                 // `--list` names signals, but only as the first word; later
                 // it is read like any other long option. A long option has
                 // its value, a name or a number, which is not read as an id
-                // either way, and the programs that take long options read
-                // `--signal` among them, so it may send a real signal.
+                // either way.
                 if text == "--list" && rest.len() == args.len() {
                     return;
                 }
-                sends = true;
                 rest = &rest[1..];
                 break;
             } else {
@@ -346,14 +343,12 @@ impl Checker<'_> {
                     }
                     break;
                 }
-                let attached = name.strip_prefix('s').or_else(|| {
-                    name.strip_prefix('n')
-                        .filter(|n| n.starts_with(|c: char| c.is_ascii_digit()))
-                });
-                if attached.is_some() {
-                    // `-sNAME`, `-nNUM`.
-                    signal = attached;
-                } else {
+                let attached = name.starts_with('s')
+                    || (name.starts_with('n')
+                        && name[1..].starts_with(|c: char| c.is_ascii_digit()));
+                if !attached {
+                    // `-sNAME`, `-nNUM` are signals; anything else is a bare
+                    // one.
                     // A bare signal once one is named, or a number past the
                     // last signal, is not one: an id.
                     let past_signals = name.bytes().all(|b| b.is_ascii_digit())
@@ -365,47 +360,10 @@ impl Checker<'_> {
                     if named || past_signals {
                         break;
                     }
-                    signal = Some(name);
                 }
             }
             named = true;
-            if signal.is_some_and(is_signal_zero) {
-                zero = true;
-            } else {
-                sends = true;
-            }
             rest = rest.get(used..).unwrap_or_default();
-        }
-        // The words after the options, up to `--`, may still hold a signal
-        // option: the `kill` program reorders its words and reads `-s SIG`
-        // and `--signal SIG` after an id (`kill -0 4242 -s 9 -1`). A word that
-        // is `-s` or starts with it, a long option, or a word only known when
-        // it runs with more after it (it may hold `-s`) means the line may
-        // send a real signal, so it is not taken as signal 0. Nothing after
-        // such a word (`kill -0 $pid`), or one that is always a number
-        // (`-$$`), leaves the line as it reads. A negative id right after the
-        // options (`kill -0 -1 -s 9`) is signalled with 0 and the program
-        // exits, so what follows it is not read.
-        let ends_at_negative_id = rest
-            .first()
-            .and_then(Arg::known)
-            .is_some_and(|text| text.len() > 1 && text != "--" && text.starts_with('-'));
-        let unread_option = !ends_at_negative_id
-            && rest
-                .iter()
-                .take_while(|arg| arg.known() != Some("--"))
-                .enumerate()
-                .any(|(index, arg)| {
-                    if let Some(text) = arg.known() {
-                        text.starts_with("-s") || text.starts_with("--")
-                    } else {
-                        let text = arg.text();
-                        index + 1 < rest.len()
-                            && !is_positive_expansion(text.strip_prefix('-').unwrap_or(text))
-                    }
-                });
-        if zero && !sends && !unread_option {
-            return;
         }
         if rest.first().and_then(Arg::known) == Some("--") {
             rest = &rest[1..];
@@ -502,6 +460,58 @@ const DISK_TOOLS: [&str; 15] = [
 /// Whether a signal is 0, which sends nothing.
 fn is_signal_zero(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b == b'0')
+}
+
+/// Whether a `kill` line is plainly signal 0, which sends nothing. The first
+/// word after `kill` is exactly `-0`, `-s 0`, `-n 0` or `--signal=0`, and every
+/// word after it is a literal positive decimal id, a job (`%1`), `$!`, `$$`,
+/// `$PPID`, or a plain variable (`$pid`, `"$pid"`). No other option, no `--`,
+/// no brace list, wildcard or substitution and no dash anywhere else is read:
+/// the `kill` program reorders its words and reads a signal option after an
+/// id, so any other line is judged by its ids.
+fn is_plain_signal_zero(args: &[Arg]) -> bool {
+    let after = match args.first().and_then(Arg::known) {
+        Some("-0" | "--signal=0") => 1,
+        Some("-s" | "-n") if args.get(1).and_then(Arg::known) == Some("0") => 2,
+        _ => return false,
+    };
+    args[after..].iter().all(|arg| match arg.known() {
+        Some(text) => is_plain_id(text),
+        None => is_plain_variable(arg.text()),
+    })
+}
+
+/// Whether `text` is a literal positive decimal id or a job such as `%1`.
+fn is_plain_id(text: &str) -> bool {
+    match text.strip_prefix('%') {
+        Some(job) => {
+            !job.is_empty()
+                && job
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'%' | b'+' | b'_'))
+        }
+        None => {
+            text.bytes().all(|b| b.is_ascii_digit())
+                && matches!(process_id(text), Some(Id::Process(_)))
+        }
+    }
+}
+
+/// Whether `text` is `$!`, `$$` or a plain variable such as `$pid`, quoted or
+/// not.
+fn is_plain_variable(text: &str) -> bool {
+    let text = text.trim_matches(['"', '\'']);
+    if is_positive_expansion(text) {
+        return true;
+    }
+    let name = text
+        .strip_prefix("${")
+        .and_then(|name| name.strip_suffix('}'))
+        .or_else(|| text.strip_prefix('$'));
+    name.is_some_and(|name| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
 }
 
 /// What a process id of `kill` stands for.

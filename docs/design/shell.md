@@ -693,18 +693,21 @@ the same line. It is `stop_system` when the line stops more than a name:
   so is a negative expansion such as `kill -- -$$`, the caller's own group,
   and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
   job (`kill %1`), `$!`, `$$`, signal 0 (`kill -0 $pid`, which sends nothing)
-  and `kill -l` are safe; `kill 1` is `stop_system`. The options are read as
-  the shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to
-  `--` or the first other word, so a line is signal 0 only when every signal
-  it names is 0: `kill -s 0 -s KILL -1` and `kill -0 -s KILL 0` send a real
-  signal and are `stop_system`. The listing options `-l`, `-L` and `--list`
-  count only as the first word (`kill -9 -l -1` still stops every process);
-  and a long option (`kill -0 --signal 9 -1`), or a word only known when it
-  runs with more after it (`kill -0 $X KILL -1`, which may hold `-s`), is not
-  read as signal 0: the ids are judged. The same holds for such a word after
-  an id, up to `--`: the `kill` program reorders its words and reads
-  `kill -0 4242 -s 9 -1` as SIGKILL to every process (`kill -0 -1 -s 9`, a
-  negative id right after the options, stays signal 0).
+  and `kill -l` are safe; `kill 1` is `stop_system`. The `kill` program
+  reorders its words and reads a signal option after an id (`kill -0 4242 -s 9
+  -1` is SIGKILL to every process), so the guard does not model that order. A
+  line is signal 0 in one plain shape only: the first word after `kill` is
+  exactly `-0`, `-s 0`, `-n 0` or `--signal=0`, and every later word is a
+  literal positive decimal id, a job, `$!`, `$$`, `$PPID`, or a plain variable
+  (`$pid`, `"$pid"`, `${pid}`): `kill -0 4242`, `kill -0 $pid` and `kill -s 0
+  %1`. No other option, no `--`, no brace list, wildcard or substitution and
+  no dash anywhere else is allowed, and such a line is judged by its ids as
+  any other: `kill -0 0`, `kill -0 -1234`, `kill -0 -1 -s 9`, `kill -0 -q 1
+  -s 9 -1`, `kill -0 {-s,KILL} -1`, `kill -0 * -1` and `kill -0 "$(cat
+  app.pid)"` are `stop_system`. The options of any other line are read as the
+  shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to `--`
+  or the first other word, and the listing options `-l`, `-L` and `--list`
+  count only as the first word (`kill -9 -l -1` still stops every process).
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name
