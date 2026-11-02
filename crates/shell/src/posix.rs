@@ -469,10 +469,13 @@ fn near_delimiter(line: &str, delimiter: &str) -> bool {
 /// `$(…)`, a `${…}`): a backtick in them is theirs. The shell takes the first
 /// backtick that no backslash escapes as the end, whatever quotes lie between,
 /// and then takes one backslash off `\``, `\\` and `\$` in what it found
-/// (`\` and any other character stay), for every POSIX shell. `None` when a
-/// backtick never closes, which a shell refuses. With `strips` (`<<-`) the
-/// tabs at the start of each line after the first are taken off, since the
-/// shell strips them from the body before it reads any code in it.
+/// (`\` and any other character stay). Shells differ on `\"`: bash keeps the
+/// backslash, dash takes it off (its body is read as the inside of double
+/// quotes, where `"` is special). A code that holds one is returned twice,
+/// once for each reading, so that what either shell runs is judged. `None`
+/// when a backtick never closes, which a shell refuses. With `strips` (`<<-`)
+/// the tabs at the start of each line after the first are taken off, since
+/// the shell strips them from the body before it reads any code in it.
 fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec<String>> {
     let bytes = body.as_bytes();
     let mut codes = Vec::new();
@@ -485,7 +488,10 @@ fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec
         match byte {
             b'\\' => at += 2,
             b'`' => {
+                // The code with a backslash kept before `"` (bash) and taken
+                // off (dash).
                 let mut code = Vec::new();
+                let mut dash = Vec::new();
                 at += 1;
                 loop {
                     match bytes.get(at)? {
@@ -494,35 +500,47 @@ fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec
                             let next = *bytes.get(at + 1)?;
                             if matches!(next, b'`' | b'\\' | b'$') {
                                 code.push(next);
+                                dash.push(next);
+                                at += 2;
+                            } else if next == b'"' {
+                                code.extend_from_slice(b"\\\"");
+                                dash.push(b'"');
                                 at += 2;
                             } else {
                                 code.push(b'\\');
+                                dash.push(b'\\');
                                 at += 1;
                             }
                         }
                         other => {
                             code.push(*other);
+                            dash.push(*other);
                             at += 1;
                         }
                     }
                 }
                 at += 1;
-                let code = String::from_utf8(code).ok()?;
-                codes.push(if strips {
-                    code.split('\n')
-                        .enumerate()
-                        .map(|(line, text)| {
-                            if line == 0 {
-                                text
-                            } else {
-                                text.trim_start_matches('\t')
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                } else {
-                    code
-                });
+                let mut readings = vec![String::from_utf8(code).ok()?];
+                if dash != readings[0].as_bytes() {
+                    readings.push(String::from_utf8(dash).ok()?);
+                }
+                for code in readings {
+                    codes.push(if strips {
+                        code.split('\n')
+                            .enumerate()
+                            .map(|(line, text)| {
+                                if line == 0 {
+                                    text
+                                } else {
+                                    text.trim_start_matches('\t')
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        code
+                    });
+                }
             }
             _ => at += 1,
         }

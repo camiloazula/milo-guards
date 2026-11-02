@@ -2030,7 +2030,11 @@ deletes). The guard finds them itself and reads the code of each as a script
 of its own, so its commands are judged and count for `effect`. A backtick ends
 at the first one no backslash escapes, whatever quotes lie between, and the
 code takes one backslash off `` \` ``, `\\` and `\$` (any other backslash
-stays), as every POSIX shell does; with `<<-` the tabs of the lines after the
+stays), as every POSIX shell does. Shells differ on `\"`: bash keeps the
+backslash, dash takes it off (it reads the body as the inside of double
+quotes), so a code that holds one is read both ways and what either shell runs
+counts (`` `echo "x\"; rm -rf /home/me; echo \"y"` `` is one echoed string
+to bash and three commands to dash). With `<<-` the tabs of the lines after the
 first are taken off. The plain text between a body's expansions is scanned
 like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
 escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads

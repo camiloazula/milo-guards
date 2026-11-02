@@ -73,6 +73,20 @@ fn the_text_around_a_backtick_substitution_does_not_hide_it() {
                 "cat <<EOF\n`cat <<X\nhi\nX\nrm -rf /home/me`\nEOF",
                 Rule::Delete,
             ),
+            // Dash takes the backslash off `\"` (bash keeps it), so the
+            // quote ends and the commands between two of them run.
+            (
+                "cat <<EOF\n`echo \"x\\\"; rm -rf /home/me; echo \\\"y\"`\nEOF",
+                Rule::Delete,
+            ),
+            (
+                "cat <<EOF\n`echo \"\\\"; rm -rf /home/me; \\\"\"`\nEOF",
+                Rule::Delete,
+            ),
+            (
+                "cat <<-EOF\n\t`echo \"x\\\"; rm -rf /home/me; echo \\\"y\"`\n\tEOF",
+                Rule::Delete,
+            ),
             // A quote in the code does not end it: the first backtick does.
             (
                 "cat <<EOF\n`echo '` ; rm -rf /home/me ; echo '`\nEOF",
@@ -122,6 +136,8 @@ fn a_here_document_that_runs_nothing_reads_as_before() {
             "cat <<EOF\n``\nEOF",
             "cat <<EOF\n`echo é`\nEOF",
             "cat <<-EOF\n\t`ls`\n\tEOF",
+            // A `\"` in the code reads the same with the backslash kept or off.
+            "cat <<EOF\n`echo \"say \\\"hi\\\"\"`\nEOF",
             "git commit -m \"$(cat <<EOF\nfix `ls`\nEOF\n)\"",
             // A quoted delimiter feeds the body as it is.
             "cat <<'EOF'\n`rm -rf /home/me`\nEOF",
