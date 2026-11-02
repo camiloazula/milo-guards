@@ -192,6 +192,97 @@ fn a_here_document_in_a_double_quoted_substitution_that_ends_exactly_reads_as_be
     );
 }
 
+/// A `<<` in arithmetic is a shift, not a here-document: reading it as one
+/// copies the next lines as a body, so a backslash-newline in them is never
+/// joined and the `rm` it spells is never seen.
+#[test]
+fn a_shift_in_arithmetic_is_not_a_here_document() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo \"$((1<<2))\"",
+            "echo $((1<<2))\nls",
+            "x=$(( x << 1 ))\nls",
+            "((x<<1))\nls",
+        ],
+        &[
+            (
+                "echo \"$((1<<2))\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$((x<<1))\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(( x << 1 ))\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            // Without the quotes, in an assignment, and as a command.
+            ("echo $((1<<2))\nr\\\nm -rf /home/me", Rule::Delete),
+            ("x=$(( x << 1 ))\nr\\\nm -rf /home/me", Rule::Delete),
+            ("((x<<1))\nr\\\nm -rf /home/me", Rule::Delete),
+            // The issue's own line after such a prefix.
+            (
+                "echo \"$((1<<2))\"\npython3 - <<'PY'\nimport shutil\n PY\nshutil.rmtree('/home/me')\nPY",
+                Rule::Unreadable,
+            ),
+            // A word and the end of the line after `<<` in `$((` could be
+            // the subshell `$((cat <<EOF` as well: not guessed at.
+            (
+                "echo \"$((cat <<EOF\nx\n EOF\nrm -rf /home/me\nEOF\n))\"",
+                Rule::Unreadable,
+            ),
+        ],
+    );
+}
+
+/// A backslash in `$'…'` escapes the next character, so `\'` does not end it;
+/// reading it as plain single quotes ends it there and leaves the next quote
+/// to run to the end of the text, where nothing is joined.
+#[test]
+fn an_escaped_quote_in_ansi_c_quotes_does_not_end_them() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "echo $'it\\'s'",
+            "echo \"$(echo $'it\\'s')\"",
+            "echo $$'a'\nls",
+        ],
+        &[
+            (
+                "echo \"$(echo $'it\\'s')\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(echo $'it\\'s')\" && r\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(printf $'a\\'b')\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            (
+                "echo \"`echo $'it\\'s'`\"\nr\\\nm -rf /home/me",
+                Rule::Delete,
+            ),
+            // Without the double quotes.
+            ("echo $'it\\'s'\nr\\\nm -rf /home/me", Rule::Delete),
+            ("echo $(echo $'it\\'s')\nr\\\nm -rf /home/me", Rule::Delete),
+            // An escaped backslash before the quote ends nothing: `\\` is
+            // one backslash, and the quote after it ends the string.
+            ("echo $'a\\\\'\nr\\\nm -rf /home/me", Rule::Delete),
+            // The issue's own line after such a prefix.
+            (
+                "echo \"$(echo $'it\\'s')\"\npython3 - <<'PY'\nimport shutil\n PY\nshutil.rmtree('/home/me')\nPY",
+                Rule::Unreadable,
+            ),
+        ],
+    );
+}
+
 #[test]
 fn a_here_document_that_ends_exactly_reads_as_before() {
     check(

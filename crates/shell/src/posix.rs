@@ -101,9 +101,12 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
     let mut near = false;
     let mut joined = String::with_capacity(text.len());
     let (mut single, mut double) = (false, false);
-    // The `$(…)` and backticks open at this point, each with whether it sits
-    // in double quotes: inside one the quoting starts afresh, so a
-    // here-document in `"$(psql <<'EOF' …)"` is a here-document.
+    // Whether the open single quotes are `$'…'`, where a backslash escapes the
+    // next character, so `\'` does not end them.
+    let mut ansi = false;
+    // The `$(…)`, `$((…))`, `((…))` and backticks open at this point, each
+    // with whether it sits in double quotes: inside one the quoting starts
+    // afresh, so a here-document in `"$(psql <<'EOF' …)"` is a here-document.
     let mut subs: Vec<(Sub, bool)> = Vec::new();
     // Here-documents opened on the current line, read from the next one:
     // each delimiter, and whether `<<-` lets it be indented with tabs.
@@ -113,7 +116,14 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
         at += 1;
         if single {
             joined.push(c);
-            single = c != '\'';
+            if ansi && c == '\\' {
+                if let Some(&next) = chars.get(at) {
+                    joined.push(next);
+                    at += 1;
+                }
+            } else {
+                single = c != '\'';
+            }
             continue;
         }
         // zsh's `(D)` glob qualifier at the end of a word.
@@ -138,11 +148,19 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
             },
             '\'' if !double => {
                 single = true;
+                ansi = ansi_quote(&joined);
                 joined.push(c);
             }
             '"' => {
                 double = !double;
                 joined.push(c);
+            }
+            // Arithmetic, `$((…))`: a `<<` in it is a shift.
+            '$' if chars.get(at) == Some(&'(') && chars.get(at + 1) == Some(&'(') => {
+                joined.push_str("$((");
+                at += 2;
+                subs.push((Sub::Arith(2), double));
+                double = false;
             }
             // A substitution: outside the quotes of the line around it.
             '$' if chars.get(at) == Some(&'(') => {
@@ -150,6 +168,15 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                 at += 1;
                 subs.push((Sub::Paren(1), double));
                 double = false;
+            }
+            // Arithmetic, `((…))`, unless already in some.
+            '(' if !double
+                && chars.get(at) == Some(&'(')
+                && !matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                joined.push_str("((");
+                at += 1;
+                subs.push((Sub::Arith(2), double));
             }
             '`' => {
                 joined.push(c);
@@ -162,14 +189,14 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                 }
             }
             '(' if !double => {
-                if let Some((Sub::Paren(depth), _)) = subs.last_mut() {
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), _)) = subs.last_mut() {
                     *depth += 1;
                 }
                 joined.push(c);
             }
             ')' if !double => {
                 joined.push(c);
-                if let Some((Sub::Paren(depth), outer)) = subs.last_mut() {
+                if let Some((Sub::Paren(depth) | Sub::Arith(depth), outer)) = subs.last_mut() {
                     *depth = depth.saturating_sub(1);
                     if *depth == 0 {
                         double = *outer;
@@ -188,6 +215,17 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
                     joined.push(next);
                     at += 1;
                 }
+            }
+            // A `<<` in arithmetic is a shift (`$((1<<2))`), but the shell
+            // reads `$((cat <<EOF` and the like as a subshell with a
+            // here-document: a word and the end of the line after it could be
+            // either, and is not guessed at.
+            '<' if !double
+                && chars.get(at) == Some(&'<')
+                && matches!(subs.last(), Some((Sub::Arith(_), _))) =>
+            {
+                near |= ends_like_heredoc_start(chars.get(at + 1..).unwrap_or_default());
+                joined.push(c);
             }
             // `<<WORD` (not `<<<`): a here-document whose body starts on
             // the next line.
@@ -254,12 +292,45 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool) {
     (joined, marks, near)
 }
 
-/// An open `$(…)` (with the depth of the parentheses in it) or backtick, see
-/// [`join_continuations`].
+/// An open `$(…)`, `$((…))` or `((…))` (with the depth of the parentheses in
+/// it) or backtick, see [`join_continuations`].
 #[derive(Clone, Copy)]
 enum Sub {
     Paren(usize),
+    Arith(usize),
     Backtick,
+}
+
+/// Whether the quote that follows `before` opens `$'…'`: a `$` that is not
+/// escaped and does not pair with another (`$$'` is the process id and a plain
+/// quote). A backslash in `$'…'` escapes the next character.
+fn ansi_quote(before: &str) -> bool {
+    let dollars = before.chars().rev().take_while(|c| *c == '$').count();
+    let rest = &before[..before.len() - dollars];
+    let slashes = rest.chars().rev().take_while(|c| *c == '\\').count();
+    let unescaped = if slashes % 2 == 1 {
+        dollars.saturating_sub(1)
+    } else {
+        dollars
+    };
+    unescaped % 2 == 1
+}
+
+/// Whether `rest`, the text after a `<<` in arithmetic, has the look of a
+/// here-document's start: an optional `-`, one word, then the end of the line.
+fn ends_like_heredoc_start(rest: &[char]) -> bool {
+    let mut rest = rest.iter().peekable();
+    rest.next_if(|c| **c == '-');
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    let mut word = 0;
+    while rest
+        .next_if(|c| !c.is_whitespace() && !";&|<>()".contains(**c))
+        .is_some()
+    {
+        word += 1;
+    }
+    while rest.next_if(|c| **c == ' ' || **c == '\t').is_some() {}
+    word > 0 && rest.next() == Some(&'\n')
 }
 
 /// Whether a line of a here-document's body is only near its delimiter: the
