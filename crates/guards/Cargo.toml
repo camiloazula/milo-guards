@@ -13,9 +13,14 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["shell", "file", "url"]
-# Judges a shell line: POSIX shell, PowerShell or cmd.
+default = ["shell", "file", "url", "code"]
+# Judges a shell line: POSIX shell, PowerShell or cmd. The shell guard reads
+# the Python and JavaScript a line gives an interpreter inline with the code
+# reader below; it is linked whether or not this front door shows it.
 shell = ["dep:milo-guards-shell"]
+# Reads Python and JavaScript code, and says what it is certain to do or that
+# it does not understand it.
+code = ["dep:milo-guards-code"]
 # Judges one read or write of a path through a file API.
 file = ["dep:milo-guards-file"]
 # Judges a URL an agent is about to fetch.
@@ -27,6 +32,7 @@ secrets = ["dep:milo-guards-secrets"]
 
 [dependencies]
 milo-guards-core.workspace = true
+milo-guards-code = { workspace = true, optional = true }
 milo-guards-shell = { workspace = true, optional = true }
 milo-guards-file = { workspace = true, optional = true }
 milo-guards-url = { workspace = true, optional = true }
