@@ -417,7 +417,12 @@ cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
 The redirect of the next command is placed from where the line now is. In a
 POSIX shell only a redirect on the command itself is read this way: a file a
 group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
-still placed from where the line is when its body ends.
+still placed from where the line is when its body ends. In PowerShell only the
+redirects of the command itself are placed so: a redirect inside a `$()` in its
+arguments is placed from where the line is there, and so is a redirect that
+follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
+x.txt` writes two folders up, as the session ran the argument before it opened
+the file).
 
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.

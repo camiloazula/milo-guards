@@ -410,6 +410,11 @@ pub(crate) struct Split {
     /// Where the redirects being read open their files from (see
     /// [`OpensFrom`]).
     opens_from: OpensFrom,
+    /// For each range of units [`Self::starts_in`] has read, the index of the
+    /// unit in it that moves the line, if one does: a command with many
+    /// redirects asks for its range once for each, and the answers must not
+    /// read the command's units again, whatever runs in between.
+    starts: HashMap<(usize, usize), Option<usize>>,
     /// In cmd, the drive the line is on, upper case: where it started, then
     /// where a drive switch, `cd /d` or `pushd` took it. `None` when it is
     /// on no drive or is only known when it runs.
@@ -955,13 +960,36 @@ impl Split {
     /// first of them that moves the line (`cd`, `pushd`, `Set-Location`)
     /// starts in, as the shell opens them before it runs; where the line is
     /// when none of them moves it.
-    pub(crate) fn starts_in(&self, units: Range<usize>) -> OpensFrom {
+    pub(crate) fn starts_in(&mut self, units: Range<usize>) -> OpensFrom {
+        // The units are only added to: a range holds the same units each
+        // time it is asked for.
+        let key = (units.start, units.end);
+        let mover = if let Some(mover) = self.starts.get(&key) {
+            *mover
+        } else {
+            let start = units.start;
+            let mover = self
+                .units
+                .get(units)
+                .into_iter()
+                .flatten()
+                .position(|unit| moves_to(unit).is_some())
+                .map(|index| start + index);
+            self.starts.insert(key, mover);
+            mover
+        };
+        mover
+            .and_then(|index| self.units.get(index))
+            .map_or(OpensFrom::Line, |unit| OpensFrom::Start(unit.dir.clone()))
+    }
+
+    /// Whether any of `units` moves the line (`cd`, `pushd`, `Set-Location`).
+    pub(crate) fn moves_in(&self, units: Range<usize>) -> bool {
         self.units
             .get(units)
             .into_iter()
             .flatten()
-            .find(|unit| moves_to(unit).is_some())
-            .map_or(OpensFrom::Line, |unit| OpensFrom::Start(unit.dir.clone()))
+            .any(|unit| moves_to(unit).is_some())
     }
 
     /// Make the redirects read from now on open their files from `from`, and

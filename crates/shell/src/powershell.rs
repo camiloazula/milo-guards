@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::ops::Range;
 
 use tree_sitter::Node;
 
@@ -10,7 +11,7 @@ mod blocks;
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
-use crate::unit::{self, Arg, Between, Listing, Split, Stage, Unit};
+use crate::unit::{self, Arg, Between, Listing, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -178,6 +179,17 @@ enum ItemUse {
     Other,
 }
 
+/// Where the redirects of one command are opened from (see
+/// [`Walker::command_children`]).
+struct Redirects {
+    /// The command's own units.
+    own: Range<usize>,
+    /// The units of the command before this index have been read for a move.
+    seen: usize,
+    /// Whether an argument that came before has moved the line.
+    moved: bool,
+}
+
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
@@ -234,12 +246,7 @@ impl Walker<'_> {
                     .as_deref()
                     .is_some_and(|key| EVENTS.contains(&key))
                     .then(|| self.split.begin_later());
-                // A redirect on a command that moves the line (`Set-Location
-                // sub > f`) is opened before it runs: from where it starts.
-                let from = self.split.starts_in(own.clone());
-                let before = self.split.open_from(from);
-                self.children(node, None, level);
-                self.split.open_from(before);
+                self.command_children(node, own.clone(), level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
@@ -323,6 +330,52 @@ impl Walker<'_> {
         for child in node.named_children(&mut cursor) {
             self.walk(child, stage, level + 1);
         }
+    }
+
+    /// What a command holds, `own` being its own units. A redirect on a
+    /// command that moves the line (`Set-Location sub > f`) is opened before
+    /// it runs: from where it starts. Only the redirects are placed so: a
+    /// sub-expression in an argument is walked from where the line is, and a
+    /// redirect that follows one that moved the line is opened where the line
+    /// has gone to, as the session ran the argument before opening the file.
+    fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize) {
+        let mut state = Redirects {
+            seen: own.end,
+            own,
+            moved: false,
+        };
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "command_elements" {
+                let mut inner = child.walk();
+                for element in child.named_children(&mut inner) {
+                    self.command_child(element, level + 2, &mut state);
+                }
+            } else {
+                self.command_child(child, level + 1, &mut state);
+            }
+        }
+    }
+
+    /// One part of a command (see [`Self::command_children`]).
+    fn command_child(&mut self, child: Node<'_>, level: usize, state: &mut Redirects) {
+        if child.kind() != "redirection" {
+            self.walk(child, None, level);
+            return;
+        }
+        // The units of the arguments walked since the last redirect: each
+        // is read once, however many redirects there are.
+        let len = self.split.units.len();
+        state.moved |= self.split.moves_in(state.seen..len);
+        state.seen = len;
+        let from = if state.moved {
+            OpensFrom::Line
+        } else {
+            self.split.starts_in(state.own.clone())
+        };
+        let outer = self.split.open_from(from);
+        self.walk(child, None, level);
+        self.split.open_from(outer);
     }
 
     /// The unit `node` runs; its key, for the walk to know a
