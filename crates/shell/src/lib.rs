@@ -231,7 +231,15 @@ struct Reading {
 
 impl Reading {
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
-        let split = unit::split(command, shell, effect);
+        let split = unit::split(
+            command,
+            shell,
+            (
+                path::drive_of(&paths.cwd.to_string_lossy()),
+                path::drive_of(&paths.home.to_string_lossy()),
+            ),
+            effect,
+        );
         let mut resolver = path::Resolver::new(paths);
         if effect {
             resolver.keep(paths);
