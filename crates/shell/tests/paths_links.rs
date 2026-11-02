@@ -2,57 +2,18 @@
 //! applies a `..` after it has followed the link before it, so
 //! `cat link/../etc/hosts` with `link -> /etc` reads `/etc/hosts`, while the
 //! same path with its `..` applied by spelling is `<cwd>/etc/hosts`. `effect`
-//! keeps judging by spelling, as before.
+//! keeps judging by spelling, as before. The plain lists (operands, patterns,
+//! walks) are in `paths.rs`.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{check_effect, path_disagreement, posix, windows};
+use common::{check_effect, exact, glob, lists, posix, walk, windows};
 use milo_guards_shell::{effect, effect_paths, Effect, How, Paths, Reach, ReadPath, Shell};
 
 const ROOT: &str = "/home/me/work/repo";
 const WIN_ROOT: &str = r"C:\Users\me\dev\repo";
-
-fn exact(path: &str) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Exact,
-    }
-}
-
-fn glob(path: &str, rest: &str) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Glob(rest.to_string()),
-    }
-}
-
-fn tree(path: &str, follows_links: bool) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Tree { follows_links },
-    }
-}
-
-/// The list a line has, or the rows of a table that differ, named together.
-fn check(shell: Shell, paths: &Paths, rows: &[(&str, Vec<ReadPath>)]) {
-    let wrong: Vec<String> = rows
-        .iter()
-        .filter_map(|(line, want)| {
-            let got = effect_paths(line, shell, paths);
-            let disagree = path_disagreement(shell, paths, line);
-            (got.as_ref() != Some(want) || disagree.is_some())
-                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}\n    {disagree:?}"))
-        })
-        .collect();
-    assert!(
-        wrong.is_empty(),
-        "{} rows wrong:\n{}",
-        wrong.len(),
-        wrong.join("\n")
-    );
-}
 
 /// A disk with a few links, played by a table (the guard does no I/O, and
 /// neither do its tests): where `path` really is, each link followed before
@@ -108,24 +69,20 @@ fn only(line: &str, paths: &Paths) -> Option<PathBuf> {
 #[test]
 fn a_dotdot_after_a_link_is_left_for_the_caller_to_apply_on_the_disk() {
     let paths = posix();
-    // The line of the issue, with `link -> /etc`: the shell reads
-    // `/etc/hosts`, and the list lets a caller resolve to it.
+    // With `link -> /etc`, the shell reads `/etc/hosts`, and the list lets a
+    // caller resolve to it (`effect` judges by spelling, so it still calls
+    // this inside: see `effect_keeps_judging_by_spelling`).
     let line = "cat link/../etc/hosts";
-    check(
+    lists(
         Shell::Posix,
         &paths,
         &[(line, vec![exact("/home/me/work/repo/link/../etc/hosts")])],
     );
     let listed = only(line, &paths).unwrap();
     assert_eq!(resolve(&listed.to_string_lossy()), "/etc/hosts");
-    // `effect` judges by spelling, so it still calls this inside.
-    assert_eq!(
-        effect(line, Shell::Posix, &paths),
-        Effect::ReadsOnly(Reach::Workspace)
-    );
     // A `..` after a plain folder still lets a caller confirm it stays inside.
     let line = "cat src/../README.md";
-    check(
+    lists(
         Shell::Posix,
         &paths,
         &[(line, vec![exact("/home/me/work/repo/src/../README.md")])],
@@ -134,10 +91,6 @@ fn a_dotdot_after_a_link_is_left_for_the_caller_to_apply_on_the_disk() {
     assert_eq!(
         resolve(&listed.to_string_lossy()),
         "/home/me/work/repo/README.md"
-    );
-    assert_eq!(
-        effect(line, Shell::Posix, &paths),
-        Effect::ReadsOnly(Reach::Workspace)
     );
 }
 
@@ -171,7 +124,7 @@ fn resolving_the_list_on_the_disk_gives_where_the_shell_reads() {
 
 #[test]
 fn the_dotdot_of_every_way_of_reading_is_kept() {
-    check(
+    lists(
         Shell::Posix,
         &posix(),
         &[
@@ -214,33 +167,33 @@ fn the_dotdot_of_every_way_of_reading_is_kept() {
             // A walk starts at a path the shell opens.
             (
                 "rg TODO link/..",
-                vec![tree("/home/me/work/repo/link/..", false)],
+                vec![walk("/home/me/work/repo/link/..", false)],
             ),
             (
                 "find link/.. -name x",
-                vec![tree("/home/me/work/repo/link/..", false)],
+                vec![walk("/home/me/work/repo/link/..", false)],
             ),
             (
                 "grep -R x link/../src",
-                vec![tree("/home/me/work/repo/link/../src", true)],
+                vec![walk("/home/me/work/repo/link/../src", true)],
             ),
             (
                 "ls link/.. | xargs cat",
-                vec![tree("/home/me/work/repo/link/..", true)],
+                vec![walk("/home/me/work/repo/link/..", true)],
             ),
             (
                 "find link/.. -exec cat {} +",
-                vec![tree("/home/me/work/repo/link/..", true)],
+                vec![walk("/home/me/work/repo/link/..", true)],
             ),
             // `git` reads the repository where `-C` goes, each folder from
             // the one before it.
             (
                 "git -C link/.. status",
-                vec![tree("/home/me/work/repo/link/..", false)],
+                vec![walk("/home/me/work/repo/link/..", false)],
             ),
             (
                 "git -C link -C .. log",
-                vec![tree("/home/me/work/repo/link/..", false)],
+                vec![walk("/home/me/work/repo/link/..", false)],
             ),
             // A part that starts with a dot can pick `..`: the folder above
             // the one it is in, which the disk names.
@@ -295,14 +248,12 @@ fn effect_keeps_judging_by_spelling() {
             "cd src && cd .. && cat x",
         ],
     );
-    // Beyond by spelling.
+    // Beyond by spelling (`cat ../x` and `cat src/../../x` are in `reach.rs`).
     check_effect(
         Shell::Posix,
         &paths,
         Effect::ReadsOnly(Reach::Beyond),
         &[
-            "cat ../x",
-            "cat src/../../x",
             "cat link/../../x",
             "cd .. && cat x",
             "cat /etc/../etc/hosts",
@@ -313,7 +264,7 @@ fn effect_keeps_judging_by_spelling() {
 
 #[test]
 fn a_cd_applies_its_own_dotdot_but_not_the_one_a_program_opens() {
-    check(
+    lists(
         Shell::Posix,
         &posix(),
         &[
@@ -356,7 +307,7 @@ fn a_cd_applies_its_own_dotdot_but_not_the_one_a_program_opens() {
                 "cd src && git -C ../link status",
                 vec![
                     exact("/home/me/work/repo/src"),
-                    tree("/home/me/work/repo/src/../link", false),
+                    walk("/home/me/work/repo/src/../link", false),
                 ],
             ),
             (
@@ -430,7 +381,7 @@ fn places(line: &str, paths: &Paths) -> Vec<String> {
 
 #[test]
 fn an_absolute_operand_does_not_borrow_the_folder_a_cd_moved_to() {
-    // The line of the issue, spelled absolute after a `cd` whose folder is
+    // `cat link/../etc/hosts`, spelled absolute after a `cd` whose folder is
     // the first part of the operand's own text. The `cd` does not change what
     // the operand opens: `link/..` after `link -> /etc` is `/`, and `etc` in
     // it is `/etc`, never `<cwd>/etc`.
@@ -461,7 +412,7 @@ fn an_absolute_operand_does_not_borrow_the_folder_a_cd_moved_to() {
             (format!("{cd} && ls {target}"), read(exact(e)), "/etc"),
             (
                 format!("{cd} && grep -r x {target}"),
-                read(tree(e, false)),
+                read(walk(e, false)),
                 "/etc",
             ),
             (
@@ -471,18 +422,18 @@ fn an_absolute_operand_does_not_borrow_the_folder_a_cd_moved_to() {
             ),
             (
                 format!("{cd} && git -C {target} status"),
-                read(tree(e, false)),
+                read(walk(e, false)),
                 "/etc",
             ),
         ];
         for (line, want, place) in &rows {
-            check(Shell::Posix, &paths, &[(line.as_str(), want.clone())]);
+            lists(Shell::Posix, &paths, &[(line.as_str(), want.clone())]);
             assert!(places(line, &paths).contains(&place.to_string()), "{line}");
         }
         // A `cd` that itself goes through the `..` is listed both ways (see
         // below), and the operand after it still once, kept.
         let line = format!("cd {target} && cat {target}/hosts");
-        check(
+        lists(
             Shell::Posix,
             &paths,
             &[(
@@ -519,13 +470,13 @@ fn a_cd_target_with_a_part_after_a_dotdot_is_listed_both_ways() {
         "cd link/../etc\ncat hosts",
         "pushd link/../etc && cat hosts",
     ] {
-        check(Shell::Posix, &paths, &[(line, four.clone())]);
+        lists(Shell::Posix, &paths, &[(line, four.clone())]);
         assert!(
             places(line, &paths).contains(&"/etc/hosts".to_string()),
             "{line}"
         );
     }
-    check(
+    lists(
         Shell::Posix,
         &paths,
         &[
@@ -598,7 +549,7 @@ fn a_cd_with_a_part_after_a_later_dotdot_is_listed_both_ways() {
             assert!(listed.contains(&want), "{line}: {listed:?}");
         }
     }
-    check(
+    lists(
         Shell::Posix,
         &paths,
         &[
@@ -653,7 +604,7 @@ fn a_cd_with_no_part_after_its_dotdot_is_one_way() {
     // A `..` with no part before it climbs from the folder the line is in,
     // which the guard knows. A folder that ends at its `..` is a leading part
     // of the text: it exists when the text does, so the shell goes there.
-    check(
+    lists(
         Shell::Posix,
         &posix(),
         &[
@@ -701,7 +652,7 @@ fn the_list_holds_each_spelling_once_and_is_sorted() {
 
 #[test]
 fn a_walk_over_the_same_spelling_is_kept_over_an_exact_path() {
-    check(
+    lists(
         Shell::Posix,
         &posix(),
         &[
@@ -711,11 +662,11 @@ fn a_walk_over_the_same_spelling_is_kept_over_an_exact_path() {
             ),
             (
                 "rg x link/..; cat link/..",
-                vec![tree("/home/me/work/repo/link/..", false)],
+                vec![walk("/home/me/work/repo/link/..", false)],
             ),
             (
                 "rg x link/..; grep -R x link/..",
-                vec![tree("/home/me/work/repo/link/..", true)],
+                vec![walk("/home/me/work/repo/link/..", true)],
             ),
         ],
     );
@@ -737,7 +688,7 @@ fn a_line_that_does_not_only_read_has_no_list() {
 #[test]
 fn powershell_and_cmd_paths_keep_their_dotdot_too() {
     let win = windows();
-    check(
+    lists(
         Shell::PowerShell,
         &win,
         &[
@@ -763,7 +714,7 @@ fn powershell_and_cmd_paths_keep_their_dotdot_too() {
             ),
             (
                 r"Get-ChildItem link\.. -Recurse",
-                vec![tree(r"C:\Users\me\dev\repo\link\..", true)],
+                vec![walk(r"C:\Users\me\dev\repo\link\..", true)],
             ),
             (
                 r"cd link\..; Get-Content x",
@@ -778,7 +729,7 @@ fn powershell_and_cmd_paths_keep_their_dotdot_too() {
             ),
         ],
     );
-    check(
+    lists(
         Shell::Cmd,
         &win,
         &[
@@ -813,7 +764,7 @@ fn a_pattern_in_the_folder_a_cd_moved_to_is_listed_in_the_folded_folder() {
     // caller that resolves `<R>/link/..` on the disk follows the link and
     // expands a different folder, so the folded glob must be listed.
     let paths = posix();
-    check(
+    lists(
         Shell::Posix,
         &paths,
         &[

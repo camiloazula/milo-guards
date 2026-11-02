@@ -7,7 +7,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{path_disagreement, posix, windows};
+use common::{exact, glob, lists, path_disagreement, posix, walk, windows};
 use milo_guards_shell::{
     effect, effect_paths, Effect, How, Paths, Protected, Reach, ReadPath, Shell,
 };
@@ -45,28 +45,13 @@ fn check(shell: Shell, paths: &Paths, rows: &[(&str, Option<&[&str]>)]) {
 const ROOT: &str = "/home/me/work/repo";
 
 #[test]
-fn the_ticket_rows() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            ("cat link/id_rsa", Some(&["/home/me/work/repo/link/id_rsa"])),
-            ("rg TODO src", Some(&["/home/me/work/repo/src"])),
-            ("ls", Some(&[ROOT])),
-            ("cat *.rs", Some(&[ROOT])),
-            ("git status", Some(&[ROOT])),
-            ("mkdir x", None),
-        ],
-    );
-}
-
-#[test]
 fn operands_and_redirect_sources_are_listed_as_absolute_paths() {
     check(
         Shell::Posix,
         &posix(),
         &[
             ("cat a.txt", Some(&["/home/me/work/repo/a.txt"])),
+            ("cat link/id_rsa", Some(&["/home/me/work/repo/link/id_rsa"])),
             (
                 "cat ./src/../a.txt",
                 Some(&["/home/me/work/repo/src/../a.txt"]),
@@ -343,13 +328,10 @@ fn a_line_that_does_not_only_read_has_no_list() {
 
 #[test]
 fn a_temporary_path_is_listed_like_any_other() {
-    // It is reads-only in the workspace by the rule for temporary files, not
-    // because it is inside the workspace: the caller applies that rule.
+    // It is reads-only in the workspace (see `reach.rs`) by the rule for
+    // temporary files, not because it is inside the workspace: the caller
+    // applies that rule.
     let paths = posix();
-    assert_eq!(
-        effect("cat /tmp/x", Shell::Posix, &paths),
-        Effect::ReadsOnly(Reach::Workspace)
-    );
     check(
         Shell::Posix,
         &paths,
@@ -556,111 +538,109 @@ fn every_extra_row_agrees_with_effect() {
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
-fn exact(path: &str) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Exact,
-    }
-}
-
-fn glob(path: &str, rest: &str) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Glob(rest.to_string()),
-    }
-}
-
-fn walk(path: &str, follows_links: bool) -> ReadPath {
-    ReadPath {
-        path: PathBuf::from(path),
-        how: How::Tree { follows_links },
-    }
-}
 
 /// How each line is read: exact paths, patterns as a folder and the rest,
 /// and walks, with whether they open what they find through links.
 #[test]
 fn each_entry_says_how_it_is_read() {
-    let rows: &[(&str, &[ReadPath])] = &[
-        ("cat a.txt", &[exact("/home/me/work/repo/a.txt")]),
-        ("cat < in.txt", &[exact("/home/me/work/repo/in.txt")]),
-        ("ls src", &[exact("/home/me/work/repo/src")]),
-        ("ls", &[exact(ROOT)]),
-        ("cd src && ls", &[exact("/home/me/work/repo/src")]),
+    let rows: &[(&str, Vec<ReadPath>)] = &[
+        ("cat a.txt", vec![exact("/home/me/work/repo/a.txt")]),
+        ("cat < in.txt", vec![exact("/home/me/work/repo/in.txt")]),
+        ("ls src", vec![exact("/home/me/work/repo/src")]),
+        ("ls", vec![exact(ROOT)]),
+        ("cd src && ls", vec![exact("/home/me/work/repo/src")]),
         // A pattern: the folder it expands in, and the rest.
-        ("cat *.rs", &[glob(ROOT, "*.rs")]),
-        ("cat src/*.rs", &[glob("/home/me/work/repo/src", "*.rs")]),
+        ("cat *.rs", vec![glob(ROOT, "*.rs")]),
+        ("cat src/*.rs", vec![glob("/home/me/work/repo/src", "*.rs")]),
         (
             "cat src/*/x.rs",
-            &[glob("/home/me/work/repo/src", "*/x.rs")],
+            vec![glob("/home/me/work/repo/src", "*/x.rs")],
         ),
         (
             "cat src/**/x.rs",
-            &[glob("/home/me/work/repo/src", "**/x.rs")],
+            vec![glob("/home/me/work/repo/src", "**/x.rs")],
         ),
-        ("cat ../*/x", &[glob("/home/me/work/repo/..", "*/x")]),
-        ("cat /*", &[glob("/", "*")]),
-        ("cat ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
-        ("echo ~/.ssh/*", &[glob("/home/me/.ssh", "*")]),
-        ("cat src/a?.rs", &[glob("/home/me/work/repo/src", "a?.rs")]),
+        ("cat ../*/x", vec![glob("/home/me/work/repo/..", "*/x")]),
+        ("cat /*", vec![glob("/", "*")]),
+        ("cat ~/.ssh/*", vec![glob("/home/me/.ssh", "*")]),
+        ("echo ~/.ssh/*", vec![glob("/home/me/.ssh", "*")]),
+        (
+            "cat src/a?.rs",
+            vec![glob("/home/me/work/repo/src", "a?.rs")],
+        ),
         (
             "cat src/[ab].rs",
-            &[glob("/home/me/work/repo/src", "[ab].rs")],
+            vec![glob("/home/me/work/repo/src", "[ab].rs")],
         ),
         (
             "cat src/*.rs docs/*.md",
-            &[
+            vec![
                 glob("/home/me/work/repo/docs", "*.md"),
                 glob("/home/me/work/repo/src", "*.rs"),
             ],
         ),
-        ("for f in *.rs; do cat \"$f\"; done", &[glob(ROOT, "*.rs")]),
+        (
+            "for f in *.rs; do cat \"$f\"; done",
+            vec![glob(ROOT, "*.rs")],
+        ),
         (
             "for d in a b; do ls $d/*; done",
-            &[
+            vec![
                 glob("/home/me/work/repo/a", "*"),
                 glob("/home/me/work/repo/b", "*"),
             ],
         ),
         // A walk that stays out of links.
-        ("rg TODO src", &[walk("/home/me/work/repo/src", false)]),
-        ("rg TODO", &[walk(ROOT, false)]),
-        ("grep -r x src", &[walk("/home/me/work/repo/src", false)]),
-        ("find src -name x", &[walk("/home/me/work/repo/src", false)]),
-        ("find . -name '*.rs'", &[walk(ROOT, false)]),
-        ("ls -R", &[walk(ROOT, false)]),
-        ("ls -R src", &[walk("/home/me/work/repo/src", false)]),
-        ("fd -e rs", &[walk(ROOT, false)]),
-        ("du -sh target", &[walk("/home/me/work/repo/target", false)]),
-        ("git status", &[walk(ROOT, false)]),
+        ("rg TODO src", vec![walk("/home/me/work/repo/src", false)]),
+        ("rg TODO", vec![walk(ROOT, false)]),
+        ("grep -r x src", vec![walk("/home/me/work/repo/src", false)]),
+        (
+            "find src -name x",
+            vec![walk("/home/me/work/repo/src", false)],
+        ),
+        ("find . -name '*.rs'", vec![walk(ROOT, false)]),
+        ("ls -R", vec![walk(ROOT, false)]),
+        ("ls -R src", vec![walk("/home/me/work/repo/src", false)]),
+        ("fd -e rs", vec![walk(ROOT, false)]),
+        (
+            "du -sh target",
+            vec![walk("/home/me/work/repo/target", false)],
+        ),
+        ("git status", vec![walk(ROOT, false)]),
         (
             "git -C a -C b log",
-            &[walk("/home/me/work/repo/a/b", false)],
+            vec![walk("/home/me/work/repo/a/b", false)],
         ),
         // A walk that opens what it finds through links.
-        ("grep -R x src", &[walk("/home/me/work/repo/src", true)]),
-        ("grep -rR x src", &[walk("/home/me/work/repo/src", true)]),
+        ("grep -R x src", vec![walk("/home/me/work/repo/src", true)]),
+        ("grep -rR x src", vec![walk("/home/me/work/repo/src", true)]),
         (
             "grep --dereference-recursive x src",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
-        ("rg -L x src", &[walk("/home/me/work/repo/src", true)]),
-        ("rg --follow x src", &[walk("/home/me/work/repo/src", true)]),
-        ("rg -nL x src", &[walk("/home/me/work/repo/src", true)]),
-        ("fd -L x src", &[walk("/home/me/work/repo/src", true)]),
-        ("find -L src", &[walk("/home/me/work/repo/src", true)]),
-        ("find src -follow", &[walk("/home/me/work/repo/src", true)]),
+        ("rg -L x src", vec![walk("/home/me/work/repo/src", true)]),
+        (
+            "rg --follow x src",
+            vec![walk("/home/me/work/repo/src", true)],
+        ),
+        ("rg -nL x src", vec![walk("/home/me/work/repo/src", true)]),
+        ("fd -L x src", vec![walk("/home/me/work/repo/src", true)]),
+        ("find -L src", vec![walk("/home/me/work/repo/src", true)]),
+        (
+            "find src -follow",
+            vec![walk("/home/me/work/repo/src", true)],
+        ),
         (
             "find src -exec cat {} +",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         (
             r"find src -execdir cat {} \;",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         (
             "diff -r a b",
-            &[
+            vec![
                 walk("/home/me/work/repo/a", true),
                 walk("/home/me/work/repo/b", true),
             ],
@@ -668,55 +648,42 @@ fn each_entry_says_how_it_is_read() {
         // What a lister hands to a program that opens the names.
         (
             "ls src | xargs cat",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
-        ("ls | xargs cat", &[walk(ROOT, true)]),
-        ("ls | sort | xargs cat", &[walk(ROOT, true)]),
-        ("git ls-files | xargs cat", &[walk(ROOT, true)]),
-        ("fd -e rs | xargs cat", &[walk(ROOT, true)]),
+        ("ls | xargs cat", vec![walk(ROOT, true)]),
+        ("ls | sort | xargs cat", vec![walk(ROOT, true)]),
+        ("git ls-files | xargs cat", vec![walk(ROOT, true)]),
+        ("fd -e rs | xargs cat", vec![walk(ROOT, true)]),
         (
             "find src -name '*.rs' | xargs cat",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         (
             "find src -print0 | xargs -0 grep x",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         (
             "ls src/* | xargs cat",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         // A lister whose names nothing opens is only read.
-        ("ls src | head -n 5", &[exact("/home/me/work/repo/src")]),
-        ("ls src | wc -l", &[exact("/home/me/work/repo/src")]),
+        ("ls src | head -n 5", vec![exact("/home/me/work/repo/src")]),
+        ("ls src | wc -l", vec![exact("/home/me/work/repo/src")]),
         // The same folder read two ways keeps the stronger.
         (
             "cat src; rg x src",
-            &[walk("/home/me/work/repo/src", false)],
+            vec![walk("/home/me/work/repo/src", false)],
         ),
         (
             "rg x src; grep -R y src",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
         (
             "rg x src; ls src | xargs cat",
-            &[walk("/home/me/work/repo/src", true)],
+            vec![walk("/home/me/work/repo/src", true)],
         ),
     ];
-    let wrong: Vec<String> = rows
-        .iter()
-        .filter_map(|(line, want)| {
-            let got = effect_paths(line, Shell::Posix, &posix());
-            (got.as_deref() != Some(*want))
-                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}"))
-        })
-        .collect();
-    assert!(
-        wrong.is_empty(),
-        "{} rows wrong:\n{}",
-        wrong.len(),
-        wrong.join("\n")
-    );
+    lists(Shell::Posix, &posix(), rows);
 }
 
 /// The rest of a pattern is what is written after its fixed folder, as
@@ -727,54 +694,41 @@ fn a_leading_dot_stays_in_the_rest_of_a_pattern() {
     let src = "/home/me/work/repo/src";
     // The folder above, a `..` kept as the pattern's part picks it.
     const UP: &str = "/home/me/work/repo/..";
-    let rows: &[(&str, &[ReadPath])] = &[
-        ("cat .a*/x", &[glob(ROOT, ".a*/x")]),
-        ("cat .??/x", &[glob(ROOT, ".??/x")]),
-        ("cat .*", &[glob(ROOT, ".*"), exact(UP)]),
-        ("ls .*", &[glob(ROOT, ".*"), exact(UP)]),
-        ("cat .[a-z]*/x", &[glob(ROOT, ".[a-z]*/x")]),
-        ("cat ./*.rs", &[glob(ROOT, "*.rs")]),
-        ("cat ./.*", &[glob(ROOT, ".*"), exact(UP)]),
-        ("cat a.*", &[glob(ROOT, "a.*")]),
-        ("cat src/.*rc", &[glob(src, ".*rc")]),
-        ("cat src/.[a-z]*/x", &[glob(src, ".[a-z]*/x")]),
+    let rows: &[(&str, Vec<ReadPath>)] = &[
+        ("cat .a*/x", vec![glob(ROOT, ".a*/x")]),
+        ("cat .??/x", vec![glob(ROOT, ".??/x")]),
+        ("cat .*", vec![glob(ROOT, ".*"), exact(UP)]),
+        ("ls .*", vec![glob(ROOT, ".*"), exact(UP)]),
+        ("cat .[a-z]*/x", vec![glob(ROOT, ".[a-z]*/x")]),
+        ("cat ./*.rs", vec![glob(ROOT, "*.rs")]),
+        ("cat ./.*", vec![glob(ROOT, ".*"), exact(UP)]),
+        ("cat a.*", vec![glob(ROOT, "a.*")]),
+        ("cat src/.*rc", vec![glob(src, ".*rc")]),
+        ("cat src/.[a-z]*/x", vec![glob(src, ".[a-z]*/x")]),
         (
             "cat x/.*",
-            &[
+            vec![
                 glob("/home/me/work/repo/x", ".*"),
                 exact("/home/me/work/repo/x/.."),
             ],
         ),
-        ("cat ~/.*rc", &[glob("/home/me", ".*rc")]),
+        ("cat ~/.*rc", vec![glob("/home/me", ".*rc")]),
         (
             "cat ../.*",
-            &[
+            vec![
                 glob("/home/me/work/repo/..", ".*"),
                 exact("/home/me/work/repo/../.."),
             ],
         ),
-        ("cat /.*", &[exact("/"), glob("/", ".*")]),
+        ("cat /.*", vec![exact("/"), glob("/", ".*")]),
         (
             "cat src/*.rs lib/*.rs",
-            &[glob("/home/me/work/repo/lib", "*.rs"), glob(src, "*.rs")],
+            vec![glob("/home/me/work/repo/lib", "*.rs"), glob(src, "*.rs")],
         ),
-        ("cat ?x/y", &[glob(ROOT, "?x/y")]),
-        ("cat src/[ab]/x", &[glob(src, "[ab]/x")]),
+        ("cat ?x/y", vec![glob(ROOT, "?x/y")]),
+        ("cat src/[ab]/x", vec![glob(src, "[ab]/x")]),
     ];
-    let wrong: Vec<String> = rows
-        .iter()
-        .filter_map(|(line, want)| {
-            let got = effect_paths(line, Shell::Posix, &posix());
-            (got.as_deref() != Some(*want))
-                .then(|| format!("{line}\n    want {want:?}\n    got  {got:?}"))
-        })
-        .collect();
-    assert!(
-        wrong.is_empty(),
-        "{} rows wrong:\n{}",
-        wrong.len(),
-        wrong.join("\n")
-    );
+    lists(Shell::Posix, &posix(), rows);
     // The folder and the rest, put together, are the pattern as written.
     for line in [
         "cat .a*/x",
