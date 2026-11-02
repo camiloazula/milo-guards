@@ -39,9 +39,17 @@ fn python_that_computes_is_understood() {
                 "print(len('abc'), max(1, 2), sorted([3, 1]))",
                 YES_IMPORTING,
             ),
-            ("import json, sys\njson.load(sys.stdin)", YES_IMPORTING),
-            ("import re\nprint(re.sub('a', 'b', 'abc'))", YES_IMPORTING),
-            ("import math\nprint(math.pi)", YES_IMPORTING),
+            // The modules built into the interpreter binary.
+            ("import sys\nprint(sys.argv)", YES_IMPORTING),
+            ("import sys; print(sys.version)", YES_IMPORTING),
+            ("import sys\nprint(sys.stdin.read())", YES_IMPORTING),
+            ("import time\nprint(time.time())", YES_IMPORTING),
+            ("import errno\nprint(errno.ENOENT)", YES_IMPORTING),
+            ("import itertools, builtins", YES_IMPORTING),
+            (
+                "import sys, time, errno\nprint(sys.argv, time.monotonic())",
+                YES_IMPORTING,
+            ),
             ("open('out.txt', 'w')", YES_IMPORTING),
             ("print(open('x').read())", YES_IMPORTING),
             ("print('x'.upper(), [1, 2].count(1))", YES_IMPORTING),
@@ -77,6 +85,22 @@ fn python_outside_the_subset_is_not_understood() {
             ("import os\nos.remove('x')", NO),
             ("import os.path", NO),
             ("import json as j\nj.dumps(1)", NO),
+            // A module that is a file looked up in the folder the code runs
+            // in first, however little the code does with it.
+            ("import json", NO),
+            ("import json, sys\njson.load(sys.stdin)", NO),
+            ("import re\nprint(re.sub('a', 'b', 'abc'))", NO),
+            ("import math\nprint(math.pi)", NO),
+            ("import sys, json", NO),
+            ("import enum", NO),
+            // The built-in modules, used beyond the few members on the list.
+            ("import builtins\nbuiltins.exec('1')", NO),
+            ("import builtins\nprint(builtins.len('a'))", NO),
+            ("import time\ntime.sleep(0)", NO),
+            ("import itertools\nprint(itertools.count())", NO),
+            ("import errno\nprint(errno.strerror(2))", NO),
+            ("import sys\nprint(sys.modules)", NO),
+            ("import sys\nsys.stdout.write('x')", NO),
             ("from json import dumps\ndumps(1)", NO),
             ("import sys\nsys.exit(0)", NO),
             ("import sys\nprint(sys.path)", NO),
@@ -179,7 +203,7 @@ fn what_is_understood_does_nothing_to_a_file_but_open_in_python() {
     // The point of understanding: no act found in understood code is no act.
     for (language, code) in [
         (Python, "print(1+1)"),
-        (Python, "import json, sys\njson.load(sys.stdin)"),
+        (Python, "import sys\nprint(sys.stdin.read())"),
         (JavaScript, "console.log(1)"),
         (JavaScript, "console.log(JSON.stringify({a: 1}))"),
     ] {

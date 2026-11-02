@@ -263,8 +263,10 @@ pub enum Understanding {
 ///   `json.dumps`, `console.log`, `Math.max`, the methods of a string or a
 ///   list), or `open` in Python, which the reader judges by its path and
 ///   mode;
-/// - its imports are `json`, `math`, `re` and `sys` in Python, and it has no
-///   import, `require` or `eval` in JavaScript;
+/// - its imports are the modules built into the interpreter binary (`sys`,
+///   `builtins`, `errno`, `itertools`, `time`) in Python, which no file in
+///   the folder the code runs in can stand in for, and it has no import,
+///   `require` or `eval` in JavaScript;
 /// - it names nothing that is not a name it set, a call on the list or a
 ///   module on the list that it imported, and sets none of those;
 /// - it reaches into nothing: no attribute that starts with an underscore,

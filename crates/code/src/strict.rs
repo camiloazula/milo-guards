@@ -18,8 +18,10 @@
 //! - its calls are on a short list that only computes (`print`, `len`, `str`,
 //!   `json.dumps`, `console.log`, `Math.max`, the methods of a string or a
 //!   list), or `open` in Python, which the reader judges by its path and mode;
-//! - its imports are `json`, `math`, `re` and `sys` in Python, and it has no
-//!   import, `require` or `eval` in JavaScript;
+//! - its imports are the modules built into the interpreter binary (`sys`,
+//!   `builtins`, `errno`, `itertools`, `time`) in Python, which no file in
+//!   the folder the code runs in can stand in for, and it has no import,
+//!   `require` or `eval` in JavaScript;
 //! - it names nothing that is not a name it set, a call on the list or a
 //!   module on the list that it imported (JavaScript's are always there), and
 //!   sets none of those;
@@ -93,30 +95,30 @@ const PYTHON_CALLS: [&str; 40] = [
     "slice",
 ];
 
-/// The modules an import may name, and the names the code may not set.
-const PYTHON_MODULES: [&str; 4] = ["json", "math", "re", "sys"];
+/// The modules an import may name, and the names the code may not set: the
+/// ones built into every interpreter binary (the `Modules/Setup.bootstrap`
+/// of `CPython` compiles `errno`, `itertools` and `time` in, `sys` and `builtins` are the
+/// interpreter itself). The import system tries the built-in finder before it
+/// looks at the import path, so no file in the folder the code runs in can
+/// stand in for one of them, and importing one reads nothing from disk. Every
+/// other module (`json`, `re`, `math`, which is a file on many builds, and the
+/// modules each of them loads in turn) is looked up in that folder first, and
+/// an import of one makes the code not read whole.
+const PYTHON_MODULES: [&str; 5] = ["builtins", "errno", "itertools", "sys", "time"];
 
 /// Whether `module.name` is a member the code may use, as a call or not.
 fn python_member(module: &str, name: &str, call: bool) -> bool {
     match module {
-        "json" => call && matches!(name, "dumps" | "loads" | "load" | "dump"),
-        "math" => true,
-        "re" => {
+        "errno" => !call,
+        "sys" => !call && matches!(name, "stdin" | "argv" | "version"),
+        "time" => {
             call && matches!(
                 name,
-                "compile"
-                    | "match"
-                    | "search"
-                    | "fullmatch"
-                    | "sub"
-                    | "subn"
-                    | "split"
-                    | "findall"
-                    | "finditer"
-                    | "escape"
+                "time" | "time_ns" | "monotonic" | "monotonic_ns" | "perf_counter"
             )
         }
-        "sys" => !call && matches!(name, "stdin" | "argv"),
+        // `builtins.exec` is `exec`, and `itertools` builds lazy iterators:
+        // importing either is read whole and using either is not.
         _ => false,
     }
 }
@@ -180,7 +182,9 @@ fn python(code: &str) -> Option<bool> {
                     clean &= plain_name(name)
                         && !name.starts_with('_')
                         && !PYTHON_CALLS.contains(&name)
-                        && !PYTHON_MODULES.contains(&name);
+                        && !PYTHON_MODULES.contains(&name)
+                        // Names of modules that were once importable.
+                        && !matches!(name, "json" | "math" | "re");
                     assigned.insert(name.to_string());
                 }
                 true

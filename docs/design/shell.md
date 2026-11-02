@@ -1390,18 +1390,25 @@ questions are answered apart:
    name and `if` with `else` (no `def`, `class`, lambda, arrow function, loop,
    comprehension, `try`, `with`, `switch`, `match`, `async`, `await`,
    decorator, `new`, spread); every call is a call on a short list that only
-   computes (`print`, `len`, `json.dumps`, `console.log`, `Math.max`, the
+   computes (`print`, `len`, `time.time`, `console.log`, `Math.max`, the
    methods of a string or a list) or `open`, which the reader judges by its
    path and mode (a name on the list used as a value, `x = print; x(1)`, is
    not); and no import, run-time code or environment write is outside the
-   list (Python imports only `json`, `math`, `re` and `sys`, plainly;
+   list (Python imports only the modules built into the interpreter binary,
+   plainly: `sys`, `builtins`, `errno`, `itertools` and `time`, which the
+   import system finds before it looks in the folder the code runs in, so
+   nothing there can stand in for them; any other import, `json`, `re` and
+   `math` among them, is looked up in that folder first and makes the code not
+   read whole, with no table of what each module loads in turn;
    JavaScript has no `import` or `require`; no `eval`, `exec`, `compile` or
    `Function`; no name that starts with an underscore or is not plain ASCII; a
    name the code did not set is not read whole). `os.getcwd()`, `sys.exit()`,
    `input()`, `process.env` and `new Date()` are not on the list.
 4. **The folder Python runs in is the workspace's own.** Python puts the folder
    the code runs in ahead of the standard library, so `import json` loads
-   `./json.py` from it, and so does code with no `import` (an uncaught
+   `./json.py` from it (which is why it is not read whole, even in the
+   workspace: a planted file there would run with no line naming it), and so
+   does code with no `import` (an uncaught
    exception imports `traceback`, the `idna` codec imports `stringprep`: this
    is `Understood { imports: true }`). Python code is read whole only when that
    folder is inside a workspace folder, the workspace's own code: the working
@@ -1414,8 +1421,9 @@ questions are answered apart:
    not read whole either.
 
 `python3 -c 'print(1+1)'`, `node -e 'console.log(1)'`,
-`python3 -c "import json,sys; json.load(sys.stdin)"` and
-`python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import os;
+`python3 -c "import sys; print(sys.version)"` and
+`python3 -c "open('out.txt','w')"` are safe. `python3 -c 'import json'`,
+`cd sub && python3 -c 'import re'`, `python3 -c 'import os;
 print(os.getcwd())'`, `node -p 'process.env'`, `python3 -c 'def f(): return 1'`,
 `PYTHONPATH=. python3 -c 'print(1)'` and `python3 - <<'PY' … PY` with nothing
 found in it are `unknown`. Code outside the four is still read, and a delete,

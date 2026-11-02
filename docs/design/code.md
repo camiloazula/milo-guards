@@ -40,10 +40,13 @@ The two are asked apart on purpose. A caller keeps every act for code it does
 not understand (a delete in a function is still a delete), and says "unknown"
 for it only when it found none. `Understood { imports }` also says whether the
 code may load a module: all Python code does, with or without an `import`,
-and it looks in the folder the code runs in first (`import json` loads
-`./json.py` from it; an uncaught exception imports `traceback`, the `idna`
-codec imports `stringprep`). A caller understands Python code only where that
-folder is its own. Understood JavaScript has no import at all.
+and it looks in the folder the code runs in first (an uncaught exception
+imports `traceback`, the `idna` codec imports `stringprep`). A caller
+understands Python code only where that folder is its own. An `import` is
+understood only for a module built into the interpreter binary, which no file
+in that folder can stand in for: `import json` is not understood, since it
+runs `./json.py` when there is one. Understood JavaScript has no import at
+all.
 
 Three more functions are for what a caller meets next to the code:
 
@@ -146,10 +149,9 @@ understood only when all of these hold:
      `dict`, `set`, `frozenset`, `range`, `enumerate`, `zip`, `any`, `all`,
      `ord`, `chr`, `hex`, `bin`, `oct`, `divmod`, `pow`, `bytes`, `bytearray`,
      `format`, `ascii`, `iter`, `next`, `complex`, `slice`; `open`, which the
-     reader judges by its path and mode; `json.dumps`, `loads`, `load`, `dump`;
-     `re.compile`, `match`, `search`, `fullmatch`, `sub`, `subn`, `split`,
-     `findall`, `finditer`, `escape`; `math.*`; and a method of a value the
-     code made (a string, a list, a file from `open`, `sys.stdin`).
+     reader judges by its path and mode; `time.time`, `time_ns`, `monotonic`,
+     `monotonic_ns`, `perf_counter`; and a method of a value the code made (a
+     string, a list, a file from `open`, `sys.stdin`).
    - JavaScript: `parseInt`, `parseFloat`, `String`, `Number`, `Boolean`,
      `isNaN`, `isFinite`; `console.log`, `error`, `warn`, `info`, `debug`;
      `JSON.stringify` and `parse`; `Math.abs`, `ceil`, `floor`, `round`, `max`,
@@ -168,9 +170,23 @@ understood only when all of these hold:
      `Bun.*`, `Deno.*`; a call of a name nothing bound, of a name the code
      set, of a call (`f()()`), or with a spread (`print(*args)`).
 4. **No import, run-time code or environment write is outside the list.**
-   Python imports only `json`, `math`, `re` and `sys`, plainly: no alias
-   (`import json as j`), no `from … import`; the only members of `sys` are
-   `stdin` and `argv`. JavaScript has no `import`, `require` or `import()`.
+   Python imports only the modules built into the interpreter binary,
+   plainly: `sys`, `builtins`, `errno`, `itertools` and `time` (the ones
+   CPython's `Modules/Setup.bootstrap` compiles in, and `sys` and `builtins`,
+   which are the interpreter itself). The import system tries its built-in
+   finder before it looks at the import path, so no file in the folder the
+   code runs in can stand in for one of them, and importing one reads
+   nothing from disk. Every other module is looked up in that folder first
+   (`python3 -c` puts it at the front of the path, so `import json` runs
+   `./json.py` when there is one, and so does each module `json` loads in
+   turn: `import re` loads `enum`), so any other import makes the code not
+   understood: `json`, `re` and `math` too (`math` is a file on many builds).
+   There is no table of what each module loads. No alias (`import sys as s`),
+   no `from … import`. The members used are few: `sys.stdin`, `sys.argv` and
+   `sys.version`; `time.time` and the four clocks above; `errno.<NAME>`; and
+   none of `builtins` and `itertools` (`builtins.exec` is `exec`), so
+   importing those two is understood and using them is not. JavaScript has no
+   `import`, `require` or `import()`.
    No `eval`, `exec`, `compile`, `__import__` or `Function`; no write to
    `os.environ`, `process.env` or a member of a module (`console.log = 1`); no
    name the code sets is a name above, or starts with an underscore; no member
@@ -180,11 +196,12 @@ understood only when all of these hold:
    `console`, so neither is the name the checks see. A name the code did not
    set is not understood either, so `os.getcwd()` with no `import os` is not,
    and a module on the list is a name only once the code imports it:
-   `print(math.pi)` and `json.dumps(1)` with no import are not understood
-   (they only fail, but the reader does not say so).
+   `print(time.time())` with no import is not understood (it only fails, but
+   the reader does not say so).
 
-`print(1+1)`, `console.log(1)`, `import json,sys; json.load(sys.stdin)` and
-`open('out.txt','w')` are understood. `import os; print(os.getcwd())`,
+`print(1+1)`, `console.log(1)`, `import sys; print(sys.version)` and
+`open('out.txt','w')` are understood. `import json; print(json.dumps(1))`,
+`import re`, `import os; print(os.getcwd())`,
 `process.env` and `def f(): return 1` are not, and `read` still finds a
 delete, an overwrite or a key in such code (`shutil.rmtree('/home/me')` in a
 function body is still a `Remove`).
