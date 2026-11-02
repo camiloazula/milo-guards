@@ -1078,7 +1078,9 @@ impl Walker<'_> {
                 self.substituted(node);
                 let outer = self.split.dir_snapshot();
                 let hidden = self.split.hidden_snapshot();
+                self.split.apart += 1;
                 self.children(node, stage, level);
+                self.split.apart -= 1;
                 self.split.restore_dir(outer);
                 self.split.restore_hidden(hidden);
             }
@@ -1278,7 +1280,10 @@ impl Walker<'_> {
                     pipeline,
                     index: next,
                 };
+                // A stage runs in a subshell of its own.
+                self.split.apart += 1;
                 self.walk(child, Some(stage), level + 1);
+                self.split.apart -= 1;
                 next += 1;
             }
         }

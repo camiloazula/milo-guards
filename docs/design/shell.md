@@ -475,11 +475,19 @@ command cd sub; cat; }; f < ../../.ssh/id_rsa`, `f() { cd sub & cat; }; f <
 same with a plain `cd`. A redirect placed from the folders of more than a few
 dozen functions that move the line, each defined in another folder, is
 `unknown`, not judged from each of them. A later definition of a function
-replaces the earlier one of the same name, so a name defined many times is read
-once, and `unknown` once however many calls reach it. A line that defines more
-than a few hundred functions that move the line (a name defined again counts
-again) has the redirects on its calls `unknown` instead of placed from where
-each function was defined. A redirect written on the
+that the line surely runs in its own shell replaces the earlier one of the same
+name, so a name defined many times is read once, and `unknown` once however
+many calls reach it. One that may not run there is kept beside the earlier one,
+since the earlier one may be the function a call reaches: the right side of
+`&&` or `||`, a branch of `if` or `case`, a loop, a function body, the
+background, a subshell `( … )`, a `$( … )` or `<( … )`, a pipeline stage and a
+script in a process of its own (`bash -c`). So `f() { :; } > .bashrc; cd ~;
+false && f() { cd .; }; f`, `… ; (f() { cd .; }); f` and `… ; f() { cd .; } & f`
+are `unknown` and `f() { echo x; } > .bashrc; cd ~; f() { cd .; }; f` is not. A
+line that defines more than a few hundred functions that move the line or whose
+definition is redirected (a name defined again counts again, kept or replaced)
+is `unknown`, and says so once, instead of placed from where each function was
+defined. A redirect written on the
 definition itself (`f() { cd sub; cat; } < ../../.ssh/id_rsa`) is opened at each
 call, before the body, so it is placed like a group's, from the folder the line
 is in where the function is defined, not from where the body ends; a name

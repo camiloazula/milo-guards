@@ -238,14 +238,15 @@ impl Unit {
 /// differs only in case counts too).
 #[derive(Debug, Default)]
 struct Names {
-    /// The function of each name as written. A later definition of the same
-    /// name replaces the earlier one, as it does in the shell, so that a
-    /// name defined many times is one entry and not as many as there are
-    /// definitions.
-    exact: HashMap<String, usize>,
-    /// The functions by their name in lower case, each by the name as
-    /// written (see `exact`).
-    lower: HashMap<String, HashMap<String, usize>>,
+    /// The functions of each name as written. A later definition that surely
+    /// runs in the line's own shell replaces the earlier ones, as it does in
+    /// the shell, so that a name defined many times is one entry and not as
+    /// many as there are definitions; one that may not run (or runs in a
+    /// shell of its own) is kept beside them, since the earlier one may be
+    /// the function a call reaches.
+    exact: HashMap<String, Vec<usize>>,
+    /// The functions by their name in lower case.
+    lower: HashMap<String, Vec<usize>>,
     /// The first unit whose program is the name as written, and the first
     /// whose key is the name.
     first_exact: HashMap<String, usize>,
@@ -253,14 +254,21 @@ struct Names {
 }
 
 impl Names {
-    /// Note that the function `name` is `at` in [`Split::reaching`], in
-    /// place of an earlier function of the same name.
-    fn add(&mut self, name: &str, at: usize) {
-        self.exact.insert(name.to_string(), at);
-        self.lower
-            .entry(name.to_ascii_lowercase())
-            .or_default()
-            .insert(name.to_string(), at);
+    /// Note that the function `name` is `at` in [`Split::reaching`]. When
+    /// `replaces`, the definition surely runs in the line's own shell, so it
+    /// takes the place of the earlier functions of the same name; otherwise
+    /// it is kept beside them.
+    fn add(&mut self, name: &str, at: usize, replaces: bool) {
+        let earlier = self.exact.entry(name.to_string()).or_default();
+        let replaced = if replaces {
+            std::mem::take(earlier)
+        } else {
+            Vec::new()
+        };
+        earlier.push(at);
+        let lower = self.lower.entry(name.to_ascii_lowercase()).or_default();
+        lower.retain(|index| !replaced.contains(index));
+        lower.push(at);
     }
 
     /// Note that the unit `unit` is the one at `at`, and give the functions
@@ -295,11 +303,8 @@ impl Names {
         let mut found: Vec<usize> = program
             .and_then(|program| self.exact.get(program))
             .into_iter()
-            .chain(
-                key.and_then(|key| self.lower.get(key))
-                    .into_iter()
-                    .flat_map(HashMap::values),
-            )
+            .chain(key.and_then(|key| self.lower.get(key)))
+            .flatten()
             .copied()
             .collect();
         found.sort_unstable();
@@ -478,6 +483,9 @@ pub(crate) struct Defining {
     unsure: bool,
     /// Whether the definition has a redirect of a file named by a folder.
     opens: bool,
+    /// Whether the definition surely runs in the line's own shell, and so
+    /// takes the place of an earlier definition of the same name.
+    replaces: bool,
     /// Where the definition's redirect opens its file from: at each call,
     /// from the folder the call is made in.
     pub(crate) here: OpensFrom,
@@ -677,9 +685,13 @@ pub(crate) struct Split {
     names: Names,
     /// How many definitions of them have a body that moves the line.
     moving: usize,
-    /// Whether a finding has said that `moving` is past
-    /// [`MAX_MOVING_FUNCTIONS`].
+    /// Whether a finding has said that the line defines more than
+    /// [`MAX_MOVING_FUNCTIONS`] of them.
     moving_flagged: bool,
+    /// How deep the line is inside a subshell, a substitution, a pipeline
+    /// stage or a script in a process of its own, whose definitions of a
+    /// function do not reach the rest of the line.
+    pub(crate) apart: usize,
     /// The units and redirect writes added inside a function body or a loop.
     in_body: Vec<usize>,
     write_in_body: Vec<usize>,
@@ -1167,20 +1179,6 @@ impl Split {
         if let Some(starts) = self.called.get(&key) {
             return starts.clone();
         }
-        if self.moving > MAX_MOVING_FUNCTIONS {
-            // However the names are kept, a line that defines this many is
-            // not worked out call by call.
-            if !self.moving_flagged {
-                self.moving_flagged = true;
-                self.problem(
-                    Rule::Unknown,
-                    "defines more functions that move the line than it reads, so the redirects on a call to one are placed from a folder only known when it runs",
-                    None,
-                );
-            }
-            self.called.insert(key, Vec::new());
-            return Vec::new();
-        }
         let mut starts = Vec::new();
         let mut unsure = Vec::new();
         let mut over = false;
@@ -1383,6 +1381,12 @@ impl Split {
     pub(crate) fn defining(&self, name: &str, opens: bool) -> Defining {
         Defining {
             name: name.to_string(),
+            // Only a definition the line surely runs, in its own shell,
+            // takes the place of an earlier one of the same name: not the
+            // right side of `&&` or `||`, a branch, a loop, a function body,
+            // the background, a subshell, a substitution, a pipeline stage
+            // or a script in a process of its own.
+            replaces: self.branches == 0 && self.repeats == 0 && self.apart == 0,
             dir: self.dir.clone(),
             moves: self.moves,
             first: self.units.len(),
@@ -1404,6 +1408,7 @@ impl Split {
             first,
             unsure,
             opens,
+            replaces,
             ..
         } = defining;
         // The walk moves its own line for every `cd` it reads, so a body
@@ -1420,8 +1425,20 @@ impl Split {
                         .is_some_and(|function| function.moves)
                 })
             });
-        if moves || opens {
-            self.names.add(&name, self.reaching.len());
+        if (moves || opens) && self.reaching.len() >= MAX_MOVING_FUNCTIONS {
+            // However the names are kept, a line that defines this many
+            // (a name defined again counts again) is not worked out call by
+            // call: it is not kept, and the line says so, once.
+            if !self.moving_flagged {
+                self.moving_flagged = true;
+                self.problem(
+                    Rule::Unknown,
+                    "defines more functions that move the line or redirect their definition than it reads, so a call to one is placed from a folder only known when it runs",
+                    None,
+                );
+            }
+        } else if moves || opens {
+            self.names.add(&name, self.reaching.len(), replaces);
             self.moving += usize::from(moves);
             self.reaching.push(Reaching {
                 name,
@@ -2196,10 +2213,12 @@ const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
 /// folder) under one redirect is unknown, not read from them all.
 const MAX_CALL_STARTS: usize = 32;
 
-/// The most functions that move the line a line may define (a name defined
-/// again counts again) before the redirects on its calls are unknown
-/// instead of placed from where each function was defined: a line that
-/// defines more is not one a person wrote to be read call by call.
+/// The most functions that move the line or whose definition is redirected
+/// that a line may define (a name defined again counts again, kept or
+/// replaced) before the line is unknown instead of placed call by call from
+/// where each function was defined: a line that defines more is not one a
+/// person wrote to be read call by call, and it bounds what a call has to
+/// look through.
 const MAX_MOVING_FUNCTIONS: usize = 256;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
@@ -2351,13 +2370,18 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
         return;
     }
     // A nested script (`bash -c 'cd x'`) runs in its own process: its `cd`
-    // does not move the line that started it. `eval`'s runs in this shell.
+    // does not move the line that started it, and a function it defines is
+    // not the line's. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
+    // (The line itself, at depth 0, is the shell whose functions these are.)
+    let apart = !here && depth > 0;
+    split.apart += usize::from(apart);
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
     }
+    split.apart -= usize::from(apart);
     if !here {
         split.restore_dir(outer);
     }
