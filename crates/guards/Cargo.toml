@@ -37,3 +37,8 @@ milo-guards-shell = { workspace = true, optional = true }
 milo-guards-file = { workspace = true, optional = true }
 milo-guards-url = { workspace = true, optional = true }
 milo-guards-secrets = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The table check `tests/everyday.rs` holds its rows to, shared with the
+# shell guard's own tests.
+milo-guards-core = { workspace = true, features = ["testing"] }
