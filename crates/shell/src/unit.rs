@@ -797,8 +797,14 @@ impl Split {
                 self.unsure_starts.insert(self.units.len());
             }
             // Whether this one moved the line is not certain when it may not
-            // have run, or runs in a process of its own.
-            if self.branches > 0 || self.repeats > 0 || unit.stage.is_some() {
+            // have run, or runs in a process of its own: a pipeline stage,
+            // or behind a wrapper (`env cd`, `nohup cd`, `coproc { cd; }`,
+            // `start cd`) that runs it as a program or in another shell.
+            if self.branches > 0
+                || self.repeats > 0
+                || unit.stage.is_some()
+                || !unit.wrappers.is_empty()
+            {
                 self.maybe_moved = true;
             }
         }

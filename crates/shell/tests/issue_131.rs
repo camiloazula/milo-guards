@@ -326,6 +326,71 @@ fn a_redirect_on_a_cd_after_a_cd_that_may_not_have_moved_is_also_placed_from_whe
 }
 
 #[test]
+fn a_cd_run_through_a_wrapper_does_not_move_the_line_so_a_later_redirect_is_also_placed_from_where_it_goes(
+) {
+    // `env cd`, `nohup cd`, `timeout 5 cd` and the like run the `cd` as a
+    // program of its own, and `coproc` runs it in a subshell: the line never
+    // moves, so the second `cd` starts in the folder the line began in.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "env cd a/b/c; cd .. > ../../../home/me/.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "nohup cd a/b/c; cd .. > ../../../home/me/.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "timeout 5 cd a/b/c; cd .. > ../../../home/me/.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "xargs cd a/b/c; cd .. > ../../../home/me/.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "coproc cd a/b/c; cd .. > ../../../home/me/.bashrc",
+                Rule::Overwrite,
+            ),
+            ("env cd sub; cd .. > ../x", Rule::Overwrite),
+            ("nohup cd sub; cd .. > ../x", Rule::Overwrite),
+            ("timeout 5 cd sub; cd .. > ../x", Rule::Overwrite),
+            ("xargs cd sub; cd .. > ../x", Rule::Overwrite),
+            ("stdbuf -o0 cd sub; cd .. > ../x", Rule::Overwrite),
+            ("nice cd sub; cd .. > ../x", Rule::Overwrite),
+            ("setsid cd sub; cd .. > ../x", Rule::Overwrite),
+            ("chroot / cd sub; cd .. > ../x", Rule::Overwrite),
+            ("coproc cd sub; cd .. > ../x", Rule::Overwrite),
+            ("coproc { cd sub; }; cd .. > ../x", Rule::Overwrite),
+            ("coproc X { cd sub; }; cd .. > ../x", Rule::Overwrite),
+        ],
+    );
+    // `start` opens a new window: the `cd` there does not move this one.
+    check(
+        Shell::Cmd,
+        &windows(),
+        &[],
+        &[
+            ("start cd sub & cd .. > ..\\x.txt", Rule::Overwrite),
+            ("start \"\" cd sub & cd .. > ..\\x.txt", Rule::Overwrite),
+            ("start /b cd sub & cd .. > ..\\x.txt", Rule::Overwrite),
+            (
+                "start cd a\\b\\c & cd .. > ..\\..\\..\\x.txt",
+                Rule::Overwrite,
+            ),
+            (
+                "start cd sub & cd .. < ..\\..\\.ssh\\id_rsa",
+                Rule::ReadSecret,
+            ),
+        ],
+    );
+}
+
+#[test]
 fn the_paths_of_a_cd_with_a_read_are_placed_from_where_it_starts() {
     let repo = "/home/me/work/repo";
     lists(

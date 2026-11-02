@@ -435,8 +435,10 @@ or a function body, which runs again from where the last pass left the line
 `f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
 `for` and `function`), and when an earlier `cd` may not have moved the line: it
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
-a branch of an `if`, `case` or `switch` or a `try`, or on the left of `||`
-(`cd sub || cd .. > ../x`, `if false; then cd sub; fi; cd .. > ../x`; the same
+a branch of an `if`, `case` or `switch` or a `try`, on the left of `||`, or
+through a wrapper that runs it as a program or in a shell of its own, such as
+`env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
+`if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
 in PowerShell and cmd). Only a `cd` after one of those is read this way: a
 redirect on a `cd` that follows a plain `cd` and `;` is placed from where the
 line is, as before.
