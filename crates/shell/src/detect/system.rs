@@ -325,17 +325,26 @@ impl Checker<'_> {
             } else if text == "--" || text.len() < 2 || !text.starts_with('-') {
                 break;
             } else if text.starts_with("--") {
-                // `--list` names signals; another long option has its value,
-                // a name or a number, which is not read as an id either way.
-                if text == "--list" {
+                // `--list` names signals, but only as the first word; later
+                // it is read like any other long option. A long option has
+                // its value, a name or a number, which is not read as an id
+                // either way, and the programs that take long options read
+                // `--signal` among them, so it may send a real signal.
+                if text == "--list" && rest.len() == args.len() {
                     return;
                 }
+                sends = true;
                 rest = &rest[1..];
                 break;
             } else {
                 let name = &text[1..];
+                // The listing options count only as the first word; later
+                // they are words the shell skips, and the ids are judged.
                 if matches!(name, "l" | "L") {
-                    return;
+                    if rest.len() == args.len() {
+                        return;
+                    }
+                    break;
                 }
                 let attached = name.strip_prefix('s').or_else(|| {
                     name.strip_prefix('n')
@@ -367,7 +376,19 @@ impl Checker<'_> {
             }
             rest = rest.get(used..).unwrap_or_default();
         }
-        if zero && !sends {
+        // A word that is only known when it runs, with more after it, may be
+        // `-s` (then a signal) or `-sNAME`, read as an option and the last
+        // one winning; so the line is not taken as signal 0. Nothing after it
+        // (`kill -0 $pid`), or one that is always a number (`-$$`), leaves the
+        // line as it reads.
+        let unread_option = rest.len() > 1
+            && rest.first().is_some_and(|arg| {
+                arg.known().is_none() && {
+                    let text = arg.text();
+                    !is_positive_expansion(text.strip_prefix('-').unwrap_or(text))
+                }
+            });
+        if zero && !sends && !unread_option {
             return;
         }
         if rest.first().and_then(Arg::known) == Some("--") {

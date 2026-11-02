@@ -688,7 +688,11 @@ the same line. It is `stop_system` when the line stops more than a name:
   the shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to
   `--` or the first other word, so a line is signal 0 only when every signal
   it names is 0: `kill -s 0 -s KILL -1` and `kill -0 -s KILL 0` send a real
-  signal and are `stop_system`.
+  signal and are `stop_system`. The listing options `-l`, `-L` and `--list`
+  count only as the first word (`kill -9 -l -1` still stops every process);
+  and a long option (`kill -0 --signal 9 -1`), or a word only known when it
+  runs with more after it (`kill -0 $X KILL -1`, which may hold `-s`), is not
+  read as signal 0: the ids are judged.
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name

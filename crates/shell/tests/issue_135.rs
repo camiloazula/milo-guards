@@ -126,6 +126,70 @@ fn a_signal_0_read_first_does_not_hide_a_later_signal_option() {
 }
 
 #[test]
+fn a_listing_option_counts_only_as_the_first_word() {
+    // The shells and the BSD program read only the first word as a listing
+    // option; later it is an id they skip (zsh warns and goes on), so the ids
+    // after it are still killed.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "kill -l",
+            "kill -L",
+            "kill --list",
+            "kill -l 9",
+            "kill -l -s 9 -1",
+        ],
+        &[
+            ("kill -9 -l -1", Rule::StopSystem),
+            ("kill -s 9 -l -1", Rule::StopSystem),
+            ("kill -9 -L -1", Rule::StopSystem),
+            ("kill -9 --list -1", Rule::StopSystem),
+            ("kill -s KILL --list -- -1", Rule::StopSystem),
+            ("kill -9 -l 0", Rule::StopSystem),
+            ("kill -TERM -l -1234", Rule::StopSystem),
+            ("sudo kill -9 -l -1", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn a_long_option_after_signal_0_may_send_a_real_signal() {
+    // `--signal` is read anywhere among the options, the last one winning.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            ("kill -0 --signal 9 -1", Rule::StopSystem),
+            ("kill -0 --signal=KILL -1", Rule::StopSystem),
+            ("kill -0 --timeout 1000 KILL -1", Rule::StopSystem),
+            ("sudo kill -0 --signal KILL -1", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
+fn an_unknown_word_among_the_options_after_signal_0_is_not_signal_0() {
+    // An expansion may hold `-s` and a name, read as an option.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "kill -0 $pid",
+            "kill -0 \"$pid\"",
+            "kill -0 \"$(cat app.pid)\"",
+            "kill -s 0 $pid",
+        ],
+        &[
+            ("kill -0 $X KILL -1", Rule::StopSystem),
+            ("kill -0 \"$S\" -1", Rule::StopSystem),
+            ("kill -s 0 $more -- -1", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
 fn the_inline_process_calls_are_judged_the_same_way() {
     check(
         Shell::Posix,
