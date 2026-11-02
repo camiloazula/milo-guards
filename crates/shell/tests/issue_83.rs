@@ -41,7 +41,7 @@ fn a_method_that_stops_a_process_is_judged_like_stop_process() {
             ("(Get-Process node, explorer).Kill()", Rule::StopSystem),
             (
                 "(Get-Process | Where-Object CPU -gt 100).Kill()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // The array's `.ForEach('Kill')` is a line the grammar does not
             // read, so it is risky for that.
@@ -69,37 +69,37 @@ fn a_method_that_stops_a_process_is_judged_like_stop_process() {
             ("Get-Process explorer | % Kill", Rule::StopSystem),
             (
                 "Get-Process | Where-Object CPU -gt 100 | % { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // Not the process itself: its parent, or an item of a list.
-            ("(Get-Process node).Parent.Kill()", Rule::StopSystem),
+            ("(Get-Process node).Parent.Kill()", Rule::StopUnknown),
             (
                 "Get-Process node | % { $_.Parent.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("(Get-Process node)[0].Kill()", Rule::StopSystem),
-            ("((Get-Process node), $x).Kill()", Rule::StopSystem),
+            ("(Get-Process node)[0].Kill()", Rule::StopUnknown),
+            ("((Get-Process node), $x).Kill()", Rule::StopUnknown),
             // An object only known when it runs.
-            ("$p.Kill()", Rule::StopSystem),
-            ("$proc.Kill($true)", Rule::StopSystem),
-            ("$p = Get-Process; $p.Kill()", Rule::StopSystem),
-            ("$procs | % { $_.Kill() }", Rule::StopSystem),
-            ("$procs | % Kill", Rule::StopSystem),
-            ("$procs.ForEach({ $_.Kill() })", Rule::StopSystem),
-            ("% { $_.Kill() }", Rule::StopSystem),
+            ("$p.Kill()", Rule::StopUnknown),
+            ("$proc.Kill($true)", Rule::StopUnknown),
+            ("$p = Get-Process; $p.Kill()", Rule::StopUnknown),
+            ("$procs | % { $_.Kill() }", Rule::StopUnknown),
+            ("$procs | % Kill", Rule::StopUnknown),
+            ("$procs.ForEach({ $_.Kill() })", Rule::StopUnknown),
+            ("% { $_.Kill() }", Rule::StopUnknown),
             (
                 "Get-Content pids.txt | % { (Get-Process -Id $_).Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // .NET's lists, and an id that is not written out in digits or
             // is the group's or the system's own.
             (
                 "[System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "[System.Diagnostics.Process]::GetProcessesByName('explorer').Kill()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "[System.Diagnostics.Process]::GetProcessById(0).Kill()",
@@ -111,14 +111,14 @@ fn a_method_that_stops_a_process_is_judged_like_stop_process() {
             ),
             (
                 "[System.Diagnostics.Process]::GetProcessById($id).Kill()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "[System.Diagnostics.Process]::GetProcessById(1234 + 0).Kill()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             ("(Get-Process -Id 0).Kill()", Rule::StopSystem),
-            ("(Get-Process -Id $id).Kill()", Rule::StopSystem),
+            ("(Get-Process -Id $id).Kill()", Rule::StopUnknown),
         ],
     );
 }
@@ -136,39 +136,39 @@ fn wmi_stops_processes_through_a_method() {
         &[
             (
                 "Get-CimInstance Win32_Process | Invoke-CimMethod -MethodName Terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | Invoke-CimMethod -MethodName Terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Invoke-CimMethod -InputObject $p -MethodName terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-WmiObject Win32_Process | Invoke-WmiMethod -Name Terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-CimInstance Win32_Process | icim -MethodName Terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-WmiObject Win32_Process | iwmi -Name Terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-WmiObject Win32_Process | % { $_.Terminate() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "(Get-WmiObject Win32_Process -Filter \"name='explorer.exe'\").Terminate()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "(Get-CimInstance Win32_Process -Filter \"name='node.exe'\").Terminate()",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -237,64 +237,64 @@ fn an_id_only_known_when_it_runs_may_be_any_process() {
         &[],
         &[
             // A variable, a file's text and another cmdlet's listing.
-            ("Stop-Process -Id $id", Rule::StopSystem),
-            ("Stop-Process $id", Rule::StopSystem),
-            ("Stop-Process -Id $env:APP_PID", Rule::StopSystem),
-            ("Stop-Process -InputObject $p", Rule::StopSystem),
-            ("Stop-Process -Id 1234,$id", Rule::StopSystem),
+            ("Stop-Process -Id $id", Rule::StopUnknown),
+            ("Stop-Process $id", Rule::StopUnknown),
+            ("Stop-Process -Id $env:APP_PID", Rule::StopUnknown),
+            ("Stop-Process -InputObject $p", Rule::StopUnknown),
+            ("Stop-Process -Id 1234,$id", Rule::StopUnknown),
             (
                 "Stop-Process -Id (Get-Content app.pid)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("Stop-Process -Id $(Get-Content app.pid)", Rule::StopSystem),
+            ("Stop-Process -Id $(Get-Content app.pid)", Rule::StopUnknown),
             (
                 "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000 -State Listen).OwningProcess -Force",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("Stop-Process -Id (netstat -ano)", Rule::StopSystem),
-            ("kill $id", Rule::StopSystem),
-            ("kill (Get-Content app.pid)", Rule::StopSystem),
+            ("Stop-Process -Id (netstat -ano)", Rule::StopUnknown),
+            ("kill $id", Rule::StopUnknown),
+            ("kill (Get-Content app.pid)", Rule::StopUnknown),
             // Not an id.
-            ("Stop-Process -Id ($x + 1)", Rule::StopSystem),
-            ("Stop-Process -Id 0x10", Rule::StopSystem),
-            ("Stop-Process -Id -1", Rule::StopSystem),
-            ("Stop-Process -Id 1.5", Rule::StopSystem),
-            ("Stop-Process -Id ' 1234'", Rule::StopSystem),
-            ("Stop-Process -Id 99999999999999999999", Rule::StopSystem),
-            ("Stop-Process -Id '1234,5678'", Rule::StopSystem),
-            ("Stop-Process -Id $null", Rule::StopSystem),
+            ("Stop-Process -Id ($x + 1)", Rule::StopUnknown),
+            ("Stop-Process -Id 0x10", Rule::StopUnknown),
+            ("Stop-Process -Id -1", Rule::StopUnknown),
+            ("Stop-Process -Id 1.5", Rule::StopUnknown),
+            ("Stop-Process -Id ' 1234'", Rule::StopUnknown),
+            ("Stop-Process -Id 99999999999999999999", Rule::StopUnknown),
+            ("Stop-Process -Id '1234,5678'", Rule::StopUnknown),
+            ("Stop-Process -Id $null", Rule::StopUnknown),
             // The item of a block, when no `Get-Process` feeds it.
-            ("$procs | % { Stop-Process -Id $_.Id }", Rule::StopSystem),
-            ("$procs | % { Stop-Process $_ }", Rule::StopSystem),
+            ("$procs | % { Stop-Process -Id $_.Id }", Rule::StopUnknown),
+            ("$procs | % { Stop-Process $_ }", Rule::StopUnknown),
             (
                 "Get-Content app.pid | % { Stop-Process -Id $_ }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("1..3 | % { Stop-Process -Id $_ }", Rule::StopSystem),
-            ("Get-Content app.pid | Stop-Process", Rule::StopSystem),
+            ("1..3 | % { Stop-Process -Id $_ }", Rule::StopUnknown),
+            ("Get-Content app.pid | Stop-Process", Rule::StopUnknown),
             (
                 "Get-NetTCPConnection -LocalPort 3000 | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("% { Stop-Process -Id $_ }", Rule::StopSystem),
+            ("% { Stop-Process -Id $_ }", Rule::StopUnknown),
             // A listing by id takes the same ids.
-            ("Get-Process -Id $id | Stop-Process", Rule::StopSystem),
+            ("Get-Process -Id $id | Stop-Process", Rule::StopUnknown),
             (
                 "Get-Process -Id (Get-Content app.pid) | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process -InputObject $x | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("Get-Process -Id $id | % { $_.Kill() }", Rule::StopSystem),
+            ("Get-Process -Id $id | % { $_.Kill() }", Rule::StopUnknown),
             (
                 "Stop-Process -Id (Get-Process -Id $id).Id",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -315,35 +315,35 @@ fn a_second_part_beside_a_listing_is_not_the_listing() {
         &[
             (
                 "Stop-Process -Id ((Get-Process node).Id, $x)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id ($x, (Get-Process node).Id)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id $((Get-Process node).Id; $x)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process node).Id, $x",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject ((Get-Process node), $x)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -InputObject (Get-Process node), $x",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id ((Get-Process node).Id + 1)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Stop-Process -Id (Get-Process node).Id, (Get-Content app.pid)",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -369,11 +369,11 @@ fn taskkill_judges_the_id_it_is_given() {
                 ("taskkill /PID 1", Rule::StopSystem),
                 ("taskkill /PID 1234 /PID 0", Rule::StopSystem),
                 ("taskkill /pid 00 /f", Rule::StopSystem),
-                ("taskkill /PID abc", Rule::StopSystem),
-                ("taskkill /PID -1", Rule::StopSystem),
-                ("taskkill /PID 12.5", Rule::StopSystem),
-                ("taskkill /F /PID %pid%", Rule::StopSystem),
-                ("taskkill /F /PID $id", Rule::StopSystem),
+                ("taskkill /PID abc", Rule::StopUnknown),
+                ("taskkill /PID -1", Rule::StopUnknown),
+                ("taskkill /PID 12.5", Rule::StopUnknown),
+                ("taskkill /F /PID %pid%", Rule::StopUnknown),
+                ("taskkill /F /PID $id", Rule::StopUnknown),
             ],
         );
     }
@@ -382,15 +382,15 @@ fn taskkill_judges_the_id_it_is_given() {
         &windows(),
         &[],
         &[
-            ("taskkill /F /PID (Get-Content app.pid)", Rule::StopSystem),
-            ("taskkill /F /PID (Get-Process).Id", Rule::StopSystem),
+            ("taskkill /F /PID (Get-Content app.pid)", Rule::StopUnknown),
+            ("taskkill /F /PID (Get-Process).Id", Rule::StopUnknown),
             (
                 "Get-Process node | ForEach-Object { taskkill /F /PID $_.Id }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-NetTCPConnection -LocalPort 3000 | % { taskkill /F /PID $_.OwningProcess }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -450,27 +450,27 @@ fn wmic_stops_the_processes_its_where_clause_picks() {
                 ("wmic process where processid=1 delete", Rule::StopSystem),
                 (
                     "wmic process where \"name like '%node%'\" call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic process where \"name='node.exe' or name='explorer.exe'\" call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic process where name!=\"node.exe\" call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic process where \"name='*'\" call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic process where parentprocessid=1234 call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic process where name=%NAME% call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
             ],
         );
@@ -512,8 +512,8 @@ fn tskill_judges_the_name_or_id_it_is_given_like_taskkill() {
         &windows(),
         &["tskill $n"],
         &[
-            ("tskill %n%", Rule::StopSystem),
-            ("tskill %id% /a", Rule::StopSystem),
+            ("tskill %n%", Rule::StopUnknown),
+            ("tskill %id% /a", Rule::StopUnknown),
         ],
     );
     check(
@@ -521,12 +521,12 @@ fn tskill_judges_the_name_or_id_it_is_given_like_taskkill() {
         &windows(),
         &["tskill $pid"],
         &[
-            ("tskill $n", Rule::StopSystem),
-            ("tskill $n /a", Rule::StopSystem),
-            ("tskill $id", Rule::StopSystem),
-            ("tskill \"$n\"", Rule::StopSystem),
-            ("tskill (Get-Content app.pid)", Rule::StopSystem),
-            ("tskill ex$n", Rule::StopSystem),
+            ("tskill $n", Rule::StopUnknown),
+            ("tskill $n /a", Rule::StopUnknown),
+            ("tskill $id", Rule::StopUnknown),
+            ("tskill \"$n\"", Rule::StopUnknown),
+            ("tskill (Get-Content app.pid)", Rule::StopUnknown),
+            ("tskill ex$n", Rule::StopUnknown),
         ],
     );
 }
@@ -547,9 +547,9 @@ fn taskkill_reads_a_filter_on_the_pid_like_pid() {
             &[
                 ("taskkill /F /FI \"PID eq 0\"", Rule::StopSystem),
                 ("taskkill /F /FI \"PID eq 1\"", Rule::StopSystem),
-                ("taskkill /F /FI \"PID eq abc\"", Rule::StopSystem),
-                ("taskkill /F /FI \"PID eq 1234 or 0\"", Rule::StopSystem),
-                ("taskkill /F /FI \"PID eq\"", Rule::StopSystem),
+                ("taskkill /F /FI \"PID eq abc\"", Rule::StopUnknown),
+                ("taskkill /F /FI \"PID eq 1234 or 0\"", Rule::StopUnknown),
+                ("taskkill /F /FI \"PID eq\"", Rule::StopUnknown),
                 ("taskkill /F /FI \"PID ne 1234\"", Rule::StopSystem),
                 ("taskkill /F /FI \"PID gt 0\"", Rule::StopSystem),
                 (
@@ -567,13 +567,13 @@ fn taskkill_reads_a_filter_on_the_pid_like_pid() {
         Shell::Cmd,
         &windows(),
         &[],
-        &[("taskkill /F /FI \"PID eq %p%\"", Rule::StopSystem)],
+        &[("taskkill /F /FI \"PID eq %p%\"", Rule::StopUnknown)],
     );
     check(
         Shell::PowerShell,
         &windows(),
         &[],
-        &[("taskkill /F /FI \"PID eq $id\"", Rule::StopSystem)],
+        &[("taskkill /F /FI \"PID eq $id\"", Rule::StopUnknown)],
     );
 }
 
@@ -636,19 +636,19 @@ fn a_where_object_name_pattern_is_read_like_a_wildcard_around_it() {
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match $pattern } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match \"$dir\" } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -notmatch 'node' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.CPU -match 'node' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'explorer' } | ForEach-Object { $_.Kill() }",
@@ -683,128 +683,128 @@ fn a_match_pattern_is_a_dotnet_expression_read_only_in_the_posix_subset() {
             // Lookarounds.
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node).*' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node$).+' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object Name -match '^(?!(node|vite)$)' | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | ? { $_.Name -match '(?!x)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where { $_.Name -match '(?!x)' } | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?=e)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?<!x)e' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // Inline options, comments and conditionals.
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?x) e x p l o r e r' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?x)expl orer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?i:EXPLORER)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?#node)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'node(?(x)|)' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // Escapes that spell out a character.
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl\x6frer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'ex\x70lorer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'lsas\x73' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'explor\x65r' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl\157rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl\0157rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl\cOrer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // Unicode classes.
             (
                 r"Get-Process | Where-Object { $_.Name -match '\p{L}' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '\p{L}+' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '\P{N}' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object -Property Name -Match -Value '\p{L}' | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // Named backreferences.
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\k<n>r' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\k{n}r' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // The same filters in front of a method that stops them.
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % Kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '^(?!node)' } | ForEach-Object { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -imatch 'expl\x6frer' } | % Kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -830,92 +830,92 @@ fn a_match_pattern_with_a_backslash_in_a_set_or_a_non_ascii_letter_is_not_read()
             // A backslash in a bracket expression.
             (
                 r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '^[\]a-z]+$' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'ls[\]a]ss' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[\]o]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[o\]]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[^\]x]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[n-p\]]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'node|expl[\]o]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object Name -match 'expl[\]o]rer' | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[]\]o]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match 'expl[^]\]x]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '[[:alpha:]\]o]rer' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | % Kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where-Object { $_.Name -match '[\]a-z]' } | ForEach-Object { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 r"Get-Process | Where { $_.Name -match '[\]a-z]' } | kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             // A letter that is not ASCII.
             (
                 "Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'İnit' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'İ' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'lſass' } | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | % Kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object { $_.Name -match 'İ' } | ForEach-Object { $_.Kill() }",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "Get-Process | Where-Object Name -match 'İnit' | Stop-Process",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -936,11 +936,18 @@ fn match_lines(pattern: &str) -> Vec<String> {
 
 /// Every form of each pattern is `stop_system`.
 fn all_stop_system(patterns: &[&str]) {
+    all_risky(patterns, Rule::StopSystem);
+}
+
+/// Every form of each pattern is `stop_unknown`: the guard cannot read the
+/// pattern, so it cannot say which processes it picks.
+fn all_stop_unknown(patterns: &[&str]) {
+    all_risky(patterns, Rule::StopUnknown);
+}
+
+fn all_risky(patterns: &[&str], rule: Rule) {
     let lines: Vec<String> = patterns.iter().flat_map(|p| match_lines(p)).collect();
-    let risky: Vec<(&str, Rule)> = lines
-        .iter()
-        .map(|line| (line.as_str(), Rule::StopSystem))
-        .collect();
+    let risky: Vec<(&str, Rule)> = lines.iter().map(|line| (line.as_str(), rule)).collect();
     check(Shell::PowerShell, &windows(), &[], &risky);
 }
 
@@ -1001,7 +1008,7 @@ fn a_dotnet_match_pattern_with_a_bracket_in_a_set_is_not_read() {
     // `[.`, `[=` and `[:` that does not close with `word:]` are a plain `[`
     // to .NET, which closes the set at the next `]`; `[a-z-[0]]` is a set
     // minus another. The POSIX reading skips or splits them differently.
-    all_stop_system(&[
+    all_stop_unknown(&[
         "zz[[.]|.|.]]",
         "zz[[=]|.|=]]",
         "zz[[:]|.|:]]",
@@ -1042,28 +1049,28 @@ fn wmic_in_powershell_does_not_read_a_value_with_a_variable_in_it() {
         &[
             (
                 "wmic process where name=$n call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("wmic process where name=$n delete", Rule::StopSystem),
+            ("wmic process where name=$n delete", Rule::StopUnknown),
             (
                 "wmic process where name=\"$n\" call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "wmic process where name=$env:P call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "wmic process where processid=$id call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "wmic process where name=$($n) call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "wmic path win32_process where name=$n call terminate",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
         ],
     );
@@ -1108,7 +1115,7 @@ fn wmic_path_win32_process_is_the_process_class_the_alias_stands_for() {
                 ),
                 (
                     "wmic path win32_process where \"name like '%node%'\" call terminate",
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                 ),
                 (
                     "wmic path win32_process call create \"notepad.exe\"",
@@ -1136,38 +1143,41 @@ fn a_process_stopped_through_a_listing_or_a_substitution_in_a_shell() {
             "pkill -P $$",
         ],
         &[
-            ("kill $(pgrep node)", Rule::StopSystem),
-            ("kill -9 $(pgrep -f vite)", Rule::StopSystem),
-            ("kill `pgrep node`", Rule::StopSystem),
-            ("kill $(lsof -ti:3000)", Rule::StopSystem),
-            ("kill -9 $(lsof -t -i tcp:3000)", Rule::StopSystem),
-            ("kill \"$(cat app.pid)\"", Rule::StopSystem),
-            ("kill $(< app.pid)", Rule::StopSystem),
-            ("kill $(jobs -p)", Rule::StopSystem),
-            ("kill $(pidof node)", Rule::StopSystem),
-            ("kill ${pids[@]}", Rule::StopSystem),
-            ("pgrep node | xargs kill", Rule::StopSystem),
-            ("pgrep node | xargs -r kill -9", Rule::StopSystem),
-            ("pgrep node | xargs -I{} kill {}", Rule::StopSystem),
-            ("lsof -t -i :3000 | xargs kill", Rule::StopSystem),
+            ("kill $(pgrep node)", Rule::StopUnknown),
+            ("kill -9 $(pgrep -f vite)", Rule::StopUnknown),
+            ("kill `pgrep node`", Rule::StopUnknown),
+            ("kill $(lsof -ti:3000)", Rule::StopUnknown),
+            ("kill -9 $(lsof -t -i tcp:3000)", Rule::StopUnknown),
+            ("kill \"$(cat app.pid)\"", Rule::StopUnknown),
+            ("kill $(< app.pid)", Rule::StopUnknown),
+            ("kill $(jobs -p)", Rule::StopUnknown),
+            ("kill $(pidof node)", Rule::StopUnknown),
+            ("kill ${pids[@]}", Rule::StopUnknown),
+            ("pgrep node | xargs kill", Rule::StopUnknown),
+            ("pgrep node | xargs -r kill -9", Rule::StopUnknown),
+            ("pgrep node | xargs -I{} kill {}", Rule::StopUnknown),
+            ("lsof -t -i :3000 | xargs kill", Rule::StopUnknown),
             (
                 "ps aux | grep node | awk '{print $2}' | xargs kill",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("cat pids.txt | xargs kill", Rule::StopSystem),
-            ("xargs -a pids.txt kill", Rule::StopSystem),
-            ("xargs kill < pids.txt", Rule::StopSystem),
-            ("jobs -p | xargs kill", Rule::StopSystem),
-            ("for p in $(pgrep node); do kill $p; done", Rule::StopSystem),
+            ("cat pids.txt | xargs kill", Rule::StopUnknown),
+            ("xargs -a pids.txt kill", Rule::StopUnknown),
+            ("xargs kill < pids.txt", Rule::StopUnknown),
+            ("jobs -p | xargs kill", Rule::StopUnknown),
+            (
+                "for p in $(pgrep node); do kill $p; done",
+                Rule::StopUnknown,
+            ),
             (
                 "pgrep node | while read p; do kill $p; done",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
             (
                 "while read p; do kill $p; done < pids.txt",
-                Rule::StopSystem,
+                Rule::StopUnknown,
             ),
-            ("xargs pkill", Rule::StopSystem),
+            ("xargs pkill", Rule::StopUnknown),
         ],
     );
 }

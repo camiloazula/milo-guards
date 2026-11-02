@@ -720,7 +720,8 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
-| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs. |
+| `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs: a stop whose target the guard reads for sure. |
+| `stop_unknown` | Stops processes the guard cannot name for sure: an id or a name only known when it runs, a listing, a substitution, a filter or an object it does not follow. It may be any process, the system's included. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
 | `drop_data` | Deletes data in a database. |
 | `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
@@ -735,7 +736,17 @@ the rule: `deletes your home directory`, `runs code the guard does not read`.
 `killall`, `pkill`, `taskkill` and `Stop-Process` (also `kill`, `spps`) are
 judged one way. Stopping a process by a plain name is everyday work (your own
 dev server, `killall Finder`) and is safe: `killall node` and `pkill node` are
-the same line. It is `stop_system` when the line stops more than a name:
+the same line. It is risky when the line stops more than a name, and the rule
+says how sure the guard is of what it stops. `stop_system` is a stop it reads
+for sure: the target is every process, a group, process 1, a process the
+system needs, or the machine. `stop_unknown` is a stop it cannot read for sure
+(the reason says "may stop", or "only known when it runs"): an id, a name, a
+filter or a listing that is known only when the line runs, a substitution or a
+pipe it does not follow, or an object it cannot name. That target may be any
+process, the ones `stop_system` names included, so the line is risky, but a
+caller that decides by rule can tell `kill 0` from `kill $pid`. A line that has
+both kinds of stop has both rules (`kill 0; kill $pid`). Splitting the rule
+moved no line between safe and risky. Each item below says which rule it is:
 
 - **Every process.** A pattern that matches every process: `pkill -f .`,
   `pkill ''`, `pkill '.*'`, `killall -r .`, `Stop-Process -Name *`,
@@ -746,15 +757,17 @@ the same line. It is `stop_system` when the line stops more than a name:
   and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
   after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
   process but the ones named) are always `stop_system`.
-- **Process 0, a group, or an id it cannot read.** `kill` of 0 signals every
+- **Process 0, a group (`stop_system`), or an id it cannot read
+  (`stop_unknown`).** `kill` of 0 signals every
   process in the caller's own group, the program that ran the line included
   (`kill 0`, `kill -9 0`), and of a negative id a whole group (`kill -- -1234`,
   `kill -1234`; `-1` is every process). The inline calls `os.kill`, `os.killpg`,
   `process.kill` and `Deno.kill` read the same way (`os.kill(0, 9)`). An id
   only known when it runs (`kill $pid`, `kill $(pgrep x)`, `xargs kill`), or too
-  long for a process id, may be any of them, so it is `stop_system` too, and
-  so is a negative expansion such as `kill -- -$$`, the caller's own group,
-  and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
+  long for a process id, may be any of them, so it is `stop_unknown` (`kill
+  99999999999999999999`, `kill '*'`), and so is a negative expansion such as
+  `kill -- -$$`, which is the caller's own group only when the shell leads
+  it, and `$PPID`, the program that ran the line. An ordinary id (`kill 4242`), a
   job (`kill %1`), `$!`, `$$`, signal 0 (`kill -0 $pid`, which sends nothing)
   and `kill -l` are safe; `kill 1` is `stop_system`. The `kill` program
   reorders its words and reads a signal option after an id (`kill -0 4242 -s 9
@@ -766,8 +779,9 @@ the same line. It is `stop_system` when the line stops more than a name:
   %1`. No other option, no `--`, no brace list, wildcard or substitution and
   no dash anywhere else is allowed, and such a line is judged by its ids as
   any other: `kill -0 0`, `kill -0 -1234`, `kill -0 -1 -s 9`, `kill -0 -q 1
-  -s 9 -1`, `kill -0 {-s,KILL} -1`, `kill -0 * -1` and `kill -0 "$(cat
-  app.pid)"` are `stop_system`. The options of any other line are read as the
+  -s 9 -1`, `kill -0 {-s,KILL} -1` and `kill -0 * -1` are `stop_system` (the
+  `-1`; the brace list and the `*` are also `stop_unknown`), and `kill -0
+  "$(cat app.pid)"` is `stop_unknown`. The options of any other line are read as the
   shell reads them, every `-s SIG`, `-n SIG`, `-sNAME` and `-nNUM` up to `--`
   or the first other word, and the listing options `-l`, `-L` and `--list`
   count only as the first word (`kill -9 -l -1` still stops every process).
@@ -800,7 +814,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   that is not an option (`/a`, `/v`, `/server:name` and `/id:n` start with a
   slash) is a name when it is not a number, judged as `/IM` is, and an id
   otherwise, judged as `/PID` is (`tskill node` and `tskill 1234` are safe,
-  `tskill explorer`, `tskill 0` and `tskill $n` are `stop_system`).
+  `tskill explorer` and `tskill 0` are `stop_system`, and `tskill $n` is
+  `stop_unknown`).
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
   `wininit`, `lsass`, `smss`, `services`, `svchost`, and the ones whose loss
@@ -850,12 +865,12 @@ the same line. It is `stop_system` when the line stops more than a name:
   `systemd-logind`, `sshd` (also `ssh`, which is its unit on Debian) or `dbus`,
   `service … stop` of them, and `launchctl kill` or `stop` of a label that has
   such a name in it (`system/com.apple.WindowServer`,
-  `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, and so is a `launchctl
-  kill` or `stop` whose target is only known when it runs; the target of any
-  other label (`gui/501/com.me.worker`) is the user's own.
+  `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
+  kill` or `stop` whose target is only known when it runs is `stop_unknown`;
+  the target of any other label (`gui/501/com.me.worker`) is the user's own.
   `systemctl restart` is not a stop and stays safe.
-- **A name only known when it runs.** `killall $NAME`, `pkill "$PATTERN"`,
-  `xargs pkill`.
+- **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
+  `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
   parameters: `-Name` and its alias `-ProcessName`, `-Id`, `-InputObject`,
   `-Force`, `-PassThru`, `-WhatIf`, `-Confirm` and the common ones, each
@@ -872,8 +887,9 @@ the same line. It is `stop_system` when the line stops more than a name:
   `-match` pattern written out is a regular expression searched for in each
   name, read as `pkill` reads one except where .NET differs (below), so
   `-match 'node'` is `-like '*node*'`
-  (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
-  it runs are `stop_system`, as is `-notmatch`). A `-match` pattern is a .NET
+  (`-match 'explorer'`, `'.*'`, `''` and `'x|.*$|'` are `stop_system`; a
+  pattern only known when it runs, and `-notmatch`, are `stop_unknown`). A
+  `-match` pattern is a .NET
   expression, and the guard reads it only in the POSIX ERE subset. Two things
   are read the .NET way: a `/` is a plain character (a process name holds no
   folder, so `'/?explorer'` and `'svc/*host'` are `stop_system`, the `?` or
@@ -883,8 +899,8 @@ the same line. It is `stop_system` when the line stops more than a name:
   `(?` in it (a lookaround, an inline option, a comment, a named group, a
   conditional) or an escape that is a letter or digit other than `\d \D \w \W
   \s \S \b \B` (`\x6f`, `\157`, `\cO`, `\uXXXX`, `\p{L}`, `\k<n>`) is not
-  read, and the filter is "picked by a filter only known when it runs"
-  (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
+  read, and the filter is "picked by a filter only known when it runs",
+  `stop_unknown` (`-match '^(?!node)'` picks every process but `node`). So is a pattern with
   a backslash inside a bracket expression (.NET reads `[\]o]` as the set `]`
   and `o`, where POSIX closes the set at the first `]`), one with a `[`
   inside a bracket expression (.NET reads `[:`, `[.` and `[=` as a plain `[`
@@ -899,7 +915,7 @@ the same line. It is `stop_system` when the line stops more than a name:
   or a script block) hands on other objects, such as a process's parent, and
   is any other stage. Any other filter is "picked by a filter only known when
   it runs", and any other stage, which may hand on other processes, is known
-  only when it runs. What follows a named listing, when it only picks from it,
+  only when it runs; both are `stop_unknown`. What follows a named listing, when it only picks from it,
   can only narrow it, so the names are judged.
   The same holds when the listing is in the arguments: `-InputObject (Get-Process)`,
   `-Id (Get-Process).Id`, `-Id $(Get-Process node)`, and `$_`, `$PSItem` or
@@ -911,7 +927,7 @@ the same line. It is `stop_system` when the line stops more than a name:
   any case. Any other member (`.Parent`, `.Threads`) hands on other objects,
   as `-ExpandProperty` does, and is any other stage: `Stop-Process
   -InputObject (Get-Process notepad).Parent` stops `explorer.exe`, which is
-  an app's usual parent, and is `stop_system` as `((Get-Process
+  an app's usual parent, and is `stop_unknown` as `((Get-Process
   node).Parent)` and `(Get-Process node).Parent | Stop-Process` are. The
   same holds for `$_` in a `ForEach-Object` block after a `Get-Process`:
   `.Id`, `.Name` and `.ProcessName` pass the listing on, and any other
@@ -936,7 +952,7 @@ the same line. It is `stop_system` when the line stops more than a name:
   `kill 4242`, `taskkill /PID 1234`, `Get-Process -Id 1234 | Stop-Process`,
   and `$PID`, the shell that runs the line. Anything else is a process only
   known when it runs, and may be any process the system needs, so it is
-  `stop_system`: a variable (`Stop-Process -Id $id`, `-InputObject $p`), a
+  `stop_unknown`: a variable (`Stop-Process -Id $id`, `-InputObject $p`), a
   file's text (`-Id (Get-Content app.pid)`), another cmdlet's listing
   (`-Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess`, the PowerShell
   of `kill $(lsof -ti:3000)`), the item of a `ForEach-Object` block that no
@@ -959,21 +975,21 @@ the same line. It is `stop_system` when the line stops more than a name:
   % Kill`, also `ForEach-Object -MemberName Kill`), judged by its name as the
   pipeline is; `[System.Diagnostics.Process]::GetProcessById(1234)` with the
   id in digits, judged as an id; and the item of a block after a listing.
-  Every other object may be any process: `$p.Kill()`, `$procs | % { $_.Kill()
+  Every other object may be any process, and is `stop_unknown`: `$p.Kill()`, `$procs | % { $_.Kill()
   }`, `(Get-Process node).Parent.Kill()`, `(Get-Process node)[0].Kill()`,
   `[System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }`,
   `(Get-WmiObject Win32_Process).Terminate()`. `Invoke-CimMethod` and
   `Invoke-WmiMethod` (also `icim`, `iwmi`) given `Terminate`, and `wmic
   process … call terminate` and `… delete`, stop the processes an instance or
   a `where` clause picks: `wmic process where name="node.exe" call terminate`
-  is the name `node.exe`, and `where processid=1234` is an id; no `where`, a
-  `like`, a second condition, or a value only known when it runs is
-  `stop_system` (in PowerShell a word of the clause that holds a `$` or a
+  is the name `node.exe`, and `where processid=1234` is an id; no `where`
+  stops every process and is `stop_system`, and a `like`, a second condition,
+  or a value only known when it runs is `stop_unknown` (in PowerShell a word of the clause that holds a `$` or a
   backtick is such a value, `wmic process where name=$n call terminate`; in
   cmd a `$` is a character of the name), and `process` is the alias of the
   class `path win32_process` (or `cim_process`), so `wmic path win32_process
   where name="explorer.exe" delete` is read as `wmic process where
-  name="explorer.exe" delete`. The CIM or WMI method is also `stop_system` (the instances come from a
+  name="explorer.exe" delete`. The CIM or WMI method is also `stop_unknown` (the instances come from a
   listing the guard does not follow). The array's `.ForEach('Kill')` is a
   line the grammar does not read, so it is `unreadable`.
 - **A fork bomb.** A function that calls itself in the background or as one
@@ -2674,7 +2690,7 @@ effect(line, shell, &paths) -> Effect   // ReadsOnly(Reach), Changes or Unknown
 | Answer | When |
 | --- | --- |
 | `ReadsOnly(Reach)` | Every unit is a known reader run with reading flags on files the guard can name, no redirect writes a file (the null device is not one), no `cd` the guard cannot follow, and the rules found nothing but an elevation or a read of a key. The [`Reach`](#reach) says where it reads. |
-| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `send_secret`, `drop_data`, `destroy_resources`). |
+| `Changes` | Any unit is a known writer, a package manager or a build tool, any redirect writes a file, or a rule found the line risky for what it changes (`delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `stop_system`, `stop_unknown`, `send_secret`, `drop_data`, `destroy_resources`). |
 | `Unknown` | Anything is not understood: a program the table does not know, a program or script known only when it runs, a nested script, a line that cannot be read in full, a limit hit. Never `ReadsOnly`: what cannot be read is not reads-only. |
 
 A line with a known writer is `Changes` whatever else it holds: `mkdir build &&

@@ -678,8 +678,9 @@ impl Checker<'_> {
         };
         let rest = &words[1..];
         // `kill signal target` and `stop label` end the process of a
-        // service: one the system needs is `stop_system`, and so is one
-        // only known when it runs. The target is the last operand.
+        // service: one the system needs is `stop_system`, and one only
+        // known when it runs is `stop_unknown`. The target is the last
+        // operand.
         if matches!(sub.as_str(), "kill" | "stop") {
             match rest.last().map(|target| (target, target.known())) {
                 Some((target, Some(label))) if is_system_label(label) => self.add(
@@ -688,7 +689,7 @@ impl Checker<'_> {
                     Some(target),
                 ),
                 Some((target, None)) => self.add(
-                    Rule::StopSystem,
+                    Rule::StopUnknown,
                     "stops a service only known when it runs",
                     Some(target),
                 ),
