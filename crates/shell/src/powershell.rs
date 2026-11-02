@@ -910,8 +910,9 @@ impl Walker<'_> {
     }
 
     /// `{ $_.Name -eq 'x' }`: the property, the operator and the value of a
-    /// block that is only a comparison of a process's name, with `-eq` or
-    /// `-like` (and their case-sensitive and -insensitive spellings).
+    /// block that is only a comparison of a process's name, with `-eq`,
+    /// `-like` or `-match` (and their case-sensitive and -insensitive
+    /// spellings).
     fn name_filter(&self, block: Node<'_>) -> Option<[Arg; 3]> {
         // The block's one statement, through the grammar's layers.
         let mut node = block;
@@ -937,7 +938,15 @@ impl Walker<'_> {
         let operator = unit::text(operator, self.source).to_ascii_lowercase();
         if !matches!(
             operator.as_str(),
-            "-eq" | "-ieq" | "-ceq" | "-like" | "-ilike" | "-clike"
+            "-eq"
+                | "-ieq"
+                | "-ceq"
+                | "-like"
+                | "-ilike"
+                | "-clike"
+                | "-match"
+                | "-imatch"
+                | "-cmatch"
         ) {
             return None;
         }

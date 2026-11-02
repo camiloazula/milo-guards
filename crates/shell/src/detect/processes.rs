@@ -10,7 +10,7 @@ use super::regex;
 use super::Checker;
 use crate::powershell::{Param, Params};
 use crate::unit::{Arg, Between, Unit};
-use crate::Rule;
+use crate::{Rule, Shell};
 
 /// A `Get-Process` that starts a pipeline: its arguments, and what each
 /// later stage (the first of them at `between[0]`) does to the processes.
@@ -234,7 +234,10 @@ impl Checker<'_> {
                 let mut words = filter.known().unwrap_or_default().split_whitespace();
                 let field = words.next().map(str::to_ascii_lowercase);
                 let operator = words.next().map(str::to_ascii_lowercase);
-                (field.as_deref(), operator.as_deref()) == (Some("imagename"), Some("eq"))
+                matches!(
+                    (field.as_deref(), operator.as_deref()),
+                    (Some("imagename" | "pid"), Some("eq"))
+                )
             });
         for filter in filters {
             let Some(text) = filter.known() else {
@@ -258,6 +261,8 @@ impl Checker<'_> {
                 (Some("imagename"), Some("eq")) => {
                     self.stop_named(&Arg::Known(value), Names::Wildcard);
                 }
+                // `PID eq 1234` names one process, judged as `/PID 1234` is.
+                (Some("pid"), Some("eq")) => self.stop_id(&Arg::Known(value)),
                 (Some("imagename"), Some(_)) => {
                     self.add(
                         Rule::StopSystem,
@@ -284,6 +289,26 @@ impl Checker<'_> {
                     );
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// `tskill name`, `tskill 1234 /a`: the Terminal Services program that
+    /// ends a process by its name or its id, judged as `taskkill /IM` and
+    /// `taskkill /PID` are. Its options (`/a`, `/v`, `/server:name`,
+    /// `/id:n`) start with a slash and name no process.
+    pub(super) fn tskill(&mut self, args: &[Arg], shell: Shell) {
+        for arg in args {
+            match arg.known() {
+                Some(text) if text.starts_with('/') => {}
+                // In PowerShell a word that holds a variable is not the text
+                // written, whatever the walker could read of it.
+                Some(text) if expands(text, shell) => self.stop_id(&Arg::Unknown(text.to_string())),
+                // A number is an id and any other word a name.
+                Some(text) if !text.is_empty() && !text.bytes().all(|b| b.is_ascii_digit()) => {
+                    self.stop_named(arg, Names::Wildcard);
+                }
+                _ => self.stop_id(arg),
             }
         }
     }
@@ -372,7 +397,7 @@ impl Checker<'_> {
     /// id. A clause that is not one of those two comparisons (a `like`, a
     /// second condition), or none at all, picks processes only known when it
     /// runs, and none is every process.
-    pub(super) fn wmic_process(&mut self, args: &[Arg]) {
+    pub(super) fn wmic_process(&mut self, args: &[Arg], shell: Shell) {
         let word = |arg: &Arg| arg.text().to_ascii_lowercase();
         if !args
             .iter()
@@ -395,7 +420,12 @@ impl Checker<'_> {
                 clause.first().copied(),
             );
         };
-        if clause.iter().any(|arg| arg.known().is_none()) {
+        // A bareword of PowerShell that holds a variable (`name=$n`) is
+        // handed over as the text written, but is another text when it runs.
+        if clause
+            .iter()
+            .any(|arg| arg.known().is_none_or(|text| expands(text, shell)))
+        {
             unread(self);
             return;
         }
@@ -565,9 +595,9 @@ impl Checker<'_> {
         let mut read = false;
         for stage in between {
             if let Between::Where(args) = stage {
-                if let Some(name) = filter_name(args) {
+                if let Some((name, kind)) = filter_name(args) {
                     read = true;
-                    self.stop_named(name, Names::Wildcard);
+                    self.stop_named(name, kind);
                 }
             }
         }
@@ -579,6 +609,14 @@ impl Checker<'_> {
             );
         }
     }
+}
+
+/// Whether a word is, in PowerShell, text with a variable or an escape in it
+/// (`name=$n`, `name=$env:P`, a backtick): a bareword the walker reads as
+/// written, whose value is only known when it runs. cmd and POSIX shells read
+/// a `$` as it is written.
+fn expands(text: &str, shell: Shell) -> bool {
+    shell == Shell::PowerShell && text.contains(['$', '`'])
 }
 
 /// Whether an argument of a `Stop-Process` holds a `Get-Process` listing,
@@ -602,15 +640,17 @@ fn between(unit: &Unit) -> Between {
     }
 }
 
-/// The name a `Where-Object` stage picks processes by, when it is only a
-/// comparison of `Name` or `ProcessName` with `-eq` or `-like`:
-/// `Where-Object Name -eq node`, `-Property ProcessName -Like -Value 'node*'`
-/// (a block of the same is read into this form by the splitter).
-fn filter_name(args: &[Arg]) -> Option<&Arg> {
+/// The name a `Where-Object` stage picks processes by, and how it reads it,
+/// when it is only a comparison of `Name` or `ProcessName` with `-eq`,
+/// `-like` or `-match`: `Where-Object Name -eq node`, `-Property ProcessName
+/// -Like -Value 'node*'` (a block of the same is read into this form by the
+/// splitter). A name `-match` is given is a pattern searched for in each name,
+/// as `pkill` reads it, so `-match 'node'` is read as `-like '*node*'`.
+fn filter_name(args: &[Arg]) -> Option<(&Arg, Names)> {
     let mut property = None;
     let mut value = None;
     let mut positional = Vec::new();
-    let mut compares = false;
+    let mut compares = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(name) = arg
@@ -624,7 +664,26 @@ fn filter_name(args: &[Arg]) -> Option<&Arg> {
         let name = name.trim_end_matches(':').to_ascii_lowercase();
         let abbreviates = |full: &str| name.len() >= 3 && full.starts_with(name.as_str());
         match name.as_str() {
-            "eq" | "ieq" | "ceq" | "like" | "ilike" | "clike" => compares = true,
+            "eq" | "ieq" | "ceq" | "like" | "ilike" | "clike" => {
+                if compares
+                    .replace(Names::Wildcard)
+                    .is_some_and(|kind| kind != Names::Wildcard)
+                {
+                    return None;
+                }
+            }
+            // The riskier reading of the case: `-cmatch` too is searched as
+            // if it ignored it.
+            "match" | "imatch" | "cmatch" => {
+                let regex = Names::Regex {
+                    exact: false,
+                    ignore_case: true,
+                    full: false,
+                };
+                if compares.replace(regex).is_some_and(|kind| kind != regex) {
+                    return None;
+                }
+            }
             _ if abbreviates("property") => property = iter.next(),
             _ if abbreviates("value") => value = iter.next(),
             _ if abbreviates("filterscript") => {}
@@ -635,11 +694,11 @@ fn filter_name(args: &[Arg]) -> Option<&Arg> {
     let property = property.or_else(|| positional.next())?;
     let value = value.or_else(|| positional.next())?;
     let property = property.known()?.to_ascii_lowercase();
-    (compares
-        && positional.next().is_none()
+    let kind = compares?;
+    (positional.next().is_none()
         && matches!(property.as_str(), "name" | "processname")
         && value.known().is_some())
-    .then_some(value)
+    .then_some((value, kind))
 }
 
 /// killall's options with a long form.

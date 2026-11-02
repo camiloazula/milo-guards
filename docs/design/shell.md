@@ -729,9 +729,15 @@ the same line. It is `stop_system` when the line stops more than a name:
   `/PID` stops whatever the filter picks: `/FI "STATUS eq RUNNING"`, `/FI
   "MEMUSAGE gt 1"`, `/FI "PID gt 0"`. Only `IMAGENAME eq name` (judged as
   `/IM name` is), `USERNAME` (above) and `STATUS eq NOT RESPONDING`, which
-  stops the programs that hang, are read; with `/IM`, `/PID` or an
-  `IMAGENAME eq` filter, the other filters only narrow what is named, and the
-  names are judged.
+  stops the programs that hang, are read, and so is `PID eq 1234`, which
+  names one process and is judged as `/PID 1234` is (`PID eq 0` is not
+  safe); with `/IM`, `/PID`, an `IMAGENAME eq` or a `PID eq` filter, the other
+  filters only narrow what is named, and the names are judged. `tskill`, the
+  Terminal Services way to end a process, is read like `taskkill`: its word
+  that is not an option (`/a`, `/v`, `/server:name` and `/id:n` start with a
+  slash) is a name when it is not a number, judged as `/IM` is, and an id
+  otherwise, judged as `/PID` is (`tskill node` and `tskill 1234` are safe,
+  `tskill explorer`, `tskill 0` and `tskill $n` are `stop_system`).
 - **A process the system needs.** `launchd`, `systemd`, `init`, `kernel_task`,
   `kthreadd`, `WindowServer`, `loginwindow`, `explorer`, `csrss`, `winlogon`,
   `wininit`, `lsass`, `smss`, `services` and `svchost`, in any case and with
@@ -782,8 +788,12 @@ the same line. It is `stop_system` when the line stops more than a name:
   `Stop-Process -Id` does, and its ids are judged as that is (see the next item);
   one given no name lists every process. A stage between the listing and `Stop-Process` is never "every
   process": `Where-Object` is read when it only compares `Name` or
-  `ProcessName` with `-eq` or `-like` (`Where-Object { $_.ProcessName -eq
-  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name;
+  `ProcessName` with `-eq`, `-like` or `-match` (`Where-Object { $_.ProcessName -eq
+  'node' }`, `Where-Object Name -like 'node*'`), and judged by that name; a
+  `-match` pattern written out is a regular expression searched for in each
+  name, read as `pkill` reads one, so `-match 'node'` is `-like '*node*'`
+  (`-match 'explorer'`, `'.*'`, `''`, `'x|.*$|'` and a pattern only known when
+  it runs are `stop_system`, as is `-notmatch`);
   `Sort-Object` and a `Select-Object` that only picks (`-First`, `-Last`,
   `-Property Name`) keep some of the same processes; a `Select-Object` given
   `-ExpandProperty` (`-exp`, `-expa`) or a calculated property (a hashtable
@@ -859,7 +869,12 @@ the same line. It is `stop_system` when the line stops more than a name:
   a `where` clause picks: `wmic process where name="node.exe" call terminate`
   is the name `node.exe`, and `where processid=1234` is an id; no `where`, a
   `like`, a second condition, or a value only known when it runs is
-  `stop_system`, as is the CIM or WMI method (the instances come from a
+  `stop_system` (in PowerShell a word of the clause that holds a `$` or a
+  backtick is such a value, `wmic process where name=$n call terminate`; in
+  cmd a `$` is a character of the name), and `process` is the alias of the
+  class `path win32_process` (or `cim_process`), so `wmic path win32_process
+  where name="explorer.exe" delete` is read as `wmic process where
+  name="explorer.exe" delete`. The CIM or WMI method is also `stop_system` (the instances come from a
   listing the guard does not follow). The array's `.ForEach('Kill')` is a
   line the grammar does not read, so it is `unreadable`.
 - **A fork bomb.** A function that calls itself in the background or as one

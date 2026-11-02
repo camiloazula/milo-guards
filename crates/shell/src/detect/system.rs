@@ -73,6 +73,7 @@ impl Checker<'_> {
             "killall" => self.killall(args),
             "pkill" => self.pkill(args),
             "taskkill" => self.taskkill(args),
+            "tskill" => self.tskill(args, shell),
             "stop-process" => self.stop_process(unit),
             "invoke-cimmethod" | "invoke-wmimethod" => self.wmi_method(args),
             "shutdown" | "reboot" | "halt" | "poweroff" | "stop-computer" | "restart-computer" => {
@@ -173,16 +174,21 @@ impl Checker<'_> {
                         None,
                     );
                 }
+                // `process` is the alias of the class `path win32_process`
+                // (and of its base class `cim_process`) names.
+                let process = key == "wmic"
+                    && (words.iter().any(|word| word == "process")
+                        || words.windows(2).any(|pair| {
+                            pair[0] == "path"
+                                && matches!(pair[1].as_str(), "win32_process" | "cim_process")
+                        }));
                 // `wmic process call create "cmdline"` starts a program.
-                if key == "wmic"
-                    && words.iter().any(|word| word == "process")
-                    && words.iter().any(|word| word == "create")
-                {
+                if process && words.iter().any(|word| word == "create") {
                     self.add(Rule::Unknown, "starts a program through wmic", None);
                 }
                 // `wmic process … call terminate` and `… delete` stop them.
-                if key == "wmic" && words.iter().any(|word| word == "process") {
-                    self.wmic_process(args);
+                if process {
+                    self.wmic_process(args, shell);
                 }
             }
             "net" | "net1" => {
