@@ -240,3 +240,93 @@ fn a_cd_that_surely_ran_keeps_its_verdict() {
         ],
     );
 }
+
+/// `if true` is no branch only for whether a `cd` in its body may not have
+/// run: for everything else (a later `cd`'s place, the dotglob option, a
+/// function definition) it is a branch, as on any `if`.
+#[test]
+fn an_if_true_is_confined_to_the_cd_in_its_body() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            // The option turned off in the body of an `if true` is not
+            // counted on, as before.
+            (
+                "shopt -s dotglob\nif true; then shopt -u dotglob; fi\nrm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; if true; then shopt -u dotglob; fi; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; if true; then unsetopt globdots; fi; rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; if :; then shopt -u dotglob; fi; rm -rf *git",
+                Rule::Delete,
+            ),
+        ],
+    );
+}
+
+/// An alias, `enable` or `disable` can make `true` or `:` fail, or run
+/// another command, so the body may not run.
+#[test]
+fn an_if_true_after_a_rename_of_the_builtin_is_a_branch() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (
+                "alias true=false\nif true; then cd sub; fi\n{ cd ..; } > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "alias true=false\nif true; then cd sub; fi\ncd .. > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "alias :=false\nif :; then cd sub; fi\n{ cd ..; } > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "shopt -s expand_aliases\nalias true=false\nif true; then cd sub; fi\n{ cd ..; } > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "enable -n true; PATH=/x; if true; then cd sub; fi; { cd ..; } > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "disable true; PATH=/x; if true; then cd sub; fi; { cd ..; } > ../.bashrc",
+                Rule::Overwrite,
+            ),
+            (
+                "shopt -s dotglob\nalias true=false\nif true; then shopt -u dotglob; fi\nrm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob\nalias :=false\nif :; then shopt -u dotglob; fi\nrm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "shopt -s dotglob; enable -n true; PATH=/x; if true; then shopt -u dotglob; fi; /bin/rm -rf *git",
+                Rule::Delete,
+            ),
+            (
+                "setopt globdots; disable true; PATH=/x; if true; then unsetopt globdots; fi; /bin/rm -rf *git",
+                Rule::Delete,
+            ),
+            // The redirected file run later, with the alias.
+            (
+                "alias true=false; if true; then cd sub; fi > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+        ],
+    );
+}

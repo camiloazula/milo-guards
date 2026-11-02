@@ -462,8 +462,11 @@ x.sh` may run the `x.sh` they wrote, when the `cd` did not run, so they are
 `unknown`, as the same `cd` at the top level is; but `{
 cd sub; echo x; } > x.sh; bash x.sh` surely runs `sub/x.sh` and `if true; then cd
 sub; fi > x.sh; bash x.sh` keeps its verdict: an `if` whose condition is `true`
-or `:` alone, with no `elif` or `else`, is no branch (unless a function of that
-name is defined). A redirect on a call to a function whose body moves the line
+or `:` alone, with no `elif` or `else`, runs its body, so a `cd` in it is not
+one that may not have run (unless a function of that name is defined, or the
+line has an `alias`, `enable` or `disable`, which can change what the name
+stands for). That is all it changes: for the option, a function definition and
+where a later `cd` starts it is a branch like any other `if`. A redirect on a call to a function whose body moves the line
 (`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
 well, from the folder the line is in when the function is called. The walk
 applies the body's `cd` once, where the function is defined, so it cannot name

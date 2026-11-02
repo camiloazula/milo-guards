@@ -1103,12 +1103,15 @@ impl Walker<'_> {
                     self.split.hide_functions();
                 }
                 let function = self.function_start(node);
-                // `if true; then …; fi` runs its body: it is no branch.
-                let branch = !self.always_taken(node);
+                // `if true; then …; fi` runs its body: a `cd` in it is no
+                // `cd` that may not have run. It is still a branch for all
+                // else (the option, a definition, where a `cd` is placed).
+                let taken = self.always_taken(node);
                 // The variable of `for` and `select` is set for the body
                 // (`for PATH in /x; do …`).
                 self.split.assigned_earlier |= node.kind() == "for_statement";
-                self.split.branches += usize::from(branch);
+                self.split.branches += 1;
+                self.split.taken += usize::from(taken);
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
@@ -1128,7 +1131,8 @@ impl Walker<'_> {
                 self.split.assigned_earlier |= node.kind() == "function_definition";
                 self.split.repeats -= usize::from(body);
                 self.split.bodies -= usize::from(body);
-                self.split.branches -= usize::from(branch);
+                self.split.taken -= usize::from(taken);
+                self.split.branches -= 1;
             }
             "pipeline" => {
                 let pipeline = self.split.pipeline(stage);
@@ -1177,8 +1181,9 @@ impl Walker<'_> {
     }
 
     /// Whether `node` is an `if` that surely runs its one body: its condition
-    /// is the command `true` or `:` alone, no `elif` or `else` follows, and
-    /// no function of that name is defined to stand in for it.
+    /// is the command `true` or `:` alone, no `elif` or `else` follows, no
+    /// function of that name is defined to stand in for it, and no alias,
+    /// `enable` or `disable` may have changed what the name stands for.
     fn always_taken(&self, node: Node<'_>) -> bool {
         if node.kind() != "if_statement" {
             return false;
@@ -1198,6 +1203,7 @@ impl Walker<'_> {
             && condition.kind() == "command"
             && matches!(name, "true" | ":")
             && !self.split.defines_function(name)
+            && !self.split.renames_builtins()
     }
 
     /// A list of commands joined by `&&` and `||`: the right side of either

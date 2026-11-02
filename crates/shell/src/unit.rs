@@ -677,6 +677,10 @@ pub(crate) struct Split {
     /// a process of its own: the right side of `&&` and `||`, a branch, a
     /// loop, a function body, a background command.
     pub(crate) branches: usize,
+    /// How many of [`Self::branches`] are an `if true; then …; fi` (see
+    /// `Walker::always_taken`): it still counts as a branch for everything
+    /// else, and is left out only for whether a `cd` in it may not have run.
+    pub(crate) taken: usize,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -998,7 +1002,15 @@ impl Split {
                 || !unit.wrappers.is_empty()
             {
                 self.maybe_moved = true;
-                self.uncertain += 1;
+                // An `if true` body surely runs, so its `cd` does not leave
+                // the line unsure where a redirect on the `if` ends.
+                if self.branches > self.taken
+                    || self.repeats > 0
+                    || unit.stage.is_some()
+                    || !unit.wrappers.is_empty()
+                {
+                    self.uncertain += 1;
+                }
             }
         }
         if unit.shell == Shell::Cmd {
@@ -1681,6 +1693,17 @@ impl Split {
     /// Whether the line defines the function `name`.
     pub(crate) fn defines_function(&self, name: &str) -> bool {
         self.functions.iter().any(|known| known == name)
+    }
+
+    /// Whether a command read so far may change what a builtin's name
+    /// stands for: an alias (`alias true=false`), or `enable` and `disable`
+    /// (`enable -n true` turns the builtin off, so a program of that name
+    /// from `PATH` runs).
+    pub(crate) fn renames_builtins(&self) -> bool {
+        self.units.iter().any(|unit| {
+            unit.key()
+                .is_some_and(|key| matches!(key.as_str(), "alias" | "enable" | "disable"))
+        })
     }
 
     /// Say a function the line defines runs with the option on, as a
