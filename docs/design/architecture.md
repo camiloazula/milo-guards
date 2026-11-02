@@ -174,8 +174,10 @@ has its place:
   Rust version agree).
 
 Some names are read by other files: `just no-inline` runs
-`crates/shell/tests/inline_off.rs` by name, and `agree.rs` reads the file
-guard's `posix.rs`, `windows.rs` and `protected.rs`.
+`crates/shell/tests/inline_off.rs` by name, `agree.rs` reads the file
+guard's `posix.rs`, `windows.rs` and `protected.rs`, and the shell guard's
+`tests/cases.rs` holds each case file in `tests/cases` to the test file of
+its name, which checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
 
 ## Why tree-sitter is held at 0.26
 

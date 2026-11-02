@@ -109,6 +109,11 @@ crates depend on each other and how that is enforced is in
   cases in `crates/<crate>/tests/<what-it-checks>.rs`, with shared helpers in
   `tests/common`; the front door end to end in `crates/guards/tests`.
   [Architecture](docs/design/architecture.md#where-a-test-goes)
+- **A plain case goes in a case file**, one line to a case, not in a Rust
+  table: `crates/<crate>/tests/cases/<what-it-checks>.cases`, checked by the
+  test file of the same name (the shell guard's now, the other guards' as
+  their tables move). Rust keeps generated cases, timing, and tests of the
+  API and of a structure. [CONTRIBUTING.md](CONTRIBUTING.md#case-files)
 - **Do not re-enable the disabled clippy lints**, and gate a deliberate panic
   behind `#[allow(..., reason = "...")]`.
   [Architecture](docs/design/architecture.md)

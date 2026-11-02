@@ -2,11 +2,12 @@
 //! names every row that came out wrong at once (and one that a row breaks one
 //! rule and not another), the makers of the paths a
 //! reads-only line lists, a clock and a linear-time check for the timed
-//! tests, and (in [`inline`])
-//! the builders of inline-code rows.
+//! tests, (in [`cases`]) the runner of the case files in `tests/cases`, and
+//! (in [`inline`]) the builders of inline-code rows.
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
 
+pub mod cases;
 pub mod inline;
 
 use std::path::PathBuf;

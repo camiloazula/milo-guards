@@ -65,6 +65,79 @@ cargo install cargo-llvm-cov   # for just coverage
 cargo install cargo-deny       # for just deny and just advisories
 ```
 
+## Case files
+
+A plain case, a line and the answer it must get, is written in a case file,
+not as a row of a Rust table. The cases of a behaviour are in
+`crates/<crate>/tests/cases/<what-it-checks>.cases`, beside the test file of
+the same name, `tests/<what-it-checks>.rs`, which checks them all with one
+call: `common::cases::check("<what-it-checks>")`. What is not a plain case
+stays in that Rust file: cases made in a loop, long or nested input, timing,
+tests of the API itself, and tests that check a structure (the paths a line
+lists, the tree `explain` draws). The shell guard reads case files; the other
+guards' tables move to them next.
+
+One case to a line, and nothing else on it:
+
+```text
+# A comment: its first character is `#`. Blank lines are skipped.
+posix safe | cd ../.. < .ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa
+cmd finds=overwrite | cd sub > ..\\x.txt
+posix effect=changes | cd sub > ../x
+posix finds=delete reason="deletes your home directory" | tar -cf x.tar ~ --remove-files
+posix safe | cd sub <<EOF > out.txt\nx\nEOF
+paths home cwd=/home/me home=/home/me workspace=/home/me
+posix@home finds=delete | rm -rf .ssh
+```
+
+The words before ` | ` say how the line is judged and what it must get. The
+text after it, from one space after the bar to the end of the line, is the
+command line, and it may hold anything, a ` | ` included.
+
+- **The shell and the paths.** The first word is the shell, `posix`,
+  `powershell` or `cmd`, and may name the paths after an `@`: `posix`, `macos`
+  or `windows` (core's test machines), or a name a `paths` line declared
+  earlier in the file. Without one, a POSIX line is judged on `posix` and the
+  others on `windows`.
+- **The answer.** `safe`, or one or more fields: `finds=RULES` (each rule is
+  found; `a/b` is either of two), `rules=RULES` (exactly these, in order),
+  `first=RULE` (the first finding), `lacks=RULES` (none of them),
+  `reason="..."` (the reason of the `first` finding, or of the one rule of
+  `finds`) and `effect=` with `reads_workspace`, `reads_beyond`, `changes` or
+  `unknown`. A rule is its wire name; a list is comma separated. A value
+  with a space is quoted. Every case is also held to the agreement checks:
+  its `effect`, `explain` and `effect_paths` agree with `classify`.
+- **A `paths` line** names a machine: `base=MACHINE`, or `cwd=` and `home=`;
+  then `workspace=` for each workspace folder (added to the base's), and
+  `folder=` or `file=` for a protected path, each followed by its `words=`.
+- **Escapes.** A backslash starts one of `\\` (a backslash), `\n`, `\t`, `\r`,
+  `\s` (a space) and `\u{HEX}` (any character), and `\"` in a quoted value.
+  A Windows path doubles its backslashes, as in a Rust string. Any other
+  character, non-ASCII included, is written as it is.
+
+A case file is refused, every bad line named by its file and line, for a
+raw tab, carriage return or other control character, a space at the start or
+end of a line or of a command line (write `\s`), an unknown escape, an unknown
+word, field, shell, rule, effect or paths name, an answer that is not whole
+(no answer, `safe` with a rule, `reason` without its one rule, a field
+twice), a case without its `| LINE`, and a case that repeats another (the
+same shell, paths, line and answer). A missing file fails its test, and
+`tests/cases.rs` fails for a case file no test file checks and for a case
+that repeats one in another file. A case that gets another answer is named
+by its file and line with what it got.
+
+To list every case, one to a line (where it is, the shell, the paths, the
+answer and the line as Rust writes a string, tab separated):
+
+```sh
+cargo test -p milo-guards-shell --all-features --test cases -- --ignored --nocapture dump
+```
+
+The reading of the format is shared, in `crates/core/tests/common/cases.rs`
+(tested by `crates/core/tests/cases.rs`); what the words mean for a guard,
+and the runner, are in its `tests/common/cases.rs`.
+
 ## Submitting a change
 
 - `main` takes pull requests only. The commits that set the repository up are
@@ -72,11 +145,11 @@ cargo install cargo-deny       # for just deny and just advisories
 - Commit messages describe the change and why. No tool trailers (no
   `Co-Authored-By` or "Generated with" lines) on commits or pull request
   descriptions.
-- A new rule comes with table tests of safe and risky lines
-  ([GUIDELINES.md](GUIDELINES.md)), and a rule's wire name never changes once
-  a caller uses it.
+- A new rule comes with cases of safe and risky lines
+  ([GUIDELINES.md](GUIDELINES.md), [Case files](#case-files)), and a rule's
+  wire name never changes once a caller uses it.
 - A test goes in the file named by what it checks, never in one named after
-  a ticket or a review; a fix adds rows to that file
+  a ticket or a review; a fix adds cases (or rows) to that file
   ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a source file's own
   helpers goes in that file's `#[cfg(test)] mod tests`; a test of what a crate
   does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
