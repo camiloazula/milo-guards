@@ -463,6 +463,91 @@ fn near_delimiter(line: &str, delimiter: &str) -> bool {
     word.replace(['\'', '"', '\\'], "") == delimiter
 }
 
+/// The code of each backtick substitution in the body of an unquoted
+/// here-document, which the shell runs and the grammar does not read. `skip`
+/// are the byte ranges of the parts of the body the grammar read itself (a
+/// `$(…)`, a `${…}`): a backtick in them is theirs. The shell takes the first
+/// backtick that no backslash escapes as the end, whatever quotes lie between,
+/// and then takes one backslash off `\``, `\\` and `\$` in what it found
+/// (`\` and any other character stay). Shells differ on `\"`: bash keeps the
+/// backslash, dash takes it off (its body is read as the inside of double
+/// quotes, where `"` is special). A code that holds one is returned twice,
+/// once for each reading, so that what either shell runs is judged. `None`
+/// when a backtick never closes, which a shell refuses. With `strips` (`<<-`)
+/// the tabs at the start of each line after the first are taken off, since
+/// the shell strips them from the body before it reads any code in it.
+fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec<String>> {
+    let bytes = body.as_bytes();
+    let mut codes = Vec::new();
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if let Some(part) = skip.iter().find(|part| part.contains(&at)) {
+            at = part.end;
+            continue;
+        }
+        match byte {
+            b'\\' => at += 2,
+            b'`' => {
+                // The code with a backslash kept before `"` (bash) and taken
+                // off (dash).
+                let mut code = Vec::new();
+                let mut dash = Vec::new();
+                at += 1;
+                loop {
+                    match bytes.get(at)? {
+                        b'`' => break,
+                        b'\\' => {
+                            let next = *bytes.get(at + 1)?;
+                            if matches!(next, b'`' | b'\\' | b'$') {
+                                code.push(next);
+                                dash.push(next);
+                                at += 2;
+                            } else if next == b'"' {
+                                code.extend_from_slice(b"\\\"");
+                                dash.push(b'"');
+                                at += 2;
+                            } else {
+                                code.push(b'\\');
+                                dash.push(b'\\');
+                                at += 1;
+                            }
+                        }
+                        other => {
+                            code.push(*other);
+                            dash.push(*other);
+                            at += 1;
+                        }
+                    }
+                }
+                at += 1;
+                let mut readings = vec![String::from_utf8(code).ok()?];
+                if dash != readings[0].as_bytes() {
+                    readings.push(String::from_utf8(dash).ok()?);
+                }
+                for code in readings {
+                    codes.push(if strips {
+                        code.split('\n')
+                            .enumerate()
+                            .map(|(line, text)| {
+                                if line == 0 {
+                                    text
+                                } else {
+                                    text.trim_start_matches('\t')
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        code
+                    });
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    Some(codes)
+}
+
 /// The command a redirect after `node` belongs to, when `node` is a list, a
 /// pipeline or a negated command: the grammar puts the redirect on the whole
 /// of it, and the shell on the last command (`a && b < f` redirects `b`).
@@ -1027,7 +1112,7 @@ impl Walker<'_> {
             }
             // The grammar reads `$(…)` in a here-document's body but not a
             // backtick substitution, which the shell runs when the delimiter
-            // is not quoted: `effect` cannot say what the line does then.
+            // is not quoted: `heredoc_backticks` reads those as code.
             "heredoc_redirect" => self.walk_heredoc(node, stage, level, None),
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
@@ -1677,6 +1762,78 @@ impl Walker<'_> {
         self.split.open_from(outer);
     }
 
+    /// The backtick substitutions in the body of an unquoted here-document,
+    /// which the shell runs as it does a `$(…)` and the grammar does not read:
+    /// each is read as a script of its own. What cannot be read is
+    /// `Unreadable`: a backtick that never closes, one in a part the grammar
+    /// read itself (`${x:-`…`}`), and one in a here-document that sits in a
+    /// backtick substitution, where the outer one takes a backslash off first
+    /// and the body is not what it looks like.
+    fn heredoc_backticks(&mut self, redirect: Node<'_>) {
+        let mut cursor = redirect.walk();
+        let parts: Vec<Node<'_>> = redirect.children(&mut cursor).collect();
+        let quoted = parts.iter().any(|part| {
+            part.kind() == "heredoc_start"
+                && unit::text(part, self.source).contains(['\'', '"', '\\'])
+        });
+        let strips = parts
+            .iter()
+            .any(|part| !part.is_named() && unit::text(part, self.source) == "<<-");
+        let Some(body) = parts.iter().find(|part| part.kind() == "heredoc_body") else {
+            return;
+        };
+        if quoted {
+            return;
+        }
+        // The grammar ends a backtick substitution at the first backtick, one
+        // a backslash escapes too, so what it holds around an unquoted
+        // here-document is not what the shell reads.
+        let mut escaped = false;
+        let mut within = redirect.parent();
+        while let Some(parent) = within {
+            escaped |= parent.kind() == "command_substitution"
+                && unit::text(&parent, self.source).starts_with('`')
+                && unit::text(&parent, self.source).contains("\\`");
+            within = parent.parent();
+        }
+        let text = unit::text(body, self.source);
+        if !escaped && !text.contains('`') {
+            return;
+        }
+        let from = body.start_byte();
+        let mut cursor = body.walk();
+        let mut skip = Vec::new();
+        let mut inner = escaped;
+        for part in body.named_children(&mut cursor) {
+            // The body's plain text between expansions is a part of the tree
+            // too, but not one the grammar read: `backtick_codes` scans it.
+            if matches!(part.kind(), "heredoc_content" | "heredoc_end") {
+                continue;
+            }
+            let range =
+                part.start_byte().saturating_sub(from)..part.end_byte().saturating_sub(from);
+            inner |= part.kind() != "command_substitution"
+                && unit::text(&part, self.source).contains('`');
+            skip.push(range);
+        }
+        let codes = if inner {
+            None
+        } else {
+            backtick_codes(text, &skip, strips)
+        };
+        let Some(codes) = codes else {
+            self.split.problem(
+                Rule::Unreadable,
+                "has a backtick in a here-document that cannot be read",
+                None,
+            );
+            return;
+        };
+        for code in codes {
+            unit::script(self.split, &code, Shell::Posix, self.depth + 1);
+        }
+    }
+
     /// A here-document's redirect. The grammar holds the redirects written
     /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
     /// command it belongs to, they are placed like any redirect of that
@@ -1690,16 +1847,7 @@ impl Walker<'_> {
     ) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
-        let quoted = children.iter().any(|child| {
-            child.kind() == "heredoc_start"
-                && unit::text(child, self.source).contains(['\'', '"', '\\'])
-        });
-        let backtick = children.iter().any(|child| {
-            child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
-        });
-        if backtick && !quoted && self.split.kept.on {
-            self.split.opaque();
-        }
+        self.heredoc_backticks(node);
         for (at, child) in children.iter().enumerate() {
             if !child.is_named() {
                 continue;
@@ -1769,6 +1917,9 @@ impl Walker<'_> {
                 // What the redirect's own parts run is handed to the body,
                 // and what the rest of the pipeline runs is not.
                 let mut inside = Vec::new();
+                let first = self.split.units.len();
+                self.heredoc_backticks(*child);
+                inside.push(first..self.split.units.len());
                 let mut cursor = child.walk();
                 for part in child.named_children(&mut cursor) {
                     let first = self.split.units.len();

@@ -565,10 +565,6 @@ fn what_cannot_be_read_is_unknown() {
             "alias ls='rm -rf'; ls",
             // A function the line calls.
             "f() { ls; }; f",
-            // The grammar does not read a backtick substitution in an
-            // unquoted here-document, which the shell runs.
-            "cat <<EOF\n`touch y`\nEOF",
-            "cat <<EOF\nline `rm x` end\nEOF",
             "set -e; ls",
             "shopt -s dotglob; ls",
             "export X=1",
@@ -591,6 +587,10 @@ fn a_line_that_changes_and_cannot_be_read_changes() {
             "git add . && eval \"$x\"",
             "ls > out.txt; $CMD",
             "rm x; foo --bar",
+            // A backtick substitution in an unquoted here-document, which
+            // the shell runs, is read as code: what it changes decides.
+            "cat <<EOF\n`touch y`\nEOF",
+            "cat <<EOF\nline `rm x` end\nEOF",
         ],
     );
 }
