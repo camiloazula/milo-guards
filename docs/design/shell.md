@@ -466,7 +466,11 @@ or `:` alone, with no `elif` or `else`, runs its body, so a `cd` in it is not
 one that may not have run (unless a function of that name is defined, or the
 line has an `alias`, `enable` or `disable`, which can change what the name
 stands for). That is all it changes: for the option, a function definition and
-where a later `cd` starts it is a branch like any other `if`. A redirect on a call to a function whose body moves the line
+where a later `cd` starts it is a branch like any other `if`. After such a
+statement a later `cd` is placed from both folders too: `{ echo x; false && cd
+sub; } > x.sh; cd ..; bash x.sh` may run the `x.sh` it wrote.
+
+A redirect on a call to a function whose body moves the line
 (`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
 well, from the folder the line is in when the function is called. The walk
 applies the body's `cd` once, where the function is defined, so it cannot name

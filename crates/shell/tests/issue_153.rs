@@ -241,6 +241,77 @@ fn a_cd_that_surely_ran_keeps_its_verdict() {
     );
 }
 
+/// After the group the line may be where it began or where the `cd` took
+/// it: a later `cd` and run is judged from both.
+#[test]
+fn a_later_run_is_judged_from_every_folder_the_group_may_end_in() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // From either folder, the run is of a file the line did not
+            // write.
+            "{ echo x; false && cd sub; } > x.sh; cd sub; bash x.sh",
+            "{ echo x; false && cd sub; } > x.sh; bash sub/x.sh",
+            "{ echo x; cd sub; } > x.sh; bash sub/x.sh",
+            // Everyday lines that do not run what they wrote.
+            "if test -d build; then cd build; fi > /dev/null; make",
+            "if [ -d build ]; then cd build; fi > log.txt; make; cat log.txt",
+            "for d in a b; do cd $d; make; cd ..; done > log.txt; cat log.txt",
+            "for d in a b; do (cd $d; make); done > log.txt; cat log.txt",
+        ],
+        &[
+            // From `sub`, `cd ..` goes back to where the file was written.
+            (
+                "{ echo x; false && cd sub; } > x.sh; cd ..; bash x.sh",
+                Rule::Unknown,
+            ),
+            // From where the line began, `cd sub` makes `../x.sh` the file
+            // that was written.
+            (
+                "{ echo x; false && cd sub; } > x.sh; cd sub; bash ../x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "{ echo x; false && cd sub; } > x.sh && bash x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "{ echo x; false && cd sub; } > x.sh; bash x.sh &",
+                Rule::Unknown,
+            ),
+            (
+                "{ echo x; false && cd sub; } &> x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "{ echo x; false && cd /tmp; } > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "{ echo x; false && pushd sub; } > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "select x in a; do cd sub; done > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            // A `cd` in a function the group calls.
+            (
+                "f() { false && cd sub; }; { echo x; f; } > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            (
+                "f() { cd sub; }; { echo x; false && f; } > x.sh; bash x.sh",
+                Rule::Unknown,
+            ),
+            // A `cd` in the background does not move the line, so the run is
+            // of the file the group wrote.
+            ("{ echo x; cd sub & } > x.sh; bash x.sh", Rule::Unknown),
+        ],
+    );
+}
+
 /// `if true` is no branch only for whether a `cd` in its body may not have
 /// run: for everything else (a later `cd`'s place, the dotglob option, a
 /// function definition) it is a branch, as on any `if`.
