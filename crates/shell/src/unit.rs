@@ -302,6 +302,19 @@ impl Hidden {
     }
 }
 
+/// The folder a redirect opens its file from. A redirect on a `cd` is opened
+/// before the `cd` runs, so from the folder the `cd` starts in, not the one
+/// it goes to.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum OpensFrom {
+    /// Where the line is when the redirect is read.
+    #[default]
+    Line,
+    /// The folder a unit starts in (as [`Unit::dir`]; `None`: where the
+    /// line began).
+    Start(Option<Arg>),
+}
+
 /// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
 #[derive(Debug, Clone)]
 pub(crate) struct Redirect {
@@ -394,6 +407,9 @@ pub(crate) struct Split {
     /// [`holds_code`]) or is only known when it runs, kept as the `cd`s are
     /// read so the folder's whole name is not read again after each one.
     dir_code: bool,
+    /// Where the redirects being read open their files from (see
+    /// [`OpensFrom`]).
+    opens_from: OpensFrom,
     /// In cmd, the drive the line is on, upper case: where it started, then
     /// where a drive switch, `cd /d` or `pushd` took it. `None` when it is
     /// on no drive or is only known when it runs.
@@ -935,9 +951,37 @@ impl Split {
         }
     }
 
-    /// Add a redirect's write, made where the line has moved to.
+    /// Where the redirects on `units` open their files from: the folder the
+    /// first of them that moves the line (`cd`, `pushd`, `Set-Location`)
+    /// starts in, as the shell opens them before it runs; where the line is
+    /// when none of them moves it.
+    pub(crate) fn starts_in(&self, units: Range<usize>) -> OpensFrom {
+        self.units
+            .get(units)
+            .into_iter()
+            .flatten()
+            .find(|unit| moves_to(unit).is_some())
+            .map_or(OpensFrom::Line, |unit| OpensFrom::Start(unit.dir.clone()))
+    }
+
+    /// Make the redirects read from now on open their files from `from`, and
+    /// give back what it was, to put back.
+    pub(crate) fn open_from(&mut self, from: OpensFrom) -> OpensFrom {
+        std::mem::replace(&mut self.opens_from, from)
+    }
+
+    /// The folder a redirect read now opens its file from.
+    fn redirect_dir(&self) -> Option<Arg> {
+        match &self.opens_from {
+            OpensFrom::Line => self.dir.clone(),
+            OpensFrom::Start(dir) => dir.clone(),
+        }
+    }
+
+    /// Add a redirect's write, made where the line has moved to, or from
+    /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
-        let dir = self.dir.clone();
+        let dir = self.redirect_dir();
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.write_in_body.push(self.writes.len());
@@ -961,9 +1005,10 @@ impl Split {
         });
     }
 
-    /// Add a redirect's read, made where the line has moved to.
+    /// Add a redirect's read, made where the line has moved to, or from
+    /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
-        let dir = self.dir.clone();
+        let dir = self.redirect_dir();
         let hidden = self.hidden();
         if self.bodies > 0 {
             self.read_in_body.push(self.reads.len());

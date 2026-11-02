@@ -6,7 +6,7 @@ use std::ops::Range;
 use tree_sitter::Node;
 
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -72,16 +72,30 @@ impl Walker<'_> {
                 let mut cursor = node.walk();
                 let mut inputs = Vec::new();
                 let mut own: Option<Range<usize>> = None;
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "redirection" {
-                        inputs.extend(self.redirect(child));
-                    } else {
-                        let first = self.split.units.len();
-                        self.walk(child, stage, level + 1);
-                        let range = first..self.split.units.len();
-                        own = Some(own.map_or(range.clone(), |own| own.start..range.end));
-                    }
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for child in children
+                    .iter()
+                    .filter(|child| child.kind() != "redirection")
+                {
+                    let first = self.split.units.len();
+                    self.walk(*child, stage, level + 1);
+                    let range = first..self.split.units.len();
+                    own = Some(own.map_or(range.clone(), |own| own.start..range.end));
                 }
+                // The shell opens a redirect before the command runs, so a
+                // command that moves the line (`cd sub > f`) is redirected
+                // from the folder it starts in.
+                let from = own
+                    .clone()
+                    .map_or(OpensFrom::Line, |own| self.split.starts_in(own));
+                let before = self.split.open_from(from);
+                for child in children
+                    .iter()
+                    .filter(|child| child.kind() == "redirection")
+                {
+                    inputs.extend(self.redirect(*child));
+                }
+                self.split.open_from(before);
                 if let Some(own) = own {
                     for target in inputs {
                         self.split.redirect(own.clone(), target, true);

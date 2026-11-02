@@ -234,7 +234,12 @@ impl Walker<'_> {
                     .as_deref()
                     .is_some_and(|key| EVENTS.contains(&key))
                     .then(|| self.split.begin_later());
+                // A redirect on a command that moves the line (`Set-Location
+                // sub > f`) is opened before it runs: from where it starts.
+                let from = self.split.starts_in(own.clone());
+                let before = self.split.open_from(from);
                 self.children(node, None, level);
+                self.split.open_from(before);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }

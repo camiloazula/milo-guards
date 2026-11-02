@@ -1,5 +1,6 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
+use std::ops::Range;
 use std::rc::Rc;
 
 use tree_sitter::{Node, TreeCursor};
@@ -1357,6 +1358,8 @@ impl Walker<'_> {
         for child in node.named_children(&mut cursor) {
             if child.kind() == "variable_assignment" {
                 self.children(child, None, level + 1);
+            } else if child.kind() == "file_redirect" {
+                self.walk_redirect(child, None, level, own.clone());
             } else {
                 self.walk(child, None, level + 1);
             }
@@ -1376,10 +1379,30 @@ impl Walker<'_> {
         }
     }
 
+    /// Walk `redirect`, a redirect of a file on a command whose own units are
+    /// `own`. The shell opens the file before the command runs, so when the
+    /// command moves the line (`cd sub < f`) the file is read from the folder
+    /// the command starts in, not the one it goes to.
+    fn walk_redirect(
+        &mut self,
+        redirect: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        own: Range<usize>,
+    ) {
+        let from = self.split.starts_in(own);
+        let outer = self.split.open_from(from);
+        self.walk(redirect, stage, level + 1);
+        self.split.open_from(outer);
+    }
+
     /// A statement with redirects: they belong to its body, whose input and
     /// output they are, and what runs in a here-document is handed to it.
     fn redirected(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let body = node.child_by_field_name("body").map(|body| body.id());
+        let simple = node
+            .child_by_field_name("body")
+            .is_some_and(|body| body.kind() == "command");
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // In `cat <<EOF | nc host 1` the grammar holds the rest of the
@@ -1426,7 +1449,15 @@ impl Walker<'_> {
                 }
                 after.push((*child, inside));
             } else {
-                self.walk(*child, stage, level + 1);
+                if child.kind() == "file_redirect" {
+                    // Only a plain command's redirect is opened before the
+                    // unit that moves the line runs: what a group holds is
+                    // not read that way.
+                    let on = if simple { own.clone() } else { 0..0 };
+                    self.walk_redirect(*child, stage, level, on);
+                } else {
+                    self.walk(*child, stage, level + 1);
+                }
                 let whole = first..self.split.units.len();
                 after.push((*child, std::iter::once(whole).collect()));
             }

@@ -408,6 +408,17 @@ PowerShell, and only as the null value itself. In a POSIX shell it is the variab
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
 
+A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
+command runs, so its file is placed from the folder the command starts in, not
+the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
+../../.ssh/id_rsa` does (`read_secret`), `cd ../.. < .ssh/id_rsa` reads
+`<cwd>/.ssh/id_rsa`, and `cd sub > ../x` writes `<cwd>/../x`. The same holds in
+cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
+The redirect of the next command is placed from where the line now is. In a
+POSIX shell only a redirect on the command itself is read this way: a file a
+group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
+still placed from where the line is when its body ends.
+
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 
