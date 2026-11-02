@@ -95,9 +95,12 @@ fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
 
 /// `text` with each backslash-newline taken out, as the shell does before
 /// it reads a line (`r\<newline>m` is `rm`), except inside single quotes,
-/// comments and here-document bodies, where it stays. A body is copied as it
-/// is, so a quote in it (`don't`) cannot leave the rest of the line looking
-/// quoted.
+/// comments and the bodies of here-documents with a quoted delimiter, where
+/// it stays. Such a body is copied as it is, so a quote in it (`don't`)
+/// cannot leave the rest of the line looking quoted. The body of an unquoted
+/// delimiter is fed to the shell as the inside of a double-quoted word: a
+/// backslash-newline in it is joined, before the body is expanded and before
+/// its lines are compared with the delimiter (`EO\<newline>F` ends it).
 ///
 /// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
@@ -122,8 +125,9 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // afresh, so a here-document in `"$(psql <<'EOF' …)"` is a here-document.
     let mut subs: Vec<(Sub, bool)> = Vec::new();
     // Here-documents opened on the current line, read from the next one:
-    // each delimiter, and whether `<<-` lets it be indented with tabs.
-    let mut bodies: Vec<(String, bool)> = Vec::new();
+    // each delimiter, whether `<<-` lets it be indented with tabs, and
+    // whether the word had a quote or a backslash (a body fed as it is).
+    let mut bodies: Vec<(String, bool, bool)> = Vec::new();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
@@ -280,12 +284,14 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                 // (`<<'E;F'` is `E;F`), the rest stops at a space or an
                 // operator.
                 let mut word = String::new();
+                let mut quoted = false;
                 while let Some(&next) = chars.get(at) {
                     if next.is_whitespace() || ";&|<>()".contains(next) {
                         break;
                     }
                     joined.push(next);
                     at += 1;
+                    quoted |= matches!(next, '\\' | '\'' | '"');
                     match next {
                         '\\' => {
                             if let Some(&escaped) = chars.get(at).filter(|c| **c != '\n') {
@@ -321,18 +327,38 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                     }
                 }
                 if !word.is_empty() {
-                    bodies.push((word, tabs));
+                    bodies.push((word, tabs, quoted));
                 }
             }
             '\n' if !double && !bodies.is_empty() => {
                 joined.push('\n');
-                for (delimiter, tabs) in std::mem::take(&mut bodies) {
+                for (delimiter, tabs, quoted) in std::mem::take(&mut bodies) {
                     while at < chars.len() {
-                        let start = at;
-                        while chars.get(at).is_some_and(|c| *c != '\n') {
+                        let mut line = String::new();
+                        while let Some(&c) = chars.get(at).filter(|c| **c != '\n') {
                             at += 1;
+                            if c != '\\' || quoted {
+                                line.push(c);
+                            } else if let Some(&next) = chars.get(at) {
+                                // An unquoted body: a backslash-newline is
+                                // joined, any other escape (`\\`) is kept
+                                // whole, so `\\<newline>` is not one.
+                                at += 1;
+                                if next != '\n' {
+                                    line.push(c);
+                                    line.push(next);
+                                } else if tabs {
+                                    // `<<-` takes the tabs off the line
+                                    // that goes on, as the guard reads it
+                                    // (some shells keep them).
+                                    while chars.get(at) == Some(&'\t') {
+                                        at += 1;
+                                    }
+                                }
+                            } else {
+                                line.push(c);
+                            }
                         }
-                        let line: String = chars[start..at].iter().collect();
                         joined.push_str(&line);
                         if at < chars.len() {
                             joined.push('\n');

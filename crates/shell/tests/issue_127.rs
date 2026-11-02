@@ -399,3 +399,67 @@ fn a_here_document_that_ends_exactly_reads_as_before() {
         &[],
     );
 }
+
+/// The shell joins each backslash-newline in the body of an unquoted
+/// here-document before it expands the body and before it looks for the end
+/// line, so `$(r\<newline>m -rf …)` in it runs `rm`, and `EO\<newline>F` ends
+/// it. A quoted delimiter feeds the body as it is.
+#[test]
+fn a_backslash_newline_in_an_unquoted_here_document_body_is_joined() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            // A quoted delimiter: the body is text, the backslash stays.
+            "cat <<'EOF'\n$(r\\\nm -rf /home/me)\nEOF",
+            "echo \"$(cat <<'EOF'\n$(r\\\nm -rf /home/me)\nEOF\n)\"",
+            "cat <<\\EOF\n$(r\\\nm -rf /home/me)\nEOF",
+            // An escaped backslash is not a continuation, and the body stays
+            // text: `\\` then a newline.
+            "echo \"$(cat <<EOF\nx\\\\\nEOF\n)\"",
+        ],
+        &[
+            // The same inside a double-quoted substitution.
+            (
+                "echo \"$(cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            (
+                "git commit -m \"$(cat <<EOF\nmsg $(r\\\nm -rf /home/me)\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            (
+                "x=\"$(cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            // In a backtick in double quotes.
+            (
+                "echo \"`cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF\n`\"",
+                Rule::Delete,
+            ),
+            // A delimiter joined across lines ends the body, and what comes
+            // after it runs.
+            (
+                "echo \"$(cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            (
+                "echo \"$(cat <<EOF\nx\nE\\\nOF\nr\\\nm -rf /home/me\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            (
+                "echo \"`cat <<EOF\nx\nEO\\\nF\nr\\\nm -rf /home/me\nEOF\n`\"",
+                Rule::Delete,
+            ),
+            // With `<<-` the tabs come off the line that goes on.
+            (
+                "echo \"$(cat <<-EOF\n\tx\n\tEO\\\n\tF\nr\\\nm -rf /home/me\nEOF\n)\"",
+                Rule::Delete,
+            ),
+            // The top-level form.
+            ("cat <<EOF\n$(r\\\nm -rf /home/me)\nEOF", Rule::Delete),
+            ("cat <<-EOF\nx $(r\\\nm -rf /home/me)\n\tEOF", Rule::Delete),
+            ("cat <<-EOF\n$(rm -rf /home/me)\n\tEOF", Rule::Delete),
+        ],
+    );
+}

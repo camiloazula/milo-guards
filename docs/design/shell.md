@@ -2021,6 +2021,13 @@ template; a body with both an escaped and an expanding `$` or backtick is
 `unknown`. `<<-` takes the tabs off each line first. A quoted delimiter
 (`<<'EOF'`, `<<\EOF`) feeds the body as it is.
 
+The body of an unquoted delimiter is joined the same way when the guard splits
+the line, also one inside `"$(…)"` or a backtick in double quotes: a
+backslash-newline in it is taken out before the body is read and before its
+lines are compared with the delimiter, so `$(r\` then `m -rf …)` in it is
+`rm`, and `EO\` then `F` ends it (for `<<-`, after leading tabs). A quoted
+delimiter's body is copied as it is.
+
 The shell ends a here-document only at a line that is exactly the delimiter
 (for `<<-`, after leading tabs only). The grammar also ends it at a line only
 near the delimiter (` EOF`, `EOF `, `EOF #…`, `EOF ;…`), so the rest would be
