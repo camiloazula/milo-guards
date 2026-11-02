@@ -451,10 +451,17 @@ impl Walker<'_> {
     fn command_child(&mut self, child: Node<'_>, level: usize, state: &mut Redirects) {
         let kind = child.kind();
         let text = unit::text(&child, self.source);
+        // A parameter after a `1>` (`1> --hard`) may or may not be the file
+        // it writes: the guard keeps it an argument and cannot place the
+        // redirect.
+        if state.pending && kind == "command_parameter" {
+            state.pending = false;
+            self.unclear_redirect(child);
+        }
         // The file a `1>` is followed by.
         let target = state.pending && !matches!(kind, "command_argument_sep" | "comment");
         let bare = match kind {
-            "generic_token" if !target => bare_redirect(text),
+            "generic_token" | "command_parameter" if !target => bare_redirect(text),
             // A name or a list that holds a `>` (`echo>f`, `x>a,b`).
             "command_name" if !target && text.contains('>') => Bare::Unclear,
             "array_literal_expression" if !target => {
@@ -551,11 +558,16 @@ impl Walker<'_> {
                 }
                 // A `1>` word and the file after it are a redirect, not
                 // arguments (see `command_child`).
-                if file_next && !matches!(element.kind(), "command_argument_sep" | "comment") {
+                // A parameter is not taken for the file (see `command_child`):
+                // it stays an argument.
+                if file_next && element.kind() == "command_parameter" {
+                    file_next = false;
+                } else if file_next && !matches!(element.kind(), "command_argument_sep" | "comment")
+                {
                     file_next = false;
                     continue;
                 }
-                if element.kind() == "generic_token" {
+                if matches!(element.kind(), "generic_token" | "command_parameter") {
                     if let Bare::Redirect { word, target } = bare_redirect(source) {
                         if !word.is_empty() {
                             args.push(Arg::Known(unescape(word)));

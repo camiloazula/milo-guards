@@ -60,7 +60,11 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   to its word (`echo x>f`, `echo x 1>f`) as words; the guard reads each as the
   redirect it is, with the stream number dropped, and the file glued to it or
   the next argument as the file it writes (`echo x 1> ..\x.txt` is an
-  `overwrite`). PowerShell reads `$HOME\.ssh\id` as one word but its
+  `overwrite`); a word glued to the `>` that the grammar lexes as a
+  parameter (`git log --format=%h>..\x.txt`) is read the same way, with the
+  part before the `>` kept as the parameter. A `1>` followed by a parameter
+  (`git reset 1> --hard`) is `unknown`: the guard keeps the parameter an
+  argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:

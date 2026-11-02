@@ -84,6 +84,12 @@ fn a_redirect_the_grammar_reads_as_a_word_writes_its_file() {
             // Among more redirects, pipes and moves.
             ("echo x 1> out.txt 2>..\\err.txt", Rule::Overwrite),
             ("echo x 1> ..\\x.txt 1> out.txt", Rule::Overwrite),
+            // A `>` glued to a word the grammar lexes as a parameter.
+            ("git log --format=%h>..\\x.txt", Rule::Overwrite),
+            ("git log --format=%h>>C:\\Windows\\x.txt", Rule::Overwrite),
+            ("git log --pretty=oneline>..\\x.txt", Rule::Overwrite),
+            ("echo --a=b>..\\x.txt", Rule::Overwrite),
+            ("echo -a=b>..\\x.txt", Rule::Overwrite),
             (
                 "Get-Content f 1> ..\\x.txt | Set-Content g",
                 Rule::Overwrite,
@@ -111,6 +117,15 @@ fn a_word_that_may_be_a_redirect_and_cannot_be_told_apart_is_unknown() {
             ("echo x\"a\">..\\x.txt", Rule::Unknown),
             // The name of the command.
             ("echo>..\\x.txt", Rule::Unknown),
+            // A parameter after the operator may be the file or an argument.
+            ("git reset 1> --hard", Rule::Unknown),
+            ("git clean 1> -fdx", Rule::Unknown),
+            ("git reset x> --hard", Rule::Unknown),
+            ("echo x 1> -a", Rule::Unknown),
+            // It stays an argument, so the discard is found too.
+            ("git reset 1> --hard", Rule::GitDiscard),
+            ("git clean 1> -fdx", Rule::GitDiscard),
+            ("git reset x> --hard", Rule::GitDiscard),
         ],
     );
 }
@@ -127,12 +142,21 @@ fn a_redirect_in_a_word_is_never_reads_only() {
             "echo x>..\\x.txt",
             "Set-Location sub 1> ..\\x.txt",
             "Write-Output x 1> ..\\x.txt",
+            "git log --format=%h>..\\x.txt",
+            "echo -a=b>..\\x.txt",
         ],
     );
     check_effect(
         Shell::PowerShell,
         &windows(),
         Effect::Unknown,
-        &["echo x 1>", "echo x a>b>c"],
+        &["echo x 1>", "echo x a>b>c", "echo x 1> -a"],
+    );
+    // The discard is changes whatever the redirect is.
+    check_effect(
+        Shell::PowerShell,
+        &windows(),
+        Effect::Changes,
+        &["git reset 1> --hard", "git reset x> --hard"],
     );
 }
