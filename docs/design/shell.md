@@ -674,6 +674,16 @@ the same line. It is `stop_system` when the line stops more than a name:
   and `taskkill /IM` read a wildcard (`*`, `?`, `[a-z]`), judged the same way
   after a trailing `.exe` is dropped. `killall5` and `pkill -v` (every
   process but the ones named) are always `stop_system`.
+- **Process 0, a group, or an id it cannot read.** `kill` of 0 signals every
+  process in the caller's own group, the program that ran the line included
+  (`kill 0`, `kill -9 0`), and of a negative id a whole group (`kill -- -1234`,
+  `kill -1234`; `-1` is every process). The inline calls `os.kill`, `os.killpg`,
+  `process.kill` and `Deno.kill` read the same way (`os.kill(0, 9)`). An id
+  only known when it runs (`kill $pid`, `kill $(pgrep x)`, `xargs kill`), or too
+  long for a process id, may be any of them, so it is `stop_system` too. An
+  ordinary id (`kill 4242`), a job (`kill %1`), `$!`, `$$`, `$PPID`, signal 0
+  (`kill -0 $pid`, which sends nothing) and `kill -l` are safe; `kill 1` is
+  `stop_system`.
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name

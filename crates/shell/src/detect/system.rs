@@ -296,12 +296,89 @@ impl Checker<'_> {
         self.permissions(unit, &targets, "changes permissions of");
     }
 
+    /// `kill [-s SIG | -n SIG | -SIG] [--] ID...`. A signal to process 0
+    /// goes to every process in the caller's own group, the program that ran
+    /// the line included, and one to a negative id goes to a whole group
+    /// (`-1`: every process). An id only known when it runs may be any of
+    /// them, so it is judged the same way. A job (`%1`), an ordinary
+    /// process, and signal 0 (which sends nothing: `kill -0 $pid` asks
+    /// whether a process is there) are everyday work.
     fn kill(&mut self, args: &[Arg]) {
-        for (at, arg) in args.iter().enumerate() {
+        let mut rest = args;
+        let first = rest.first().and_then(Arg::known);
+        match first {
+            Some("-s" | "-n") => {
+                if rest.get(1).and_then(Arg::known).is_some_and(is_signal_zero) {
+                    return;
+                }
+                rest = rest.get(2..).unwrap_or_default();
+            }
+            Some(text) if text.starts_with("--") && text != "--" => {
+                // `--list` names signals; another long option has its value,
+                // a name or a number, which is not read as an id either way.
+                if text == "--list" {
+                    return;
+                }
+                rest = &rest[1..];
+            }
+            Some(text) if text.len() > 1 && text.starts_with('-') && text != "--" => {
+                let name = &text[1..];
+                if matches!(name, "l" | "L") || is_signal_zero(name) {
+                    return;
+                }
+                // A number past the last signal is not one: an id.
+                let past_signals = name.bytes().all(|b| b.is_ascii_digit())
+                    && name
+                        .trim_start_matches('0')
+                        .parse::<u8>()
+                        .map_or(true, |number| number > 64);
+                if !past_signals {
+                    rest = &rest[1..];
+                }
+            }
+            _ => {}
+        }
+        if rest.first().and_then(Arg::known) == Some("--") {
+            rest = &rest[1..];
+        }
+        for arg in rest {
             match arg.known() {
-                Some("1") => self.add(Rule::StopSystem, "stops the system's first process", None),
-                Some("-1") if at > 0 => self.add(Rule::StopSystem, "stops every process", None),
-                _ => {}
+                // A job.
+                Some(text) if text.starts_with('%') => {}
+                Some(text) => match process_id(text) {
+                    Some(Id::Process(1)) => {
+                        self.add(Rule::StopSystem, "stops the system's first process", None);
+                    }
+                    Some(Id::Process(_)) => {}
+                    Some(Id::Own) => self.add(
+                        Rule::StopSystem,
+                        "stops every process in its own group",
+                        Some(arg),
+                    ),
+                    Some(Id::All) => self.add(Rule::StopSystem, "stops every process", None),
+                    Some(Id::Group) => {
+                        self.add(Rule::StopSystem, "stops a whole process group", Some(arg));
+                    }
+                    Some(Id::Unreadable) => self.add(
+                        Rule::StopSystem,
+                        "may stop a whole process group",
+                        Some(arg),
+                    ),
+                    // A word, which `kill` refuses; a pattern may expand to
+                    // an id.
+                    None if text.contains(['*', '?', '[', '{']) => self.add(
+                        Rule::StopSystem,
+                        "may stop a whole process group",
+                        Some(arg),
+                    ),
+                    None => {}
+                },
+                None if is_positive_expansion(arg.text()) => {}
+                None => self.add(
+                    Rule::StopSystem,
+                    "may stop a whole process group",
+                    Some(arg),
+                ),
             }
         }
     }
@@ -352,6 +429,68 @@ const DISK_TOOLS: [&str; 15] = [
     "initialize-disk",
     "remove-partition",
 ];
+
+/// Whether a signal is 0, which sends nothing.
+fn is_signal_zero(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b == b'0')
+}
+
+/// What a process id of `kill` stands for.
+#[derive(Debug, PartialEq, Eq)]
+enum Id {
+    /// An ordinary process, or the first (`1`).
+    Process(u32),
+    /// 0: every process in the caller's own group.
+    Own,
+    /// -1: every process.
+    All,
+    /// Another negative id: a whole group.
+    Group,
+    /// A number `kill` may take as 0 or a negative id (past what a process
+    /// id holds, it wraps).
+    Unreadable,
+}
+
+/// The process id `text` is, when it is a number as `kill` reads one: blanks
+/// around it and a sign are allowed, and leading zeros are not octal.
+fn process_id(text: &str) -> Option<Id> {
+    let text = text.trim();
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(digits) => (true, digits),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let Ok(number) = digits
+        .trim_start_matches('0')
+        .parse::<u32>()
+        .or_else(|error| {
+            // All zeros is the number 0; anything else that does not fit is long.
+            if digits.bytes().all(|b| b == b'0') {
+                Ok(0)
+            } else {
+                Err(error)
+            }
+        })
+    else {
+        return Some(Id::Unreadable);
+    };
+    Some(match (negative, number) {
+        (_, 0) => Id::Own,
+        (_, number) if number > i32::MAX as u32 => Id::Unreadable,
+        (true, 1) => Id::All,
+        (true, _) => Id::Group,
+        (false, number) => Id::Process(number),
+    })
+}
+
+/// Whether an id only known when it runs is always a process: `$!` (the
+/// last background job), `$$` and `$PPID`, quoted or not.
+fn is_positive_expansion(text: &str) -> bool {
+    let text = text.trim_matches(['"', '\'']);
+    matches!(text, "$!" | "$$" | "$PPID" | "${!}" | "${$}" | "${PPID}")
+}
 
 /// `chmod`/`chown` operands: the mode or owner first, the files after.
 /// Their options are a few letters (`-R`, `-f`, `-v`); a mode like `-x`

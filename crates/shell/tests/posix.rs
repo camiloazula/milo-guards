@@ -475,7 +475,6 @@ fn a_trap_action_is_a_script_that_runs_later() {
             "trap \"rm -rf build\" EXIT",
             "trap -- 'rm -f target/tmp.lock' INT TERM",
             "trap 'echo cleaning up' EXIT",
-            "trap 'kill 0' INT",
             "trap '' INT",
             "trap \"\" INT TERM",
             "trap - EXIT",
@@ -496,6 +495,8 @@ fn a_trap_action_is_a_script_that_runs_later() {
             "cd src && trap 'rm -rf ../build' EXIT",
         ],
         &[
+            // `kill 0` signals the caller's own process group (issue 135).
+            ("trap 'kill 0' INT", Rule::StopSystem),
             ("trap 'rm -rf ~' EXIT", Rule::Delete),
             ("trap 'rm -rf /' EXIT", Rule::Delete),
             ("trap \"rm -rf ~\" EXIT", Rule::Delete),
