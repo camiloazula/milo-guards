@@ -3256,14 +3256,16 @@ through the front door, which has no logic and no example of its own.
 
 ## Tests
 
-The tests are tables, one file for each thing they check, named by it (the
-rule is in [Guidelines](../../GUIDELINES.md#tests)): `tests/posix.rs` for POSIX
-lines, `tests/windows.rs` for PowerShell and cmd, built on core's test kit, and
-beside them a file for each part of the guard (`cd.rs`, `posix_wildcards.rs`,
-`stop_processes.rs`, `drop_data.rs`, `here_documents.rs` and the rest). Each
-table has a list of safe lines and a list of risky lines with the rule each
-must break. A new rule comes with rows of both kinds, and a fix adds rows to
-the file of what it checks. The everyday lines that must stay safe go through
+The tests are cases, one file for each thing they check, named by it (the
+rule is in [Guidelines](../../GUIDELINES.md#tests)): `tests/cases/posix.cases`
+for POSIX lines and `tests/cases/windows.cases` for PowerShell and cmd, checked
+by `tests/posix.rs` and `tests/windows.rs`, and beside them a file for each
+part of the guard (`cd`, `posix_wildcards`, `stop_processes`, `drop_data`,
+`here_documents` and the rest), its plain cases in a case file of its name
+(the format is in [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)) or, until
+they move there, in tables built on core's test kit. Each case is a line and
+the answer it must get: safe, or the rules it must find. A new rule comes with
+cases of both kinds, and a fix adds cases to the file of what it checks. The everyday lines that must stay safe go through
 the front door, in `crates/guards/tests/everyday.rs`, which holds each of them
 to the same agreement checks.
 
@@ -3278,10 +3280,10 @@ what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
 and is only compiled there (`just no-inline`).
 
 `tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
-line of `posix.rs` and `windows.rs` also goes through `effect`: the shared
-`check` does it for each row of a table, and the tests that name a finding's
-reason judge their lines with the shared `classify` of `tests/common`, which
-does it too. A line `classify` finds risky for anything but an elevation or a
+case also goes through `effect`: the runner of the case files does it for
+each case, the shared `check` for each row of a table, and the tests that
+name a finding's target judge their lines with the shared `classify` of
+`tests/common`, which does it too. A line `classify` finds risky for anything but an elevation or a
 read of a key must not be `ReadsOnly`. The same check runs `explain` over each
 row: its findings and assessment must be `classify`'s, and its tree must show
 every finding. `tests/explain.rs` holds what `explain` shows.

@@ -1,0 +1,663 @@
+# Which names a POSIX wildcard matches. A wildcard skips a dot name unless the
+# pattern starts with a dot, so `*git` is not `.git`; a line can turn hidden
+# names on (`dotglob`, `globdots`, a non-empty `GLOBIGNORE`, set by an
+# assignment, an expansion such as `${GLOBIGNORE:=x}` or arithmetic), and
+# zsh's `(D)` glob qualifier does it for one pattern. A qualifier or an
+# extended glob the guard does not read stays unreadable; POSIX classes and
+# collating elements in a bracket are read as each shell reads them. A listing
+# piped into a delete is judged as the delete of its pattern, and a pattern in
+# a temporary folder picks temporary files. The format is in CONTRIBUTING.md.
+
+# A POSIX wildcard skips dot names unless it starts with a dot.
+posix safe | rm -rf *git
+posix safe | rm -rf ?git
+posix safe | rm -rf [!x]git
+posix safe | rm -rf *.tmp
+posix safe | rm -rf ????
+posix finds=delete | rm -rf .git*
+posix finds=delete | rm -rf .?it
+posix finds=delete | rm -rf .[g]it
+
+# A line that turns on globbing of hidden names (`dotglob`, `globdots`, a
+# non-empty `GLOBIGNORE`) makes the wildcards after it able to match `.git`.
+posix safe | shopt -s dotglob; rm -rf build/*
+posix safe | shopt -s dotglob; rm -f *.o
+posix safe | shopt -s dotglob; rm -rf src/*git
+posix safe | shopt -s dotglob; cd src; rm -rf *git
+posix safe | shopt -s dotglob; rm -rf src/*/../*git
+posix safe | shopt -s dotglob; shopt -u dotglob && rm -rf *git
+posix safe | shopt -s nullglob; rm -rf *git
+posix safe | shopt -q dotglob; rm -rf *git
+posix safe | setopt extendedglob; rm -rf *git
+posix safe | setopt globdots; rm -f *.o
+# Turned off again, or never on for what follows.
+posix safe | shopt -s dotglob; shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob nullglob; shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob; { shopt -u dotglob; }; rm -rf *git
+posix safe | setopt globdots; unsetopt globdots; rm -rf *git
+posix safe | setopt GLOB_DOTS; setopt noglobdots; rm -rf *git
+posix safe | setopt globdots; unsetopt GLOB_DOTS; rm -rf *git
+posix safe | unsetopt noglobdots; unsetopt globdots; rm -rf *git
+posix safe | set -o globdots; set +o globdots; rm -rf *git
+posix safe | rm -rf *git; shopt -s dotglob
+posix safe | GLOBIGNORE=; rm -rf *git
+posix safe | GLOBIGNORE=''; rm -rf *git
+# A change in a subshell or a script of its own stays there.
+posix safe | bash -c 'shopt -s dotglob'; rm -rf *git
+posix safe | sh -c 'shopt -s dotglob; true'; rm -rf *git
+posix safe | (shopt -s dotglob); rm -rf *git
+posix safe | echo $(shopt -s dotglob); rm -rf *git
+posix safe | bash -c 'rm -rf *git'
+posix safe | bash -c 'shopt -s dotglob; shopt -u dotglob; rm -rf *git'
+# Each shell's flag turned off by its own switch.
+posix safe | shopt -s dotglob; setopt globdots; shopt -u dotglob; unsetopt globdots; rm -rf *git
+posix safe | GLOBIGNORE=x; set -o globdots; unset GLOBIGNORE; set +o globdots; rm -rf *git
+# A `GLOBIGNORE` that is empty, or only in front of a command that is not a
+# call to a function the line defines.
+posix safe | f() { rm -rf *git; }; GLOBIGNORE= f
+posix safe | f() { rm -rf *git; }; GLOBIGNORE=x ls; f
+# Everyday commands with the option on.
+posix safe | shopt -s dotglob; cp -r src/* dist/
+posix safe | shopt -s dotglob; mv build/* out/
+posix safe | shopt -s dotglob; rm -f *.log
+posix safe | setopt dotglob; rm -f *.log
+# The other names, turned off again.
+posix safe | setopt globdots; setopt nodotglob; rm -rf *git
+posix safe | setopt dotglob; unsetopt dotglob; rm -rf *git
+posix safe | setopt DOT_GLOB; unsetopt DOT_GLOB; rm -rf *git
+posix safe | set -4; set +4; rm -rf *git
+posix safe | set -o dotglob; set +o dotglob; rm -rf *git
+# A shell started without the option, or only reading a script.
+posix safe | bash -O extglob -c 'rm -rf *git'
+posix safe | bash +O dotglob -c 'rm -rf *git'
+posix safe | bash -O dotglob -c 'true'; rm -rf *git
+posix safe | zsh -o noglobdots -c 'rm -rf *git'
+posix safe | zsh -o pipefail -c 'rm -rf *git'
+posix safe | BASHOPTS=extglob bash -c 'rm -rf *git'
+# Off through the builtins that run in this shell.
+posix safe | shopt -s dotglob; command shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob; builtin shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob; time shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob; ! shopt -u dotglob; rm -rf *git
+posix safe | shopt -s dotglob; eval 'shopt -u dotglob'; rm -rf *git
+posix safe | GLOBIGNORE=x; unset GLOBIGNORE; rm -rf *git
+posix safe | GLOBIGNORE=x; unset -v GLOBIGNORE; rm -rf *git
+# A body that never runs with the option on.
+posix safe | echo dotglob; f() { :; }; rm -f *.*
+posix safe | echo GLOBIGNORE; f() { :; }; rm -f *.*
+posix safe | f() { rm -rf *git; }; echo dotglob; f
+posix safe | f() { rm -rf *git; }; f
+posix safe | while true; do rm -rf *git; done
+posix safe | for i in 1; do echo dotglob; rm -rf *git; done
+posix safe | for i in 1; do rm -rf *git; done; shopt -s nullglob
+# Not an assignment of `GLOBIGNORE`, or an empty one.
+posix safe | export "GLOBIGNORE="; rm -rf *git
+posix safe | (( x = 1 )); rm -rf *git
+posix safe | (( GLOBIGNORE == 1 )); rm -rf *git
+posix safe | let x=1; rm -rf *git
+posix safe | echo GLOBIGNORE=x; rm -rf *git
+# A file sourced for its other effects.
+posix safe | source .venv/bin/activate && rm -rf *.egg-info
+posix safe | . ./env.sh; rm -f *.o
+# `GLOBIGNORE` in front of a command is read after the shell has expanded that
+# command's own wildcards.
+posix safe | GLOBIGNORE=x rm -rf *git
+posix safe | env GLOBIGNORE=x rm -rf *git
+# An expansion that assigns `GLOBIGNORE` (`${GLOBIGNORE:=x}`): empty, or not
+# an assignment, or not `GLOBIGNORE`.
+posix safe | : ${GLOBIGNORE:=}; rm -rf *git
+posix safe | : ${GLOBIGNORE=}; rm -rf *git
+posix safe | : ${GLOBIGNORE:=''}; rm -rf *git
+posix safe | : ${GLOBIGNORE:-x}; rm -rf *git
+posix safe | : ${GLOBIGNORE:+x}; rm -rf *git
+posix safe | : ${GLOBIGNORE-x}; rm -rf *git
+posix safe | : ${GLOBIGNORE:?x}; rm -rf *git
+posix safe | : ${GLOBIGNORE}; rm -rf *git
+posix safe | : ${GLOBIGNORE:0:1}; rm -rf *git
+posix safe | : ${GLOBIGNOREX:=x}; rm -rf *git
+posix safe | : ${XGLOBIGNORE:=x}; rm -rf *git
+posix safe | : ${OTHER:=x}; rm -rf *git
+posix safe | echo ${GLOBIGNORE}; rm -rf *git
+# The assignment comes after the wildcard is read.
+posix safe | rm -rf *git; : ${GLOBIGNORE:=x}
+posix safe | rm -rf *git && : ${GLOBIGNORE:=x}
+# Turned off again, where the line is sure to run it.
+posix safe | : ${GLOBIGNORE:=x}; unset GLOBIGNORE; rm -rf *git
+# Not the variable.
+posix safe | (( x++ )); rm -rf *git
+posix safe | (( -GLOBIGNORE )); rm -rf *git
+# `let` reads each word as arithmetic: naming the variable, a comparison, or
+# another variable does not set it.
+posix safe | let GLOBIGNORE; rm -rf *git
+posix safe | let GLOBIGNORE<=1; rm -rf *git
+posix safe | let x++; rm -rf *git
+posix safe | let XGLOBIGNORE++; rm -rf *git
+posix safe | let GLOBIGNORE=; rm -rf *git
+posix safe | let x=GLOBIGNORE+1; rm -rf *git
+posix safe | echo '${GLOBIGNORE:=x}'; rm -rf *git
+# With the option on, a pattern that cannot match a hidden name is as safe as
+# it was.
+posix safe | : ${GLOBIGNORE:=x}; rm -f *.o
+posix safe | : ${GLOBIGNORE:=x}; rm -f build/*.o
+posix safe | (( GLOBIGNORE++ )); rm -f *.o
+# In an arithmetic chain the variable is read, or compared, and not assigned
+# to.
+posix safe | (( x = GLOBIGNORE )); rm -rf *git
+posix safe | (( x = y = GLOBIGNORE )); rm -rf *git
+posix safe | (( x = GLOBIGNORE == 1 )); rm -rf *git
+posix safe | (( x = XGLOBIGNORE = 1 )); rm -rf *git
+posix safe | x=$(( x = GLOBIGNORE )); rm -rf *git
+posix safe | (( x = GLOBIGNORE = 1 )); rm -f *.o
+posix finds=delete | shopt -s dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; rm -rf ./*git
+posix finds=delete | shopt -s dotglob; rm -rf ?git
+posix finds=delete | shopt -s dotglob; rm -rf *.*
+posix finds=delete | shopt -s dotglob; rm -rf */objects
+posix finds=delete | shopt -s dotglob nullglob; rm -rf *git
+posix finds=delete | shopt -s nullglob dotglob; rm -rf *git
+posix finds=delete | shopt -sq dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob && rm -rf *git
+posix finds=delete | shopt -s dotglob\nrm -rf *git
+posix finds=delete | shopt -s dotglob; sudo rm -rf *git
+posix finds=delete | shopt -s dotglob; mv *git /tmp/old
+posix finds=delete | builtin shopt -s dotglob; rm -rf *git
+posix finds=delete | command shopt -s dotglob; rm -rf *git
+posix finds=delete | shopt -s $option; rm -rf *git
+posix finds=delete | shopt -s dotglob; ls -d *git | xargs rm -rf
+posix finds=delete | shopt -s dotglob; ls -d * | xargs rm -rf
+posix finds=delete | shopt -s dotglob; ls -d *git | xargs -n1 rm -rf
+posix finds=delete | shopt -s dotglob; rm -rf src/*/../../*git
+posix finds=delete | setopt globdots; rm -rf *git
+posix finds=delete | setopt GLOB_DOTS; rm -rf *git
+posix finds=delete | setopt glob_dots; rm -rf *git
+posix finds=delete | setopt GlobDots; rm -rf *git
+posix finds=delete | setopt extendedglob globdots; rm -rf *git
+posix finds=delete | setopt $option; rm -rf *git
+posix finds=delete | unsetopt noglobdots; rm -rf *git
+posix finds=delete | unsetopt NO_GLOB_DOTS; rm -rf *git
+posix finds=delete | setopt globdots; ls -d *git | xargs rm -rf
+posix finds=delete | set -o globdots; rm -rf *git
+posix finds=delete | set -eo globdots; rm -rf *git
+posix finds=delete | set +o noglobdots; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; rm -rf *git
+posix finds=delete | GLOBIGNORE=x\nrm -rf *git
+posix finds=delete | GLOBIGNORE+=x; rm -rf *git
+posix finds=delete | GLOBIGNORE=$IGNORE; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; ls -d *git | xargs rm -rf
+posix finds=delete | export GLOBIGNORE=x; rm -rf *git
+posix finds=delete | declare -x GLOBIGNORE=x; rm -rf *git
+posix finds=delete | read GLOBIGNORE; rm -rf *git
+posix finds=delete | printf -v GLOBIGNORE x; rm -rf *git
+# A script that runs in this shell, or inherits the option.
+posix finds=delete | eval 'shopt -s dotglob'; rm -rf *git
+posix finds=delete | eval shopt -s dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; bash -c 'rm -rf *git'
+posix finds=delete | bash -c 'shopt -s dotglob; rm -rf *git'
+posix finds=delete | sh -c 'GLOBIGNORE=x; rm -rf *git'
+posix finds=delete | GLOBIGNORE=x bash -c 'rm -rf *git'
+posix finds=delete | env GLOBIGNORE=x bash -c 'rm -rf *git'
+posix finds=delete | export GLOBIGNORE=x; bash -c 'rm -rf *git'
+posix finds=delete | (shopt -s dotglob; rm -rf *git)
+posix finds=delete | { shopt -s dotglob; rm -rf *git; }
+# zsh's other names for it, and its flag.
+posix finds=delete | setopt dotglob; rm -rf *git
+posix finds=delete | setopt DOT_GLOB; rm -rf *git
+posix finds=delete | setopt NoDotGlob; setopt dotglob; rm -rf *git
+posix finds=delete | unsetopt nodotglob; rm -rf *git
+posix finds=delete | set -o dotglob; rm -rf *git
+posix finds=delete | set -4; rm -rf *git
+posix finds=delete | set -e4; rm -rf *git
+posix finds=delete | setopt -4; rm -rf *git
+posix finds=delete | unsetopt +4; rm -rf *git
+posix finds=delete | setopt -m '*dots'; rm -rf *git
+posix finds=delete | unsetopt -m '*dots'; rm -rf *git
+# A shell started with the option on.
+posix finds=delete | bash -O dotglob -c 'rm -rf *git'
+posix finds=delete | bash -O nullglob -O dotglob -c 'rm -rf *git'
+posix finds=delete | bash -O $option -c 'rm -rf *git'
+posix finds=delete | zsh -o globdots -c 'rm -rf *git'
+posix finds=delete | zsh -o dotglob -c 'rm -rf *git'
+posix finds=delete | zsh -o GLOB_DOTS -c 'rm -rf *git'
+posix finds=delete | zsh -o $option -c 'rm -rf *git'
+posix finds=delete | zsh -4 -c 'rm -rf *git'
+posix finds=delete | zsh --globdots -c 'rm -rf *git'
+posix finds=delete | sudo bash -O dotglob -c 'rm -rf *git'
+posix finds=delete | BASHOPTS=dotglob bash -c 'rm -rf *git'
+posix finds=delete | BASHOPTS=extglob:dotglob bash -c 'rm -rf *git'
+posix finds=delete | env BASHOPTS=dotglob bash -c 'rm -rf *git'
+posix finds=delete | export BASHOPTS=dotglob; bash -c 'rm -rf *git'
+posix finds=delete | export "BASHOPTS=dotglob"; bash -c 'rm -rf *git'
+# An off switch behind a wrapper that starts a process of its own.
+posix finds=delete | shopt -s dotglob; env shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; nohup shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; timeout 5 shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; nice shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; stdbuf -o0 shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; find . -exec shopt -u dotglob \\;; rm -rf *git
+posix finds=delete | shopt -s dotglob; sudo shopt -u dotglob; rm -rf *git
+# `eval` as a stage of a pipeline runs in a subshell.
+posix finds=delete | shopt -s dotglob; eval 'shopt -u dotglob' | cat; rm -rf *git
+# An off switch of the other shell is an error there, so it clears nothing:
+# each shell's option has its own.
+posix finds=delete | setopt globdots; shopt -u dotglob; rm -rf *git
+posix finds=delete | setopt globdots; unset GLOBIGNORE; rm -rf *git
+posix finds=delete | shopt -s dotglob; unsetopt globdots; rm -rf *git
+posix finds=delete | shopt -s dotglob; set +o globdots; rm -rf *git
+posix finds=delete | shopt -s dotglob; set +4; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; unsetopt globdots; rm -rf *git
+posix finds=delete | shopt -s dotglob; unsetopt dotglob; rm -rf *git
+posix finds=delete | setopt globdots; unsetopt noglobdots; shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; setopt $option; shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; . ./env.sh; shopt -u dotglob; rm -rf *git
+# `unset -f` removes a function, not the variable.
+posix finds=delete | shopt -s dotglob; unset -f GLOBIGNORE; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; unset -f GLOBIGNORE; rm -rf *git
+# A function exported to a shell started with the option on, or called with
+# `GLOBIGNORE` in front of it.
+posix finds=delete | f() { rm -rf *git; }; export -f f; bash -O dotglob -c f
+posix finds=delete | f() { rm -rf *git; }; export -f f; GLOBIGNORE=x bash -c f
+posix finds=delete | f() { rm -rf *git; }; GLOBIGNORE=x f
+posix finds=delete | f() { rm -rf *git; }; BASHOPTS=dotglob f
+# A zsh pipeline's last stage runs in this shell, so an on switch in any stage
+# reaches the units after it.
+posix finds=delete | setopt globdots | cat; rm -rf *git
+posix finds=delete | cat | setopt globdots; rm -rf *git
+posix finds=delete | eval 'shopt -s dotglob' | cat; rm -rf *git
+# More ways to set `GLOBIGNORE`.
+posix finds=delete | export "GLOBIGNORE=x"; rm -rf *git
+posix finds=delete | declare "GLOBIGNORE=x"; rm -rf *git
+posix finds=delete | typeset 'GLOBIGNORE=x'; rm -rf *git
+posix finds=delete | local "GLOBIGNORE=x"; rm -rf *git
+posix finds=delete | readonly "GLOBIGNORE=x"; rm -rf *git
+posix finds=delete | printf -vGLOBIGNORE x; rm -rf *git
+posix finds=delete | let GLOBIGNORE=1; rm -rf *git
+posix finds=delete | (( GLOBIGNORE=1 )); rm -rf *git
+posix finds=delete | x=$(( GLOBIGNORE=1 )); rm -rf *git
+# `unset` is an off switch like `shopt -u`.
+posix finds=delete | GLOBIGNORE=x; true || unset GLOBIGNORE; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; unset GLOBIGNORE | cat; rm -rf *git
+posix finds=delete | GLOBIGNORE=x; (unset GLOBIGNORE); rm -rf *git
+# A file sourced may turn it on.
+posix finds=delete | . ./env.sh; rm -rf *git
+posix finds=delete | source ./env.sh && rm -rf *git
+posix finds=delete | source .venv/bin/activate && rm -rf *git
+# A body that runs after the option is on, however it was set.
+posix finds=delete | f() { rm -rf *git; }; eval 'shopt -s dotglob'; f
+posix finds=delete | f() { rm -rf *git; }; shopt -s $o; f
+posix finds=delete | f() { rm -rf *git; }; shopt -s dot"glob"; f
+posix finds=delete | f() { rm -rf *git; }; setopt -4; f
+posix finds=delete | f() { rm -rf *git; }; . ./env.sh; f
+posix finds=delete | f() { rm -rf *git; }; bash -c 'shopt -s dotglob'; f
+posix finds=delete | bash -c 'f() { rm -rf *git; }; shopt -s dotglob; f'
+posix finds=delete | for i in 1 2; do rm -rf *git; shopt -s $opt; done
+posix finds=delete | while x; do rm -rf *git; eval 'shopt -s dotglob'; done
+posix finds=overwrite | f() { echo x > *git; }; shopt -s dotglob; f
+# An off switch that may not run, or runs in a process of its own.
+posix finds=delete | shopt -s dotglob; true || shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; false && shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob && shopt -u dotglob && rm -rf *git
+posix finds=delete | shopt -s dotglob; if x; then shopt -u dotglob; fi; rm -rf *git
+posix finds=delete | shopt -s dotglob; case x in x) shopt -u dotglob;; esac; rm -rf *git
+posix finds=delete | shopt -s dotglob; for x in a; do shopt -u dotglob; done; rm -rf *git
+posix finds=delete | shopt -s dotglob; shopt -u dotglob & rm -rf *git
+posix finds=delete | shopt -s dotglob; shopt -u dotglob | cat; rm -rf *git
+posix finds=delete | shopt -s dotglob; bash -c 'shopt -u dotglob'; rm -rf *git
+posix finds=delete | shopt -s dotglob; (shopt -u dotglob); rm -rf *git
+posix finds=delete | shopt -s dotglob; f() { shopt -u dotglob; }; rm -rf *git
+# A body that runs after the option is on.
+posix finds=delete | f() { rm -rf *git; }; shopt -s dotglob; f
+posix finds=delete | for x in 1 2; do rm -rf *git; shopt -s dotglob; done
+posix finds=delete | while true; do rm -rf *git; GLOBIGNORE=x; done
+posix finds=delete | for GLOBIGNORE in x; do rm -rf *git; done
+# An expansion that assigns `GLOBIGNORE`.
+posix finds=delete | : ${GLOBIGNORE:=x}; rm -rf *git
+posix finds=delete | : ${GLOBIGNORE=x}; rm -rf *git
+posix finds=delete | : ${GLOBIGNORE:=x} && rm -rf *git
+posix finds=delete | : ${GLOBIGNORE:=x}\nrm -rf *git
+posix finds=delete | : ${GLOBIGNORE:=$x}; rm -rf *git
+posix finds=delete | : ${GLOBIGNORE:=x*}; rm -rf *git
+posix finds=delete | : ${GLOBIGNORE[0]:=x}; rm -rf *git
+posix finds=delete | echo ${GLOBIGNORE:=x}; rm -rf *git
+posix finds=delete | echo "${GLOBIGNORE:=x}"; rm -rf *git
+posix finds=delete | x=${GLOBIGNORE:=y}; rm -rf *git
+posix finds=delete | x="${GLOBIGNORE:=y}"; rm -rf *git
+posix finds=delete | export x=${GLOBIGNORE:=y}; rm -rf *git
+posix finds=delete | true ${GLOBIGNORE:=x} && rm -rf *git
+posix finds=delete | [[ -n ${GLOBIGNORE:=x} ]]; rm -rf *git
+posix finds=delete | for v in ${GLOBIGNORE:=x}; do :; done; rm -rf *git
+# Expanded before the command's own wildcards are.
+posix finds=delete | rm -rf ${GLOBIGNORE:=x}*git
+posix finds=delete | rm ${GLOBIGNORE:=x} -rf *git
+# Where it reaches: a script that inherits it, a listing, a function body.
+posix finds=delete | : ${GLOBIGNORE:=x}; bash -c 'rm -rf *git'
+posix finds=delete | bash -c ': ${GLOBIGNORE:=x}; rm -rf *git'
+posix finds=delete | sh -c ': ${GLOBIGNORE:=x}; rm -rf *git'
+posix finds=delete | : ${GLOBIGNORE:=x}; ls -d *git | xargs rm -rf
+posix finds=delete | f() { rm -rf *git; }; : ${GLOBIGNORE:=x}; f
+posix finds=delete | f() { : ${GLOBIGNORE:=x}; }; f; rm -rf *git
+posix finds=delete | eval ': ${GLOBIGNORE:=x}'; rm -rf *git
+# Not sure to run, which does not matter for an assignment.
+posix finds=delete | true || : ${GLOBIGNORE:=x}; rm -rf *git
+posix finds=delete | if true; then : ${GLOBIGNORE:=x}; fi; rm -rf *git
+# Not certain to be unset again.
+posix finds=delete | : ${GLOBIGNORE:=x}; true || unset GLOBIGNORE; rm -rf *git
+# The arithmetic forms, which turn an empty variable into 1 or -1.
+posix finds=delete | (( GLOBIGNORE++ )); rm -rf *git
+posix finds=delete | (( GLOBIGNORE-- )); rm -rf *git
+posix finds=delete | (( ++GLOBIGNORE )); rm -rf *git
+posix finds=delete | (( --GLOBIGNORE )); rm -rf *git
+posix finds=delete | x=$(( GLOBIGNORE++ )); rm -rf *git
+posix finds=delete | echo $(( GLOBIGNORE+=2 )); rm -rf *git
+posix finds=delete | (( GLOBIGNORE += 1 )); rm -rf *git
+# `let` does the same with each of its words, `++` and `+=` included, quoted
+# or not, and in any part of a word.
+posix finds=delete | let GLOBIGNORE++; rm -rf *git
+posix finds=delete | let GLOBIGNORE--; rm -rf *git
+posix finds=delete | let ++GLOBIGNORE; rm -rf *git
+posix finds=delete | let --GLOBIGNORE; rm -rf *git
+posix finds=delete | let GLOBIGNORE+=1; rm -rf *git
+posix finds=delete | let GLOBIGNORE-=1; rm -rf *git
+posix finds=delete | let GLOBIGNORE*=2; rm -rf *git
+posix finds=delete | let "GLOBIGNORE+=1"; rm -rf *git
+posix finds=delete | let 'GLOBIGNORE += 1'; rm -rf *git
+posix finds=delete | let "GLOBIGNORE++"; rm -rf *git
+posix finds=delete | let '++ GLOBIGNORE'; rm -rf *git
+posix finds=delete | let "GLOBIGNORE[0]+=1"; rm -rf *git
+posix finds=delete | let x=1,GLOBIGNORE-=1; rm -rf *git
+posix finds=delete | let x=GLOBIGNORE++; rm -rf *git
+posix finds=delete | let x=GLOBIGNORE=1; rm -rf *git
+posix finds=delete | let a=1 GLOBIGNORE+=1; rm -rf *git
+posix finds=delete | let GLOBIGNORE+=$x; rm -rf *git
+posix finds=delete | let GLOBIGNORE++ && rm -rf *git
+# An arithmetic chain that assigns it on the way.
+posix finds=delete | (( x = GLOBIGNORE = 1 )); rm -rf *git
+posix finds=delete | $(( x = GLOBIGNORE = 1 )); rm -rf *git
+posix finds=delete | echo $(( x = GLOBIGNORE = 1 )); rm -rf *git
+posix finds=delete | (( x = y = GLOBIGNORE = 1 )); rm -rf *git
+posix finds=delete | (( GLOBIGNORE = x = 1 )); rm -rf *git
+posix finds=delete | (( x += GLOBIGNORE += 1 )); rm -rf *git
+posix finds=delete | (( x = (GLOBIGNORE = 1) )); rm -rf *git
+
+# A `(D)` glob qualifier lets that command's wildcards match hidden names.
+# A pattern that cannot match a hidden name stays as safe as it was.
+posix safe | rm -rf *.o(D)
+posix safe | rm -f *.o(D) *.a(D)
+posix safe | rm -f src/*.o(D)
+posix safe | rm -rf *.o(.D)
+posix safe | rm -rf *.o(D.)
+posix safe | rm -rf *.o(D/)
+posix safe | rm -rf *.o(oD)
+posix safe | rm -rf build/*(D)
+posix safe | rm -rf target*(D)
+posix safe | rm -rf *.o(^D)
+posix safe | rm -rf **/*.o(D)
+posix safe | rm -rf ***/*.o(D)
+# `**/` takes in the folder itself, and a name without a dot that way is still
+# no hidden name.
+posix safe | rm -rf **/*git
+posix safe | rm -rf **/*.o
+# The history of a folder below the workspace is not the workspace's, with
+# `dotglob` as with the qualifier.
+posix safe | cd sub; rm -rf *git(D)
+posix safe | rm -rf */*git(D)
+posix safe | ls *git(D)
+posix safe | cat *.md(D)
+posix safe | echo *git(D)
+# The qualifier is for its own command.
+posix safe | rm -rf *.o(D); rm -rf *git
+posix safe | rm -rf *.o(D) && rm -rf *git
+posix safe | rm -rf *.o(D)\nrm -rf *git
+posix safe | ls *.o(D); rm -rf *git
+posix safe | echo *.o(D) | rm -rf *git
+posix safe | ( rm -rf *.o(D) ); rm -rf *git
+# Not a qualifier: quoted, escaped, or another construct.
+posix safe | echo '*git(D)'
+posix safe | echo "*git(D)"
+posix safe | echo '*git(D)'; rm -rf *git
+posix safe | echo "x(D)"; rm -rf *git
+posix safe | echo x\\(D\\); rm -rf *git
+posix safe | echo $(echo D); rm -rf *git
+posix safe | echo <(echo D); rm -rf *git
+posix safe | echo $((1 + 2)); rm -rf *git
+posix safe | (echo D); rm -rf *git
+posix safe | ( rm -rf *.o )
+posix safe | x=(D); rm -rf *git
+posix safe | x=(a D); rm -rf *git
+posix safe | f() { rm -rf *.o; }; f
+posix safe | f(){ rm -rf *.o; }; f
+posix safe | if (( 1 )); then rm -rf *.o; fi
+posix safe | case x in (D) rm -rf *.o;; esac
+posix safe | case x in D) rm -rf *.o;; esac
+posix safe | rm -rf *.o # *git(D)
+posix safe | rm -rf *.o #(D)
+# A heredoc body is text.
+posix safe | cat <<EOF\n*git(D)\nEOF\nrm -rf *.o
+# A qualifier on a word that is only a name.
+posix safe | ls .git(D)
+posix safe | ls README.md(D)
+posix finds=delete | rm -rf *git(D)
+posix finds=delete | rm -rf -- *git(D)
+posix finds=delete | rm -r *git(D)
+posix finds=delete | rm -rf *git(D) x
+posix finds=delete | rm -rf x *git(D)
+posix finds=delete | rm -rf *git(D);
+posix finds=delete | rm -rf *git(D);rm -rf x
+posix finds=delete | rm -rf *git(D)&
+posix finds=delete | rm -rf *git(D)|cat
+posix finds=delete | rm -rf *git(D) > out
+posix finds=delete | rm -rf *git(D)>out
+posix finds=delete | rm -rf *git(D) 2>&1
+posix finds=delete | echo hi; rm -rf *git(D)
+posix finds=delete | echo hi && rm -rf *git(D)
+posix finds=delete | rm -rf *git(D)\necho hi
+posix finds=delete | ( rm -rf *git(D) )
+posix finds=delete | { rm -rf *git(D); }
+posix finds=delete | if true; then rm -rf *git(D); fi
+posix finds=delete | f() { rm -rf *git(D); }; f
+posix finds=delete | sudo rm -rf *git(D)
+posix finds=delete | env rm -rf *git(D)
+posix finds=delete | noglob rm -rf *git(D)
+posix finds=delete | command rm -rf *git(D)
+posix finds=delete | time rm -rf *git(D)
+# Other spellings of the pattern and the qualifier.
+posix finds=delete | rm -rf ?git(D)
+posix finds=delete | rm -rf *git*(D)
+posix finds=delete | rm -rf *.*(D)
+posix finds=delete | rm -rf *(D)
+posix finds=delete | rm -rf ./*git(D)
+posix finds=delete | rm -rf [.]git(D)
+posix finds=delete | rm -rf *git(.D)
+posix finds=delete | rm -rf *git(D.)
+posix finds=delete | rm -rf *git(D/)
+posix finds=delete | rm -rf *git(Dn)
+posix finds=delete | rm -rf *git(^D)
+posix finds=delete | rm -rf *git(D,.)
+posix finds=delete | rm -rf *git(mh-1D)
+posix finds=delete | rm -rf *git(-D)
+# `**/` and `***/` match no folder too, so `*git` is read in the workspace
+# folder itself, where `.git` is.
+posix finds=delete | rm -rf **/*git(D)
+posix finds=delete | rm -rf **/*git(D/)
+posix finds=delete | rm -rf ./**/*git(D)
+posix finds=delete | rm -rf ***/*git(D)
+posix finds=delete | rm -rf **/**/*git(D)
+posix finds=delete | ls -d **/*git(D) | xargs rm -rf
+posix finds=delete | shopt -s dotglob globstar; rm -rf **/*git
+# The names a listing or a loop hands on.
+posix finds=delete | ls -d *git(D) | xargs rm -rf
+posix finds=delete | for f in *git(D); do rm -rf "$f"; done
+posix finds=delete | for f in *git(D); do rm -rf $f; done
+# A script it starts reads the qualifier itself.
+posix finds=delete | bash -c 'rm -rf *git(D)'
+posix finds=delete | zsh -c 'rm -rf *git(D)'
+posix finds=delete | sh -c "rm -rf *git(D)"
+posix finds=delete | zsh -c 'echo hi; rm -rf *git(D)'
+posix finds=delete | eval 'rm -rf *git(D)'
+posix finds=delete | echo $(rm -rf *git(D))
+# A redirect target.
+posix finds=overwrite | cat x > *git(D)
+# Reading a key, and the qualifier lets `*` match `.ssh`.
+posix finds=read_secret | cat ~/.ssh/*(D)
+
+# A qualifier or an extended glob the guard does not read stays unreadable.
+# With `extendedglob` (on in an rc file, or by `setopt`), `^x` is every name
+# but `x`, `a~b` is `a` but not `b`, and `#` repeats. The `^` in the qualifier
+# is the qualifier's, and `~` first is the home folder, which the qualifier is
+# still read after.
+posix safe | ls ~/*.o(D)
+# Only the word in front of the qualifier is looked at.
+posix safe | echo ^x; rm -rf *.o(D)
+posix safe | echo a~b; rm -rf *.o(D)
+# `e` runs a string and `+` a function: not read, and so risky as they were
+# before.
+posix finds=unreadable | rm -rf *(e:'rm -rf ~':)
+posix finds=unreadable | rm -rf *git(De:'x':)
+posix finds=unreadable | rm -rf *git(D+f)
+posix finds=unreadable | rm -rf *git(+f)
+posix finds=unreadable | rm -rf *git(D:t)
+posix finds=unreadable | rm -rf *git(D[1])
+posix finds=unreadable | rm -rf *git(D$x)
+posix finds=unreadable | rm -rf *git(D)x
+# No `D`.
+posix finds=unreadable | rm -rf *.o(N)
+posix finds=unreadable | rm -rf *.o(.)
+posix finds=unreadable | rm -rf *.o()
+# `P` adds the string it holds as a word before each match, so
+# `mv *(DP./usr.)` is `mv /usr` and every name: not a pattern of names.
+posix finds=unreadable | mv *(DP./usr.)
+posix finds=unreadable | mv *(DP./root.)
+posix finds=unreadable | mv *(DP./usr/local/bin.)
+posix finds=unreadable | mv *(DP./opt.)
+posix finds=unreadable | chmod *(DP.777.)
+posix finds=unreadable | chmod *(DP.-R.P.777.)
+posix finds=unreadable | chown *(DP.-R.P.root.)
+posix finds=unreadable | ln *(DP.-sf.P./usr/bin/x.)
+posix finds=unreadable | cp *(DP.-t.) /tmp/x
+posix finds=unreadable | rm -rf *.o(PD)
+# An extended glob operator: `.git` is among the names it matches, so a word
+# with one is not read as a plain pattern.
+posix finds=unreadable | zsh -o extendedglob -c 'rm -rf ^x(D)'
+posix finds=unreadable | zsh -o extendedglob -c 'rm -rf *git~x(D)'
+posix finds=unreadable | zsh -c 'setopt extendedglob; rm -rf ^x(D)'
+posix finds=unreadable | setopt extendedglob; rm -rf ^x(D)
+posix finds=unreadable | setopt extended_glob; rm -rf ^x(D)
+posix finds=unreadable | setopt extendedglob; rm -rf *git~x(D)
+posix finds=unreadable | setopt extendedglob; rm -rf .#git(D)
+# Without the option on in the line, an rc file may have it.
+posix finds=unreadable | rm -rf ^x(D)
+posix finds=unreadable | rm -rf *git~x(D)
+posix finds=unreadable | rm -rf ^*.o(D)
+posix finds=unreadable | rm -rf .#git(D)
+posix finds=unreadable | rm -rf (.|)git(D)
+
+# A qualifier stays on a command that turns its words into a script: `eval`,
+# `watch` and `trap` run the words after zsh has expanded the pattern with its
+# qualifier, so the `rm` inside is handed `.git`.
+# A pattern that cannot match a hidden name stays as safe as it was.
+posix safe | eval rm -rf *.o(D)
+posix safe | watch rm -f *.o(D)
+posix safe | trap rm\\ -f\\ *.o(D) EXIT
+# The qualifier is for its own command, and not for the next.
+posix safe | eval echo *.o(D); rm -rf *git
+posix safe | watch echo *.o(D); rm -rf *git
+# A script that is only a string has no qualifier.
+posix safe | eval 'rm -rf *.o'
+posix safe | eval echo hi
+posix finds=delete | eval rm -rf *git(D)
+posix finds=delete | eval rm -rf -- *git(D)
+posix finds=delete | eval 'rm -rf' *git(D)
+posix finds=delete | eval echo hi\\; rm -rf *git(D)
+posix finds=delete | command eval rm -rf *git(D)
+posix finds=delete | builtin eval rm -rf *git(D)
+posix finds=delete | noglob eval rm -rf *git(D)
+posix finds=delete | time eval rm -rf *git(D)
+posix finds=delete | x=$(eval rm -rf *git(D))
+posix finds=delete | watch rm -rf *git(D)
+posix finds=delete | watch -n 1 rm -rf *git(D)
+posix finds=delete | trap rm\\ -rf\\ *git(D) EXIT
+# The same, with the option for the whole line.
+posix finds=delete | setopt globdots; eval rm -rf *git
+posix finds=delete | setopt globdots; watch rm -rf *git
+
+# A POSIX class in a bracket matches a hidden name: `[[:alpha:]]` is one
+# letter, `[[:punct:]]` one punctuation character (a dot is one): with the
+# qualifier, or `dotglob`, they match `.git`.
+# A class that does not take what the pattern needs there.
+posix safe | rm -rf *[[:digit:]]it(D)
+posix safe | rm -rf *g[[:digit:]]t(D)
+posix safe | rm -rf [[:alpha:]]git(D)
+posix safe | rm -rf *[![:alpha:]]it(D)
+posix safe | rm -rf *[[:upper:]]it(D)
+posix safe | rm -rf *[[:space:]]it(D)
+posix safe | rm -rf *[[:alpha:]].o(D)
+posix safe | shopt -s dotglob; rm -rf *[[:digit:]]it
+posix safe | shopt -s dotglob; rm -rf [[:alpha:]]git
+# The dot is hidden unless the option is on.
+posix safe | rm -rf *[[:alpha:]]it
+posix safe | rm -rf [[:punct:]]git
+posix safe | rm -rf [.[:alpha:]]git
+posix finds=delete | rm -rf *[[:alpha:]]it(D)
+posix finds=delete | rm -rf ?[[:alpha:]]it(D)
+posix finds=delete | rm -rf [[:punct:]]git(D)
+posix finds=delete | rm -rf [.[:alpha:]]git(D)
+posix finds=delete | rm -rf [[:punct:][:alpha:]]git(D)
+posix finds=delete | rm -rf *g[[:alpha:]]t(D)
+posix finds=delete | rm -rf *[[:alpha:]]*(D)
+posix finds=delete | rm -rf [[:punct:]]*(D)
+posix finds=delete | rm -rf *[[:lower:]]it(D)
+posix finds=delete | rm -rf *[[:alnum:]]it(D)
+posix finds=delete | rm -rf *[[:graph:]]it(D)
+posix finds=delete | rm -rf [![:alpha:]]git(D)
+posix finds=delete | rm -rf [![:digit:]]git(D)
+posix finds=delete | rm -rf [[:alpha:][:punct:]]git(D)
+# Not read exactly, so taken as any character.
+posix finds=delete | rm -rf *[[:nosuch:]]it(D)
+posix finds=delete | rm -rf [[=a=]]*(D)
+posix finds=delete | rm -rf [[.-.]]git(D)
+posix finds=delete | rm -rf [a-[.z.]]git(D)
+# With the option for the whole line.
+posix finds=delete | shopt -s dotglob; rm -rf *[[:alpha:]]it
+posix finds=delete | shopt -s dotglob; rm -rf [[:punct:]]git
+posix finds=delete | shopt -s dotglob; rm -rf [.[:alpha:]]git
+posix finds=delete | setopt globdots; rm -rf *[[:alpha:]]it
+
+# A bracket with a collating element is also read as zsh does. zsh has no
+# `[.x.]` or `[=x=]`: `[` and `.` are members and the first `]` closes the
+# bracket, so `[[.x.]*git` is one class and `*git`, and with `globdots` or
+# `(D)` it matches `.git`. Bash reads a plain `[` for it. A line that can be
+# read by zsh is judged by zsh's reading too.
+# The dot is hidden unless an option or the qualifier is on.
+posix safe | rm -rf [[.x.]*git
+posix safe | rm -rf [[=.=]*git
+# Neither reading matches `.git`.
+posix safe | setopt globdots; rm -f [[.x.]*.o
+posix safe | rm -f [[.x.]*.o(D)
+posix safe | setopt globdots; rm -f [[=x=]*.o
+posix finds=delete | setopt globdots; rm -rf [[.x.]*git
+posix finds=delete | setopt globdots; rm -rf [[.x.]git
+posix finds=delete | setopt globdots; rm -rf [a[.x.]git
+posix finds=delete | setopt globdots; rm -rf [[=.=]*git
+posix finds=delete | set -o globdots; rm -rf [[.x.]*git
+posix finds=delete | zsh -o globdots -c 'rm -rf [[.x.]*git'
+posix finds=delete | zsh -c 'setopt globdots; rm -rf [[.x.]*git'
+# The qualifier exists only in zsh.
+posix finds=delete | rm -rf [[.x.]*git(D)
+posix finds=delete | rm -rf [[=.=]*git(D)
+posix finds=delete | rm -rf [[.x.]git(D)
+posix finds=delete | rm -rf [a[.x.]git(D)
+posix finds=delete | mv [[.x.]*git(D) /tmp/x
+
+# A listing is judged as the delete of its pattern is.
+posix safe | ls *.bak | xargs rm
+posix safe | ls -d src/*/../*.o | xargs rm
+posix finds=delete | ls -d src/*/../../.g* | xargs rm -rf
+posix finds=delete | ls -d src/*/../../* | xargs rm -rf
+posix finds=delete | rm -rf src/*/../../.g*
+
+# A pattern that picks names in a temporary folder is temporary files.
+posix safe | rm /tmp/*.log
+posix safe | ls /tmp/*.log | xargs rm
+posix safe | ls -d /tmp/build-* | xargs rm -rf
+posix safe | ls /var/tmp/*.log | xargs rm
+posix finds=delete | rm -rf /tmp/*
+posix finds=delete | ls /tmp | xargs rm -rf

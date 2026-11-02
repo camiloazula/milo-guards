@@ -34,8 +34,9 @@ pub fn as_printed(text: &str) -> String {
 }
 
 /// `classify`, and the line's `effect` and `explain` held to agree with it
-/// (see [`disagreements`]): the tests of `posix.rs` and `windows.rs` judge
-/// every line through this, so each line they name goes through both too.
+/// (see [`disagreements`]): the tests of a finding's target and of what a
+/// line nested too deep gives judge their lines through this, so each line
+/// they name goes through both too, as every case of a case file does.
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> milo_guards_shell::Assessment {
     let wrong = disagreements(shell, paths, [command]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
