@@ -1,5 +1,6 @@
 //! Splitting a POSIX shell line (`sh`, `bash`, `zsh`) with tree-sitter-bash.
 
+use std::ops::Range;
 use std::rc::Rc;
 
 use tree_sitter::{Node, TreeCursor};
@@ -33,6 +34,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         split,
         redirected: None,
+        last_command: 0..0,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -200,6 +202,26 @@ fn join_continuations(text: &str) -> (String, Vec<usize>) {
         }
     }
     (joined, marks)
+}
+
+/// The command a redirect after `node` belongs to, when `node` is a list, a
+/// pipeline or a negated command: the grammar puts the redirect on the whole
+/// of it, and the shell on the last command (`a && b < f` redirects `b`).
+/// `None` when `node` is not one of those, or ends in something else than a
+/// plain command.
+fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
+    if !matches!(node.kind(), "list" | "pipeline" | "negated_command") {
+        return None;
+    }
+    let mut last = node;
+    while matches!(last.kind(), "list" | "pipeline" | "negated_command") {
+        let mut cursor = last.walk();
+        last = last
+            .named_children(&mut cursor)
+            .filter(|child| child.kind() != "comment")
+            .last()?;
+    }
+    (last.kind() == "command").then_some(last)
 }
 
 /// Whether `node` is a here-document's redirect that holds the rest of its
@@ -410,6 +432,9 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// The redirects of the statement being walked, for its body command.
     redirected: Option<Redirected>,
+    /// The units of the command walked last (not what its arguments run):
+    /// read right after a statement's body, it is the body's last command.
+    last_command: Range<usize>,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -587,10 +612,21 @@ impl Walker<'_> {
             // The right side of `&&` and `||` may not run.
             "list" => {
                 let mut cursor = node.walk();
-                for (at, child) in node.named_children(&mut cursor).enumerate() {
+                let before = self.split.moved_so_far();
+                let mut at = 0;
+                for child in node.children(&mut cursor) {
+                    // The right side of `||` only runs when the left failed:
+                    // a `cd` on the left may not have moved the line.
+                    if child.kind() == "||" {
+                        self.split.may_not_have_moved(before);
+                    }
+                    if !child.is_named() {
+                        continue;
+                    }
                     self.split.branches += usize::from(at > 0);
                     self.walk(child, stage, level + 1);
                     self.split.branches -= usize::from(at > 0);
+                    at += 1;
                 }
             }
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
@@ -733,21 +769,7 @@ impl Walker<'_> {
             // The grammar reads `$(…)` in a here-document's body but not a
             // backtick substitution, which the shell runs when the delimiter
             // is not quoted: `effect` cannot say what the line does then.
-            "heredoc_redirect" => {
-                let mut cursor = node.walk();
-                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
-                let quoted = children.iter().any(|child| {
-                    child.kind() == "heredoc_start"
-                        && unit::text(child, self.source).contains(['\'', '"', '\\'])
-                });
-                let backtick = children.iter().any(|child| {
-                    child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
-                });
-                if backtick && !quoted && self.split.kept.on {
-                    self.split.opaque();
-                }
-                self.children(node, stage, level);
-            }
+            "heredoc_redirect" => self.walk_heredoc(node, stage, level, None),
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
             "test_command" => {
@@ -1357,12 +1379,15 @@ impl Walker<'_> {
         for child in node.named_children(&mut cursor) {
             if child.kind() == "variable_assignment" {
                 self.children(child, None, level + 1);
+            } else if child.kind() == "file_redirect" {
+                self.walk_redirect(child, None, level, own.clone());
             } else {
                 self.walk(child, None, level + 1);
             }
         }
         self.split
             .nest(own.clone(), own.end..self.split.units.len());
+        self.last_command = own.clone();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if let Some((target, input)) = self.file_redirect(child) {
@@ -1376,10 +1401,75 @@ impl Walker<'_> {
         }
     }
 
+    /// Walk `redirect`, a redirect of a file on a command whose own units are
+    /// `own`. The shell opens the file before the command runs, so when the
+    /// command moves the line (`cd sub < f`) the file is read from the folder
+    /// the command starts in, not the one it goes to.
+    fn walk_redirect(
+        &mut self,
+        redirect: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        own: Range<usize>,
+    ) {
+        let from = self.split.starts_in(own);
+        let outer = self.split.open_from(from);
+        self.walk(redirect, stage, level + 1);
+        self.split.open_from(outer);
+    }
+
+    /// A here-document's redirect. The grammar holds the redirects written
+    /// after its start (`<<EOF < f`) inside it: when `own` is the units of the
+    /// command it belongs to, they are placed like any redirect of that
+    /// command.
+    fn walk_heredoc(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        level: usize,
+        own: Option<Range<usize>>,
+    ) {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        let quoted = children.iter().any(|child| {
+            child.kind() == "heredoc_start"
+                && unit::text(child, self.source).contains(['\'', '"', '\\'])
+        });
+        let backtick = children.iter().any(|child| {
+            child.kind() == "heredoc_body" && unit::text(child, self.source).contains('`')
+        });
+        if backtick && !quoted && self.split.kept.on {
+            self.split.opaque();
+        }
+        for (at, child) in children.iter().enumerate() {
+            if !child.is_named() {
+                continue;
+            }
+            match &own {
+                Some(own) if child.kind() == "file_redirect" => {
+                    self.walk_redirect(*child, stage, level, own.clone());
+                }
+                _ => {
+                    let background = children.get(at + 1).is_some_and(|next| next.kind() == "&");
+                    self.walk_in(*child, stage, level + 1, background);
+                }
+            }
+        }
+    }
+
     /// A statement with redirects: they belong to its body, whose input and
     /// output they are, and what runs in a here-document is handed to it.
     fn redirected(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let body = node.child_by_field_name("body").map(|body| body.id());
+        let simple = node
+            .child_by_field_name("body")
+            .is_some_and(|body| body.kind() == "command");
+        // A redirect after a list, a pipeline or a negation is on its last
+        // command: `a && cd sub < f` opens `f` from where the `cd` starts.
+        let chained = node
+            .child_by_field_name("body")
+            .and_then(last_simple)
+            .is_some();
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         // In `cat <<EOF | nc host 1` the grammar holds the rest of the
@@ -1391,6 +1481,9 @@ impl Walker<'_> {
             .any(|child| piped_heredoc(*child))
             .then(|| self.split.pipeline(stage));
         let mut own = 0..0;
+        // The units the redirects are opened before: a plain command's own,
+        // or the last command of a list, pipeline or negation.
+        let mut placed = 0..0;
         let mut after = Vec::new();
         // The stages the body takes in that pipeline: the here-document's
         // own come after them.
@@ -1410,6 +1503,9 @@ impl Walker<'_> {
                     None => self.walk(*child, stage, level + 1),
                 }
                 own = first..self.split.units.len();
+                if chained {
+                    placed = self.last_command.clone();
+                }
             } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
                 // What the redirect's own parts run is handed to the body,
                 // and what the rest of the pipeline runs is not.
@@ -1426,7 +1522,18 @@ impl Walker<'_> {
                 }
                 after.push((*child, inside));
             } else {
-                self.walk(*child, stage, level + 1);
+                if child.kind() == "file_redirect" {
+                    // Only a plain command's redirect is opened before the
+                    // unit that moves the line runs: what a group holds is
+                    // not read that way.
+                    let on = if simple { own.clone() } else { placed.clone() };
+                    self.walk_redirect(*child, stage, level, on);
+                } else if child.kind() == "heredoc_redirect" {
+                    let on = if simple { own.clone() } else { placed.clone() };
+                    self.walk_heredoc(*child, stage, level, Some(on));
+                } else {
+                    self.walk(*child, stage, level + 1);
+                }
                 let whole = first..self.split.units.len();
                 after.push((*child, std::iter::once(whole).collect()));
             }

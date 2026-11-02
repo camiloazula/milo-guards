@@ -410,6 +410,41 @@ PowerShell, and only as the null value itself. In a POSIX shell it is the variab
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
 
+A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
+command runs, so its file is placed from the folder the command starts in, not
+the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
+../../.ssh/id_rsa` does (`read_secret`), `cd ../.. < .ssh/id_rsa` reads
+`<cwd>/.ssh/id_rsa`, and `cd sub > ../x` writes `<cwd>/../x`. The same holds in
+cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
+The redirect of the next command is placed from where the line now is. In a
+POSIX shell only a redirect on the command itself is read this way, and that
+includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
+`cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
+and it is read as the last command's): a file a
+group, a subshell or a loop is redirected from (`{ cd sub; cat; } < f`) is
+still placed from where the line is when its body ends. In PowerShell only the
+redirects of the command itself are placed so: a redirect inside a `$()` in its
+arguments is placed from where the line is there, and so is a redirect that
+follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
+x.txt` writes two folders up, as the session ran the argument before it opened
+the file).
+
+The folder a `cd` starts in is not always certain, and the redirect is then
+placed from both places, the one the `cd` starts in and the one it goes to, so
+either can make the line risky. It is not certain when the `cd` is in a loop
+or a function body, which runs again from where the last pass left the line
+(`for i in 1 2; do cd .. > x; done` writes `<cwd>/../x` on the second pass;
+`f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
+`for` and `function`), and when an earlier `cd` may not have moved the line: it
+ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
+a branch of an `if`, `case` or `switch` or a `try`, on the left of `||`, or
+through a wrapper that runs it as a program or in a shell of its own, such as
+`env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
+`if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
+in PowerShell and cmd). Only a `cd` after one of those is read this way: a
+redirect on a `cd` that follows a plain `cd` and `;` is placed from where the
+line is, as before.
+
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 

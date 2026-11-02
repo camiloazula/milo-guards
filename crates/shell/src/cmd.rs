@@ -6,7 +6,7 @@ use std::ops::Range;
 use tree_sitter::Node;
 
 use crate::launch;
-use crate::unit::{self, Arg, Split, Stage, Unit};
+use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -66,22 +66,56 @@ impl Walker<'_> {
                 let pipeline = self.split.pipeline(stage);
                 self.pipe_in(node, pipeline, 0, level);
             }
+            // The right side of `&&` and `||` may not run, and the right
+            // side of `||` runs only when the left failed: a `cd` on the
+            // left may not have moved the line.
+            "cond_exec" => {
+                let mut cursor = node.walk();
+                let before = self.split.moved_so_far();
+                let mut at = 0;
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "||" {
+                        self.split.may_not_have_moved(before);
+                    }
+                    if !child.is_named() {
+                        continue;
+                    }
+                    self.split.branches += usize::from(at > 0);
+                    self.walk(child, stage, level + 1);
+                    self.split.branches -= usize::from(at > 0);
+                    at += 1;
+                }
+            }
             // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
             // command's input feeds the units it runs.
             "redirect_stmt" => {
                 let mut cursor = node.walk();
                 let mut inputs = Vec::new();
                 let mut own: Option<Range<usize>> = None;
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "redirection" {
-                        inputs.extend(self.redirect(child));
-                    } else {
-                        let first = self.split.units.len();
-                        self.walk(child, stage, level + 1);
-                        let range = first..self.split.units.len();
-                        own = Some(own.map_or(range.clone(), |own| own.start..range.end));
-                    }
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for child in children
+                    .iter()
+                    .filter(|child| child.kind() != "redirection")
+                {
+                    let first = self.split.units.len();
+                    self.walk(*child, stage, level + 1);
+                    let range = first..self.split.units.len();
+                    own = Some(own.map_or(range.clone(), |own| own.start..range.end));
                 }
+                // The shell opens a redirect before the command runs, so a
+                // command that moves the line (`cd sub > f`) is redirected
+                // from the folder it starts in.
+                let from = own
+                    .clone()
+                    .map_or(OpensFrom::Line, |own| self.split.starts_in(own));
+                let before = self.split.open_from(from);
+                for child in children
+                    .iter()
+                    .filter(|child| child.kind() == "redirection")
+                {
+                    inputs.extend(self.redirect(*child));
+                }
+                self.split.open_from(before);
                 if let Some(own) = own {
                     for target in inputs {
                         self.split.redirect(own.clone(), target, true);
@@ -101,6 +135,12 @@ impl Walker<'_> {
                 self.split.repeats += 1;
                 self.children(node, stage, level);
                 self.split.repeats -= 1;
+            }
+            // What a condition guards may not run.
+            "if_stmt" => {
+                self.split.branches += 1;
+                self.children(node, stage, level);
+                self.split.branches -= 1;
             }
             _ => self.children(node, stage, level),
         }

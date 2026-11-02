@@ -2,7 +2,7 @@
 //! grammar split it; and the helpers that read a unit's arguments.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -302,6 +302,24 @@ impl Hidden {
     }
 }
 
+/// The folder a redirect opens its file from. A redirect on a `cd` is opened
+/// before the `cd` runs, so from the folder the `cd` starts in, not the one
+/// it goes to.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum OpensFrom {
+    /// Where the line is when the redirect is read.
+    #[default]
+    Line,
+    /// The folder a unit starts in (as [`Unit::dir`]; `None`: where the
+    /// line began).
+    Start(Option<Arg>),
+    /// The folder a unit starts in, and also where the line is when the
+    /// redirect is read (where the unit goes): the folder the unit starts in
+    /// is not certain, because its body runs more than once or an earlier
+    /// `cd` may not have moved the line, so either may be the one.
+    Both(Option<Arg>),
+}
+
 /// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
 #[derive(Debug, Clone)]
 pub(crate) struct Redirect {
@@ -394,6 +412,23 @@ pub(crate) struct Split {
     /// [`holds_code`]) or is only known when it runs, kept as the `cd`s are
     /// read so the folder's whole name is not read again after each one.
     dir_code: bool,
+    /// Where the redirects being read open their files from (see
+    /// [`OpensFrom`]).
+    opens_from: OpensFrom,
+    /// For each range of units [`Self::starts_in`] has read, the index of the
+    /// unit in it that moves the line, if one does: a command with many
+    /// redirects asks for its range once for each, and the answers must not
+    /// read the command's units again, whatever runs in between.
+    starts: HashMap<(usize, usize), Option<usize>>,
+    /// Whether a `cd` read so far may not have moved the line: it sits in a
+    /// branch, a loop, a function body, a pipeline stage or the background,
+    /// or is the left side of `||`. Where the next `cd` starts is then not
+    /// certain.
+    maybe_moved: bool,
+    /// The units that move the line from a folder that is not certain (see
+    /// [`Self::maybe_moved`]; a loop or a function body runs again from where
+    /// its last `cd` went), by their place in `units`.
+    unsure_starts: HashSet<usize>,
     /// In cmd, the drive the line is on, upper case: where it started, then
     /// where a drive switch, `cd /d` or `pushd` took it. `None` when it is
     /// on no drive or is only known when it runs.
@@ -611,6 +646,7 @@ pub(crate) struct Place {
     drive_guess: bool,
     moves: usize,
     later: usize,
+    maybe_moved: bool,
 }
 
 /// An action that runs later, in this shell, from wherever the line has
@@ -753,6 +789,25 @@ impl Split {
             self.psdrive = true;
         }
         let mut moved = moves_to(&unit);
+        if moved.is_some() {
+            // A `cd` in a loop or a function body starts from where the
+            // last pass left the line; one after a `cd` that may not have
+            // moved it starts from a place that is not certain either.
+            if self.repeats > 0 || self.maybe_moved {
+                self.unsure_starts.insert(self.units.len());
+            }
+            // Whether this one moved the line is not certain when it may not
+            // have run, or runs in a process of its own: a pipeline stage,
+            // or behind a wrapper (`env cd`, `nohup cd`, `coproc { cd; }`,
+            // `start cd`) that runs it as a program or in another shell.
+            if self.branches > 0
+                || self.repeats > 0
+                || unit.stage.is_some()
+                || !unit.wrappers.is_empty()
+            {
+                self.maybe_moved = true;
+            }
+        }
         if unit.shell == Shell::Cmd {
             // A program only known when it runs may be a drive switch.
             if unit.program.is_unknown() {
@@ -935,19 +990,95 @@ impl Split {
         }
     }
 
-    /// Add a redirect's write, made where the line has moved to.
-    pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
-        let dir = self.dir.clone();
-        let hidden = self.hidden();
-        if self.bodies > 0 {
-            self.write_in_body.push(self.writes.len());
+    /// Where the redirects on `units` open their files from: the folder the
+    /// first of them that moves the line (`cd`, `pushd`, `Set-Location`)
+    /// starts in, as the shell opens them before it runs; where the line is
+    /// when none of them moves it.
+    pub(crate) fn starts_in(&mut self, units: Range<usize>) -> OpensFrom {
+        // The units are only added to: a range holds the same units each
+        // time it is asked for.
+        let key = (units.start, units.end);
+        let mover = if let Some(mover) = self.starts.get(&key) {
+            *mover
+        } else {
+            let start = units.start;
+            let mover = self
+                .units
+                .get(units)
+                .into_iter()
+                .flatten()
+                .position(|unit| moves_to(unit).is_some())
+                .map(|index| start + index);
+            self.starts.insert(key, mover);
+            mover
+        };
+        let Some((index, unit)) =
+            mover.and_then(|index| self.units.get(index).map(|unit| (index, unit)))
+        else {
+            return OpensFrom::Line;
+        };
+        if self.unsure_starts.contains(&index) {
+            OpensFrom::Both(unit.dir.clone())
+        } else {
+            OpensFrom::Start(unit.dir.clone())
         }
-        self.writes.push(Write {
-            shell,
-            target,
-            dir,
-            hidden,
-        });
+    }
+
+    /// Note that what the walk has read so far may have left the line
+    /// somewhere else than it thinks, when `moved` (how many `cd`s it had
+    /// read when the part began) is not how many it has read now: for the
+    /// left side of `||`, which only runs the right side when it failed.
+    pub(crate) fn may_not_have_moved(&mut self, moved: usize) {
+        if self.moved != moved {
+            self.maybe_moved = true;
+        }
+    }
+
+    /// How many `cd`s the walk has read, for [`Self::may_not_have_moved`].
+    pub(crate) fn moved_so_far(&self) -> usize {
+        self.moved
+    }
+
+    /// Whether any of `units` moves the line (`cd`, `pushd`, `Set-Location`).
+    pub(crate) fn moves_in(&self, units: Range<usize>) -> bool {
+        self.units
+            .get(units)
+            .into_iter()
+            .flatten()
+            .any(|unit| moves_to(unit).is_some())
+    }
+
+    /// Make the redirects read from now on open their files from `from`, and
+    /// give back what it was, to put back.
+    pub(crate) fn open_from(&mut self, from: OpensFrom) -> OpensFrom {
+        std::mem::replace(&mut self.opens_from, from)
+    }
+
+    /// The folders a redirect read now opens its file from: one, or two when
+    /// it is not certain where the unit it is on starts.
+    fn redirect_dirs(&self) -> Vec<Option<Arg>> {
+        match &self.opens_from {
+            OpensFrom::Line => vec![self.dir.clone()],
+            OpensFrom::Start(dir) => vec![dir.clone()],
+            OpensFrom::Both(dir) => vec![dir.clone(), self.dir.clone()],
+        }
+    }
+
+    /// Add a redirect's write, made where the line has moved to, or from
+    /// where the unit it is on started (see [`Self::open_from`]).
+    pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
+        let hidden = self.hidden();
+        for dir in self.redirect_dirs() {
+            if self.bodies > 0 {
+                self.write_in_body.push(self.writes.len());
+            }
+            self.writes.push(Write {
+                shell,
+                target: target.clone(),
+                dir,
+                hidden,
+            });
+        }
     }
 
     /// Record a `for` loop over `words` whose body, the units and the
@@ -961,19 +1092,21 @@ impl Split {
         });
     }
 
-    /// Add a redirect's read, made where the line has moved to.
+    /// Add a redirect's read, made where the line has moved to, or from
+    /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
-        let dir = self.dir.clone();
         let hidden = self.hidden();
-        if self.bodies > 0 {
-            self.read_in_body.push(self.reads.len());
+        for dir in self.redirect_dirs() {
+            if self.bodies > 0 {
+                self.read_in_body.push(self.reads.len());
+            }
+            self.reads.push(Read {
+                shell,
+                target: target.clone(),
+                dir,
+                hidden,
+            });
         }
-        self.reads.push(Read {
-            shell,
-            target,
-            dir,
-            hidden,
-        });
     }
 
     /// Whether a wildcard in what comes next may match a leading dot.
@@ -1214,6 +1347,7 @@ impl Split {
             drive_guess: self.drive_guess,
             moves: self.moves,
             later: self.later.len(),
+            maybe_moved: self.maybe_moved,
         }
     }
 
@@ -1235,6 +1369,7 @@ impl Split {
         self.drive = place.drive;
         self.drive_guess = place.drive_guess;
         self.moves = place.moves;
+        self.maybe_moved = place.maybe_moved;
     }
 
     /// Record that the line sets or unsets the variable `name`, for `effect`.
