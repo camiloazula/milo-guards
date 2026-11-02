@@ -170,6 +170,40 @@ fn a_long_option_after_signal_0_may_send_a_real_signal() {
 }
 
 #[test]
+fn a_signal_option_after_an_id_may_send_a_real_signal() {
+    // The `kill` program reorders its words and reads `-s SIG` and
+    // `--signal SIG` after an id, and a later `-1` as the id -1.
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "kill -0 4242",
+            "kill -0 $pid",
+            "kill -0 -$$ 1",
+            "kill -0 -1 -s 9",
+            "kill -0 4242 -- -s",
+        ],
+        &[
+            ("kill -0 4242 -s 9 -1", Rule::StopSystem),
+            ("/bin/kill -0 4242 -s 9 -1", Rule::StopSystem),
+            ("env kill -0 4242 -s 9 -1", Rule::StopSystem),
+            ("xargs kill -0 4242 -s 9 -1", Rule::StopSystem),
+            ("sudo kill -0 4242 -s 9 -1", Rule::StopSystem),
+            ("sudo kill -0 4242 --signal 9 -1", Rule::StopSystem),
+            ("/usr/bin/kill -0 4242 -s KILL 0", Rule::StopSystem),
+            ("nohup kill -0 4242 -s 9 -- -1234", Rule::StopSystem),
+            ("kill -0 4242 -sKILL -1", Rule::StopSystem),
+            ("kill -0 4242 --signal=KILL -1", Rule::StopSystem),
+            ("kill -0 %1 -s 9 -1", Rule::StopSystem),
+            ("kill -0 $! -s 9 -1", Rule::StopSystem),
+            ("kill -0 $$ -s 9 -1", Rule::StopSystem),
+            ("kill -0 -$$ -s 9 -1", Rule::StopSystem),
+            ("kill -0 4242 $more -1", Rule::StopSystem),
+        ],
+    );
+}
+
+#[test]
 fn an_unknown_word_among_the_options_after_signal_0_is_not_signal_0() {
     // An expansion may hold `-s` and a name, read as an option.
     check(

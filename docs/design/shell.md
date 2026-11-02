@@ -692,7 +692,10 @@ the same line. It is `stop_system` when the line stops more than a name:
   count only as the first word (`kill -9 -l -1` still stops every process);
   and a long option (`kill -0 --signal 9 -1`), or a word only known when it
   runs with more after it (`kill -0 $X KILL -1`, which may hold `-s`), is not
-  read as signal 0: the ids are judged.
+  read as signal 0: the ids are judged. The same holds for such a word after
+  an id, up to `--`: the `kill` program reorders its words and reads
+  `kill -0 4242 -s 9 -1` as SIGKILL to every process (`kill -0 -1 -s 9`, a
+  negative id right after the options, stays signal 0).
 - **Every process of a user, a group or a terminal.** `pkill -u me`, `-U`,
   `-G`, `killall -u me`, `killall -t ttys000`, `killall -Z context`,
   `taskkill /FI "USERNAME eq me"`, given no name. With a name

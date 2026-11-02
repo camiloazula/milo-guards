@@ -376,18 +376,34 @@ impl Checker<'_> {
             }
             rest = rest.get(used..).unwrap_or_default();
         }
-        // A word that is only known when it runs, with more after it, may be
-        // `-s` (then a signal) or `-sNAME`, read as an option and the last
-        // one winning; so the line is not taken as signal 0. Nothing after it
-        // (`kill -0 $pid`), or one that is always a number (`-$$`), leaves the
-        // line as it reads.
-        let unread_option = rest.len() > 1
-            && rest.first().is_some_and(|arg| {
-                arg.known().is_none() && {
-                    let text = arg.text();
-                    !is_positive_expansion(text.strip_prefix('-').unwrap_or(text))
-                }
-            });
+        // The words after the options, up to `--`, may still hold a signal
+        // option: the `kill` program reorders its words and reads `-s SIG`
+        // and `--signal SIG` after an id (`kill -0 4242 -s 9 -1`). A word that
+        // is `-s` or starts with it, a long option, or a word only known when
+        // it runs with more after it (it may hold `-s`) means the line may
+        // send a real signal, so it is not taken as signal 0. Nothing after
+        // such a word (`kill -0 $pid`), or one that is always a number
+        // (`-$$`), leaves the line as it reads. A negative id right after the
+        // options (`kill -0 -1 -s 9`) is signalled with 0 and the program
+        // exits, so what follows it is not read.
+        let ends_at_negative_id = rest
+            .first()
+            .and_then(Arg::known)
+            .is_some_and(|text| text.len() > 1 && text != "--" && text.starts_with('-'));
+        let unread_option = !ends_at_negative_id
+            && rest
+                .iter()
+                .take_while(|arg| arg.known() != Some("--"))
+                .enumerate()
+                .any(|(index, arg)| {
+                    if let Some(text) = arg.known() {
+                        text.starts_with("-s") || text.starts_with("--")
+                    } else {
+                        let text = arg.text();
+                        index + 1 < rest.len()
+                            && !is_positive_expansion(text.strip_prefix('-').unwrap_or(text))
+                    }
+                });
         if zero && !sends && !unread_option {
             return;
         }
