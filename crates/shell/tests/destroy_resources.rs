@@ -1,7 +1,10 @@
 //! Deleting containers, cluster objects, cloud resources or an
 //! infrastructure stack is `destroy_resources`; listing, describing,
 //! creating and rehearsing are safe, and a command only known when it runs is
-//! `unknown`.
+//! `unknown`. One table per kind of tool, then the lines that wrap or run
+//! them, PowerShell and cmd, and the reason a prompt can show. How the words
+//! of such a line are read (options, rehearsals, variables, loops) is in
+//! `destroy_resources_options.rs`.
 
 mod common;
 
@@ -10,93 +13,13 @@ use milo_guards_shell::{classify, effect, Effect, Reach, Rule, Shell};
 
 const DESTROY: Rule = Rule::DestroyResources;
 
-fn reason(line: &str) -> String {
+/// The reason of the one finding of `line`, which breaks `rule`.
+fn reason(line: &str, rule: Rule) -> String {
     let assessment = classify(line, Shell::Posix, &posix());
     let findings = assessment.findings();
     assert_eq!(findings.len(), 1, "{line}: {findings:?}");
-    assert_eq!(findings[0].rule, DESTROY, "{line}");
+    assert_eq!(findings[0].rule, rule, "{line}");
     findings[0].reason.clone()
-}
-
-#[test]
-fn the_lines_in_the_issue() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "docker rm web",
-            "docker compose down",
-            "kubectl get pods",
-            "terraform plan",
-            "aws s3 ls",
-            "docker build -t app .",
-        ],
-        &[
-            ("docker system prune -af --volumes", DESTROY),
-            ("docker volume rm pgdata", DESTROY),
-            ("docker rm -f $(docker ps -aq)", DESTROY),
-            ("kubectl delete namespace prod", DESTROY),
-            ("helm uninstall api", DESTROY),
-            ("terraform destroy -auto-approve", DESTROY),
-            ("aws s3 rm s3://prod-bucket --recursive", DESTROY),
-            ("gcloud projects delete prod", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn a_reason_and_a_target_a_prompt_can_show() {
-    let assessment = classify("kubectl delete namespace prod", Shell::Posix, &posix());
-    let finding = &assessment.findings()[0];
-    assert_eq!(finding.rule, DESTROY);
-    assert_eq!(finding.reason, "deletes a namespace and everything in it");
-    assert_eq!(finding.target.as_deref(), Some("namespace"));
-    assert_eq!(DESTROY.name(), "destroy_resources");
-    assert_eq!(
-        reason("docker system prune -af --volumes"),
-        "removes unused containers, images and volumes"
-    );
-    assert_eq!(
-        reason("docker system prune"),
-        "removes unused containers, networks and images"
-    );
-    assert_eq!(reason("docker volume rm pgdata"), "deletes volumes");
-    assert_eq!(
-        reason("docker rm -f $(docker ps -aq)"),
-        "removes containers chosen when it runs"
-    );
-    assert_eq!(
-        reason("kubectl delete pods --all"),
-        "deletes every object of a kind"
-    );
-    assert_eq!(
-        reason("kubectl delete pods -A"),
-        "deletes objects in every namespace"
-    );
-    assert_eq!(reason("kubectl delete pod web"), "deletes cluster objects");
-    assert_eq!(reason("helm uninstall api"), "uninstalls a Helm release");
-    assert_eq!(
-        reason("terraform apply -destroy"),
-        "destroys the infrastructure a configuration manages"
-    );
-    assert_eq!(
-        reason("aws ec2 terminate-instances --instance-ids i-1"),
-        "terminates EC2 instances"
-    );
-    assert_eq!(
-        reason("aws rds delete-db-instance --db-instance-identifier x"),
-        "deletes AWS resources"
-    );
-    assert_eq!(
-        reason("aws s3 rm s3://b --recursive"),
-        "deletes every object under a prefix"
-    );
-    let assessment = classify("docker $cmd ps", Shell::Posix, &posix());
-    assert_eq!(assessment.findings()[0].rule, Rule::Unknown);
-    assert_eq!(
-        assessment.findings()[0].reason,
-        "runs a docker command only known when it runs"
-    );
 }
 
 #[test]
@@ -154,10 +77,10 @@ fn containers() {
         &[
             ("docker system prune", DESTROY),
             ("docker system prune -f", DESTROY),
+            ("docker system prune -af --volumes", DESTROY),
             ("docker system prune -a --volumes -f", DESTROY),
             ("docker -H tcp://host:2375 system prune -f", DESTROY),
             ("docker --context prod system prune", DESTROY),
-            ("sudo docker system prune -af", DESTROY),
             ("docker volume rm pgdata", DESTROY),
             ("docker volume remove pgdata", DESTROY),
             ("docker volume rm -f pgdata", DESTROY),
@@ -175,7 +98,6 @@ fn containers() {
             ("docker rm `docker ps -aq`", DESTROY),
             ("docker container rm -f $(docker ps -aq)", DESTROY),
             ("docker rm -f $ids", DESTROY),
-            ("docker rm -f \"$(docker ps -aq)\"", DESTROY),
             ("docker ps -aq | xargs docker rm -f", DESTROY),
             ("docker rm -f web db", DESTROY),
             ("docker rm -f web db cache", DESTROY),
@@ -217,20 +139,6 @@ fn containers() {
 }
 
 #[test]
-fn a_computed_container_is_judged_like_the_shell_reads_it() {
-    // An unquoted variable is split into words; a quoted one is a word.
-    assert_eq!(
-        rules("docker rm -f $names", Shell::Posix, &posix()),
-        vec![DESTROY]
-    );
-    assert!(rules("docker rm -f \"$name\"", Shell::Posix, &posix()).is_empty());
-    assert_eq!(
-        rules("docker rm -f \"$(docker ps -aq)\"", Shell::Posix, &posix()),
-        vec![DESTROY]
-    );
-}
-
-#[test]
 fn clusters() {
     check(
         Shell::Posix,
@@ -244,9 +152,6 @@ fn clusters() {
             "kubectl apply -f deploy.yaml",
             "kubectl apply -f deploy.yaml --dry-run=client",
             "kubectl create namespace dev",
-            "kubectl scale deploy web --replicas=3",
-            "kubectl scale --replicas 2 deploy/web",
-            "kubectl scale deploy web --replicas=0 --dry-run=client",
             "kubectl rollout restart deploy web",
             "kubectl rollout status deploy web",
             "kubectl cordon node1",
@@ -264,7 +169,6 @@ fn clusters() {
             "helm install api ./chart",
             "helm upgrade --install api ./chart",
             "helm list",
-            "helm uninstall api --dry-run",
             "helm repo remove stable",
             "helm plugin uninstall diff",
             "kind create cluster",
@@ -293,11 +197,6 @@ fn clusters() {
             ("kubectl delete pvc data", DESTROY),
             ("kubectl delete pod -l app=web", DESTROY),
             ("kubectl delete pod web --grace-period=0 --force", DESTROY),
-            ("kubectl delete pod web --dry-run=none", DESTROY),
-            (
-                "kubectl delete pod web --dry-run=client --dry-run=none",
-                DESTROY,
-            ),
             ("kubectl -n prod delete pod web", DESTROY),
             ("kubectl --namespace prod delete pod web", DESTROY),
             ("kubectl --namespace=prod delete pod web", DESTROY),
@@ -317,12 +216,6 @@ fn clusters() {
                 "kubectl drain node1 --ignore-daemonsets --delete-emptydir-data",
                 DESTROY,
             ),
-            ("kubectl scale deploy web --replicas=0", DESTROY),
-            ("kubectl scale --replicas=0 deploy/web", DESTROY),
-            ("kubectl scale deploy web --replicas 0", DESTROY),
-            ("kubectl scale deploy web --replicas=00", DESTROY),
-            ("kubectl -n prod scale deploy web --replicas=0", DESTROY),
-            ("kubectl scale deploy web --replicas=$N", Rule::Unknown),
             ("kubectl replace --force -f pod.yaml", DESTROY),
             ("kubectl apply --prune -f dir/ --all", DESTROY),
             ("microk8s kubectl delete ns prod", DESTROY),
@@ -363,7 +256,6 @@ fn infrastructure() {
             "terraform fmt",
             "terraform apply",
             "terraform apply -auto-approve",
-            "terraform apply -destroy=false",
             "terraform output",
             "terraform destroy -help",
             "terraform -chdir=infra plan",
@@ -376,7 +268,6 @@ fn infrastructure() {
             "pulumi preview",
             "pulumi stack ls",
             "pulumi stack select dev",
-            "pulumi destroy --preview-only",
             "cdk deploy",
             "cdk synth",
             "cdk diff",
@@ -415,6 +306,15 @@ fn infrastructure() {
             ("pulumi stack rm dev --force --yes", DESTROY),
             ("pulumi stack remove dev", DESTROY),
             ("pulumi --cwd infra destroy", DESTROY),
+            // pulumi is found behind its own stack option.
+            ("pulumi --stack dev destroy --yes", DESTROY),
+            ("pulumi -s dev destroy", DESTROY),
+            ("pulumi --stack dev down", DESTROY),
+            ("pulumi --stack=dev destroy", DESTROY),
+            ("pulumi -s dev stack rm", DESTROY),
+            ("pulumi --stack dev stack rm dev", DESTROY),
+            ("pulumi --target urn:x destroy", DESTROY),
+            ("pulumi -m msg -s dev destroy", DESTROY),
             ("cdk destroy", DESTROY),
             ("cdk destroy --force", DESTROY),
             ("cdk -a 'node app.js' destroy", DESTROY),
@@ -453,7 +353,6 @@ fn aws() {
             "aws ec2 describe-instances",
             "aws ec2 run-instances --image-id ami-1",
             "aws ec2 stop-instances --instance-ids i-1",
-            "aws ec2 terminate-instances --instance-ids i-1 --dry-run",
             "aws iam list-users",
             "aws iam create-user --user-name bob",
             "aws sts get-caller-identity",
@@ -469,10 +368,12 @@ fn aws() {
             ("aws s3 rm s3://prod-bucket --recursive", DESTROY),
             ("aws s3 rm s3://prod-bucket/key", DESTROY),
             ("aws s3 rm --recursive s3://prod-bucket", DESTROY),
+            ("aws s3 rm s3://b --recursive", DESTROY),
             ("aws --profile prod s3 rm s3://b --recursive", DESTROY),
             ("aws s3 rb s3://bucket", DESTROY),
             ("aws s3 rb s3://bucket --force", DESTROY),
             ("aws s3 sync . s3://bucket --delete", DESTROY),
+            ("aws s3 sync . s3://b --delete", DESTROY),
             ("aws s3 sync s3://a s3://b --delete", DESTROY),
             ("aws s3api delete-bucket --bucket b", DESTROY),
             ("aws s3api delete-object --bucket b --key k", DESTROY),
@@ -512,6 +413,9 @@ fn aws() {
     );
 }
 
+/// Every cloud CLI but aws. Each table holds the delete verbs its siblings
+/// have: a bulk delete, a sync that deletes what the source lacks, a removal
+/// of one node or backup.
 #[test]
 fn other_clouds() {
     check(
@@ -523,11 +427,14 @@ fn other_clouds() {
             "gcloud compute instances list",
             "gcloud compute instances list --filter=name~delete",
             "gcloud compute instances list --filter name=delete",
+            "gcloud compute instances describe vm",
             "gcloud compute instances describe vm --zone us-central1-a",
             "gcloud compute instances create vm",
             "gcloud compute instances stop vm",
+            "gcloud compute instance-groups managed list",
             "gcloud storage ls gs://bucket",
             "gcloud storage cp a gs://bucket",
+            "gcloud storage rsync -r . gs://b",
             "gcloud auth login",
             "gsutil ls gs://bucket",
             "gsutil cp a gs://bucket",
@@ -539,12 +446,18 @@ fn other_clouds() {
             "az vm show -g rg -n delete",
             "az vm create -g rg -n vm --image ubuntu",
             "az account show",
+            "az storage blob list --account-name a -c c",
             "doctl compute droplet list",
             "doctl compute droplet create web",
             "doctl auth remove --context x",
+            "doctl kubernetes cluster node-pool list c",
             "flyctl apps list",
             "flyctl deploy",
             "fly status",
+            "fly apps list",
+            "fly machine list",
+            "fly m list",
+            "fly vol list",
             "vercel",
             "vercel deploy",
             "vercel ls",
@@ -552,15 +465,18 @@ fn other_clouds() {
             "heroku apps",
             "heroku logs --tail",
             "heroku apps:info -a x",
+            "heroku pg:backups:capture",
             "wrangler deploy",
             "wrangler dev",
             "wrangler tail",
             "wrangler kv namespace list",
             "firebase deploy",
             "firebase projects:list",
+            "firebase database:get /",
             "hcloud server list",
             "scw instance server list",
             "oci compute instance list",
+            "oci os object list --bucket-name b",
             "eksctl get cluster",
             "eksctl create cluster",
             "kops get clusters",
@@ -583,14 +499,28 @@ fn other_clouds() {
             ("gcloud storage rm -r gs://b", DESTROY),
             ("gcloud storage rm gs://b/o", DESTROY),
             ("gcloud alpha storage rm gs://b/o", DESTROY),
+            (
+                "gcloud storage rsync -r . gs://b --delete-unmatched-destination-objects",
+                DESTROY,
+            ),
+            (
+                "gcloud storage rsync --delete-unmatched-destination-objects -r . gs://b",
+                DESTROY,
+            ),
             ("gcloud kms keys versions destroy 1 --key k", DESTROY),
             ("gcloud --format json compute instances delete vm", DESTROY),
+            ("gcloud firestore bulk-delete --collection-ids=x", DESTROY),
+            (
+                "gcloud compute instance-groups managed delete-instances mig --instances=a",
+                DESTROY,
+            ),
             ("gsutil rm -r gs://bucket", DESTROY),
             ("gsutil -m rm -r gs://bucket/**", DESTROY),
             ("gsutil rm gs://bucket/obj", DESTROY),
             ("gsutil rb gs://bucket", DESTROY),
             ("gsutil -m rsync -d -r dir gs://bucket", DESTROY),
             ("gsutil rsync -dr dir gs://bucket", DESTROY),
+            ("gsutil rsync -d . gs://b", DESTROY),
             ("az group delete --name rg --yes", DESTROY),
             ("az group delete -n rg -y", DESTROY),
             ("az vm delete -g rg -n vm", DESTROY),
@@ -598,6 +528,10 @@ fn other_clouds() {
             ("az aks delete -g rg -n c", DESTROY),
             ("az storage blob delete -c c -n b", DESTROY),
             ("az storage blob delete-batch -s c", DESTROY),
+            (
+                "az storage remove --account-name a -c c --recursive",
+                DESTROY,
+            ),
             ("az keyvault purge -n kv", DESTROY),
             ("az resource delete --ids x", DESTROY),
             ("az sql db delete -g rg -s s -n d", DESTROY),
@@ -606,6 +540,10 @@ fn other_clouds() {
             ("doctl compute droplet d web", DESTROY),
             ("doctl -t $TOKEN compute droplet delete web", DESTROY),
             ("doctl kubernetes cluster delete c", DESTROY),
+            (
+                "doctl kubernetes cluster node-pool delete-node c p n",
+                DESTROY,
+            ),
             ("doctl databases delete id", DESTROY),
             ("doctl apps delete id", DESTROY),
             ("flyctl apps destroy app", DESTROY),
@@ -615,6 +553,17 @@ fn other_clouds() {
             ("fly machine destroy m", DESTROY),
             ("fly machine rm m", DESTROY),
             ("fly -a app apps destroy app", DESTROY),
+            // flyctl's aliases of a group and of a verb.
+            ("fly m rm abc", DESTROY),
+            ("fly m remove abc", DESTROY),
+            ("fly m destroy abc", DESTROY),
+            ("fly vol rm v", DESTROY),
+            ("fly vol delete v", DESTROY),
+            ("fly volumes remove v", DESTROY),
+            ("fly apps rm app", DESTROY),
+            ("fly apps remove app", DESTROY),
+            ("flyctl apps rm app", DESTROY),
+            ("fly -a app apps rm app", DESTROY),
             ("vercel remove app", DESTROY),
             ("vercel rm app --yes", DESTROY),
             ("vercel project rm app", DESTROY),
@@ -624,6 +573,8 @@ fn other_clouds() {
             ("heroku apps:destroy x", DESTROY),
             ("heroku apps destroy -a x", DESTROY),
             ("heroku addons:destroy db -a x", DESTROY),
+            ("heroku addons:delete x", DESTROY),
+            ("heroku pg:backups:delete b001", DESTROY),
             ("wrangler delete", DESTROY),
             ("wrangler delete --name w", DESTROY),
             ("wrangler d1 delete db", DESTROY),
@@ -634,11 +585,13 @@ fn other_clouds() {
             ("wrangler secret delete KEY", DESTROY),
             ("firebase projects:delete p", DESTROY),
             ("firebase firestore:delete --all-collections", DESTROY),
+            ("firebase database:remove / --force", DESTROY),
             ("hcloud server delete web", DESTROY),
             ("scw instance server terminate s", DESTROY),
             ("scw instance server delete s", DESTROY),
             ("oci compute instance terminate --instance-id i", DESTROY),
             ("oci os bucket delete --name b", DESTROY),
+            ("oci os object bulk-delete --bucket-name b --force", DESTROY),
             ("eksctl delete cluster --name c", DESTROY),
             ("eksctl delete nodegroup --cluster c --name n", DESTROY),
             ("kops delete cluster --name c --yes", DESTROY),
@@ -646,8 +599,85 @@ fn other_clouds() {
     );
 }
 
+/// An operand only known when it runs, after a verb that copies, runs, reads
+/// or sets something, does not make an everyday cloud line unknown; a verb
+/// that deletes is still read behind it.
 #[test]
-fn wrapped_in_something_else() {
+fn everyday_cloud_lines_with_a_computed_operand_are_safe() {
+    check(
+        Shell::Posix,
+        &posix(),
+        &[
+            "gcloud container clusters get-credentials $C --zone z",
+            "gcloud builds submit --tag \"gcr.io/$P/app\"",
+            "gcloud auth activate-service-account --key-file $F",
+            "gcloud secrets versions access latest --secret $S",
+            "gcloud projects add-iam-policy-binding $P --member $M --role r",
+            "gcloud compute instances add-metadata $VM",
+            "gcloud storage cp $F gs://b/",
+            "gcloud storage cp \"$F\" gs://b/",
+            "gcloud storage rsync $SRC gs://b",
+            "gcloud storage mv $A gs://b/",
+            "gcloud pubsub topics publish $T --message x",
+            "gcloud container images list-tags $IMG",
+            "gcloud sql connect $DB --user root",
+            "gcloud config configurations activate $C",
+            "heroku config:set FOO=$BAR",
+            "heroku config:set $(cat .env)",
+            "heroku config:get $KEY",
+            "heroku ps:scale web=$N",
+            "wrangler secret put $NAME",
+            "wrangler kv key put $K $V",
+            "wrangler r2 object put b/$K",
+            "wrangler tail $W",
+            "wrangler dev $F",
+            "wrangler d1 execute $DB --command \"select 1\"",
+            "vercel link --project $P",
+            "vercel pull --environment $E",
+            "vercel promote $URL",
+            "vercel redeploy $URL",
+            "hcloud context use $C",
+            "oci os object put -bn $B",
+            "oci ce cluster create-kubeconfig --cluster-id $ID",
+            "oci session authenticate --profile-name $P",
+            "az storage blob upload -f $F -c c -n x",
+            "az storage blob upload-batch -d c -s $DIR",
+            "az storage blob download -c c -n x -f $F",
+            "az storage blob download-batch -d $DIR -s c",
+            "az acr build -r $R -t img .",
+            "aws lambda invoke --function-name $F out.json",
+        ],
+        &[
+            // A word only known when it runs, where a verb could be, is
+            // still unknown.
+            ("heroku $verb", Rule::Unknown),
+            ("wrangler kv:namespace $verb x", Rule::Unknown),
+            ("gcloud compute $x instances", Rule::Unknown),
+            ("gcloud run $verb web", Rule::Unknown),
+            // A verb that deletes is read behind an operand too.
+            ("heroku config:set FOO=$BAR; heroku apps:destroy x", DESTROY),
+            ("gcloud compute instances delete $VM", DESTROY),
+            (
+                "gcloud storage cp $F gs://b/; gcloud storage rm gs://b/x",
+                DESTROY,
+            ),
+            (
+                "gcloud storage rsync $SRC gs://b --delete-unmatched-destination-objects",
+                DESTROY,
+            ),
+            (
+                "az storage blob upload -f $F -c c -n x; az group delete -n g -y",
+                DESTROY,
+            ),
+        ],
+    );
+}
+
+/// A destroying command is found inside a shell's script, behind a wrapper,
+/// a path, an assignment, in a list or a pipeline, and when a package runner
+/// runs it; quoted or searched for, it is only text.
+#[test]
+fn wrapped_or_run_by_something_else() {
     check(
         Shell::Posix,
         &posix(),
@@ -660,6 +690,8 @@ fn wrapped_in_something_else() {
             "docker ps -a | grep web",
             "kubectl get pods | grep delete",
             "terraform plan | tee plan.txt",
+            "npx cdk diff",
+            "pnpm dlx cdk synth",
         ],
         &[
             ("bash -c 'docker system prune -af'", DESTROY),
@@ -669,7 +701,6 @@ fn wrapped_in_something_else() {
             ("time terraform destroy", DESTROY),
             ("cd infra && terraform destroy -auto-approve", DESTROY),
             ("terraform plan && terraform destroy -auto-approve", DESTROY),
-            ("docker ps -aq | xargs docker rm -f", DESTROY),
             ("kubectl get ns -o name | xargs kubectl delete", DESTROY),
             ("/usr/local/bin/kubectl delete pod web", DESTROY),
             ("DOCKER_HOST=tcp://h:2375 docker system prune -af", DESTROY),
@@ -677,6 +708,12 @@ fn wrapped_in_something_else() {
                 "for ns in a b; do kubectl delete namespace $ns; done",
                 DESTROY,
             ),
+            ("npx cdk destroy", DESTROY),
+            ("pnpm dlx cdk destroy", DESTROY),
+            ("bunx cdk destroy", DESTROY),
+            ("npm exec -- cdk destroy", DESTROY),
+            ("npx wrangler delete", DESTROY),
+            ("npx sst remove", DESTROY),
         ],
     );
 }
@@ -733,12 +770,6 @@ fn powershell_and_cmd() {
             ),
         ],
     );
-    assert_eq!(
-        rules("docker rm -f $name", Shell::PowerShell, &windows()),
-        vec![DESTROY]
-    );
-    assert!(rules("docker rm -f \"$name\"", Shell::PowerShell, &windows()).is_empty());
-    assert!(rules("docker rm -f $env:NAME", Shell::PowerShell, &windows()).is_empty());
     check(
         Shell::Cmd,
         &windows(),
@@ -754,234 +785,6 @@ fn powershell_and_cmd() {
             ("terraform destroy -auto-approve", DESTROY),
             ("aws s3 rm s3://prod-bucket --recursive", DESTROY),
             ("docker volume rm %VOL%", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn a_flag_without_a_value_does_not_hide_the_command() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "cdk --json synth",
-            "minikube --logtostderr status",
-            "pulumi --logflow preview",
-            "aws --cli-auto-prompt s3 ls",
-            "gcloud --log-http storage ls gs://b",
-            "pulumi --stack dev preview",
-        ],
-        &[
-            ("cdk --json destroy", DESTROY),
-            ("cdk -j destroy", DESTROY),
-            ("cdk --ignore-errors destroy", DESTROY),
-            ("cdk --lookups destroy", DESTROY),
-            ("cdk --staging destroy", DESTROY),
-            ("cdk --notices destroy", DESTROY),
-            ("cdk --version-reporting destroy", DESTROY),
-            ("cdk --asset-metadata destroy", DESTROY),
-            ("cdk --path-metadata destroy", DESTROY),
-            ("cdk --app 'node app.js' destroy", DESTROY),
-            ("minikube --logtostderr delete --all", DESTROY),
-            ("minikube --skip_log_headers delete", DESTROY),
-            ("minikube --rootless delete", DESTROY),
-            ("minikube --profile dev delete", DESTROY),
-            ("pulumi --logflow destroy --yes", DESTROY),
-            ("aws --cli-auto-prompt s3 rb s3://x --force", DESTROY),
-            ("gcloud --log-http storage rm -r gs://b", DESTROY),
-            ("gcloud --user-output-enabled storage rm -r gs://b", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn pulumi_is_found_behind_its_own_stack_option() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[],
-        &[
-            ("pulumi --stack dev destroy --yes", DESTROY),
-            ("pulumi -s dev destroy", DESTROY),
-            ("pulumi --stack dev down", DESTROY),
-            ("pulumi --stack=dev destroy", DESTROY),
-            ("pulumi -s dev stack rm", DESTROY),
-            ("pulumi --stack dev stack rm dev", DESTROY),
-            ("pulumi --target urn:x destroy", DESTROY),
-            ("pulumi -m msg -s dev destroy", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn a_word_only_known_when_it_runs_is_unknown_past_the_first() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "gcloud compute instances describe $VM",
-            "gcloud compute instances list --filter=$F",
-            "az vm show -g rg -n $VM",
-            "az vm show --ids $ID",
-            "doctl compute droplet get $ID",
-            "kind create cluster --name $N",
-            "kind load docker-image $IMG",
-            "k3d cluster create $name",
-            "pulumi stack select $S",
-            "terragrunt plan $dir",
-            "terragrunt run-all plan $dir",
-        ],
-        &[
-            ("gcloud projects $verb prod", Rule::Unknown),
-            ("gcloud compute instances \"$action\" vm", Rule::Unknown),
-            ("az group $verb -n rg", Rule::Unknown),
-            ("doctl compute droplet $verb web", Rule::Unknown),
-            ("fly apps $verb app", Rule::Unknown),
-            ("kind delete $what", Rule::Unknown),
-            ("k3d cluster $verb dev", Rule::Unknown),
-            ("pulumi stack $verb dev", Rule::Unknown),
-            ("terragrunt run-all $cmd", Rule::Unknown),
-            ("terragrunt run --all -- $cmd", Rule::Unknown),
-            ("gcloud $group delete prod", DESTROY),
-            ("gcloud projects delete $id", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn a_variable_that_expands_to_several_words_is_computed() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &["docker rm -f \"$name\"", "docker rm -f \"$*\""],
-        &[
-            ("docker rm -f \"$@\"", DESTROY),
-            ("docker rm -f \"${@}\"", DESTROY),
-            ("docker rm -f \"${ids[@]}\"", DESTROY),
-            ("docker rm \"$@\"", DESTROY),
-            ("docker rm -f ${ids[@]}", DESTROY),
-        ],
-    );
-    check(
-        Shell::PowerShell,
-        &windows(),
-        &[
-            "docker rm -f \"$ids\"",
-            "docker rm -f $env:NAME",
-            "docker rm -f web",
-        ],
-        &[
-            ("docker rm -f $ids", DESTROY),
-            ("docker rm $ids", DESTROY),
-            ("docker rm -f @ids", DESTROY),
-            ("docker rm -f $containers.Id", DESTROY),
-            ("$ids = docker ps -aq; docker rm -f $ids", DESTROY),
-        ],
-    );
-    check(
-        Shell::Cmd,
-        &windows(),
-        &["docker rm -f \"%IDS%\"", "docker rm -f web"],
-        &[
-            ("docker rm -f %IDS%", DESTROY),
-            ("docker rm %IDS%", DESTROY),
-            ("docker rm -f !IDS!", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn a_rehearsal_turned_off_is_not_one() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "pulumi destroy --preview-only",
-            "pulumi destroy --yes --preview-only=true",
-            "helm uninstall api --dry-run",
-            "helm uninstall api --dry-run=true",
-        ],
-        &[
-            ("pulumi destroy --yes --preview-only=false", DESTROY),
-            ("pulumi destroy --preview-only=false", DESTROY),
-            (
-                "pulumi destroy --preview-only --preview-only=false",
-                DESTROY,
-            ),
-            ("helm uninstall api --dry-run=false", DESTROY),
-            ("helm uninstall api --dry-run --dry-run=false", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn flyctl_aliases_are_read() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "fly apps list",
-            "fly machine list",
-            "fly m list",
-            "fly vol list",
-        ],
-        &[
-            ("fly m rm abc", DESTROY),
-            ("fly m remove abc", DESTROY),
-            ("fly m destroy abc", DESTROY),
-            ("fly vol rm v", DESTROY),
-            ("fly vol delete v", DESTROY),
-            ("fly volumes remove v", DESTROY),
-            ("fly apps rm app", DESTROY),
-            ("fly apps remove app", DESTROY),
-            ("flyctl apps rm app", DESTROY),
-            ("fly -a app apps rm app", DESTROY),
-        ],
-    );
-}
-
-#[test]
-fn the_reason_for_an_unknown_command_reads_right() {
-    for (line, expected) in [
-        (
-            "aws $service",
-            "runs an aws command only known when it runs",
-        ),
-        ("az $x", "runs an az command only known when it runs"),
-        ("oc $x", "runs an oc command only known when it runs"),
-        ("oci $x", "runs an oci command only known when it runs"),
-        (
-            "eksctl $x",
-            "runs an eksctl command only known when it runs",
-        ),
-        ("sst $x", "runs an sst command only known when it runs"),
-        ("gcloud $x", "runs a gcloud command only known when it runs"),
-    ] {
-        let assessment = classify(line, Shell::Posix, &posix());
-        let findings = assessment.findings();
-        assert_eq!(findings.len(), 1, "{line}: {findings:?}");
-        assert_eq!(findings[0].rule, Rule::Unknown, "{line}");
-        assert_eq!(findings[0].reason, expected, "{line}");
-    }
-}
-
-#[test]
-fn a_package_runner_runs_the_infrastructure_cli() {
-    check(
-        Shell::Posix,
-        &posix(),
-        &[
-            "npx cdk diff",
-            "pnpm dlx cdk synth",
-            "heroku config:set $(cat .env)",
-        ],
-        &[
-            ("npx cdk destroy", DESTROY),
-            ("pnpm dlx cdk destroy", DESTROY),
-            ("bunx cdk destroy", DESTROY),
-            ("npm exec -- cdk destroy", DESTROY),
-            ("npx wrangler delete", DESTROY),
-            ("npx sst remove", DESTROY),
         ],
     );
 }
@@ -1029,7 +832,114 @@ fn sls_in_powershell_is_select_string() {
         &[],
         &[("sls.cmd remove", DESTROY), ("serverless remove", DESTROY)],
     );
-    // No alias in cmd or on a POSIX shell.
+    // No alias in cmd, nor on a POSIX shell (`infrastructure` holds that row).
     check(Shell::Cmd, &windows(), &[], &[("sls remove", DESTROY)]);
-    check(Shell::Posix, &posix(), &[], &[("sls remove", DESTROY)]);
+}
+
+/// The one finding of each line and the reason a prompt can show for it,
+/// for what it destroys or for the command only known when it runs.
+#[test]
+fn a_reason_and_a_target_a_prompt_can_show() {
+    for (line, rule, expected) in [
+        (
+            "kubectl delete namespace prod",
+            DESTROY,
+            "deletes a namespace and everything in it",
+        ),
+        (
+            "docker system prune -af --volumes",
+            DESTROY,
+            "removes unused containers, images and volumes",
+        ),
+        (
+            "docker system prune",
+            DESTROY,
+            "removes unused containers, networks and images",
+        ),
+        ("docker volume rm pgdata", DESTROY, "deletes volumes"),
+        (
+            "docker rm -f $(docker ps -aq)",
+            DESTROY,
+            "removes containers chosen when it runs",
+        ),
+        (
+            "kubectl delete pods --all",
+            DESTROY,
+            "deletes every object of a kind",
+        ),
+        (
+            "kubectl delete pods -A",
+            DESTROY,
+            "deletes objects in every namespace",
+        ),
+        ("kubectl delete pod web", DESTROY, "deletes cluster objects"),
+        ("helm uninstall api", DESTROY, "uninstalls a Helm release"),
+        (
+            "terraform apply -destroy",
+            DESTROY,
+            "destroys the infrastructure a configuration manages",
+        ),
+        (
+            "aws ec2 terminate-instances --instance-ids i-1",
+            DESTROY,
+            "terminates EC2 instances",
+        ),
+        (
+            "aws rds delete-db-instance --db-instance-identifier x",
+            DESTROY,
+            "deletes AWS resources",
+        ),
+        (
+            "aws s3 rm s3://b --recursive",
+            DESTROY,
+            "deletes every object under a prefix",
+        ),
+        (
+            "docker $cmd ps",
+            Rule::Unknown,
+            "runs a docker command only known when it runs",
+        ),
+        (
+            "aws $service",
+            Rule::Unknown,
+            "runs an aws command only known when it runs",
+        ),
+        (
+            "az $x",
+            Rule::Unknown,
+            "runs an az command only known when it runs",
+        ),
+        (
+            "oc $x",
+            Rule::Unknown,
+            "runs an oc command only known when it runs",
+        ),
+        (
+            "oci $x",
+            Rule::Unknown,
+            "runs an oci command only known when it runs",
+        ),
+        (
+            "eksctl $x",
+            Rule::Unknown,
+            "runs an eksctl command only known when it runs",
+        ),
+        (
+            "sst $x",
+            Rule::Unknown,
+            "runs an sst command only known when it runs",
+        ),
+        (
+            "gcloud $x",
+            Rule::Unknown,
+            "runs a gcloud command only known when it runs",
+        ),
+    ] {
+        assert_eq!(reason(line, rule), expected, "{line}");
+    }
+    let assessment = classify("kubectl delete namespace prod", Shell::Posix, &posix());
+    assert_eq!(
+        assessment.findings()[0].target.as_deref(),
+        Some("namespace")
+    );
 }
