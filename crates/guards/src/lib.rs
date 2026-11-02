@@ -34,6 +34,7 @@
 //! | Feature | Module | Judges |
 //! | --- | --- | --- |
 //! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace |
+//! | `code` (default) | `code` | not a guard: Python or JavaScript code, read for the acts it is certain to do (`code::read`) and for whether it is understood in full (`code::understand`); the shell guard reads inline code with it |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
 //! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
 //! | `secrets` | `secrets` | a text: the keys, tokens, passwords and personal data in it, and where; `secrets::find_spans` gives the ranges to scrub |
@@ -66,6 +67,26 @@
 //! assert_eq!(effect("cat ~/.ssh/id_ed25519", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Beyond));
 //! assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
 //! assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
+//! # }
+//! ```
+//!
+//! The code reader judges nothing: it says what code is certain to do, and a
+//! caller (the shell guard, for the code a line gives an interpreter) turns that
+//! into what it judges. Code it does not understand in full is never taken for
+//! harmless:
+//!
+//! ```
+//! # #[cfg(feature = "code")] {
+//! use milo_local_guards::code::{read, understand, Act, Language, Understanding};
+//!
+//! // A snippet that only computes does nothing to a file, and is understood.
+//! assert!(read(Language::Python, "print(1 + 1)").acts.is_empty());
+//! assert!(matches!(understand(Language::Python, "print(1 + 1)"), Understanding::Understood { .. }));
+//!
+//! // A delete is an act with its path, and code that imports `shutil` is not understood.
+//! let code = "import shutil\nshutil.rmtree('/home/me')";
+//! assert!(matches!(read(Language::Python, code).acts[..], [Act::Remove(_)]));
+//! assert_eq!(understand(Language::Python, code), Understanding::NotUnderstood);
 //! # }
 //! ```
 //!
@@ -177,6 +198,9 @@ pub use milo_guards_core::{Assessment, Finding, Paths, Protected, ProtectedKind,
 
 #[cfg(feature = "shell")]
 pub use milo_guards_shell as shell;
+
+#[cfg(feature = "code")]
+pub use milo_guards_code as code;
 
 #[cfg(feature = "file")]
 pub use milo_guards_file as file;

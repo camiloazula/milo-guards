@@ -1330,6 +1330,10 @@ impl Split {
     /// one the line shows: an assignment or a wrapper hands it one, or an
     /// earlier unit exported a variable, turned them all on (`set -a`) or
     /// read a file that may set them.
+    #[cfg_attr(
+        not(feature = "inline"),
+        allow(dead_code, reason = "only the reader of inline code asks")
+    )]
     pub(crate) fn environment_set(&self) -> bool {
         self.environment > 0
             || self.assigned_earlier
@@ -1386,6 +1390,10 @@ impl Split {
 
     /// Note inline Python read whole that imports a module, run from the
     /// folder the line has moved to (see [`Split::importing`]).
+    #[cfg_attr(
+        not(feature = "inline"),
+        allow(dead_code, reason = "only the reader of inline code notes an import")
+    )]
     pub(crate) fn imports(&mut self, code: &str) {
         self.importing.push(Importing {
             dir: self.dir.clone(),

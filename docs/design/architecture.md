@@ -5,11 +5,13 @@ promises, and how to add a guard.
 
 ## The crates
 
-There are three kinds of crate.
+There are four kinds of crate: the core, the guards, a reader that guards build
+on, and the front door.
 
 | Folder | Package | What it is |
 | --- | --- | --- |
 | `crates/core` | `milo-guards-core` | What every guard shares: `Paths`, the verdict types, the path model, the test kit. [Core](core.md). |
+| `crates/code` | `milo-guards-code` | A reader, not a guard: Python and JavaScript code in, the acts it is certain to do out, or that it is not understood. [Code](code.md). |
 | `crates/shell` | `milo-guards-shell` | The shell guard. [Shell](shell.md). |
 | `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/url` | `milo-guards-url` | The URL guard. [URL](url.md). |
@@ -24,10 +26,13 @@ shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
 `shell` is `milo_local_guards::shell`, `file` is `milo_local_guards::file`, `url`
-is `milo_local_guards::url` and `secrets` is `milo_local_guards::secrets`; the
-first three are on by default and `secrets` is not, because most callers want
-the others and not a table of patterns in their binary. A caller who wants one
-guard switches the rest off.
+is `milo_local_guards::url`, `code` is `milo_local_guards::code` and `secrets` is
+`milo_local_guards::secrets`; the first four are on by default and `secrets` is
+not, because most callers want the others and not a table of patterns in their
+binary. A caller who wants one guard switches the rest off. The shell guard
+reads inline Python and JavaScript with the code reader whether or not the
+front door shows it as `code`; the shell crate's own `inline` feature (on by
+default) is what links it, and off, every inline line is `unknown`.
 
 Core's trait is called `RuleName`, not `Rule`, because each guard names its own
 enum of rules `Rule` (`shell::Rule`), and the front door's root and a guard's
@@ -40,18 +45,27 @@ nothing.
 
 ```text
 milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
-        │                                              ▲
+        │                      │                        ▲
+        │                      └──►  milo-guards-code   │   (the shell's `inline` feature)
+        ├──►  milo-guards-code                          │
         ├──►  milo-guards-file  ────────────────────────┤
         ├──►  milo-guards-url  ─────────────────────────┤
         ├──►  milo-guards-secrets  ─────────────────────┤
         └───────────────────────────────────────────────┘
 ```
 
-- A guard depends on `milo-guards-core` and on its own parsers. Nothing else.
+- A guard depends on `milo-guards-core` and on its own parsers. Nothing else,
+  but a reader.
 - A guard never depends on another guard. If two guards need the same thing,
-  that thing moves into core.
+  that thing moves into core. The one exception is a reader: `milo-guards-code`
+  reads code of another language, judges nothing, and any guard may build on
+  it as on a parser (the shell guard does, behind its `inline` feature, on by
+  default). A reader depends on its own parsers only, never on a guard or on
+  another reader; the code reader needs nothing of the core and does not depend
+  on it.
 - Core depends on nothing but `std`.
-- The front door depends on core and on every guard, behind features.
+- The front door depends on core, on every guard and on the readers, behind
+  features.
 - Nothing depends on the front door.
 
 A guard that needs another guard's answer is not a guard. The caller asks both
@@ -64,7 +78,9 @@ through the shell guard, and neither guard knows of the other.
 guard depends on another guard, or when core depends on anything. It reads
 `package = "..."` and `path = "..."` values too, and the root manifest's
 `[workspace.dependencies]`, so a renamed dependency, a path dependency or a
-renamed workspace dependency on another guard is caught as well.
+renamed workspace dependency on another guard is caught as well. A reader (the
+folders listed in `READERS`, today `code`) is not a guard for it: a guard may
+depend on one, and a reader may depend on no guard and no other reader.
 
 ## The contract
 
@@ -101,6 +117,12 @@ What enforces each promise, and where:
 | Deterministic | no test of its own: it follows from the first promise |
 | No policy | no test of its own: a guard's API only reports findings |
 
+The code reader ([Code](code.md)) is not a guard but keeps the promises the
+same way: no I/O and no environment (the same contract test and clippy lists),
+deterministic, no policy (it says what code does, and never whether that is
+risky), never panics (its `tests/robust.rs`), and, for the fourth, what it
+cannot read is not understood, never understood by default.
+
 The contract test reads the source of every crate under `crates/`, and each
 crate's `build.rs` if it has one, and fails on any use of `std::fs`,
 `std::env`, `std::process`, `std::net`, `std::thread`, `std::os`,
@@ -130,11 +152,11 @@ permissive licences.
 
 ## Why tree-sitter is held at 0.26
 
-The shell guard parses with tree-sitter. Cargo lets a lockfile hold one
-version of a crate that has a `links` key, and tree-sitter's runtime has one.
-So the version the guard uses is the version of every caller that also parses
-with tree-sitter. A caller that holds it at 0.26 cannot take a guard that
-needs 0.27.
+The shell guard and the code reader parse with tree-sitter. Cargo lets a
+lockfile hold one version of a crate that has a `links` key, and tree-sitter's
+runtime has one. So the version the guard uses is the version of every caller
+that also parses with tree-sitter. A caller that holds it at 0.26 cannot take a
+guard that needs 0.27.
 
 For that reason the workspace holds tree-sitter at 0.26 and moves it only when
 the callers move. The grammars depend only on `tree-sitter-language`, so any

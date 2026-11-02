@@ -1226,6 +1226,30 @@ fn a_module_under_another_name_is_followed() {
 }
 
 #[test]
+fn a_loader_in_front_of_buns_code_flag_is_unknown_in_every_shell() {
+    // The code of such a line may not be told (a module the options load runs
+    // first, or the code is only known when it runs), so cmd says `unknown`
+    // for it as the other shells do, not that bun is the whole story.
+    for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+        for paths in [posix(), common::macos(), common::windows()] {
+            for line in [
+                "bun --import r.js -e \"$X\"",
+                "bun --require r.js -e \"$X\"",
+                "bun --loader .js:jsx -p \"$X\"",
+                "bun --import data:text/javascript -e \"console.log(1)\"",
+                "bun -F x run -e \"console.log(1)\"",
+            ] {
+                assert_eq!(
+                    rules(line, shell, &paths),
+                    [Rule::Unknown],
+                    "{shell:?} {line:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn on_windows_inline_code_is_not_read() {
     check(
         Shell::PowerShell,

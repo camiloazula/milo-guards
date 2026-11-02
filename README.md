@@ -27,6 +27,14 @@ verdict back in microseconds.
   also says whether the reads stay in the workspace: `git status` does, `cat
   ~/.ssh/id_ed25519` does not. `effect_paths` lists the places
   such a line reads, and how each is read (exactly, as a pattern, or as a walk), for a caller that checks them on the disk.
+- **code** reads Python and JavaScript (Node, Bun and Deno) and says what the
+  code is certain to do: the files it deletes, writes, reads and moves, the
+  programs it starts, with the paths it names. It judges nothing itself: the
+  shell guard uses it for the code a line gives an interpreter inline
+  (`python3 -c`, `node -e`, a here-document), where `python3 -c 'print(1)'` is
+  safe and `python3 -c "import shutil; shutil.rmtree('/home/me')"` is a delete
+  of your home directory. Code it does not understand in full is never taken
+  for harmless.
 - **file** judges one read or write of a path through a file API, which no shell
   line shows. It resolves the path by its spelling alone (`~`, `..`, Windows
   drives, shares, long paths, short names, any case): a read of
@@ -54,8 +62,8 @@ More guards will sit beside them.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell`, `file` and `url` features are on by
-default; `secrets` is opt in, because most callers want the others and not a table of
+Depend on `milo-local-guards` by git. The `shell`, `file`, `url` and `code` features are
+on by default; `secrets` is opt in, because most callers want the others and not a table of
 patterns in their binary.
 
 ```toml

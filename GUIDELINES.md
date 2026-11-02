@@ -12,12 +12,18 @@ in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How it fits together
 
-The workspace has three kinds of crate:
+The workspace has these kinds of crate: the core, the guards, a reader of code
+that guards build on, and the front door:
 
 - `crates/core` (`milo-guards-core`) - what every guard shares: the `Paths` a
   command is judged against, the verdict types (`Assessment`, `Finding`, the
   `RuleName` trait with its stable wire names), the path model, and a test kit
   behind the `testing` feature. [Its design](docs/design/core.md).
+- `crates/code` (`milo-guards-code`) - a reader, not a guard: `read` and
+  `understand`. It reads Python and JavaScript and says what the code is
+  certain to do, or that it does not understand it. It judges nothing; the
+  shell guard builds on it for inline code, behind its `inline` feature.
+  [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
   and redirects. [Its design](docs/design/shell.md).
@@ -56,8 +62,14 @@ crates depend on each other and how that is enforced is in
 ### Structure
 
 - **A guard depends on `core` and its own parsers only**, never on another
-  guard. A caller gets them together through `crates/guards`.
+  guard. A caller gets them together through `crates/guards`. The one
+  exception is a reader of code (`crates/code`), which judges nothing and
+  depends on no guard: a guard may build on it as on a parser.
   [Architecture](docs/design/architecture.md)
+- **Code that is not understood is never harmless.** The code reader keeps
+  every act it finds, and says `Understood` only for a few plain statements it
+  reads in full; a caller that finds no act in code that is not understood says
+  unknown. [Code](docs/design/code.md)
 - **Every shell rule reads structure, never raw text**: the program, its flags,
   operands and redirects, and where each path lands. [Shell](docs/design/shell.md)
 - **The secrets guard judges the value, never the spelling, and never shows
@@ -100,8 +112,8 @@ crates depend on each other and how that is enforced is in
 ## Where to look
 
 - Design pages: [docs/design/](docs/design/). [Architecture](docs/design/architecture.md),
-  [core](docs/design/core.md), [shell](docs/design/shell.md) and
-  [file](docs/design/file.md).
+  [core](docs/design/core.md), [code](docs/design/code.md),
+  [shell](docs/design/shell.md) and [file](docs/design/file.md).
   [url](docs/design/url.md) and [secrets](docs/design/secrets.md).
 - What belongs here: only what the code and `cargo`/`clippy` cannot tell you.
 - A convention a coding agent gets wrong: add the fix here, as one line, with
