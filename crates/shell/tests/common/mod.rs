@@ -1,7 +1,8 @@
 //! What the tables share: the directories commands run with, a check that
 //! names every row that came out wrong at once (and one that a row breaks one
 //! rule and not another), the makers of the paths a
-//! reads-only line lists, a clock for the timed tests, and (in [`inline`])
+//! reads-only line lists, a clock and a linear-time check for the timed
+//! tests, and (in [`inline`])
 //! the builders of inline-code rows.
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
@@ -300,4 +301,29 @@ pub fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
         })
         .min()
         .unwrap_or_default()
+}
+
+/// A line of a quarter of the size takes about a quarter of the time; one
+/// that is read in quadratic time takes sixteen times as long. `line` makes
+/// the line of a size; the two are compared with each other, so a slow or
+/// busy machine, which slows both, does not fail it.
+pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usize) -> String) {
+    let floor = Duration::from_millis(5);
+    let mut last = (Duration::ZERO, Duration::ZERO);
+    let linear = (0..3).any(|_| {
+        let small = took(&line(16 * 1024), shell, paths);
+        let big = took(&line(64 * 1024), shell, paths);
+        last = (small, big);
+        big <= 10 * small.max(floor)
+    });
+    assert!(
+        linear,
+        "{what}: 16 KB took {:?}, 64 KB took {:?}",
+        last.0, last.1
+    );
+}
+
+/// `part` repeated to fill `size` bytes, less `slack` for what is around it.
+pub fn filled(part: &str, size: usize, slack: usize) -> String {
+    part.repeat((size - slack) / part.len())
 }
