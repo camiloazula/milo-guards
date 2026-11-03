@@ -55,8 +55,9 @@ impl Checker<'_> {
             // Clusters.
             "kubectl" | "oc" => kubectl(args),
             "microk8s" => microk8s(args),
-            "k3s" => k3s(args, &[]),
-            "k0s" => k3s(args, K0S_VALUES),
+            "k3s" => k3s(args, &[], &["kubectl"]),
+            // `kc` is k0s's short name for its kubectl.
+            "k0s" => k3s(args, K0S_VALUES, &["kubectl", "kc"]),
             "minikube" => minikube(args),
             "helm" => helm(args),
             "helmfile" => first_word(
@@ -326,21 +327,19 @@ impl Checker<'_> {
                 "deletes Consul data or settings",
             ),
             // Repositories and sites.
-            "gh" => cloud(
+            "gh" => forge(
                 args,
                 &values,
-                2,
-                false,
-                |_, word| word == "delete" || word.starts_with("delete-"),
                 "deletes a GitHub repository, release or other object",
+                "deletes what a GitHub API call names",
+                "calls the GitHub API with a method only known when it runs",
             ),
-            "glab" => cloud(
+            "glab" => forge(
                 args,
                 &values,
-                2,
-                false,
-                |_, word| word == "delete" || word.starts_with("delete-"),
                 "deletes a GitLab project, release or other object",
+                "deletes what a GitLab API call names",
+                "calls the GitLab API with a method only known when it runs",
             ),
             "netlify" => cloud(
                 args,
@@ -359,6 +358,11 @@ impl Checker<'_> {
                 "deletes Supabase projects or their parts",
             ),
             // Storage.
+            "rclone" | "s3cmd" | "mc"
+                if rehearsed(args, &values, (read_as != "mc").then_some("-n")) =>
+            {
+                Safe
+            }
             "rclone" => first_word(
                 args,
                 &values,
@@ -409,7 +413,7 @@ fn is_select_string_alias(unit: &Unit) -> bool {
 /// Programs read as letters (`sst`) count by the sound of the first one.
 fn article(program: &str) -> &'static str {
     if program.starts_with(['a', 'e', 'i', 'o', 'u'])
-        || matches!(program, "sst" | "sls" | "scw" | "s3cmd" | "mc")
+        || matches!(program, "sst" | "sls" | "scw" | "s3cmd" | "mc" | "mcli")
     {
         "an"
     } else {
@@ -420,13 +424,15 @@ fn article(program: &str) -> &'static str {
 /// The program a front end, a build of another name or a second copy of a
 /// program is read as: each takes the same commands as the program it
 /// stands for. `kubecolor` colours kubectl's output, `microk8s.kubectl` is
-/// the kubectl a snap installs, `helm3` a second helm; `podman-remote`,
-/// `finch` (a nerdctl in a virtual machine) and `nerdctl.lima` take the
-/// commands of docker's own line.
+/// the kubectl a snap installs (and `microk8s.helm` and `microk8s.helm3` its
+/// helm), `helm3` a second helm; `podman-remote`, `finch` (a nerdctl in a
+/// virtual machine) and `nerdctl.lima` take the commands of docker's own
+/// line. `mcli` is the `MinIO` client where `mc` is Midnight Commander.
 fn read_as(key: &str) -> &str {
     match key {
         "kubecolor" | "microk8s.kubectl" => "kubectl",
-        "helm3" => "helm",
+        "helm3" | "microk8s.helm" | "microk8s.helm3" => "helm",
+        "mcli" => "mc",
         "podman-remote" => "podman",
         "finch" | "nerdctl.lima" => "nerdctl",
         _ => key,
@@ -445,7 +451,7 @@ fn values_of(key: &str) -> Vec<&'static str> {
         "colima" => &[COLIMA_VALUES],
         "kubectl" | "oc" | "k3s" => &[KUBECTL_VALUES],
         "k0s" => &[K0S_VALUES, KUBECTL_VALUES],
-        "microk8s" => &[SMALL_CLUSTER_VALUES, KUBECTL_VALUES],
+        "microk8s" => &[SMALL_CLUSTER_VALUES, KUBECTL_VALUES, HELM_VALUES],
         "minikube" => &[MINIKUBE_VALUES, KUBECTL_VALUES],
         "helm" => &[HELM_VALUES],
         "helmfile" => &[HELMFILE_VALUES],
@@ -1101,6 +1107,27 @@ const TILT_VALUES: &[&str] = &["--klog"];
 /// Options of gh and glab that take a value.
 const GH_VALUES: &[&str] = &["-R", "--repo"];
 
+/// Options of `gh api` and `glab api` that take a value.
+const GH_API_VALUES: &[&str] = &[
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-f",
+    "--raw-field",
+    "-F",
+    "--field",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "--input",
+    "--hostname",
+    "-p",
+    "--preview",
+    "--cache",
+];
+
 /// Options of netlify that take a value.
 const NETLIFY_VALUES: &[&str] = &["--auth", "--filter"];
 
@@ -1492,6 +1519,20 @@ fn rehearsal(args: &[Arg], values: &[&str], name: &str) -> bool {
         == Some(Given::On)
 }
 
+/// Whether an object-store line only rehearses: `--dry-run` (or `short`,
+/// its one-letter name, as rclone's and s3cmd's `-n`) is the last one
+/// written, and turned on.
+fn rehearsed(args: &[Arg], values: &[&str], short: Option<&str>) -> bool {
+    flags(args, values)
+        .into_iter()
+        .filter_map(|arg| match (arg.known(), short) {
+            (Some(text), Some(short)) if text == short => Some(Given::On),
+            _ => given(arg, "dry-run"),
+        })
+        .next_back()
+        == Some(Given::On)
+}
+
 /// A command whose only name is its first word.
 fn first_word<'a>(
     args: &'a [Arg],
@@ -1512,7 +1553,9 @@ fn first_word<'a>(
 /// A CLI whose delete verb is one of the first `depth` words (`gcloud
 /// compute instances delete vm`); `hit` is given the word before it. With
 /// `colon`, a `topic:command` word (`heroku config:set`) is a whole command,
-/// so the words after it are operands.
+/// so the words after it are operands. A verb that makes or sets something
+/// (see [`makes`]) takes names after it, never a verb: `argocd app create
+/// delete` makes an app named `delete`.
 fn cloud<'a>(
     args: &'a [Arg],
     values: &[&str],
@@ -1525,12 +1568,14 @@ fn cloud<'a>(
     let mut before = None;
     let mut unread = false;
     let mut leaf = false;
+    let mut made = false;
     for (at, word) in words.iter().take(depth).enumerate() {
         match word.known() {
             Some(text) => {
-                if hit(before, text) {
+                if !made && hit(before, text) {
                     return Destroys(reason, words.get(at + 1).copied());
                 }
+                made = made || makes(text);
                 // A verb that does not delete takes operands, not another
                 // verb: `describe $vm` names a machine.
                 leaf = leaf || leaf_verb(text) || (colon && text.contains(':'));
@@ -1613,6 +1658,17 @@ fn leaf_verb(text: &str) -> bool {
         || ["get-", "add-", "create-", "update-", "set-", "list-"]
             .iter()
             .any(|prefix| text.starts_with(prefix))
+}
+
+/// Whether a known word is a verb that makes, writes or sets one thing, which
+/// no CLI here uses as a group: `create`, `new`, `put`, `set`, and a longer
+/// name for creating (`service-instance-create`, `bucket-create`,
+/// `create-key`). What follows it is a name, even one that reads like a
+/// delete verb.
+fn makes(text: &str) -> bool {
+    matches!(text, "create" | "new" | "put" | "set")
+        || text.ends_with("-create")
+        || text.starts_with("create-")
 }
 
 /// Whether a word is an assignment (`FOO=$BAR`, `web=2`): a name, then `=`.
@@ -1760,7 +1816,7 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         "rmi" => return remove_images(rest, unit, split),
         "compose" => return compose(rest),
         "system" | "volume" | "container" | "image" | "network" | "stack" | "service" | "pod"
-        | "machine" | "kube" | "secret" | "config" | "node" | "swarm" => {}
+        | "machine" | "kube" | "play" | "secret" | "config" | "node" | "swarm" => {}
         _ => return Safe,
     }
     let Some((sub, after)) = command(rest, &[]) else {
@@ -1789,7 +1845,7 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         ("secret", "rm" | "remove") => Destroys("deletes swarm secrets", target),
         ("config", "rm" | "remove") => Destroys("deletes swarm configs", target),
         ("node", "rm" | "remove") => Destroys("removes nodes from a swarm", target),
-        ("swarm", "leave") if has_flag(after, Some('f'), Some("force")) => {
+        ("swarm", "leave") if has_flag(after, Some('f'), None) || turned_on(after, "force") => {
             Destroys("leaves a swarm, even as its last manager", target)
         }
         ("pod", "rm") => remove_containers(after, unit, split),
@@ -1799,7 +1855,8 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
             Destroys("deletes every virtual machine and its containers", target)
         }
         ("kube", "down") => Destroys("removes the pods a file created", target),
-        ("kube", "play") if has_flag(after, None, Some("down")) => {
+        // `play kube` is podman's older name for `kube play`.
+        ("kube", "play") | ("play", "kube") if has_flag(after, None, Some("down")) => {
             Destroys("removes the pods a file created", target)
         }
         _ => Safe,
@@ -1964,26 +2021,29 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
     }
 }
 
-/// `microk8s kubectl …`, and its own `reset`.
+/// `microk8s kubectl …`, `microk8s helm …` (and `helm3`), and its own
+/// `reset`.
 fn microk8s(args: &[Arg]) -> Say<'_> {
     let Some((cmd, rest)) = command(args, SMALL_CLUSTER_VALUES) else {
         return Safe;
     };
     match cmd.known() {
         Some("kubectl") => kubectl(rest),
+        Some("helm" | "helm3") => helm(rest),
         Some("reset") => Destroys("deletes every workload of a MicroK8s cluster", None),
         Some(_) => Safe,
         None => Unread(None),
     }
 }
 
-/// `k3s kubectl …` and `k0s kubectl …`.
-fn k3s<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+/// `k3s kubectl …` and `k0s kubectl …` (or `k0s kc …`): `names` are the
+/// program's names for its kubectl.
+fn k3s<'a>(args: &'a [Arg], values: &[&str], names: &[&str]) -> Say<'a> {
     let Some((cmd, rest)) = command(args, values) else {
         return Safe;
     };
     match cmd.known() {
-        Some("kubectl") => kubectl(rest),
+        Some(name) if names.contains(&name) => kubectl(rest),
         Some(_) => Safe,
         None => Unread(None),
     }
@@ -2067,9 +2127,14 @@ fn k3d(args: &[Arg]) -> Say<'_> {
 const TERRAFORM_DESTROYS: &str = "destroys the infrastructure a configuration manages";
 
 fn terraform(args: &[Arg]) -> Say<'_> {
-    let Some((cmd, rest)) = command(args, &[]) else {
-        return Safe;
-    };
+    match command(args, &[]) {
+        Some((cmd, rest)) => terraform_command(cmd, rest),
+        None => Safe,
+    }
+}
+
+/// A terraform command, `cmd`, with the arguments after it.
+fn terraform_command<'a>(cmd: &Arg, rest: &'a [Arg]) -> Say<'a> {
     match cmd.known() {
         Some("destroy") => Destroys(TERRAFORM_DESTROYS, None),
         Some("apply") if turned_on(rest, "destroy") => Destroys(TERRAFORM_DESTROYS, None),
@@ -2108,52 +2173,43 @@ fn or_else<'a>(said: Say<'a>, next: impl FnOnce() -> Say<'a>) -> Say<'a> {
 }
 
 /// terragrunt: terraform's commands, also run over every module (`run-all
-/// destroy`, `run --all -- destroy`, the old `destroy-all`). What follows a
-/// `--` is handed to terraform (or to the program `exec` runs), so its first
-/// word is the command; before it, any word is read.
+/// destroy`, `run --all -- state rm x`, the old `destroy-all`). `run-all`,
+/// `run` and `exec` come before the command, which is read like terraform
+/// reads it: terragrunt's own word, or else the first word after a `--`,
+/// which is handed to terraform (or to the program `exec` runs). A
+/// `-destroy` given to terragrunt counts for the `apply` it runs.
 fn terragrunt(args: &[Arg]) -> Say<'_> {
     let (own, passed) = match walk(args, TERRAGRUNT_VALUES).1 {
         Some(at) => (
             args.get(..at).unwrap_or_default(),
-            Some(args.get(at + 1..).unwrap_or_default()),
+            args.get(at + 1..).unwrap_or_default(),
         ),
-        None => (args, None),
+        None => (args, &[][..]),
     };
-    let words = words(own, TERRAGRUNT_VALUES);
-    let named = |names: &[&str]| {
-        words
-            .iter()
-            .any(|word| word.known().is_some_and(|text| names.contains(&text)))
-    };
-    let destroy = turned_on(own, "destroy");
-    if named(&["destroy", "destroy-all"]) || (named(&["apply"]) && destroy) {
-        return Destroys(TERRAFORM_DESTROYS, None);
-    }
-    if let Some((word, rest)) = passed.and_then(|passed| command(passed, &[])) {
-        match word.known() {
-            Some("destroy") => return Destroys(TERRAFORM_DESTROYS, None),
-            Some("apply") if destroy || turned_on(rest, "destroy") => {
-                return Destroys(TERRAFORM_DESTROYS, None)
-            }
-            // `exec -- terraform destroy`.
-            Some("terraform" | "tofu") => match terraform(rest) {
-                Safe => {}
-                said => return said,
-            },
-            Some(_) => {}
-            None => return Unread(None),
-        }
-    }
-    // A word only known when it runs where the command goes: nothing but
-    // `run-all`, `run` and their like come before it.
-    for word in &words {
+    let destroy = turned_on(args, "destroy");
+    let mut rest = own;
+    while let Some((word, after)) = command(rest, TERRAGRUNT_VALUES) {
         match word.known() {
             None => return Unread(None),
-            Some("run-all" | "run" | "hcl" | "exec") => {}
-            Some(_) => break,
+            Some("run-all" | "run" | "hcl" | "exec") => rest = after,
+            Some(_) => return terragrunt_command(word, after, destroy),
         }
     }
-    Safe
+    match command(passed, &[]) {
+        Some((word, after)) => terragrunt_command(word, after, destroy),
+        None => Safe,
+    }
+}
+
+/// The command terragrunt runs, `word`, with the arguments after it.
+fn terragrunt_command<'a>(word: &Arg, after: &'a [Arg], destroy: bool) -> Say<'a> {
+    match word.known() {
+        Some("destroy-all") => Destroys(TERRAFORM_DESTROYS, None),
+        Some("apply") if destroy => Destroys(TERRAFORM_DESTROYS, None),
+        // `exec -- terraform destroy`.
+        Some("terraform" | "tofu") => terraform(after),
+        _ => terraform_command(word, after),
+    }
 }
 
 fn pulumi(args: &[Arg]) -> Say<'_> {
@@ -2343,6 +2399,68 @@ fn nomad<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
             }
         },
     )
+}
+
+/// `gh` and `glab`: a `delete` or `delete-*` after a group (`repo delete`,
+/// `release delete-asset`), and an `api` call whose method is `DELETE`. An
+/// alias is the CLI's own setting, so `alias delete` is safe.
+fn forge<'a>(
+    args: &'a [Arg],
+    values: &[&str],
+    deletes: &'static str,
+    api_deletes: &'static str,
+    api_unread: &'static str,
+) -> Say<'a> {
+    let Some((group, rest)) = command(args, values) else {
+        return Safe;
+    };
+    match group.known() {
+        Some("alias") => Safe,
+        Some("api") => api(rest, api_deletes, api_unread),
+        _ => cloud(
+            args,
+            values,
+            2,
+            false,
+            |_, word| word == "delete" || word.starts_with("delete-"),
+            deletes,
+        ),
+    }
+}
+
+/// `gh api` and `glab api`: the method is the last `-X` or `--method`
+/// given (`-X DELETE`, `--method=delete`, `-XDELETE`), in any case. One only
+/// known when it runs may be `DELETE`.
+fn api<'a>(args: &'a [Arg], deletes: &'static str, unread: &'static str) -> Say<'a> {
+    let mut method = None;
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        let text = written(arg);
+        if arg.known() == Some("--") {
+            break;
+        }
+        if matches!(arg.known(), Some("-X" | "--method")) {
+            method = args.get(at).map(|value| value.known());
+            at += 1;
+        } else if let Some(value) = text
+            .strip_prefix("--method=")
+            .or_else(|| text.strip_prefix("-X"))
+        {
+            method = Some(arg.known().map(|_| value));
+        } else if arg
+            .known()
+            .is_some_and(|known| GH_API_VALUES.contains(&known))
+        {
+            at += 1;
+        }
+    }
+    let target = words(args, GH_API_VALUES).first().copied();
+    match method {
+        Some(Some(method)) if method.eq_ignore_ascii_case("delete") => Destroys(deletes, target),
+        Some(None) => Unread(Some(unread)),
+        _ => Safe,
+    }
 }
 
 fn gsutil(args: &[Arg]) -> Say<'_> {
