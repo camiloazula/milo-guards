@@ -488,6 +488,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
+                self.split.statement();
                 let list = self.split.list_start();
                 let mut cursor = node.walk();
                 let mut at = 0;
@@ -513,9 +514,14 @@ impl Walker<'_> {
                 self.split.list_end(list);
             }
             "pipeline_chain" => {
+                self.split.statement();
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // The right side of an `&&` after a chain that is not one
+                // command runs when the chain succeeded, not when a `cd` in
+                // it did (`-not (Set-Location s) && …`).
+                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
                 for (index, child) in stages.iter().enumerate() {
                     // A value that is piped on (`'DROP TABLE t' | psql`) is
                     // a stage that says it, as `Write-Output` would.
@@ -529,6 +535,9 @@ impl Walker<'_> {
                         _ => Stage { pipeline, index },
                     };
                     self.walk(*child, Some(stage), level + 1);
+                }
+                if !command {
+                    self.split.statement();
                 }
             }
             "command" => {
@@ -756,9 +765,10 @@ impl Walker<'_> {
     }
 
     /// `$env:TF_CLI_ARGS = '-destroy'`: terraform reads the value as
-    /// arguments of its command, in any later line that runs it. A value
-    /// that is not a plain `=` of a string written out (`+=`, a variable) is
-    /// only known when it runs.
+    /// arguments of its command, in any later line that runs it, as `zip`
+    /// reads `$env:ZIPOPT` (and `$env:ZIP`) as options. A value that is not
+    /// a plain `=` of a string written out (`+=`, a variable) is only known
+    /// when it runs.
     fn env_assignment(&mut self, node: Node<'_>) {
         let Some(left) = node.named_child(0) else {
             return;
@@ -773,10 +783,15 @@ impl Walker<'_> {
             .get(..4)
             .filter(|head| head.eq_ignore_ascii_case("env:"))
             .and_then(|_| name.get(4..))
-            .and_then(unit::tf_cli_args_folded)
         else {
             return;
         };
+        let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let terraform = unit::argument_variable(name);
+        if !zip && terraform.is_none() {
+            return;
+        }
+        let name = name.to_string();
         let right = node.child_by_field_name("value");
         let plain = right.is_some_and(|right| {
             self.source
@@ -798,13 +813,19 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
-        self.split.tf_cli_args.push((name, value));
+        match terraform {
+            Some(name) => self.split.note_argument_variable(name, value),
+            None => {
+                self.split.zip_env.set(&name, &value, true);
+            }
+        }
     }
 
     /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
     /// …`: a variable terraform reads as arguments, set to a value the guard
     /// does not read, so a later `terraform apply` is only known when it
-    /// runs. A wildcard in the name may match one.
+    /// runs (also `env:ZIPOPT` and `env:ZIP` for `zip`). A wildcard in the
+    /// name may match one.
     fn env_item(&mut self, key: &str, args: &[Arg]) {
         if !matches!(key, "set-item" | "new-item" | "set-content" | "add-content") {
             return;
@@ -819,15 +840,17 @@ impl Walker<'_> {
                 continue;
             };
             let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+            let name = unit::argument_variable(rest).or_else(|| {
                 rest.contains(['*', '?', '['])
                     .then(|| "TF_CLI_ARGS".to_string())
             });
             if let Some(name) = name {
                 self.split
-                    .tf_cli_args
-                    .push((name, Arg::Unknown(text.to_string())));
+                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
+            self.split
+                .zip_env
+                .set(rest, &Arg::Unknown(text.to_string()), true);
         }
     }
 
@@ -2426,7 +2449,14 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" => Arg::Known(unescape(source)),
+            "generic_token" => match bare_expansion(source) {
+                None => Arg::Known(unescape(source)),
+                Some(runs) => Arg::Template {
+                    text: unescape(source),
+                    source: source.into(),
+                    runs,
+                },
+            },
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -3074,15 +3104,20 @@ impl Walker<'_> {
         // terraform reads as arguments, or one only known when it runs, set
         // to a value the guard does not read.
         if method == "setenvironmentvariable" {
-            let name = match blocks::first_string(&children).map(|name| self.string(name)) {
-                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+            let named = blocks::first_string(&children).map(|name| self.string(name));
+            if let Some(Arg::Known(name)) = &named {
+                let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                self.split.zip_env.set(name, &value, true);
+            }
+            let name = match named {
+                Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };
             if let Some(name) = name {
-                self.split.tf_cli_args.push((
+                self.split.note_argument_variable(
                     name,
                     Arg::Unknown(unit::text(&node, self.source).to_string()),
-                ));
+                );
             }
         }
         if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {
@@ -3560,6 +3595,36 @@ fn attach_colon(args: &mut [Arg]) {
 }
 
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
+/// Whether a bare word holds an expansion PowerShell puts its value in, in
+/// argument mode as in a double-quoted string (`of=$d`, `x${d}`,
+/// `x$($d)`): `Some(true)` when one runs a command, `None` when there is
+/// none. A `$` after a backtick or inside single quotes is text, and so is
+/// one that starts no name (`a$`, `$:`).
+fn bare_expansion(source: &str) -> Option<bool> {
+    let mut found = None;
+    let mut single = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => single = !single,
+            '`' if !single => {
+                chars.next();
+            }
+            '$' if !single => match chars.peek() {
+                Some('(') => return Some(true),
+                Some(&next)
+                    if next.is_alphanumeric() || matches!(next, '_' | '{' | '?' | '^' | '$') =>
+                {
+                    found = Some(false);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    found
+}
+
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars();

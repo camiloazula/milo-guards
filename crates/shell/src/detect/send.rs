@@ -641,7 +641,15 @@ impl Checker<'_> {
         }
         for (at, unit) in units.iter().enumerate() {
             let unit = self.aliased(unit);
-            let own = self.secret_read(&unit, flow.stdin(at), &flow.written);
+            // Read from each other folder a `cd` before it may have left the
+            // line in too, as the rules judge it (see [`Unit::others`]).
+            let own = self
+                .secret_read(&unit, flow.stdin(at), &flow.written)
+                .or_else(|| {
+                    unit.others().into_iter().find_map(|dir| {
+                        self.secret_read(&unit.in_folder(dir), flow.stdin(at), &flow.written)
+                    })
+                });
             if let Some(slot) = flow.own.get_mut(at) {
                 *slot = own;
             }
@@ -1208,7 +1216,14 @@ impl Checker<'_> {
                 Place::Sensitive(words, Sensitivity::Secret) => Some(words),
                 Place::Home { .. } if home => Some(HOME),
                 Place::Top(ROOT) if home => Some(HOME),
-                _ => None,
+                // From a folder only known when it runs, a name may be one
+                // in the home directory, which that folder may be.
+                _ => crate::path::in_unknown_folder(unit.dir.as_ref(), arg, unit.shell).and_then(
+                    |homed| match self.place(unit.shell, unit.scope(), &homed, Access::Item) {
+                        Place::Sensitive(words, Sensitivity::Secret) => Some(words),
+                        _ => None,
+                    },
+                ),
             }
         };
         let words = words.or_else(|| {
@@ -1886,7 +1901,8 @@ fn copied_by(unit: &Unit, key: &str) -> Vec<(Arg, String, bool, bool)> {
     };
     match key {
         "cp" | "mv" | "install" | "ditto" | "ln" => {
-            let (sources, destination) = super::sources_and_destination(args, &super::COPY_VALUED);
+            let (sources, destination) =
+                super::sources_and_destination(args, &super::COPY_VALUED, unit.shell);
             let whole = key == "ditto"
                 || has_flag(args, Some('r'), Some("recursive"))
                 || has_flag(args, Some('R'), None)

@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use super::{add, MAX_WRAPPERS};
-use crate::unit::{Arg, Split, Unit};
+use crate::unit::{option_start, Arg, Split, Unit};
 use crate::{Rule, Shell};
 
 /// The most work `find -exec` may be read to do for one line, in all the
@@ -90,6 +90,103 @@ fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
             found.startup = Rc::clone(&unit.startup);
             add(split, found, depth);
         }
+    }
+}
+
+/// The tests of `find` whose next argument is a pattern, a number or a
+/// type.
+pub(crate) const FIND_VALUED: [&str; 28] = [
+    "-name",
+    "-iname",
+    "-path",
+    "-ipath",
+    "-wholename",
+    "-iwholename",
+    "-lname",
+    "-ilname",
+    "-regex",
+    "-iregex",
+    "-type",
+    "-xtype",
+    "-newer",
+    "-mtime",
+    "-mmin",
+    "-atime",
+    "-amin",
+    "-ctime",
+    "-cmin",
+    "-size",
+    "-perm",
+    "-user",
+    "-group",
+    "-maxdepth",
+    "-mindepth",
+    "-links",
+    "-samefile",
+    "-regextype",
+];
+
+/// Whether an argument of `find`'s expression, after the places it searches,
+/// is only known when it runs where only a test or an action can stand: not
+/// the value of a test or an action that takes one (`-name "$p"`), nor a
+/// word of the command an `-exec` runs. It may be `-delete`.
+pub(crate) fn find_unread_primary(args: &[Arg]) -> bool {
+    /// Actions and tests beside [`FIND_VALUED`] that take one value.
+    const ALSO_VALUED: [&str; 10] = [
+        "-printf", "-fprint", "-fprint0", "-fls", "-inum", "-uid", "-gid", "-fstype", "-used",
+        "-context",
+    ];
+    let mut at = 0;
+    while let Some(text) = args.get(at).and_then(Arg::known) {
+        match text {
+            "-H" | "-L" | "-P" => at += 1,
+            "-D" | "-O" => at += 2,
+            text if text.starts_with("-O") && text.len() > 2 => at += 1,
+            _ => break,
+        }
+    }
+    let after_starts = args
+        .get(at..)
+        .unwrap_or_default()
+        .iter()
+        .position(starts_expression);
+    let Some(first) = after_starts else {
+        return false;
+    };
+    let mut iter = args[at + first..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            None => return true,
+            Some(text) if FIND_VALUED.contains(&text) || ALSO_VALUED.contains(&text) => {
+                iter.next();
+            }
+            Some("-fprintf") => {
+                iter.next();
+                iter.next();
+            }
+            Some("-exec" | "-execdir" | "-ok" | "-okdir") => {
+                for word in iter.by_ref() {
+                    if matches!(word.known(), Some(";" | "+")) {
+                        break;
+                    }
+                }
+            }
+            Some(text) if text.starts_with("-newer") => {
+                iter.next();
+            }
+            Some(_) => {}
+        }
+    }
+    false
+}
+
+/// Whether an argument of `find` starts its expression, after the places
+/// it searches: a test, an action, `(` or `!`, written or only known when
+/// it runs and starting with `-` (`"-$A"`, see [`option_start`]).
+fn starts_expression(arg: &Arg) -> bool {
+    match arg.known() {
+        Some(text) => text.starts_with('-') || text == "(" || text == "!",
+        None => option_start(arg, Shell::Posix).is_some(),
     }
 }
 
@@ -217,10 +314,7 @@ pub(crate) fn find_starts(args: &[Arg]) -> Vec<Arg> {
         .get(at..)
         .unwrap_or_default()
         .iter()
-        .take_while(|arg| {
-            !arg.known()
-                .is_some_and(|text| text.starts_with('-') || text == "(" || text == "!")
-        })
+        .take_while(|arg| !starts_expression(arg))
         .cloned()
         .collect();
     if starts.is_empty() {

@@ -437,13 +437,17 @@ fn a_cd_target_with_a_part_after_a_dotdot_is_listed_both_ways() {
         ]
     };
     let four = both("/home/me/work/repo/etc", "/home/me/work/repo/link/../etc");
-    for line in [
-        "cd link/../etc && cat hosts",
-        "cd link/../etc; cat ./hosts",
-        "cd link/../etc\ncat hosts",
-        "pushd link/../etc && cat hosts",
+    // Without `&&` the `cd` may have failed, and the line read `hosts` where
+    // it was.
+    let mut stayed = four.clone();
+    stayed.insert(2, exact("/home/me/work/repo/hosts"));
+    for (line, want) in [
+        ("cd link/../etc && cat hosts", &four),
+        ("cd link/../etc; cat ./hosts", &stayed),
+        ("cd link/../etc\ncat hosts", &stayed),
+        ("pushd link/../etc && cat hosts", &four),
     ] {
-        lists(Shell::Posix, &paths, &[(line, four.clone())]);
+        lists(Shell::Posix, &paths, &[(line, want.clone())]);
         assert!(
             places(line, &paths).contains(&"/etc/hosts".to_string()),
             "{line}"
@@ -695,7 +699,10 @@ fn powershell_and_cmd_paths_keep_their_dotdot_too() {
             ),
             (
                 r"cd src; Get-Content ..\x",
+                // The `cd` may have failed, and the line read `..\x` where
+                // it was.
                 vec![
+                    exact(r"C:\Users\me\dev\repo\..\x"),
                     exact(r"C:\Users\me\dev\repo\src"),
                     exact(r"C:\Users\me\dev\repo\src\..\x"),
                 ],

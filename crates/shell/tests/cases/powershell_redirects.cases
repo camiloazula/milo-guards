@@ -29,8 +29,10 @@ powershell safe | echo x 1>&2
 powershell safe | echo "x>..\\y.txt"
 powershell safe | echo 'x>..\\y.txt'
 powershell safe | echo "a","b>..\\y.txt"
-# `Set-Location sub` has moved by the time the next command runs.
-powershell safe | Set-Location sub; echo x 1> ..\\x.txt
+# `Set-Location sub` has moved by the time the next command runs, when it
+# did not fail.
+powershell safe | Set-Location sub && echo x 1> ..\\x.txt
+powershell finds=overwrite | Set-Location sub; echo x 1> ..\\x.txt
 powershell finds=overwrite | echo x 1> ..\\x.txt
 powershell finds=overwrite | Write-Output x 1> ..\\x.txt
 powershell finds=overwrite | echo x>..\\x.txt
