@@ -2813,7 +2813,10 @@ impl Walker<'_> {
                     .children(&mut cursor)
                     .find(|child| !child.is_named())
                     .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
-                Some(heredoc_fed(raw, strips, quoted))
+                // Whether an expansion in the body runs a command, as the
+                // grammar reads it: a quoted delimiter expands nothing.
+                let runs = !quoted && lost.iter().copied().chain(body.copied()).any(runs_command);
+                Some(heredoc_fed(raw, strips, quoted, runs))
             }
             _ => None,
         }
@@ -2878,6 +2881,7 @@ impl Walker<'_> {
                 let mut value = String::new();
                 let mut template = String::new();
                 let mut partial = false;
+                let mut runs = false;
                 let mut cursor = node.walk();
                 for part in node.children(&mut cursor) {
                     // The grammar leaves a `$$` out of the named parts when
@@ -2900,8 +2904,11 @@ impl Walker<'_> {
                             value.push_str(&text);
                             template.push_str(&text);
                         }
-                        Arg::Template { text, .. } => {
+                        Arg::Template {
+                            text, runs: hole, ..
+                        } => {
                             partial = true;
+                            runs |= hole;
                             template.push_str(&text);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null
@@ -2911,6 +2918,7 @@ impl Walker<'_> {
                             ) =>
                         {
                             partial = true;
+                            runs |= runs_command(part);
                             template.push_str(OPAQUE);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null => {
@@ -2921,7 +2929,8 @@ impl Walker<'_> {
                 if partial {
                     Arg::Template {
                         text: template,
-                        source: source.to_string(),
+                        source: source.into(),
+                        runs,
                     }
                 } else {
                     Arg::Known(value)
@@ -2949,6 +2958,7 @@ impl Walker<'_> {
         let mut value = String::new();
         let mut template = String::new();
         let mut partial = false;
+        let mut runs = false;
         let mut at = start;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -2969,11 +2979,13 @@ impl Walker<'_> {
                     }
                     Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
+                        runs |= runs_command(child);
                         template.push_str(OPAQUE);
                     }
                 },
                 _ => {
                     partial = true;
+                    runs |= runs_command(child);
                     template.push_str(OPAQUE);
                 }
             }
@@ -2985,7 +2997,8 @@ impl Walker<'_> {
         if partial {
             Arg::Template {
                 text: template,
-                source: source.to_string(),
+                source: source.into(),
+                runs,
             }
         } else {
             Arg::Known(value)
@@ -3024,7 +3037,7 @@ impl Walker<'_> {
 /// as an expansion). A body with both an escaped and an expanding `$` or
 /// backtick is known only when it runs: a template reads each `$` it holds as
 /// an expansion, and would take a character the client gets as it is for one.
-fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool, runs: bool) -> Arg {
     let lines: String = if strips {
         raw.split_inclusive('\n')
             .map(|line| line.trim_start_matches('\t'))
@@ -3059,10 +3072,19 @@ fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
         (true, true) => Arg::Unknown(raw.to_string()),
         (false, true) => Arg::Template {
             text,
-            source: raw.to_string(),
+            source: raw.into(),
+            runs,
         },
         (_, false) => Arg::Known(text),
     }
+}
+
+/// Whether `node` is a command substitution (`$(…)`, a backtick), or holds
+/// one (`${x:-$(…)}`, `$(( $(…) ))`): an expansion that runs a command.
+fn runs_command(node: Node<'_>) -> bool {
+    let mut runs = false;
+    unit::for_each_node(node, |inner| runs |= inner.kind() == "command_substitution");
+    runs
 }
 
 /// One node of the fork-bomb scan, with its children still to read.
