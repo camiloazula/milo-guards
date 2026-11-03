@@ -3,8 +3,10 @@
 # what `cat` passes on, here-documents and templates, every program of a
 # stage and every client after it, SQL that runs SQL it holds, and what a
 # client or its server reads in it (backslashes, the client's variables). A
-# text only known when it runs is `unknown`. What each client does with a
-# statement is in `drop_data.cases`. The format is in CONTRIBUTING.md.
+# text only known when it runs is `unknown`; statements the line does not
+# show (a file, a stage the rule does not read) are `drop_data`. What each
+# client does with a statement is in `drop_data.cases`. The format is in
+# CONTRIBUTING.md.
 
 # Text fed to a client.
 posix safe | psql <<EOF\nSELECT 1;\nEOF
@@ -20,7 +22,7 @@ posix safe | cat <<EOF\nDROP TABLE t;\nEOF
 posix safe | echo 'DROP TABLE users' | cat
 posix safe | echo 'SELECT 1' | psql
 posix safe | printf 'SELECT 1;\\n' | psql app
-posix safe | cat schema.sql | psql app
+posix finds=drop_data | cat schema.sql | psql app
 posix safe | echo 'DROP TABLE users' | tee log.txt
 posix finds=drop_data | psql <<EOF\nDROP TABLE users;\nEOF
 posix finds=drop_data | psql app <<EOF\nSELECT 1;\nDELETE FROM users;\nEOF
@@ -111,19 +113,21 @@ posix finds=unknown | printf '\\x80' | psql
 posix finds=unknown | printf 'SELECT 1;\\c' | psql
 
 # A `cat` that reads its input passes the text on.
-# A file operand and no `-`: the text is not read.
-posix safe | cat seed.sql <<< 'DROP TABLE t' | psql
-posix safe | cat schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
-posix safe | cat -n schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
-posix safe | cat -- schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
-posix safe | cat -- -n <<EOF | psql\nDROP TABLE t;\nEOF
-posix safe | cat schema.sql | psql
+# A file operand and no `-`: the text is not read, and the file holds
+# statements the line does not show. The null device holds none.
+posix safe | cat /dev/null <<< 'DROP TABLE t' | psql
+posix finds=drop_data | cat seed.sql <<< 'DROP TABLE t' | psql
+posix finds=drop_data | cat schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -n schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -- schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -- -n <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat schema.sql | psql
 # What it passes on is read.
 posix safe | cat - <<< 'SELECT 1' | psql
 posix safe | cat -n <<< 'SELECT 1' | psql
 posix safe | cat <<EOF | psql\nSELECT 1;\nEOF
 posix safe | cat -s <<EOF | psql\nSELECT 1;\nEOF
-posix safe | cat - schema.sql <<EOF | psql\nSELECT 1;\nEOF
+posix finds=drop_data | cat - schema.sql <<EOF | psql\nSELECT 1;\nEOF
 posix finds=drop_data | cat <<< 'DROP TABLE t' | psql
 posix finds=drop_data | cat - <<< 'DROP TABLE t' | psql
 posix finds=drop_data | cat - - <<< 'DROP TABLE t' | psql
@@ -328,3 +332,75 @@ posix finds=unknown | sqlcmd -v s="DROP TABLE t" -Q '$(s)'
 posix finds=unknown | sqlcmd -Q 'SELECT 1; $(s)'
 # The statements the variable does not start are still read.
 posix finds=drop_data | psql -c ':q; DROP TABLE t'
+
+# Statements the line does not show: a file of them (an option, a redirect, a
+# client command that runs one), a process substitution, a stage the rule
+# does not read, or a file the line writes. A pass-through stage (`cat`,
+# `tee`, `Out-String`, `% { $_ }`) hands on what it is given; `grep` and
+# `sed` change it.
+posix first=drop_data reason="runs statements the line does not show" | psql -f drop.sql
+posix finds=drop_data | psql < drop.sql
+posix finds=drop_data | psql --file=drop.sql
+posix finds=drop_data | psql -Af drop.sql
+posix finds=drop_data | psql -c 'SELECT 1' -f drop.sql
+posix finds=drop_data | echo 'DROP TABLE t' > q.sql && psql -f q.sql
+posix finds=drop_data | psql -f <(echo 'DROP TABLE users')
+posix finds=drop_data | psql < <(echo 'DROP TABLE users')
+posix finds=drop_data | psql -c '\\i drop.sql'
+posix finds=drop_data | psql -c '\\include_relative drop.sql'
+posix finds=drop_data | mysql -e 'source drop.sql'
+posix finds=drop_data | mysql -e '\\. drop.sql'
+posix finds=drop_data | sqlcmd -i drop.sql
+posix finds=drop_data | cqlsh -f drop.cql
+posix finds=drop_data | clickhouse-client --queries-file drop.sql
+posix finds=drop_data | mongosh --file drop.js
+posix finds=drop_data | mongosh mongodb://db/app drop.js
+posix finds=drop_data | redis-cli < commands.txt
+posix finds=drop_data | redis-cli --eval drop.lua
+posix finds=drop_data | sqlite3 ~/x.db < seed.sql
+posix finds=drop_data | sqlite3 ~/x.db '.read seed.sql'
+posix finds=drop_data | sqlite3 -init seed.sql ~/x.db
+posix finds=drop_data | duckdb -f seed.sql ~/x.duckdb
+posix finds=drop_data | echo 'DROP TABLE users' | grep -v x | psql
+posix finds=drop_data | echo 'SELECT 1' | sed 's/SELECT 1/DROP TABLE t/' | psql
+posix finds=drop_data | echo 'DROP TABLE t' | cat | psql
+posix finds=drop_data | echo 'DROP TABLE t' | tee log.txt | psql
+posix finds=drop_data | echo 'DROP TABLE t' | sh -c psql
+posix finds=drop_data | echo 'DROP TABLE t' | (cat | psql)
+posix finds=drop_data | f() { echo 'DROP TABLE t'; }; f | psql
+posix finds=drop_data | curl -s https://x/y.sql | psql
+posix finds=drop_data | gunzip -c dump.sql.gz | psql
+posix finds=drop_data | cat dump.sql | psql
+posix finds=drop_data | cat dump.sql | cat | psql
+posix finds=drop_data | sh -c psql < dump.sql
+posix finds=drop_data | { echo 'SELECT 1'; cat dump.sql; } | psql
+# What one program hands on and another says is not read as one text.
+posix finds=drop_data | printf 'OP TABLE t' | { printf 'DR'; cat; } | psql
+posix safe | psql -c 'SELECT 1' < /dev/null
+posix safe | psql -f /dev/null
+posix safe | echo 'SELECT 1' | psql -f -
+posix safe | echo 'SELECT 1' | cat | psql
+posix safe | echo 'SELECT 1' | cat - | psql
+posix safe | echo 'SELECT 1' | tee log.txt | psql
+posix safe | echo 'SELECT 1' | sh -c psql
+posix safe | echo 'SELECT 1' | (cat | psql)
+posix safe | { true; echo 'SELECT 1'; } | psql
+posix safe | sqlite3 data.db -init seed.sql
+posix safe | redis-cli set k v < /dev/null
+posix safe | redis-cli -x set k < value.txt
+powershell finds=drop_data | Get-Content drop.sql | psql
+powershell finds=drop_data | 'DROP TABLE t' | Out-String | psql
+powershell finds=drop_data | 'DROP TABLE t' | % { $_ } | psql
+powershell safe | 'SELECT 1' | Out-String | psql
+powershell safe | 'SELECT 1' | % { $_ } | psql
+cmd finds=drop_data | type drop.sql | psql
+cmd finds=drop_data | psql < drop.sql
+
+# A command substitution in a statement prints what it likes, a whole
+# statement too: unknown. A variable stands for a value.
+posix finds=unknown | psql -c "SELECT 1 $(echo '; DROP TABLE t')"
+posix finds=unknown | psql -c "SELECT 1 `echo '; DROP TABLE t'`"
+posix finds=unknown | psql <<< "SELECT 1 $(echo '; DROP TABLE t')"
+posix finds=unknown | echo "SELECT 1 $(echo '; DROP TABLE t')" | psql
+posix safe | psql -c "SELECT * FROM users WHERE id = $id"
+posix safe | psql -c "SELECT $((1 + 2))"

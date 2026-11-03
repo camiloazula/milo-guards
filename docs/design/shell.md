@@ -78,6 +78,16 @@ run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
 
+`Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
+words after the program) with spaces into one command line, which the program
+splits as Windows programs do: spaces separate words outside `"…"`, `""` in a
+quote is a quote, and backslashes count only before a `"`. So
+`-ArgumentList '-c "DROP TABLE t"'` hands `psql` the two words `-c` and
+`DROP TABLE t`. The words no longer show that a value was quoted, so the word
+after `-ArgumentList` is its value whatever it starts with, and a word that
+starts with `-` and holds a space is the list given by position (`Start-Process
+psql '-c …'`), not a parameter.
+
 **Package runners** come off too, with each runner's own options skipped:
 `npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
 `yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
@@ -746,7 +756,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `stop_system` | Shuts the computer down, restarts it, or stops every process, or one the system needs: a stop whose target the guard reads for sure. |
 | `stop_unknown` | Stops processes the guard cannot name for sure: an id or a name only known when it runs, a listing, a substitution, a filter or an object it does not follow. It may be any process, the system's included. |
 | `send_secret` | Sends a key, a credential or the environment off the machine. |
-| `drop_data` | Deletes data in a database. |
+| `drop_data` | Deletes data in a database, or runs database statements the line does not show (a file, a stage it does not read). |
 | `destroy_resources` | Deletes containers, cluster objects, cloud resources or an infrastructure stack. |
 | `unknown` | Runs a program or a script known only when it runs. |
 | `unreadable` | The line, or part of it, cannot be read. |
@@ -2309,13 +2319,60 @@ Reading, inserting, creating and a statement that picks its rows are safe.
 
 **Where the statement is.** Only text on the line itself is read: an option, an
 operand, a here-document or here-string fed to the client, or the text a
-piped `echo`, `printf` or `Write-Output` (or a `cat` given a here-document)
-says. A `cat` reads its input, and passes the text fed to it on, when it has
-no file operand, or has `-` or `/dev/stdin` among its operands, whatever its
-options (`cat - <<< 'DROP TABLE t' | psql`, `cat schema.sql - <<EOF | psql`,
-`cat -s <<EOF | psql`); a `cat` of files only ignores its input. An operand
-only known when it runs may be `-`. The grammar leaves a lone `-` that is the
-last word before a here-document out of its tree, so the guard puts it back.
+piped `echo`, `printf` or `Write-Output` says, and what a stage that hands on
+its input passes on. A `cat` reads its input, and passes the text fed to it
+on, when it has no file operand, or has `-` or `/dev/stdin` among its
+operands, whatever its options (`cat - <<< 'DROP TABLE t' | psql`, `cat
+schema.sql - <<EOF | psql`, `cat -s <<EOF | psql`); a `cat` of files only
+ignores its input, and the files are statements the line does not show (see
+below). An operand only known when it runs may be `-`, or a file. The grammar
+leaves a lone `-` that is the last word before a here-document out of its
+tree, so the guard puts it back.
+
+**Statements the line does not show.** A client that runs statements the line
+does not show is `drop_data`, with the reason `runs statements the line does
+not show`: the file could drop anything, and the line cannot tell a seed from
+a teardown. That is a client given a file of statements, by its option (`psql
+-f`, `--file`; `sqlcmd -i`; `cqlsh -f`; `clickhouse-client --queries-file`;
+`mongosh --file` and a `.js` operand; `sqlite3 -init`, `duckdb -init` and
+`-f`; `redis-cli --eval`), by a redirect (`psql < drop.sql`, `psql < <(…)`),
+or by a client command in its text (`psql`'s `\i`, `\ir`, `\include` and
+`\include_relative`, `mysql`'s `source` and `\.`, `cqlsh`'s `SOURCE`, `.read`
+of a file in `sqlite3` and `duckdb`). `-f -` and `/dev/stdin` are its input,
+read as such, and the null device holds nothing (`psql -f /dev/null`, `psql
+… < /dev/null`). A process substitution is a file too (`psql -f <(echo …)`). A
+file the line writes before it runs it (`echo 'DROP TABLE t' > q.sql && psql
+-f q.sql`) is such a file: the guard does not follow what a file holds. A
+database file in the workspace is still the agent's own, so `sqlite3 data.db
+< seed.sql` is safe.
+
+The input of a client is followed out of the line: from a stage of a pipeline
+to the stage before it; from the first stage of a pipeline that runs in a
+stage of another (`echo … | (cat | psql)`) to the stage before that one; and
+from a command a client runs for (`sh -c psql`, a substitution) to that
+command's input, with the text fed to it and the files redirected onto it
+(`echo … | sh -c psql`, `sh -c psql < dump.sql`). The programs of a stage are
+read for what they hand on:
+
+- `echo`, `printf` and `Write-Output` with words say their text, as above.
+- A stage that hands on its input as it is passes on what it is given, read
+  the same way: a `cat` that reads its input, `tee`, and in PowerShell
+  `Out-String`, `Tee-Object`, `Write-Output` with no words and `ForEach-Object
+  { $_ }` (`%`). `echo 'DROP TABLE t' | cat | psql` drops the table and
+  `echo 'SELECT 1' | tee log.txt | psql` is safe.
+- `grep` and `sed` hand on what they are given, which is read, but leave lines
+  out or change them: `printf 'DELETE FROM t\nWHERE id = 1;'` through `grep
+  -v WHERE` is a `DELETE` of every row. What they hand on is not shown.
+- `true`, `false`, `:`, `test`, `[`, `sleep` and `wait` print nothing.
+- Anything else (a `cat` of files, `curl`, `gunzip -c`, `pg_dump`,
+  `Get-Content`, cmd's `type`, a function the line defines) hands on what
+  the line does not show.
+
+What one program of a stage hands on and another says (`{ printf DR; cat; }`)
+is a text that is not read as one, so it is not shown. With no command of its
+own, `redis-cli` runs the commands of its input, so a file or a stage the rule
+does not read is `drop_data` there; given a command (`redis-cli -x set k <
+value.txt`) its input is a value.
 On PowerShell a value that is piped
 on says its text as `Write-Output` would: a string or a here-string
 (`'DROP TABLE t' | psql`, `@'` … `'@ | psql`) is read, and anything else (a
@@ -2352,9 +2409,7 @@ Where shells differ in what they decode, the text is read as each of bash, zsh
 and dash prints it, and a statement any of them shows counts: dash leaves
 `\xHH` as written (and decodes `\n` next to it), bash's `echo -e` and zsh's
 leave `\NNN` with no 0 in front, and zsh and dash leave `\"`, `\'` and `\?` in a
-format. A file of statements (`psql -f
-migrations/001.sql`, `sqlite3 data.db < seed.sql`, `cat seed.sql | psql`) is
-the workspace's own code and is safe, as `python3 scripts/gen.py` is.
+format.
 
 An unquoted here-document is read as the shell feeds it: the shell treats its
 body as the inside of a double-quoted word, so a backslash before a newline
@@ -2573,7 +2628,12 @@ q.sql)`, a here-document that is just `$Q`) is `unknown`, with the reason `runs
 a database statement only known when it runs`. In a double-quoted
 POSIX statement the expansions stand as words, so `psql -c "DELETE FROM users
 WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
-`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A `$` that starts
+`drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A variable stands
+for a value, but a command substitution prints what it likes, a whole
+statement too: a statement with a `$(…)` (not arithmetic, `$((…))`) or a
+backtick outside single quotes is `unknown` as well as read
+(`psql -c "SELECT 1 $(echo '; DROP TABLE t')"`, the same in a here-string and
+in what `echo`, `printf` or `Write-Output` say). A `$` that starts
 an expansion ends the word before it, since the expansion may be empty:
 `psql -c "DROP$x TABLE t"`, `"TRUNCATE$x t"` and `"DELETE$opts FROM t"` are
 `drop_data`, and so is `mongosh --eval "db.dropDatabase$x()"`. A template
@@ -2610,22 +2670,41 @@ lists, the two-value `-lookaside` and `-pagecache` included, so none moves the
 file onto its value. Every server database is risky, because the line cannot
 tell a scratch database from production.
 
+**A client in a container or on another machine** is read as the client
+itself: `docker exec`, `docker container exec`, `podman exec` and `nerdctl
+exec` (their options end at the container, and `-e`, `-u`, `-w`,
+`--env-file`, `--detach-keys` and `--preserve-fds` take a value), `docker
+compose exec` and `docker-compose exec` (the service), `kubectl exec` and `oc
+exec` (the command after `--`, or after the pod in the old form), and `ssh
+HOST` (the words after the host, with `ssh`'s options before or after it).
+The client keeps the input of the line, so `cat dump.sql | docker exec -i db
+psql` runs statements the line does not show. A database file there is never
+the agent's own: `docker exec db sqlite3 data.db 'DROP TABLE t'` is
+`drop_data`. `ssh` joins its words with spaces into a line the remote shell
+reads, and a shell's `-c` line in a container (`docker exec db sh -c "psql
+-c …"`) is such a line too: one command of plain words is read as that
+command, as the shell splits it; a line that is more (an operator, a
+redirect, an expansion, a pattern, an assignment) is read only for whether a
+word of it names a client, and then is `unknown` with the reason `runs a
+database client behind a command the guard does not read` (`ssh db 'cd /srv
+&& psql -c …'`, `ssh db sudo -u postgres psql -c …`). So is a command in a
+container that is not a client or a shell and names one. Up to eight such
+layers are read (`ssh a ssh b psql …`).
+
 Migrations run by the project's own tool (`sqlx migrate run`, `rails
 db:migrate`) are safe: the guard reads no program that is not on its list.
 
-Not read, so the caller has to account for them: a statement behind a program
-the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
--c …`); a statement handed over by a file, a process substitution
-(`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
-`cat` (`echo … | sed … | psql`); stored procedures (`CALL p()`, `EXEC p`),
+Not read, so the caller has to account for them: a client started by `docker
+run`, `kubectl run` or `kubectl debug`; what a file of statements holds, even
+one the line writes; stored procedures (`CALL p()`, `EXEC p`),
 whatever they run; the
 text of a prepared statement that is not on the line (`EXECUTE s` after a
 `PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
 a `psql` variable or `sqlcmd` `$(var)` that does not start a statement
 (`WHERE a = :x`: it is read as a word, and may hold more than a value);
-`sqlcmd`'s `!!` and `GO`; a stage between `echo` and the client (`echo … |
-tee | psql`); other clients (`pgcli`, `mycli`, `litecli`, `pg_restore --clean`).
+`sqlcmd`'s `!!` and `GO`; other clients (`pgcli`, `mycli`, `litecli`,
+`pg_restore --clean`).
 
 ## Containers, clusters, infrastructure and the cloud
 

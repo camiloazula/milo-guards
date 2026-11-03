@@ -367,7 +367,27 @@ fn file_arg(file: &str, moved: bool) -> Arg {
 /// aliases, which `Params` reads as `-LiteralPath`; or first), its arguments in
 /// `-ArgumentList` (or after it), and `-Verb RunAs` to run it elevated.
 pub(super) fn start_process(unit: &Unit) -> Launch {
-    let params = Params::read(&unit.args);
+    // The value of `-ArgumentList` is often a quoted string that starts with
+    // `-` (`-ArgumentList '-c "…"'`), which the words no longer tell from a
+    // parameter: the word after it is its value, whatever it starts with. A
+    // word with a space in it is no parameter's name: it is the argument
+    // list given by position (`Start-Process psql '-c …'`).
+    let mut rest = Vec::new();
+    let mut listed = Vec::new();
+    let mut words = unit.args.iter();
+    while let Some(arg) = words.next() {
+        if names_argument_list(arg) {
+            listed.extend(words.next().cloned());
+        } else if arg
+            .known()
+            .is_some_and(|text| text.starts_with('-') && text.contains(char::is_whitespace))
+        {
+            listed.push(arg.clone());
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    let params = Params::read(&rest);
     let mut positional = params.positional.iter();
     let program = params
         .values(&["filepath", "path", "literalpath"])
@@ -377,18 +397,27 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
     let Some(program) = program else {
         return Launch::Itself;
     };
-    let mut args = Vec::new();
-    for arg in params
-        .values(&["argumentlist"])
-        .into_iter()
+    // The arguments are joined with spaces into one command line, which the
+    // program splits as Windows programs do: quotes hold spaces.
+    let given: Vec<&Arg> = listed
+        .iter()
+        .chain(params.values(&["argumentlist"]))
         .chain(positional.copied())
-    {
-        match arg {
-            Arg::Known(text) => args.extend(
-                text.split_whitespace()
-                    .map(|word| Arg::Known(word.to_string())),
-            ),
-            other => args.push(other.clone()),
+        .collect();
+    let mut args = Vec::new();
+    let known: Option<Vec<&str>> = given.iter().map(|arg| arg.known()).collect();
+    match known {
+        Some(texts) => args.extend(windows_words(&texts.join(" ")).into_iter().map(Arg::Known)),
+        None => {
+            for arg in given {
+                match arg {
+                    Arg::Known(text) => args.extend(
+                        text.split_whitespace()
+                            .map(|word| Arg::Known(word.to_string())),
+                    ),
+                    other => args.push(other.clone()),
+                }
+            }
         }
     }
     let mut wrappers = unit.wrappers.clone();
@@ -419,6 +448,74 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listed: Vec::new(),
         depth: unit.depth,
     }))
+}
+
+/// Whether `arg` is `Start-Process`'s `-ArgumentList` parameter, by its name,
+/// a start of it no other parameter has (`-ar`), or its alias `-Args`, with
+/// no value after a colon.
+fn names_argument_list(arg: &Arg) -> bool {
+    let Some(name) = arg.known().and_then(|text| text.strip_prefix('-')) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name == "args" || (name.len() > 1 && "argumentlist".starts_with(&name))
+}
+
+/// The words a Windows program reads from its command line, as the C runtime
+/// splits it: spaces and tabs separate words outside quotes, `"` opens and
+/// closes a quote (`""` inside one is a quote), and backslashes are literal
+/// except before a `"`, where each pair is one backslash and an odd one
+/// makes the quote literal.
+fn windows_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let mut count = 1;
+                while chars.peek() == Some(&'\\') {
+                    chars.next();
+                    count += 1;
+                }
+                started = true;
+                if chars.peek() == Some(&'"') {
+                    word.extend(std::iter::repeat_n('\\', count / 2));
+                    if count % 2 == 1 {
+                        chars.next();
+                        word.push('"');
+                    }
+                } else {
+                    word.extend(std::iter::repeat_n('\\', count));
+                }
+            }
+            '"' => {
+                started = true;
+                if quoted && chars.peek() == Some(&'"') {
+                    chars.next();
+                    word.push('"');
+                } else {
+                    quoted = !quoted;
+                }
+            }
+            ' ' | '\t' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                started = true;
+                word.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
 }
 
 /// cmd's `start`: a quoted title first, its `/` options, then the program.
