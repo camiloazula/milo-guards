@@ -142,8 +142,11 @@ posix safe | cd sub; (cd x && make) || echo failed; { ls; } > ../log
 posix safe | f() { (cd sub && make); }; f; f > log.txt
 posix safe | f() { x=$(cd sub && pwd); }; f; f > log.txt
 posix safe | f() ( cd sub; make ); f; f > log.txt
-# A `cd` that does reach the line still moves it.
-posix finds=overwrite | cd repos || exit 1; for d in */; do cd "$d"; done > ../pull.log
+# A `cd` that does reach the line still moves it, for what comes after the
+# loop; the loop's own redirect is opened before it runs, where `cd repos`
+# (which ran, or `exit` ended the line) took it.
+posix finds=overwrite | cd repos || exit 1; for d in */; do cd "$d"; done; echo x > ../pull.log
+posix safe | cd repos || exit 1; for d in */; do cd "$d"; done > ../pull.log
 posix finds=unknown | f() { cd sub; make; }; cd x; f > log.txt
 posix finds=unknown | f() { (cd a); cd sub; }; cd x; f > log.txt
 posix finds=read_secret | { cd sub; (cd x); } < ../../.ssh/id_rsa
@@ -324,6 +327,7 @@ posix finds=unknown | f(){ :; } > sub/x; cd ..; f(){ cd .; } & f
 posix safe | { cd sub; echo x; } > x.sh; bash x.sh
 posix safe | { cd sub; echo x; } >> x.sh; bash x.sh
 posix safe | { cd sub && echo x; } > x.sh; bash x.sh
+posix safe | { echo x; cd sub || exit; } > x.sh; bash x.sh
 posix safe | { cd sub; cd sub2; echo x; } > x.sh; bash x.sh
 posix safe | ls; { cd sub; echo x; } > x.sh; bash x.sh
 posix safe | if true; then cd sub; fi > x.sh; bash x.sh

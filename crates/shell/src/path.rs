@@ -818,14 +818,34 @@ pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {
         return path.clone();
     };
     // In PowerShell a rooted path with no drive (`\x`, `/x`) is the root of
-    // the drive the folder before it is on, which after a `cd` to another
-    // provider is that provider's, not the file system's.
+    // the drive or share the folder before it is on, which after a `cd` to
+    // another provider is that provider's, not the file system's.
     if shell == Shell::PowerShell && rooted(text) {
         return match root_of(dir) {
             Root::Plain => path.clone(),
-            Root::Drive(drive) => Arg::Known(format!("{drive}{text}")),
+            Root::Drive(drive) | Root::Share(drive) => Arg::Known(format!("{drive}{text}")),
             Root::Unknown => Arg::Unknown(text.clone()),
         };
+    }
+    // A relative path the file system provider names (`FileSystem::x`,
+    // `Microsoft.PowerShell.Core\FileSystem::x`) is from the folder the line
+    // is in, as a plain one is; after a `cd` to another provider, or to a
+    // place only known when it runs, where it lands is only known then.
+    if shell == Shell::PowerShell {
+        if let Some((qualifier, rest)) = text.split_once("::") {
+            let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+            if provider.eq_ignore_ascii_case("filesystem") && !rest.is_empty() {
+                let inner = Arg::Known(rest.to_string());
+                let joined = within(Some(dir), &inner, shell);
+                return if joined == inner {
+                    path.clone()
+                } else if file_system_folder(dir) {
+                    joined
+                } else {
+                    Arg::Unknown(text.clone())
+                };
+            }
+        }
     }
     // `~` is the home of the provider the folder is in, and only the file
     // system has one: elsewhere the `cd ~` fails and stays where it was, so
@@ -870,7 +890,7 @@ fn home(text: &str) -> bool {
 /// when it runs are not.
 fn file_system_folder(dir: &Arg) -> bool {
     match root_of(dir) {
-        Root::Plain => true,
+        Root::Plain | Root::Share(_) => true,
         Root::Drive(drive) => is_letter(drive.trim_end_matches(':')),
         Root::Unknown => false,
     }
@@ -889,6 +909,9 @@ enum Root {
     Plain,
     /// A drive of its own: `HKCU:`, `Function:`, `C:`.
     Drive(String),
+    /// A share of the file system, as its folder spells it:
+    /// `\\server\share`, `\\?\UNC\server\share`.
+    Share(String),
     /// Only known when it runs, or a provider path with no drive.
     Unknown,
 }
@@ -912,10 +935,52 @@ fn root_of_text(dir: &str) -> Root {
             Root::Unknown
         };
     }
+    if let Some(root) = share_root(dir) {
+        return root;
+    }
     match qualifier(dir, Shell::PowerShell) {
         Some((name, _)) => Root::Drive(format!("{name}:")),
         None => Root::Plain,
     }
+}
+
+/// The root of a folder spelled from two separators: a share
+/// (`\\server\share\x`, `\\?\UNC\server\share\x`) is its own root, a long
+/// path to a drive (`\\?\C:\x`) that drive's, and anything else (a device,
+/// a share with no name) has no root the guard can read. `None` for a folder
+/// that does not start so.
+fn share_root(dir: &str) -> Option<Root> {
+    let separator = |c: char| matches!(c, '\\' | '/');
+    let mut chars = dir.chars();
+    if !(chars.next().is_some_and(separator) && chars.next().is_some_and(separator)) {
+        return None;
+    }
+    let names: Vec<&str> = chars.as_str().split(separator).collect();
+    // The first `count` names, each a plain name, as one root.
+    let root = |count: usize| {
+        let first = names.get(..count)?;
+        first
+            .iter()
+            .all(|name| !matches!(*name, "" | "." | ".."))
+            .then(|| format!("\\\\{}", first.join("\\")))
+    };
+    let share = match names.first().copied() {
+        Some("?") => {
+            let rest = milo_guards_core::spelling::verbatim(dir).unwrap_or_default();
+            if let Some((letter, tail)) = rest.split_once(':') {
+                if is_letter(letter) && (tail.is_empty() || tail.starts_with(separator)) {
+                    return Some(Root::Drive(format!("{letter}:")));
+                }
+            }
+            names
+                .get(1)
+                .filter(|kind| kind.eq_ignore_ascii_case("unc"))
+                .and_then(|_| root(4))
+        }
+        Some(".") => None,
+        _ => root(2),
+    };
+    Some(share.map_or(Root::Unknown, Root::Share))
 }
 
 /// What a listing of `text` hands on, as a path the resolver reads: a
