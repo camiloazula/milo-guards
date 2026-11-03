@@ -1032,6 +1032,8 @@ as plain names they do not.
   when it runs. A quoted or escaped operator (`'.gi#t'`, `.gi\#t`) is itself,
   a `~` that starts the word is the home folder, and one in a bracket
   (`[~]`) is a member. A word with an expansion in it is read as written only.
+  Where each bracket closes is found in one pass from the end of the word, so
+  a long run of `[` that never closes is read in linear time.
 - **Bodies.** A function body or a loop may run after the option is on, so
   when the line turns it on anywhere, the line is read again with the words in
   them read as zsh reads them: `f() { rm -rf .gi#t; }; setopt extendedglob;

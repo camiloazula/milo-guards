@@ -149,13 +149,15 @@ pub(crate) enum Reading {
 
 /// The ranges of `chars` that are one element of a pattern each: a bracket
 /// expression as a whole (`[!.]`, `[[:alpha:]#]`), anything else one
-/// character. A quoted or escaped `[` opens nothing.
+/// character. A quoted or escaped `[` opens nothing. Linear in the word: a
+/// run of `[` that never closes does not scan to its end at each one.
 fn elements(chars: &[(char, bool)]) -> Vec<(usize, usize)> {
+    let closes = closes(chars);
     let mut out = Vec::new();
     let mut at = 0;
     while at < chars.len() {
         let end = if chars[at] == ('[', true) {
-            bracket_end(chars, at).unwrap_or(at)
+            bracket_end(chars, &closes, at).unwrap_or(at)
         } else {
             at
         };
@@ -168,8 +170,8 @@ fn elements(chars: &[(char, bool)]) -> Vec<(usize, usize)> {
 /// Where the bracket expression that opens at `open` closes: a `]` first in
 /// it (after a `!` or `^`) is a member, `[:alpha:]` inside it is one, and a
 /// `/` ends the part, so no bracket goes past one. `None` when nothing closes
-/// it, and the `[` is itself.
-fn bracket_end(chars: &[(char, bool)], open: usize) -> Option<usize> {
+/// it, and the `[` is itself. `closes` is [`closes`] of `chars`.
+fn bracket_end(chars: &[(char, bool)], closes: &[Option<usize>], open: usize) -> Option<usize> {
     let mut at = open + 1;
     if matches!(chars.get(at), Some(('!' | '^', _))) {
         at += 1;
@@ -177,19 +179,38 @@ fn bracket_end(chars: &[(char, bool)], open: usize) -> Option<usize> {
     if matches!(chars.get(at), Some((']', _))) {
         at += 1;
     }
-    while let Some(&(c, _)) = chars.get(at) {
-        match c {
-            ']' => return Some(at),
-            '/' => return None,
-            '[' if matches!(chars.get(at + 1), Some((':', _))) => {
-                let close = (at + 2..chars.len().saturating_sub(1))
-                    .find(|&j| chars[j].0 == ':' && chars[j + 1].0 == ']')?;
-                at = close + 2;
-            }
-            _ => at += 1,
-        }
+    closes.get(at).copied().flatten()
+}
+
+/// For each place in `chars`, and the end, the `]` that a bracket expression
+/// read on from there closes at: the first `]`, past whole `[:alpha:]`-style
+/// elements, before a `/` or the end; `None` when there is none. Read from
+/// the end, so each place is read once.
+fn closes(chars: &[(char, bool)]) -> Vec<Option<usize>> {
+    let len = chars.len();
+    // The first `:]` at or after each place.
+    let mut class_end = vec![None; len + 1];
+    for at in (0..len).rev() {
+        class_end[at] = if chars[at].0 == ':' && chars.get(at + 1).is_some_and(|c| c.0 == ']') {
+            Some(at)
+        } else {
+            class_end[at + 1]
+        };
     }
-    None
+    let mut closes = vec![None; len + 1];
+    for at in (0..len).rev() {
+        closes[at] = match chars[at].0 {
+            ']' => Some(at),
+            '/' => None,
+            '[' if chars.get(at + 1).is_some_and(|c| c.0 == ':') => class_end
+                .get(at + 2)
+                .copied()
+                .flatten()
+                .and_then(|close| closes.get(close + 2).copied().flatten()),
+            _ => closes[at + 1],
+        };
+    }
+    closes
 }
 
 /// How zsh reads a word with `extendedglob` on, as a plain pattern that
