@@ -1,0 +1,60 @@
+# The absolute path the system opens (`Resolver::opened`), with every `..`
+# kept where it was written. The system applies a `..` after it has followed
+# the link before it, so a caller that checks the disk needs the `..` that
+# `Resolver::absolute` applies by spelling. `home` gives the part below the
+# home directory (`~`).
+
+# A POSIX path keeps every `..` where it was written. After a link, `..` is
+# the parent of its target.
+posix opened=/home/me/work/repo/link/../etc/hosts | link/../etc/hosts
+posix opened=/home/me/work/repo/src/../README.md | src/../README.md
+posix opened=/home/me/work/repo/src/../a | ./src/../a
+posix opened=/home/me/work/repo/.. | ..
+posix opened=/home/me/work/repo/../x | ../x
+posix opened=/home/me/work/repo/../../x | ../../x
+posix opened=/home/me/work/repo/a/../../b | a/../../b
+posix opened=/home/me/work/repo/a/b/.. | a/b/..
+posix opened=/a/link/../x | /a/link/../x
+posix opened=/a/b/../c | /a/./b/../c
+posix home opened=/home/me/link/../x | /link/../x
+posix home opened=/home/me/../you | /../you
+# `.` is dropped, and so are an empty part and a closing separator.
+posix opened=/home/me/work/repo/a/b | ./a/./b
+posix opened=/home/me/work/repo/src/a | src//a/
+posix opened=/ | /
+# Nothing is above the root: `/..` is `/`, whatever is before it.
+posix opened=/ | /..
+posix opened=/etc | /../etc
+posix opened=/etc/../x | /../../etc/../x
+
+# A Windows path keeps its `..`, with backslashes and its drive.
+windows opened=C:\\Users\\me\\dev\\repo\\link\\..\\x | link\\..\\x
+windows opened=C:\\Users\\me\\dev\\repo\\..\\x | ..\\x
+windows opened=C:\\Users\\me\\dev\\repo\\..\\x | ../x
+windows opened=C:\\a\\link\\..\\b | C:\\a\\link\\..\\b
+windows opened=D:\\x\\..\\y | D:\\x\\..\\y
+windows opened=C:\\Windows\\..\\x | \\Windows\\..\\x
+windows home opened=C:\\Users\\me\\..\\you | \\..\\you
+windows opened=\\\\server\\share\\a\\..\\b | \\\\server\\share\\a\\..\\b
+windows opened=C:\\Users\\me\\dev\\repo\\x\\..\\y | c:x\\..\\y
+# A long path is the plain path it names, its `..` kept.
+windows opened=C:\\Users\\me\\x\\..\\y | \\\\?\\C:\\Users\\me\\x\\..\\y
+# Above a drive's root there is nothing to climb to.
+windows opened=C:\\x | C:\\..\\x
+windows opened=\\\\server\\share\\x | \\\\server\\share\\..\\x
+
+# What is not one place on a disk has no path either way.
+posix opened=none | /dev/null
+posix opened=none | /dev/zero
+windows opened=none | NUL
+windows opened=none | \\\\.\\PhysicalDrive0
+windows opened=none | D:x
+windows opened=none | d:y/z/../w
+
+# A path with no `..` is the same both ways.
+posix opened=/home/me/work/repo/a.txt absolute=/home/me/work/repo/a.txt | a.txt
+posix opened=/home/me/work/repo/src/main.rs absolute=/home/me/work/repo/src/main.rs | src/main.rs
+posix opened=/etc/hosts absolute=/etc/hosts | /etc/hosts
+posix home opened=/home/me/.ssh/config absolute=/home/me/.ssh/config | /.ssh/config
+posix home opened=/home/me absolute=/home/me |
+posix opened=/home/me/work/repo absolute=/home/me/work/repo | .

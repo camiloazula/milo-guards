@@ -74,9 +74,13 @@ the same name, `tests/<what-it-checks>.rs`, which checks them all with one
 call: `common::cases::check("<what-it-checks>")`. What is not a plain case
 stays in that Rust file: cases made in a loop, long or nested input, timing,
 tests of the API itself, and tests that check a structure (the paths a line
-lists, the tree `explain` draws). The shell, file, URL and secrets guards
-read case files; the secrets guard's cases hold no value shaped like a real
-key, which its tests build in Rust so that none sits in the repository.
+lists, the tree `explain` draws). The shell, file, URL and secrets guards,
+the path model in `core` and the `code` reader read case files; the secrets
+guard's cases hold no value shaped like a real key, which its tests build in
+Rust so that none sits in the repository. The front door's
+`crates/guards/tests/everyday.rs` reads its `tests/cases/everyday.cases` with
+the shell guard's runner, and judges each line through
+`milo_local_guards::shell` too.
 
 One case to a line, and nothing else on it:
 
@@ -169,9 +173,39 @@ rules=generic_secret span="F4kePass9" | password=F4kePass9&x=1
 covers="F4kePassw0rdZ" | machine api.fake.test login fakeuser password F4kePassw0rdZ
 ```
 
+The path model's case is `FLAVOUR[@PATHS] [home] [hidden] [deep]
+ANSWER... | PATH`: `FLAVOUR` is `posix` or `windows`, how the path is
+spelled, judged on `posix` or `windows` without `@PATHS` (declared as the
+shell guard's). `home` gives the path as `Spelling::Home`, the part below the
+home directory; `hidden` says a wildcard matches a leading dot, and `deep`
+that a folder is read whole. The answer is one or more questions asked of the
+`Resolver`, each with the answer it must give: `place=`, `into=`
+(`place_into`) and `place_hidden=` give a place (`inside`, `outside`,
+`unknown`, `disk`, `null`, `registry`, `temp`, `in_temp`, `workspace`,
+`holds_workspace`, `home`, `holds_home`, or `top:`, `secret:`, `startup:`,
+`history:` and `protected:` with the words); `startup=`, `below=`
+(`startup_below`), `picks=` (`picks_secret`), `kernel=` and `git=` give the
+words or `none`; `absolute=` and `opened=` the path or `none`; `reaches=`
+(`reaches_secret`) and `network=` give `yes` or `no`. The code reader's case
+is `WHAT ANSWER... | CODE`: `WHAT` is `python`, `javascript`, `python2`
+(`understand_python2`) or `module` (a module specifier), and the answer is
+`acts="..."` (the acts `read` finds, as `tests/common` spells them),
+`understand=yes|importing|no`, `other_encoding=yes|no` (Python), and
+`data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
+command with `-p milo-guards-core` and `-p milo-guards-code`.
+
+```text
+posix@macos place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+windows home absolute=C:\\Users\\me\\AppData | \\AppData
+posix hidden picks="your SSH keys" | /home/me/*
+python acts="remove /home/me" understand=no | import shutil\nshutil.rmtree('/home/me')
+```
+
 The reading of the format is shared, in `crates/core/tests/common/cases.rs`
 (tested by `crates/core/tests/cases.rs`); what the words mean for a guard,
-and the runner, are in its `tests/common/cases.rs`.
+and the runner, are in its `tests/common/cases.rs` (for the path model,
+`crates/core/tests/common/runner.rs`, which its tests call
+`common::cases`).
 
 ## Submitting a change
 

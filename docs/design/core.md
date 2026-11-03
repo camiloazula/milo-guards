@@ -614,5 +614,23 @@ generic over the rule and the judge, so every guard tests the same way.
 And it has `rules(input, judge)`, the rules an input breaks, in order, for a
 test that wants to assert more than one.
 
-A guard wraps `check` in a small helper that fixes the judge, and writes its
-tests as tables.
+A guard wraps `check` in a small helper that fixes the judge, for the tests
+that are not plain cases; a plain case goes in a case file
+([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
+
+## Tests
+
+Core's own tests hold the path model to its cases, in case files in
+`crates/core/tests/cases`, each checked by the test file of its name:
+`sensitive.cases` (`place`, `kernel`, `git` and `network`: the kinds of a
+sensitive place, case, short names, other users' homes, long paths,
+drive-relative paths and a Mac's links), `startup.cases` (`startup`,
+`startup_below` and what a write into one is), `picks.cases`
+(`picks_secret`), `reaches_secret.cases`, `absolute.cases` and
+`opened.cases`. A case asks the `Resolver` one or more questions of one path,
+on one machine, and gives each answer. What is made in a loop or asks the API
+itself stays in Rust: the folds NTFS does not make and the flavour in
+`sensitive.rs`, and that applying the `..` of what is opened gives the
+absolute path in `opened.rs`. `tests/cases.rs` tests the shared reading of
+the format and core's runner (`tests/common/runner.rs`), and dumps every
+case.

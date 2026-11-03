@@ -1,12 +1,13 @@
-//! What the tables share: a short, stable spelling of an act, so a row reads
-//! as the acts it expects, and a check that names every row that came out
-//! wrong at once.
+//! What the tests share: a short, stable spelling of an act, so a case reads
+//! as the acts it expects, and the runner of the case files (`cases`).
 
 #![allow(dead_code, unreachable_pub)]
 
-use milo_guards_code::{read, Act, Arg, Language};
+pub mod cases;
 
-/// An argument as a row spells it: the value when the code gives it,
+use milo_guards_code::{Act, Arg, Language};
+
+/// An argument as a case spells it: the value when the code gives it,
 /// `?` when only known when it runs, `FOLDER*` for a path somewhere in a
 /// folder.
 pub fn arg(arg: &Arg) -> String {
@@ -17,7 +18,7 @@ pub fn arg(arg: &Arg) -> String {
     }
 }
 
-/// An act as a row spells it.
+/// An act as a case spells it.
 pub fn show(act: &Act) -> String {
     match act {
         Act::Remove(path) => format!("remove {}", arg(path)),
@@ -46,25 +47,7 @@ pub fn show(act: &Act) -> String {
     }
 }
 
-/// Acts as a row spells them, joined by `, `.
+/// Acts as a case spells them, joined by `, `.
 pub fn shown(acts: &[Act]) -> String {
     acts.iter().map(show).collect::<Vec<_>>().join(", ")
-}
-
-/// The acts `code` makes, spelled.
-pub fn acts(language: Language, code: &str) -> String {
-    shown(&read(language, code).acts)
-}
-
-/// Every row whose acts are not the ones it expects, named together.
-pub fn check(language: Language, rows: &[(&str, &str)]) {
-    let wrong: Vec<String> = rows
-        .iter()
-        .filter_map(|(code, expected)| {
-            let found = acts(language, code);
-            (found != *expected)
-                .then(|| format!("{code:?}\n    expected: {expected}\n    found:    {found}"))
-        })
-        .collect();
-    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }

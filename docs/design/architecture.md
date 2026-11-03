@@ -170,12 +170,14 @@ has its place:
 - A test of the front door from end to end is in `crates/guards/tests`:
   `agree.rs` (the shell and the file guard give one answer), `contract.rs`
   (the contract and the direction of the dependencies), `everyday.rs` (the
-  everyday commands stay safe) and `toolchain.rs` (the places that name the
+  everyday commands stay safe, its lines in `tests/cases/everyday.cases`) and
+  `toolchain.rs` (the places that name the
   Rust version agree).
 
 Some names are read by other files: `just no-inline` runs
 `crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file
-in the file guard's `tests/cases`, and each guard's `tests/cases.rs` holds
+in the file guard's `tests/cases`, and each guard's, core's and the code
+reader's `tests/cases.rs` holds
 each case file in its `tests/cases` to the test file of its name, which
 checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
 

@@ -1,0 +1,73 @@
+# What the crate says of a module specifier (`is_data_url`,
+# `is_foreign_module`) and of a coding declaration (`declares_other_encoding`),
+# outside the code it reads.
+
+# A data URL is found as the URL parser reads it: leading control characters
+# and spaces, and tabs and newlines inside, are dropped.
+module data_url=yes | data:text/javascript,console.log(1)
+module data_url=yes | DATA:text/javascript,x
+module data_url=yes | Data:x
+module data_url=yes | \sdata:x
+module data_url=yes | \u{1}\ndata:x
+module data_url=yes | da\tta:x
+module data_url=yes | d\na\rt\ta:x
+module data_url=no |
+module data_url=no | dat
+module data_url=no | data
+module data_url=no | ./data:x
+module data_url=no | database:x
+module data_url=no | https://example.com/data:x
+module data_url=no | lodash
+module data_url=no | ./x.js
+
+# A module is foreign when it is not the workspace's own: the network, and a
+# registry that downloads.
+module foreign=yes | http://example.com/a.js
+module foreign=yes | https://example.com/a.js
+module foreign=yes | HTTPS://example.com/a.js
+module foreign=yes | jsr:@std/path
+module foreign=yes | npm:left-pad
+# A file outside the workspace.
+module foreign=yes | /tmp/x.js
+module foreign=yes | ~/x.js
+module foreign=yes | \\\\server\\share\\x.js
+module foreign=yes | ..
+module foreign=yes | ../x.js
+module foreign=yes | ..\\x.js
+module foreign=yes | file:///tmp/x.js
+module foreign=yes | FILE:x.js
+module foreign=yes | C:\\x.js
+module foreign=yes | c:/x.js
+# As the URL parser reads it.
+module foreign=yes | \shttps://example.com/a.js
+module foreign=yes | ht\ntps://example.com/a.js
+# The workspace's own, and an installed package.
+module foreign=no | ./x.js
+module foreign=no | x.js
+module foreign=no | src/x.js
+module foreign=no | fs
+module foreign=no | node:fs
+module foreign=no | lodash
+module foreign=no | @scope/pkg
+module foreign=no | json
+module foreign=no |
+# A data URL is its own question.
+module foreign=no | data:text/javascript,x
+
+# Another coding declaration than UTF-8 is found in code read as bytes.
+python other_encoding=yes | # coding: utf-7\nprint(1)
+python other_encoding=yes | # -*- coding: latin-1 -*-\nprint('é')
+python other_encoding=yes | #!/usr/bin/python\n# vim: set fileencoding=utf-16 :\nprint(1)
+python other_encoding=yes | # coding=cp037\nprint(1)
+# ASCII-compatible, but the text is not all ASCII.
+python other_encoding=yes | # coding: latin-1\nprint('é')
+python other_encoding=no | print(1)
+python other_encoding=no | # coding: utf-8\nprint('é')
+python other_encoding=no | # -*- coding: UTF8 -*-\nprint(1)
+python other_encoding=no | # coding: utf-8-sig\nprint(1)
+# ASCII-compatible, and the text is all ASCII: read the same.
+python other_encoding=no | # coding: latin-1\nprint(1)
+python other_encoding=no | # coding: ascii\nprint(1)
+# Not in the first two lines, or not a declaration.
+python other_encoding=no | print(1)\nprint(2)\n# coding: utf-7\n
+python other_encoding=no | x = 'coding: utf-7'

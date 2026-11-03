@@ -111,7 +111,8 @@ crates depend on each other and how that is enforced is in
   [Architecture](docs/design/architecture.md#where-a-test-goes)
 - **A plain case goes in a case file**, one line to a case, not in a Rust
   table: `crates/<crate>/tests/cases/<what-it-checks>.cases`, checked by the
-  test file of the same name, in every guard. Rust keeps generated cases,
+  test file of the same name, in every guard, the path model and the code
+  reader. Rust keeps generated cases,
   timing, tests of the API and of a structure, and the secrets guard's
   credential-shaped values, which it builds so that none sits in the
   repository. [CONTRIBUTING.md](CONTRIBUTING.md#case-files)

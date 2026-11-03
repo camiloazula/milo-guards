@@ -223,10 +223,15 @@ an unknown path, never a known one: no limit makes code understood.
 
 ## Tests
 
-`crates/code/tests/` holds the crate's own tables. `acts.rs` has code and the
-acts it must give, for each language. `understand.rs` has a row for every way
-out of the strict subset, and the code that stays inside it. `modules.rs` holds
-the module specifiers and coding declarations. `robust.rs` runs seeded noise
+`crates/code/tests/` holds the crate's own cases, in case files
+(`tests/cases`, the format is in
+[CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), each checked by the test
+file of its name. `acts.cases` has code and the acts it must give, for each
+language. `understand.cases` has a case for every way out of the strict
+subset, and the code that stays inside it, for Python, JavaScript and
+Python 2. `modules.cases` holds the module specifiers and coding
+declarations; `modules.rs` keeps the shape of an argument and the limits.
+`cases.rs` tests the runner and dumps every case. `robust.rs` runs seeded noise
 through both grammars (no panic, the same answer twice, understood code only
 ever opens a file) and checks that very deep, very long and growing code ends.
 The shell guard's own cases (`crates/shell/tests/cases/inline.cases`, the

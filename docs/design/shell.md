@@ -3266,8 +3266,9 @@ part of the guard (`cd`, `posix_wildcards`, `stop_processes`, `drop_data`,
 they move there, in tables built on core's test kit. Each case is a line and
 the answer it must get: safe, or the rules it must find. A new rule comes with
 cases of both kinds, and a fix adds cases to the file of what it checks. The everyday lines that must stay safe go through
-the front door, in `crates/guards/tests/everyday.rs`, which holds each of them
-to the same agreement checks.
+the front door: `crates/guards/tests/everyday.rs` reads them from its
+`tests/cases/everyday.cases` with this guard's runner, which holds each of
+them to the same agreement checks.
 
 `tests/cases/inline.cases` is the same for inline Python and JavaScript, with
 the lines that are safe, what each rule finds and what stays `unknown`; the
@@ -3310,7 +3311,7 @@ a protected `.agent`, one that is the home folder and one that holds a folder
 of logins, and `tests/cases/reach_windows.cases` the same for PowerShell and
 cmd; the plain readers of the plain workspace are in `tests/cases/effect.cases`,
 and core's `reaches_secret` has its own in
-`crates/core/tests/reaches_secret.rs`.
+`crates/core/tests/cases/reaches_secret.cases`.
 `tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
 one that checks every way of reading against a table of links playing the disk,
 the way the docs tell a caller to;
@@ -3320,7 +3321,8 @@ after a `cd`, PowerShell and cmd), and `tests/cases/paths_links.cases` the
 lines `effect` still judges by spelling; and
 every case of every case file and every row of every table is also held to
 agree with `effect` on whether it has a list (`common::path_disagreement`). Core's `absolute` has its own in
-`crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/opened.rs`.
+`crates/core/tests/cases/absolute.cases`, and `opened` in
+`crates/core/tests/cases/opened.cases`.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of
 expected names is a `match` with no fallback arm, so a new rule does not compile
