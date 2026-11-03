@@ -276,13 +276,17 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
         let Some(text) = arg.known() else {
             // `--file="$OUT"`: an option whose value is only known when it
             // runs is that option, not a member, and not the mode.
+            // Its value may still split into words (`--file=$A`), a member
+            // among them.
             if let Some((name, value)) = unknown_long(arg) {
+                read.split(&value);
                 read.long(name, Some(value), &mut iter);
                 continue;
             }
             read.unknown |= arg.is_unknown();
-            // One that starts as an option (`"--$X"`) is no member.
-            if option_start(arg, shell).is_none() {
+            // One that starts as an option (`"--$X"`) is no member, unless
+            // it may split into words (`-cf$A`).
+            if option_start(arg, shell).is_none() || may_split(arg, shell) {
                 read.members.push(within(read.under.as_ref(), arg, shell));
             }
             continue;

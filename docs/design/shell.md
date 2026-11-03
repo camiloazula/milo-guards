@@ -2045,7 +2045,8 @@ home directory, and the keys in it).
 A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
 --remove-files`) is judged as if it packed. A `tar` option that takes a value
 in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
-a member, unless it may split into words when it runs (`-f $A`, see
+a member, unless it may split into words when it runs (`-f $A`,
+`--file=$A`, `-cf$A`, see
 [Values only known when they run](#values-only-known-when-they-run)), and
 neither does one whose value is only known when it runs (`--file="$OUT"`,
 `--exclude="$SKIP"`): it is that option, read by its name, not a member and

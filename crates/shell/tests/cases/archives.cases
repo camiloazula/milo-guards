@@ -819,6 +819,10 @@ posix finds=overwrite reason="unpacks into a folder only known when it runs" | t
 posix finds=delete reason="deletes a path only known when it runs" | tar -cf $A src --remove-files
 posix finds=delete reason="deletes a path only known when it runs" | A='x.tar /etc'; tar -cf $A --remove-files
 posix finds=delete | tar --exclude $E -cf x.tar src --remove-files
+posix finds=delete | tar -cf$A src --remove-files
+posix finds=delete | tar -c --file=$A src --remove-files
+posix finds=delete | tar -c --exclude=$E src --remove-files
+posix safe | tar -c --file="$A" src --remove-files
 posix finds=delete | tar -czf x.tar src $OPTS
 posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | tar -cf x.tar ~/src "--$X"
 posix finds=delete | tar -cf x.tar ~/src "--remove-$X"
