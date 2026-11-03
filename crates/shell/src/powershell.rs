@@ -91,6 +91,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         item: None,
         holds: HashSet::new(),
+        streams: HashSet::new(),
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
@@ -141,6 +142,141 @@ fn names_block(node: Node<'_>) -> bool {
             None => return false,
         }
     }
+}
+
+/// The variables read under `node`, by name (see [`variable_name`]): each of
+/// the grammar's variable nodes, a splat (`@p`) and one in a string among
+/// them. A command under it is a unit of its own, which reads its own
+/// variables and hands on what it prints, and an assignment nested in it
+/// holds its own value: the walk goes into neither, and reads a nested
+/// assignment as the variables it sets (`$a = $b = $k` reads `b`, which holds
+/// what `k` does).
+pub(crate) fn variables(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    unit::for_each_node_until(node, |inner| {
+        let nested = inner.id() != node.id();
+        match inner.kind() {
+            "variable" => {
+                names.extend(variable_name(unit::text(&inner, source)));
+                false
+            }
+            "command" if nested => false,
+            "assignment_expression" if nested => {
+                if let Some(left) = inner.named_child(0) {
+                    names.extend(variables(left, source));
+                }
+                false
+            }
+            _ => true,
+        }
+    });
+    names
+}
+
+/// The variable a variable node's text names, in lower case as PowerShell
+/// matches names, and without a scope: `$k`, `${K}`, `$script:k` and the
+/// splat `@k` all name `k`; `$env:k` names the environment drive, `env`.
+pub(crate) fn variable_name(text: &str) -> Option<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    let name = text.strip_prefix(['$', '@'])?;
+    let name = name
+        .strip_prefix('{')
+        .and_then(|name| name.strip_suffix('}'))
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    let name = match name.split_once(':') {
+        Some((scope, rest)) if SCOPES.contains(&scope) => rest.to_string(),
+        Some((drive, _)) => drive.to_string(),
+        None => name,
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// The parameters of `Set-Variable` and `New-Variable` that take a value,
+/// other than `-Name`.
+const SET_VARIABLE_VALUES: &[&str] = &[
+    "value",
+    "include",
+    "exclude",
+    "description",
+    "option",
+    "visibility",
+    "scope",
+];
+
+/// The parameters of `Get-Variable` that take a value, other than `-Name`.
+const GET_VARIABLE_VALUES: &[&str] = &["include", "exclude", "scope"];
+
+/// Whether `key` sets the variable it is given the name of: `Set-Variable`
+/// and `New-Variable`, by name or alias.
+fn sets_by_name(key: &str) -> bool {
+    matches!(key, "set-variable" | "sv" | "set" | "new-variable" | "nv")
+}
+
+/// The variables, in lower case, a cmdlet's arguments name as `names` (a
+/// parameter or a prefix of one) or by position: any word that is not a
+/// parameter or the value of one of `values`. A word the guard cannot take
+/// for a value is a name, so a name is not missed.
+fn named_variables(args: &[Arg], names: &[&str], values: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    // What the word after a parameter is: `Some(true)` a name, `Some(false)`
+    // another value, `None` a word by position.
+    let mut next = None;
+    for arg in args {
+        let param = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .map(|param| param.trim_end_matches(':').to_ascii_lowercase());
+        match param.filter(|param| !param.is_empty()) {
+            Some(param) => {
+                next = if names.iter().any(|name| name.starts_with(&param)) {
+                    Some(true)
+                } else if values.iter().any(|value| value.starts_with(&param)) {
+                    Some(false)
+                } else {
+                    None
+                };
+            }
+            None => {
+                if next.take() != Some(false) {
+                    found.extend(arg.known().and_then(bare_variable));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A variable's name as a cmdlet is given it (`k`, `+k` to add to it,
+/// `script:k`), in lower case and without its scope.
+fn bare_variable(text: &str) -> Option<String> {
+    variable_name(&format!("${}", text.trim_start_matches('+')))
+}
+
+/// The variables a PowerShell command whose key is `key` sets, in lower
+/// case: the name `Set-Variable` or `New-Variable` is given, by `-Name` or
+/// by position, and the one any cmdlet's `-OutVariable` (`-ov`, `-ov +k`,
+/// which adds to it) or `-PipelineVariable` (`-pv`) names, which holds what
+/// the command prints.
+pub(crate) fn variables_set(key: &str, args: &[Arg]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(param) = arg.known().and_then(|text| text.strip_prefix('-')) else {
+            continue;
+        };
+        let param = param.trim_end_matches(':').to_ascii_lowercase();
+        let output = matches!(param.as_str(), "ov" | "pv")
+            || (param.len() >= 4 && "outvariable".starts_with(&param))
+            || (param.len() >= 2 && "pipelinevariable".starts_with(&param));
+        if output {
+            names.extend(iter.next().and_then(Arg::known).and_then(bare_variable));
+        }
+    }
+    if sets_by_name(key) {
+        names.extend(named_variables(args, &["name"], SET_VARIABLE_VALUES));
+    }
+    names
 }
 
 /// Whether `node` is a splat (`@args`), however the grammar wraps it.
@@ -327,6 +463,9 @@ struct Walker<'a> {
     /// for the whole tree so that each `Stop-Process` reads only the nodes
     /// that lead to a listing.
     holds: HashSet<usize>,
+    /// The variables set from a network stream (`$s = $tcp.GetStream()`),
+    /// whose `Write` sends what it is given.
+    streams: HashSet<String>,
 }
 
 impl Walker<'_> {
@@ -341,6 +480,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
+                self.split.statement();
                 let list = self.split.list_start();
                 let mut cursor = node.walk();
                 let mut at = 0;
@@ -366,9 +506,14 @@ impl Walker<'_> {
                 self.split.list_end(list);
             }
             "pipeline_chain" => {
+                self.split.statement();
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // The right side of an `&&` after a chain that is not one
+                // command runs when the chain succeeded, not when a `cd` in
+                // it did (`-not (Set-Location s) && …`).
+                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
                 for (index, child) in stages.iter().enumerate() {
                     // A value that is piped on (`'DROP TABLE t' | psql`) is
                     // a stage that says it, as `Write-Output` would.
@@ -382,6 +527,9 @@ impl Walker<'_> {
                         _ => Stage { pipeline, index },
                     };
                     self.walk(*child, Some(stage), level + 1);
+                }
+                if !command {
+                    self.split.statement();
                 }
             }
             "command" => {
@@ -428,6 +576,14 @@ impl Walker<'_> {
                 // What a sub-expression in its arguments runs is handed to it.
                 self.split
                     .nest(own.clone(), own.end..self.split.units.len());
+                // What each reading sets: the name's own, and each
+                // command an alias may make it run.
+                for at in own.clone() {
+                    let key = self.split.units.get(at).and_then(Unit::key);
+                    if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
+                        self.sets_variables(key.as_deref(), at);
+                    }
+                }
             }
             // `trap { … }`: its block runs on a terminating error, later.
             "trap_statement" => {
@@ -435,10 +591,12 @@ impl Walker<'_> {
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
             }
+            // `foreach ($l in …) { … }`: the variable holds each item of what
+            // the collection runs prints, and the body runs once for each.
+            "foreach_statement" => self.foreach(node, stage, level),
             // A loop, or a function that is called more than once, runs
             // what it holds again with other values.
-            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
-            | "function_statement" => {
+            "for_statement" | "while_statement" | "do_statement" | "function_statement" => {
                 // A function named as a location cmdlet stands in for it.
                 if node.kind() == "function_statement" && self.names_location(node) {
                     self.split.lose_locations();
@@ -449,7 +607,11 @@ impl Walker<'_> {
             }
             // What a condition guards, or a `try` may stop short of, may not
             // run.
-            "if_statement" | "switch_statement" | "try_statement" => {
+            // `switch (…) { … }` runs a clause for each item of what its
+            // condition runs prints, or of the lines of the file `-File`
+            // names, which a clause reads as `$_` (or `$PSItem`).
+            "switch_statement" => self.switch(node, stage, level),
+            "if_statement" | "try_statement" => {
                 self.split.branches += 1;
                 self.children(node, stage, level);
                 self.split.branches -= 1;
@@ -462,12 +624,20 @@ impl Walker<'_> {
                 // A method call is no unit, and the rules know only some of
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
-                self.dotnet(node);
+                let first = self.split.units.len();
+                let sends = self.dotnet(node, stage);
+                let own = first..self.split.units.len();
                 // A hook's block, set by its method, runs later.
                 let later = blocks::sets_hook(node, self.source).then(|| self.split.begin_later());
                 self.children(node, stage, level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
+                }
+                // What the call's object and arguments run is handed to the
+                // sender it stands for.
+                if sends {
+                    self.split
+                        .nest(own.clone(), own.end..self.split.units.len());
                 }
             }
             "assignment_expression" => {
@@ -484,12 +654,91 @@ impl Walker<'_> {
                 let later = blocks::assigned_member(node, self.source)
                     .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
                     .then(|| self.split.begin_later());
+                let first = self.split.units.len();
                 self.children(node, stage, level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
+                // `$k = Get-Content .env`: what the variables the left side
+                // names hold.
+                self.assigned(node, first);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// `foreach ($l in …) { … }`: the variable holds each item of what the
+    /// collection runs prints, and the body runs once for each. (Each of
+    /// these arms is a method of its own, so that the frame of
+    /// [`Self::walk`], which nests as deep as the tree, stays small.)
+    fn foreach(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.repeats += 1;
+        let mut names = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let first = self.split.units.len();
+            self.walk(child, stage, level + 1);
+            match child.kind() {
+                "variable" => {
+                    names = variable_name(unit::text(&child, self.source))
+                        .into_iter()
+                        .collect();
+                }
+                "statement_block" => {}
+                _ => {
+                    let uses = variables(child, self.source);
+                    self.hold(&names, first, uses);
+                }
+            }
+        }
+        self.split.repeats -= 1;
+    }
+
+    /// `switch (…) { … }`: a clause runs for each item of what the condition
+    /// runs prints, or of the lines of the file `-File` names (see
+    /// [`Self::switch_file`]), and reads it as `$_` (or `$PSItem`). What a
+    /// condition guards may not run.
+    fn switch(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.branches += 1;
+        self.split.repeats += 1;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let first = self.split.units.len();
+            let condition = child.kind() == "switch_condition";
+            if condition {
+                self.switch_file(child);
+            }
+            self.walk(child, stage, level + 1);
+            if condition {
+                let uses = variables(child, self.source);
+                self.hold(&["_".to_string(), "psitem".to_string()], first, uses);
+            }
+        }
+        self.split.repeats -= 1;
+        self.split.branches -= 1;
+    }
+
+    /// An assignment whose value ran the units from `first` on: the
+    /// variables its left side names hold what they print, and what the
+    /// variables the value reads hold. Those are taken from the value's own
+    /// nodes: an assignment nested in it holds its own value, and is read as
+    /// its variable, so a chain (`$a = $b = …`) is read once and not again at
+    /// each level. A variable set from a value that opens a network stream
+    /// (`$s = $tcp.GetStream()`) is one.
+    fn assigned(&mut self, node: Node<'_>, first: usize) {
+        let Some(left) = node.named_child(0) else {
+            return;
+        };
+        let names = variables(left, self.source);
+        let mut cursor = node.walk();
+        let values: Vec<Node<'_>> = node.children_by_field_name("value", &mut cursor).collect();
+        let uses = values
+            .iter()
+            .flat_map(|value| variables(*value, self.source))
+            .collect();
+        self.hold(&names, first, uses);
+        if values.iter().any(|value| self.opens_stream(*value)) {
+            self.streams.extend(names);
         }
     }
 
@@ -516,7 +765,7 @@ impl Walker<'_> {
             return;
         };
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
-        let terraform = unit::tf_cli_args_folded(name);
+        let terraform = unit::argument_variable(name);
         if !zip && terraform.is_none() {
             return;
         }
@@ -543,7 +792,7 @@ impl Walker<'_> {
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
         match terraform {
-            Some(name) => self.split.tf_cli_args.push((name, value)),
+            Some(name) => self.split.note_argument_variable(name, value),
             None => {
                 self.split.zip_env.set(&name, &value, true);
             }
@@ -569,14 +818,13 @@ impl Walker<'_> {
                 continue;
             };
             let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+            let name = unit::argument_variable(rest).or_else(|| {
                 rest.contains(['*', '?', '['])
                     .then(|| "TF_CLI_ARGS".to_string())
             });
             if let Some(name) = name {
                 self.split
-                    .tf_cli_args
-                    .push((name, Arg::Unknown(text.to_string())));
+                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
             self.split
                 .zip_env
@@ -610,12 +858,9 @@ impl Walker<'_> {
         }
         let value = self.expr(node);
         let program = Arg::Known("Write-Output".to_string());
-        self.split.push(Unit::new(
-            Shell::PowerShell,
-            program,
-            vec![value],
-            Some(stage),
-        ));
+        let mut unit = Unit::new(Shell::PowerShell, program, vec![value], Some(stage));
+        unit.names = Some(variables(node, self.source));
+        self.split.push(unit);
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -1145,6 +1390,7 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        unit.names = Some(self.command_variables(node, key.as_deref(), &unit.args));
         if let Some(key) = key.as_deref() {
             self.env_item(key, &unit.args);
         }
@@ -1797,7 +2043,8 @@ impl Walker<'_> {
         };
         let mut found = Vec::new();
         for (at, target) in targets.iter().enumerate() {
-            let Some(name) = target.and_then(|target| variable_name(target, self.source)) else {
+            let Some(name) = target.and_then(|target| scoped_variable_name(target, self.source))
+            else {
                 continue;
             };
             let value = values.get(at).copied();
@@ -1822,7 +2069,7 @@ impl Walker<'_> {
             if targets.contains(&Some(variable)) {
                 continue;
             }
-            let Some(name) = variable_name(variable, self.source) else {
+            let Some(name) = scoped_variable_name(variable, self.source) else {
                 continue;
             };
             if let Some(alias) = name.strip_prefix("alias:") {
@@ -2446,15 +2693,249 @@ impl Walker<'_> {
         Arg::Known(value.to_string())
     }
 
+    /// Note that each of `names` holds what the units from `first` on print
+    /// and what the variables `uses` hold, for the rule that follows a
+    /// secret into a variable (`$k = Get-Content .env`).
+    fn hold(&mut self, names: &[String], first: usize, uses: Vec<String>) {
+        let inside = first..self.split.units.len();
+        for name in names {
+            self.split.assign_uses(name, inside.clone(), uses.clone());
+        }
+    }
+
+    /// The variables a command's arguments read (see [`variables`]). `Get-Variable`
+    /// prints what the variables it names hold, so it reads them too; one
+    /// given no name, or a wildcard, prints every variable, which is any the
+    /// line has set so far.
+    fn command_variables(&self, node: Node<'_>, key: Option<&str>, args: &[Arg]) -> Vec<String> {
+        let mut names = node
+            .child_by_field_name("command_elements")
+            .map(|elements| variables(elements, self.source))
+            .unwrap_or_default();
+        if matches!(key, Some("get-variable" | "gv")) {
+            let given = named_variables(args, &["name"], GET_VARIABLE_VALUES);
+            if given.is_empty() || given.iter().any(|name| unit::pattern(name)) {
+                names.extend(self.split.assigned.iter().map(|one| one.name.clone()));
+            }
+            names.extend(given);
+        }
+        names
+    }
+
+    /// Note what the variables a command sets hold, the command being the
+    /// unit at `at`: what it prints for `-OutVariable` and
+    /// `-PipelineVariable`, and what its value runs and reads for
+    /// `Set-Variable` and `New-Variable` (`Set-Variable k (gc .env)`,
+    /// `Set-Variable k $j`). What a pipeline hands them is followed by the
+    /// rule (`sets` in `detect/send.rs`).
+    fn sets_variables(&mut self, key: Option<&str>, at: usize) {
+        let Some(unit) = self.split.units.get(at) else {
+            return;
+        };
+        let names = variables_set(key.unwrap_or_default(), &unit.args);
+        if names.is_empty() {
+            return;
+        }
+        let uses = if key.is_some_and(sets_by_name) {
+            unit.variables()
+        } else {
+            Vec::new()
+        };
+        self.hold(&names, at, uses);
+    }
+
+    /// `switch -File f`: the lines of `f`, read as a `Get-Content` of it. The
+    /// grammar keeps the file as text, so the command is read again from it
+    /// (`"$HOME\.ssh\id_rsa"` is a string the reader resolves), as a script
+    /// one level deeper, which counts against the budget of what is read
+    /// again.
+    fn switch_file(&mut self, condition: Node<'_>) {
+        let Some(file) = condition
+            .named_child(0)
+            .filter(|child| child.kind() == "switch_filename")
+        else {
+            return;
+        };
+        let text = unit::text(&file, self.source).trim();
+        if text.is_empty() {
+            return;
+        }
+        let command = format!("Get-Content {text}");
+        unit::script_in(
+            self.split,
+            &command,
+            Shell::PowerShell,
+            self.depth + 1,
+            true,
+        );
+    }
+
+    /// Whether `node` opens a network stream: it calls `GetStream()`
+    /// somewhere (`$tcp.GetStream()`, `[Net.Security.SslStream]::new(
+    /// $tcp.GetStream())`), short of an assignment nested in it, which is
+    /// read on its own.
+    fn opens_stream(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node_until(node, |inner| {
+            if found || (inner.id() != node.id() && inner.kind() == "assignment_expression") {
+                return false;
+            }
+            if inner.kind() == "member_name" {
+                found = unit::text(&inner, self.source).eq_ignore_ascii_case("getstream");
+            }
+            !found
+        });
+        found
+    }
+
+    /// Whether the object of a method call is a network stream: one opened
+    /// in it, or a variable set from one.
+    fn is_stream(&self, object: Node<'_>) -> bool {
+        if object.kind() == "variable" {
+            return variable_name(unit::text(&object, self.source))
+                .is_some_and(|name| self.streams.contains(&name));
+        }
+        self.opens_stream(object)
+    }
+
+    /// The arguments a method call is given, as the guard reads each;
+    /// `children` are the call's parts.
+    fn call_arguments(&self, children: &[Node<'_>]) -> Vec<Arg> {
+        let Some(list) = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .and_then(|list| list.named_child(0))
+        else {
+            return Vec::new();
+        };
+        let mut cursor = list.walk();
+        list.named_children(&mut cursor)
+            .map(|mut argument| {
+                // The grammar wraps an argument in a chain of one-child nodes.
+                while argument.kind().ends_with("argument_expression")
+                    && argument.named_child_count() == 1
+                {
+                    match argument.named_child(0) {
+                        Some(inner) => argument = inner,
+                        None => break,
+                    }
+                }
+                self.expr(argument)
+            })
+            .collect()
+    }
+
+    /// A .NET call that reads a secret or sends what it is given: it is
+    /// judged as the cmdlet that does the same. A read of a file
+    /// (`[IO.File]::ReadAllText('.env')`, a reader or stream opened on it,
+    /// `[IO.StreamReader]::new('.env')`) is a `Get-Content` of it, a read of
+    /// the environment (`[Environment]::GetEnvironmentVariables()`) a
+    /// `Get-ChildItem env:`, an upload (`$wc.UploadFile(url, f)`,
+    /// `$wc.UploadString(url, $b)`, `$client.PostAsync(url, $content)`, a
+    /// `Write` on a network stream) an `Invoke-RestMethod` that posts each
+    /// argument, a file for `UploadFile` and a body for the others, and a
+    /// request (`$wc.DownloadString(url)`, `$client.GetAsync(url)`,
+    /// `[Net.WebRequest]::Create(url)`) an `Invoke-WebRequest` of its
+    /// arguments, whose address can carry a secret. Whether it sends is
+    /// returned: what its object and arguments run is then handed to it.
+    fn secret_call(&mut self, method: &str, children: &[Node<'_>], stage: Option<Stage>) -> bool {
+        let names = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .map(|list| variables(*list, self.source))
+            .unwrap_or_default();
+        let unit = |program: &str, args: Vec<Arg>| {
+            let mut unit = Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                args,
+                stage,
+            );
+            unit.names = Some(names.clone());
+            unit
+        };
+        let known = |text: &str| Arg::Known(text.to_string());
+        // The type a static method is called on (`[IO.File]`), as written.
+        let type_name = children
+            .first()
+            .filter(|object| object.kind() == "type_literal")
+            .map(|object| {
+                unit::text(object, self.source)
+                    .trim_matches(['[', ']'])
+                    .to_ascii_lowercase()
+            })
+            .unwrap_or_default();
+        let opens_file = method == "new"
+            && ["streamreader", "filestream", "fileinfo"]
+                .iter()
+                .any(|kind| type_name.ends_with(kind));
+        let mut arguments = self.call_arguments(children);
+        let mut sends = false;
+        if READS_FILE.contains(&method) || opens_file {
+            if let Some(path) = arguments.first() {
+                self.split.push(unit("Get-Content", vec![path.clone()]));
+            }
+            // `$wc.OpenRead(url)` is also a request.
+            if !method.starts_with("openread") || type_name.ends_with("file") {
+                return false;
+            }
+        }
+        let requests = !arguments.is_empty()
+            && (REQUESTS.contains(&method)
+                || (matches!(method, "create" | "createhttp" | "createdefault")
+                    && type_name.ends_with("webrequest")));
+        let parameter = if UPLOADS_FILE.contains(&method) {
+            Some("-InFile")
+        } else if UPLOADS_DATA.contains(&method)
+            || (WRITES.contains(&method) && children.first().is_some_and(|o| self.is_stream(*o)))
+        {
+            Some("-Body")
+        } else {
+            None
+        };
+        match method {
+            // One variable is what `Get-ChildItem env:NAME` lists; a name
+            // only known when it runs may be any of them.
+            "getenvironmentvariables" | "getenvironmentvariable" => {
+                let name = arguments
+                    .first()
+                    .and_then(Arg::known)
+                    .filter(|_| method == "getenvironmentvariable");
+                let drive = format!("env:{}", name.unwrap_or_default());
+                self.split
+                    .push(unit("Get-ChildItem", vec![Arg::Known(drive)]));
+            }
+            _ if requests => {
+                self.split
+                    .push(unit("Invoke-WebRequest", std::mem::take(&mut arguments)));
+                sends = true;
+            }
+            _ => {
+                if let Some(parameter) = parameter {
+                    let mut args = vec![known("-Method"), known("Post")];
+                    for argument in arguments {
+                        args.push(known(parameter));
+                        args.push(argument);
+                    }
+                    self.split.push(unit("Invoke-RestMethod", args));
+                    sends = true;
+                }
+            }
+        }
+        sends
+    }
+
     /// A .NET method call that changes files or the system
     /// (`[IO.Directory]::Delete(…)`, `(Get-Item ~).Delete()`): its arguments
     /// are expressions the guard does not resolve, so the call is risky
-    /// wherever it points.
-    fn dotnet(&mut self, node: Node<'_>) {
+    /// wherever it points. A call that reads a secret or sends is judged as
+    /// the cmdlet that does the same (see [`Self::secret_call`]), and whether
+    /// it sends is returned.
+    fn dotnet(&mut self, node: Node<'_>, stage: Option<Stage>) -> bool {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
-            return;
+            return false;
         };
         // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
         // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
@@ -2465,8 +2946,9 @@ impl Walker<'_> {
                 "calls a method only known when it runs",
                 Some(unit::text(&node, self.source)),
             );
-            return;
+            return false;
         };
+        let sends = self.secret_call(&method, &children, stage);
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
@@ -2487,13 +2969,13 @@ impl Walker<'_> {
         .any(|kind| object.contains(kind));
         blocks::hook_call(self.split, &method, &children, node, self.source);
         if self.location_call(&method, &object, node, &children) {
-            return;
+            return sends;
         }
         // A method that stops a process, called on it (`.Kill()`). The
         // array's `.ForEach('Kill')` is a line the grammar does not read.
         if blocks::stops_process(&method) {
             self.stop_call(node, &children);
-            return;
+            return sends;
         }
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
@@ -2511,7 +2993,7 @@ impl Walker<'_> {
             {
                 unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
             }
-            return;
+            return sends;
         }
         // `[Environment]::SetEnvironmentVariable('TF_CLI_ARGS', …)`: a name
         // terraform reads as arguments, or one only known when it runs, set
@@ -2523,21 +3005,21 @@ impl Walker<'_> {
                 self.split.zip_env.set(name, &value, true);
             }
             let name = match named {
-                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+                Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };
             if let Some(name) = name {
-                self.split.tf_cli_args.push((
+                self.split.note_argument_variable(
                     name,
                     Arg::Unknown(unit::text(&node, self.source).to_string()),
-                ));
+                );
             }
         }
-        let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
-            return;
-        };
-        self.split
-            .problem(rule, reason, Some(unit::text(&node, self.source)));
+        if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {
+            self.split
+                .problem(rule, reason, Some(unit::text(&node, self.source)));
+        }
+        sends
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
@@ -2568,6 +3050,84 @@ impl Walker<'_> {
         self.split.write(Shell::PowerShell, target);
     }
 }
+
+/// The .NET methods that read a file they are given by name: `[IO.File]`'s
+/// reads and opens.
+const READS_FILE: [&str; 11] = [
+    "readalltext",
+    "readalllines",
+    "readallbytes",
+    "readlines",
+    "openread",
+    "opentext",
+    "readalltextasync",
+    "readalllinesasync",
+    "readallbytesasync",
+    "readlinesasync",
+    "openreadasync",
+];
+
+/// The .NET methods that make a request of an address they are given:
+/// `Net.WebClient`'s downloads and opens, and `HttpClient`'s gets and
+/// deletes. The address can carry a secret (`https://x/?k=$k`).
+const REQUESTS: [&str; 22] = [
+    "downloadstring",
+    "downloadstringasync",
+    "downloadstringtaskasync",
+    "downloaddata",
+    "downloaddataasync",
+    "downloaddatataskasync",
+    "downloadfile",
+    "downloadfileasync",
+    "downloadfiletaskasync",
+    "openread",
+    "openreadasync",
+    "openreadtaskasync",
+    "openwrite",
+    "openwriteasync",
+    "openwritetaskasync",
+    "getasync",
+    "getstringasync",
+    "getbytearrayasync",
+    "getstreamasync",
+    "getfromjsonasync",
+    "deleteasync",
+    "deletefromjsonasync",
+];
+
+/// The methods that write what they are given to a stream: on a network
+/// stream (see [`Walker::is_stream`]), they send it.
+const WRITES: [&str; 5] = [
+    "write",
+    "writeasync",
+    "writebyte",
+    "writeline",
+    "writelineasync",
+];
+
+/// The .NET methods that upload a file they are given by name:
+/// `Net.WebClient`'s `UploadFile`.
+const UPLOADS_FILE: [&str; 3] = ["uploadfile", "uploadfileasync", "uploadfiletaskasync"];
+
+/// The .NET methods that send data they are given: `Net.WebClient`'s
+/// uploads, `HttpClient`'s posts, a socket's or a mail client's sends.
+const UPLOADS_DATA: [&str; 15] = [
+    "uploaddata",
+    "uploaddataasync",
+    "uploaddatataskasync",
+    "uploadstring",
+    "uploadstringasync",
+    "uploadstringtaskasync",
+    "uploadvalues",
+    "uploadvaluesasync",
+    "uploadvaluestaskasync",
+    "postasync",
+    "putasync",
+    "patchasync",
+    "sendasync",
+    "send",
+    "sendmailasync",
+];
 
 /// The id in `[System.Diagnostics.Process]::GetProcessById(1234)`, when the
 /// text is exactly that call (or the same with the namespace left out) and
@@ -3485,9 +4045,10 @@ fn left_variables(left: Node<'_>) -> Vec<Node<'_>> {
     }
 }
 
-/// A variable's name, in lower case, without its `$` or braces
-/// (`${function:x}` is `function:x`).
-fn variable_name(node: Node<'_>, source: &str) -> Option<String> {
+/// A variable's name, in lower case, without its `$` or braces but with
+/// its scope or drive (`${function:x}` is `function:x`); [`variable_name`]
+/// drops them.
+fn scoped_variable_name(node: Node<'_>, source: &str) -> Option<String> {
     let name = unit::text(&node, source).trim().to_ascii_lowercase();
     name.strip_prefix("${")
         .and_then(|rest| rest.strip_suffix('}'))

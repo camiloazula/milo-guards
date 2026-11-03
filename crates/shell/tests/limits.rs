@@ -564,11 +564,21 @@ fn the_longest_folder_a_line_is_followed_into_is_the_limit() {
         !deletes(&format!("cd {}a; rm x", "a/".repeat(n)))
     });
     assert_eq!(found, 128);
-    // A `cd` at a time, too.
-    let found = edge(2_000, |n| !deletes(&format!("{}rm x", "cd a; ".repeat(n))));
+    // A `cd` at a time, too, each one the line goes on past only when it
+    // ran.
+    let found = edge(2_000, |n| {
+        !deletes(&format!("{}rm x", "cd a || exit; ".repeat(n)))
+    });
     assert_eq!(found, 128 + 1);
+    // `MAX_ELSEWHERE`: each plain `cd` may fail and leave the line where it
+    // was, and past eight such folders the line may be in one only known
+    // when it runs.
+    let found = edge(2_000, |n| !deletes(&format!("{}rm x", "cd a; ".repeat(n))));
+    assert_eq!(found, 8);
     // The `..` a `cd` applies are folded, so going down and back up, over
-    // and over, is no longer than staying: these are safe in each shell.
+    // and over, is no longer than staying: these are safe in each shell
+    // where the line goes on only when `cd a` ran. (Where `cd a` may have
+    // failed, the `cd ..` after it may leave the workspace: see `cd.cases`.)
     for (shell, line) in [
         (
             Shell::Posix,
@@ -577,23 +587,30 @@ fn the_longest_folder_a_line_is_followed_into_is_the_limit() {
                 "cd crates/a && cargo build && cd ../.. && ".repeat(40)
             ),
         ),
-        (Shell::Posix, format!("{}rm x", "cd a; cd ..; ".repeat(400))),
         (
-            Shell::PowerShell,
-            format!("{}Remove-Item x", "cd a; cd ..; ".repeat(400)),
+            Shell::Posix,
+            format!("{}rm x", "cd a || exit; cd ..; ".repeat(400)),
         ),
-        (Shell::Cmd, format!("{}del x", "cd a & cd .. & ".repeat(70))),
+        (
+            Shell::Cmd,
+            format!("{}del x", "cd a || exit /b & cd .. & ".repeat(70)),
+        ),
     ] {
         let paths = paths_for(shell);
         let found = classify(&line, shell, &paths);
         assert!(found.is_safe(), "{shell:?}: {:?}", found.findings());
     }
+    // PowerShell goes on past a `cd` that failed, so one `cd` spells the
+    // round trips: folded, the folder is where the line began.
+    let line = format!("cd {}; Remove-Item x", "a\\..\\".repeat(400));
+    let found = classify(&line, Shell::PowerShell, &paths_for(Shell::PowerShell));
+    assert!(found.is_safe(), "{:?}", found.findings());
     // Folded, a folder that goes deeper is still too long; and a line whose
     // `cd` may follow a link physically is not folded.
     for line in [
-        format!("{}rm x", "cd a; cd b; cd ..; ".repeat(130)),
-        format!("cd -P .; {}rm x", "cd a; cd ..; ".repeat(100)),
-        format!("cd a/../b; {}rm x", "cd a; cd ..; ".repeat(100)),
+        format!("{}rm x", "cd a || exit; cd b || exit; cd ..; ".repeat(130)),
+        format!("cd -P .; {}rm x", "cd a || exit; cd ..; ".repeat(100)),
+        format!("cd a/../b; {}rm x", "cd a || exit; cd ..; ".repeat(100)),
     ] {
         assert!(deletes(&line), "{}", &line[..20]);
     }

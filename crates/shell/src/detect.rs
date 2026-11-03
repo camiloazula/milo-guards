@@ -69,6 +69,10 @@ pub(crate) const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
+/// What the reason of a finding judged from another folder a `cd` before it
+/// may have left the line in ends with (see [`Unit::others`]).
+const MOVED_OFF: &str = " if a cd before it failed or did not run";
+
 /// What the rules found in a split line: the findings of the whole line,
 /// and where each came from.
 #[derive(Debug, Default)]
@@ -104,7 +108,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
             }
         }
     }
-    for write in &split.writes {
+    // A write placed from another folder the line may be in is read for a
+    // later run from that folder already (see [`Unit::others`]).
+    for write in split.writes.iter().filter(|write| !write.also) {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
     for write in &split.unsure_writes {
@@ -117,7 +123,16 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let mut units = Vec::with_capacity(split.units.len());
     for (at, unit) in split.units.iter().enumerate() {
         let before = checker.found.len();
-        checker.unit(at, unit);
+        checker.unit(at, unit, true);
+        // A `cd` before it that may not have run, or may have failed, may
+        // have left the line in another folder: its paths are judged from
+        // there too. A run of a file the line wrote is judged from each of
+        // them already.
+        let own = checker.found.len();
+        for dir in unit.others() {
+            checker.unit(at, &unit.in_folder(dir), false);
+        }
+        checker.moved_off(before, own);
         checker.loose(at, before);
         units.push(checker.found[before..].to_vec());
     }
@@ -125,11 +140,47 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let before = checker.found.len();
     checker.redirected_reads();
     line.extend_from_slice(&checker.found[before..]);
-    let mut writes = Vec::with_capacity(split.writes.len());
+    let mut writes: Vec<Vec<Finding>> = Vec::with_capacity(split.writes.len());
+    // A redirect is written from each folder the line may be in, and a
+    // folder a `cd` that may have failed left the line in stays one of them
+    // for the units after it: the same file from the same folder is judged
+    // once.
+    type Key<'s> = (Shell, Option<&'s Arg>, bool, &'s Arg, bool);
+    let mut judged: HashMap<Key<'_>, Vec<Finding>> = HashMap::new();
+    // What the redirect being read found from the folders the walk has the
+    // line in (the writes of one redirect come together, those first): from
+    // another folder the line may be in, the same finding is that one.
+    let mut plain: (Option<&Arg>, Vec<Finding>) = (None, Vec::new());
     for write in &split.writes {
-        let before = checker.found.len();
-        checker.write(write.shell, write.scope(), &write.target, "writes to");
-        writes.push(checker.found[before..].to_vec());
+        if !write.also && plain.0 != Some(&write.target) {
+            plain = (Some(&write.target), Vec::new());
+        }
+        let key = (
+            write.shell,
+            write.dir.as_ref(),
+            write.hidden,
+            &write.target,
+            write.also,
+        );
+        let found = if let Some(found) = judged.get(&key) {
+            checker.found.extend_from_slice(found);
+            found.clone()
+        } else {
+            let before = checker.found.len();
+            checker.write(write.shell, write.scope(), &write.target, "writes to");
+            if write.also {
+                let mine = std::mem::take(&mut plain.1);
+                checker.moved_off_from(&mine, before);
+                plain.1 = mine;
+            }
+            let found = checker.found[before..].to_vec();
+            judged.insert(key, found.clone());
+            found
+        };
+        if !write.also {
+            plain.1.extend_from_slice(&found);
+        }
+        writes.push(found);
     }
     // Inline code the guard did not read whole is `unknown`, but only where
     // nothing else was found: a line that already asks, or that the guard is
@@ -436,19 +487,51 @@ impl Checker<'_> {
         }
     }
 
-    fn unit(&mut self, at: usize, unit: &Unit) {
+    /// The findings from `own` on were judged from another folder a `cd`
+    /// before the unit may have left the line in (see [`Unit::others`]): one
+    /// the unit made from where the walk has the line (from `before`) is
+    /// that one, and any other says where it comes from, so a caller sees
+    /// what to change (`&&` after the `cd`, or `|| exit`).
+    fn moved_off(&mut self, before: usize, own: usize) {
+        let mine = self.found[before..own].to_vec();
+        self.moved_off_from(&mine, own);
+    }
+
+    /// As [`Self::moved_off`], with what was found from where the walk has
+    /// the line given as `mine`.
+    fn moved_off_from(&mut self, mine: &[Finding], own: usize) {
+        let others = self.found.split_off(own);
+        for mut finding in others {
+            if mine.contains(&finding) {
+                continue;
+            }
+            finding.reason.push_str(MOVED_OFF);
+            if !self.found[own..].contains(&finding) {
+                self.found.push(finding);
+            }
+        }
+    }
+
+    /// Judge `unit`, the one at `at`; `runs` says whether to judge a run of
+    /// a file the line wrote too, which a copy of it in another folder the
+    /// line may be in leaves to the unit itself (see [`Unit::others`]).
+    fn unit(&mut self, at: usize, unit: &Unit, runs: bool) {
         self.called(unit);
         let Some(key) = unit.key() else {
             // A program only known when it runs may be a shell, or start one.
-            self.startup_then_run(unit, None);
+            if runs {
+                self.startup_then_run(unit, None);
+            }
             return;
         };
         self.elevated(unit, &key);
         self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
-        self.write_then_run(unit, &key);
-        self.program_then_run(unit);
-        self.startup_then_run(unit, Some(&key));
+        if runs {
+            self.write_then_run(unit, &key);
+            self.program_then_run(unit);
+            self.startup_then_run(unit, Some(&key));
+        }
         self.files(unit, &key);
         self.send(at, unit, &key);
         self.data(at, unit, &key);

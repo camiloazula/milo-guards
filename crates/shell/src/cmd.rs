@@ -6,6 +6,8 @@ use std::ops::Range;
 use tree_sitter::Node;
 
 use crate::launch;
+use crate::path;
+use crate::powershell::native;
 use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -24,6 +26,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     Walker {
         source: &text,
         depth,
+        input: false,
         split,
     }
     .walk(tree.root_node(), None, 0);
@@ -50,6 +53,9 @@ fn assigned(split: &mut Split, root: Node<'_>, text: &str) {
 struct Walker<'a> {
     source: &'a str,
     depth: usize,
+    /// Whether the commands being walked have a file redirected onto their
+    /// input (`python < x.py`, `(python) < x.py`).
+    input: bool,
     split: &'a mut Split,
 }
 
@@ -59,6 +65,20 @@ impl Walker<'_> {
             self.split
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
             return;
+        }
+        // The right side of an `&&` after a statement runs when it
+        // succeeded, whatever a `cd` before it did (see
+        // [`Split::statement`]).
+        if matches!(
+            node.kind(),
+            "pipe_stmt"
+                | "cond_exec"
+                | "redirect_stmt"
+                | "variable_assignment"
+                | "for_stmt"
+                | "if_stmt"
+        ) {
+            self.split.statement();
         }
         match node.kind() {
             "cmd" | "call_stmt" => {
@@ -122,6 +142,12 @@ impl Walker<'_> {
                 let mut inputs = Vec::new();
                 let mut own: Option<Range<usize>> = None;
                 let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // What the commands read from their input is the file: an
+                // interpreter runs it (`python < x.py`).
+                let outer = self.input;
+                self.input |= children
+                    .iter()
+                    .any(|child| child.kind() == "redirection" && self.reads_input(*child));
                 for child in children
                     .iter()
                     .filter(|child| child.kind() != "redirection")
@@ -131,6 +157,7 @@ impl Walker<'_> {
                     let range = first..self.split.units.len();
                     own = Some(own.map_or(range.clone(), |own| own.start..range.end));
                 }
+                self.input = outer;
                 // The shell opens a redirect before the command runs, so a
                 // command that moves the line (`cd sub > f`) is redirected
                 // from the folder it starts in.
@@ -255,6 +282,7 @@ impl Walker<'_> {
             Walker {
                 source: &text,
                 depth: self.depth,
+                input: self.input,
                 split: self.split,
             }
             .walk(tree.root_node(), stage, level + 1);
@@ -384,11 +412,64 @@ impl Walker<'_> {
                 None,
             );
         }
-        let units: Vec<Unit> = readings
-            .into_iter()
-            .map(|reading| self.unit(reading, args.clone(), spans.clone(), &after, stage))
-            .collect();
+        let mut units = Vec::new();
+        for reading in readings {
+            let raw = raw_arguments(&reading, &after).and_then(|range| self.source.get(range));
+            let mut unit = self.unit(reading, args.clone(), spans.clone(), &after, stage);
+            if let Some(raw) = raw {
+                self.own_split(&mut unit, raw);
+            }
+            units.push(unit);
+        }
         launch::add_readings(self.split, units, self.depth);
+    }
+
+    /// The arguments of a program that splits its own command line, as
+    /// it reads them: cmd hands every program it starts, all but its own
+    /// built-in commands, the text after its name as written, carets outside
+    /// quotes and variables apart (`raw`), and the program splits it. A
+    /// program does so by the C runtime's rules, where `\"` is a quote and a
+    /// quote does not end a word (`bash -c "echo \"hi\"; rm -rf ~"` hands
+    /// bash `echo "hi"; rm -rf ~`), and so does a runner or a wrapper that
+    /// starts another (`uv run bash -c …`, `wsl …`, `git submodule foreach
+    /// …`). `start` hands the program it starts the same text, after a title
+    /// in quotes. `cmd` runs the text after `/c` as it is, quotes and all
+    /// (`cmd /c bash -c "rm -rf ~"`), by its own rule for the quotes around
+    /// it. A word with a variable that is only known when it runs is unknown.
+    fn own_split(&self, unit: &mut Unit, raw: &str) {
+        let Some(key) = unit.key() else {
+            return;
+        };
+        let Some(program) = unit.program.known() else {
+            return;
+        };
+        let start = program.eq_ignore_ascii_case("start");
+        if is_built_in(program) && !start {
+            return;
+        }
+        let text = uncaret(raw);
+        // Each word, and the text it was written as: a word only known when
+        // it runs keeps its quotes (`docker rm -f "%IDS%"` is one name).
+        let words = if key == "cmd" {
+            native::words("cmd", &[], &text)
+                .into_iter()
+                .map(|word| (word.clone(), word))
+                .collect()
+        } else {
+            let mut words = native::argv_written(&text);
+            // `start "title" program …`: the title is no argument (see
+            // `Self::unit`).
+            if start && text.trim_start().starts_with('"') && words.len() >= 2 {
+                words.remove(0);
+            }
+            words
+        };
+        unit.args = words
+            .into_iter()
+            .map(|(word, written)| {
+                expand_variables(&word, self.split).map_or(Arg::Unknown(written), Arg::Known)
+            })
+            .collect();
     }
 
     /// The unit of `reading`, the program and what is left of its word, and
@@ -425,7 +506,11 @@ impl Walker<'_> {
         {
             args.remove(0);
         }
-        Unit::new(Shell::Cmd, program, args, stage)
+        let mut unit = Unit::new(Shell::Cmd, program, args, stage);
+        if self.input {
+            unit.stdin = Some(Arg::Unknown("<input>".to_string()));
+        }
+        unit
     }
 
     /// How cmd reads a command's first word, made of the touching `pieces`:
@@ -700,6 +785,31 @@ impl Walker<'_> {
         }
     }
 
+    /// Whether the redirect `node` hands the command an input: a file (`<`,
+    /// `0<`) or another handle (`0<&3`). The null device holds nothing to
+    /// read (`python < NUL`), so it is none.
+    fn reads_input(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let mut reads = false;
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "redirect_op" => {
+                    reads = unit::text(&child, self.source)
+                        .trim_start_matches(|c: char| c.is_ascii_digit())
+                        .starts_with('<');
+                }
+                "redirect_target" if reads => {
+                    let target = self.quoted_value(child);
+                    return !target
+                        .known()
+                        .is_some_and(|target| path::null_device(target, Shell::Cmd));
+                }
+                _ => {}
+            }
+        }
+        reads
+    }
+
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
     /// (`2>&1`) writes nothing. Returns the files it reads (`<`), and notes each read.
     fn redirect(&mut self, node: Node<'_>) -> Vec<Arg> {
@@ -776,7 +886,7 @@ impl Walker<'_> {
         };
         let zip =
             written_name.eq_ignore_ascii_case("ZIPOPT") || written_name.eq_ignore_ascii_case("ZIP");
-        let terraform = unit::tf_cli_args_folded(written_name);
+        let terraform = unit::argument_variable(written_name);
         if !zip && terraform.is_none() {
             return;
         }
@@ -805,7 +915,7 @@ impl Walker<'_> {
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
         match terraform {
-            Some(name) => self.split.tf_cli_args.push((name, value)),
+            Some(name) => self.split.note_argument_variable(name, value),
             None => {
                 self.split.zip_env.set(written_name, &value, true);
             }
@@ -962,12 +1072,17 @@ fn unquoted_operator(text: &str) -> Option<usize> {
 /// name a known place put in; `None` when any other variable (`%X%`, `%%f`,
 /// `!X!`), or one the line sets, makes it known only when it runs.
 fn expand(text: &str, split: &Split) -> Option<String> {
-    let text = unescape(text);
+    expand_variables(&unescape(text), split)
+}
+
+/// `text` with the variables that name a known place put in (see
+/// [`expand`]), its carets left as they are.
+fn expand_variables(text: &str, split: &Split) -> Option<String> {
     if text.matches('!').count() >= 2 {
         return None;
     }
     let mut value = String::with_capacity(text.len());
-    let mut rest = text.as_str();
+    let mut rest = text;
     while let Some(at) = rest.find('%') {
         value.push_str(&rest[..at]);
         let after = &rest[at + 1..];
@@ -998,6 +1113,45 @@ pub(crate) fn place(name: &str) -> Option<&'static str> {
         "programdata" => "C:\\ProgramData",
         _ => return None,
     })
+}
+
+/// Where the arguments after a command's name are in the source, as one
+/// stretch: what is left of the first word, then the `after` pieces.
+fn raw_arguments(reading: &Reading, after: &[Node<'_>]) -> Option<Range<usize>> {
+    let start = reading
+        .first
+        .first()
+        .map(|(_, range)| range.start)
+        .or_else(|| after.first().map(Node::start_byte))?;
+    let end = after
+        .last()
+        .map(Node::end_byte)
+        .or_else(|| reading.first.last().map(|(_, range)| range.end))?;
+    (start <= end).then_some(start..end)
+}
+
+/// `text` as cmd hands it to a program: the carets outside double quotes
+/// taken off (`^"` is a quote cmd does not read as one, but the program
+/// does), the ones inside kept.
+fn uncaret(text: &str) -> String {
+    let mut value = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '^' if !quoted => {
+                if let Some(next) = chars.next() {
+                    value.push(next);
+                }
+            }
+            '"' => {
+                quoted = !quoted;
+                value.push(c);
+            }
+            _ => value.push(c),
+        }
+    }
+    value
 }
 
 /// cmd's escape character is `^`: `^&` is `&`.

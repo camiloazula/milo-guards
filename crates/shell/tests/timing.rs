@@ -343,6 +343,40 @@ fn wrappers_that_build_their_command_are_read_in_time() {
             "zip x; ".repeat(2_000)
         ),
         format!("rar m x.rar{}", " ~/a".repeat(15_000)),
+        // Package and environment runners: words of yarn taken off, options
+        // a table does not list (each may take the word after it), lines
+        // run side by side, nested runners.
+        format!("yarn{} rimraf ~", " workspace a".repeat(5_000)),
+        format!("yarn{} exec rm", " workspaces foreach -A".repeat(2_500)),
+        format!("uvx{} rimraf ~", " --a x".repeat(10_000)),
+        format!("pipx run{} rimraf ~", " -q".repeat(20_000)),
+        format!("concurrently {}", "'rm -rf ~' ".repeat(5_000)),
+        format!("npm-run-all {}", "'a:*' ".repeat(10_000)),
+        format!("{}rm -rf ~", "poetry run ".repeat(5_000)),
+        format!("{}rm -rf ~", "corepack npx ".repeat(4_000)),
+        format!("{}rm -rf ~", "npx cross-env A=1 ".repeat(3_000)),
+        format!("mise exec{} -- rm -rf ~", " a@1".repeat(12_000)),
+        // A command set once in the environment and run by each `npx`, and
+        // placeholders each filled in with every word passed on.
+        format!(
+            "export npm_config_call='{}'; {}",
+            "rm -rf ~; ".repeat(4_800),
+            "npx; ".repeat(200)
+        ),
+        format!(
+            "export npm_config_call='rm -rf ~'; {}",
+            "npx; ".repeat(12_000)
+        ),
+        format!(
+            "concurrently -P '{}' -- {}",
+            "rm {@}; ".repeat(2_000),
+            "a ".repeat(12_000)
+        ),
+        format!(
+            "{}rm -rf ~",
+            "micromamba --log-level info run ".repeat(1_500)
+        ),
+        format!("micromamba{} run rm -rf ~", " --a x".repeat(10_000)),
     ];
     for line in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -423,9 +457,16 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each `${`), took a tenth of a second to a second at the length limit,
     // and 3.4 s on a slow machine for `${` repeated, inside the budget of
     // what a lexer reads: they are counted before parsing (`Openers` in
-    // `tangled.rs`). A release build reads each in
-    // tens of milliseconds; the bounds leave room for a machine busy with
-    // other work, and for the debug build `just test` runs.
+    // `tangled.rs`). A chain of PowerShell assignments (`$a = $a = … gc
+    // .env`), whose value was read again for its variables at each level,
+    // took over two seconds in a debug build: each level now reads only its
+    // own nodes (`variables` in `powershell.rs`). A path is judged again from
+    // each other folder a `cd` that may have failed or not run may have left
+    // the line in, which made the `cd` rows two to three times slower until a
+    // `cd ..` back from one after `&&` added none and every folder only known
+    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). A release
+    // build reads each in tens of milliseconds; the bounds leave room for a
+    // machine busy with other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
         std::time::Duration::from_secs(2)
     } else {
@@ -469,6 +510,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("a|a\n|", "", "")),
         (Shell::Posix, fit("cd a; cd ..; ", "", "rm x")),
         (Shell::Posix, fit("cd a; cat b; cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("cd a && cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("x && cd a; cat b > c; ", "", "bash c")),
         (Shell::PowerShell, fit("cd a; cd ..; ", "", "Remove-Item x")),
         (Shell::Posix, fit("echo x | ", "", "|")),
         (Shell::Posix, fit("|", "", "")),
@@ -484,6 +527,14 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        // A runner that starts another, each read in turn: about a tenth of
+        // a second in a release build.
+        (Shell::Cmd, fit("bun exec ", "", "")),
+        (Shell::Posix, fit("bun exec ", "", "")),
+        (Shell::PowerShell, fit("bun exec ", "", "")),
+        (Shell::PowerShell, fit("cmd /c ", "", "")),
+        (Shell::PowerShell, fit("$a = ", "", "gc .env")),
+        (Shell::PowerShell, distinct_assignments()),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -548,4 +599,19 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
             );
         }
     }
+}
+
+/// A chain of PowerShell assignments, each to a variable of its own
+/// (`$a0 = $a1 = … gc .env`), as long as a line may be.
+fn distinct_assignments() -> String {
+    let tail = "gc .env";
+    let mut line = String::new();
+    for at in 0.. {
+        let next = format!("$a{at} = ");
+        if line.len() + next.len() + tail.len() > 64 * 1024 {
+            break;
+        }
+        line += &next;
+    }
+    line + tail
 }

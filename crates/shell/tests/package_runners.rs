@@ -1,5 +1,7 @@
 //! A package runner (`npx`, `npm exec`, `pnpm`, `pnpx`, `yarn`, `bunx`,
-//! `bun`, `deno`, `dx`, `uv`, `uvx`, `pipx`) runs the program it names, so
+//! `bun`, `deno`, `dx`, `uv`, `uvx`, `pipx`, `corepack`, and the runners of
+//! a project's environment: `poetry`, `pdm`, `hatch`, `conda`, `pixi`,
+//! `rye`, `volta`, `mise`) runs the program it names, so
 //! that program is judged, past every option of the runner that takes a
 //! value; `bun` and `deno` run code given inline or read from their input; a
 //! script a runner runs may be one the same line writes; and on Windows the
