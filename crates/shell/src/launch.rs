@@ -541,37 +541,7 @@ fn add_launched(
                 commands,
                 moves,
             } => {
-                let at = split.units.len();
-                split.push(unit);
-                for command in commands {
-                    let Arg::Known(text) = command else {
-                        split.problem(
-                            Rule::Unknown,
-                            "runs a command only known when it runs",
-                            Some(command.text()),
-                        );
-                        continue;
-                    };
-                    // Each runs in a shell of its own, which a `GLOBIGNORE`
-                    // in front of the program hands the option to.
-                    let outer = split.hidden_snapshot();
-                    if split.scoped_hidden() {
-                        split.hide_for_script();
-                    }
-                    // `tar -C dir` runs it from `dir`, or from where the
-                    // line was: which, only the order of the run shows.
-                    let outer_dir = moves.then(|| split.dir_snapshot());
-                    if moves {
-                        split.move_unknown("the folder it runs in");
-                    }
-                    let first = split.units.len();
-                    unit::script_in(split, &text, shell, depth + 1, false);
-                    if let Some(place) = outer_dir {
-                        split.restore_dir(place);
-                    }
-                    split.nest(at..at + 1, first..split.units.len());
-                    split.restore_hidden(outer);
-                }
+                run_commands(split, unit, shell, commands, moves, depth);
                 return;
             }
             Launch::Inline(language, code) => {
@@ -642,9 +612,76 @@ fn add_launched(
     split.push(unit);
 }
 
+/// Add `unit`, an archiver, and the `commands` it runs through `shell`
+/// besides, each nested under it, from a folder only known when it runs
+/// when it `moves`. A function of its own, so that its locals are not on
+/// the stack of [`add_launched`] in the deepest walk of a nested line.
+#[inline(never)]
+fn run_commands(
+    split: &mut Split,
+    unit: Unit,
+    shell: Shell,
+    commands: Vec<Arg>,
+    moves: bool,
+    depth: usize,
+) {
+    let at = split.units.len();
+    split.push(unit);
+    for command in commands {
+        let Arg::Known(text) = command else {
+            split.problem(
+                Rule::Unknown,
+                "runs a command only known when it runs",
+                Some(command.text()),
+            );
+            continue;
+        };
+        // Each runs in a shell of its own, which a `GLOBIGNORE` in front of
+        // the program hands the option to.
+        let outer = split.hidden_snapshot();
+        if split.scoped_hidden() {
+            split.hide_for_script();
+        }
+        // `tar -C dir` runs it from `dir`, or from where the line was:
+        // which, only the order of the run shows.
+        let outer_dir = moves.then(|| split.dir_snapshot());
+        if moves {
+            split.move_unknown("the folder it runs in");
+        }
+        let first = split.units.len();
+        unit::script_in(split, &text, shell, depth + 1, false);
+        if let Some(place) = outer_dir {
+            split.restore_dir(place);
+        }
+        split.nest(at..at + 1, first..split.units.len());
+        split.restore_hidden(outer);
+    }
+}
+
+/// What an archiver that may run commands through a shell besides does:
+/// itself alone, or with the commands its arguments give.
+#[inline(never)]
+fn archiver(key: &str, unit: &Unit) -> Launch {
+    let (commands, moves) = crate::detect::archive_commands(key, &unit.args, unit.shell);
+    if commands.is_empty() {
+        Launch::Itself
+    } else {
+        Launch::Commands {
+            shell: if unit.shell == Shell::Posix {
+                Shell::Posix
+            } else {
+                Shell::Cmd
+            },
+            commands,
+            moves,
+        }
+    }
+}
+
 /// Put the options `ZIPOPT` (or `ZIP`) gives in front of `zip`'s own, as it
 /// reads them. A value only known when it runs may hold any option, `-m`
 /// among them.
+#[inline(never)]
 fn zip_options(split: &mut Split, unit: &mut Unit) {
     let read = split.zip_env.read();
     for (reason, text) in read.problems {
@@ -995,22 +1032,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "dx" => runner(key, unit),
         // An archiver that runs commands through a shell besides: `/bin/sh`
         // on a POSIX system, and `cmd` on Windows.
-        "tar" | "gtar" | "bsdtar" | "zip" => {
-            let (commands, moves) = crate::detect::archive_commands(key, args, unit.shell);
-            if commands.is_empty() {
-                Launch::Itself
-            } else {
-                Launch::Commands {
-                    shell: if unit.shell == Shell::Posix {
-                        Shell::Posix
-                    } else {
-                        Shell::Cmd
-                    },
-                    commands,
-                    moves,
-                }
-            }
-        }
+        "tar" | "gtar" | "bsdtar" | "zip" => archiver(key, unit),
         "git" => git::launch(args),
         "bun" => bun(unit),
         "deno" => deno(unit),

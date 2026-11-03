@@ -3366,22 +3366,13 @@ pub(crate) fn split(
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
 ) -> Split {
-    let mut split = Split {
-        drive,
-        home_drive,
-        ..Split::default()
-    };
+    let mut split = start(drive, home_drive);
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        split = Split {
-            psdrive: true,
-            drive,
-            home_drive,
-            ..Split::default()
-        };
+        start_again_psdrive(&mut split);
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -3400,6 +3391,30 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// A `Split` for a line read on `drive`, with the home directory on
+/// `home_drive`. A function of its own, as [`start_again_extended`] is.
+#[inline(never)]
+fn start(drive: Option<char>, home_drive: Option<char>) -> Split {
+    Split {
+        drive,
+        home_drive,
+        ..Split::default()
+    }
+}
+
+/// Clear `split` for a second read of the line that knows the drives the
+/// line makes, as [`start_again_extended`] does.
+#[inline(never)]
+fn start_again_psdrive(split: &mut Split) {
+    let fresh = Split {
+        psdrive: true,
+        drive: split.drive,
+        home_drive: split.home_drive,
+        ..Split::default()
+    };
+    *split = fresh;
 }
 
 /// Clear `split` for a second read of the line that reads the words of its
