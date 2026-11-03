@@ -301,6 +301,15 @@ fn add_launched(
                 return;
             }
             Launch::Itself => {
+                // `coproc NAME {` with the group's commands on the lines
+                // after it runs nothing of its own: what runs is read there,
+                // and the `}` that closes the group is taken off by the walk.
+                if key == "coproc" && unit.shell == Shell::Posix && unit.wrappers.is_empty() {
+                    if let Some(groups) = coproc_opens_only(&unit.args) {
+                        split.coproc_groups += groups;
+                        return;
+                    }
+                }
                 // What `find` picks is handed to the programs its `-exec` runs.
                 let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
@@ -315,6 +324,9 @@ fn add_launched(
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
                 let own = unit.args.get(..start).unwrap_or_default();
+                if key == "coproc" && unit.shell == Shell::Posix {
+                    split.coproc_groups += coproc_groups(own);
+                }
                 split.environment += usize::from(sets_environment(&key, own));
                 split
                     .node_options
@@ -1121,14 +1133,27 @@ fn piped(unit: &Unit) -> bool {
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
 pub(super) fn coproc(args: &[Arg]) -> Launch {
+    command_after(args, coproc_name(args), false)
+}
+
+/// How many words name a `coproc` (`coproc NAME { … }`): one or none. A
+/// name stands before a group or a compound command; before a simple
+/// command the first word is the program.
+fn coproc_name(args: &[Arg]) -> usize {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
     let stuck = |at: usize| word(at).is_some_and(stuck_group);
-    // A name stands before a group or a compound command; before a simple
-    // command the first word is the program.
-    let at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
-    command_after(args, at, false)
+    usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)))
+}
+
+/// How many groups a `coproc` opens when its words past the name are only
+/// `{` words, the group's commands on the lines after it (`coproc NAME {`,
+/// a newline, `ls`): `None` when it has other words, or none.
+fn coproc_opens_only(args: &[Arg]) -> Option<usize> {
+    let rest = args.get(coproc_name(args)..).unwrap_or_default();
+    (!rest.is_empty() && rest.iter().all(|arg| arg.known().is_some_and(opens_group)))
+        .then(|| coproc_groups(rest))
 }
 
 /// What runs after a word that starts a command of its own (`coproc`,
@@ -1153,6 +1178,16 @@ fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
     } else {
         runs(args, Some(at))
     }
+}
+
+/// How many groups the words before what a `coproc` runs open: each `{`
+/// of the words [`coproc`] steps over (`{ {` is one word, two groups).
+fn coproc_groups(own: &[Arg]) -> usize {
+    own.iter()
+        .filter_map(Arg::known)
+        .filter(|text| opens_group(text))
+        .map(|text| text.matches('{').count())
+        .sum()
 }
 
 /// Whether `key` is a word that starts a command of its own, which the

@@ -300,14 +300,23 @@ both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
 the `rm`. A redirect in front of the command gives the command its words
 back, as any redirect does (see [Splitting](#splitting)): `coproc { 2>/dev/null
-rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar has no
-`coproc`, so two forms are not read, and are risky:
+rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar reads the
+`}` that closes such a group as a command of its own; the shell runs nothing
+for it, so the walk takes off one bare `}` with no arguments for each `{` a
+`coproc` opened in the same script, and it is no unit: `coproc { ls *.txt; }`
+and `coproc NAME { ls; }` only read, as `coproc cat` does, and a quoted `'}'`
+is still a program. A group whose commands start on the next line (`coproc
+NAME {`, a newline, `ls`) leaves the `coproc` with nothing to run on its own
+line: it is no unit either, and the lines after it are read as they stand. The
+grammar has no `coproc`, so three forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
+- A group that never closes in its script (`coproc {`, `coproc { ls }`, `coproc
+  { ls; '}'`), which bash does not run as written: `Unreadable`.
 
 The other words that start a command of their own are read the same way,
 since the grammar does not read a group or a negation after them either.
@@ -4781,6 +4790,20 @@ itself (a part that cannot be read, a program known only when it runs, a limit
 hit). Every known argument that is not an option gets a place, whether or not
 the program takes it as a path (`reset` in `git reset` lands inside the
 workspace); which arguments are paths is the rules' business, not the tree's.
+In a POSIX shell nothing after the first `--` is an option: in `rm -- -rf
+~/x` and `rm -rf -- -x ~`, `rm` takes `-rf` and `-x` as files, so they get a
+place and the `--` gets none (a second `--` is a file too). The tree follows
+only a POSIX `--` for now: PowerShell's `--` ends its parameters too, but the
+tree does not read it yet, so a word after it that starts with a dash still
+shows as an option. A cmd `--` ends nothing.
+
+The tree never shows the line's text raw where it could mislead: a control
+character (a newline, a tab, an ESC), a line or paragraph separator (U+2028,
+U+2029) and a Unicode format character (category `Cf`: the bidi controls
+U+202A to U+202E and U+2066 to U+2069, a zero-width space, a byte order mark)
+are written as escapes (`\n`, `\u{1b}`, `\u{202e}`), so the text can neither pose
+as a line of the tree, nor reach a terminal as a sequence, nor show in another
+order than it is read. The fields of `Explanation` keep the text raw.
 
 `classify` is `explain` without the tree: both take their answer from one
 reading of the line (`effect` too, from the same split), so `Explanation::findings`
@@ -4881,7 +4904,10 @@ holds seeded noise that never panics, a line too long or too nested being
 unreadable, a line whose nested scripts are read too often being unreadable,
 too many here-documents, a too-long cmd chain and too-deep nesting not being
 read while everyday lines with many `<<` or `&` are, and the tests that time
-a nasty line against a 200 ms bound;
+a nasty line against a 200 ms bound. Each of them runs `explain` and draws its
+tree too, which do more work than `classify`: a line past a limit is
+unreadable there as well, and `classify`, `explain` and the drawing of the tree
+are each held to the bound;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
