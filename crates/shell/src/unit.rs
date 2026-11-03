@@ -870,6 +870,10 @@ pub(crate) struct Split {
     moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// Where the line was before each folder a wrapper started its program
+    /// in (see [`Self::start_in`]), to put it back once that program is
+    /// read.
+    folders: Vec<Place>,
     /// How much nested script text has been read, in bytes (and one for
     /// each script), and how much of the line has been read again (see
     /// [`read_again`]): a line that makes the same script be read again and
@@ -2612,6 +2616,72 @@ impl Split {
             .unwrap_or_default()
         {
             code.dir = Some(moved.clone());
+        }
+    }
+
+    /// Start what a wrapper runs in `target`, the folder its own option
+    /// names (`env -C DIR`, `pnpm --dir DIR`, `Start-Process
+    /// -WorkingDirectory DIR`, `start /d DIR`), read as a `shell` path: every
+    /// folder the line may be in moves there, as for a `cd` that ran. The
+    /// wrapper fails rather than run its program anywhere else. The move is
+    /// that program's alone: [`Self::leave_folders`] puts the line back.
+    pub(crate) fn start_in(&mut self, target: &Arg, shell: Shell) {
+        self.folders.push(self.dir_snapshot());
+        if shell == Shell::Cmd {
+            // `start /d` names the whole folder: its drive too, and a network
+            // path is on a drive the line does not name.
+            match target.known() {
+                Some(text) if text.starts_with(r"\\") || text.starts_with("//") => {
+                    self.change_drive(None);
+                }
+                Some(text) => {
+                    if let Some(letter) = crate::path::drive_of(text) {
+                        self.change_drive(Some(letter));
+                    }
+                }
+                None => self.change_drive(None),
+            }
+        }
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        let elsewhere: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let stayed: Vec<Option<Arg>> = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        // As for a `cd`: the folder holds code when the target does, or when
+        // the folder did and the target was put after it.
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.pwd.unplain |= self.dir_code;
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+    }
+
+    /// How many folders wrappers have started their programs in and the
+    /// line is still in, to give to [`Self::leave_folders`].
+    pub(crate) fn folders_mark(&self) -> usize {
+        self.folders.len()
+    }
+
+    /// Put the line back where it was before the folders wrappers started
+    /// their programs in since `mark` (see [`Self::start_in`]).
+    pub(crate) fn leave_folders(&mut self, mark: usize) {
+        if mark < self.folders.len() {
+            let mut left = self.folders.split_off(mark);
+            let place = left.swap_remove(0);
+            self.restore_dir(place);
         }
     }
 

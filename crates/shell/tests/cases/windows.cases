@@ -130,6 +130,18 @@ cmd finds=delete | wsl rm -rf ~
 cmd safe | wsl ls
 powershell finds=delete | wsl ~ rm -rf ~
 cmd finds=delete | wsl ~ rm -rf ~
+# `--cd` starts the Linux shell in the folder it names.
+powershell finds=delete | wsl --cd C:\\Windows rm -rf System32
+cmd finds=delete | wsl --cd C:\\Windows rm -rf System32
+powershell finds=delete | wsl --cd C:\\Windows -- rm -rf System32
+cmd finds=delete | wsl --cd C:\\Windows -e rm -rf System32
+powershell finds=delete | wsl --cd ~ rm -rf .ssh
+powershell finds=delete | wsl --cd C:/Windows rm -rf System32
+cmd finds=delete | wsl --cd C: rm -rf Windows
+powershell finds=delete | wsl --cd /mnt/c/Windows rm -rf System32
+powershell finds=delete | wsl --cd C:\\Windows 'rm -rf System32'
+powershell safe | wsl --cd build rm -rf obj
+cmd safe | wsl --cd build rm -rf obj
 
 # A PowerShell trap and event action run later.
 powershell safe | trap { Remove-Item build }

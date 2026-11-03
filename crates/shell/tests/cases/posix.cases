@@ -501,7 +501,7 @@ posix safe | env -S 'make test'
 posix safe | env -S'make test'
 posix finds=delete | env --s 'rm -rf ~'
 posix finds=delete | env -u FOO -S'rm -rf ~'
-posix finds=unknown | env -S 'rm -rf' "$X"
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf' "$X"
 # The words of the string are env's own arguments again: options and
 # assignments first, then the program.
 posix finds=delete | env -S'-i' rm -rf ~
@@ -511,9 +511,11 @@ posix finds=delete | env -S'-C / rm -rf ./*'
 posix finds=delete | env -S '-i' rm -rf ~
 posix finds=delete | env -S'X=1 rm -rf ~'
 posix safe | env -S'-i make test'
-posix finds=unreadable | env -S'rm\\_-rf\\_~'
-posix finds=unreadable | env -S 'rm\\_-rf\\_~'
-posix finds=unreadable | env -S'${CMD} -rf ~'
+# env's own escapes are read as env reads them: `\_` between words.
+posix finds=delete | env -S'rm\\_-rf\\_~'
+posix finds=delete | env -S 'rm\\_-rf\\_~'
+# A `${NAME}` env fills in names a program only known when it runs.
+posix finds=unknown | env -S'${CMD} -rf ~'
 
 # The script `xargs` hands to `sh -c` gets its input as `$1` and `$@`, known
 # only when it runs.
