@@ -170,7 +170,7 @@ posix finds=drop_data | psql <<-EOF\n\tDR\\\nOP TABLE t\n\tEOF
 posix finds=drop_data | psql <<EOF\nSELECT $$ ; DROP TABLE t; $$\nEOF
 posix finds=drop_data | cat <<EOF | psql\nSELECT $$ ; DROP TABLE t; $$\nEOF
 # `\\!` is `\!` for the client.
-posix finds=unknown | psql <<EOF\n\\\\! touch x\nEOF
+posix finds=delete | psql <<EOF\n\\\\! rm -rf ~/x\nEOF
 # `\$x` is `$x` and not a string.
 posix finds=drop_data | psql <<EOF\nSELECT 1; \\$x ; DROP TABLE t\nEOF
 posix finds=drop_data | psql <<EOF\nSELECT 1; \\`x\\` ; DROP TABLE t\nEOF
@@ -275,9 +275,9 @@ posix finds=drop_data | { echo 'DROP TABLE t;'; } | { sqlite3 :memory:; psql; }
 posix finds=drop_data | { echo 'FLUSHALL'; } | { redis-cli; redis-cli; }
 posix finds=drop_data | { printf 'DROP TABLE t;'; } | { redis-cli; psql; }
 # What a stage backs up is judged where each client runs.
-posix finds=drop_data | { echo '.backup ~/prod.db'; } | { sqlite3 d.db; sqlite3 e.db; }
-posix finds=drop_data | { echo '.backup backup.db'; } | { sqlite3 d.db; cd /home/me; sqlite3 e.db; }
-posix finds=drop_data | { echo '.backup ~/prod.db'; echo '.save ~/x.db'; } | duckdb d.db
+posix finds=overwrite | { echo '.backup ~/prod.db'; } | { sqlite3 d.db; sqlite3 e.db; }
+posix finds=overwrite | { echo '.backup backup.db'; } | { sqlite3 d.db; cd /home/me; sqlite3 e.db; }
+posix finds=overwrite | { echo '.backup ~/prod.db'; echo '.save ~/x.db'; } | duckdb d.db
 
 # Dynamic SQL in text on the line is read.
 posix safe | psql -c "DO 'BEGIN PERFORM 1; END'"
@@ -325,7 +325,7 @@ posix finds=drop_data | mysql -e "SET sql_mode='ANSI_QUOTES'; SELECT \\"a\\\\\\"
 posix finds=drop_data | psql <<'EOF'\nSET standard_conforming_strings = off;\nSELECT 'a\\'' ; DROP TABLE t; --';\nEOF
 posix finds=drop_data | psql -c "SET standard_conforming_strings = off; SELECT 'a\\\\'' ; DROP TABLE t; --';"
 # A program, from the other reading.
-posix finds=unknown | mysql -e "SELECT 'a\\\\'; \\! touch x; -- '"
+posix finds=unreadable | mysql -e "SELECT 'a\\\\'; \\! touch x; -- '"
 
 # A variable the client fills in is not read where a statement starts.
 posix safe | psql -c 'SELECT 1::int'

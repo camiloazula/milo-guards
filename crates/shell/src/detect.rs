@@ -82,7 +82,20 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
+    judge(split, resolver, data::Nest::default())
+}
+
+/// What the rules find in `split`, a program a database client runs, read
+/// as a line of its own `nest` deep in such programs.
+fn nested(split: &Split, resolver: &Resolver, nest: data::Nest) -> Vec<Finding> {
+    judge(split, resolver, nest).found
+}
+
+/// [`findings`], for a line `nest` deep in the programs database clients
+/// run (see [`data::Nest`]).
+fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     let mut checker = Checker::new(split, resolver);
+    checker.data.nest = nest;
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
