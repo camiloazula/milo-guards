@@ -228,7 +228,11 @@ impl Walker<'_> {
             let command = self.source.get(from..node.end_byte()).unwrap_or_default();
             format!("{command}\n")
         };
-        if !unit::read_again(self.split, &text, "reads too many of its commands again to judge") {
+        if !unit::read_again(
+            self.split,
+            &text,
+            "reads too many of its commands again to judge",
+        ) {
             return true;
         }
         let language = tree_sitter_batch::LANGUAGE.into();

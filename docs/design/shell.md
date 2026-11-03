@@ -97,7 +97,12 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   `if exist q rd /s /q C:\Windows` is. Nor does it read a `call`, `if` or
   `for` spelled with carets (`ca^ll`, `i^f`), which cmd takes off first:
   that command's text is split again with the carets of its first word
-  taken off. A `for` typed at the prompt
+  taken off. A `call` of the program `call` (`call call rd /s /q C:\x`)
+  runs the command after it, so the text from the second `call` is split
+  again the same way. Each text split again counts against the line's
+  budget of nested script text, so a line of `f^or … do f^or … do …`,
+  where each command holds the rest of the line, is `unreadable` past it
+  instead of read once for each command. A `for` typed at the prompt
   (`for %i in …`, not `%%i`) is not read by the grammar and is `unreadable`
   wherever it stands.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
@@ -218,8 +223,10 @@ risky:
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
-for one line as far as a budget a few times the longest line. Past either, the
-line is unreadable.
+for one line as far as a budget a few times the longest line; a cmd command
+the guard reads again as a statement of its own (`ver && if …`, `i^f`,
+`call call`) counts against the same budget. Past either, the line is
+unreadable.
 
 The other limits, each read as unreadable past it, and each pinned by a test
 that finds the edge by measuring it and asserts both sides (see Tests):
