@@ -303,19 +303,26 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
-                let before = self.split.moves_so_far();
+                let before = self.split.mark();
                 let mut cursor = node.walk();
                 let mut at = 0;
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "pipeline_chain_tail" {
                         if unit::text(&child, self.source) == "||" {
-                            self.split.may_not_have_moved(before);
+                            self.split.may_not_have_moved(&before);
                         }
                         continue;
                     }
+                    let moves = self.split.moves_so_far();
                     self.split.branches += usize::from(at > 0);
                     self.walk(child, stage, level + 1);
                     self.split.branches -= usize::from(at > 0);
+                    // A `cd` on the right side runs only when the left let
+                    // it: when it did not, the line may still be where the
+                    // chain began.
+                    if at > 0 && self.split.moves_so_far() != moves {
+                        self.split.may_not_have_moved(&before);
+                    }
                     at += 1;
                 }
             }

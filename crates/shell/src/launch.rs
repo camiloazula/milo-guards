@@ -443,6 +443,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         reads: Reads::Nothing,
         stdin,
         dir: None,
+        elsewhere: Vec::new(),
         hidden: false,
         startup,
         repeated: false,

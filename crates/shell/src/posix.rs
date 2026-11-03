@@ -822,7 +822,6 @@ struct Tail {
     here: OpensFrom,
     moved: usize,
     moves: usize,
-    uncertain: usize,
     first: usize,
 }
 
@@ -1210,7 +1209,7 @@ impl Walker<'_> {
     /// may not run.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        let before = self.split.moves_so_far();
+        let before = self.split.mark();
         let mut at = 0;
         let last = self
             .tail_of
@@ -1221,7 +1220,7 @@ impl Walker<'_> {
             // The right side of `||` only runs when the left failed: a `cd`
             // on the left may not have moved the line.
             if child.kind() == "||" {
-                self.split.may_not_have_moved(before);
+                self.split.may_not_have_moved(&before);
             }
             if !child.is_named() {
                 continue;
@@ -1233,13 +1232,19 @@ impl Walker<'_> {
                     here: self.split.opens_here(),
                     moved: self.split.moved_so_far(),
                     moves: self.split.moves_so_far(),
-                    uncertain: self.split.uncertain_so_far(),
                     first: self.split.units.len(),
                 });
             }
+            let moves = self.split.moves_so_far();
             self.split.branches += usize::from(at > 0);
             self.walk(child, stage, level + 1);
             self.split.branches -= usize::from(at > 0);
+            // A `cd` on the right side runs only when the left let it: when
+            // it did not (`cd sub && cd sub2`), the line may still be where
+            // the list began.
+            if at > 0 && self.split.moves_so_far() != moves {
+                self.split.may_not_have_moved(&before);
+            }
             at += 1;
         }
     }
@@ -2088,7 +2093,6 @@ impl Walker<'_> {
         let here = self.split.opens_here();
         let moved_before = self.split.moved_so_far();
         let moves_before = self.split.moves_so_far();
-        let uncertain_before = self.split.uncertain_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
@@ -2169,7 +2173,6 @@ impl Walker<'_> {
                         tail.first..own.end,
                         tail.moved,
                         tail.moves,
-                        tail.uncertain,
                         by_folder,
                     )
                 } else {
@@ -2178,7 +2181,6 @@ impl Walker<'_> {
                         own.clone(),
                         moved_before,
                         moves_before,
-                        uncertain_before,
                         by_folder,
                     )
                 };

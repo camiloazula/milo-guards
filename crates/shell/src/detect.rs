@@ -139,11 +139,6 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
-    // A file a redirect wrote from a folder the line may not end up in, which
-    // a later run may be from.
-    for write in &split.later_writes {
-        checker.written(write.dir.as_ref(), &write.target, write.shell);
-    }
     checker.flow = checker.trace();
     // What each step adds to `found` is what that step found: the findings
     // from `split.findings` come first, and are the line's own.
@@ -890,13 +885,19 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether the line writes the file `name` names from where `unit` runs.
+    /// Whether the line writes the file `name` names from where `unit` runs,
+    /// or from any other folder the line may be in then (see
+    /// [`Unit::elsewhere`]).
     fn names_written(&self, unit: &Unit, name: &str) -> bool {
-        self.pattern_written(unit.dir.as_ref(), name, unit.shell)
-            || self
-                .resolver
-                .file_key(unit.dir.as_ref(), &Arg::Known(name.to_string()), unit.shell)
-                .is_some_and(|wanted| self.written.contains(&wanted))
+        std::iter::once(unit.dir.as_ref())
+            .chain(unit.elsewhere.iter().map(Option::as_ref))
+            .any(|dir| {
+                self.pattern_written(dir, name, unit.shell)
+                    || self
+                        .resolver
+                        .file_key(dir, &Arg::Known(name.to_string()), unit.shell)
+                        .is_some_and(|wanted| self.written.contains(&wanted))
+            })
     }
 
     fn add_run_written(&mut self, script: &Arg) {
@@ -939,8 +940,28 @@ impl Checker<'_> {
     }
 
     /// `unit` runs `script`, from `dir`: say so when the line writes it, or
-    /// may.
+    /// may. From where `unit` runs, it is also judged from every other folder
+    /// the line may be in then (see [`Unit::elsewhere`]): a `cd` that may not
+    /// have run, after the line wrote the file, may have left it where the
+    /// file is.
     fn runs_written(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
+        let others: &[Option<Arg>] = if dir == unit.dir.as_ref() {
+            &unit.elsewhere
+        } else {
+            &[]
+        };
+        for from in std::iter::once(dir).chain(others.iter().map(Option::as_ref)) {
+            let before = self.found.len();
+            self.runs_written_from(unit, script, from);
+            if self.found.len() != before {
+                return;
+            }
+        }
+    }
+
+    /// `unit` runs `script`, with the line in `dir`: say so when the line
+    /// writes it, or may.
+    fn runs_written_from(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
         // A script path the guard cannot place (after a `cd` to somewhere
         // unknown, or on a drive whose directory is) may be the one the line
         // writes; a line that writes nothing has no script to be.

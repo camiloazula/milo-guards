@@ -63,6 +63,39 @@ posix finds=unknown | echo hi > /home/me/work/repo/x.sh; ./x.sh
 posix finds=unknown | cd sub; echo hi > x.sh; ./x.sh
 posix finds=unknown | echo hi > sub/x.sh; cd sub; ./x.sh
 posix finds=unknown | echo hi > x.sh; cd sub; ../x.sh
+# A `cd` after the write that may not have run (in a branch, after `&&` or
+# `||` or on the left of `||`, in a loop or a function body, in a pipeline
+# stage) may leave the line where the file was written: the run is judged from
+# every folder the line may be in.
+posix finds=unknown | echo x > x.sh; false && cd s; bash x.sh
+posix finds=unknown | echo x > x.sh; [ -d s ] && cd s; bash x.sh
+posix finds=unknown | echo x > x0.sh; if false; then cd s; fi; bash x0.sh
+posix finds=unknown | echo x > x.sh; cd s || true; bash x.sh
+posix finds=unknown | echo x > x.sh; cd a && cd s; bash x.sh
+posix finds=unknown | echo x > x.sh; cd a; false && cd s; bash ../x.sh
+posix finds=unknown | echo x > x.sh; false && cd s; ./x.sh
+posix finds=unknown | echo x > x.sh; false && cd /tmp; bash x.sh
+posix finds=unknown | echo x > x.sh; for d in $l; do cd s; done; bash x.sh
+posix finds=unknown | echo x > x.sh; f() { cd s; }; bash x.sh
+posix finds=unknown | echo x > x.sh; false && cd s | true; bash x.sh
+posix finds=unknown | echo x | tee x.sh; false && cd s; bash x.sh
+powershell finds=unknown | 'x' > x.ps1; if ($a) { cd s }; .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; if ($a) { cd s }; pwsh -File x.ps1
+cmd finds=unknown | echo x > x.bat & if exist s cd s & x.bat
+cmd finds=unknown | echo x > x.bat & if exist s cd s & x
+# Past the most folders the guard keeps, the line may be anywhere: a run is
+# unknown once the line writes a file, and safe when it writes none.
+posix finds=unknown reason="runs a script only known when it runs" | echo x > log.txt; false && cd a; false && cd b; false && cd c; false && cd d; ./app
+posix safe | false && cd a; false && cd b; false && cd c; false && cd d; ./app
+# A `cd` that surely ran, a run of another file, and everyday lines that run
+# nothing they wrote.
+posix safe | echo x > x.sh; if true; then cd s; fi; bash x.sh
+posix safe | echo x > x.sh; false && cd s; bash t/x.sh
+posix safe | echo x > log.txt; test -d sub && cd sub; ./app
+posix safe | test -d sub && cd sub; ls > files.txt; cat files.txt
+posix safe | cd build && make; ./app
+powershell safe | 'x' > x.ps1; cd s; .\\x.ps1
+powershell safe | 'x' > x.ps1; cd s | Out-Null; .\\x.ps1
 # The program wrapped or nested.
 posix finds=unknown | echo hi > x.sh; sudo ./x.sh
 posix finds=unknown | echo hi > x.sh; env FOO=1 ./x.sh
