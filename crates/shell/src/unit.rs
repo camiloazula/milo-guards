@@ -2907,14 +2907,64 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
-/// Whether `text` is a `/X`-style switch, not a path. A long path spelt with
-/// forward slashes (`//?/C:/x`) is a path: read as one, it can only be judged
-/// more strictly.
+/// Whether `text` is a `/X`-style switch, not a path: a slash and a switch
+/// name (`/q`, `/-y`, `/?`, `/mir`), or a run of short ones (`/s/q`), with an
+/// optional `:value` after the last (`/a:-d`, `/R:3`). A name is letters,
+/// digits, `-`, `+` and `?`; in a run each is at most
+/// [`RUN_NAME`] characters, so `/evil/share/x` is a path with folders.
+///
+/// Anything else is a path, which can only be judged more strictly than a
+/// switch: a text that starts with two separators (`//server/share`,
+/// `//?/C:/x`, `/\server`), one core reads as a share or a device
+/// (`/dev/sda`), and one with a `\` or a `.` in it. So is a switch whose
+/// value holds a separator or starts with a drive (`/x://evil/s`, `/x:C:`):
+/// its value is a path, and the argument is judged as one.
 pub(crate) fn is_switch(text: &str) -> bool {
-    text.starts_with('/')
-        && text.len() > 1
-        && !text[1..].contains(['\\', '.'])
-        && milo_guards_core::spelling::verbatim(text).is_none()
+    use milo_guards_core::{spelling, Flavour};
+    let Some(body) = text.strip_prefix('/') else {
+        return false;
+    };
+    if body.is_empty()
+        || body.starts_with(['/', '\\'])
+        || text.contains(['\\', '.'])
+        || spelling::network(text, Flavour::Windows)
+        || spelling::device(text, Flavour::Windows).is_some()
+    {
+        return false;
+    }
+    let (names, value) = match body.split_once(':') {
+        Some((names, value)) => (names, Some(value)),
+        None => (body, None),
+    };
+    let names: Vec<&str> = names.split('/').collect();
+    let run = names.len() > 1;
+    let named = names.iter().all(|name| {
+        !name.is_empty()
+            && (!run || name.chars().count() <= RUN_NAME)
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '+' | '?'))
+    });
+    let drive = |value: &str| {
+        let mut chars = value.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+    };
+    named && !value.is_some_and(|value| value.contains('/') || drive(value))
+}
+
+/// The longest name of a switch written in a run of several (`/s/q`,
+/// `/mir/np`): a longer part makes the text a path with folders.
+const RUN_NAME: usize = 3;
+
+/// The value of a `/NAME:value` switch whose name is one of `names`, without
+/// case (`/LOG:C:\x.txt`, `/exclude:list.txt`): a value that is a path, which
+/// [`is_switch`] leaves to be judged as one.
+pub(crate) fn switch_value<'a>(text: &'a str, names: &[&str]) -> Option<&'a str> {
+    let (name, value) = text.strip_prefix('/')?.split_once(':')?;
+    names
+        .iter()
+        .any(|known| name.eq_ignore_ascii_case(known))
+        .then_some(value)
 }
 
 /// The arguments that are not `/X`-style switches.

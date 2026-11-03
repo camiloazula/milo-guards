@@ -4,7 +4,9 @@ use super::{downloads_to, or_here, sources_and_destination, Checker, COPY_VALUED
 use crate::launch::{find_targets, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::Params;
-use crate::unit::{has_flag, has_switch, operands, plain, Arg, Scope, Unit};
+use crate::unit::{
+    has_flag, has_switch, is_switch, operands, plain, switch_value, Arg, Scope, Unit,
+};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::{glob, verbatim};
 use milo_guards_core::Flavour;
@@ -39,14 +41,14 @@ impl Checker<'_> {
                 }
             }
             "del" | "erase" if shell == Shell::Cmd => {
-                let targets = builtin(&plain(args));
+                let targets = builtin(args);
                 self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
                 if has_switch(args, "s") {
                     self.search_deletes(unit, &targets);
                 }
             }
             "rd" | "rmdir" if shell == Shell::Cmd && has_switch(args, "s") => {
-                let targets = builtin(&plain(args));
+                let targets = builtin(args);
                 self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
             }
             "remove-item" => {
@@ -104,7 +106,14 @@ impl Checker<'_> {
                 }
             }
             "copy" | "xcopy" | "move" if shell == Shell::Cmd => {
-                let operands = builtin(&plain(args));
+                // `xcopy /exclude:list.txt` names a file of strings to skip,
+                // which it reads: no operand.
+                let kept: Vec<Arg> = args
+                    .iter()
+                    .filter(|arg| key != "xcopy" || !valued(arg, &["exclude"]))
+                    .cloned()
+                    .collect();
+                let operands = builtin(&kept);
                 let operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
                     self.move_away(unit, &operands[..operands.len() - 1], "moves");
@@ -120,7 +129,37 @@ impl Checker<'_> {
                 }
             }
             "robocopy" => {
-                let operands = plain(args);
+                // A log or a job file it writes, and a job file it reads, are
+                // switches with a value, not folders or files to copy.
+                for value in args
+                    .iter()
+                    .filter_map(Arg::known)
+                    .filter_map(|text| switch_value(text, &ROBOCOPY_LOGS))
+                {
+                    let log = Arg::Known(value.to_string());
+                    self.write(shell, unit.scope(), &log, "writes a log to");
+                }
+                for value in args
+                    .iter()
+                    .filter_map(Arg::known)
+                    .filter_map(|text| switch_value(text, &["save"]))
+                {
+                    let job = Arg::Known(format!("{value}.rcj"));
+                    self.write(shell, unit.scope(), &job, "writes to");
+                }
+                // A job file holds folders and switches of its own, which the
+                // guard never sees.
+                if let Some(job) = args.iter().find(|arg| valued(arg, &["job"])) {
+                    self.add(
+                        Rule::Unknown,
+                        "copies by a job file the guard does not read",
+                        Some(job),
+                    );
+                }
+                let operands: Vec<&Arg> = plain(args)
+                    .into_iter()
+                    .filter(|arg| !valued(arg, &ROBOCOPY_LOGS) && !valued(arg, &["save", "job"]))
+                    .collect();
                 if let Some(destination) = operands.get(1) {
                     if has_switch(args, "mir") || has_switch(args, "purge") {
                         self.delete(unit, &[destination], "deletes files in");
@@ -305,7 +344,7 @@ impl Checker<'_> {
                 }
             }
             "ren" | "rename" if shell == Shell::Cmd => {
-                let operands = builtin(&plain(args));
+                let operands = builtin(args);
                 if let [source, name, ..] = operands.as_slice() {
                     self.rename(unit, &[source], Some(name));
                 }
@@ -782,9 +821,21 @@ fn from_pipe(unit: &Unit) -> bool {
     unit.stage.is_some_and(|stage| stage.index > 0)
 }
 
-/// cmd's built-in commands (`del`, `rd`, `copy`, `move`) also end an
-/// argument at `,`, `;` and `=`: `rd /s /q x,C:\Users\me` is two folders.
-fn builtin(args: &[&Arg]) -> Vec<Arg> {
+/// The switches of `robocopy` that name a log file it writes: `/LOG+:` and
+/// `/UNILOG+:` add to it, the others replace it.
+const ROBOCOPY_LOGS: [&str; 4] = ["log", "log+", "unilog", "unilog+"];
+
+/// Whether `arg` is a `/NAME:value` switch with one of `names`.
+fn valued(arg: &Arg, names: &[&str]) -> bool {
+    arg.known()
+        .is_some_and(|text| switch_value(text, names).is_some())
+}
+
+/// The operands of cmd's built-in commands (`del`, `rd`, `copy`, `move`),
+/// which also end an argument at `,`, `;` and `=`: `rd /s /q x,C:\Users\me`
+/// is two folders. Each part is a switch or an operand of its own, so
+/// `/q;//evil/s` is the switch `/q` and a share.
+fn builtin(args: &[Arg]) -> Vec<Arg> {
     args.iter()
         .flat_map(|arg| match arg {
             Arg::Known(text) => text
@@ -792,8 +843,9 @@ fn builtin(args: &[&Arg]) -> Vec<Arg> {
                 .filter(|part| !part.is_empty())
                 .map(|part| Arg::Known(part.to_string()))
                 .collect::<Vec<_>>(),
-            other => vec![(*other).clone()],
+            other => vec![other.clone()],
         })
+        .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
 }
 
