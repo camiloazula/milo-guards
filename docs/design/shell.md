@@ -2984,8 +2984,9 @@ too: `clickhouse-client --password 'DROP TABLE t'` runs the `DROP`.
 or alias in any case (`-que`), `-Query:'…'`, and the query as its first
 positional parameter (`Invoke-Sqlcmd 'DROP TABLE t'`). A start of several
 names is refused by PowerShell and one of no name takes no value, so the word
-after either is read as a query too; `-InputFile` is a file of statements, the
-workspace's own, as `psql -f` is. In PowerShell a parameter word with quotes in
+after either is read as a query too; `-InputFile` is a file of statements,
+which runs what the line does not show, as `psql -f` does (`-InputFile nul`
+runs nothing). In PowerShell a parameter word with quotes in
 it (`mysql --execute='DROP TABLE t'`, `psql --command="DROP TABLE t"`) is the
 word with its quotes taken off, as PowerShell hands it to a native program; a
 double-quoted part that holds a `$` is only known when it runs.
@@ -3163,7 +3164,9 @@ backticks for one expansion that hides the text between them; this covers
 here-string given to a client as its statement is read the same way, from the
 grammar's reading of it: each variable and `$(…)` in it stands as an expansion,
 so `psql -c "DELETE FROM t WHERE id = $id"` is safe, `psql -c "DROP TABLE
-$t"` is `drop_data` and `psql -c "$verb FROM t"` is `unknown`. A string that
+$t"` is `drop_data` and `psql -c "$verb FROM t"` is `unknown`; a `$(…)` runs
+a command, which prints what it likes, so a statement with one is `unknown`,
+as a POSIX command substitution is. A string that
 holds a `$` or a backtick as text (`` `$ ``, a lone `$`) is `unknown`, since
 the reader would take it for an expansion that hides what follows. On cmd an
 expansion in a double-quoted word (`%id%`) is not read as a word, so any

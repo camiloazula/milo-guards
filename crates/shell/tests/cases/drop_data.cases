@@ -926,6 +926,7 @@ posix safe | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {a: 1
 posix safe | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {}, limit: 1}]})'
 posix safe | mongosh --eval 'db.users.deleteMany({"a.b": 1})'
 posix safe | mongosh --eval 'db.dropUser("alice")'
+posix safe | mongosh --eval 'db.users.bulkWrite([{deleteOne: {filter: {}}}])'
 posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{deleteMany: {filter: {}}}])'
 posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{insertOne: {document: {a: 1}}}, {deleteMany: {filter: f}}])'
 posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{"deleteMany": {"filter": {}}}])'

@@ -46,9 +46,8 @@ struct Client {
     short_file: &'static str,
     /// Long options whose value is a file of statements (`--file`).
     long_file: &'static [&'static str],
-    /// Whether an operand that ends in `.js` is a script the client runs
-    /// (`mongosh db drop.js`).
-    scripts: bool,
+    /// What a word that is no option and no option's value is.
+    operands: Operands,
     /// The options whose value is never a word that starts with `-`: without
     /// a value they stand alone, as `mongosh -p` does (it prompts for the
     /// password), and the word is an option of its own.
@@ -57,11 +56,20 @@ struct Client {
     bundles: bool,
     /// Whether a short option may also start with `/` (Windows `sqlcmd`).
     slash: bool,
-    /// Whether a word that is no option is a statement too
-    /// (`clickhouse-client 'SELECT 1'`, and after `-n`, which takes no value).
-    operands: bool,
     /// What the statement is written in.
     language: Language,
+}
+
+/// What a client makes of a word that is no option and no option's value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operands {
+    /// Nothing it runs: a database, a user.
+    Other,
+    /// One that ends in `.js` is a script it runs (`mongosh db drop.js`).
+    Scripts,
+    /// Each is a statement (`clickhouse-client 'SELECT 1'`, and after `-n`,
+    /// which takes no value).
+    Statements,
 }
 
 /// Which options of a client take no value from a word that starts with `-`.
@@ -134,11 +142,10 @@ const PSQL: Client = Client {
     long_exits: &["command"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
-    operands: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Postgres),
 };
 
@@ -219,11 +226,10 @@ const MYSQL: Client = Client {
     long_exits: &["execute"],
     short_file: "",
     long_file: &[],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
-    operands: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::MySql),
 };
 
@@ -266,11 +272,10 @@ const CLICKHOUSE: Client = Client {
     long_exits: &["query"],
     short_file: "",
     long_file: &["queries-file"],
-    scripts: false,
     loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
-    operands: true,
+    operands: Operands::Statements,
     language: Language::Sql(Dialect::ClickHouse),
 };
 
@@ -292,11 +297,10 @@ const SQLCMD: Client = Client {
     long_exits: &["query"],
     short_file: "i",
     long_file: &["input-file"],
-    scripts: false,
     loose: Loose::No,
     bundles: false,
     slash: true,
-    operands: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::SqlServer),
 };
 
@@ -334,11 +338,10 @@ const CQLSH: Client = Client {
     long_exits: &["execute"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
-    operands: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Cql),
 };
 
@@ -391,11 +394,10 @@ const MONGO: Client = Client {
     long_exits: &[],
     short_file: "f",
     long_file: &["file"],
-    scripts: true,
     loose: Loose::Every,
     bundles: true,
     slash: false,
-    operands: false,
+    operands: Operands::Scripts,
     language: Language::Mongo,
 };
 
@@ -566,7 +568,7 @@ impl Client {
         while let Some(arg) = iter.next() {
             let Some((text, holes)) = view(arg) else {
                 // What `xargs` hands on is an operand only known when it runs.
-                if self.operands && matches!(arg, Arg::Input) {
+                if self.operands == Operands::Statements && matches!(arg, Arg::Input) {
                     found.push(arg.clone());
                 }
                 continue;
@@ -574,13 +576,13 @@ impl Client {
             // An operand that is a script the client runs.
             let script = |text: &str| {
                 let lower = text.to_ascii_lowercase();
-                self.scripts
+                self.operands == Operands::Scripts
                     && [".js", ".mjs", ".cjs"]
                         .iter()
                         .any(|end| lower.ends_with(end))
             };
             if ended || text == "--" {
-                if ended && self.operands {
+                if ended && self.operands == Operands::Statements {
                     found.push(arg.clone());
                 } else if ended && script(text) {
                     files.push(arg.clone());
@@ -608,7 +610,9 @@ impl Client {
                     self.statement_value(&mut iter, found);
                 } else if long == Long::File {
                     files.extend(Self::value(&mut iter, loose).cloned());
-                } else if long == Long::Value || (long == Long::Loose && !self.operands) {
+                } else if long == Long::Value
+                    || (long == Long::Loose && self.operands != Operands::Statements)
+                {
                     Self::value(&mut iter, long == Long::Loose);
                 }
                 // An optional value is left where it is read as an operand
@@ -627,7 +631,7 @@ impl Client {
                         continue;
                     }
                 },
-                None if self.operands => {
+                None if self.operands == Operands::Statements => {
                     found.push(arg.clone());
                     continue;
                 }
