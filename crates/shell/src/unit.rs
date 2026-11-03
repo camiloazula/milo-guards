@@ -363,6 +363,16 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
     }
 }
 
+/// Whether `text`, a word as the shell expands it, is a wildcard pattern:
+/// it holds a `*` or a `?`, or a `[` with a `]` after it (a `[` alone is a
+/// name, as the program `[` is).
+pub(crate) fn pattern(text: &str) -> bool {
+    text.contains(['*', '?'])
+        || text
+            .split_once('[')
+            .is_some_and(|(_, rest)| rest.contains(']'))
+}
+
 /// A write a redirect makes: `> file`, `>> file`.
 #[derive(Debug, Clone)]
 pub(crate) struct Write {
