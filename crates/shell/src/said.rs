@@ -34,6 +34,7 @@ impl Said {
     }
 
     /// What inline code that runs code it downloads says, with its way out.
+    #[cfg(feature = "inline")]
     pub(crate) fn downloaded_code() -> Self {
         Self::instead(
             "runs code it downloads",
