@@ -217,6 +217,16 @@ fn add_launched(
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
+                // `xargs -a FILE cmd`: the program's arguments are what the
+                // file holds, as if it were redirected onto its input.
+                if key == "xargs" {
+                    if let Some(file) =
+                        wrappers::arg_file(unit.args.get(..start).unwrap_or_default())
+                    {
+                        let at = split.units.len();
+                        split.redirect(at..at + 1, file, true);
+                    }
+                }
                 split.environment += usize::from(sets_environment(&key));
                 split
                     .node_options
@@ -294,6 +304,18 @@ fn add_launched(
                         unit::script_in(split, &text, shell, depth + 1, here);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
+                        if key == "alias" {
+                            let name = split
+                                .units
+                                .get(shell_at)
+                                .and_then(|alias| alias.args.first())
+                                .and_then(Arg::known)
+                                .and_then(|word| word.split_once('='))
+                                .map(|(name, _)| name.to_string());
+                            if let Some(name) = name {
+                                split.body(&name, shell_at + 1..split.units.len());
+                            }
+                        }
                         if let Some(began) = later {
                             split.branches -= 1;
                             split.bodies -= 1;
@@ -382,6 +404,16 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// The name and value of `alias NAME=VALUE`, given one alias to define.
+fn alias(args: &[Arg]) -> Option<(&str, &str)> {
+    let [word] = args else {
+        return None;
+    };
+    word.known()?
+        .split_once('=')
+        .filter(|(name, value)| !name.is_empty() && !name.starts_with('-') && !value.is_empty())
 }
 
 /// Say what the options of the wrapper `key`, the arguments before the
@@ -582,6 +614,12 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "xargs" if posix => xargs(args),
+        // `alias f='cat .env'`: a call of `f` runs the value, read as a
+        // script where it is defined, as a function's body is.
+        "alias" if unit.shell == Shell::Posix => alias(args)
+            .map_or(Launch::Itself, |(_, value)| {
+                Launch::Script(Shell::Posix, Arg::Known(value.to_string()))
+            }),
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
         // fish chains commands with `; and cmd`, `; or cmd` and `not cmd`;

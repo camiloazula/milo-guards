@@ -4,9 +4,12 @@
 //! sends its input.
 //!
 //! A secret is a file the path model calls sensitive (`~/.ssh`, `~/.aws`),
-//! an `.env` file anywhere, or the whole environment. Reading one on this
-//! machine is nothing; only sending it is.
+//! an `.env` or `.envrc` file or a shell's history anywhere, the whole
+//! environment, the GPG secret keys `gpg` exports, or a file the line wrote
+//! from one of them. Reading one on this machine is nothing; only sending it
+//! is.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -15,19 +18,97 @@ use milo_guards_core::{Flavour, Sensitivity};
 
 use super::files::remote;
 use super::Checker;
+use crate::launch::INTERPRETERS;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, referenced, Arg, Stage, Unit};
+use crate::unit::{has_flag, operands, referenced, Arg, Nested, Stage, Unit};
 use crate::{Rule, Shell};
 
 const ENVIRONMENT: &str = "your environment variables";
 const DOTENV: &str = "an .env file";
+const ENVRC: &str = "an .envrc file";
+const HISTORY: &str = "your shell history";
+const GPG: &str = "your GPG keys";
 const HOME: &str = "your home directory";
+/// A folder that holds the workspace, which may hold an `.env` file.
+const WORKSPACE: &str = "your workspace";
 /// What core calls the root of a disk, which holds the home directory.
 const ROOT: &str = "the root of the disk";
 
 /// The ends of an `.env` file's name that make it a template, committed
 /// with the code: `.env.example`.
 const TEMPLATES: [&str; 4] = ["example", "sample", "template", "dist"];
+
+/// The ends of an `.env` file's name that say it is encrypted, made to be
+/// committed or sent: `.env.gpg`, `.env.vault`.
+const ENCRYPTED: [&str; 5] = ["gpg", "pgp", "age", "enc", "vault"];
+
+/// The files a shell or a prompt keeps every line typed into it in, a
+/// secret typed on one among them, in lower case.
+const HISTORIES: [&str; 12] = [
+    ".bash_history",
+    ".zsh_history",
+    ".zhistory",
+    ".sh_history",
+    ".ksh_history",
+    ".history",
+    "fish_history",
+    "consolehost_history.txt",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+];
+
+/// Programs that print what they are given as a name, a listing, a count or
+/// a hash, never what a file holds: `echo .env`, `ls ~/.ssh`,
+/// `sha256sum .env`.
+const NAMES_ONLY: &[&str] = &[
+    "echo",
+    "printf",
+    "ls",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "stat",
+    "du",
+    "file",
+    "wc",
+    "test",
+    "[",
+    "md5sum",
+    "md5",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
+    "shasum",
+    "b2sum",
+    "b3sum",
+    "cksum",
+    "sum",
+];
+
+/// The kinds of `socat` address that reach another machine.
+const SOCAT_NETWORK: [&str; 10] = [
+    "tcp",
+    "udp",
+    "ssl",
+    "openssl",
+    "sctp",
+    "socks",
+    "proxy",
+    "dccp",
+    "ip-sendto",
+    "vsock",
+];
+
+/// The kinds of `socat` address that open a file to read.
+const SOCAT_FILES: [&str; 4] = ["file", "open", "gopen", "readfile"];
+
+/// The programs that read their attachments' names from `-a` and `-A`.
+const MAILERS: [&str; 4] = ["mail", "mailx", "s-nail", "mutt"];
 
 /// Programs that send what they are given to another machine, so a secret
 /// in their arguments, in a substitution they run or in a variable they
@@ -45,6 +126,8 @@ const NETWORK: &[&str] = &[
     "start-bitstransfer",
     "send-mailmessage",
     "nc",
+    "nc.openbsd",
+    "nc.traditional",
     "ncat",
     "netcat",
     "socat",
@@ -58,6 +141,7 @@ const NETWORK: &[&str] = &[
     "mosh",
     "mail",
     "mailx",
+    "s-nail",
     "sendmail",
     "msmtp",
     "mutt",
@@ -66,6 +150,8 @@ const NETWORK: &[&str] = &[
 /// Programs that send their input as they get it.
 const SINKS: &[&str] = &[
     "nc",
+    "nc.openbsd",
+    "nc.traditional",
     "ncat",
     "netcat",
     "socat",
@@ -75,6 +161,7 @@ const SINKS: &[&str] = &[
     "mosh",
     "mail",
     "mailx",
+    "s-nail",
     "sendmail",
     "msmtp",
     "mutt",
@@ -84,9 +171,9 @@ const SINKS: &[&str] = &[
 ];
 
 /// Programs beside [`NETWORK`] and [`SINKS`] that this rule sends with: the
-/// cloud copiers, which copy to a bucket, and a TLS client, which sends its
-/// input.
-const COPIERS: &[&str] = &["aws", "gsutil", "openssl"];
+/// cloud copiers, which copy to a bucket, a TLS client, which sends its
+/// input, and `gh gist create`, which posts files.
+const COPIERS: &[&str] = &["aws", "gsutil", "gcloud", "az", "openssl", "gh"];
 
 /// Programs that name a key or a certificate they use to log in, which they
 /// do not send: `ssh -i ~/.ssh/id_ed25519 host`.
@@ -181,6 +268,15 @@ const CLOUD_VALUES: [&str; 31] = [
 ];
 const GSUTIL_VALUES: [&str; 3] = ["-h", "-o", "-x"];
 
+/// The most times the line is followed again for the files it wrote from a
+/// secret (see [`Checker::trace`]): a copy of a copy of a secret is followed
+/// this many copies deep.
+const MAX_PASSES: usize = 4;
+
+/// The most names one `curl -T` value is expanded into by curl's own `{a,b}`
+/// lists: past this, the value is read as written.
+const MAX_CURL_GLOB: usize = 256;
+
 /// A secret found, as a reason says it and as the line wrote it.
 #[derive(Debug, Clone)]
 struct Hit {
@@ -214,6 +310,13 @@ pub(super) struct Flow {
     stage: HashMap<usize, (usize, Hit)>,
     /// The stage of an outer pipeline that a pipeline runs in.
     parent: HashMap<usize, Stage>,
+    /// The files the line writes from a secret, by their key (see
+    /// [`crate::path::Resolver::file_key`]): each is that secret for the rest
+    /// of the line.
+    written: HashMap<String, Hit>,
+    /// The first unit that sources a secret file (`source .env`), and what
+    /// it holds: every variable a later unit reads may be one it set.
+    sourced: Option<(usize, Hit)>,
 }
 
 impl Flow {
@@ -252,12 +355,32 @@ impl Flow {
 
 impl Checker<'_> {
     /// Follow every secret the line reads: which units read one, and which
-    /// are handed one.
+    /// are handed one. A file the line writes from a secret holds it too,
+    /// so the line is followed again with the files it wrote, until no new
+    /// one is written or [`MAX_PASSES`] have been made.
     pub(super) fn trace(&self) -> Flow {
-        let units = &self.split.units;
         if !self.can_send() {
             return Flow::default();
         }
+        let mut flow = self.trace_with(HashMap::new());
+        for _ in 1..MAX_PASSES {
+            let mut written = flow.written.clone();
+            let before = written.len();
+            for (key, hit) in self.secret_writes(&flow) {
+                written.entry(key).or_insert(hit);
+            }
+            if written.len() == before {
+                break;
+            }
+            flow = self.trace_with(written);
+        }
+        flow
+    }
+
+    /// One pass of [`Self::trace`], with the files known so far to be
+    /// written from a secret.
+    fn trace_with(&self, written: HashMap<String, Hit>) -> Flow {
+        let units = &self.split.units;
         let mut flow = Flow {
             active: true,
             parent: self.split.parents.clone(),
@@ -266,10 +389,13 @@ impl Checker<'_> {
             stdin: vec![None; units.len()],
             to_network: vec![false; units.len()],
             stage_of: units.iter().map(|unit| unit.stage).collect(),
+            written,
             ..Flow::default()
         };
+        let nested = &self.split.nested;
+        let calls = self.calls();
         // Outer commands were noted last, and hand their place down first.
-        for nested in self.split.nested.iter().rev() {
+        for nested in nested.iter().rev() {
             let outer = nested
                 .command
                 .clone()
@@ -282,9 +408,28 @@ impl Checker<'_> {
                 }
             }
         }
+        // A body runs where its call stands: in the stage of the first call
+        // that is in a pipeline, each body once.
+        let mut placed = HashSet::new();
+        for (at, bodies) in &calls {
+            let Some(stage) = flow.stage_of(*at) else {
+                continue;
+            };
+            for body in *bodies {
+                if placed.insert((body.start, body.end)) {
+                    for inside in body.clone() {
+                        if let Some(slot) =
+                            flow.stage_of.get_mut(inside).filter(|slot| slot.is_none())
+                        {
+                            *slot = Some(stage);
+                        }
+                    }
+                }
+            }
+        }
         // A pipeline inside a command that is a stage of another runs in that
         // stage: the nearest command that holds it says which.
-        for nested in &self.split.nested {
+        for nested in nested {
             let outer = nested
                 .command
                 .clone()
@@ -309,10 +454,18 @@ impl Checker<'_> {
                 continue;
             };
             if redirect.input {
-                let Some(hit) = self.secret(first, &redirect.target, false, true) else {
+                let Some(hit) = self.secret_of(first, &redirect.target, false, true, &flow.written)
+                else {
                     continue;
                 };
-                for at in redirect.units.clone() {
+                // `exec < .env` makes the file the input of the rest of the
+                // line.
+                let fed = if replaces_input(first) {
+                    redirect.units.start..units.len()
+                } else {
+                    redirect.units.clone()
+                };
+                for at in fed {
                     if let Some(slot) = flow.stdin.get_mut(at).filter(|slot| slot.is_none()) {
                         *slot = Some(hit.clone());
                     }
@@ -326,16 +479,32 @@ impl Checker<'_> {
             }
         }
         for (at, unit) in units.iter().enumerate() {
-            let own = self.secret_read(unit, flow.stdin(at));
+            let own = self.secret_read(unit, flow.stdin(at), &flow.written);
             if let Some(slot) = flow.own.get_mut(at) {
                 *slot = own;
             }
         }
+        // `source .env` sets variables from the file, which the line does
+        // not show: any variable read after it may hold the secret.
+        flow.sourced = units.iter().enumerate().find_map(|(at, unit)| {
+            let sources = unit.shell == Shell::Posix
+                && unit
+                    .key()
+                    .is_some_and(|key| matches!(key.as_str(), "source" | "."));
+            sources
+                .then(|| flow.own(at).cloned().map(|hit| (at, hit)))
+                .flatten()
+        });
+        // What each pipeline's stages and each command's substitutions read
+        // so far, for the variables a `read` in a later stage or a `printf
+        // -v` sets.
+        handed(&mut flow, nested, &calls);
+        stages(&mut flow);
         // A variable set from what a secret-reading command prints holds
         // the secret, and so does one set from that.
         let held = self.held(&flow);
         for (at, unit) in units.iter().enumerate() {
-            if let Some(hit) = mentions(unit, &held) {
+            if let Some(hit) = mentions(unit, &held).or_else(|| sourced(&flow, at, unit)) {
                 if let Some(slot) = flow.fed.get_mut(at) {
                     *slot = Some(hit.clone());
                 }
@@ -358,47 +527,12 @@ impl Checker<'_> {
                 }
             }
         }
-        for nested in &self.split.nested {
-            let hit = nested.inside.clone().find_map(|at| flow.own(at).cloned());
-            if let Some(hit) = hit {
-                for at in nested.command.clone() {
-                    if let Some(slot) = flow.fed.get_mut(at).filter(|slot| slot.is_none()) {
-                        *slot = Some(hit.clone());
-                    }
-                }
-            }
-        }
-        for at in 0..units.len() {
-            let (Some(stage), Some(hit)) = (flow.stage_of(at), flow.own(at).or(flow.fed(at)))
-            else {
-                continue;
-            };
-            let hit = hit.clone();
-            // From the stage up through the stages of the pipelines it runs
-            // in, while this is the earliest read: an outer pipeline's
-            // entry is set once for each inner one, so what an earlier
-            // read already set is as far as the walk needs to go.
-            let mut stage = stage;
-            loop {
-                let first = flow
-                    .stage
-                    .get(&stage.pipeline)
-                    .is_none_or(|(first, _)| stage.index < *first);
-                if !first {
-                    break;
-                }
-                flow.stage
-                    .insert(stage.pipeline, (stage.index, hit.clone()));
-                match flow.parent.get(&stage.pipeline) {
-                    Some(outer) => stage = *outer,
-                    None => break,
-                }
-            }
-        }
+        handed(&mut flow, nested, &calls);
+        stages(&mut flow);
         // A substitution, process substitution or script in a command runs
         // with the command's input: `cat .env | curl -d "$(cat)" url`. So the
         // command is handed what the stages before its own read.
-        for nested in &self.split.nested {
+        for nested in nested {
             for at in nested.command.clone() {
                 let Some(hit) = flow.stage_of(at).and_then(|stage| flow.piped(stage)) else {
                     continue;
@@ -410,6 +544,102 @@ impl Checker<'_> {
             }
         }
         flow
+    }
+
+    /// Each unit that calls a function or an alias the line defines, with
+    /// the bodies the call may run: a body runs where its call stands, in
+    /// its stage of a pipeline.
+    fn calls(&self) -> Vec<(usize, &[Range<usize>])> {
+        self.split
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(_, unit)| unit.shell == Shell::Posix)
+            .filter_map(|(at, unit)| {
+                let bodies = self.split.bodies_of(unit.program.known()?);
+                (!bodies.is_empty()).then_some((at, bodies))
+            })
+            .collect()
+    }
+
+    /// The files the line writes from a secret, by their key, with the
+    /// secret each holds: a redirect of what a unit that reads or is handed
+    /// one prints (`env > e.txt`), a copy of one (`cp .env /tmp/x`), and
+    /// what `tee` is handed.
+    fn secret_writes(&self, flow: &Flow) -> Vec<(String, Hit)> {
+        let units = &self.split.units;
+        let handed = |at: usize| {
+            flow.own(at)
+                .or(flow.fed(at))
+                .or_else(|| flow.stage_of(at).and_then(|stage| flow.piped(stage)))
+        };
+        let mut found = Vec::new();
+        let mut note = |unit: &Unit, file: &str, hit: &Hit| {
+            let key = self.resolver.file_key(
+                unit.dir.as_ref(),
+                &Arg::Known(file.to_string()),
+                unit.shell,
+            );
+            if let Some(key) = key {
+                found.push((
+                    key,
+                    Hit {
+                        words: hit.words,
+                        target: file.to_string(),
+                    },
+                ));
+            }
+        };
+        for redirect in self
+            .split
+            .redirects
+            .iter()
+            .filter(|redirect| !redirect.text && !redirect.input)
+        {
+            let Some(file) = redirect.target.known().filter(|file| !network_device(file)) else {
+                continue;
+            };
+            let (Some(first), Some(hit)) = (
+                units.get(redirect.units.start),
+                redirect.units.clone().find_map(handed),
+            ) else {
+                continue;
+            };
+            note(first, file, hit);
+        }
+        for (at, unit) in units.iter().enumerate() {
+            let Some(key) = unit.key() else { continue };
+            match key.as_str() {
+                "cp" | "mv" | "install" | "ditto" => {
+                    let Some(hit) = flow.own(at) else { continue };
+                    let (sources, destination) =
+                        super::sources_and_destination(&unit.args, &super::COPY_VALUED);
+                    let Some(destination) = destination else {
+                        continue;
+                    };
+                    let Some(destination) = destination.known() else {
+                        continue;
+                    };
+                    note(unit, destination, hit);
+                    // Copied into a folder, each lands under its own name.
+                    for source in sources.iter().filter_map(|source| source.known()) {
+                        let name = source.rsplit('/').next().unwrap_or(source);
+                        if !name.is_empty() {
+                            let folder = destination.trim_end_matches('/');
+                            note(unit, &format!("{folder}/{name}"), hit);
+                        }
+                    }
+                }
+                "tee" => {
+                    let Some(hit) = handed(at) else { continue };
+                    for file in operands(&unit.args, &[]).into_iter().filter_map(Arg::known) {
+                        note(unit, file, hit);
+                    }
+                }
+                _ => {}
+            }
+        }
+        found
     }
 
     /// Whether any unit of the line can send something away: it runs a
@@ -431,9 +661,11 @@ impl Checker<'_> {
     }
 
     /// The variables that hold a secret, by name: one set from a command
-    /// that reads a secret, or from a variable that holds one. Each name is
-    /// settled once, from the variables read to set it, whatever the order
-    /// the line sets them in (a loop or a function runs them again).
+    /// that reads a secret, or from a variable that holds one; one a `for`
+    /// takes from such a command; one a `read`, `mapfile` or `printf -v`
+    /// sets from a secret it is handed. Each name is settled once, from the
+    /// first secret found for it, whatever the order the line sets them in
+    /// (a loop or a function runs them again).
     fn held(&self, flow: &Flow) -> HashMap<String, Hit> {
         let units = &self.split.units;
         let assigned = &self.split.assigned;
@@ -459,7 +691,7 @@ impl Checker<'_> {
             }
         }
         let mut readers: HashMap<&str, Vec<usize>> = HashMap::new();
-        let mut work: Vec<(usize, Hit)> = Vec::new();
+        let mut work: Vec<(String, Hit)> = Vec::new();
         // Each assignment is handed work once: a name is settled by the
         // first, and whoever reads it is told then.
         let mut queued = vec![false; assigned.len()];
@@ -467,27 +699,39 @@ impl Checker<'_> {
             let direct = one.inside.clone().find_map(|unit| flow.own(unit).cloned());
             if let Some(hit) = direct {
                 queued[at] = true;
-                work.push((at, hit));
+                work.push((one.name.clone(), hit));
             }
             let inside = one.inside.clone().filter_map(|unit| reads.get(unit));
             for name in inside.flatten().chain(&one.uses) {
                 readers.entry(name).or_default().push(at);
             }
         }
-        let mut held: HashMap<String, Hit> = HashMap::new();
-        while let Some((at, hit)) = work.pop() {
-            let Some(one) = assigned.get(at) else {
-                continue;
-            };
-            if held.contains_key(&one.name) {
+        // `read k < .env`, `cat .env | while read l`, `mapfile -t a < .env`,
+        // `printf -v k '%s' "$(cat .env)"`: the names a builtin sets from
+        // what it reads or is handed.
+        for (at, unit) in units.iter().enumerate() {
+            let names = sets(unit);
+            if names.is_empty() {
                 continue;
             }
-            held.insert(one.name.clone(), hit.clone());
-            let in_arguments = readers.get(one.name.as_str()).into_iter().flatten();
+            let hit = flow
+                .own(at)
+                .or(flow.fed(at))
+                .or_else(|| flow.stage_of(at).and_then(|stage| flow.piped(stage)));
+            if let Some(hit) = hit {
+                work.extend(names.into_iter().map(|name| (name, hit.clone())));
+            }
+        }
+        let mut held: HashMap<String, Hit> = HashMap::new();
+        while let Some((name, hit)) = work.pop() {
+            if held.contains_key(&name) {
+                continue;
+            }
+            let in_arguments = readers.get(name.as_str()).into_iter().flatten();
             // An assignment reads what a here-document feeds any unit in its
             // value.
             let in_text = fed_names
-                .get(one.name.as_str())
+                .get(name.as_str())
                 .into_iter()
                 .flatten()
                 .flat_map(|fed| {
@@ -501,21 +745,34 @@ impl Checker<'_> {
             for reader in in_arguments.copied().chain(in_text) {
                 if let Some(slot) = queued.get_mut(reader).filter(|slot| !**slot) {
                     *slot = true;
-                    work.push((reader, hit.clone()));
+                    if let Some(one) = assigned.get(reader) {
+                        work.push((one.name.clone(), hit.clone()));
+                    }
                 }
             }
+            held.insert(name, hit);
         }
         held
     }
 
-    /// A secret the unit itself reads: the environment, a file it is given
-    /// or has on its input.
-    fn secret_read(&self, unit: &Unit, stdin: Option<&Hit>) -> Option<Hit> {
-        let named = super::named(unit);
+    /// A secret the unit itself reads: the environment, the GPG secret
+    /// keys, a file it is given, has on its input, or is handed the names of
+    /// by `xargs`. A program that only prints names, a listing or a hash
+    /// reads none.
+    fn secret_read(
+        &self,
+        unit: &Unit,
+        stdin: Option<&Hit>,
+        written: &HashMap<String, Hit>,
+    ) -> Option<Hit> {
+        let named = self.named_send(unit);
         let unit: &Unit = &named;
         let key = unit.key()?;
         // They print or list keys the machine holds, which are public.
         if matches!(key.as_str(), "ssh-keygen" | "ssh-add") {
+            return None;
+        }
+        if unit.shell != Shell::PowerShell && NAMES_ONLY.contains(&key.as_str()) {
             return None;
         }
         if dumps_environment(unit, &key) {
@@ -524,17 +781,81 @@ impl Checker<'_> {
                 target: key,
             });
         }
+        if let Some(target) = exports_secret_keys(unit, &key) {
+            return Some(Hit { words: GPG, target });
+        }
+        // `ls ~/.ssh | xargs cat`: the names the stage before lists.
+        let listed =
+            if unit.args.contains(&Arg::Input) && unit.wrappers.iter().any(|w| w == "xargs") {
+                self.expand(unit, &Arg::Input).0
+            } else {
+                Vec::new()
+            };
         candidates(unit, &key)
             .iter()
-            .find_map(|arg| self.secret(unit, arg, false, true))
+            .chain(&listed)
+            .find_map(|arg| self.secret_of(unit, arg, false, true, written))
             .or_else(|| stdin.cloned())
+    }
+
+    /// `unit` with each word that names a file under a folder only known
+    /// when it runs read by the name it ends in (see [`super::named`]),
+    /// `curl -T "$PWD/.env"` sending `.env`. The folder may be the home
+    /// directory, so a name that is a secret there is read as there:
+    /// `"$x/.ssh/id_rsa"` is `~/.ssh/id_rsa`.
+    fn named_send<'u>(&self, unit: &'u Unit) -> Cow<'u, Unit> {
+        if unit.shell != Shell::Posix {
+            return Cow::Borrowed(unit);
+        }
+        let names: Vec<Option<Arg>> = unit
+            .args
+            .iter()
+            .map(|arg| {
+                let name = super::named_in_unknown_folder(arg)?;
+                let text = name.known()?;
+                let home = Arg::Known(format!("~/{text}"));
+                let secret = !text.starts_with(['/', '~'])
+                    && matches!(
+                        self.place(unit.shell, unit.scope(), &home, Access::Item),
+                        Place::Sensitive(_, Sensitivity::Secret)
+                    );
+                Some(if secret { home } else { name })
+            })
+            .collect();
+        if names.iter().all(Option::is_none) {
+            return Cow::Borrowed(unit);
+        }
+        let args = unit
+            .args
+            .iter()
+            .zip(names)
+            .map(|(arg, name)| name.unwrap_or_else(|| arg.clone()))
+            .collect();
+        Cow::Owned(Unit {
+            args,
+            ..Unit::clone(unit)
+        })
+    }
+
+    /// The secret `arg` names, when it names one (see [`Self::secret_of`]),
+    /// with the files the line wrote from one.
+    fn secret(&self, unit: &Unit, arg: &Arg, home: bool, glob: bool) -> Option<Hit> {
+        self.secret_of(unit, arg, home, glob, &self.flow.written)
     }
 
     /// The secret `arg` names, when it names one: `home` also counts the
     /// home directory itself and any folder holding it, which hold them, for
     /// what copies a folder. `glob` says whether the shell expands a wildcard
     /// in it: it does for a word of its own, not for a part of one (`@f`).
-    fn secret(&self, unit: &Unit, arg: &Arg, home: bool, glob: bool) -> Option<Hit> {
+    /// A file in `written` holds the secret it was written from.
+    fn secret_of(
+        &self,
+        unit: &Unit,
+        arg: &Arg,
+        home: bool,
+        glob: bool,
+        written: &HashMap<String, Hit>,
+    ) -> Option<Hit> {
         let name = super::named_in_unknown_folder(arg);
         let arg = name.as_ref().unwrap_or(arg);
         let text = arg.known().filter(|text| *text != "-")?;
@@ -545,29 +866,54 @@ impl Checker<'_> {
             return None;
         }
         let words = if is_environ(text) {
-            ENVIRONMENT
-        } else if dotenv(text, unit.shell, unit.hidden, glob) {
-            DOTENV
+            Some(ENVIRONMENT)
+        } else if let Some(words) = secret_name(text, unit.shell, unit.hidden, glob) {
+            Some(words)
         } else if public_key(text) {
             return None;
         } else {
             match self.place(unit.shell, unit.scope(), arg, Access::Item) {
-                Place::Sensitive(words, Sensitivity::Secret) => words,
-                Place::Home { .. } if home => HOME,
-                Place::Top(ROOT) if home => HOME,
-                _ => return None,
+                Place::Sensitive(words, Sensitivity::Secret) => Some(words),
+                Place::Home { .. } if home => Some(HOME),
+                Place::Top(ROOT) if home => Some(HOME),
+                _ => None,
             }
         };
+        let words = words.or_else(|| {
+            if written.is_empty() {
+                return None;
+            }
+            let key = self.resolver.file_key(unit.dir.as_ref(), arg, unit.shell)?;
+            written.get(&key).map(|hit| hit.words)
+        })?;
         Some(Hit {
             words,
             target: text.to_string(),
         })
     }
 
+    /// A folder that holds the workspace, which may hold an `.env` file.
+    fn workspace(&self, unit: &Unit, arg: &Arg) -> Option<Hit> {
+        let text = arg.known()?;
+        matches!(
+            self.place(unit.shell, unit.scope(), arg, Access::Item),
+            Place::Workspace { .. }
+        )
+        .then(|| Hit {
+            words: WORKSPACE,
+            target: text.to_string(),
+        })
+    }
+
     fn sent(&mut self, hit: &Hit) {
+        let reason = if hit.words == WORKSPACE {
+            "sends your workspace off the machine, and it may hold an .env file".to_string()
+        } else {
+            format!("sends {} off the machine", hit.words)
+        };
         self.add(
             Rule::SendSecret,
-            format!("sends {} off the machine", hit.words),
+            reason,
             Some(&Arg::Known(hit.target.clone())),
         );
     }
@@ -581,12 +927,15 @@ impl Checker<'_> {
         }
         // A file named under a folder only known when it runs is sent by
         // its name (`curl -T "$PWD/.env"`).
-        let named = super::named(unit);
+        let named = self.named_send(unit);
         let unit: &Unit = &named;
         for file in uploads(unit, key) {
             if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
                 self.sent(&hit);
             }
+        }
+        if key == "sftp" {
+            self.sftp_batch(unit);
         }
         self.copy(unit, key);
         let network = NETWORK.contains(&key);
@@ -608,6 +957,20 @@ impl Checker<'_> {
                 self.sent(&hit);
             }
         }
+        // `ls ~/.ssh/* | xargs -I{} curl -T {} url`: the names the stage
+        // before lists are the files it is handed.
+        if network
+            && unit.args.contains(&Arg::Input)
+            && unit.wrappers.iter().any(|wrapper| wrapper == "xargs")
+        {
+            let (listed, _) = self.expand(unit, &Arg::Input);
+            let hit = listed
+                .iter()
+                .find_map(|arg| self.secret(unit, arg, false, true));
+            if let Some(hit) = hit {
+                self.sent(&hit);
+            }
+        }
         if network {
             if let Some(hit) = self.flow.fed(at).cloned() {
                 self.sent(&hit);
@@ -615,14 +978,50 @@ impl Checker<'_> {
         }
     }
 
+    /// The files an `sftp` batch puts on the other machine: the batch is
+    /// its input (a here-string, a here-document, or what an `echo` or a
+    /// `printf` before it prints) unless `-b` names a file other than `-`.
+    fn sftp_batch(&mut self, unit: &Unit) {
+        let mut batches = Vec::new();
+        if let Some(Arg::Known(text)) = &unit.stdin {
+            batches.push(text.clone());
+        }
+        let batch = option_value(&unit.args, "-b");
+        if batch.as_ref().is_none_or(|file| file.known() == Some("-")) {
+            batches.extend(self.printed_before(unit));
+        }
+        for text in batches {
+            for file in sftp_puts(&text) {
+                if let Some(hit) = self.secret(unit, &Arg::Known(file.to_string()), true, true) {
+                    self.sent(&hit);
+                }
+            }
+        }
+    }
+
+    /// What an `echo` or a `printf` in the stage before `unit` prints, when
+    /// its words are known: the lines a program reading its input is given.
+    fn printed_before(&self, unit: &Unit) -> Option<String> {
+        let stage = unit.stage.filter(|stage| stage.index > 0)?;
+        let at = *self.producers.get(&(stage.pipeline, stage.index - 1))?;
+        let producer = self.split.units.get(at)?;
+        if !matches!(producer.key()?.as_str(), "echo" | "printf") {
+            return None;
+        }
+        let words: Vec<&str> = producer.args.iter().filter_map(Arg::known).collect();
+        Some(words.join(" ").replace("\\n", "\n"))
+    }
+
     /// `scp`, `rsync`, `sftp`, `rclone` and the cloud copiers given a
-    /// destination on another machine: what they take from here goes.
+    /// destination on another machine: what they take from here goes. A
+    /// copy of a whole folder that holds the workspace sends what it holds,
+    /// unless it leaves out `.env` files.
     fn copy(&mut self, unit: &Unit, key: &str) {
         let values: &[&str] = match key {
             "scp" => &SCP_VALUES,
             "sftp" => &SFTP_VALUES,
             "rsync" => &RSYNC_VALUES,
-            "rclone" | "aws" => &CLOUD_VALUES,
+            "rclone" | "aws" | "gcloud" => &CLOUD_VALUES,
             "gsutil" => &GSUTIL_VALUES,
             _ => return,
         };
@@ -636,24 +1035,250 @@ impl Checker<'_> {
             "rclone" if verb(0, &["copy", "sync", "move", "copyto", "moveto", "bisync"]) => 1,
             "aws" if verb(0, &["s3"]) && verb(1, &["cp", "mv", "sync"]) => 2,
             "gsutil" if verb(0, &["cp", "mv", "rsync"]) => 1,
+            "gcloud" if verb(0, &["storage"]) && verb(1, &["cp", "mv", "rsync"]) => 2,
             "scp" | "sftp" | "rsync" => 0,
             _ => return,
         };
+        let args = unit.args.as_slice();
+        let whole = match key {
+            "scp" => has_flag(args, Some('r'), None),
+            "rsync" => {
+                has_flag(args, Some('r'), Some("recursive"))
+                    || has_flag(args, Some('a'), Some("archive"))
+            }
+            "rclone" => true,
+            "aws" => verb(1, &["sync"]) || has_flag(args, None, Some("recursive")),
+            "gsutil" | "gcloud" => {
+                verb(skip - 1, &["rsync"])
+                    || has_flag(args, Some('r'), Some("recursive"))
+                    || has_flag(args, Some('R'), None)
+            }
+            _ => false,
+        } && !leaves_out_dotenv(args);
+        let posix = unit.shell == Shell::Posix;
         let Some((destination, sources)) = all.get(skip..).and_then(<[&Arg]>::split_last) else {
             return;
         };
-        if !to_other_machine(destination, matches!(key, "scp" | "sftp")) {
+        if !to_other_machine(destination, matches!(key, "scp" | "sftp"), posix) {
             return;
         }
         for source in sources {
-            if to_other_machine(source, false) {
+            if to_other_machine(source, false, posix) {
                 continue;
             }
-            if let Some(hit) = self.secret(unit, source, true, true) {
+            let hit = self
+                .secret(unit, source, true, true)
+                .or_else(|| whole.then(|| self.workspace(unit, source)).flatten());
+            if let Some(hit) = hit {
                 self.sent(&hit);
             }
         }
     }
+}
+
+/// What runs for a command hands it what it reads: a substitution, a script
+/// it starts (see [`crate::unit::Split::nested`]), and the body of a function
+/// or an alias it calls. Each body's first secret is found once, however
+/// many calls run it.
+fn handed(flow: &mut Flow, nested: &[Nested], calls: &[(usize, &[Range<usize>])]) {
+    for nested in nested {
+        let hit = nested.inside.clone().find_map(|at| flow.own(at).cloned());
+        if let Some(hit) = hit {
+            for at in nested.command.clone() {
+                if let Some(slot) = flow.fed.get_mut(at).filter(|slot| slot.is_none()) {
+                    *slot = Some(hit.clone());
+                }
+            }
+        }
+    }
+    let mut bodies: HashMap<(usize, usize), Option<Hit>> = HashMap::new();
+    for (at, called) in calls {
+        for body in *called {
+            let hit = bodies
+                .entry((body.start, body.end))
+                .or_insert_with(|| body.clone().find_map(|inside| flow.own(inside).cloned()))
+                .clone();
+            if let Some(hit) = hit {
+                if let Some(slot) = flow.fed.get_mut(*at).filter(|slot| slot.is_none()) {
+                    *slot = Some(hit);
+                }
+            }
+        }
+    }
+}
+
+/// The secret a pipeline's earlier stage reads, for each pipeline: the
+/// first stage that reads one or is handed one, also for each pipeline a
+/// stage of it runs in.
+fn stages(flow: &mut Flow) {
+    for at in 0..flow.own.len() {
+        let (Some(stage), Some(hit)) = (flow.stage_of(at), flow.own(at).or(flow.fed(at))) else {
+            continue;
+        };
+        let hit = hit.clone();
+        // From the stage up through the stages of the pipelines it runs
+        // in, while this is the earliest read: an outer pipeline's
+        // entry is set once for each inner one, so what an earlier
+        // read already set is as far as the walk needs to go.
+        let mut stage = stage;
+        loop {
+            let first = flow
+                .stage
+                .get(&stage.pipeline)
+                .is_none_or(|(first, _)| stage.index < *first);
+            if !first {
+                break;
+            }
+            flow.stage
+                .insert(stage.pipeline, (stage.index, hit.clone()));
+            match flow.parent.get(&stage.pipeline) {
+                Some(outer) => stage = *outer,
+                None => break,
+            }
+        }
+    }
+}
+
+/// A secret a `source` of a secret file earlier on the line may have set
+/// in a variable `unit` reads.
+fn sourced(flow: &Flow, at: usize, unit: &Unit) -> Option<Hit> {
+    let (from, hit) = flow.sourced.as_ref()?;
+    let reads = unit
+        .args
+        .iter()
+        .any(|arg| arg.is_unknown() && !referenced(arg.text()).is_empty());
+    (at > *from && reads).then(|| hit.clone())
+}
+
+/// Whether `unit` is `exec` with no program, which makes its redirects the
+/// shell's own for the rest of the line: `exec < .env`.
+fn replaces_input(unit: &Unit) -> bool {
+    unit.shell == Shell::Posix
+        && unit.args.is_empty()
+        && unit.key().is_some_and(|key| key == "exec")
+}
+
+/// The variables a builtin sets from what it reads: `read`'s names (or
+/// `REPLY`) and the array of `-a`, `mapfile`'s and `readarray`'s array (or
+/// `MAPFILE`), and the name `printf -v` prints into.
+fn sets(unit: &Unit) -> Vec<String> {
+    if unit.shell != Shell::Posix {
+        return Vec::new();
+    }
+    let Some(key) = unit.key() else {
+        return Vec::new();
+    };
+    let args = unit.args.as_slice();
+    let known = |found: Vec<&Arg>| -> Vec<String> {
+        found
+            .into_iter()
+            .filter_map(Arg::known)
+            .map(str::to_string)
+            .collect()
+    };
+    match key.as_str() {
+        "read" => {
+            let mut names = known(operands(
+                args,
+                &["-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"],
+            ));
+            names.extend(
+                option_value(args, "-a")
+                    .as_ref()
+                    .and_then(Arg::known)
+                    .map(str::to_string),
+            );
+            if names.is_empty() {
+                names.push("REPLY".to_string());
+            }
+            names
+        }
+        "mapfile" | "readarray" => {
+            let names = known(operands(args, &["-d", "-n", "-O", "-s", "-u", "-C", "-c"]));
+            vec![names
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "MAPFILE".to_string())]
+        }
+        "printf" => option_value(args, "-v")
+            .as_ref()
+            .and_then(Arg::known)
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The value of a short option, given apart (`-b file`) or joined to it
+/// (`-bfile`): the last one given.
+fn option_value(args: &[Arg], option: &str) -> Option<Arg> {
+    let mut iter = args.iter();
+    let mut value = None;
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if text == option {
+            value = iter.next().cloned();
+        } else if let Some(rest) = text.strip_prefix(option).filter(|rest| !rest.is_empty()) {
+            value = Some(Arg::Known(rest.to_string()));
+        }
+    }
+    value
+}
+
+/// The files an `sftp` batch puts: the first operand of each `put` and
+/// `reput` (the second is where it lands), and every operand of `mput`.
+fn sftp_puts(text: &str) -> Vec<&str> {
+    let mut files = Vec::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        let Some(command) = words.next() else {
+            continue;
+        };
+        let operands: Vec<&str> = words.filter(|word| !word.starts_with('-')).collect();
+        match command.trim_start_matches(['-', '@']) {
+            "put" | "reput" => files.extend(operands.first()),
+            "mput" => files.extend(operands),
+            _ => {}
+        }
+    }
+    files
+}
+
+/// Whether a copy leaves out `.env` files: an `--exclude` pattern that
+/// matches one.
+fn leaves_out_dotenv(args: &[Arg]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        let pattern = if text == "--exclude" {
+            iter.next().and_then(Arg::known)
+        } else {
+            text.strip_prefix("--exclude=")
+        };
+        let Some(pattern) = pattern else { continue };
+        let name = pattern.trim_start_matches('/').trim_end_matches('/');
+        if glob::matches(name, ".env", Flavour::Posix, true) {
+            return true;
+        }
+    }
+    false
+}
+
+/// What `gpg --export-secret-keys` (or `--export-secret-subkeys`) is told to
+/// print: the private keys of the keyring, which no path names.
+fn exports_secret_keys(unit: &Unit, key: &str) -> Option<String> {
+    if !matches!(key, "gpg" | "gpg2") {
+        return None;
+    }
+    unit.args
+        .iter()
+        .filter_map(Arg::known)
+        .find(|text| text.starts_with("--export-secret-"))
+        .map(str::to_string)
 }
 
 /// A secret a variable the unit's arguments mention holds.
@@ -684,11 +1309,15 @@ fn network_device(text: &str) -> bool {
 
 /// Whether `arg` is on another machine: `host:path`, a URL, a destination
 /// only known when it runs that holds a colon, or (`unknown`) any
-/// destination only known when it runs.
-fn to_other_machine(arg: &Arg, unknown: bool) -> bool {
+/// destination only known when it runs. On POSIX (`posix`) there are no
+/// drives, so a one-letter host is a host too: `h:`, `h:/tmp`.
+fn to_other_machine(arg: &Arg, unknown: bool, posix: bool) -> bool {
     match arg {
         Arg::Known(text) => {
             remote(arg)
+                || (posix
+                    && text.find(':') == Some(1)
+                    && text.starts_with(|first: char| first.is_ascii_alphanumeric()))
                 || text.contains("://")
                 || text.starts_with(':')
                 || (text.starts_with('[') && text.contains("]:"))
@@ -699,13 +1328,19 @@ fn to_other_machine(arg: &Arg, unknown: bool) -> bool {
 }
 
 /// The arguments of `unit` that may name a file it reads, without the ones
-/// that name a key it logs in with, and the value of each `name=value`.
+/// that name a key it logs in with or are code an interpreter is given
+/// (`node -p 'process.env'`), and the value of each `name=value`.
 fn candidates(unit: &Unit, key: &str) -> Vec<Arg> {
     let logs_in = KEY_USERS.contains(&key);
+    let interprets = INTERPRETERS.contains(&key) || key.starts_with("python");
     let mut found = Vec::new();
     let mut iter = unit.args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
+        if interprets && takes_code(key, text) {
+            iter.next();
+            continue;
+        }
         if logs_in {
             if LOGIN_OPTIONS.contains(&text) {
                 iter.next();
@@ -721,6 +1356,48 @@ fn candidates(unit: &Unit, key: &str) -> Vec<Arg> {
         found.push(arg.clone());
         if let Some((_, value)) = text.split_once('=').filter(|(_, value)| !value.is_empty()) {
             found.push(Arg::Known(value.to_string()));
+        }
+    }
+    if key == "tar" {
+        found.extend(tar_members(&unit.args));
+    }
+    found
+}
+
+/// Whether the interpreter `key`'s option or command takes the code it runs
+/// as the next word: `-e` and a run of short options that ends in it (`perl
+/// -lne`), `--eval`, Python's `-c`, node's and bun's `-p` and `--print`,
+/// PHP's `-r`, `deno eval`.
+fn takes_code(key: &str, text: &str) -> bool {
+    let short = text.len() > 1 && text.starts_with('-') && !text.starts_with("--");
+    text == "--eval"
+        || (short && text.ends_with('e'))
+        || (key.starts_with("python") && text == "-c")
+        || (matches!(key, "node" | "nodejs" | "bun") && matches!(text, "-p" | "--print"))
+        || (key == "php" && text == "-r")
+        || (key == "deno" && text == "eval")
+}
+
+/// What `tar` packs from a folder `-C` (`--directory`) moved it to, joined
+/// to that folder: `tar czf - -C ~ .ssh` packs `~/.ssh`.
+fn tar_members(args: &[Arg]) -> Vec<Arg> {
+    let mut found = Vec::new();
+    let mut folder: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if matches!(text, "-C" | "--directory") {
+            folder = iter.next().and_then(Arg::known).map(str::to_string);
+        } else if let Some(value) = text.strip_prefix("--directory=") {
+            folder = Some(value.to_string());
+        } else if text.starts_with('-') {
+            continue;
+        } else if let Some(folder) = &folder {
+            if text.starts_with('/') {
+                continue;
+            }
+            let folder = folder.trim_end_matches('/');
+            found.push(Arg::Known(format!("{folder}/{text}")));
         }
     }
     found
@@ -761,15 +1438,17 @@ fn public_key(text: &str) -> bool {
     text.to_ascii_lowercase().ends_with(".pub")
 }
 
-/// Whether `text` names an `.env` file (`.env`, `.env.local`,
-/// `config/.env.production`) or, when the shell expands it (`glob`), a
-/// pattern that can: not a folder, and not a template such as
-/// `.env.example`.
-fn dotenv(text: &str, shell: Shell, hidden: bool, glob: bool) -> bool {
+/// The secret a file's name says it holds: an `.env` file (`.env`,
+/// `.env.local`, `config/.env.production`, `prod.env`), an `.envrc`, or a
+/// shell's or a prompt's history; when the shell expands it (`glob`), a
+/// pattern that can name an `.env` or `.envrc` file. Not a folder, a
+/// template (`.env.example`, `example.env`) or an encrypted copy
+/// (`.env.gpg`, `.env.vault`), which are made to be committed or sent.
+fn secret_name(text: &str, shell: Shell, hidden: bool, glob: bool) -> Option<&'static str> {
     let windows = shell != Shell::Posix;
     let separators: &[char] = if windows { &['/', '\\'] } else { &['/'] };
     if text.ends_with(separators) {
-        return false;
+        return None;
     }
     let name = text.rsplit(separators).next().unwrap_or(text);
     // Windows reads `.env.`, `.env ` and `.env:stream` as `.env`.
@@ -784,25 +1463,42 @@ fn dotenv(text: &str, shell: Shell, hidden: bool, glob: bool) -> bool {
     if glob::has_wildcard(name) {
         // A wildcard in a name the shell does not expand is a letter.
         if !glob {
-            return false;
+            return None;
         }
         let flavour = if windows {
             Flavour::Windows
         } else {
             Flavour::Posix
         };
-        return [".env", ".env.local"]
-            .iter()
-            .any(|file| glob::matches(name, file, flavour, hidden));
+        let matches = |file: &str| glob::matches(name, file, flavour, hidden);
+        return if matches(".env") || matches(".env.local") {
+            Some(DOTENV)
+        } else if matches(".envrc") {
+            Some(ENVRC)
+        } else {
+            None
+        };
     }
     let lower = name.to_ascii_lowercase();
-    match lower.strip_prefix(".env") {
+    if lower == ".envrc" {
+        return Some(ENVRC);
+    }
+    if HISTORIES.contains(&lower.as_str()) {
+        return Some(HISTORY);
+    }
+    let encrypted = lower
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| ENCRYPTED.contains(&extension));
+    let dotenv = match lower.strip_prefix(".env") {
         Some("") => true,
         Some(rest) => rest
             .strip_prefix('.')
-            .is_some_and(|suffix| !TEMPLATES.contains(&suffix)),
-        None => false,
-    }
+            .is_some_and(|suffix| !TEMPLATES.contains(&suffix) && !encrypted),
+        None => lower
+            .strip_suffix(".env")
+            .is_some_and(|stem| !stem.is_empty() && !TEMPLATES.contains(&stem)),
+    };
+    dotenv.then_some(DOTENV)
 }
 
 /// A file a unit uploads: `-` stands for its input.
@@ -837,8 +1533,124 @@ fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
             .into_iter()
             .map(|arg| Upload { arg, word: true })
             .collect(),
+        "socat" => socat_files(&unit.args),
+        key if MAILERS.contains(&key) => attachments(&unit.args),
+        "gh" => gist_files(&unit.args).unwrap_or_default(),
+        "az" => blob_files(&unit.args),
         _ => Vec::new(),
     }
+}
+
+/// The files `socat` reads to send: a `FILE:`, `OPEN:`, `GOPEN:` or
+/// `READFILE:` address (its path up to the first `,`), when another of its
+/// addresses reaches another machine (`TCP:host:1`, `OPENSSL:…`).
+fn socat_files(args: &[Arg]) -> Vec<Upload> {
+    let addresses: Vec<&str> = args
+        .iter()
+        .filter_map(Arg::known)
+        .filter(|text| !(text.len() > 1 && text.starts_with('-')))
+        .collect();
+    let kind = |address: &str| {
+        address
+            .split([':', ','])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let network = addresses.iter().any(|address| {
+        let kind = kind(address);
+        SOCAT_NETWORK
+            .iter()
+            .any(|network| kind.starts_with(network))
+    });
+    if !network {
+        return Vec::new();
+    }
+    addresses
+        .iter()
+        .filter(|address| SOCAT_FILES.contains(&kind(address).as_str()))
+        .filter_map(|address| address.split_once(':'))
+        .map(|(_, rest)| named(rest.split(',').next().unwrap_or(rest), false))
+        .collect()
+}
+
+/// The files `mail`, `mailx`, `s-nail` and `mutt` attach: the values of
+/// `-a` and `-A`, given apart or joined, up to the next option (`mutt -a
+/// f1 f2 -- to`).
+fn attachments(args: &[Arg]) -> Vec<Upload> {
+    let mut files = Vec::new();
+    let mut taking = false;
+    for arg in args {
+        let Some(text) = arg.known() else {
+            if taking {
+                files.push(Upload {
+                    arg: arg.clone(),
+                    word: true,
+                });
+            }
+            continue;
+        };
+        if text.starts_with('-') && text.len() > 1 {
+            taking = false;
+            if let Some(rest) = text.strip_prefix("-a").or_else(|| text.strip_prefix("-A")) {
+                if rest.is_empty() {
+                    taking = true;
+                } else {
+                    files.push(named(rest, false));
+                }
+            }
+        } else if taking {
+            files.push(named(text, true));
+        }
+    }
+    files
+}
+
+/// The files `gh gist create` (`gh gist new`) posts, `-` for its input;
+/// `None` for any other `gh` command.
+fn gist_files(args: &[Arg]) -> Option<Vec<Upload>> {
+    let all = operands(args, &["-d", "--desc", "-f", "--filename"]);
+    let verb = |at: usize, verbs: &[&str]| {
+        all.get(at)
+            .and_then(|arg| arg.known())
+            .is_some_and(|word| verbs.contains(&word))
+    };
+    if !(verb(0, &["gist"]) && verb(1, &["create", "new"])) {
+        return None;
+    }
+    Some(
+        all.get(2..)
+            .unwrap_or_default()
+            .iter()
+            .map(|arg| Upload {
+                arg: (*arg).clone(),
+                word: true,
+            })
+            .collect(),
+    )
+}
+
+/// The file `az storage blob upload` sends: its `-f` (`--file`).
+fn blob_files(args: &[Arg]) -> Vec<Upload> {
+    let all = operands(args, &[]);
+    let command: Vec<&str> = all.iter().take(3).filter_map(|arg| arg.known()).collect();
+    if command != ["storage", "blob", "upload"] {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if matches!(text, "-f" | "--file") {
+            files.extend(iter.next().map(|file| Upload {
+                arg: file.clone(),
+                word: true,
+            }));
+        } else if let Some(file) = text.strip_prefix("--file=") {
+            files.push(named(file, false));
+        }
+    }
+    files
 }
 
 /// What `Start-BitsTransfer` uploads: its `-Source` files, when `-TransferType`
@@ -883,6 +1695,10 @@ fn named(text: &str, word: bool) -> Upload {
 /// `--data-ascii`, `--json`), `--data-urlencode name@f`, `-F name=@f` or
 /// `name=<f`, `-T f` and `-H @f`.
 fn curl_files(args: &[Arg]) -> Vec<Upload> {
+    // curl expands `{a,b}` in an upload's name itself, unless told not to.
+    let globs = !args
+        .iter()
+        .any(|arg| matches!(arg.known(), Some("-g" | "--globoff")));
     let mut files = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -890,7 +1706,13 @@ fn curl_files(args: &[Arg]) -> Vec<Upload> {
         // `attached` says the value is a part of the option's word.
         let mut take = |kind: char, value: Option<Arg>, attached: bool| {
             if let Some(Arg::Known(value)) = value {
-                files.extend(curl_file(kind, &value, !attached));
+                if kind == 'T' && globs {
+                    for name in curl_glob(&value) {
+                        files.extend(curl_file(kind, &name, !attached));
+                    }
+                } else {
+                    files.extend(curl_file(kind, &value, !attached));
+                }
             }
         };
         if let Some(long) = text.strip_prefix("--") {
@@ -966,6 +1788,32 @@ fn curl_file(kind: char, value: &str, word: bool) -> Vec<Upload> {
         // `-T .` uploads what is on the input.
         _ => vec![named(if value == "." { "-" } else { value }, word)],
     }
+}
+
+/// The names curl makes of an upload's name by its own `{a,b}` lists:
+/// `{.env,README}` is `.env` and `README`. Past [`MAX_CURL_GLOB`] names, or
+/// with a list left open, the name as written.
+fn curl_glob(value: &str) -> Vec<String> {
+    let mut names = vec![String::new()];
+    let mut rest = value;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}').map(|close| open + close) else {
+            break;
+        };
+        let before = &rest[..open];
+        let mut next = Vec::new();
+        for name in &names {
+            for choice in rest[open + 1..close].split(',') {
+                if next.len() >= MAX_CURL_GLOB {
+                    return vec![value.to_string()];
+                }
+                next.push(format!("{name}{before}{choice}"));
+            }
+        }
+        names = next;
+        rest = &rest[close + 1..];
+    }
+    names.into_iter().map(|name| name + rest).collect()
 }
 
 /// What `wget` posts from a file: `--post-file f`, `--body-file f`.
@@ -1056,12 +1904,14 @@ fn takes_input(unit: &Unit, key: &str) -> bool {
                 && !has_flag(args, None, Some("offline"))
         }
         "openssl" => args.iter().any(|arg| arg.known() == Some("s_client")),
+        // `gh gist create` with no file, or `-`, posts its input.
+        "gh" => gist_files(args).is_some_and(|files| files.is_empty() || stdin(files)),
         "rclone" => operands(args, &[]).first().and_then(|arg| arg.known()) == Some("rcat"),
         "aws" | "gsutil" => {
             args.iter().any(|arg| arg.known() == Some("-"))
                 && operands(args, &[])
                     .iter()
-                    .any(|arg| to_other_machine(arg, false))
+                    .any(|arg| to_other_machine(arg, false, unit.shell == Shell::Posix))
         }
         _ => SINKS.contains(&key),
     }

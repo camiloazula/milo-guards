@@ -1156,6 +1156,8 @@ impl Walker<'_> {
                 if let Some(function) = &function {
                     let here = function.here.clone();
                     self.function_children(node, stage, level, &here);
+                } else if node.kind() == "for_statement" {
+                    self.loop_children(node, stage, level);
                 } else {
                     self.children(node, stage, level);
                 }
@@ -1507,6 +1509,35 @@ impl Walker<'_> {
             .map(str::to_string)
             .collect();
         self.split.bind(name, words, start);
+    }
+
+    /// The children of a `for`, as [`Self::children`] walks them; the loop's
+    /// variable is then set from what runs in its words and from the
+    /// variables they name, as `k=$(cat f)` is (`for k in $(cat f)`).
+    fn loop_children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        let mut cursor = node.walk();
+        let values: Vec<Node<'_>> = node.children_by_field_name("value", &mut cursor).collect();
+        let last = values.last().map(Node::id);
+        let mut end = first;
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if child.is_named() {
+                let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                self.walk_in(*child, stage, level + 1, background);
+            }
+            if Some(child.id()) == last {
+                end = self.split.units.len();
+            }
+        }
+        if let Some(variable) = node.child_by_field_name("variable") {
+            let text: Vec<&str> = values
+                .iter()
+                .map(|value| unit::text(value, self.source))
+                .collect();
+            let name = unit::text(&variable, self.source);
+            self.split.assign(name, first..end, &text.join(" "));
+        }
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {

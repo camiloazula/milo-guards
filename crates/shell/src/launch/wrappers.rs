@@ -175,6 +175,25 @@ pub(super) fn xargs(args: &[Arg]) -> Launch {
     }
 }
 
+/// The file `xargs -a FILE` (`--arg-file`) reads the arguments from,
+/// instead of its input.
+pub(super) fn arg_file(args: &[Arg]) -> Option<Arg> {
+    let mut iter = args.iter();
+    let mut file = None;
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if matches!(text, "-a" | "--arg-file") {
+            file = iter.next().cloned();
+        } else if let Some(value) = text
+            .strip_prefix("--arg-file=")
+            .or_else(|| text.strip_prefix("-a").filter(|value| !value.is_empty()))
+        {
+            file = Some(Arg::Known(value.to_string()));
+        }
+    }
+    file
+}
+
 /// `tmux` runs a command through the user's shell in its sessions and
 /// windows: the last operand of such a subcommand is that command.
 pub(super) fn tmux(args: &[Arg]) -> Launch {
