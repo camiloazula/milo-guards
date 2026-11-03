@@ -1016,6 +1016,9 @@ impl Walker<'_> {
             .map(|program| unit::key(program, Shell::PowerShell));
         // Whether the last word was a redirect operator alone (`1>`).
         let mut file_next = false;
+        // A parameter that ends in a `$`, as its start, its end and the index
+        // of its argument: what comes right after it is the rest of its word.
+        let mut dangling: Option<(usize, usize, usize)> = None;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -1075,6 +1078,31 @@ impl Walker<'_> {
                     }
                 }
                 downloads |= self.downloads(element);
+                // `--execute=$(…)` and `--execute=${q}`: the grammar ends the
+                // parameter at its `$`, and the rest of the word is the next
+                // element. They are one word, which is only known when it
+                // runs.
+                if let Some((start, end, index)) = dangling.take() {
+                    if end == element.start_byte()
+                        && matches!(
+                            element.kind(),
+                            "parenthesized_expression" | "script_block_expression"
+                        )
+                    {
+                        let whole = self.source.get(start..element.end_byte());
+                        if let (Some(slot), Some(whole)) = (args.get_mut(index), whole) {
+                            *slot = joined_dollar(
+                                whole,
+                                end - start,
+                                element.kind() == "parenthesized_expression",
+                            );
+                        }
+                        continue;
+                    }
+                }
+                if element.kind() == "command_parameter" && ends_in_dollar(source) {
+                    dangling = Some((element.start_byte(), element.end_byte(), args.len()));
+                }
                 match element.kind() {
                     "command_argument_sep" => {
                         if unit::text(&element, self.source).contains(':') {
@@ -2147,7 +2175,27 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" | "command_parameter" => Arg::Known(unescape(source)),
+            "generic_token" => Arg::Known(unescape(source)),
+            "command_parameter" => match quoted_parameter(source) {
+                Some(Parameter {
+                    text,
+                    made,
+                    expands: None,
+                }) => {
+                    self.split.note_splitting(&made);
+                    Arg::Known(text)
+                }
+                Some(Parameter {
+                    text,
+                    expands: Some(runs),
+                    ..
+                }) => Arg::Template {
+                    text,
+                    source: source.into(),
+                    runs,
+                },
+                None => Arg::Unknown(source.to_string()),
+            },
             "integer_literal"
             | "decimal_integer_literal"
             | "hexadecimal_integer_literal"
@@ -2206,7 +2254,7 @@ impl Walker<'_> {
                     splits.extend(made);
                     value.push_str(&before);
                     if child.kind() != "variable" {
-                        return Arg::Unknown(source.to_string());
+                        return self.unknown_string(literal, source);
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         // Inside a string `$null` is the empty string, so
@@ -2214,7 +2262,7 @@ impl Walker<'_> {
                         Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
-                            return Arg::Unknown(source.to_string())
+                            return self.unknown_string(literal, source);
                         }
                     }
                     at = child.end_byte();
@@ -2246,6 +2294,61 @@ impl Walker<'_> {
             ),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+
+    /// A double-quoted string or here-string whose value is only known when
+    /// it runs, its text noted as a template (see [`Split::template`]).
+    fn unknown_string(&self, literal: Node<'_>, source: &str) -> Arg {
+        self.split.note_template(source, self.template(literal));
+        Arg::Unknown(source.to_string())
+    }
+
+    /// The text the expandable string or here-string `literal` holds, with
+    /// each variable and subexpression in it standing as `${}`, and whether
+    /// it holds a subexpression, which runs a command: `None` when it holds
+    /// anything else, or a `$` or backtick of its own (an escaped `` `$ ``, a
+    /// lone `$`), which a reader of the text would take for an expansion.
+    fn template(&self, literal: Node<'_>) -> Option<(String, bool)> {
+        let here = literal.kind() == "expandable_here_string_literal";
+        let quotes = if here { 2 } else { 1 };
+        let start = literal.start_byte() + quotes;
+        let end = literal.end_byte().saturating_sub(quotes).max(start);
+        let mut text = String::new();
+        let mut runs = false;
+        let mut at = start;
+        let mut cursor = literal.walk();
+        let plain = |part: &str, text: &mut String| {
+            let (part, _) = unescape_expandable(part);
+            let part = if here {
+                part
+            } else {
+                part.replace("\"\"", "\"")
+            };
+            if part.contains(['$', '`']) {
+                return false;
+            }
+            text.push_str(&part);
+            true
+        };
+        for child in literal.named_children(&mut cursor) {
+            if !matches!(child.kind(), "variable" | "sub_expression")
+                || !plain(self.source.get(at..child.start_byte())?, &mut text)
+            {
+                return None;
+            }
+            runs |= child.kind() == "sub_expression";
+            text.push_str("${}");
+            at = child.end_byte();
+        }
+        if !plain(self.source.get(at..end)?, &mut text) {
+            return None;
+        }
+        let text = if here {
+            text.trim_matches(['\r', '\n']).to_string()
+        } else {
+            text
+        };
+        Some((text, runs))
     }
 
     /// A word after `--%` with each `%NAME%` in it put in: a variable that
@@ -2831,6 +2934,207 @@ fn unescape(text: &str) -> String {
         }
     }
     value
+}
+
+/// What a parameter word is (`--execute='DROP TABLE t'`,
+/// `--command="… $t"`, `--command=$q`): PowerShell hands a native program the
+/// word with its quotes taken off, `--execute=DROP TABLE t`, a single-quoted
+/// part as it is written, and a double-quoted part and the rest as
+/// expandable text, whose variables and subexpressions it puts in. The
+/// grammar keeps the word whole, so it is read here.
+struct Parameter {
+    /// The text, each expansion in it standing as `${}`.
+    text: String,
+    /// What a `` `u{…} `` made, as for [`unescape_expandable`].
+    made: Vec<char>,
+    /// Whether it holds an expansion, and then whether one of them runs a
+    /// command (`$(…)`).
+    expands: Option<bool>,
+}
+
+/// The parameter word `source` read (see [`Parameter`]). `None` when a quote
+/// or an expansion is never closed, or when it holds an expansion and a `$`
+/// or backtick of its own, which a reader of its text would take for one.
+fn quoted_parameter(source: &str) -> Option<Parameter> {
+    if !source.contains(['\'', '"', '$']) {
+        return Some(Parameter {
+            text: unescape(source),
+            made: Vec::new(),
+            expands: None,
+        });
+    }
+    let mut text = String::new();
+    let mut made = Vec::new();
+    let mut expands: Option<bool> = None;
+    // Whether the text holds a `$` or a backtick that is no expansion.
+    let mut odd = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => {
+                let next = chars.next();
+                odd |= matches!(next, Some('$' | '`'));
+                text.extend(next);
+            }
+            '$' => match expansion(&mut chars)? {
+                Dollar::Itself => {
+                    odd = true;
+                    text.push('$');
+                }
+                Dollar::Variable => {
+                    text.push_str("${}");
+                    expands = expands.or(Some(false));
+                }
+                Dollar::Runs => {
+                    text.push_str("${}");
+                    expands = Some(true);
+                }
+            },
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' if chars.peek() == Some(&'\'') => {
+                        chars.next();
+                        text.push('\'');
+                    }
+                    '\'' => break,
+                    c => {
+                        odd |= matches!(c, '$' | '`');
+                        text.push(c);
+                    }
+                }
+            },
+            '"' => {
+                // The plain text since the last expansion, read with its
+                // backticks when the expansion or the closing quote ends it.
+                let mut inner = String::new();
+                let mut plain = |inner: &mut String, text: &mut String, odd: &mut bool| {
+                    let (part, splits) = unescape_expandable(inner);
+                    *odd |= part.contains(['$', '`']);
+                    text.push_str(&part);
+                    made.extend(splits);
+                    inner.clear();
+                };
+                loop {
+                    match chars.next()? {
+                        '`' => {
+                            inner.push('`');
+                            inner.push(chars.next()?);
+                        }
+                        '"' if chars.peek() == Some(&'"') => {
+                            chars.next();
+                            inner.push('"');
+                        }
+                        '"' => break,
+                        '$' => match expansion(&mut chars)? {
+                            Dollar::Itself => inner.push('$'),
+                            Dollar::Variable => {
+                                plain(&mut inner, &mut text, &mut odd);
+                                text.push_str("${}");
+                                expands = expands.or(Some(false));
+                            }
+                            Dollar::Runs => {
+                                plain(&mut inner, &mut text, &mut odd);
+                                text.push_str("${}");
+                                expands = Some(true);
+                            }
+                        },
+                        c => inner.push(c),
+                    }
+                }
+                plain(&mut inner, &mut text, &mut odd);
+            }
+            c => text.push(c),
+        }
+    }
+    if expands.is_some() && odd {
+        return None;
+    }
+    Some(Parameter {
+        text,
+        made,
+        expands,
+    })
+}
+
+/// Whether the parameter word `source` ends in a `$` that is not escaped,
+/// where the grammar ends it before a `(` or `{`.
+fn ends_in_dollar(source: &str) -> bool {
+    let Some(head) = source.strip_suffix('$') else {
+        return false;
+    };
+    head.chars().rev().take_while(|c| *c == '`').count() % 2 == 0
+}
+
+/// The parameter word `whole` that the grammar split after its `$`, at
+/// `split` (`--execute=$(gc x.sql)`, `--execute=${q}`): a template whose
+/// last expansion runs a command when `runs`, or only known when it runs.
+fn joined_dollar(whole: &str, split: usize, runs: bool) -> Arg {
+    let head = whole.get(..split.saturating_sub(1)).unwrap_or_default();
+    match quoted_parameter(head) {
+        Some(Parameter {
+            mut text, expands, ..
+        }) if expands.is_some() || !text.contains(['$', '`']) => {
+            text.push_str("${}");
+            Arg::Template {
+                text,
+                source: whole.into(),
+                runs: runs || expands == Some(true),
+            }
+        }
+        _ => Arg::Unknown(whole.to_string()),
+    }
+}
+
+/// What a `$` starts in a parameter word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dollar {
+    /// A subexpression (`$(…)`), which runs a command.
+    Runs,
+    /// A variable: `$q`, `${q}`, `$env:Q`.
+    Variable,
+    /// Nothing: the `$` is itself.
+    Itself,
+}
+
+/// What the `$` just read starts in a parameter word, read past it. `None`
+/// when a subexpression or `${` is never closed.
+fn expansion(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<Dollar> {
+    match chars.peek() {
+        Some('(') => {
+            let mut depth = 0usize;
+            loop {
+                match chars.next()? {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return Some(Dollar::Runs);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some('{') => loop {
+            if chars.next()? == '}' {
+                return Some(Dollar::Variable);
+            }
+        },
+        Some(c) if c.is_alphanumeric() || matches!(c, '_' | '?' | '^' | '$') => {
+            let special = matches!(c, '?' | '^' | '$');
+            chars.next();
+            if !special {
+                while chars
+                    .peek()
+                    .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | ':'))
+                {
+                    chars.next();
+                }
+            }
+            Some(Dollar::Variable)
+        }
+        _ => Some(Dollar::Itself),
+    }
 }
 
 /// What a backtick makes of the text in an expandable string or here-string:
