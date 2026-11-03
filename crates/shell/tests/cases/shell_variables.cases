@@ -591,6 +591,79 @@ posix finds=unknown | printf -v x '%s' "$1"; (( x ))
 posix finds=unknown | : ${x:='a[$(rm -rf ~)]'}; echo $((x))
 # Pieces appended to a value may join into code none of them holds.
 posix finds=unknown | x='$'; x+='(rm -rf ~)'; echo $((x))
+# A backslash before a `$` outside quotes is only known when it runs: the
+# grammar reads such a word apart. In quotes the text is read whole.
+posix finds=unknown | x=a[\\$\\(rm\\ -rf\\ ~\\)]; echo $((x))
+posix finds=delete | x="a[\\$(rm -rf ~)]"; echo $((x))
+# A command's output that arithmetic reads is only known when it runs.
+posix finds=unknown | echo $(( $(echo 'a[$(rm -rf ~)]') ))
+posix finds=unknown | echo $(( $(cat f) ))
+posix finds=unknown | [[ $(cat f) -eq 1 ]]
+# `let` and `declare` behind `builtin` and `command`, or spelled with a
+# backslash or quotes, are the builtins.
+posix finds=delete | x='a[$(rm -rf ~)]'; builtin let x
+posix finds=delete | x='a[$(rm -rf ~)]'; command let x
+posix finds=delete | x='a[$(rm -rf ~)]'; \\let x
+posix finds=delete | x='a[$(rm -rf ~)]'; 'let' x
+posix finds=delete | let 'a[$(rm -rf ~)]'
+posix finds=delete | x='a[$(rm -rf ~)]'; builtin declare -i z; z=x
+posix safe | x='a[$(rm -rf ~)]'; command -v let
+# Every value a variable with the integer attribute is given is arithmetic.
+posix finds=unknown | x='a[$(rm -rf ~)]'; declare -i y; read y <<< x
+posix finds=unknown | x='a[$(rm -rf ~)]'; declare -i y; printf -v y x
+posix finds=delete | x='a[$(rm -rf ~)]'; declare -i y; : ${y:=x}
+posix finds=delete | x='a[$(rm -rf ~)]'; declare -i y; for y in x; do :; done
+posix finds=delete | x='a[$(rm -rf ~)]'; declare -i n; n=x true
+# In arithmetic, `${!x}` reads the variables the values of `x` name; with
+# `@P`, each of them is expanded as a prompt.
+posix finds=delete | x=y; y='a[$(rm -rf ~)]'; echo $(( ${!x} ))
+posix finds=delete | x='$(rm -rf ~)'; y=x; echo "${!y@P}"
+# The offset and length of a special or positional parameter are arithmetic.
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${@:x}
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${*:1:x}
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${1:x}
+posix safe | echo ${@:2} ${1:0:3}
+# The positional parameters the line sets, with `set --` or a call of a
+# function it defines, are its own values; after a `shift` each may hold any.
+posix finds=delete | set -- 'a[$(rm -rf ~)]'; echo $(($1))
+posix finds=delete | set -e -- 'a[$(rm -rf ~)]'; echo $(($@))
+posix finds=delete | f() { echo $(($1)); }; f 'a[$(rm -rf ~)]'
+posix finds=unknown | set -- 1; shift; echo $(($1))
+posix safe | set -- 1 2; echo $(($1 + $2))
+posix safe | set -o pipefail; echo $(($1))
+# The key of an element of an indexed array is arithmetic; an associative
+# array's is text.
+posix finds=delete | x='a[$(rm -rf ~)]'; arr=( [x]=1 )
+posix finds=delete | x='a[$(rm -rf ~)]'; declare -a b=([x]=1)
+posix safe | x='a[$(rm -rf ~)]'; declare -A m=([x]=1)
+posix safe | arr=([0]=a [1]=b); echo "${arr[1]}"
+# A subscript in a name a builtin reads is arithmetic: `unset`, `printf -v`,
+# `read`, `[[ -v ]]`, `test -v`; so is a reference's value when it is read.
+posix finds=delete | x='a[$(rm -rf ~)]'; unset 'a[x]'
+posix finds=delete | x='a[$(rm -rf ~)]'; printf -v 'a[x]' 1
+posix finds=delete | x='a[$(rm -rf ~)]'; read 'a[x]'
+posix finds=delete | x='a[$(rm -rf ~)]'; [[ -v 'a[x]' ]]
+posix finds=delete | x='a[$(rm -rf ~)]'; test -v 'a[x]'
+posix finds=delete | declare -n r='a[$(rm -rf ~)]'; echo $r
+posix finds=unknown | declare -n r=$1; echo $r
+posix safe | unset 'a[1]' x; [[ -v a[0] ]]
+posix safe | declare -n r=x; echo $r
+# `$((…))` in the body of a here-document, which the grammar reads as a
+# command, is arithmetic too.
+posix finds=delete | x='a[$(rm -rf ~)]'; cat <<EOF\n$((x))\nEOF
+posix safe | x=3; cat <<EOF\n$((x + 1))\nEOF
+# Parameters that are always numbers give numbers: the status, the count of
+# arguments, process ids, lengths, counters such as RANDOM, and a range of
+# numbers. A counter the line unsets is a variable like any other.
+posix safe | cargo build; rc=$?; [[ $rc -eq 0 ]]
+posix safe | for i in {1..5}; do echo $((i*2)); done
+posix safe | n=${#arr[@]}; echo $((n-1))
+posix safe | pid=$!; [[ $pid -gt 0 ]]
+posix safe | n=$#; echo $((n))
+posix safe | x=$RANDOM; echo $((x))
+posix safe | s="$SECONDS"; echo $((s + 1))
+posix finds=unknown | unset RANDOM; RANDOM='a[$(rm -rf ~)]'; x=$RANDOM; echo $((x))
+posix safe | for c in {a..c}; do echo $((c)); done
 # Text, numbers and the variables the line does not set stay safe.
 posix safe | echo $((y + 1))
 posix safe | echo $((COLUMNS - 1))
@@ -618,8 +691,10 @@ posix finds=delete | cat <<EOF\n${x:-'$(rm -rf ~)'}\nEOF
 posix safe | echo ${x:-'$(rm -rf ~)'}
 posix safe | cat <<'EOF'\n${x:-'$(rm -rf ~)'}\nEOF
 posix safe | echo "${x:-'$y'}"
+posix safe | echo "${x:-'\\`'}"
 # A backslash before a backtick, a `$` or a backslash inside backticks goes
 # before the code is read.
 posix finds=delete | echo `echo \\`rm -rf ~\\``
 posix safe | echo `echo \\`date\\``
 posix safe | echo "`echo \\"x\\"`"
+posix safe | x='a[$(rm -rf ~)]'; export -n y=x; echo $y

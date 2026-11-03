@@ -32,6 +32,13 @@ const MOST_FOLLOWED: usize = 64;
 /// The reason of a read the guard cannot follow.
 const UNKNOWN: &str = "may run code a variable holds that is only known when it runs";
 
+/// The reason of arithmetic that reads a command's output as an expression.
+pub(crate) const OUTPUT: &str = "may run code in a command's output that arithmetic reads";
+
+/// The name the values of every positional parameter are kept under too, as
+/// `$@` and `$*` read them all.
+pub(crate) const POSITIONAL: &str = "@";
+
 /// One value the line gives a variable.
 #[derive(Debug, Clone)]
 pub(crate) enum Value {
@@ -75,6 +82,15 @@ pub(crate) struct Values {
     /// The variables given the integer attribute (`declare -i n`): an
     /// assignment to one reads its value as arithmetic.
     integers: HashSet<String>,
+    /// The arrays declared associative (`declare -A m`), whose keys are
+    /// text, not arithmetic.
+    associative: HashSet<String>,
+    /// The variables declared a reference to another (`declare -n r`): a
+    /// read of one reads the variable its value names, subscript and all.
+    references: HashSet<String>,
+    /// Whether the line shifts the positional parameters, so that each may
+    /// hold the value of any other.
+    pub(crate) shifted: bool,
     /// What a read by arithmetic of a variable runs, worked out once.
     followed: HashMap<String, Rc<Followed>>,
 }
@@ -141,6 +157,54 @@ impl Values {
         self.integers.contains(name)
     }
 
+    /// Note that the line declares `name` an associative array.
+    pub(crate) fn associative(&mut self, name: &str) {
+        self.associative.insert(name.to_string());
+    }
+
+    /// Whether the line declares `name` an associative array anywhere.
+    pub(crate) fn is_associative(&self, name: &str) -> bool {
+        self.associative.contains(name)
+    }
+
+    /// Note that the line declares `name` a reference to another variable.
+    pub(crate) fn reference(&mut self, name: &str) {
+        self.references.insert(name.to_string());
+    }
+
+    /// Whether the line declares `name` a reference anywhere.
+    pub(crate) fn is_reference(&self, name: &str) -> bool {
+        self.references.contains(name)
+    }
+
+    /// After the whole line is read: a shift moves every positional
+    /// parameter's value to another, so each is only known when it runs.
+    pub(crate) fn settle(&mut self) {
+        if !self.shifted {
+            return;
+        }
+        let positional: Vec<String> = self
+            .set
+            .keys()
+            .filter(|name| {
+                name.as_str() == POSITIONAL || name.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            .cloned()
+            .collect();
+        for name in positional {
+            self.add(&name, Value::Unknown("shift".to_string()));
+        }
+    }
+
+    /// The variables the values of `name` name, as `${!name}` reads them
+    /// (`a[i]` names `a` and `i`), and whether one of its values is only
+    /// known when it runs. Nothing for a variable the line does not set.
+    pub(crate) fn named_by(&self, name: &str) -> (Vec<String>, bool) {
+        self.set.get(name).map_or((Vec::new(), false), |entry| {
+            (entry.names.clone(), entry.unknown.is_some())
+        })
+    }
+
     /// What a read by arithmetic of `name` runs, following the variables its
     /// values name.
     fn follow(&mut self, name: &str) -> Rc<Followed> {
@@ -179,7 +243,7 @@ impl Values {
 
 /// Whether `text`, a value, holds code a read of it may run: `$(`, a
 /// backtick, or a `${…}`, which may set or expand another value as code.
-fn holds_code(text: &str) -> bool {
+pub(crate) fn holds_code(text: &str) -> bool {
     text.contains("$(") || text.contains("${") || text.contains('`')
 }
 
@@ -288,6 +352,20 @@ pub(crate) fn indirect(split: &mut Split, name: &str, site: &str, depth: usize) 
         run(split, code, depth);
     }
     arithmetic(split, &indexes, site, depth);
+}
+
+/// A read of a reference, `r` after `declare -n r=value`: the variable the
+/// value names is read, and its subscript is read as arithmetic.
+pub(crate) fn referenced(split: &mut Split, value: &Value, depth: usize) {
+    match value {
+        Value::Text(text) => {
+            if holds_code(text) {
+                run(split, text, depth);
+            }
+            arithmetic(split, &index_names(text), text, depth);
+        }
+        Value::Unknown(written) => split.problem(Rule::Unknown, UNKNOWN, Some(written)),
+    }
 }
 
 /// `${name@P}` expands the value of `name` as a prompt: its escapes decoded,
