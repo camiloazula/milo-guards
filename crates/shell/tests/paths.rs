@@ -1,16 +1,15 @@
 //! `effect_paths`: the absolute paths a reads-only line reads, from the same
 //! reading as `effect`. Each row names the list for a line; a line that does
-//! not only read has none. Every row of every other table is also held to
-//! agree with `effect` (see `common::path_disagreement`).
+//! not only read has none. Every case of every case file is also held to
+//! agree with `effect` (see `common::path_disagreement`); the effect of the
+//! lines here that only that checks is in `tests/cases/paths.cases`.
 
 mod common;
 
 use std::path::PathBuf;
 
-use common::{exact, glob, lists, path_disagreement, posix, walk, windows};
-use milo_guards_shell::{
-    effect, effect_paths, Effect, How, Paths, Protected, Reach, ReadPath, Shell,
-};
+use common::{exact, glob, lists, posix, walk, windows};
+use milo_guards_shell::{effect_paths, How, Paths, Protected, ReadPath, Shell};
 
 /// The places `effect_paths` lists for a line, each once, whatever way it is
 /// read.
@@ -328,7 +327,7 @@ fn a_line_that_does_not_only_read_has_no_list() {
 
 #[test]
 fn a_temporary_path_is_listed_like_any_other() {
-    // It is reads-only in the workspace (see `reach.rs`) by the rule for
+    // It is reads-only in the workspace (see `reach.cases`) by the rule for
     // temporary files, not because it is inside the workspace: the caller
     // applies that rule.
     let paths = posix();
@@ -514,29 +513,13 @@ fn a_workspace_that_is_the_home_folder_lists_what_is_read_there() {
     );
 }
 
+/// The lines that mix shells' habits and the spellings of paths, and the
+/// effect of the lines the link test below reads, are in
+/// `tests/cases/paths.cases`; every case there, as everywhere, is held to
+/// agree with `effect` (see `common::path_disagreement`).
 #[test]
-fn every_extra_row_agrees_with_effect() {
-    // The tables go through `common::path_disagreement` already; these are
-    // the lines that mix shells' habits and the spellings of paths.
-    let rows = [
-        "cat a b *.rs src/*.rs",
-        "cd src && rg TODO .. | head",
-        "git -C a log -p -- b c",
-        "sudo cat /etc/hosts",
-        "env LANG=C ls",
-        "find . -name '*.log' -exec cat {} +",
-        "mkdir x && cat x",
-        "cat /*",
-        "cat \"\"",
-        "echo \"/usr/*\"",
-        "ls ~root",
-        "cat a >&2",
-    ];
-    let wrong: Vec<String> = rows
-        .iter()
-        .filter_map(|line| path_disagreement(Shell::Posix, &posix(), line))
-        .collect();
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+fn every_case_holds() {
+    common::cases::check("paths");
 }
 
 /// How each line is read: exact paths, patterns as a folder and the rest,
@@ -1079,8 +1062,10 @@ fn a_link_that_leaves_the_workspace_is_found_by_checking_each_entry() {
                 }
             })
     };
-    // Judged by spelling, all of them stay in the workspace; on the disk,
-    // each reads what a link points at.
+    // Judged by spelling, all of them stay in the workspace (their cases are
+    // in `tests/cases/paths.cases`, and `cat *.rs`, `git ls-files | xargs
+    // cat` and `grep -R x src` in `effect.cases` and `reach.cases`); on the
+    // disk, each reads what a link points at.
     for line in [
         "cat link/id_rsa",
         "ls link",
@@ -1099,11 +1084,6 @@ fn a_link_that_leaves_the_workspace_is_found_by_checking_each_entry() {
         "rg --follow x src",
         "find -L src",
     ] {
-        assert_eq!(
-            effect(line, Shell::Posix, &paths),
-            Effect::ReadsOnly(Reach::Workspace),
-            "{line}"
-        );
         assert!(leaves(line), "{line}");
     }
     // What is in the workspace stays in it.

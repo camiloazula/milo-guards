@@ -3279,7 +3279,9 @@ what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
 `tests/inline_off.rs` holds every inline line to `unknown` with the feature off
 and is only compiled there (`just no-inline`).
 
-`tests/effect.rs` is the same for `effect`: a table of lines for each answer. Every
+`tests/cases/effect.cases` is the same for `effect`: a section of lines for each
+answer, checked by `tests/effect.rs`, which keeps the lines made long or nested
+deep. Every
 case also goes through `effect`: the runner of the case files does it for
 each case, the shared `check` for each row of a table, and the tests that
 name a finding's target judge their lines with the shared `classify` of
@@ -3297,20 +3299,22 @@ front door's
 `crates/guards/tests/agree.rs` holds the shell and the file guard to one
 answer (see [Reading a key](#reading-a-key)).
 
-`tests/reach.rs` has the rows of `Reach` for a POSIX line, read in a workspace
-with nothing protected, one with a protected `.agent`, one that is the home
-folder and one that holds a folder of logins, and `tests/reach_windows.rs` the
-same for PowerShell and cmd; the plain readers of the plain workspace are in
-`tests/effect.rs`, and core's `reaches_secret` has its own in
+`tests/cases/reach.cases` has the cases of `Reach` for a POSIX line, read in a
+workspace with nothing protected, from other working directories, in one with
+a protected `.agent`, one that is the home folder and one that holds a folder
+of logins, and `tests/cases/reach_windows.cases` the same for PowerShell and
+cmd; the plain readers of the plain workspace are in `tests/cases/effect.cases`,
+and core's `reaches_secret` has its own in
 `crates/core/tests/reaches_secret.rs`.
 `tests/paths.rs` has the rows of `effect_paths`, in POSIX, PowerShell and cmd, and
 one that checks every way of reading against a table of links playing the disk,
 the way the docs tell a caller to;
 `tests/paths_links.rs` has the rows of the `..` the list keeps (a link before a
 `..`, every way of reading, a `cd` listed folded and kept, an absolute operand
-after a `cd`, PowerShell and cmd); and
-every row of every table is also held to agree with `effect` on whether it has
-a list (`common::path_disagreement`). Core's `absolute` has its own in
+after a `cd`, PowerShell and cmd), and `tests/cases/paths_links.cases` the
+lines `effect` still judges by spelling; and
+every case of every case file and every row of every table is also held to
+agree with `effect` on whether it has a list (`common::path_disagreement`). Core's `absolute` has its own in
 `crates/core/tests/absolute.rs`, and `opened` in `crates/core/tests/opened.rs`.
 `tests/names.rs` walks `Rule::ALL` and checks the wire names, that each rule is
 listed once, and that the trait gives the same name as the method. Its list of

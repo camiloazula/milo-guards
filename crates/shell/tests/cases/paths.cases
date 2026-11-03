@@ -1,0 +1,33 @@
+# `effect_paths`: the effect of lines whose list of paths paths.rs checks or
+# leans on. Every case of every file is held to agree with `effect` (the paths
+# are listed exactly when a line only reads, and inside the workspace when its
+# reach is the workspace); the lists themselves, a structure, are in paths.rs.
+# The format is in CONTRIBUTING.md.
+
+# Lines that mix shells' habits and the spellings of paths.
+posix effect=reads_workspace | cat a b *.rs src/*.rs
+posix effect=reads_workspace | cd src && rg TODO .. | head
+posix effect=reads_workspace | git -C a log -p -- b c
+posix effect=changes | mkdir x && cat x
+posix effect=reads_beyond | cat /*
+posix effect=reads_workspace | cat ""
+posix effect=reads_beyond | echo "/usr/*"
+posix effect=unknown | ls ~root
+posix effect=reads_workspace | cat a >&2
+
+# A link in the workspace that points out of it reads as the workspace by
+# spelling: each of these reads what a link points at on the disk, which
+# checking each entry of the list finds (paths.rs).
+posix effect=reads_workspace | cat link/id_rsa
+posix effect=reads_workspace | ls link
+posix effect=reads_workspace | rg TODO link
+posix effect=reads_workspace | cat link/*
+posix effect=reads_workspace | cd link && ls
+posix effect=reads_workspace | cat src/../link/id_rsa
+posix effect=reads_workspace | cat src/*/x.rs
+posix effect=reads_workspace | for f in *.rs; do cat "$f"; done
+posix effect=reads_workspace | ls src | xargs cat
+posix effect=reads_workspace | find src -exec cat {} +
+posix effect=reads_workspace | rg -L x src
+posix effect=reads_workspace | rg --follow x src
+posix effect=reads_workspace | find -L src
