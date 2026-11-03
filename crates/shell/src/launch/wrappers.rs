@@ -7,7 +7,7 @@ use std::rc::Rc;
 use super::interpreters::{reads_input, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
-use crate::powershell::Params;
+use crate::powershell::{native, Params};
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
 
@@ -173,6 +173,25 @@ pub(super) fn xargs(args: &[Arg]) -> Launch {
     } else {
         Launch::Itself
     }
+}
+
+/// The file `xargs -a FILE` (`--arg-file`) reads the arguments from,
+/// instead of its input.
+pub(super) fn arg_file(args: &[Arg]) -> Option<Arg> {
+    let mut iter = args.iter();
+    let mut file = None;
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if matches!(text, "-a" | "--arg-file") {
+            file = iter.next().cloned();
+        } else if let Some(value) = text
+            .strip_prefix("--arg-file=")
+            .or_else(|| text.strip_prefix("-a").filter(|value| !value.is_empty()))
+        {
+            file = Some(Arg::Known(value.to_string()));
+        }
+    }
+    file
 }
 
 /// `tmux` runs a command through the user's shell in its sessions and
@@ -363,66 +382,46 @@ fn file_arg(file: &str, moved: bool) -> Arg {
     }
 }
 
-/// `Start-Process`: the program in `-FilePath` (`-Path` and `-PSPath` are its
-/// aliases, which `Params` reads as `-LiteralPath`; or first), its arguments in
-/// `-ArgumentList` (or after it), and `-Verb RunAs` to run it elevated.
+/// `Start-Process`: the program in `-FilePath` (or its aliases `-Path` and
+/// `-PSPath`; or first), its arguments in `-ArgumentList` (or after it), split
+/// again by the program (see [`native::words`]), and `-Verb RunAs` to run it
+/// elevated. Every other parameter that takes a value takes it
+/// (`-WindowStyle Hidden`).
 pub(super) fn start_process(unit: &Unit) -> Launch {
-    // The value of `-ArgumentList` is often a quoted string that starts with
-    // `-` (`-ArgumentList '-c "…"'`), which the words no longer tell from a
-    // parameter: the word after it is its value, whatever it starts with. A
-    // word with a space in it is no parameter's name: it is the argument
-    // list given by position (`Start-Process psql '-c …'`).
-    let mut rest = Vec::new();
-    let mut listed = Vec::new();
-    let mut words = unit.args.iter();
-    while let Some(arg) = words.next() {
-        if names_argument_list(arg) {
-            listed.extend(words.next().cloned());
-        } else if redirects_standard(arg).is_some() {
-            // The file of a redirect is not an argument of the program.
-            words.next();
-        } else if arg
-            .known()
-            .is_some_and(|text| text.starts_with('-') && text.contains(char::is_whitespace))
-        {
-            listed.push(arg.clone());
-        } else {
-            rest.push(arg.clone());
-        }
-    }
-    let params = Params::read(&rest);
+    let params = Params::start_process(&unit.args);
     let mut positional = params.positional.iter();
     let program = params
-        .values(&["filepath", "path", "literalpath"])
+        .values(&["filepath"])
         .first()
         .copied()
         .or_else(|| positional.next().copied());
     let Some(program) = program else {
         return Launch::Itself;
     };
-    // The arguments are joined with spaces into one command line, which the
-    // program splits as Windows programs do: quotes hold spaces.
-    let given: Vec<&Arg> = listed
-        .iter()
-        .chain(params.values(&["argumentlist"]))
-        .chain(positional.copied())
-        .collect();
+    // The arguments are joined into one command line, which the program
+    // splits by its own rules: a run of strings known now is split as one.
+    let key = program
+        .known()
+        .map(|program| unit::key(program, Shell::PowerShell))
+        .unwrap_or_default();
     let mut args = Vec::new();
-    let known: Option<Vec<&str>> = given.iter().map(|arg| arg.known()).collect();
-    match known {
-        Some(texts) => args.extend(windows_words(&texts.join(" ")).into_iter().map(Arg::Known)),
-        None => {
-            for arg in given {
-                match arg {
-                    Arg::Known(text) => args.extend(
-                        text.split_whitespace()
-                            .map(|word| Arg::Known(word.to_string())),
-                    ),
-                    other => args.push(other.clone()),
-                }
-            }
+    let mut line: Vec<&str> = Vec::new();
+    for arg in params
+        .values(&["argumentlist"])
+        .into_iter()
+        .chain(positional.copied())
+    {
+        if let Arg::Known(text) = arg {
+            line.push(text);
+            continue;
         }
+        let words = native::words(&key, &args, &line.join(" "));
+        args.extend(words.into_iter().map(Arg::Known));
+        line.clear();
+        args.push(arg.clone());
     }
+    let words = native::words(&key, &args, &line.join(" "));
+    args.extend(words.into_iter().map(Arg::Known));
     let mut wrappers = unit.wrappers.clone();
     wrappers.push("start-process".to_string());
     if params.values(&["verb"]).iter().any(|verb| {
@@ -446,6 +445,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         startup: Rc::default(),
         repeated: false,
         downloaded: false,
+        relocates: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
@@ -453,111 +453,14 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
     }))
 }
 
-/// Which of `Start-Process`'s redirects `arg` names, by its name, a start of
-/// it no other parameter has, or its alias (`-RSI`): `Some(true)` for
-/// `-RedirectStandardInput`, `Some(false)` for the output and the errors.
-fn redirects_standard(arg: &Arg) -> Option<bool> {
-    let name = arg.known()?.strip_prefix('-')?;
-    let name = name.trim_end_matches(':').to_ascii_lowercase();
-    let stem = "redirectstandard";
-    match name.as_str() {
-        "rsi" => Some(true),
-        "rso" | "rse" => Some(false),
-        _ if name.len() > stem.len() && "redirectstandardinput".starts_with(&name) => Some(true),
-        _ if name.len() > stem.len()
-            && ["redirectstandardoutput", "redirectstandarderror"]
-                .iter()
-                .any(|full| full.starts_with(&name)) =>
-        {
-            Some(false)
-        }
-        _ => None,
-    }
-}
-
-/// The file `Start-Process -RedirectStandardInput` feeds the program it
-/// starts, as `program < file` does.
+/// The file `Start-Process -RedirectStandardInput` (or `-RSI`, or a start
+/// of it no other parameter has) feeds the program it starts, as
+/// `program < file` does.
 pub(super) fn standard_input(unit: &Unit) -> Option<Arg> {
-    let mut words = unit.args.iter();
-    while let Some(arg) = words.next() {
-        if names_argument_list(arg) {
-            words.next();
-        } else if let Some(input) = redirects_standard(arg) {
-            let file = words.next();
-            if input {
-                return file.cloned();
-            }
-        }
-    }
-    None
-}
-
-/// Whether `arg` is `Start-Process`'s `-ArgumentList` parameter, by its name,
-/// a start of it no other parameter has (`-ar`), or its alias `-Args`, with
-/// no value after a colon.
-fn names_argument_list(arg: &Arg) -> bool {
-    let Some(name) = arg.known().and_then(|text| text.strip_prefix('-')) else {
-        return false;
-    };
-    let name = name.to_ascii_lowercase();
-    name == "args" || (name.len() > 1 && "argumentlist".starts_with(&name))
-}
-
-/// The words a Windows program reads from its command line, as the C runtime
-/// splits it: spaces and tabs separate words outside quotes, `"` opens and
-/// closes a quote (`""` inside one is a quote), and backslashes are literal
-/// except before a `"`, where each pair is one backslash and an odd one
-/// makes the quote literal.
-fn windows_words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut started = false;
-    let mut quoted = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                let mut count = 1;
-                while chars.peek() == Some(&'\\') {
-                    chars.next();
-                    count += 1;
-                }
-                started = true;
-                if chars.peek() == Some(&'"') {
-                    word.extend(std::iter::repeat_n('\\', count / 2));
-                    if count % 2 == 1 {
-                        chars.next();
-                        word.push('"');
-                    }
-                } else {
-                    word.extend(std::iter::repeat_n('\\', count));
-                }
-            }
-            '"' => {
-                started = true;
-                if quoted && chars.peek() == Some(&'"') {
-                    chars.next();
-                    word.push('"');
-                } else {
-                    quoted = !quoted;
-                }
-            }
-            ' ' | '\t' if !quoted => {
-                if started {
-                    words.push(std::mem::take(&mut word));
-                    started = false;
-                }
-            }
-            c => {
-                started = true;
-                word.push(c);
-            }
-        }
-    }
-    if started {
-        words.push(word);
-    }
-    words
+    Params::start_process(&unit.args)
+        .values(&["redirectstandardinput"])
+        .first()
+        .map(|file| (*file).clone())
 }
 
 /// cmd's `start`: a quoted title first, its `/` options, then the program.
@@ -1136,6 +1039,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         startup: Rc::clone(&unit.startup),
         repeated: false,
         downloaded: false,
+        relocates: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),

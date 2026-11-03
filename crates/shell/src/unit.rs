@@ -130,6 +130,11 @@ pub(crate) struct Unit {
     /// Whether the script it runs is a download (`Invoke-Expression` given
     /// `(iwr url)`), which only runs when it does.
     pub(crate) downloaded: bool,
+    /// Whether it may move a PowerShell session to a place the guard cannot
+    /// follow: a script block or a script run by a name only known when it
+    /// runs (`& $b`, `. $b`) may hold a `cd`, and the session has one
+    /// location, whatever scope the block runs in.
+    pub(crate) relocates: bool,
     /// The `Get-Process` listings written inside the arguments of a
     /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
     pub(crate) listings: Vec<Listing>,
@@ -225,6 +230,7 @@ impl Unit {
             startup: Rc::default(),
             repeated: false,
             downloaded: false,
+            relocates: false,
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
@@ -358,6 +364,16 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         (Shell::Cmd, None) => lower,
         (_, Some(stem)) => stem.to_string(),
     }
+}
+
+/// Whether `text`, a word as the shell expands it, is a wildcard pattern:
+/// it holds a `*` or a `?`, or a `[` with a `]` after it (a `[` alone is a
+/// name, as the program `[` is).
+pub(crate) fn pattern(text: &str) -> bool {
+    text.contains(['*', '?'])
+        || text
+            .split_once('[')
+            .is_some_and(|(_, rest)| rest.contains(']'))
 }
 
 /// A write a redirect makes: `> file`, `>> file`.
@@ -644,6 +660,12 @@ pub(crate) struct Split {
     /// that writes one. Before that, a plain `cd` that failed leaves no file
     /// written where the line stayed.
     wrote: bool,
+    /// The folders PowerShell's `Push-Location` saved (see [`Locations`]).
+    locations: Locations,
+    /// How many times the line has saved or taken a folder of a location
+    /// stack, or picked the stack: an action that runs later and does
+    /// either leaves every stack unknown.
+    location_steps: usize,
     /// The units that move the line from a folder that is not certain (see
     /// [`Self::maybe_moved`]; a loop or a function body runs again from where
     /// its last `cd` went), by their place in `units`.
@@ -668,6 +690,9 @@ pub(crate) struct Split {
     /// item of what the loop walks, so a rule that counts what a command
     /// reaches reads `"$c"` as every item, not one.
     looped: Vec<String>,
+    /// What a POSIX line sets its variables to, for the places bash reads a
+    /// value again as code (arithmetic, `${!x}`, `${x@P}`).
+    pub(crate) values: crate::values::Values,
     /// The characters a backtick `u{…}` made in a PowerShell string that are
     /// a space that is not an ASCII one, a dash or a typographic quote: as a
     /// path or an argument each is the text it holds, but a script that holds
@@ -760,6 +785,13 @@ pub(crate) struct Split {
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
+    /// The units of each function body and alias the line defines, by name:
+    /// what a call of the name runs (see [`Split::bodies_of`]).
+    called_bodies: HashMap<String, Vec<Range<usize>>>,
+    /// The names among [`Split::called_bodies`] an `alias` defines, whose
+    /// call is its value followed by the call's words (see
+    /// [`Split::is_alias`]).
+    aliases: HashSet<String>,
     /// The functions whose body moves the line, or whose definition is
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
@@ -824,6 +856,49 @@ struct Pwd {
     used: Option<String>,
 }
 
+/// PowerShell's location stacks as the line leaves them: `Push-Location`
+/// saves where the line is on a stack, and `Pop-Location` goes back to the
+/// last folder saved there. Only a step the line is certain to take, in
+/// order, is kept: one in a branch, a loop, a function body, the right side
+/// of `&&` or `||`, an action that runs later or behind a wrapper may or may
+/// not run, or run again, so after it every stack holds what is only known
+/// when it runs. A stack the line did not fill held what the session had
+/// before the line, which the line does not show.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Locations {
+    /// Each stack the line saved a folder on, by name in lower case, with
+    /// the folders saved, the last on top.
+    stacks: Vec<(String, Vec<Saved>)>,
+    /// The stack `Push-Location` and `Pop-Location` use when not given one,
+    /// which `Set-Location -StackName` picks.
+    default: Stack,
+    /// Whether a step the line may or may not have taken came before: no
+    /// stack can be read then.
+    lost: bool,
+}
+
+/// The stack the location cmdlets use when not given one.
+#[derive(Debug, Clone, Default)]
+enum Stack {
+    /// The session's own, named `default`.
+    #[default]
+    Session,
+    /// One the line picked, by name in lower case.
+    Named(String),
+    /// One only known when it runs.
+    Unknown,
+}
+
+/// Where the line was when `Push-Location` saved it, which a `Pop-Location`
+/// goes back to.
+#[derive(Debug, Clone)]
+struct Saved {
+    dir: Option<Arg>,
+    dir_code: bool,
+    elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
+}
+
 /// What a line holds that only [`crate::effect`] reads.
 #[derive(Debug, Default)]
 pub(crate) struct Kept {
@@ -886,6 +961,14 @@ pub(crate) struct Began {
     findings: usize,
     importing: usize,
     moved: usize,
+    location_steps: usize,
+}
+
+impl Began {
+    /// How many `cd`s the walk had read in all.
+    pub(crate) fn moved(&self) -> usize {
+        self.moved
+    }
 }
 
 /// Where the line was, to put back after a subshell or a nested script
@@ -898,6 +981,21 @@ pub(crate) struct Place {
     drive_guess: bool,
     moves: usize,
     later: usize,
+    maybe_moved: bool,
+    elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
+    locations: Locations,
+}
+
+/// Where the line is when the right side of an `||` ends the shell (see
+/// [`Split::exits_after`]): the rest of the line runs only when the left side
+/// did not fail.
+#[derive(Debug)]
+pub(crate) struct Exit {
+    dir: Option<Arg>,
+    dir_code: bool,
+    drive: Option<char>,
+    drive_guess: bool,
     maybe_moved: bool,
     elsewhere: Vec<Option<Arg>>,
     stayed: Vec<Option<Arg>>,
@@ -1131,7 +1229,22 @@ impl Split {
             }
             moved = moved.and_then(|target| self.cmd_target(&unit, target));
         }
-        if let Some(target) = moved {
+        // A `Pop-Location` the line is certain to run, of a folder the line
+        // saved, goes back to it.
+        let back = if unit.shell == Shell::PowerShell {
+            self.location_step(&unit, moved.is_some())
+        } else {
+            None
+        };
+        if let (Some(_), Some(saved)) = (&moved, back) {
+            self.moves += 1;
+            self.moved += 1;
+            self.dir = saved.dir;
+            self.dir_code = saved.dir_code;
+            self.pwd.unplain |= self.dir_code;
+            self.set_elsewhere(saved.elsewhere);
+            self.set_stayed(saved.stayed);
+        } else if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
             let dir = self.moved_to(self.dir.as_ref(), &target, unit.shell);
@@ -1187,6 +1300,136 @@ impl Split {
         }
         self.wrote = self.wrote || !crate::detect::written_by(&unit).is_empty();
         self.units.push(unit);
+    }
+
+    /// Keep PowerShell's location stacks (see [`Locations`]) for `unit`,
+    /// which is about to be added: `Push-Location` saves where the line is,
+    /// `Set-Location -StackName` picks the stack, and `Pop-Location` takes
+    /// the last folder saved, which is returned when the line goes back to
+    /// it. A step the line may or may not take, or take again, leaves every
+    /// stack unknown, and so does a block or a script the guard does not read
+    /// that may move the line (`moves`: `& $b`, `iex $s`), which may save or
+    /// take a folder too.
+    fn location_step(&mut self, unit: &Unit, moves: bool) -> Option<Saved> {
+        if unit.relocates || (moves && unit.key().as_deref() == Some("invoke-expression")) {
+            self.location_steps += 1;
+            self.locations.lost = true;
+            return None;
+        }
+        let key = unit.key()?;
+        // An alias of a location cmdlet's name (`Set-Alias popd Get-Date`),
+        // or of a name only known when it runs, may stand in for it.
+        if renames_location(unit, &key) {
+            self.lose_locations();
+            return None;
+        }
+        if !matches!(
+            key.as_str(),
+            "push-location" | "pop-location" | "set-location"
+        ) {
+            return None;
+        }
+        let params = crate::powershell::Params::cmdlet(&unit.args, &crate::powershell::LOCATION);
+        let named = params.has(&["stackname"]);
+        // In a later stage of a pipeline it runs once for each item, which
+        // may give it its folder and its stack (`$s | Pop-Location`).
+        let piped = unit.stage.is_some_and(|stage| stage.index > 0);
+        if key == "set-location" && !named && !piped {
+            return None;
+        }
+        self.location_steps += 1;
+        let certain = self.branches == self.taken
+            && self.repeats == 0
+            && self.bodies == 0
+            && unit.wrappers.is_empty()
+            && !piped
+            && crate::powershell::location_binds(&unit.args, &key);
+        if !certain {
+            self.locations.lost = true;
+            if key == "set-location" {
+                self.locations.default = Stack::Unknown;
+            }
+            return None;
+        }
+        // The stack it names, in lower case; `None` when that is only known
+        // when it runs (`-StackName $s`, or no value at all).
+        let name = if named {
+            match params.values(&["stackname"]).first() {
+                Some(Arg::Known(name)) => Some(name.to_ascii_lowercase()),
+                _ => None,
+            }
+        } else {
+            match &self.locations.default {
+                Stack::Session => Some("default".to_string()),
+                Stack::Named(name) => Some(name.clone()),
+                Stack::Unknown => None,
+            }
+        };
+        match key.as_str() {
+            "set-location" => {
+                self.locations.default = name.map_or(Stack::Unknown, Stack::Named);
+                None
+            }
+            "push-location" => {
+                let Some(name) = name else {
+                    self.locations.lost = true;
+                    return None;
+                };
+                let saved = Saved {
+                    dir: self.dir.clone(),
+                    dir_code: self.dir_code,
+                    elsewhere: self.elsewhere.clone(),
+                    stayed: self.stayed.clone(),
+                };
+                match self.locations.stacks.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, stack)) => stack.push(saved),
+                    None => self.locations.stacks.push((name, vec![saved])),
+                }
+                None
+            }
+            _ => {
+                let Some(name) = name else {
+                    self.locations.lost = true;
+                    return None;
+                };
+                if self.locations.lost {
+                    return None;
+                }
+                let stack = self
+                    .locations
+                    .stacks
+                    .iter_mut()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, stack)| stack);
+                // A stack the line did not fill holds what the session saved
+                // before it: from here on no stack can be read.
+                let saved = stack.and_then(Vec::pop);
+                if saved.is_none() {
+                    self.locations.lost = true;
+                }
+                saved
+            }
+        }
+    }
+
+    /// Note that a step the line may or may not take came before, as a
+    /// function or an alias that stands in for a location cmdlet does: no
+    /// location stack can be read after it.
+    pub(crate) fn lose_locations(&mut self) {
+        self.location_steps += 1;
+        self.locations.lost = true;
+    }
+
+    /// Start a runspace of its own (a thread job's, a `-Parallel` block's),
+    /// whose location stacks are empty, and give back the line's, to put
+    /// back with [`Self::restore_locations`] once it is read.
+    pub(crate) fn take_locations(&mut self) -> Locations {
+        std::mem::take(&mut self.locations)
+    }
+
+    /// Put back the line's location stacks, from [`Self::take_locations`].
+    pub(crate) fn restore_locations(&mut self, locations: Locations) {
+        self.locations = locations;
     }
 
     /// Where a `cd` to `target` takes the line from `from`.
@@ -1611,6 +1854,45 @@ impl Split {
         self.add_stops();
     }
 
+    /// The right side of the `||` about to be read ends the shell (`cd s ||
+    /// exit`): the rest of the line runs only when the left side did not
+    /// fail, so a plain `cd` that ends it ran (none of the folders it may
+    /// have stayed in, see [`Self::stayed`]), and so did every right side of
+    /// `&&` in it (none of the folders it may have stopped in, see
+    /// [`Chain`]). Note where the line is then, before [`Self::list_or`] says
+    /// the left side may have failed, which only the right side reads;
+    /// [`Self::exited`] puts it back when that side ends.
+    pub(crate) fn exits_after(&self) -> Exit {
+        let mut stayed = self.stayed.clone();
+        stayed.retain(|folder| !self.last_stayed.contains(folder));
+        Exit {
+            dir: self.dir.clone(),
+            dir_code: self.dir_code,
+            drive: self.drive,
+            drive_guess: self.drive_guess,
+            maybe_moved: self.maybe_moved,
+            elsewhere: self.elsewhere.clone(),
+            stayed,
+        }
+    }
+
+    /// The right side of `||` that ended the shell has been read: put the
+    /// line back where [`Self::exits_after`] noted it, for what comes after.
+    /// The `cd`s read since still count as read (see [`Self::moves`]), which
+    /// only makes a later action less certain of where it runs.
+    pub(crate) fn exited(&mut self, exit: Exit) {
+        self.dir = exit.dir;
+        self.dir_code = exit.dir_code;
+        self.drive = exit.drive;
+        self.drive_guess = exit.drive_guess;
+        self.maybe_moved = exit.maybe_moved;
+        self.elsewhere = exit.elsewhere;
+        self.stayed = exit.stayed;
+        self.last_stayed.clear();
+        self.chain.stops.clear();
+        self.chain.stayed.clear();
+    }
+
     /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
     /// it. It may not run, so it is a branch. After `&&` it runs only when
     /// the left side did, so the folders a plain `cd` that ends the left side
@@ -1747,6 +2029,43 @@ impl Split {
         }
     }
 
+    /// Note that `units` are the body of the function or alias `name`: a
+    /// call may run any body of its name the line defines. Past
+    /// [`MAX_BODIES`] for one name, the two first are kept as one range from
+    /// the start of the first to the end of the second, which holds both
+    /// and whatever the line runs between them.
+    pub(crate) fn body(&mut self, name: &str, units: Range<usize>) {
+        if units.is_empty() {
+            return;
+        }
+        let bodies = self.called_bodies.entry(name.to_string()).or_default();
+        if bodies.len() >= MAX_BODIES {
+            let first = bodies.remove(0);
+            if let Some(second) = bodies.first_mut() {
+                *second = first.start.min(second.start)..first.end.max(second.end);
+            }
+        }
+        bodies.push(units);
+    }
+
+    /// Note that `units` are the value of `alias name=…`: a call of `name`
+    /// runs it, with the call's words after its last command.
+    pub(crate) fn alias_body(&mut self, name: &str, units: Range<usize>) {
+        self.body(name, units);
+        self.aliases.insert(name.to_string());
+    }
+
+    /// Whether an `alias` on the line defines `name`.
+    pub(crate) fn is_alias(&self, name: &str) -> bool {
+        self.aliases.contains(name)
+    }
+
+    /// The units of the bodies a unit that runs the program `name` may run:
+    /// the functions and aliases of that name the line defines.
+    pub(crate) fn bodies_of(&self, name: &str) -> &[Range<usize>] {
+        self.called_bodies.get(name).map_or(&[], Vec::as_slice)
+    }
+
     /// Note that the definition which began at `defining` has been read. A
     /// call to a function whose body moves the line, or that calls one that
     /// does, or whose definition is redirected, starts in a folder the walk
@@ -1764,6 +2083,7 @@ impl Split {
             replaces,
             ..
         } = defining;
+        self.body(&name, first..self.units.len());
         // The walk moves its own line for every `cd` it reads, so a body
         // moves it as far as the walk is concerned unless a subshell or a
         // substitution gave the `cd` back. A `cd` in a pipeline stage, the
@@ -2077,6 +2397,7 @@ impl Split {
             findings: self.findings.len(),
             importing: self.importing.len(),
             moved: self.moved,
+            location_steps: self.location_steps,
         }
     }
 
@@ -2090,6 +2411,11 @@ impl Split {
         if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
             self.dir_code = true;
+        }
+        // A location stack the action saves on or takes from is changed
+        // whenever it runs.
+        if self.location_steps != began.location_steps {
+            self.locations.lost = true;
         }
         self.later.push(Later {
             units: began.units..self.units.len(),
@@ -2143,6 +2469,48 @@ impl Split {
         }
     }
 
+    /// Read everything added since `began` from somewhere only known when it
+    /// runs.
+    pub(crate) fn unplace(&mut self, began: Began) {
+        self.move_later(&Later {
+            units: began.units..self.units.len(),
+            writes: began.writes..self.writes.len(),
+            reads: began.reads..self.reads.len(),
+            importing: began.importing..self.importing.len(),
+            moves: self.moves,
+            moved: self.moved,
+            inherited: false,
+        });
+    }
+
+    /// Start what is read next in `target`, as a process started there
+    /// does (a PowerShell job's `-WorkingDirectory`): it is no `cd` of this
+    /// shell, so the caller puts the line back where it was afterwards.
+    pub(crate) fn enter(&mut self, target: &Arg, shell: Shell) {
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        let elsewhere = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let stayed = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+    }
+
     /// Read an action that runs later from somewhere unknown.
     fn move_later(&mut self, later: &Later) {
         let moved = Arg::Unknown("where the line moves to".to_string());
@@ -2181,6 +2549,7 @@ impl Split {
             maybe_moved: self.maybe_moved,
             elsewhere: self.elsewhere.clone(),
             stayed: self.stayed.clone(),
+            locations: self.locations.clone(),
         }
     }
 
@@ -2205,6 +2574,7 @@ impl Split {
         self.maybe_moved = place.maybe_moved;
         self.elsewhere = place.elsewhere;
         self.stayed = place.stayed;
+        self.locations = place.locations;
         self.last_stayed.clear();
     }
 
@@ -2455,6 +2825,11 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     {
         return None;
     }
+    // A block or a script run by a name only known when it runs may hold a
+    // `cd` of the session.
+    if unit.relocates {
+        return Some(Arg::Unknown(unit.program.text().to_string()));
+    }
     let program = unit.program.known()?;
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
@@ -2497,41 +2872,80 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         (Shell::Cmd, "cd" | "chdir" | "pushd") => {
             plain(&unit.args).first().map(|target| (*target).clone())
         }
-        (Shell::PowerShell, "set-location" | "push-location") => {
+        (Shell::PowerShell, "set-location" | "push-location") => location_target(unit, key),
+        // A string the line writes out is read as a script run in the
+        // session (see `launch`), whose `cd` moves the line; any other may
+        // hold one the guard does not see.
+        (Shell::PowerShell, "invoke-expression") => {
             let params = crate::powershell::Params::read(&unit.args);
-            // `--` ends the parameters, so it is not the path: `cd -- -` is
-            // the history step and `cd -- X` goes to X.
-            let mut positional = params.positional.iter().copied();
-            let end = params
-                .positional
-                .iter()
-                .position(|arg| arg.known() == Some("--"));
-            let first = match end {
-                Some(0) => positional.nth(1),
-                _ => positional.next(),
-            };
-            let target = params
-                .values(&["path", "literalpath"])
+            match params
+                .values(&["command"])
                 .first()
-                .copied()
-                .or(first)
-                .map(|target| match target {
-                    // PowerShell 6.2+ reads `-` and `+` as a step back or
-                    // forward in location history, not a folder.
-                    Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
-                    other => (*other).clone(),
-                });
-            Some(target.unwrap_or_else(|| {
-                // With no path, a stage after the first takes it from the
-                // pipeline; the first goes home.
-                if unit.stage.is_some_and(|stage| stage.index > 0) {
-                    Arg::Unknown(key)
-                } else {
-                    Arg::Known("~".to_string())
-                }
-            }))
+                .or(params.positional.first())
+            {
+                Some(Arg::Known(_)) if !unit.downloaded => None,
+                Some(script) => Some(Arg::Unknown(script.text().to_string())),
+                None => Some(Arg::Unknown(key)),
+            }
         }
         _ => None,
+    }
+}
+
+/// Where a PowerShell `Set-Location` or `Push-Location` moves to, `None`
+/// when it does not move: read by their own parameters, so the value of
+/// `-StackName` is not the folder. `--` ends the parameters, so it is not
+/// the path: `cd -- -` is the history step and `cd -- X` goes to X. With no
+/// path, a stage after the first takes it from the pipeline; the first
+/// `Set-Location` goes home, a `Set-Location -StackName` only picks the stack
+/// `Pop-Location` takes from, and a `Push-Location` saves where the line is
+/// and stays there.
+fn location_target(unit: &Unit, key: String) -> Option<Arg> {
+    let params = crate::powershell::Params::cmdlet(&unit.args, &crate::powershell::LOCATION);
+    let mut positional = params.positional.iter().copied();
+    let end = params
+        .positional
+        .iter()
+        .position(|arg| arg.known() == Some("--"));
+    let first = match end {
+        Some(0) => positional.nth(1),
+        _ => positional.next(),
+    };
+    let target = params
+        .values(&["path", "literalpath"])
+        .first()
+        .copied()
+        .or(first)
+        .map(|target| match target {
+            // PowerShell 6.2+ reads `-` and `+` as a step back or forward in
+            // location history, not a folder.
+            Arg::Known(step) if step == "-" || step == "+" => Arg::Unknown(step.clone()),
+            other => other.clone(),
+        });
+    if target.is_some() {
+        return target;
+    }
+    if unit.stage.is_some_and(|stage| stage.index > 0) {
+        Some(Arg::Unknown(key))
+    } else if key == "push-location" || params.has(&["stackname"]) {
+        None
+    } else {
+        Some(Arg::Known("~".to_string()))
+    }
+}
+
+/// Whether `unit`, a PowerShell command whose name is `key`, sets an alias
+/// that may stand in for a location cmdlet: one named as one (`Set-Alias
+/// popd Get-Date`), one that stands for one under another name, or one whose
+/// name is only known when it runs (`Set-Alias $n …`, `Import-Alias`).
+fn renames_location(unit: &Unit, key: &str) -> bool {
+    match key {
+        "set-alias" | "new-alias" | "sal" | "nal" => unit.args.iter().any(|arg| match arg {
+            Arg::Known(word) => crate::powershell::names_location(word),
+            _ => true,
+        }),
+        "import-alias" | "ipal" => true,
+        _ => false,
     }
 }
 
@@ -2631,6 +3045,14 @@ const MAX_ELSEWHERE: usize = 8;
 /// person wrote to be read call by call, and it bounds what a call has to
 /// look through.
 const MAX_MOVING_FUNCTIONS: usize = 256;
+
+/// The most bodies kept apart for one function or alias name (see
+/// [`Split::body`]): a name defined again runs the last definition, or one of
+/// those before it when a later one may not have run. Each body a call may
+/// run is followed for the secrets it reads and sends, so the work a line
+/// can make stays bounded however often it defines one name; the ones before
+/// are kept together, as one range that holds them all.
+const MAX_BODIES: usize = 4;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:
@@ -2784,6 +3206,11 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // does not move the line that started it, and a function it defines is
     // not the line's. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
+    // Its location stacks are its own, and empty: a `Pop-Location` there
+    // does not take what the line saved.
+    if !here {
+        split.take_locations();
+    }
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
@@ -2915,14 +3342,71 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
-/// Whether `text` is a `/X`-style switch, not a path. A long path spelt with
-/// forward slashes (`//?/C:/x`) is a path: read as one, it can only be judged
-/// more strictly.
+/// Whether `text` is a `/X`-style switch, not a path: a slash and a switch
+/// name (`/q`, `/-y`, `/?`, `/mir`), or a run of short ones (`/s/q`), each
+/// with an optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). A name is
+/// letters, digits, `-`, `+` and `?`; in a run each is at most [`RUN_NAME`]
+/// characters, so `/evil/share/x` is a path with folders.
+///
+/// Anything else is a path, which can only be judged more strictly than a
+/// switch: a text that starts with two separators (`//server/share`,
+/// `//?/C:/x`, `/\server`), one core reads as a share or a device
+/// (`/dev/sda`), and one with a `\` or a `.` in it. So is a switch whose
+/// value starts with a drive or runs on into a path (`/x:C:/Windows`,
+/// `/x://evil/s`): its value is a path, and the argument is judged as one.
 pub(crate) fn is_switch(text: &str) -> bool {
-    text.starts_with('/')
-        && text.len() > 1
-        && !text[1..].contains(['\\', '.'])
-        && milo_guards_core::spelling::verbatim(text).is_none()
+    switch_names(text).is_some()
+}
+
+/// The names of the switches `text` is, in order (`/a:h/s/q` is `a`, `s` and
+/// `q`), when it is one by [`is_switch`]; `None` for a path.
+pub(crate) fn switch_names(text: &str) -> Option<Vec<&str>> {
+    use milo_guards_core::{spelling, Flavour};
+    let body = text.strip_prefix('/')?;
+    if body.is_empty()
+        || body.starts_with(['/', '\\'])
+        || text.contains(['\\', '.'])
+        || spelling::network(text, Flavour::Windows)
+        || spelling::device(text, Flavour::Windows).is_some()
+    {
+        return None;
+    }
+    let drive = |value: &str| {
+        let mut chars = value.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+    };
+    let parts: Vec<&str> = body.split('/').collect();
+    let run = parts.len() > 1;
+    parts
+        .into_iter()
+        .map(|part| {
+            let (name, value) = match part.split_once(':') {
+                Some((name, value)) => (name, Some(value)),
+                None => (part, None),
+            };
+            let named = !name.is_empty()
+                && (!run || name.chars().count() <= RUN_NAME)
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '+' | '?'));
+            (named && !value.is_some_and(drive)).then_some(name)
+        })
+        .collect()
+}
+
+/// The longest name of a switch written in a run of several (`/s/q`,
+/// `/mir/np`): a longer part makes the text a path with folders.
+const RUN_NAME: usize = 3;
+
+/// The value of a `/NAME:value` switch whose name is one of `names`, without
+/// case (`/LOG:C:\x.txt`, `/exclude:list.txt`): a value that is a path, which
+/// [`is_switch`] leaves to be judged as one.
+pub(crate) fn switch_value<'a>(text: &'a str, names: &[&str]) -> Option<&'a str> {
+    let (name, value) = text.strip_prefix('/')?.split_once(':')?;
+    names
+        .iter()
+        .any(|known| name.eq_ignore_ascii_case(known))
+        .then_some(value)
 }
 
 /// The arguments that are not `/X`-style switches.

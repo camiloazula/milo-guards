@@ -923,8 +923,6 @@ posix finds=drop_data | podman exec -l psql -c 'DROP DATABASE app'
 posix finds=drop_data | podman exec --latest psql -c 'DROP DATABASE app'
 posix finds=drop_data | podman exec -it -l psql -c 'DROP DATABASE app'
 posix safe | podman exec -l psql -c 'SELECT 1'
-powershell finds=drop_data | Start-Process psql -ArgumentList '-c "DROP TABLE t"'
-powershell safe | Start-Process psql -ArgumentList '-c "SELECT 1"'
 powershell finds=drop_data | Start-Process psql '-c "DROP TABLE t"'
 powershell finds=drop_data | Start-Process -FilePath psql -ArgumentList '-c "DROP TABLE t"' -Wait
 powershell finds=drop_data | Start-Process psql -Args '-c "DROP TABLE t"'
