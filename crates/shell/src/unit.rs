@@ -779,6 +779,13 @@ pub(crate) struct Split {
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
+    /// The units of each function body and alias the line defines, by name:
+    /// what a call of the name runs (see [`Split::bodies_of`]).
+    called_bodies: HashMap<String, Vec<Range<usize>>>,
+    /// The names among [`Split::called_bodies`] an `alias` defines, whose
+    /// call is its value followed by the call's words (see
+    /// [`Split::is_alias`]).
+    aliases: HashSet<String>,
     /// The functions whose body moves the line, or whose definition is
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
@@ -2016,6 +2023,43 @@ impl Split {
         }
     }
 
+    /// Note that `units` are the body of the function or alias `name`: a
+    /// call may run any body of its name the line defines. Past
+    /// [`MAX_BODIES`] for one name, the two first are kept as one range from
+    /// the start of the first to the end of the second, which holds both
+    /// and whatever the line runs between them.
+    pub(crate) fn body(&mut self, name: &str, units: Range<usize>) {
+        if units.is_empty() {
+            return;
+        }
+        let bodies = self.called_bodies.entry(name.to_string()).or_default();
+        if bodies.len() >= MAX_BODIES {
+            let first = bodies.remove(0);
+            if let Some(second) = bodies.first_mut() {
+                *second = first.start.min(second.start)..first.end.max(second.end);
+            }
+        }
+        bodies.push(units);
+    }
+
+    /// Note that `units` are the value of `alias name=…`: a call of `name`
+    /// runs it, with the call's words after its last command.
+    pub(crate) fn alias_body(&mut self, name: &str, units: Range<usize>) {
+        self.body(name, units);
+        self.aliases.insert(name.to_string());
+    }
+
+    /// Whether an `alias` on the line defines `name`.
+    pub(crate) fn is_alias(&self, name: &str) -> bool {
+        self.aliases.contains(name)
+    }
+
+    /// The units of the bodies a unit that runs the program `name` may run:
+    /// the functions and aliases of that name the line defines.
+    pub(crate) fn bodies_of(&self, name: &str) -> &[Range<usize>] {
+        self.called_bodies.get(name).map_or(&[], Vec::as_slice)
+    }
+
     /// Note that the definition which began at `defining` has been read. A
     /// call to a function whose body moves the line, or that calls one that
     /// does, or whose definition is redirected, starts in a folder the walk
@@ -2031,6 +2075,7 @@ impl Split {
             replaces,
             ..
         } = defining;
+        self.body(&name, first..self.units.len());
         // The walk moves its own line for every `cd` it reads, so a body
         // moves it as far as the walk is concerned unless a subshell or a
         // substitution gave the `cd` back. A `cd` in a pipeline stage, the
@@ -2992,6 +3037,14 @@ const MAX_ELSEWHERE: usize = 8;
 /// person wrote to be read call by call, and it bounds what a call has to
 /// look through.
 const MAX_MOVING_FUNCTIONS: usize = 256;
+
+/// The most bodies kept apart for one function or alias name (see
+/// [`Split::body`]): a name defined again runs the last definition, or one of
+/// those before it when a later one may not have run. Each body a call may
+/// run is followed for the secrets it reads and sends, so the work a line
+/// can make stays bounded however often it defines one name; the ones before
+/// are kept together, as one range that holds them all.
+const MAX_BODIES: usize = 4;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:

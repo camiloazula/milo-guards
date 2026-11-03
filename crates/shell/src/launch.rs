@@ -19,7 +19,8 @@ mod wrappers;
 use find::find_exec;
 pub(crate) use find::find_targets;
 pub(crate) use interpreters::{
-    after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,
+    SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
@@ -247,6 +248,16 @@ fn add_launched(
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
+                // `xargs -a FILE cmd`: the program's arguments are what the
+                // file holds, as if it were redirected onto its input.
+                if key == "xargs" {
+                    if let Some(file) =
+                        wrappers::arg_file(unit.args.get(..start).unwrap_or_default())
+                    {
+                        let at = split.units.len();
+                        split.redirect(at..at + 1, file, true);
+                    }
+                }
                 let own = unit.args.get(..start).unwrap_or_default();
                 split.environment += usize::from(sets_environment(&key, own));
                 split
@@ -324,7 +335,26 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
-                        unit::script_in(split, &text, shell, depth + 1, here);
+                        if key == "alias" {
+                            // Each `NAME=VALUE` is a body of its own.
+                            let definitions: Vec<(String, String)> = split
+                                .units
+                                .get(shell_at)
+                                .map(|alias| {
+                                    aliases(&alias.args)
+                                        .into_iter()
+                                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            for (name, value) in definitions {
+                                let first = split.units.len();
+                                unit::script_in(split, &value, shell, depth + 1, here);
+                                split.alias_body(&name, first..split.units.len());
+                            }
+                        } else {
+                            unit::script_in(split, &text, shell, depth + 1, here);
+                        }
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -415,6 +445,21 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// The name and value of each alias `alias NAME=VALUE…` defines: every word
+/// that holds one, after a `--` that ends the options.
+fn aliases(args: &[Arg]) -> Vec<(&str, &str)> {
+    let words = match args.split_first() {
+        Some((first, rest)) if first.known() == Some("--") => rest,
+        _ => args,
+    };
+    words
+        .iter()
+        .filter_map(Arg::known)
+        .filter_map(|word| word.split_once('='))
+        .filter(|(name, value)| !name.is_empty() && !name.starts_with('-') && !value.is_empty())
+        .collect()
 }
 
 /// Say what the options of the wrapper `key`, the arguments before the
@@ -622,6 +667,14 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "xargs" if posix => xargs(args),
+        // `alias f='cat .env'`: a call of `f` runs the value, read as a
+        // script where it is defined, as a function's body is; each
+        // `NAME=VALUE` is read apart where the script is.
+        "alias" if unit.shell == Shell::Posix => {
+            aliases(args).first().map_or(Launch::Itself, |(_, value)| {
+                Launch::Script(Shell::Posix, Arg::Known((*value).to_string()))
+            })
+        }
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
         // fish chains commands with `; and cmd`, `; or cmd` and `not cmd`;
