@@ -801,6 +801,9 @@ pub(crate) struct Split {
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
+    /// The aliases and functions a PowerShell line sets, which a command of
+    /// that name may run (see [`crate::powershell::Aliases`]).
+    pub(crate) aliases: crate::powershell::Aliases,
 }
 
 /// What the line does to `PWD`, read from the whole line.

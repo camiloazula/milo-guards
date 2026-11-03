@@ -217,3 +217,47 @@ fn a_line_at_the_length_limit_is_read_in_time() {
     }
     assert!(slowest.0 < LIMIT, "{:?} for {}", slowest.0, slowest.1);
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
+    let _serial = serial();
+    // Every command may run any of the targets the line sets its name to, so
+    // the readings are bounded, and past the bound the line is unreadable.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let paths = paths_for(Shell::PowerShell);
+    let fill = |head: String, unit: &str| {
+        let count = (64 * 1024 - head.len()) / unit.len();
+        format!("{head}{}", unit.repeat(count))
+    };
+    let mut many = String::new();
+    for at in 0..100 {
+        let at = at.to_string();
+        many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
+    }
+    for line in [
+        fill(many, "x ~; "),
+        fill("Set-Alias x Remove-Item; ".to_string(), "x b; "),
+    ] {
+        assert!(line.len() <= 64 * 1024);
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::PowerShell, &paths);
+        let _ = effect(&line, Shell::PowerShell, &paths);
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{took:?}");
+        assert!(
+            assessment
+                .findings()
+                .iter()
+                .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
+            "{assessment:?}"
+        );
+    }
+}

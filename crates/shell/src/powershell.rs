@@ -7,7 +7,11 @@ use std::ops::Range;
 
 use tree_sitter::Node;
 
+mod aliases;
 mod blocks;
+
+pub(crate) use aliases::Aliases;
+use aliases::{Set, Stands};
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
@@ -83,6 +87,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         holds: HashSet::new(),
     };
     walker.mark_listings(tree.root_node());
+    walker.define(tree.root_node());
     walker.walk(tree.root_node(), None, 0);
 }
 
@@ -161,6 +166,9 @@ pub(crate) fn canonical(name: &str) -> &str {
         "start" | "saps" => "start-process",
         "kill" | "spps" => "stop-process",
         "gps" | "ps" => "get-process",
+        "sal" => "set-alias",
+        "nal" => "new-alias",
+        "nmo" => "new-module",
         "icim" => "invoke-cimmethod",
         "iwmi" => "invoke-wmimethod",
         "%" | "foreach" => "foreach-object",
@@ -348,20 +356,22 @@ impl Walker<'_> {
             }
             "command" => {
                 let first = self.split.units.len();
-                let key = self.command(node, stage);
+                let keys = self.command(node, stage);
                 let own = first..self.split.units.len();
                 let outer = self.item;
                 // The block of `ForEach-Object` and `Where-Object` runs once
                 // for each item of its input.
-                let each = matches!(key.as_deref(), Some("foreach-object" | "where-object"));
+                let each = keys
+                    .iter()
+                    .any(|key| matches!(key.as_str(), "foreach-object" | "where-object"));
                 if each {
                     self.item = stage;
                     self.split.repeats += 1;
                 }
                 // The block of an event runs later, in this session.
-                let later = key
-                    .as_deref()
-                    .is_some_and(|key| EVENTS.contains(&key))
+                let later = keys
+                    .iter()
+                    .any(|key| EVENTS.contains(&key.as_str()))
                     .then(|| self.split.begin_later());
                 self.command_children(node, own.clone(), level);
                 if let Some(began) = later {
@@ -586,11 +596,88 @@ impl Walker<'_> {
         }
     }
 
-    /// The unit `node` runs; its key, for the walk to know a
-    /// `ForEach-Object` block.
-    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) -> Option<String> {
-        let name = node.child_by_field_name("command_name")?;
+    /// The units `node` runs: the program it names, and each command an
+    /// alias the line sets may make that name run instead (see
+    /// [`Self::readings`]). Their keys, for the walk to know a
+    /// `ForEach-Object` block or an event's.
+    fn command(&mut self, node: Node<'_>, stage: Option<Stage>) -> Vec<String> {
+        let Some(name) = node.child_by_field_name("command_name") else {
+            return Vec::new();
+        };
         let program = self.name(name);
+        let mut keys = Vec::new();
+        for (at, program) in self.readings(&program, node).into_iter().enumerate() {
+            // What an alias may run instead may not run at all: the name
+            // may still be its own program (the alias set in a branch, or
+            // refused, as a read-only built-in one is).
+            let instead = usize::from(at > 0);
+            self.split.branches += instead;
+            keys.extend(self.reading(node, stage, program, at == 0));
+            self.split.branches -= instead;
+        }
+        keys
+    }
+
+    /// The programs a command named `program` may run: the name itself
+    /// first, then each command the line sets it to stand for, by a key of
+    /// its own. A name the line sets to a command or a function body only
+    /// known when it runs makes the command unknown.
+    fn readings(&mut self, program: &Arg, node: Node<'_>) -> Vec<Arg> {
+        let mut readings = vec![program.clone()];
+        let Some(name) = program.known() else {
+            return readings;
+        };
+        if self.split.aliases.is_empty() || self.split.aliases.exhausted() {
+            return readings;
+        }
+        let resolved = self.split.aliases.resolve(name);
+        let text = unit::text(&node, self.source);
+        if resolved.unknown {
+            self.split.problem(
+                Rule::Unknown,
+                "runs an alias the line sets to a command only known when it runs",
+                Some(text),
+            );
+        }
+        if resolved.function {
+            self.split.problem(
+                Rule::Unknown,
+                "runs a function the line sets to a block only known when it runs",
+                Some(text),
+            );
+        }
+        let mut keys = vec![unit::key(name, Shell::PowerShell)];
+        for command in resolved.commands {
+            let key = unit::key(&command, Shell::PowerShell);
+            if keys.contains(&key) {
+                continue;
+            }
+            if let Some(first) = self.split.aliases.reading() {
+                if first {
+                    self.split.problem(
+                        Rule::Unreadable,
+                        "runs commands through more aliases than the guard reads",
+                        Some(text),
+                    );
+                }
+                break;
+            }
+            keys.push(key);
+            readings.push(Arg::Known(command));
+        }
+        readings
+    }
+
+    /// The unit `node` runs when its program is `program`; its key. `first`
+    /// is false for each reading after the first, which reads again only what
+    /// the program changes.
+    fn reading(
+        &mut self,
+        node: Node<'_>,
+        stage: Option<Stage>,
+        program: Arg,
+        first: bool,
+    ) -> Option<String> {
         let mut args = Vec::new();
         let mut shapes = Vec::new();
         // Whether an argument is a download, as `iex (iwr url)` runs one.
@@ -608,7 +695,7 @@ impl Walker<'_> {
                 // pipe is read again as the next command.
                 let source = unit::text(&element, self.source);
                 if source.starts_with("--%") {
-                    if let Some((_, rest)) = source.split_once('|') {
+                    if let Some((_, rest)) = source.split_once('|').filter(|_| first) {
                         unit::script(self.split, rest, Shell::PowerShell, self.depth + 1);
                     }
                     continue;
@@ -1028,6 +1115,123 @@ impl Walker<'_> {
         let name = self.name(name);
         name.known()
             .map(|program| unit::key(program, Shell::PowerShell))
+    }
+
+    /// Read the aliases and functions the line sets, before any of its
+    /// commands is judged (see [`Aliases`]): `Set-Alias`, `New-Alias`, `Set-Item
+    /// Alias:NAME`, `$alias:NAME = …`, and `$function:NAME = …` with a body
+    /// that is not a block written out. A name only known when it runs, and
+    /// a name the line may already have run as a command (a script this line
+    /// runs sets it), make the line unknown.
+    fn define(&mut self, root: Node<'_>) {
+        let mut found = Vec::new();
+        unit::for_each_node(root, |node| match node.kind() {
+            "command" => found.extend(self.alias_command(node)),
+            "assignment_expression" => found.extend(self.assigned_name(node)),
+            _ => {}
+        });
+        for (name, stands, text) in found {
+            let Some(name) = name else {
+                self.split.problem(
+                    Rule::Unknown,
+                    "sets an alias whose name is only known when it runs",
+                    Some(&text),
+                );
+                continue;
+            };
+            match self.split.aliases.set(&name, stands) {
+                Set::Noted => {
+                    // Only a script the line runs can set a name after a
+                    // command of that name was judged: that command may run
+                    // after it (in a function body, a loop, a trap).
+                    let judged = self.split.units.iter().any(|unit| {
+                        unit.shell == Shell::PowerShell
+                            && unit
+                                .program
+                                .known()
+                                .is_some_and(|program| program.eq_ignore_ascii_case(&name))
+                    });
+                    if judged {
+                        self.split.problem(
+                            Rule::Unknown,
+                            "sets an alias or function for a command the line may have run already",
+                            Some(&text),
+                        );
+                    }
+                }
+                Set::Over { first: true } => self.split.problem(
+                    Rule::Unknown,
+                    "sets more aliases and functions than the guard reads",
+                    Some(&text),
+                ),
+                Set::Again | Set::Over { first: false } => {}
+            }
+        }
+    }
+
+    /// The alias a command sets: `Set-Alias` and `New-Alias` (`sal`, `nal`),
+    /// and `Set-Item` (`si`) on a path of the `Alias:` drive. The name is
+    /// `None` when it is only known when it runs; the text is the command's.
+    fn alias_command(&self, node: Node<'_>) -> Option<(Option<String>, Stands, String)> {
+        let key = self.command_key(node)?;
+        let text = unit::text(&node, self.source).to_string();
+        let args = self.plain_args(node, Some(&key));
+        let splat = node
+            .child_by_field_name("command_elements")
+            .is_some_and(|elements| {
+                let mut cursor = elements.walk();
+                let any = elements
+                    .named_children(&mut cursor)
+                    .any(|element| is_splat(element, self.source));
+                any
+            });
+        let target = |value: Option<&Arg>| match value {
+            Some(Arg::Known(command)) => Stands::Command(command.clone()),
+            _ => Stands::Unknown,
+        };
+        match key.as_str() {
+            "set-alias" | "new-alias" => {
+                let params = Params::cmdlet(&args, &SET_ALIAS);
+                let (name, value) = by_position(&params, &["name"], &["value"]);
+                // A splat may hold the name, or the value, or both.
+                if splat && !(params.has(&["name"]) && params.has(&["value"])) {
+                    return Some((None, Stands::Unknown, text));
+                }
+                let name = name?;
+                Some((name.known().map(str::to_string), target(value), text))
+            }
+            "set-item" => {
+                let params = Params::cmdlet(&args, &SET_ITEM);
+                let (path, value) = by_position(&params, &["path", "literalpath"], &["value"]);
+                let name = alias_item(path?.known()?)?;
+                Some((Some(name), target(value), text))
+            }
+            _ => None,
+        }
+    }
+
+    /// The name an assignment sets: `$alias:x = 'Remove-Item'` an alias,
+    /// `$function:f = $b` a function whose body is only known when it runs
+    /// (a block written out is read where it stands, as the body it is).
+    fn assigned_name(&self, node: Node<'_>) -> Option<(Option<String>, Stands, String)> {
+        let left = node.named_child(0)?;
+        let value = node.child_by_field_name("value")?;
+        let left = unit::text(&left, self.source).trim().to_ascii_lowercase();
+        let name = left
+            .strip_prefix("${")
+            .and_then(|rest| rest.strip_suffix('}'))
+            .or_else(|| left.strip_prefix('$'))?;
+        let text = unit::text(&node, self.source).to_string();
+        if let Some(name) = name.strip_prefix("alias:") {
+            let stands = match self.expr(blocks::unwrap(value)) {
+                Arg::Known(command) => Stands::Command(command),
+                _ => Stands::Unknown,
+            };
+            return Some((Some(unscoped(name).to_string()), stands, text));
+        }
+        let name = name.strip_prefix("function:")?;
+        (!blocks::written(value))
+            .then(|| (Some(unscoped(name).to_string()), Stands::Function, text))
     }
 
     /// Mark every node that has a `Get-Process` below it. Each climb stops at
@@ -2012,6 +2216,80 @@ impl Param {
             .find(|param| param.name == typed || param.aliases.contains(&typed))
             .or_else(|| all().find(|param| param.starts_with(typed)))
     }
+}
+
+/// The parameters of `Set-Alias` and `New-Alias`, whose name and value are
+/// also taken by position, in that order.
+const SET_ALIAS: [Param; 9] = [
+    Param::value("name", &[]),
+    Param::value("value", &[]),
+    Param::value("description", &[]),
+    Param::value("option", &[]),
+    Param::value("scope", &[]),
+    Param::switch("passthru", &[]),
+    Param::switch("force", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Set-Item`, whose path and value are also taken by
+/// position, in that order.
+const SET_ITEM: [Param; 11] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("value", &[]),
+    Param::value("filter", &[]),
+    Param::value("include", &[]),
+    Param::value("exclude", &[]),
+    Param::value("credential", &[]),
+    Param::switch("force", &[]),
+    Param::switch("passthru", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The two parameters a cmdlet takes first and second by position (`Set-Alias
+/// NAME VALUE`), each given as the names that bind it (`-Path` or
+/// `-LiteralPath`), as PowerShell binds them: each named one takes its
+/// value, and the arguments no parameter takes fill the ones left, in order.
+fn by_position<'a>(
+    params: &Params<'a>,
+    first: &[&str],
+    second: &[&str],
+) -> (Option<&'a Arg>, Option<&'a Arg>) {
+    let mut free = params.positional.iter().copied();
+    let mut take = |fulls: &[&str]| {
+        if params.has(fulls) {
+            params
+                .named
+                .iter()
+                .find(|(name, _)| fulls.contains(&name.as_str()))
+                .and_then(|(_, value)| *value)
+        } else {
+            free.next()
+        }
+    };
+    let first = take(first);
+    (first, take(second))
+}
+
+/// The alias a path of the `Alias:` drive names (`Alias:x`, `alias:\x`), when
+/// it names one alias: not a wildcard, which may match any number of them.
+fn alias_item(path: &str) -> Option<String> {
+    let (drive, rest) = path.split_once(':')?;
+    if !drive.eq_ignore_ascii_case("alias") {
+        return None;
+    }
+    let name = rest.strip_prefix(['\\', '/']).unwrap_or(rest);
+    (!name.is_empty() && !name.contains(['*', '?', '[', '\\', '/'])).then(|| name.to_string())
+}
+
+/// A name without the scope in front of it (`global:f` is `f`).
+fn unscoped(name: &str) -> &str {
+    ["global:", "script:", "local:", "private:"]
+        .iter()
+        .find_map(|scope| name.strip_prefix(scope))
+        .unwrap_or(name)
 }
 
 /// The parameters every cmdlet takes.
