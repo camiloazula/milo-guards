@@ -806,9 +806,48 @@ posix finds=stop_system | f() { for ((;;)); do f & done; }; f
 posix finds=stop_system | f() { [ -d "$1" ] && { f "$1" & f "$1" & }; }; f .
 # A condition that reads nothing that changes is no condition.
 posix finds=stop_system | f() { [ -d x ] && f & }; f
+# A loop over a word known only when it runs, or over the arguments, runs a
+# call that does not pass its variable on as often as it gives names; a
+# `while` or `until` loop as often as its condition holds.
+posix finds=stop_system | f() { for i in $(seq 2); do f & done; }; f
+posix finds=stop_system | f() { for i in *; do f & done; }; f
+posix finds=stop_system | f() { for i in `seq 2`; do f & done; }; f
+posix finds=stop_system | f() { for i in $X; do f | cat; done; }; f
+posix finds=stop_system | f() { for i in "$@"; do f x x & done; }; f x
+posix finds=stop_system | f() { for i; do f & done; }; f a
+posix finds=stop_system | f() { for i in $(seq 2); do f; done & }; f
+posix finds=stop_system | f() { while [ -n "$HOME" ]; do f & done; }; f
+posix finds=stop_system | f() { until [ -n "$x" ]; do f & done; }; f
+posix finds=stop_system | f() { while [ -n "$1" ]; do f "$1" & shift; done; }; f a
+posix finds=stop_system | f() { select i in a; do f & done; }; f
+posix finds=stop_system | f() { for i in {a,b}; do [ -n "$1" ] && f "$1" | cat; done; }; f a
+posix finds=stop_system | f() { for d in "$1"/*; do for e in $(seq 2); do f "$d" & done; done; }; f .
+# Over the arguments, a call that passes two or more words on may pass more
+# each time.
+posix finds=stop_system | f() { for i in "$@"; do f "$i" "$i" & done; }; f x
+# `eval` reads its words as a line, behind `builtin`, `command` and `--`.
+posix finds=stop_system | f() { eval 'f|f'; }; f
+posix finds=stop_system | f() { eval "f &"; }; f
+posix finds=stop_system | f() { eval -- f & }; f
+posix finds=stop_system | f() { builtin eval f & }; f
+posix finds=stop_system | f() { command eval 'f & f'; }; f
+posix finds=stop_system | f() { eval 'echo $(f) $(f)'; }; f
+posix finds=stop_system | f() { eval "eval 'f & f'"; }; f
+posix finds=stop_system | f() { noglob f & }; f
+# A condition counts only when the call passes on a value known when it runs.
+posix finds=stop_system | f() { [ -n "$HOME" ] && f & }; f
+posix finds=stop_system | f() { [ -n "$1" ] || f & }; f
+posix finds=stop_system | f() { case $1 in *) f & ;; esac; }; f
+posix finds=stop_system | f() { if [ -n "$1" ]; then :; else f & fi; }; f
 # One copy under a condition that reads the arguments, or in a loop over
 # them, is a recursion that ends with them.
 posix safe | walk(){ for d in "$1"/*; do [ -d "$d" ] && walk "$d" | sort; done; }; walk .
+posix safe | walk(){ for d in "${1}"/*; do [ -d "$d" ] && walk "$d" | sort; done; }; walk .
+posix safe | walk(){ for d in "$1"/*; do eval 'walk "$d"' | sort; done; }; walk .
+posix safe | f() { for i in 'a{b'; do [ -n "$1" ] && f "${1#?}" | cat; done; }; f abc
+posix safe | f() { command f & }; f
+posix safe | f() { builtin f & }; f
+posix safe | f() { command -v f & }; f
 posix safe | f() { [ "$1" -gt 0 ] && f $(( $1 - 1 )) | cat; }; f 3
 posix safe | f() { if [ -n "$1" ]; then shift; f "$@" & fi; }; f a b
 posix safe | f() { case $1 in ?*) f "${1#?}" | cat ;; esac; }; f abc

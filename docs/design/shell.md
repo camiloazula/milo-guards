@@ -1023,23 +1023,44 @@ moved no line between safe and risky. Each item below says which rule it is:
   is read as `rm`), and for where each call stands. A call starts a process of
   its own in the background (`&`), as a stage of a pipeline, in a subshell, a
   command or process substitution (`cat <(f) <(f)`), or through `coproc`
-  (`coproc f`, `coproc { f; }`); `eval f` calls `f` as `f` does. Functions
-  that call each other in a cycle are one set (`f() { g & }; g() { f & }`),
-  and a function defined inside another is judged by its own name, its
-  commands not also read as the outer one's. A set is a bomb when one of its
-  calls starts a process and either one of its functions makes two or more
-  calls into the set (`f(){ g & g; }; g(){ f & f; }`), or a call in a loop
-  that may run it more than once (over two or more words or a brace list,
-  `while true`, `for ((;;))`), or none of its calls is guarded. A call is
-  guarded when it runs only on a condition that reads a value known when the
-  line runs (the left of `&&` or `||`, an `if`, `elif`, `while` or `case`
-  whose condition holds an expansion, a substitution or a wildcard), or in a
-  loop over one such word (`for d in "$1"/*`) or over the arguments: a single
-  self-call there is a recursion that ends with its data, so `walk(){ for d
-  in "$1"/*; do [ -d "$d" ] && walk "$d" | sort; done; }; walk .` is safe,
-  while `if true; then f & fi` and `[ -d x ] && f &`, whose conditions read
-  nothing that changes, are bombs. Calls that never start a process (`f() {
-  f; }`) recurse in one shell and are not bombs.
+  (`coproc f`, `coproc { f; }`). zsh's `noglob`, `nocorrect` and `-` come off
+  the call; `builtin` and `command` skip functions, so `command f` calls none.
+  `eval`, also behind `builtin`, `command` or `--`, has its words joined and
+  read as a line of its own with the grammar, each command in it at its own
+  place there (`eval 'f|f'`, `eval "f &"`) and the whole where the `eval`
+  stands; words only known when it runs are not read here, and the walk says
+  they are `unknown`. Functions that call each other in a cycle are one set
+  (`f() { g & }; g() { f & }`), and a function defined inside another is
+  judged by its own name, its commands not also read as the outer one's. A
+  set is a bomb when one of its calls starts a process and either one of its
+  functions makes two or more calls into the set (`f(){ g & g; }; g(){ f &
+  f; }`), or a call that may run more than once, or none of its calls is
+  guarded.
+  - A call may run more than once in a `while` or `until` loop whatever its
+    condition reads, in `select`, in `for ((…))`, and in a `for` over two or
+    more words or a brace list (`{1..3}`, `{a,b}`: the grammar's range, or a
+    bare `{`, `,` and `}` in one word, never a quoted one or `${…}`).
+  - A `for` over one word known only when the line runs (`"$1"/*`, `$(seq
+    2)`, `*`, `$X`) or over the arguments (`for x;`, `"$@"`) runs a call as
+    many times as that word gives names, unless the call passes the loop's
+    variable on (`walk "$d"`): then it is guarded, a recursion that ends with
+    its data. Over the arguments, a call that passes two or more words on is
+    many even so (`for i in "$@"; do f "$i" "$i" & done` doubles them each
+    time). In nested loops of this kind the call must pass on each loop's
+    variable.
+  - A call under a condition (the left of `&&` or `||`, an `if`, `elif` or
+    `case`) that reads a value known when the line runs (an expansion, a
+    substitution or a wildcard) is guarded when it passes on such a value
+    itself (`[ "$1" -gt 0 ] && f $(( $1 - 1 ))`). A condition that reads
+    nothing that changes (`if true; then f & fi`, `[ -d x ] && f &`), or a
+    call that passes nothing on (`[ -n "$HOME" ] && f &`), is no guard.
+  - So `walk(){ for d in "$1"/*; do [ -d "$d" ] && walk "$d" | sort; done; };
+    walk .` is safe, however `$1` is spelled. Calls that never start a process
+    (`f() { f; }`) recurse in one shell and are not bombs.
+  - Known limit: a guard is read from its shape, not from what it computes.
+    A call that passes a value on unchanged (`[ -n "$1" ] && f "$1" &`), or
+    a single copy in a loop over a word whose names never run out (a glob that
+    matches itself), is taken as a recursion that ends.
 
 `killall`'s and `pkill`'s options are read as they read them: bundled letters,
 `-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,

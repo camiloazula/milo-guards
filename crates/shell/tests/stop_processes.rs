@@ -107,6 +107,14 @@ fn the_fork_bomb_scan_reads_nested_functions_quickly() {
         nested("if true; then ", "fi; ", 390, 15_000),
         nested("while true; do ", "done; ", 390, 15_000),
         nested("( ", ") ", 390, 15_000),
+        // Loops over a word known when it runs, each call checked against
+        // the variable of each.
+        format!(
+            "f(){{ {}{}{} }}",
+            "for d in $x; do ".repeat(390),
+            "f \"$d\" & ".repeat(15_000),
+            "done; ".repeat(390)
+        ),
     ];
     let limits = lines
         .iter()
