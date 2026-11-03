@@ -606,6 +606,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         dir: None,
         elsewhere: Vec::new(),
         stayed: Vec::new(),
+        adrift: false,
         hidden: false,
         startup,
         repeated: false,

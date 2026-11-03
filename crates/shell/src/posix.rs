@@ -1008,6 +1008,8 @@ struct Walker<'a> {
 /// shell after the commands before it ran, so from where they left the line.
 struct Tail {
     here: OpensFrom,
+    /// Where the line is then, for a last command that does not move it.
+    now: OpensFrom,
     moved: usize,
     moves: usize,
     first: usize,
@@ -1503,21 +1505,23 @@ impl Walker<'_> {
             if !child.is_named() {
                 continue;
             }
+            // A `cd` on the right side runs only when the left let it: when
+            // it did not (`cd sub && cd sub2`), the line may still be where
+            // that side began, or where the list did.
+            let link = (at > 0).then(|| self.split.link_start());
             // A redirect on the whole list is opened before its last command
-            // runs, and after the ones before it did.
+            // runs, and after the ones before it did: after `&&`, where a
+            // plain `cd` before it that failed left the line is not one.
             if Some(child.id()) == last {
                 self.tail = Some(Tail {
                     here: self.split.opens_here(),
+                    now: self.split.opens_now(),
                     moved: self.split.moved_so_far(),
                     moves: self.split.moves_so_far(),
                     first: self.split.units.len(),
                 });
             }
-            // A `cd` on the right side runs only when the left let it: when
-            // it did not (`cd sub && cd sub2`), the line may still be where
-            // that side began, or where the list did.
-            if at > 0 {
-                let link = self.split.link_start();
+            if let Some(link) = link {
                 self.walk(child, stage, level + 1);
                 self.split.link_end(&list, link);
                 if let Some(exit) = exit.take() {
@@ -2657,6 +2661,7 @@ impl Walker<'_> {
                     // The last command of a list: after the earlier ones.
                     self.split.opens_before(
                         tail.here.clone(),
+                        tail.now.clone(),
                         tail.first..own.end,
                         tail.moved,
                         tail.moves,
@@ -2665,6 +2670,7 @@ impl Walker<'_> {
                 } else {
                     self.split.opens_before(
                         here.clone(),
+                        OpensFrom::Line,
                         own.clone(),
                         moved_before,
                         moves_before,

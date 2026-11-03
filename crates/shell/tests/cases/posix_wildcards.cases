@@ -24,7 +24,9 @@ posix finds=delete | rm -rf .[g]it
 posix safe | shopt -s dotglob; rm -rf build/*
 posix safe | shopt -s dotglob; rm -f *.o
 posix safe | shopt -s dotglob; rm -rf src/*git
-posix safe | shopt -s dotglob; cd src; rm -rf *git
+posix safe | shopt -s dotglob; cd src && rm -rf *git
+# A `cd` that may have failed leaves the line where `.git` is.
+posix finds=delete | shopt -s dotglob; cd src; rm -rf *git
 posix safe | shopt -s dotglob; rm -rf src/*/../*git
 posix safe | shopt -s dotglob; shopt -u dotglob && rm -rf *git
 posix safe | shopt -s nullglob; rm -rf *git
@@ -399,7 +401,8 @@ posix safe | rm -rf **/*git
 posix safe | rm -rf **/*.o
 # The history of a folder below the workspace is not the workspace's, with
 # `dotglob` as with the qualifier.
-posix safe | cd sub; rm -rf *git(D)
+posix safe | cd sub && rm -rf *git(D)
+posix finds=delete | cd sub; rm -rf *git(D)
 posix safe | rm -rf */*git(D)
 posix safe | ls *git(D)
 posix safe | cat *.md(D)

@@ -75,7 +75,7 @@ cmd@two_drives safe | cd c:\\Users\\me\\repo\\a & rd /s /q b
 cmd@two_drives safe | cd sub & del *.obj
 cmd@two_drives safe | cd sub\\deep & rd /s /q build
 cmd@two_drives safe | pushd D:\\ws\\a & rd /s /q b
-cmd@two_drives safe | D: & cd D:\\ws\\a & rd /s /q b
+cmd@two_drives safe | D: && cd D:\\ws\\a && rd /s /q b
 # A drive alone without `/d` shows its folder and moves nothing.
 cmd@two_drives safe | cd D: & del *.obj
 cmd@two_drives safe | cd C: & del *.obj
@@ -174,3 +174,56 @@ cmd@two_drives finds=delete | cd x %X% & del z
 cmd@two_drives finds=delete | cd %X% y & del z
 cmd@two_drives finds=delete | cd My Folder %X% & del *.obj
 cmd@two_drives finds=delete | cd My /d Folder & del z
+
+# A cd that may not run, may fail, or goes somewhere else leaves the line in
+# more than one folder: a later relative path is judged from each.
+# A `cd` that may not run: behind `||` or `&&`, in an `if` or a `case` arm,
+# a loop or a function.
+posix finds=delete | cd /etc; true || cd /home/me/work/repo; rm -rf passwd
+posix finds=delete | cd /etc; [ -d x ] && cd /home/me/work/repo; rm -rf ssh
+posix finds=delete | cd /etc; if [ -d x ]; then cd /home/me/work/repo; fi; rm -rf ssh
+posix finds=delete | cd /etc; case $x in a) cd /home/me/work/repo;; esac; rm -rf ssh
+posix finds=delete | cd /etc; while true; do cd /home/me/work/repo; done; rm -rf passwd
+posix finds=delete | cd /etc; f() { cd /home/me/work/repo; }; f; rm -rf passwd
+posix finds=delete | false && cd sub; rm -rf ../x
+posix finds=overwrite | cd /etc; true || cd /home/me/work/repo; echo x > passwd
+posix finds=read_secret | cd ~; true || cd /home/me/work/repo; cat < .ssh/id_rsa
+# A `cd` in a pipeline stage runs in a process of its own.
+posix finds=delete | cd sub | true; rm -rf ../x
+posix finds=delete | true | cd sub; rm -rf ../x
+# A plain `cd` may fail, to a folder that is not there, and the shell stays.
+posix finds=delete | cd /etc && cd /home/me/work/repo/nonexist; rm -rf ssh
+posix finds=delete | cd sub; rm -rf ../x
+posix finds=delete | cd /etc; cd /home/me/work/repo; rm -rf passwd
+posix finds=delete | cd /etc; cd ~/work/repo; rm -rf passwd
+# After `&&` the `cd` ran, and so it did before an `||` that ends the shell.
+posix safe | cd sub && rm -rf ../x
+posix safe | cd /etc && cd /home/me/work/repo && rm -rf passwd
+posix safe | cd /etc; cd /home/me/work/repo || exit; rm -rf passwd
+posix safe | cd sub || exit 1; rm -rf ../x
+# A `CDPATH` the line sets moves `cd` to a relative name somewhere else; a
+# name that starts with `.` or `..`, or an absolute one, is not looked up.
+posix finds=delete | CDPATH=/; cd etc; rm -rf passwd
+posix finds=delete | export CDPATH=~; cd .ssh; rm -rf id_rsa
+posix finds=delete | CDPATH=/ cd etc && rm -rf passwd
+posix finds=delete | CDPATH=/; pushd etc && rm -rf passwd
+posix safe | CDPATH=/; cd ./sub && rm -rf build
+posix safe | CDPATH=/; cd /home/me/work/repo/sub && rm -rf build
+# In cmd, a `cd` behind `||` may not run, and a plain one may fail; one in
+# a pipeline stage runs in a process of its own.
+cmd finds=delete | cd sub | ver & rd /s /q ..\\x
+cmd finds=delete | cd C:\\Windows & if exist x cd C:\\Users\\me\\dev\\repo & rd /s /q System32
+cmd finds=delete | cd C:\\Windows & ver || cd C:\\Users\\me\\dev\\repo & rd /s /q System32
+cmd finds=delete | cd C:\\Windows & cd C:\\Users\\me\\dev\\repo & rd /s /q System32
+cmd@two_drives finds=delete | D: & cd D:\\ws\\a & rd /s /q b
+cmd safe | cd C:\\Windows & cd C:\\Users\\me\\dev\\repo && rd /s /q System32
+# In PowerShell a `Set-Location` that fails leaves the line where it was too.
+powershell finds=delete | Set-Location C:\\Windows; Set-Location C:\\Users\\me\\dev\\repo; Remove-Item -Recurse System32
+powershell safe | Set-Location C:\\Windows; Set-Location C:\\Users\\me\\dev\\repo && Remove-Item -Recurse System32
+powershell finds=delete | Set-Location C:\\Windows; if ($x) { Set-Location C:\\Users\\me\\dev\\repo }; Remove-Item -Recurse System32
+# These stay safe.
+posix safe | cd sub && rm -rf build
+posix safe | cd src && make
+cmd safe | cd sub & del *.obj
+posix safe | mkdir -p out && cd out && rm -rf tmp
+posix safe | cd sub; rm -rf build

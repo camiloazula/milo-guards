@@ -1,6 +1,7 @@
 //! A command line split into units, one per program it runs, whichever
 //! grammar split it; and the helpers that read a unit's arguments.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -118,6 +119,10 @@ pub(crate) struct Unit {
     /// (see [`Split::stayed`]): a script it runs may be the file of that
     /// name in any of them.
     pub(crate) stayed: Vec<Option<Arg>>,
+    /// Whether the plain `cd`s before it that may have failed left the line
+    /// in more folders than the guard follows (see [`Split::adrift`]): it
+    /// may then be in a folder only known when it runs.
+    pub(crate) adrift: bool,
     /// Whether an earlier unit in the line turned on a shell option that
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
@@ -234,6 +239,7 @@ impl Unit {
             dir: None,
             elsewhere: Vec::new(),
             stayed: Vec::new(),
+            adrift: false,
             hidden: false,
             startup: Rc::default(),
             repeated: false,
@@ -251,6 +257,34 @@ impl Unit {
         Scope {
             dir: self.dir.as_ref(),
             hidden: self.hidden,
+        }
+    }
+
+    /// Every other folder the line may be in when this unit runs, besides
+    /// [`Self::dir`], each once: where a `cd` before it that may not have run
+    /// ([`Self::elsewhere`]) or may have failed ([`Self::stayed`]) left the
+    /// line, and a folder only known when it runs past the most the guard
+    /// follows. Its paths are judged from each of them too.
+    pub(crate) fn others(&self) -> Vec<Option<Arg>> {
+        others(
+            self.dir.as_ref(),
+            &self.elsewhere,
+            &self.stayed,
+            self.adrift,
+        )
+    }
+
+    /// This unit as it runs with the line in `dir`, one of
+    /// [`Self::others`]: judged from there alone, so a run of a file the
+    /// line wrote, which is judged from every folder already, is not read
+    /// again.
+    pub(crate) fn in_folder(&self, dir: Option<Arg>) -> Self {
+        Self {
+            dir,
+            elsewhere: Vec::new(),
+            stayed: Vec::new(),
+            adrift: false,
+            ..self.clone()
         }
     }
 
@@ -412,6 +446,12 @@ pub(crate) struct Write {
     pub(crate) dir: Option<Arg>,
     /// As [`Unit::hidden`].
     pub(crate) hidden: bool,
+    /// Whether `dir` is one of the other folders the line may be in (see
+    /// [`Unit::others`]), not where the walk has it: the write is judged
+    /// from there, but a later run of a file the line wrote has its own
+    /// reading of those folders, so it is not counted among the files
+    /// written.
+    pub(crate) also: bool,
 }
 
 impl Write {
@@ -467,19 +507,52 @@ pub(crate) enum OpensFrom {
     /// Where the line is when the redirect is read.
     #[default]
     Line,
-    /// The folder a unit starts in (as [`Unit::dir`]; `None`: where the
-    /// line began).
-    Start(Option<Arg>),
-    /// The folder a unit starts in, and also where the line is when the
-    /// redirect is read (where the unit goes): the folder the unit starts in
-    /// is not certain, because its body runs more than once or an earlier
-    /// `cd` may not have moved the line, so either may be the one.
-    Both(Option<Arg>),
+    /// The folder a unit starts in, with the others the line may be in then
+    /// (see [`Start`]).
+    Start(Box<Start>),
+    /// The folder a unit starts in, with the others the line may be in then,
+    /// and also where the line is when the redirect is read (where the unit
+    /// goes): the folder the unit starts in is not certain, because its body
+    /// runs more than once or an earlier `cd` may not have moved the line,
+    /// so either may be the one.
+    Both(Box<Start>),
     /// Any of these folders, and also where the line is when the redirect is
     /// read: a call to a function whose body moves the line starts in the
     /// folder the line is in when it is called, which is not known; the
     /// folders it was defined in are the ones the walk can name.
     Among(Vec<Option<Arg>>),
+}
+
+/// The folder a unit starts in, as [`OpensFrom`] names it. Kept behind a
+/// box, so an [`OpensFrom`], which the walk holds at every level it
+/// recurses through, stays small.
+#[derive(Debug, Clone)]
+pub(crate) struct Start {
+    /// As [`Unit::dir`]; `None`: where the line began.
+    dir: Option<Arg>,
+    /// The other folders the line may be in then (as [`Unit::others`]).
+    others: Vec<Option<Arg>>,
+    /// Whether a `cd` that may not have run is among what left it there
+    /// (see [`Split::unsure_writes`]).
+    unsure: bool,
+}
+
+impl OpensFrom {
+    fn start(dir: Option<Arg>, others: Vec<Option<Arg>>, unsure: bool) -> Self {
+        Self::Start(Box::new(Start {
+            dir,
+            others,
+            unsure,
+        }))
+    }
+
+    fn both(dir: Option<Arg>, others: Vec<Option<Arg>>) -> Self {
+        Self::Both(Box::new(Start {
+            dir,
+            others,
+            unsure: true,
+        }))
+    }
 }
 
 /// A redirect of a file onto the units of a statement: `cmd < f`, `cmd > f`.
@@ -672,28 +745,38 @@ pub(crate) struct Split {
     /// body, in a pipeline stage or behind a wrapper, but not in an `if
     /// true` body), each moved on by every `cd` read since (a list of `&&`
     /// keeps the folders it may have stopped in until it ends, see
-    /// [`Chain::stops`]). Only a run of a
-    /// file is judged from them (see [`Unit::elsewhere`]): a file written
+    /// [`Chain::stops`]). A later command's paths and redirects are judged
+    /// from each of them as well (see [`Unit::others`]), and a run of a file
+    /// the line wrote from each (see [`Unit::elsewhere`]): a file written
     /// before such a `cd` and run after it may be the one the line runs. At
     /// most [`MAX_ELSEWHERE`]; past that, one folder only known when it
     /// runs.
     elsewhere: Vec<Option<Arg>>,
     /// The folders the line is still in when a plain `cd` failed: one that
     /// is not in a branch, a loop, a function body, a pipeline stage or
-    /// behind a wrapper (those are [`Self::elsewhere`]'s), read after the
-    /// line wrote a file. A `cd` to a folder that is not there prints an
-    /// error and the shell (POSIX, cmd, PowerShell) runs the next command
-    /// where it was, so a file written before it and run after it may be the
-    /// one the line runs. Only that
-    /// judgement reads these (see [`Unit::stayed`]): where paths are placed,
-    /// redirects and every other check take the `cd` as run. Each is moved on
-    /// by every `cd` read since; a command on the right side of `&&` after
-    /// the `cd` runs only when it ran, so the list keeps them until it ends
-    /// (see [`Chain::stayed`]). A `cd` that only steps up (`cd ..`) goes back
+    /// behind a wrapper (those are [`Self::elsewhere`]'s). A `cd` to a
+    /// folder that is not there prints an error and the shell (POSIX, cmd,
+    /// PowerShell) runs the next command where it was, so a later command's
+    /// paths and redirects are judged from each of these as well (see
+    /// [`Unit::others`]), and a file written before it and run after it may
+    /// be the one the line runs (see [`Unit::stayed`]). Each is moved on by
+    /// every `cd` read since; a command on the right side of `&&` after the
+    /// `cd` runs only when it ran, so the list keeps them until it ends (see
+    /// [`Chain::stayed`]). A `cd` that only steps up (`cd ..`) goes back
     /// through a folder the line came through and is taken as run. At most
     /// [`MAX_ELSEWHERE`]; past that, each file written so far is judged by
-    /// its name (see [`Self::written_by_name`]) and none are kept.
+    /// its name (see [`Self::written_by_name`]), none are kept, and the line
+    /// is [`Self::adrift`].
     stayed: Vec<Option<Arg>>,
+    /// The shell of the last unit the walk added, whose spelling of a folder
+    /// [`Self::distinct`] folds; `None` before the first.
+    fold_shell: Option<Shell>,
+    /// Whether the folders a plain `cd` that failed may have left the line
+    /// in were once more than [`MAX_ELSEWHERE`]: from then on a later
+    /// command's paths are also judged from a folder only known when it
+    /// runs (see [`Unit::others`]), which stands for every folder such a
+    /// `cd` may leave the line in, so none is kept (see [`Self::set_stayed`]).
+    adrift: bool,
     /// How many of `writes`, and of `units`, have been judged by their name
     /// when the folders in [`Self::stayed`] were too many.
     named_writes: usize,
@@ -701,10 +784,6 @@ pub(crate) struct Split {
     /// The folders the last unit added to [`Self::stayed`], when it is a
     /// plain `cd`: the right side of `&&` after it runs only when it ran.
     last_stayed: Vec<Option<Arg>>,
-    /// Whether the line has written a file so far: a redirect, or a command
-    /// that writes one. Before that, a plain `cd` that failed leaves no file
-    /// written where the line stayed.
-    wrote: bool,
     /// The folders PowerShell's `Push-Location` saved (see [`Locations`]).
     locations: Locations,
     /// How many times the line has saved or taken a folder of a location
@@ -1216,9 +1295,11 @@ impl Split {
 
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
+        self.fold_shell = Some(unit.shell);
         unit.dir.clone_from(&self.dir);
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
+        unit.adrift = self.adrift;
         unit.tf_cli_args.clone_from(&self.tf_cli_args);
         self.last_stayed.clear();
         unit.hidden = self.hidden();
@@ -1289,6 +1370,9 @@ impl Split {
             }
             moved = moved.and_then(|target| self.cmd_target(&unit, target));
         }
+        if unit.shell == Shell::Posix && self.reassigned("CDPATH") {
+            moved = moved.map(|target| by_cdpath(&unit, target));
+        }
         // A `Pop-Location` the line is certain to run, of a folder the line
         // saved, goes back to it.
         let back = if unit.shell == Shell::PowerShell {
@@ -1334,7 +1418,7 @@ impl Split {
             let mut added = Vec::new();
             if unsure {
                 stayed.extend(self.stayed.iter().cloned());
-            } else if self.wrote && !steps_up(&target, unit.shell) {
+            } else if !steps_up(&target, unit.shell) {
                 added = std::iter::once(self.dir.clone())
                     .chain(self.elsewhere.iter().cloned())
                     .chain(self.stayed.iter().cloned())
@@ -1361,7 +1445,6 @@ impl Split {
             added.retain(|folder| self.stayed.contains(folder));
             self.last_stayed = added;
         }
-        self.wrote = self.wrote || !crate::detect::written_by(&unit).is_empty();
         self.units.push(unit);
     }
 
@@ -1527,12 +1610,7 @@ impl Split {
     /// [`Self::elsewhere`]), once each and not where the walk has it; more
     /// than [`MAX_ELSEWHERE`] is one folder only known when it runs.
     fn set_elsewhere(&mut self, folders: Vec<Option<Arg>>) {
-        let mut kept: Vec<Option<Arg>> = Vec::new();
-        for folder in folders {
-            if folder != self.dir && !kept.contains(&folder) {
-                kept.push(folder);
-            }
-        }
+        let mut kept = self.distinct(folders);
         if kept.len() > MAX_ELSEWHERE {
             kept = vec![Some(Arg::Unknown(
                 "where a cd that may not have run left the line".to_string(),
@@ -1541,19 +1619,46 @@ impl Split {
         self.elsewhere = kept;
     }
 
+    /// Each of `folders` once, and not where the walk has the line: two
+    /// spellings of a folder whose `..` fold to the same one are one folder,
+    /// as a `cd` folds them (`a/..` is where `a` is), unless a `cd` may have
+    /// followed a link physically (see [`Self::moved_to`]).
+    fn distinct(&self, folders: Vec<Option<Arg>>) -> Vec<Option<Arg>> {
+        let folds = self
+            .fold_shell
+            .filter(|shell| *shell != Shell::Posix || !(self.pwd.physical || self.pwd.climbed));
+        let here = folder_key(self.dir.as_ref(), folds);
+        let keys: Vec<_> = folders
+            .iter()
+            .map(|folder| folder_key(folder.as_ref(), folds))
+            .collect();
+        let mut keep = vec![false; keys.len()];
+        for (at, folded) in keys.iter().enumerate() {
+            let seen = keys
+                .iter()
+                .zip(&keep)
+                .take(at)
+                .any(|(earlier, kept)| *kept && earlier == folded);
+            keep[at] = *folded != here && !seen;
+        }
+        folders
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(folder, kept)| kept.then_some(folder))
+            .collect()
+    }
+
     /// Say a plain `cd` that failed may have left the line in each of
     /// `folders` (see [`Self::stayed`]), once each and not where the walk has
     /// it; past [`MAX_ELSEWHERE`], the files written so far are judged by
-    /// their name instead (see [`Self::written_by_name`]).
+    /// their name instead (see [`Self::written_by_name`]), and the line is
+    /// [`Self::adrift`]. Once it is, it may be anywhere already: no folder is
+    /// kept, and the files written since are judged by their name too.
     fn set_stayed(&mut self, folders: Vec<Option<Arg>>) {
-        let mut kept: Vec<Option<Arg>> = Vec::new();
-        for folder in folders {
-            if folder != self.dir && !kept.contains(&folder) {
-                kept.push(folder);
-            }
-        }
-        if kept.len() > MAX_ELSEWHERE {
+        let mut kept = self.distinct(folders);
+        if self.adrift || kept.len() > MAX_ELSEWHERE {
             self.written_by_name();
+            self.adrift = true;
             kept.clear();
         }
         self.stayed = kept;
@@ -1565,8 +1670,14 @@ impl Split {
     /// so a later run of a script of that name, from any folder, may be it,
     /// and a run of another name stays what it was.
     fn written_by_name(&mut self) {
+        // A write placed from one of the other folders the line may be in
+        // is not one of the files written (see [`Write::also`]).
         let redirects = self.writes.get(self.named_writes..).unwrap_or_default();
-        let mut named: Vec<Write> = redirects.to_vec();
+        let mut named: Vec<Write> = redirects
+            .iter()
+            .filter(|write| !write.also)
+            .cloned()
+            .collect();
         for unit in self.units.get(self.named_units..).unwrap_or_default() {
             named.extend(
                 crate::detect::written_by(unit)
@@ -1576,6 +1687,7 @@ impl Split {
                         target,
                         dir: unit.dir.clone(),
                         hidden: unit.hidden,
+                        also: false,
                     }),
             );
         }
@@ -1795,8 +1907,10 @@ impl Split {
 
     /// Where the redirects on a group, a loop or a branch whose body is
     /// `units` open their files from, before any of it runs: `start` (see
-    /// [`Self::opens_here`]) when the body moves the line, and the folder a
-    /// function it calls was defined in when that moves the line.
+    /// [`Self::opens_here`]) when the body moves the line, `stays` when it
+    /// does not (where the line is when the redirect is read, or, for the
+    /// last command of a list, [`Self::opens_now`] before it), and the
+    /// folder a function it calls was defined in when that moves the line.
     /// `moved_before` is how many `cd`s had been read when the statement
     /// began, and `moves_before` how many this shell had run: the body moves
     /// the line only if it ran one that a subshell did not give back.
@@ -1807,6 +1921,7 @@ impl Split {
     pub(crate) fn opens_before(
         &mut self,
         start: OpensFrom,
+        stays: OpensFrom,
         units: Range<usize>,
         moved_before: usize,
         moves_before: usize,
@@ -1819,11 +1934,15 @@ impl Split {
             Vec::new()
         };
         if dirs.is_empty() {
-            return if moved { start } else { OpensFrom::Line };
+            return if moved { start } else { stays };
         }
         if moved {
             match start {
-                OpensFrom::Start(dir) | OpensFrom::Both(dir) => dirs.push(dir),
+                OpensFrom::Start(start) | OpensFrom::Both(start) => {
+                    let Start { dir, others, .. } = *start;
+                    dirs.push(dir);
+                    dirs.extend(others);
+                }
                 OpensFrom::Among(more) => dirs.extend(more),
                 OpensFrom::Line => {}
             }
@@ -1864,17 +1983,36 @@ impl Split {
             } else {
                 Vec::new()
             };
-            return if starts.is_empty() {
-                OpensFrom::Line
-            } else {
-                OpensFrom::Among(starts)
-            };
+            if !starts.is_empty() {
+                return OpensFrom::Among(starts);
+            }
+            // Where the first of them started, with the other folders the
+            // line may have been in then: the last command of a list after
+            // `&&` runs only when a plain `cd` before it did not fail, which
+            // the line, once the list has ended, no longer says.
+            return self.units.get(key.0).filter(|_| key.0 < key.1).map_or(
+                OpensFrom::Line,
+                |unit| {
+                    OpensFrom::start(unit.dir.clone(), unit.others(), !unit.elsewhere.is_empty())
+                },
+            );
         };
         if self.unsure_starts.contains(&index) {
-            OpensFrom::Both(unit.dir.clone())
+            OpensFrom::both(unit.dir.clone(), unit.others())
         } else {
-            OpensFrom::Start(unit.dir.clone())
+            OpensFrom::start(unit.dir.clone(), unit.others(), false)
         }
+    }
+
+    /// The other folders the line may be in now, besides where the walk has
+    /// it, as [`Unit::others`] says them for a unit added now.
+    fn others(&self) -> Vec<Option<Arg>> {
+        others(
+            self.dir.as_ref(),
+            &self.elsewhere,
+            &self.stayed,
+            self.adrift,
+        )
     }
 
     /// Every folder the line may be in now: where the walk has it, then the
@@ -2057,18 +2195,42 @@ impl Split {
     }
 
     /// The folders a redirect read now opens its file from: one, or two when
-    /// it is not certain where the unit it is on starts.
-    fn redirect_dirs(&self) -> Vec<Option<Arg>> {
-        match &self.opens_from {
-            OpensFrom::Line => vec![self.dir.clone()],
-            OpensFrom::Start(dir) => vec![dir.clone()],
-            OpensFrom::Both(dir) => vec![dir.clone(), self.dir.clone()],
-            OpensFrom::Among(dirs) => dirs
-                .iter()
-                .cloned()
-                .chain(std::iter::once(self.dir.clone()))
-                .collect(),
+    /// it is not certain where the unit it is on starts, each with whether
+    /// it is one of the other folders the line may be in then (see
+    /// [`Unit::others`]), after those.
+    fn redirect_dirs(&self) -> Vec<(Option<Arg>, bool)> {
+        let (dirs, also) = match &self.opens_from {
+            OpensFrom::Line => (vec![self.dir.clone()], self.others()),
+            OpensFrom::Start(start) => (vec![start.dir.clone()], start.others.clone()),
+            OpensFrom::Both(start) => (
+                vec![start.dir.clone(), self.dir.clone()],
+                start.others.clone(),
+            ),
+            OpensFrom::Among(dirs) => (
+                dirs.iter()
+                    .cloned()
+                    .chain(std::iter::once(self.dir.clone()))
+                    .collect(),
+                Vec::new(),
+            ),
+        };
+        let mut placed: Vec<(Option<Arg>, bool)> =
+            dirs.into_iter().map(|dir| (dir, false)).collect();
+        for dir in also {
+            if !placed.iter().any(|(known, _)| *known == dir) {
+                placed.push((dir, true));
+            }
         }
+        placed
+    }
+
+    /// Where the line is now, with the other folders it may be in (see
+    /// [`Unit::others`]): where a redirect on the last command of a list
+    /// opens when that command does not move the line. The list itself may
+    /// have stopped elsewhere, or a plain `cd` before `&&` failed, but then
+    /// its last command does not run.
+    pub(crate) fn opens_now(&self) -> OpensFrom {
+        OpensFrom::start(self.dir.clone(), self.others(), !self.elsewhere.is_empty())
     }
 
     /// Where a redirect on a group, a loop or a branch that begins now opens
@@ -2082,9 +2244,9 @@ impl Split {
             // it began.
             OpensFrom::Among(vec![self.dir.clone(), None])
         } else if self.repeats > 0 {
-            OpensFrom::Both(self.dir.clone())
+            OpensFrom::both(self.dir.clone(), self.others())
         } else {
-            OpensFrom::Start(self.dir.clone())
+            OpensFrom::start(self.dir.clone(), self.others(), false)
         }
     }
 
@@ -2268,9 +2430,8 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to, or from
     /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
-        self.wrote = true;
         let hidden = self.hidden();
-        for dir in self.redirect_dirs() {
+        for (dir, also) in self.redirect_dirs() {
             if self.bodies > 0 {
                 self.write_in_body.push(self.writes.len());
             }
@@ -2279,6 +2440,7 @@ impl Split {
                 target: target.clone(),
                 dir,
                 hidden,
+                also,
             });
         }
         // Whether the line may be in more than one folder where the redirect
@@ -2287,8 +2449,8 @@ impl Split {
         // certain.
         let unsure = match &self.opens_from {
             OpensFrom::Line => !self.elsewhere.is_empty(),
-            OpensFrom::Start(_) => false,
-            OpensFrom::Both(_) | OpensFrom::Among(_) => true,
+            OpensFrom::Start(start) => start.unsure,
+            OpensFrom::Both(..) | OpensFrom::Among(_) => true,
         };
         if unsure {
             self.unsure_writes.push(Write {
@@ -2296,6 +2458,7 @@ impl Split {
                 target,
                 dir: self.dir.clone(),
                 hidden,
+                also: false,
             });
         }
     }
@@ -2315,7 +2478,7 @@ impl Split {
     /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
         let hidden = self.hidden();
-        for dir in self.redirect_dirs() {
+        for (dir, _) in self.redirect_dirs() {
             if self.bodies > 0 {
                 self.read_in_body.push(self.reads.len());
             }
@@ -2888,6 +3051,61 @@ fn cmd_drive_switch(unit: &Unit) -> Option<char> {
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     (chars.next().is_none() && unit.args.first().and_then(Arg::known) == Some(":"))
         .then_some(letter)
+}
+
+/// The folders in `elsewhere` and `stayed` that are not `dir`, each once,
+/// and a folder only known when it runs when the line is `adrift` (see
+/// [`Unit::others`]).
+fn others(
+    dir: Option<&Arg>,
+    elsewhere: &[Option<Arg>],
+    stayed: &[Option<Arg>],
+    adrift: bool,
+) -> Vec<Option<Arg>> {
+    let lost = adrift.then(|| {
+        Some(Arg::Unknown(
+            "where a cd that may have failed left the line".to_string(),
+        ))
+    });
+    let mut folders: Vec<Option<Arg>> = Vec::new();
+    for folder in elsewhere.iter().chain(stayed).cloned().chain(lost) {
+        if folder.as_ref() != dir && !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
+/// The folder `folder` names, with the `..` a `cd` folds folded under the
+/// rules of `folds`, the shell whose spelling it is (`None`: not folded), so
+/// two spellings of one folder compare equal; `None` is where the line began.
+fn folder_key(folder: Option<&Arg>, folds: Option<Shell>) -> Option<Cow<'_, Arg>> {
+    match (folder, folds) {
+        (Some(Arg::Known(text)), Some(shell)) if text.contains("..") => {
+            match fold_dots(text, shell) {
+                Some(folded) if matches!(folded.as_str(), "" | ".") => None,
+                Some(folded) => Some(Cow::Owned(Arg::Known(folded))),
+                None => folder.map(Cow::Borrowed),
+            }
+        }
+        _ => folder.map(Cow::Borrowed),
+    }
+}
+
+/// Where a POSIX `cd` or `pushd` to `target` goes when the line sets
+/// `CDPATH`: a relative name that does not start with `.` or `..` is looked
+/// up in each folder `CDPATH` names before the working folder, so it goes to
+/// a place only known when it runs.
+fn by_cdpath(unit: &Unit, target: Arg) -> Arg {
+    let searched = matches!(unit.key().as_deref(), Some("cd" | "chdir" | "pushd"))
+        && target.known().is_some_and(|text| {
+            let first = text.split('/').next().unwrap_or_default();
+            !text.is_empty() && !matches!(first, "" | "." | "..") && !text.starts_with('~')
+        });
+    match target {
+        Arg::Known(text) if searched => Arg::Unknown(text),
+        other => other,
+    }
 }
 
 /// Whether a `cd` to `target` only steps up (`..`, `../..`) or stays (`.`):

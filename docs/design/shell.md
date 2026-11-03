@@ -456,6 +456,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
+| Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept (a write or a delete of a relative path there is risky, as after `cd "$x"`), and a run of a file the line wrote is judged by the file's name |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -816,6 +817,46 @@ A script a program runs in a folder of its own choosing, which the line does
 not say (`git submodule foreach` runs its command in each submodule), is read
 as after a `cd` to an unknown place, and the rest of the line is read from
 where it was.
+
+A `cd` that may not run, or may fail, leaves the line in more than one folder,
+and a later relative path, a redirect and a reach are judged from each of them,
+so the line is as risky as the worst of them. A `cd` may not run behind `&&`
+or `||`, in a branch of an `if` or a `case`, in a loop or a function body,
+behind a wrapper, or in a pipeline stage (a POSIX shell or cmd runs a stage
+in a process of its own, so the line stays where it was): `cd /etc; true ||
+cd /home/me/work/repo; rm -rf passwd`, `cd /etc; [ -d x ] && cd
+/home/me/work/repo; rm -rf ssh`, `false && cd sub; rm -rf ../x` and `cd sub |
+true; rm -rf ../x` are each a `delete` beyond the workspace. A plain `cd` (or
+`pushd`, `Set-Location`, cmd's `cd`) to a folder that is not there prints an
+error and the shell runs the next command where the line was, so it may leave
+the line there too, unless it only steps up (`cd ..`, which goes back through
+a folder the shell came through): `cd /etc && cd /home/me/work/repo/nonexist;
+rm -rf ssh` and `cd sub; rm -rf ../x` are a `delete`, and so is cmd's `cd
+C:\Windows & ver || cd C:\Users\me\dev\repo & rd /s /q System32`. A
+command on the right side of `&&` runs only when the `cd` before it ran, so it
+is judged from where the `cd` went alone: `cd sub && rm -rf ../x`, `cd sub &&
+rm -rf build`, `cd src && make` and `mkdir -p out && cd out && rm -rf tmp`
+stay safe, and so does `cd sub; rm -rf build` and cmd's `cd sub & del *.obj`,
+which are inside the workspace from either folder. A redirect on the last
+command of a list of `&&` is placed the same way (`cd sub && cat <
+../../.ssh/id_rsa` is safe). So is the rest of a line after a `cd` before an
+`||` whose right side ends the shell (`cd sub || exit 1; rm -rf ../x` is safe;
+which right sides end it is in "A script a line writes and then runs" below).
+Each later `cd` moves every one of those folders on, so `cd src; cd ..; ls`
+may list the folder above the workspace. Past eight folders, the line is also
+in a folder only known when it runs, and every relative path after it is
+unknown. A redirect is judged once for each folder it may be opened from,
+however many units after a `cd` the folder stays one of them, so a line that
+repeats a `cd` takes time that grows with its length. What a run of a file the
+line wrote is judged from is in "A script a line writes and then runs" below.
+
+When the line sets `CDPATH` (an assignment, `export`, one in front of the
+`cd`, wherever it is in the line), a POSIX `cd` or `pushd` to a relative name
+that does not start with `.` or `..` looks it up in each folder `CDPATH` names
+first, so it goes to a place only known when it runs: `CDPATH=/; cd etc; rm
+-rf passwd` and `export CDPATH=~; cd .ssh; rm -rf id_rsa` are a `delete` of a
+path only known when it runs, while `CDPATH=/; cd ./sub && rm -rf build` stays
+safe.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
@@ -845,7 +886,9 @@ count of `cd`s are taken just before that last command, not before the list,
 and the redirect is on that last command only (the key above is read from
 `~`, and a `send_secret` pipe after it finds it). A `cd` before it that may not
 have run (after `||`, or the right side of `&&` or `||`) makes the folder
-uncertain, as for a `cd` above. A pipeline's last stage starts where the
+uncertain, as for a `cd` above, while a plain `cd` that may have failed does
+not when the last command is after the `&&` that follows it: that command
+then does not run. A pipeline's last stage starts where the
 pipeline starts (`cd ~ | { cat; } < .ssh/id_rsa` opens it from the folder the
 line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
 l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
@@ -865,11 +908,12 @@ script a line writes and then runs" below). `if
 false; then cd sub; else echo x; fi > x.sh; bash x.sh`, `{ echo x; false && cd
 sub; } > x.sh; bash x.sh` and `for i in $l; do cd sub; echo x; done > x.sh; bash
 x.sh` may run the `x.sh` they wrote, when the `cd` did not run, so they are
-`unknown`, as the same `cd` at the top level is; but `{
-cd sub; echo x; } > x.sh; bash x.sh` surely runs `sub/x.sh` and `if true; then cd
-sub; fi > x.sh; bash x.sh` keeps its verdict: an `if` whose condition is `true`
-or `:` alone, with no `elif` or `else`, runs its body, so a `cd` in it is not
-one that may not have run (unless a function of that name is defined, or the
+`unknown`, as the same `cd` at the top level is; so are `{ cd sub; echo x; } >
+x.sh; bash x.sh` and `if true; then cd sub; fi > x.sh; bash x.sh`, whose plain
+`cd` may have failed and left the line where it wrote `x.sh`, while `{ cd sub;
+echo x; } > x.sh && cd sub && bash x.sh` runs `sub/x.sh` and stays safe. An
+`if` whose condition is `true` or `:` alone, with no `elif` or `else`, runs
+its body, so a `cd` in it is not one that may not have run (unless a function of that name is defined, or the
 line has an `alias`, `enable` or `disable`, which can change what the name
 stands for). That is all it changes: for the option, a function definition and
 where a later `cd` starts it is a branch like any other `if`. After such a
@@ -2790,8 +2834,8 @@ Some risks only show when units are read together.
   `make` is in the pipeline), so `cd a && make > log && cd ../b && make > log
   && cd ../c && make > log && cd ../d && make > log && cd .. && ./run` stays
   safe. A file written where the line may already be in more than one folder
-  (after a `cd` that may not have run) is placed only from where the walk has
-  the line, and a later `cd` may bring the folders together again, so the
+  (after a `cd` that may not have run) is judged from each of them (see "Where
+  a line is"), but a later `cd` may bring the folders together again, so the
   guard does not follow which file each folder holds: a later run of a script
   of that file's name, in any folder, is `unknown`. `false && cd s; echo x >
   x.sh; cd /home/me/work/repo; bash x.sh` runs the file it wrote when `cd s`
@@ -2803,28 +2847,29 @@ Some risks only show when units are read together.
   A plain `cd` may fail too: a folder that is not there is an error, and
   POSIX shells, cmd and PowerShell (whose `cd` error does not stop the line,
   whatever `-ErrorAction` says, since a `try` or a `trap` may go on past it)
-  run the next command where the line was. So for a run of a file only, a
-  plain `cd` (`cd`, `pushd`, `Set-Location`, an `if true` body's, one before
-  `&&`), read after the line wrote a file, also leaves the line in every
-  folder it may have been in before it, each moved on by every later `cd`:
-  `echo x > x.sh; cd s; bash x.sh`, `echo x > x.bat & cd s & x.bat` and
-  `'x' > x.ps1; Set-Location s; .\x.ps1` may run the file they wrote and are
-  `unknown`. Nothing else takes the `cd` as one that may have failed: where
-  paths are placed, where a redirect opens and every other check go on from
-  where it moved the line, and a file written after it is placed from there
-  alone. A command on the right side of the `&&` after it runs only when it
-  ran, so the folders it may have stayed in count only after the list (or
-  from an `||` on): `echo x > x.sh; cd s && bash x.sh` stays safe, `echo x >
-  x.sh; cd s && make; bash x.sh` is `unknown`. Before the line writes a file
-  there is nothing to run where it stayed, so `cd build; make; ./app` and
-  `cd s; bash x.sh` stay safe, and a `cd` that only steps up (`cd ..`,
-  `cd ../..`, cmd's `cd..`) goes back through folders the shell came through
-  and is taken as run, so `cd sub; echo x > x.sh; cd ..; ./x.sh` stays safe.
-  Past eight such folders (a chain of `cd`s into folders, each of which may
-  have failed) each file written so far counts as written in every folder by
-  its name, as above: a run of a script of that name is `unknown`, and one of
-  another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
-  stays safe.
+  run the next command where the line was. So a plain `cd` (`cd`, `pushd`,
+  `Set-Location`, an `if true` body's, one before `&&`) also leaves the line
+  in every folder it may have been in before it, each moved on by every later
+  `cd`, and a run is judged from each: `echo x > x.sh; cd s; bash x.sh`,
+  `echo x > x.bat & cd s & x.bat`, `'x' > x.ps1; Set-Location s; .\x.ps1` and
+  `{ cd s; echo x; } > x.sh; bash x.sh` (the group's redirect is opened
+  before its `cd`) may run the file they wrote and are `unknown`. A file
+  written after it is matched to a run from where the walk has the line, and
+  from where it stayed, by the same folder: each copy of the write is judged
+  where it lands (see "Where a line is"), but only a run from the folder it
+  was written in can be it. A command on the right side of the `&&` after it
+  runs only when it ran, so the folders it may have stayed in count only after
+  the list (or from an `||` on): `echo x > x.sh; cd s && bash x.sh` stays
+  safe, `echo x > x.sh; cd s && make; bash x.sh` is `unknown`. When the line
+  writes no file there is nothing to run where it stayed, so `cd build; make;
+  ./app` and `cd s; bash x.sh` stay safe, and a `cd` that only steps up
+  (`cd ..`, `cd ../..`, cmd's `cd..`) goes back through folders the shell
+  came through and is taken as run, so `cd sub; echo x > x.sh; cd ..; ./x.sh`
+  stays safe. Past eight such folders (a chain of `cd`s into folders, each of
+  which may have failed) each file written so far counts as written in every
+  folder by its name, as above: a run of a script of that name is `unknown`,
+  and one of another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f;
+  ./app`) stays safe.
   An `||` whose right side ends the shell is the exception: in `cd s ||
   exit` the rest of the line runs only when the left side did not fail, so
   the `cd` ran, and so did every `cd` on the right of an `&&` before the
