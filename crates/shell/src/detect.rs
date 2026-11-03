@@ -505,23 +505,37 @@ impl Checker<'_> {
     /// The places `arg` stands for: a pipeline's input is the files the
     /// stage before it lists, when that stage lists files the guard can place.
     /// Also whether the stage that listed them had wildcards match hidden
-    /// names.
+    /// names. When the stage's first unit lists, so does each other listing
+    /// at that stage: a second reading of it (`ls -d .gi#t` as zsh reads it
+    /// with `extendedglob` on) or another listing in its group.
     fn expand(&self, unit: &Unit, arg: &Arg) -> (Vec<Arg>, bool) {
         if *arg != Arg::Input {
             return (vec![arg.clone()], false);
         }
-        let producer = unit
+        let stage = unit
             .stage
             .filter(|stage| stage.index > 0)
-            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
+            .map(|stage| (stage.pipeline, stage.index - 1));
+        let producer = stage
+            .and_then(|stage| self.producers.get(&stage))
             .and_then(|&at| self.split.units.get(at));
-        let found = producer
-            .and_then(listed)
-            .unwrap_or_else(|| vec![Arg::Unknown("<input>".to_string())]);
-        (
-            found,
-            producer.is_some_and(|producer| producer.hidden || lists_hidden(producer)),
-        )
+        let mut hidden = producer.is_some_and(|producer| producer.hidden || lists_hidden(producer));
+        let Some(mut found) = producer.and_then(listed) else {
+            return (vec![Arg::Unknown("<input>".to_string())], hidden);
+        };
+        let others = stage
+            .and_then(|stage| self.stages.get(&stage))
+            .into_iter()
+            .flatten()
+            .skip(1)
+            .filter_map(|&at| self.split.units.get(at));
+        for other in others {
+            if let Some(more) = listed(other) {
+                found.extend(more);
+                hidden |= other.hidden || lists_hidden(other);
+            }
+        }
+        (found, hidden)
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
