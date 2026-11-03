@@ -171,15 +171,16 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root. `Start-Process`
-reads its parameters as the cmdlet does: each that takes a value takes the
-next argument whatever it is (`-WindowStyle Hidden`, `-Credential`,
-`-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`, `-ArgumentList
-'-c x'`), so none is left where the program is read; the strings of
-`-ArgumentList` are joined into one command line that the program splits as
-it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'`
-is `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError`
-write their file, as a redirect does. So do the words that
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root, and the `NAME=value`
+words sudo takes after its options set the program's environment (`sudo FOO=1
+rm` is `rm`). `Start-Process` reads its parameters as the cmdlet does: each
+that takes a value takes the next argument whatever it is (`-WindowStyle
+Hidden`, `-Credential`, `-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`,
+`-ArgumentList '-c x'`), so none is left where the program is read; the strings
+of `-ArgumentList` are joined into one command line that the program splits as
+it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'` is
+`drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError` write
+their file, as a redirect does. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
@@ -3429,58 +3430,68 @@ prune`, `network prune`, `volume rm` and `volume prune`, `image prune -a`,
 and podman's `system reset`, `pod prune`, `machine rm`, `machine reset`, `kube
 down` and `kube play --down` (or `play kube --down`, its older name) destroy;
 so do `docker-machine rm` and `colima delete`, which delete a virtual machine
-with its containers. `rm` is read by what it takes: one named container is
-safe, forced or not (`docker rm -f web`); several forced at once, a choice made
-when the line runs (`$(docker ps -aq)`, a pipe's input, a variable that expands
-to several words, a wildcard the shell expands, what `find -exec docker rm -f
-{} +` finds), podman's `rm -a` and `--filter`, and `-v` (the container's
-volumes) are not. A wildcard (`docker rm -f *`, `web-?`) is every name it
-matches in a POSIX shell and in PowerShell, which expands one for a program on
-Linux and macOS; cmd hands it to the program as it is. The guard reads an
-argument as the program gets it, its quotes gone, so a quoted wildcard (`docker
-rm -f '*'`, `"web-*"`) counts as several too, though docker is handed the
-pattern and expands nothing: the riskier reading. A `{}` of `find -exec` stands
-for every name the search finds, so a container or image removed through one is
-several at once. Which variables expand to several words depends on the shell:
-in a POSIX shell an unquoted one, and a quoted one holding an array (`"$@"`,
-`"${ids[@]}"`, one word per element), but not `"$name"`; in PowerShell any
-variable except `$env:` and a splat (`@ids`), since an array handed to a
-program is one argument per element, but not a quoted `"$ids"`; in cmd an
-unquoted `%IDS%` or `!IDS!`, which is expanded as text. A POSIX word also
-splits when an unquoted `$` follows a quoted head (`"$a"$b`) and when it holds
-an unquoted brace list or sequence (`web{1,2}`, `{web,db}`, `web{1..3}`); a
-brace list in a word the parser has already unquoted counts as bare. A command
-in a loop or a function body runs again with other values, so any operand there
-that holds an expansion is every item, whatever the variable is called and
-however it was set (`id="$c"`, `name=$(…)`, `$1` after a `shift`, `%%i`): `for
-c in $(docker ps -aq); do id="$c"; docker rm -f "$id"; done`, `docker ps -aq |
-while read -r l; do docker rm -f "${l%% *}"; done`, `f() { docker rm -f "$1";
-}`. Loops are `for`, `select`, `while` and `until` and function bodies in a
-POSIX shell; `foreach`, `for`, `while`, `do` and `function` and the block of
-`ForEach-Object` (`%`) and `Where-Object` in PowerShell (`docker ps -aq | % {
-$c = $_; docker rm -f "$c" }`); `for … do` in cmd (`for /f "delims=" %%i in
-('docker ps -aq') do docker rm -f "%%i"`, also behind `@` and in a `do (set
-id=%%i& …)` group). Outside a loop, a quoted variable that a `for` or a `read`
-sets is still every item. So `for c in web db; do docker rm -f "$c"; done` is
-risky too, as several forced at once, while `id=web; docker rm -f "$id"` is one
-value and `docker rm -f "$id"; for c in a b; do echo "$c"; done` is safe. So
-`docker rm -f "$name"` is safe and `docker rm -f $ids` in PowerShell is not.
-Images are rebuilt or pulled again, so `rmi` and `image rm` of the images they
-name, forced or not, and a `image prune` without `-a` are safe, as are `network
-rm` and `builder prune`; `rmi` and `image rm` are read like `rm` otherwise:
-several forced at once, `-a`, and images chosen when the line runs (`docker rmi
--f $(docker images -aq)`) destroy. The global options of each program that take
-a value (`-H`, `--context`, `-n`) are skipped to find the command.
+with its containers. compose's own `--dry-run`, on either side of its command,
+runs nothing (`docker compose --dry-run down -v`); `--dry-run=false` and one
+after `--` do not count. A `--filter` takes a value, so `docker system prune
+--filter until=24h` names no target. `rm` is read by what it takes: one named
+container is safe, forced or not (`docker rm -f web`); several forced at once,
+a choice made when the line runs (`$(docker ps -aq)`, a pipe's input, a
+variable that expands to several words, a wildcard the shell expands, what
+`find -exec docker rm -f {} +` finds), podman's `rm -a` and `--filter`, and
+`-v` (the container's volumes) are not. A wildcard (`docker rm -f *`, `web-?`)
+is every name it matches in a POSIX shell and in PowerShell, which expands one
+for a program on Linux and macOS; cmd hands it to the program as it is. The
+guard reads an argument as the program gets it, its quotes gone, so a quoted
+wildcard (`docker rm -f '*'`, `"web-*"`) counts as several too, though docker
+is handed the pattern and expands nothing: the riskier reading. A `{}` of `find
+-exec` stands for every name the search finds, so a container or image removed
+through one is several at once. Which variables expand to several words depends
+on the shell: in a POSIX shell an unquoted one, and a quoted one holding an
+array (`"$@"`, `"${ids[@]}"`, one word per element) or the names of the
+variables that start with a prefix (`"${!p@}"`, but not `"${!p*}"`), but not
+`"$name"`, nor a quoted variable after a plain head (`app-"$ENV"` is one word,
+`app-$ENV` may be several); in PowerShell any variable except `$env:` and a
+splat (`@ids`), since an array handed to a program is one argument per element,
+but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`, which is
+expanded as text. A POSIX word also splits when an unquoted `$` follows a
+quoted head (`"$a"$b`) and when it holds an unquoted brace list or sequence
+(`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the parser has
+already unquoted counts as bare. A command in a loop or a function body runs
+again with other values, so any operand there that holds an expansion is every
+item, whatever the variable is called and however it was set (`id="$c"`,
+`name=$(…)`, `$1` after a `shift`, `%%i`): `for c in $(docker ps -aq); do
+id="$c"; docker rm -f "$id"; done`, `docker ps -aq | while read -r l; do docker
+rm -f "${l%% *}"; done`, `f() { docker rm -f "$1"; }`. Loops are `for`,
+`select`, `while` and `until` and function bodies in a POSIX shell; `foreach`,
+`for`, `while`, `do` and `function` and the block of `ForEach-Object` (`%`) and
+`Where-Object` in PowerShell (`docker ps -aq | % { $c = $_; docker rm -f "$c"
+}`); `for … do` in cmd (`for /f "delims=" %%i in ('docker ps -aq') do docker rm
+-f "%%i"`, also behind `@` and in a `do (set id=%%i& …)` group). Outside a
+loop, a quoted variable that a `for` or a `read` sets is still every item. So
+`for c in web db; do docker rm -f "$c"; done` is risky too, as several forced
+at once, while `id=web; docker rm -f "$id"` is one value and `docker rm -f
+"$id"; for c in a b; do echo "$c"; done` is safe. So `docker rm -f "$name"` is
+safe and `docker rm -f $ids` in PowerShell is not. Images are rebuilt or pulled
+again, so `rmi` and `image rm` of the images they name, forced or not, and a
+`image prune` without `-a` are safe, as are `network rm` and `builder prune`;
+`rmi` and `image rm` are read like `rm` otherwise: several forced at once,
+`-a`, and images chosen when the line runs (`docker rmi -f $(docker images
+-aq)`) destroy. The global options of each program that take a value (`-H`,
+`--context`, `-n`) are skipped to find the command.
 
 **Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
 a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace --force`;
-`apply --prune`. `--dry-run=client` and `=server` only rehearse and are safe,
-the last one written counting. A replica count is read as Go reads an integer
-(`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero); one that is
-not a plain decimal and not a zero, or only known when it runs, is `unknown`.
-`kubectl` is also read behind `microk8s`, `k3s`, `k0s` (also as `k0s kc`) and
-`minikube kubectl --`, and as `kubecolor` (which colours its output) and
-`microk8s.kubectl`. `oc adm drain` is kubectl's `drain`, and `oc adm prune`
+`apply --prune`; `apply --force`, which deletes an object it cannot patch and
+creates it again (`--force-conflicts` is not it, and a Go boolean the last of
+which is known to be off, `--force=false`, is off). `--dry-run=client` and
+`=server` only rehearse and are safe, the last one written counting, before the
+command or after it (kubectl reads its command's flags on either side, and one
+it does not take there runs nothing). A replica count is read as Go reads an
+integer (`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero); one
+that is not a plain decimal and not a zero, or only known when it runs, is
+`unknown`. `kubectl` is also read behind `microk8s`, `k3s`, `k0s` (also as `k0s
+kc`) and `minikube kubectl --`, and as `kubecolor` (which colours its output)
+and `microk8s.kubectl`. `oc adm drain` is kubectl's `drain`, and `oc adm prune`
 deletes old images, builds or deployments once `--confirm` is on (without it
 the command only lists them). `helm uninstall` (also `delete`, `del`, `un`, and
 as `helm3`, `microk8s helm`, `microk8s helm3`, `microk8s.helm` and
@@ -3496,13 +3507,31 @@ and `tilt down`.
 **Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy` (a
 Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not `-destroy=false`;
 any `-destroy` turned on before `--` counts, even with a `=false` after it,
-since a value option may have taken that word); `plan -destroy` is safe. `state
-rm` (unless `-dry-run`) and `workspace delete` destroy too: what leaves the
-state is no longer managed, and a workspace's state goes with it. `terragrunt`
-the same, each command read like terraform reads it (`terragrunt state rm x`,
-`workspace delete`), also behind `run-all` and `run --all --`: the command is
-terragrunt's own word after `run-all`, `run` or `exec`, or else the first word
-after `--` (or `terraform` behind `exec --`), the options that take a value
+since a value option may have taken that word), and `apply -replace=ADDRESS`
+(also `-replace ADDRESS`), which destroys what it names to create it again;
+`plan -destroy` and `plan -replace` are safe. `state rm` (unless `-dry-run`)
+and `workspace delete` destroy too: what leaves the state is no longer managed,
+and a workspace's state goes with it. terraform puts the words of
+`TF_CLI_ARGS`, and of `TF_CLI_ARGS_apply` for `apply`, in front of its
+command's own, so the values the line gives them where terraform runs are read
+as arguments of `apply`: a prefix assignment (`TF_CLI_ARGS=-destroy terraform
+apply`), `env TF_CLI_ARGS=…` and `sudo TF_CLI_ARGS=…`, and an assignment or
+`export` earlier in the line, which may set a variable that is already
+exported. An `export TF_CLI_ARGS` (also `declare -x` and `typeset -x`) of a
+name the line gave no value it reads is a value only known when it runs, since
+`read`, `mapfile` or `printf -v` may have set it. PowerShell's
+`$env:TF_CLI_ARGS = '…'` and cmd's `set TF_CLI_ARGS=…` and `set
+"TF_CLI_ARGS=…"` are read the same, their names in any case, as Windows reads
+them; `Set-Item` or `New-Item` of `env:` (a wildcard name too),
+`[Environment]::SetEnvironmentVariable`, `+=` and `set /p` give a value only
+known when it runs. Such a value makes `apply` `unknown`, unless a known value
+beside it destroys, which it does whatever the other holds; `TF_CLI_ARGS_plan`
+does not reach `apply`. `terragrunt` the same (`-replace` and `TF_CLI_ARGS`
+included, since terraform gets its arguments and its environment), each command
+read like terraform reads it (`terragrunt state rm x`, `workspace delete`),
+also behind `run-all` and `run --all --`: the command is terragrunt's own word
+after `run-all`, `run` or `exec`, or else the first word after `--` (or
+`terraform` behind `exec --`), the options that take a value
 (`--queue-include-dir`, `--parallelism`) skipped. `pulumi destroy` (also `down`
 and `dn`, unless `--preview-only`, a Go-style flag that `--preview-only=false`
 or a value only known when it runs turns off), `pulumi stack rm` and `pulumi
@@ -3549,6 +3578,38 @@ one given counting, and `unknown` with a method only known when it runs),
 Midnight Commander), each safe with `--dry-run` (and rclone's and s3cmd's
 `-n`), the last one given counting.
 
+A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
+and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a
+verb that takes operands (`deploy`, `create`) such a word is the name of what
+that verb makes, so `gcloud functions deploy delete-user` and `doctl compute
+droplet create delete-me` are safe, and so are `gcloud functions call
+delete-user` and `gcloud sql instances patch delete-db` (also after
+`cancel`, `pause` and `resume`). A whole delete verb is still read there
+(`gcloud deploy targets delete t`, `gcloud logging logs delete x`), since
+some of those verbs are also groups. `run` is a group in gcloud
+(`gcloud run services delete`), so a name after it is still read as a verb:
+`gcloud scheduler jobs run delete-old` is a false alarm.
+
+Some verbs destroy under another name. Scaling a service to nothing takes
+it down as a delete would: `fly scale count 0` (also `web=0` for a process
+group), `heroku ps:scale web=0` (also `scale` and `dyno:scale`, with a size
+after `:`), `aws ecs update-service --desired-count 0`, `aws autoscaling
+set-desired-capacity --desired-capacity 0` and `update-auto-scaling-group`
+with a `--desired-capacity` or `--max-size` of 0, `az vmss scale
+--new-capacity 0`, `az aks scale` and `az aks nodepool scale --node-count 0`,
+`gcloud compute instance-groups managed resize --size 0` and `gcloud
+container clusters resize --num-nodes 0` (also behind `alpha` and `beta`),
+and `eksctl scale nodegroup --nodes 0` (also `-N`, `--nodes-max` and `-M`).
+These name no target, since what they scale is named by an option of each
+command's own (`--service`, `-n`). `fly scale count` reads its counts from
+its operands, not from the values of its options (`--max-per-region 0`).
+A count is read as kubectl's is; one only known when it runs (`web=$N`), or
+a heroku decrease (`web-1`), which may leave none, is `unknown`. `az
+deployment group create --mode Complete` (also the older `az group
+deployment create`, any case) deletes every resource of the group its
+template does not list; a mode only known when it runs is `unknown`, and
+`what-if` only shows it.
+
 A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
 before `--` and not as the value of an option that takes a value, since pflag
 and Go's flag package hand that option the next word even when it starts with
@@ -3579,11 +3640,12 @@ another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `aws s3 mv`, `rclone sync`, which deletes at
 the destination what the source lacks); a program run on another machine (`ssh
 host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf
-/`); a command a tool reads from a file or its environment
-(`TF_CLI_ARGS=-destroy`, a `kubectl` plugin, a shell alias); a `gh api graphql`
-mutation that deletes; and a resource named like a delete verb behind a verb
-that does not make or set it (`gcloud functions deploy delete-user` reads as a
-delete, because the guard cannot tell the verb from a name that follows).
+/`); a command a tool reads from a file or its environment (`TF_CLI_ARGS` set
+before the line, or exported by `set -a` and then set by `read`, a `kubectl`
+plugin, a shell alias); a `gh api graphql` mutation that deletes; and a
+resource named like a whole delete verb behind a verb that does not make or set
+it (`gcloud functions deploy delete` reads as a delete, because the guard
+cannot tell the verb from a name that follows).
 
 ## Reads only
 
