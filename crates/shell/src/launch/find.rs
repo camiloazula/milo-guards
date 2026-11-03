@@ -186,10 +186,11 @@ fn starts_expression(arg: &Arg) -> bool {
 }
 
 /// The paths a `find` acts on, for each folder it searches: the folder
-/// itself when its expression may act on `.git` there or on every name, else
-/// an entry inside it, and `.git` too when the expression may act on one of
-/// the entries `.git` holds (`-name HEAD`, `-name '*.pack'`), which a name
-/// search finds at any depth (see [`search`]).
+/// itself when its expression may act on `.git` there as a folder, or on an
+/// entry no name or path pattern picks out, else an entry inside it, and
+/// `.git` too when the expression may act on `.git` as a file or on one of
+/// the entries it holds (`-name HEAD`, `-name '*.pack'`), which a name search
+/// finds at any depth (see [`search`]).
 pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
     let starts = find_starts(args);
     let search = Search::read(expression(args));

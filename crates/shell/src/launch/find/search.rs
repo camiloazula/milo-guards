@@ -1,15 +1,20 @@
-//! What a `find` expression can do with two places below each folder it
-//! searches: the repository's `.git` folder itself, and the entries `.git`
-//! holds (`HEAD`, `config`, a pack). The expression is read as `find` reads
-//! it, its tests and actions joined by `-a`, `-o`, `,`, `!` and brackets, and
-//! each test is asked of each place: true, false, or not known. An action
-//! that may run on `.git` hands on the whole folder searched; one that may run
-//! on an entry inside it hands on `.git`. A `-prune` sure to run on `.git`
-//! keeps the search out of it, unless the search goes depth first (`-depth`,
-//! `-d`, or `-delete`, which turns it on: GNU find then refuses the line, and
-//! BSD and macOS find descend into the pruned folder all the same). An
-//! expression that cannot be read, or that holds a word that may split into
-//! more when it runs, is taken to reach everything.
+//! What a `find` expression can do with the places below each folder it
+//! searches: the repository's `.git` itself, as a folder and as the file or
+//! link it is in a linked worktree or a submodule, the entries `.git` holds
+//! (`HEAD`, `config`, a pack), and an ordinary entry, one no name or path
+//! pattern of the expression picks out. The expression is read as `find`
+//! reads it, its tests and actions joined by `-a`, `-o`, `,`, `!` and
+//! brackets, and each test is asked of each place: true, false, or not
+//! known. An action that may run on `.git` as a folder, or on an ordinary
+//! entry, hands on the whole folder searched; one that may run on `.git` as
+//! a file, or on an entry inside it, hands on `.git`. A `-prune` sure to run
+//! on `.git` as a folder keeps the search out of it, unless the search goes
+//! depth first (`-depth`, `-d`, or `-delete`, which turns it on: GNU find
+//! then refuses the line, and BSD and macOS find descend into the pruned
+//! folder all the same). An expression that cannot be read, or that holds a
+//! word that may split into more when it runs, is taken to reach everything.
+
+use std::collections::BTreeMap;
 
 use milo_guards_core::spelling::glob;
 use milo_guards_core::Flavour;
@@ -26,11 +31,17 @@ const MAX_NESTING: usize = 64;
 /// is not read.
 const MAX_PATTERN_BYTES: usize = 4096;
 
-/// The most work the tests that depend on the folder searched may take: the
-/// folders times the bytes of their path patterns and the size of the
-/// expression, which is read again for each folder. Past it the expression is
-/// not read.
-const MAX_PATH_WORK: usize = 1 << 16;
+/// The most work the tests that depend on the folder searched may take, in
+/// the steps [`glob::path_reach_work`] counts: for each distinct folder, each
+/// way the search spells its `.git` and each path pattern, the pattern's
+/// tokens times the names it is asked of, and [`NODE_WORK`] for each node of
+/// the expression, which is walked again for each folder. Past it the
+/// expression is not read. It keeps the worst line to tens of milliseconds.
+const MAX_PATH_WORK: usize = 1 << 23;
+
+/// The work of walking one node of the expression for one place, in the steps
+/// of [`MAX_PATH_WORK`].
+const NODE_WORK: usize = 8;
 
 /// A test's answer for one place: true, false, or not known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,21 +78,41 @@ impl Tri {
     }
 }
 
-/// The two places asked about.
+/// The places asked about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
-    /// The `.git` folder directly inside the folder searched.
-    Git,
+    /// `.git` directly inside the folder searched, as a folder.
+    GitFolder,
+    /// The same `.git` as a file or a link, as it is in a linked worktree or
+    /// a submodule: nothing is below it.
+    GitFile,
     /// An entry `.git` holds, at any depth below it.
     Entry,
+    /// An ordinary entry: a name and a path that no name or path pattern
+    /// matches, unless the pattern matches every one.
+    Other,
+}
+
+/// Every place, in the order of a [`Node::Fixed`]'s answers.
+const PLACES: usize = 4;
+
+impl Place {
+    fn index(self) -> usize {
+        match self {
+            Self::GitFolder => 0,
+            Self::GitFile => 1,
+            Self::Entry => 2,
+            Self::Other => 3,
+        }
+    }
 }
 
 /// One part of the expression.
 #[derive(Debug)]
 enum Node {
-    /// A test whose answer does not depend on the folder searched: for
-    /// `.git`, and for an entry inside it.
-    Fixed(Tri, Tri),
+    /// A test whose answer does not depend on the folder searched, for each
+    /// place in the order of [`Place::index`].
+    Fixed([Tri; PLACES]),
     /// `-path` and its kin: the pattern as written, the pattern as `find`'s
     /// matching reads it (`None` when it is not read), and whether it
     /// compares without case.
@@ -112,11 +143,11 @@ struct Walk {
 /// What a search does with the places below one folder it searches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Reach {
-    /// It may act on `.git` itself, or on every name: the folder is taken
-    /// whole.
+    /// It may act on `.git` as a folder, or on an ordinary entry: the folder
+    /// is taken whole.
     Whole,
-    /// It acts on files inside the folder, and on `.git`'s entries when
-    /// `git` is set.
+    /// It acts on files inside the folder, and on `.git` (as a file, or on
+    /// its entries) when `git` is set.
     Inside { git: bool },
 }
 
@@ -133,8 +164,8 @@ pub(super) struct Search {
     /// It has an action that hands on; without one `find` prints what the
     /// whole expression is true for.
     acts: bool,
-    /// The bytes of its path patterns.
-    path_bytes: usize,
+    /// Its path patterns, as `find`'s matching reads them.
+    paths: Vec<String>,
 }
 
 impl Search {
@@ -151,6 +182,7 @@ impl Search {
             filters: false,
             name_bytes: 0,
             path_bytes: 0,
+            paths: Vec::new(),
         };
         let root = if expression.is_empty() {
             Ok(None)
@@ -166,48 +198,83 @@ impl Search {
             root: root.ok().flatten(),
             depth_first: parser.depth_first,
             acts: parser.acts,
-            path_bytes: parser.path_bytes,
+            paths: parser.paths,
             nodes: parser.nodes,
         }
     }
 
     /// What the search does below each of `starts`.
     pub(super) fn reach_all(&self, starts: &[Arg]) -> Vec<Reach> {
-        let paths = self.path_bytes > 0;
-        let work = starts
-            .len()
-            .saturating_mul(self.nodes.len().saturating_add(self.path_bytes));
-        if self.whole || (paths && work > MAX_PATH_WORK) {
+        if self.whole {
             return vec![Reach::Whole; starts.len()];
         }
-        // Without a path test every folder gets the same answer.
-        let once = (!paths).then(|| self.reach(None));
+        // Without a path test, read or not, every folder gets the same
+        // answer.
+        if !self
+            .nodes
+            .iter()
+            .any(|node| matches!(node, Node::Path { .. }))
+        {
+            return vec![self.reach(None); starts.len()];
+        }
+        // Each distinct folder is read once, and the work of all of them is
+        // counted before any is.
+        let mut folders: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for start in starts.iter().filter_map(Arg::known) {
+            folders.entry(start).or_insert_with(|| git_spellings(start));
+        }
+        let walks = self
+            .nodes
+            .len()
+            .saturating_mul(PLACES)
+            .saturating_mul(NODE_WORK);
+        let mut work = walks;
+        for spellings in folders.values() {
+            work = work.saturating_add(walks);
+            for spelling in spellings {
+                for pattern in &self.paths {
+                    work = work.saturating_add(glob::path_reach_work(pattern, spelling));
+                }
+            }
+        }
+        if work > MAX_PATH_WORK {
+            return vec![Reach::Whole; starts.len()];
+        }
+        let reached: BTreeMap<&str, Reach> = folders
+            .iter()
+            .map(|(start, spellings)| (*start, self.reach(Some(spellings))))
+            .collect();
+        let unknown = self.reach(None);
         starts
             .iter()
-            .map(|start| once.unwrap_or_else(|| self.reach(Some(start))))
+            .map(|start| {
+                start
+                    .known()
+                    .and_then(|text| reached.get(text).copied())
+                    .unwrap_or(unknown)
+            })
             .collect()
     }
 
-    /// What the search does below `start` (`None` when no test depends on
-    /// it).
-    fn reach(&self, start: Option<&Arg>) -> Reach {
-        let spellings = start.and_then(git_spellings);
-        let git = spellings.as_deref();
-        let on_git = self.walk(Place::Git, git);
-        if on_git.hands_on {
+    /// What the search does below a folder whose `.git` is spelled in each
+    /// of `git` (`None` when the folder is only known when it runs, or no
+    /// test asks).
+    fn reach(&self, git: Option<&[String]>) -> Reach {
+        let folder = self.walk(Place::GitFolder, git);
+        if folder.hands_on || self.walk(Place::Other, git).hands_on {
             return Reach::Whole;
         }
-        if on_git.prunes && !self.depth_first {
-            return Reach::Inside { git: false };
+        let file = self.walk(Place::GitFile, git).hands_on;
+        if folder.prunes && !self.depth_first {
+            return Reach::Inside { git: file };
         }
         Reach::Inside {
-            git: self.walk(Place::Entry, git).hands_on,
+            git: file || self.walk(Place::Entry, git).hands_on,
         }
     }
 
     /// Walks the expression for `place`, below a folder whose `.git` is
-    /// spelled in each of `git` (`None` when the folder is only known when
-    /// it runs, or no test asks).
+    /// spelled in each of `git`.
     fn walk(&self, place: Place, git: Option<&[String]>) -> Walk {
         let mut walk = Walk::default();
         let Some(root) = self.root else {
@@ -232,10 +299,7 @@ impl Search {
         walk: &mut Walk,
     ) -> Tri {
         match &self.nodes[at] {
-            Node::Fixed(on_git, on_entry) => match place {
-                Place::Git => *on_git,
-                Place::Entry => *on_entry,
-            },
+            Node::Fixed(answers) => answers[place.index()],
             Node::Path { raw, read, fold } => match (git, raw, read) {
                 (Some(git), Some(raw), Some(read)) => path_answer(place, raw, read, *fold, git),
                 _ => Tri::Maybe,
@@ -245,7 +309,7 @@ impl Search {
                 *answer
             }
             Node::Prune => {
-                walk.prunes |= sure && place == Place::Git;
+                walk.prunes |= sure && place == Place::GitFolder;
                 Tri::True
             }
             Node::Not(inner) => self.eval(*inner, place, git, sure, walk).not(),
@@ -292,20 +356,18 @@ impl Search {
 
 /// The ways a search of `start` spells the path of `.git` inside it: GNU
 /// find drops the trailing `/` of a folder (`./` gives `./.git`), and BSD
-/// and macOS find keep it (`.//.git`). `None` for a folder only known when
-/// it runs.
-fn git_spellings(start: &Arg) -> Option<Vec<String>> {
-    let text = start.known()?;
-    let trimmed = text.trim_end_matches('/');
+/// and macOS find keep it (`.//.git`).
+fn git_spellings(start: &str) -> Vec<String> {
+    let trimmed = start.trim_end_matches('/');
     let mut spellings = vec![format!("{trimmed}/.git")];
-    if text.ends_with('/') {
-        for spelling in [format!("{text}/.git"), format!("{text}.git")] {
+    if start.ends_with('/') {
+        for spelling in [format!("{start}/.git"), format!("{start}.git")] {
             if !spellings.contains(&spelling) {
                 spellings.push(spelling);
             }
         }
     }
-    Some(spellings)
+    spellings
 }
 
 /// The path of the `.git` folder inside `start`.
@@ -317,7 +379,9 @@ pub(super) fn git_inside(start: &str) -> String {
 /// spelled in each of `git`.
 fn path_answer(place: Place, raw: &str, read: &str, fold: bool, git: &[String]) -> Tri {
     match place {
-        Place::Git => Tri::all(git.iter().map(|path| matching(raw, read, path, fold))),
+        Place::GitFolder | Place::GitFile => {
+            Tri::all(git.iter().map(|path| matching(raw, read, path, fold)))
+        }
         Place::Entry => {
             // `PREFIX*` takes every path below `.git` when `PREFIX` matches
             // the path of `.git`, or of `.git` and a `/`.
@@ -338,7 +402,34 @@ fn path_answer(place: Place, raw: &str, read: &str, fold: bool, git: &[String]) 
                 Tri::False
             }
         }
+        Place::Other => {
+            if matches_every(raw) {
+                return Tri::True;
+            }
+            // `PREFIX*` takes every path below the folder when `PREFIX`
+            // matches the folder, or the folder and a `/` (`./*`, `.*`).
+            let head = raw.trim_end_matches('*');
+            if !exact(raw) || head.len() == raw.len() {
+                return Tri::False;
+            }
+            Tri::all(git.iter().map(|path| {
+                let folder = path.strip_suffix(".git").unwrap_or(path);
+                let every = matches(head, folder, fold)
+                    || matches(head, folder.trim_end_matches('/'), fold);
+                if every {
+                    Tri::True
+                } else {
+                    Tri::False
+                }
+            }))
+        }
     }
+}
+
+/// Whether a pattern read exactly matches every name, and every path: it is
+/// made of `*`, with at most one `?` among them.
+fn matches_every(raw: &str) -> bool {
+    !raw.is_empty() && raw.chars().all(|c| matches!(c, '*' | '?')) && raw.matches('?').count() <= 1
 }
 
 /// Whether a pattern is read exactly: it holds no bracket and no backslash,
@@ -415,6 +506,8 @@ struct Parser<'a> {
     filters: bool,
     name_bytes: usize,
     path_bytes: usize,
+    /// The path patterns read, as `find`'s matching reads them.
+    paths: Vec<String>,
 }
 
 /// The expression could not be read.
@@ -470,6 +563,23 @@ const OPTIONS: [&str; 11] = [
 
 /// Options that take a value, and are always true.
 const VALUED_OPTIONS: [&str; 3] = ["-maxdepth", "-mindepth", "-regextype"];
+
+/// Tests that take no value and hand nothing on, beside the ones read on
+/// their own.
+const TESTS: [&str; 12] = [
+    "-empty",
+    "-readable",
+    "-writable",
+    "-executable",
+    "-nouser",
+    "-nogroup",
+    "-quit",
+    "-acl",
+    "-xattr",
+    "-sparse",
+    "-s",
+    "-E",
+];
 
 impl Parser<'_> {
     fn push(&mut self, node: Node) -> usize {
@@ -583,7 +693,7 @@ impl Parser<'_> {
                         }
                         name_test(&raw, fold)
                     }
-                    None => Node::Fixed(Tri::Maybe, Tri::Maybe),
+                    None => Node::Fixed([Tri::Maybe; PLACES]),
                 }
             }
             "-path" | "-ipath" | "-wholename" | "-iwholename" => {
@@ -595,21 +705,19 @@ impl Parser<'_> {
                     return Err(Unread);
                 }
                 let read = raw.as_deref().and_then(fnmatch);
+                if let Some(read) = &read {
+                    self.paths.push(read.clone());
+                }
                 Node::Path { raw, read, fold }
             }
-            "-type" => {
-                // `.git` is a folder; GNU find takes a list (`-type f,d`).
-                let on_git = match self.value()?.known() {
-                    Some(kinds) if kinds.contains('d') => Tri::True,
-                    Some(_) => Tri::False,
-                    None => Tri::Maybe,
-                };
-                Node::Fixed(on_git, Tri::Maybe)
-            }
-            "-false" => Node::Fixed(Tri::False, Tri::False),
+            "-type" => match self.value()?.known() {
+                Some(kinds) => type_test(kinds),
+                None => Node::Fixed([Tri::Maybe; PLACES]),
+            },
+            "-false" => Node::Fixed([Tri::False; PLACES]),
             "-depth" | "-d" => {
                 self.depth_first = true;
-                Node::Fixed(Tri::True, Tri::True)
+                Node::Fixed([Tri::True; PLACES])
             }
             "-delete" => {
                 self.depth_first = true;
@@ -642,17 +750,20 @@ impl Parser<'_> {
                 Node::HandOn(Tri::True)
             }
             "-prune" => Node::Prune,
-            text if OPTIONS.contains(&text) => Node::Fixed(Tri::True, Tri::True),
+            text if OPTIONS.contains(&text) => Node::Fixed([Tri::True; PLACES]),
             text if VALUED_OPTIONS.contains(&text) => {
                 self.value()?;
-                Node::Fixed(Tri::True, Tri::True)
+                Node::Fixed([Tri::True; PLACES])
             }
             text if VALUED.contains(&text) || text.starts_with("-newer") => {
                 self.value()?;
-                Node::Fixed(Tri::Maybe, Tri::Maybe)
+                Node::Fixed([Tri::Maybe; PLACES])
             }
-            // Any other test or action (`-empty`, `-quit`), known or not.
-            text if text.starts_with('-') && text.len() > 1 => Node::Fixed(Tri::Maybe, Tri::Maybe),
+            text if TESTS.contains(&text) => Node::Fixed([Tri::Maybe; PLACES]),
+            // Any other primary may be an action that hands on what it is run
+            // on, as NetBSD's `-printx` does; it is not counted as one, so
+            // the `-print` `find` adds when there is none is still read.
+            text if text.starts_with('-') && text.len() > 1 => Node::HandOn(Tri::Maybe),
             _ => return Err(Unread),
         };
         Ok(self.push(node))
@@ -665,7 +776,7 @@ impl Parser<'_> {
 /// names `.git` holds.
 fn name_test(raw: &str, fold: bool) -> Node {
     let Some(read) = fnmatch(raw) else {
-        return Node::Fixed(Tri::Maybe, Tri::Maybe);
+        return Node::Fixed([Tri::Maybe; PLACES]);
     };
     let on_git = matching(raw, &read, ".git", fold);
     let reaches = if fold {
@@ -673,5 +784,28 @@ fn name_test(raw: &str, fold: bool) -> Node {
     } else {
         glob::can_match_git_entry(&read, Flavour::Posix)
     };
-    Node::Fixed(on_git, if reaches { Tri::Maybe } else { Tri::False })
+    let on_entry = if reaches { Tri::Maybe } else { Tri::False };
+    let on_other = if matches_every(raw) {
+        Tri::True
+    } else {
+        Tri::False
+    };
+    Node::Fixed([on_git, on_git, on_entry, on_other])
+}
+
+/// A `-type` test of the kinds in `kinds` (GNU find takes a list, `-type
+/// f,d`): `.git` is a folder in a repository's own checkout, and a file, or
+/// a link, in a linked worktree or a submodule.
+fn type_test(kinds: &str) -> Node {
+    let on_folder = if kinds.contains('d') {
+        Tri::True
+    } else {
+        Tri::False
+    };
+    let on_file = match (kinds.contains('f'), kinds.contains('l')) {
+        (true, true) => Tri::True,
+        (false, false) => Tri::False,
+        _ => Tri::Maybe,
+    };
+    Node::Fixed([on_folder, on_file, Tri::Maybe, Tri::Maybe])
 }
