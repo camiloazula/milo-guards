@@ -687,6 +687,9 @@ pub(crate) struct Split {
     /// item of what the loop walks, so a rule that counts what a command
     /// reaches reads `"$c"` as every item, not one.
     looped: Vec<String>,
+    /// What a POSIX line sets its variables to, for the places bash reads a
+    /// value again as code (arithmetic, `${!x}`, `${x@P}`).
+    pub(crate) values: crate::values::Values,
     /// The characters a backtick `u{…}` made in a PowerShell string that are
     /// a space that is not an ASCII one, a dash or a typographic quote: as a
     /// path or an argument each is the text it holds, but a script that holds

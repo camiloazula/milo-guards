@@ -37,7 +37,9 @@ A line is judged in three steps.
 The modules follow the steps. `posix`, `powershell` and `cmd` split a line with
 their grammar. `launch` takes wrappers off and reads scripts handed to shells.
 `unit` holds the unit and the helpers that read its arguments. `detect` holds
-the rules. `path` is the shell's side of the path model. `inline` finds the code
+the rules. `values` keeps what a POSIX line sets its variables to, for the
+places bash reads a value again as code. `path` is the shell's side of the
+path model. `inline` finds the code
 an interpreter is given inline and turns what `milo-guards-code` reads in it into
 units (see [Inline code](#inline-code) and [Code](code.md)).
 
@@ -498,6 +500,115 @@ line leaves things, whichever is more conservative and needs the least state:
   as far as the depth limit. A `$(…)` in a double-quoted action is read where
   it stands, when the trap is set, and is a placeholder variable in the text
   the action is read from, so it is not read twice.
+
+### Values read again as code
+
+bash reads some values a second time, and runs the code it finds in them
+then: a variable's value is code where it is read so, not where it is set.
+
+- **Arithmetic** reads a variable's value as an expression, and a subscript
+  in that expression is expanded, `$(…)` and all: `x='a[$(rm -rf ~)]'; echo
+  $((x))` deletes the home directory. The places that read arithmetic are
+  `$((…))` and `$[…]` (also in the body of an unquoted here-document, where
+  the grammar reads `$((x))` as a command), `((…))`, the three parts of `for
+  ((…))`, each word of `let` (also behind `builtin` and `command`, and spelled
+  `\let` or `'let'`), both sides of `-eq`, `-ne`, `-lt`, `-le`, `-gt` and
+  `-ge` in `[[ … ]]` (not in `[ … ]` and `test`, which read numbers only), an
+  array's subscript (`${a[i]}`, `a[i]=1`, and the key of each `[k]=v` of an
+  indexed array, `a=([k]=v)`; an array declared with `-A` has text keys), the
+  offset and length of `${x:i:j}`, `${@:i:j}` and `${1:i}`, and every value
+  given to a variable the line gives the integer attribute (`declare -i n`,
+  also `local -i`, `typeset -i` and a `declare` behind `builtin` or
+  `command`): an assignment, `read`, `printf -v`, `${n:=…}` and the words of
+  `for n in …` alike. A name in an expression reads its value; so does `$x`
+  in one, `$1` reads the first positional parameter, and `$@` and `$*` read
+  them all. A name that is assigned (`(( x = 1 ))`, `let x=1`) is not read,
+  `x += 1` is, and `${#x}` is a length that reads no value as code.
+- **A subscript in a variable's name** that a builtin reads is arithmetic
+  too: `unset 'a[i]'`, `read 'a[i]'`, `printf -v 'a[i]'`, `getopts o 'a[i]'`,
+  `declare 'a[i]=1'`, `[[ -v a[i] ]]` and `test -v 'a[i]'`.
+- **`${!x}`** reads the variable the value of `x` names, and its subscript as
+  arithmetic: `x='a[$(rm -rf ~)]'; echo ${!x}` deletes, and so does
+  `x='a[i]'; i='a[$(rm -rf ~)]'; echo ${!x}`. In arithmetic, `${!x}` reads
+  the value of each variable the values of `x` name as an expression (`x=y;
+  y='a[$(rm -rf ~)]'; echo $(( ${!x} ))`). `${!x@}`, `${!x*}` and `${!a[@]}`
+  list names and keys and read no value. A reference (`declare -n r=…`, also
+  `local -n` and `typeset -n`, not `export -n`) is read the same way, where
+  it is declared: `declare -n r='a[$(rm -rf ~)]'; echo $r` deletes.
+- **`${x@P}`** expands the value as a prompt: its escapes decoded as a
+  `PS4`'s are (see [Actions that run later](#actions-that-run-later)), then
+  its `$(…)` and backticks run. `${!y@P}` does the same to each variable the
+  values of `y` name. `${x@Q}`, `${x@U}` and the other operators run nothing.
+
+The values are the ones the line gives, wherever it gives them and whether
+or not that runs before the read: an assignment (also after `export`,
+`declare`, `local` and the like, quoted or not, an element of an array, and
+`+=`), each word of a `for` loop, `${x:=v}`, and the positional parameters
+that `set -- …` (or `set` with words after its options) and a call of a
+function the line defines give, from `$1` on. A value written in text is
+read as the code it holds where the read is, `$(…)`, backticks and `${…}`
+(which may itself read another value again), as a nested script whose
+findings are the line's: so the lines above are the `delete` of `~`. A value
+is followed through the names it holds (`x='a[$(rm -rf ~)]'; y=x; echo
+$((y))` deletes too). A value that names no code reads as safe: `x=3; echo
+$((x + 1))`, `i=0; echo ${a[i]}`, `n=$((n + 1))` (an arithmetic expansion is
+a number) and `for i in 1 2 3; do echo $((i * 2)); done`. So does a value
+that is always a number: `$?`, `$#`, `$$`, `$!`, a length (`${#x}`,
+`${#a[@]}`), a range of numbers (`for i in {1..5}`), and the counters bash
+fills (`$RANDOM`, `$SRANDOM`, `$SECONDS`, `$EPOCHSECONDS`, `$LINENO`,
+`$BASHPID`, `$PPID`, `$UID`, `$EUID`) as long as the line names the counter
+nowhere but where it reads it: a counter the line unsets or declares is a
+variable like any other. So `cargo build; rc=$?; [[ $rc -eq 0 ]]`,
+`n=${#arr[@]}; echo $((n-1))` and `x=$RANDOM` stay safe.
+
+A value only known when it runs is `unknown`, with the reason `may run code a
+variable holds that is only known when it runs`, at each place that reads it
+so: one set from a substitution or another variable (`x=$(cat f)`, `x="$y"`),
+by `read`, `mapfile`, `printf -v` or `getopts`, by a `for` over words that
+expand or match names (`for x in *`, `for x in $(seq 5)`, `for x; do`), by
+`${x:=…}` with a quote or an expansion in its word, and pieces joined by `+=`
+when any of them holds a `$` or a backtick (`x='$'; x+='(rm -rf ~)'` is
+`$(rm -rf ~)`). So is a word with a backslash before a `$` or a backtick
+outside quotes (`x=a[\$\(rm\ -rf\ ~\)]`), which the grammar may read
+apart, and every positional parameter once the line shifts them. So is a
+variable given more than 16 distinct values, a value that names more than 256
+variables, and a read that follows more than 64 names. A variable the line
+does not set at all is the environment the caller runs the line in, and is
+not judged (`echo $((COLUMNS - 1))` and `echo $(($1))` stay safe).
+
+The output of a command that arithmetic reads is an expression too, so
+`$(( $(echo 'a[$(rm -rf ~)]') ))` runs the code the command prints. The
+guard cannot know what a program prints, so arithmetic that reads a
+substitution is `unknown`, with the reason `may run code in a command's
+output that arithmetic reads`, wherever it is: `$(( $(cat f) ))`, `[[ $(id -u)
+-eq 0 ]]`, `${a[$(cmd)]}`. This is the price of the rule: some ordinary
+lines become `unknown`, such as `start=$(date +%s); make; echo $((
+$(date +%s) - start ))` and `[[ $(wc -l < f) -gt 0 ]]`, where the programs
+only print numbers. `[ "$(id -u)" -eq 0 ]` reads numbers only and stays
+safe.
+
+The tree is read for the values once, before the walk, and the walk reads
+them again where each read is. That work is kept out of the frame of the
+walk itself, which recurses once for each level of the parse tree, so that a
+line nested to the limit (see [What cannot be read is risky](#what-cannot-be-read-is-risky)) still
+fits a thread's stack.
+
+Quoted text the grammar keeps as text is read as the shell reads it in two
+more places:
+
+- **Single quotes in a `${…}` word inside double quotes** (and in the body of
+  a here-document with an unquoted delimiter, which the shell reads the same
+  way) are text, so what they hold is expanded: `echo "${x:-'$(rm -rf ~)'}"`
+  and `echo "${x/y/'$(rm -rf ~)'}"` delete, and so do a word with text around
+  the quotes (`"${x:-a'$(rm -rf ~)'b}"`), an ANSI-C string (`"${x:-$'…'}"`)
+  and a nested `${…}`. Outside double quotes they quote: `echo ${x:-'$(rm -rf
+  ~)'}` stays safe, as do `echo "${x:-default}"` and `echo "${x:-'a b'}"`. A
+  backslash still escapes there, so ``echo "${x:-'\`'}"`` holds a plain
+  backtick and stays safe.
+- **A backslash inside backticks** before a backtick, a `$` or a backslash
+  goes before the code is read, so an escaped backtick starts a substitution
+  of its own: ```echo "`echo \`rm -rf ~\``"``` deletes. The code is read as
+  the here-document's backticks are (`\"` both ways, bash's and dash's).
 
 ### Where a line is
 
@@ -2243,6 +2354,9 @@ A line is never safe because the guard gave up on it. These come back risky:
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
+- A value only known when it runs where bash reads a value again as code:
+  arithmetic, `${!x}` and `${x@P}` (see
+  [Values read again as code](#values-read-again-as-code)).
 - A program named by a brace list or a wildcard (`command {rm,-rf,~}`, `./*
   -rf /`).
 - A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
@@ -2614,10 +2728,12 @@ first are taken off. The plain text between a body's expansions is scanned
 like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
 escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads
 as before. What cannot be read is `Unreadable`: a backtick
-that never closes, code that does not parse, a backtick inside a `${…}` (or
-another part the grammar read for itself), and an unquoted here-document in a
-backtick substitution that holds an escaped backtick, where the outer
-substitution takes a backslash off first and the body is not what it shows.
+that never closes, code that does not parse, and a backtick inside a `${…}`
+(or another part the grammar read for itself). An unquoted here-document in a
+backtick substitution that holds an escaped backtick is read once the outer
+substitution has taken its backslashes off, as every escaped backtick inside
+backticks is (see [Values read again as code](#values-read-again-as-code)),
+so the body is what the shell reads.
 
 The body of an unquoted delimiter is joined the same way when the guard splits
 the line, also one inside `"$(…)"` or a backtick in double quotes: a

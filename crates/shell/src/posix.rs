@@ -11,6 +11,8 @@ use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
+mod values;
+
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let (text, marks, near, open) = join_continuations(text);
     let text = text.as_str();
@@ -37,17 +39,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
             None,
         );
     }
-    let (names, looped) = assigned(tree.root_node(), text);
-    for name in names {
-        split.reassign(&name);
-    }
-    for name in looped {
-        split.loop_variable(&name);
-    }
-    if split.kept.on {
-        environment(split, tree.root_node(), text);
-    }
-    Walker {
+    let mut walker = Walker {
         source: text,
         marks: &marks,
         depth,
@@ -58,8 +50,23 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         tail_of: Vec::new(),
         tail: None,
         unstaged: None,
+        sets: std::collections::HashMap::new(),
+        functions: std::collections::HashSet::new(),
+    };
+    // One walk of the tree finds the variables the line sets and the values
+    // it gives them.
+    let (names, looped) = assigned(tree.root_node(), text, |node| walker.note_value(node));
+    walker.noted();
+    for name in names {
+        walker.split.reassign(&name);
     }
-    .walk(tree.root_node(), None, 0);
+    for name in looped {
+        walker.split.loop_variable(&name);
+    }
+    if walker.split.kept.on {
+        environment(walker.split, tree.root_node(), text);
+    }
+    walker.walk(tree.root_node(), None, 0);
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -776,26 +783,34 @@ fn dashes_before_heredoc(rest: &str) -> usize {
 /// The variables the line sets anywhere (assignments, also after `export`
 /// or `local`, `for` variables, `unset` and `read`), and among them the ones
 /// a `for` loop or a `read` sets: each of those holds one item of what the
-/// loop walks or the input it reads. One walk of the tree finds both.
-fn assigned(root: Node<'_>, source: &str) -> (Vec<String>, Vec<String>) {
+/// loop walks or the input it reads. One walk of the tree finds both, and
+/// hands each node to `also` on the way.
+fn assigned<'t>(
+    root: Node<'t>,
+    source: &str,
+    mut also: impl FnMut(Node<'t>),
+) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
     let mut looped = Vec::new();
-    unit::for_each_node(root, |node| match node.kind() {
-        "variable_assignment" => names.extend(
-            node.child_by_field_name("name")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
-        "unset_command" => {
-            let mut cursor = node.walk();
-            names.extend(
-                node.named_children(&mut cursor)
+    unit::for_each_node(root, |node| {
+        also(node);
+        match node.kind() {
+            "variable_assignment" => names.extend(
+                node.child_by_field_name("name")
                     .map(|name| unit::text(&name, source).to_string()),
-            );
-        }
-        _ => {
-            let found = loop_variables(node, source);
-            names.extend(found.iter().cloned());
-            looped.extend(found);
+            ),
+            "unset_command" => {
+                let mut cursor = node.walk();
+                names.extend(
+                    node.named_children(&mut cursor)
+                        .map(|name| unit::text(&name, source).to_string()),
+                );
+            }
+            _ => {
+                let found = loop_variables(node, source);
+                names.extend(found.iter().cloned());
+                looped.extend(found);
+            }
         }
     });
     (names, looped)
@@ -939,6 +954,11 @@ struct Walker<'a> {
     /// stage the pipeline itself is in: only its last command is in the
     /// pipeline, and the ones before it run where the pipeline does.
     unstaged: Option<(usize, Option<Stage>)>,
+    /// The values each node of the tree gives variables, by node id, for the
+    /// walk to read where the node runs (see [`values`]).
+    sets: std::collections::HashMap<usize, Vec<(String, crate::values::Value)>>,
+    /// The functions the line defines, as the tree is read before the walk.
+    functions: std::collections::HashSet<String>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1110,6 +1130,10 @@ impl Walker<'_> {
         if level > unit::MAX_TREE_DEPTH {
             self.split
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
+            return;
+        }
+        // Kept out of `node`, which the walk recurses through.
+        if self.reads_again(node) {
             return;
         }
         self.split.branches += usize::from(background);
