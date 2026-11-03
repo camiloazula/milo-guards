@@ -2,10 +2,11 @@
 //!
 //! An agent refused a key on the file API can read it through the shell, so
 //! `cat <path>` must be `read_secret` exactly when a read of `<path>` is, for
-//! every path the file guard's own tables name, on a POSIX machine, a Mac and
-//! a Windows one (in PowerShell and in cmd). The paths are the string
-//! literals of the file guard's test tables, read from their source, so a
-//! row added there is held against the shell as soon as it lands.
+//! every path the file guard's own cases name, on a POSIX machine, a Mac and
+//! a Windows one (in PowerShell and in cmd). The paths are read from every
+//! case file of the file guard, `crates/file/tests/cases/*.cases` (the path
+//! of each case, and the paths each `paths` line names), so a case added
+//! there is held against the shell as soon as it lands.
 
 #![cfg(all(feature = "shell", feature = "file"))]
 #![allow(
@@ -14,150 +15,69 @@
     reason = "this test reads the repository's own files, which no guard may do"
 )]
 
+#[path = "../../core/tests/common/cases.rs"]
+mod format;
+
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use format::Word;
 use milo_local_guards::file::{self, Access};
 use milo_local_guards::shell::{self, Shell};
 use milo_local_guards::Paths;
 
-/// The test tables of the file guard.
-const TABLES: [&str; 3] = ["posix.rs", "windows.rs", "protected.rs"];
+/// The fields of a `paths` line that name a path.
+const PATH_FIELDS: [&str; 5] = ["cwd", "home", "workspace", "folder", "file"];
 
-/// The most a path may have in it for a table's row to be one worth a line.
+/// The most a path may have in it for a case to be one worth a line.
 const LONGEST: usize = 300;
 
-fn source(table: &str) -> Result<String, String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../file/tests")
-        .join(table);
-    fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+/// The folder of the file guard's case files.
+fn folder() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../file/tests/cases")
 }
 
-/// Every string literal in Rust source `text`, with escapes resolved:
-/// plain, raw (`r"…"`, `r#"…"#`) and across a line's end; comments and
-/// character literals are skipped.
-fn literals(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
+/// The names of the file guard's case files, sorted.
+fn case_files() -> Result<Vec<String>, String> {
+    let entries =
+        fs::read_dir(folder()).map_err(|e| format!("cannot read {}: {e}", folder().display()))?;
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "cases"))
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Every path the case file `name` of the file guard names: the path of each
+/// case, and each path a `paths` line names.
+fn paths_of(name: &str) -> Result<Vec<String>, String> {
+    let shown = format!("crates/file/tests/cases/{name}.cases");
+    let path = folder().join(format!("{name}.cases"));
+    let source =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let records = format::parse(&shown, &source).map_err(|refused| refused.join("\n"))?;
     let mut found = Vec::new();
-    let mut at = 0;
-    while let Some(&c) = chars.get(at) {
-        match c {
-            '/' if chars.get(at + 1) == Some(&'/') => {
-                while chars.get(at).is_some_and(|&c| c != '\n') {
-                    at += 1;
-                }
-            }
-            '/' if chars.get(at + 1) == Some(&'*') => {
-                at += 2;
-                while at < chars.len() && !(chars[at] == '*' && chars.get(at + 1) == Some(&'/')) {
-                    at += 1;
-                }
-                at += 2;
-            }
-            // A character literal (`'"'`, `'\''`) is not the start of a string.
-            '\'' => {
-                at += if chars.get(at + 1) == Some(&'\\') {
-                    // `'\n'`, `'\''`, `'\u{..}'`: to the closing quote.
-                    let close = (at + 3..chars.len()).find(|&i| chars[i] == '\'');
-                    close.map_or(1, |close| close + 1 - at)
-                } else if chars.get(at + 2) == Some(&'\'') {
-                    3
-                } else {
-                    1
-                };
-            }
-            'r' if matches!(chars.get(at + 1), Some('"' | '#'))
-                && at
-                    .checked_sub(1)
-                    .is_none_or(|before| !is_name(chars[before])) =>
-            {
-                let hashes = chars[at + 1..].iter().take_while(|&&c| c == '#').count();
-                let open = at + 1 + hashes;
-                if chars.get(open) != Some(&'"') {
-                    at += 1;
-                    continue;
-                }
-                let mut end = open + 1;
-                let closing: Vec<char> = std::iter::once('"')
-                    .chain(std::iter::repeat_n('#', hashes))
-                    .collect();
-                while end < chars.len() && chars[end..].get(..closing.len()) != Some(&closing[..]) {
-                    end += 1;
-                }
-                found.push(chars[open + 1..end.min(chars.len())].iter().collect());
-                at = end + closing.len();
-            }
-            '"' => {
-                let mut value = String::new();
-                at += 1;
-                while let Some(&c) = chars.get(at) {
-                    at += 1;
-                    match c {
-                        '"' => break,
-                        '\\' => match chars.get(at).copied() {
-                            Some('n') => {
-                                value.push('\n');
-                                at += 1;
-                            }
-                            Some('r') => {
-                                value.push('\r');
-                                at += 1;
-                            }
-                            Some('t') => {
-                                value.push('\t');
-                                at += 1;
-                            }
-                            Some('0') => {
-                                value.push('\0');
-                                at += 1;
-                            }
-                            Some('u') if chars.get(at + 1) == Some(&'{') => {
-                                let close = (at..chars.len()).find(|&i| chars[i] == '}');
-                                if let Some(close) = close {
-                                    let hex: String = chars[at + 2..close].iter().collect();
-                                    if let Some(c) =
-                                        u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                                    {
-                                        value.push(c);
-                                    }
-                                    at = close + 1;
-                                }
-                            }
-                            Some('\n') => {
-                                at += 1;
-                                while chars.get(at).is_some_and(|c| c.is_whitespace()) {
-                                    at += 1;
-                                }
-                            }
-                            Some(other) => {
-                                value.push(other);
-                                at += 1;
-                            }
-                            None => {}
-                        },
-                        other => value.push(other),
-                    }
-                }
-                found.push(value);
-            }
-            _ => at += 1,
+    for record in records {
+        match record.text {
+            Some(text) => found.push(text),
+            None => found.extend(record.words.into_iter().filter_map(|word| match word {
+                Word::Field(field, value) if PATH_FIELDS.contains(&field.as_str()) => Some(value),
+                _ => None,
+            })),
         }
     }
-    found
+    Ok(found)
 }
 
-fn is_name(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// The paths of the file guard's tables: each literal that is a path a line
-/// can name whole.
-fn paths_of_the_tables() -> Result<BTreeSet<String>, String> {
+/// The paths of the file guard's cases: each that a line can name whole.
+fn paths_of_the_cases() -> Result<BTreeSet<String>, String> {
     let mut found = BTreeSet::new();
-    for table in TABLES {
-        found.extend(literals(&source(table)?).into_iter().filter(|path| {
+    for name in case_files()? {
+        found.extend(paths_of(&name)?.into_iter().filter(|path| {
             !path.is_empty()
                 && path.len() <= LONGEST
                 && !path.chars().any(char::is_control)
@@ -266,8 +186,8 @@ fn lines(path: &str, shell: Shell, home: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() {
-    let tables = paths_of_the_tables().expect("the file guard's tables are readable");
+fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_cases() {
+    let cases = paths_of_the_cases().expect("the file guard's case files are readable");
     let posix = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
     let mac = Paths::new("/Users/me/dev/repo", "/Users/me", ["/Users/me/dev/repo"]);
     let windows = Paths::new(
@@ -276,7 +196,7 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() 
         [r"C:\Users\me\dev\repo"],
     );
     let (mut wrong, mut judged, mut secrets) = (Vec::new(), 0_usize, 0_usize);
-    for path in &tables {
+    for path in &cases {
         for (paths, shells) in [
             (&posix, &[Shell::Posix][..]),
             (&mac, &[Shell::Posix][..]),
@@ -301,8 +221,8 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() 
             }
         }
     }
-    // The tables are read, and name keys: not an empty scan that agrees on
-    // nothing.
+    // The case files are read, and name keys: not an empty scan that agrees
+    // on nothing.
     assert!(judged > 10_000, "only {judged} lines were judged");
     assert!(secrets > 2_000, "only {secrets} of them were secrets");
     assert!(
@@ -314,27 +234,25 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_tables() 
 }
 
 #[test]
-fn the_literals_of_a_source_are_read_as_rust_reads_them() {
-    let text = r##"
-        // "not a literal"
-        let a = "plain \\ and \" and \u{212a}";
-        let b = r"raw \d";
-        let c = r#"with "quotes" inside"#;
-        let d = '"';
-        let e = '\'';
-        let f = "joined \
-                 lines";
-        /* "nor this" */
-        let g = (1, "x");
-    "##;
-    assert_eq!(
-        literals(text),
-        [
-            "plain \\ and \" and \u{212a}",
-            "raw \\d",
-            "with \"quotes\" inside",
-            "joined lines",
-            "x",
-        ]
-    );
+fn each_case_file_names_its_paths() {
+    let posix = paths_of("posix").expect("posix.cases is readable");
+    // A case's path, decoded, and a path a `paths` line names.
+    assert!(posix.iter().any(|path| path == "~/.ssh\\id_rsa"));
+    assert!(posix.iter().any(|path| path == "/home/me/.docker/proj"));
+    let windows = paths_of("windows").expect("windows.cases is readable");
+    assert!(windows
+        .iter()
+        .any(|path| path == r"\\?\C:\Users\me\.ssh\id_rsa"));
+    assert!(windows.iter().any(|path| path == r"C:\Users\Camilo Azula"));
+    let protected = paths_of("protected").expect("protected.cases is readable");
+    assert!(protected.iter().any(|path| path == "/home/me/.agent"));
+    assert!(paths_of("no_such_cases").is_err());
+    // Every case file is read, the ones that were tables first among them.
+    let names = case_files().expect("the case files are listed");
+    for name in ["posix", "windows", "protected", "limits", "startup"] {
+        assert!(
+            names.iter().any(|listed| listed == name),
+            "{name}: {names:?}"
+        );
+    }
 }

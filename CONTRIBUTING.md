@@ -74,8 +74,8 @@ the same name, `tests/<what-it-checks>.rs`, which checks them all with one
 call: `common::cases::check("<what-it-checks>")`. What is not a plain case
 stays in that Rust file: cases made in a loop, long or nested input, timing,
 tests of the API itself, and tests that check a structure (the paths a line
-lists, the tree `explain` draws). The shell guard reads case files; the other
-guards' tables move to them next.
+lists, the tree `explain` draws). The shell guard and the file guard read
+case files; the other guards' tables move to them next.
 
 One case to a line, and nothing else on it:
 
@@ -134,6 +134,20 @@ answer and the line as Rust writes a string, tab separated):
 
 ```sh
 cargo test -p milo-guards-shell --all-features --test cases -- --ignored --nocapture dump
+```
+
+The file guard's case files are the same but for the first word and the
+text: a case is `ACCESS[@PATHS] ANSWER... | PATH`, where `ACCESS` is `read`
+or `write`, a case without `@PATHS` is judged on `posix`, there is no
+`effect=`, and the text is the path the file API is given. Every case is also
+held to name the path as written in each finding (none past the longest path
+judged). Its dump is `cargo test -p milo-guards-file --all-features --test
+cases -- --ignored --nocapture dump`.
+
+```text
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+paths home cwd=/home/me home=/home/me workspace=/home/me
+write@home rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | .bashrc
 ```
 
 The reading of the format is shared, in `crates/core/tests/common/cases.rs`

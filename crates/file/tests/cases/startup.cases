@@ -1,0 +1,824 @@
+# Files a tool runs on its own (`.vscode/tasks.json`, `.envrc`, `.husky/*`,
+# `.github/workflows/*`...): a write to one, at any depth in a workspace
+# folder and however it is spelled, is `write_sensitive`; a read is safe; and
+# the files that only run when someone asks (`Makefile`, `justfile`,
+# `package.json`) stay safe. Every spelling a review could try is a case. The
+# format is in CONTRIBUTING.md.
+
+# A write to a file a tool runs on its own is one finding, in these words:
+# every place on the list, written as a file or as something below a folder.
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .vscode/settings.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | proj.code-workspace
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | a/b/My Project.code-workspace
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | mise.toml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .mise.toml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | mise.local.toml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .mise.local.toml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .zed/tasks.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .gitpod.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .gitea/workflows/ci.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .forgejo/workflows/ci.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .woodpecker.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .woodpecker/build.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .githooks/pre-commit
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .githooks
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .cursor/hooks.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .windsurf/hooks.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .claude/settings.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .claude/settings.local.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .gemini/settings.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .codex/config.toml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .roo/mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .amazonq/mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .kiro/settings/mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .kiro/hooks/x.kiro.hook
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .continue/mcpServers/x.yaml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .vscode/tasks.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .vscode/launch.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .vscode/mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .cursor/mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .mcp.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .idea/runConfigurations
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .idea/runConfigurations/Build.xml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .envrc
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .husky
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .husky/pre-commit
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .husky/_/husky.sh
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .pre-commit-config.yaml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | lefthook.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | lefthook.yaml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .lefthook.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .lefthook.yaml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | lefthook-local.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .lefthook-local.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .github/workflows
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .github/workflows/ci.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .github/workflows/deep/er/x.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .github/actions/setup/action.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .gitlab-ci.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .circleci/config.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .buildkite/pipeline.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .travis.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .drone.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | Jenkinsfile
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | azure-pipelines.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | bitbucket-pipelines.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .devcontainer
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .devcontainer/devcontainer.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .devcontainer/Dockerfile
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .devcontainer/features/x/install.sh
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .devcontainer.json
+# At any depth below a workspace folder, as a `.git` is.
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | src/.envrc
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | a/b/c/.vscode/tasks.json
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | packages/app/.github/workflows/ci.yml
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | vendor/x/.husky/pre-commit
+write rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | docs/Jenkinsfile
+
+# A read of one stays safe, on a POSIX machine, a Mac and Windows.
+read safe | .vscode/settings.json
+read safe | proj.code-workspace
+read safe | a/b/My Project.code-workspace
+read safe | mise.toml
+read safe | .mise.toml
+read safe | mise.local.toml
+read safe | .mise.local.toml
+read safe | .zed/tasks.json
+read safe | .gitpod.yml
+read safe | .gitea/workflows/ci.yml
+read safe | .forgejo/workflows/ci.yml
+read safe | .woodpecker.yml
+read safe | .woodpecker/build.yml
+read safe | .githooks/pre-commit
+read safe | .githooks
+read safe | .cursor/hooks.json
+read safe | .windsurf/hooks.json
+read safe | .claude/settings.json
+read safe | .claude/settings.local.json
+read safe | .gemini/settings.json
+read safe | .codex/config.toml
+read safe | .roo/mcp.json
+read safe | .amazonq/mcp.json
+read safe | .kiro/settings/mcp.json
+read safe | .kiro/hooks/x.kiro.hook
+read safe | .continue/mcpServers/x.yaml
+read safe | .vscode/tasks.json
+read safe | .vscode/launch.json
+read safe | .vscode/mcp.json
+read safe | .cursor/mcp.json
+read safe | .mcp.json
+read safe | .idea/runConfigurations
+read safe | .idea/runConfigurations/Build.xml
+read safe | .envrc
+read safe | .husky
+read safe | .husky/pre-commit
+read safe | .husky/_/husky.sh
+read safe | .pre-commit-config.yaml
+read safe | lefthook.yml
+read safe | lefthook.yaml
+read safe | .lefthook.yml
+read safe | .lefthook.yaml
+read safe | lefthook-local.yml
+read safe | .lefthook-local.yml
+read safe | .github/workflows
+read safe | .github/workflows/ci.yml
+read safe | .github/workflows/deep/er/x.yml
+read safe | .github/actions/setup/action.yml
+read safe | .gitlab-ci.yml
+read safe | .circleci/config.yml
+read safe | .buildkite/pipeline.yml
+read safe | .travis.yml
+read safe | .drone.yml
+read safe | Jenkinsfile
+read safe | azure-pipelines.yml
+read safe | bitbucket-pipelines.yml
+read safe | .devcontainer
+read safe | .devcontainer/devcontainer.json
+read safe | .devcontainer/Dockerfile
+read safe | .devcontainer/features/x/install.sh
+read safe | .devcontainer.json
+read safe | src/.envrc
+read safe | a/b/c/.vscode/tasks.json
+read safe | packages/app/.github/workflows/ci.yml
+read safe | vendor/x/.husky/pre-commit
+read safe | docs/Jenkinsfile
+read@macos safe | .vscode/settings.json
+read@macos safe | proj.code-workspace
+read@macos safe | a/b/My Project.code-workspace
+read@macos safe | mise.toml
+read@macos safe | .mise.toml
+read@macos safe | mise.local.toml
+read@macos safe | .mise.local.toml
+read@macos safe | .zed/tasks.json
+read@macos safe | .gitpod.yml
+read@macos safe | .gitea/workflows/ci.yml
+read@macos safe | .forgejo/workflows/ci.yml
+read@macos safe | .woodpecker.yml
+read@macos safe | .woodpecker/build.yml
+read@macos safe | .githooks/pre-commit
+read@macos safe | .githooks
+read@macos safe | .cursor/hooks.json
+read@macos safe | .windsurf/hooks.json
+read@macos safe | .claude/settings.json
+read@macos safe | .claude/settings.local.json
+read@macos safe | .gemini/settings.json
+read@macos safe | .codex/config.toml
+read@macos safe | .roo/mcp.json
+read@macos safe | .amazonq/mcp.json
+read@macos safe | .kiro/settings/mcp.json
+read@macos safe | .kiro/hooks/x.kiro.hook
+read@macos safe | .continue/mcpServers/x.yaml
+read@macos safe | .vscode/tasks.json
+read@macos safe | .vscode/launch.json
+read@macos safe | .vscode/mcp.json
+read@macos safe | .cursor/mcp.json
+read@macos safe | .mcp.json
+read@macos safe | .idea/runConfigurations
+read@macos safe | .idea/runConfigurations/Build.xml
+read@macos safe | .envrc
+read@macos safe | .husky
+read@macos safe | .husky/pre-commit
+read@macos safe | .husky/_/husky.sh
+read@macos safe | .pre-commit-config.yaml
+read@macos safe | lefthook.yml
+read@macos safe | lefthook.yaml
+read@macos safe | .lefthook.yml
+read@macos safe | .lefthook.yaml
+read@macos safe | lefthook-local.yml
+read@macos safe | .lefthook-local.yml
+read@macos safe | .github/workflows
+read@macos safe | .github/workflows/ci.yml
+read@macos safe | .github/workflows/deep/er/x.yml
+read@macos safe | .github/actions/setup/action.yml
+read@macos safe | .gitlab-ci.yml
+read@macos safe | .circleci/config.yml
+read@macos safe | .buildkite/pipeline.yml
+read@macos safe | .travis.yml
+read@macos safe | .drone.yml
+read@macos safe | Jenkinsfile
+read@macos safe | azure-pipelines.yml
+read@macos safe | bitbucket-pipelines.yml
+read@macos safe | .devcontainer
+read@macos safe | .devcontainer/devcontainer.json
+read@macos safe | .devcontainer/Dockerfile
+read@macos safe | .devcontainer/features/x/install.sh
+read@macos safe | .devcontainer.json
+read@macos safe | src/.envrc
+read@macos safe | a/b/c/.vscode/tasks.json
+read@macos safe | packages/app/.github/workflows/ci.yml
+read@macos safe | vendor/x/.husky/pre-commit
+read@macos safe | docs/Jenkinsfile
+read@windows safe | .vscode/settings.json
+read@windows safe | proj.code-workspace
+read@windows safe | a/b/My Project.code-workspace
+read@windows safe | mise.toml
+read@windows safe | .mise.toml
+read@windows safe | mise.local.toml
+read@windows safe | .mise.local.toml
+read@windows safe | .zed/tasks.json
+read@windows safe | .gitpod.yml
+read@windows safe | .gitea/workflows/ci.yml
+read@windows safe | .forgejo/workflows/ci.yml
+read@windows safe | .woodpecker.yml
+read@windows safe | .woodpecker/build.yml
+read@windows safe | .githooks/pre-commit
+read@windows safe | .githooks
+read@windows safe | .cursor/hooks.json
+read@windows safe | .windsurf/hooks.json
+read@windows safe | .claude/settings.json
+read@windows safe | .claude/settings.local.json
+read@windows safe | .gemini/settings.json
+read@windows safe | .codex/config.toml
+read@windows safe | .roo/mcp.json
+read@windows safe | .amazonq/mcp.json
+read@windows safe | .kiro/settings/mcp.json
+read@windows safe | .kiro/hooks/x.kiro.hook
+read@windows safe | .continue/mcpServers/x.yaml
+read@windows safe | .vscode/tasks.json
+read@windows safe | .vscode/launch.json
+read@windows safe | .vscode/mcp.json
+read@windows safe | .cursor/mcp.json
+read@windows safe | .mcp.json
+read@windows safe | .idea/runConfigurations
+read@windows safe | .idea/runConfigurations/Build.xml
+read@windows safe | .envrc
+read@windows safe | .husky
+read@windows safe | .husky/pre-commit
+read@windows safe | .husky/_/husky.sh
+read@windows safe | .pre-commit-config.yaml
+read@windows safe | lefthook.yml
+read@windows safe | lefthook.yaml
+read@windows safe | .lefthook.yml
+read@windows safe | .lefthook.yaml
+read@windows safe | lefthook-local.yml
+read@windows safe | .lefthook-local.yml
+read@windows safe | .github/workflows
+read@windows safe | .github/workflows/ci.yml
+read@windows safe | .github/workflows/deep/er/x.yml
+read@windows safe | .github/actions/setup/action.yml
+read@windows safe | .gitlab-ci.yml
+read@windows safe | .circleci/config.yml
+read@windows safe | .buildkite/pipeline.yml
+read@windows safe | .travis.yml
+read@windows safe | .drone.yml
+read@windows safe | Jenkinsfile
+read@windows safe | azure-pipelines.yml
+read@windows safe | bitbucket-pipelines.yml
+read@windows safe | .devcontainer
+read@windows safe | .devcontainer/devcontainer.json
+read@windows safe | .devcontainer/Dockerfile
+read@windows safe | .devcontainer/features/x/install.sh
+read@windows safe | .devcontainer.json
+read@windows safe | src/.envrc
+read@windows safe | a/b/c/.vscode/tasks.json
+read@windows safe | packages/app/.github/workflows/ci.yml
+read@windows safe | vendor/x/.husky/pre-commit
+read@windows safe | docs/Jenkinsfile
+
+# The files that only run when asked stay safe, to a write and to a read, on
+# a POSIX machine, a Mac and Windows: files that run only when someone asks,
+# and near misses of the names.
+write safe | Makefile
+write safe | justfile
+write safe | package.json
+write safe | Cargo.toml
+write safe | build.rs
+write safe | scripts/build.sh
+write safe | .cargo/config.toml
+write safe | .envrcx
+write safe | x.envrc
+write safe | .envrc.bak
+write safe | .env/rc
+write safe | envrc
+write safe | tasks.json
+write safe | launch.json
+write safe | mcp.json
+write safe | .vscode/extensions.json
+write safe | .vscode/tasks.json.bak
+write safe | .vscodex/tasks.json
+write safe | vscode/tasks.json
+write safe | .vscode/x/tasks.json.d
+write safe | .cursor/rules/x.mdc
+write safe | .cursor/mcp.json.bak
+write safe | .idea/workspace.xml
+write safe | .idea/runConfigurationsx/x.xml
+write safe | .husky-old/pre-commit
+write safe | .huskyx
+write safe | .pre-commit-hooks.yaml
+write safe | lefthook.yml.bak
+write safe | my-lefthook.yml
+write safe | lefthook
+write safe | .github/dependabot.yml
+write safe | .github/ISSUE_TEMPLATE/bug.md
+write safe | .github/workflows-old/ci.yml
+write safe | .githubx/workflows/ci.yml
+write safe | .gitlab/issue_templates/x.md
+write safe | .gitlab-ci.yml.bak
+write safe | Jenkinsfile.md
+write safe | .devcontainerx/x
+write safe | .devcontainer.jsonx
+write safe | src/.gitignore
+read safe | Makefile
+read safe | justfile
+read safe | package.json
+read safe | Cargo.toml
+read safe | build.rs
+read safe | scripts/build.sh
+read safe | .cargo/config.toml
+read safe | .envrcx
+read safe | x.envrc
+read safe | .envrc.bak
+read safe | .env/rc
+read safe | envrc
+read safe | tasks.json
+read safe | launch.json
+read safe | mcp.json
+read safe | .vscode/extensions.json
+read safe | .vscode/tasks.json.bak
+read safe | .vscodex/tasks.json
+read safe | vscode/tasks.json
+read safe | .vscode/x/tasks.json.d
+read safe | .cursor/rules/x.mdc
+read safe | .cursor/mcp.json.bak
+read safe | .idea/workspace.xml
+read safe | .idea/runConfigurationsx/x.xml
+read safe | .husky-old/pre-commit
+read safe | .huskyx
+read safe | .pre-commit-hooks.yaml
+read safe | lefthook.yml.bak
+read safe | my-lefthook.yml
+read safe | lefthook
+read safe | .github/dependabot.yml
+read safe | .github/ISSUE_TEMPLATE/bug.md
+read safe | .github/workflows-old/ci.yml
+read safe | .githubx/workflows/ci.yml
+read safe | .github/hooks/x
+read safe | .gitlab/issue_templates/x.md
+read safe | .gitlab-ci.yml.bak
+read safe | Jenkinsfile.md
+read safe | .devcontainerx/x
+read safe | .devcontainer.jsonx
+read safe | src/.gitignore
+write@macos safe | Makefile
+write@macos safe | justfile
+write@macos safe | package.json
+write@macos safe | Cargo.toml
+write@macos safe | build.rs
+write@macos safe | scripts/build.sh
+write@macos safe | .cargo/config.toml
+write@macos safe | .env
+write@macos safe | .envrcx
+write@macos safe | x.envrc
+write@macos safe | .envrc.bak
+write@macos safe | .env/rc
+write@macos safe | envrc
+write@macos safe | tasks.json
+write@macos safe | launch.json
+write@macos safe | mcp.json
+write@macos safe | .vscode/extensions.json
+write@macos safe | .vscode/tasks.json.bak
+write@macos safe | .vscodex/tasks.json
+write@macos safe | vscode/tasks.json
+write@macos safe | .vscode/x/tasks.json.d
+write@macos safe | .cursor/rules/x.mdc
+write@macos safe | .cursor/mcp.json.bak
+write@macos safe | .idea/workspace.xml
+write@macos safe | .idea/runConfigurationsx/x.xml
+write@macos safe | .husky-old/pre-commit
+write@macos safe | .huskyx
+write@macos safe | .pre-commit-hooks.yaml
+write@macos safe | lefthook.yml.bak
+write@macos safe | my-lefthook.yml
+write@macos safe | lefthook
+write@macos safe | .github/dependabot.yml
+write@macos safe | .github/ISSUE_TEMPLATE/bug.md
+write@macos safe | .github/workflows-old/ci.yml
+write@macos safe | .githubx/workflows/ci.yml
+write@macos safe | .github/hooks/x
+write@macos safe | .gitlab/issue_templates/x.md
+write@macos safe | .gitlab-ci.yml.bak
+write@macos safe | Jenkinsfile.md
+write@macos safe | .devcontainerx/x
+write@macos safe | .devcontainer.jsonx
+write@macos safe | src/.gitignore
+read@macos safe | Makefile
+read@macos safe | justfile
+read@macos safe | package.json
+read@macos safe | Cargo.toml
+read@macos safe | build.rs
+read@macos safe | scripts/build.sh
+read@macos safe | .cargo/config.toml
+read@macos safe | .env
+read@macos safe | .envrcx
+read@macos safe | x.envrc
+read@macos safe | .envrc.bak
+read@macos safe | .env/rc
+read@macos safe | envrc
+read@macos safe | tasks.json
+read@macos safe | launch.json
+read@macos safe | mcp.json
+read@macos safe | .vscode/extensions.json
+read@macos safe | .vscode/tasks.json.bak
+read@macos safe | .vscodex/tasks.json
+read@macos safe | vscode/tasks.json
+read@macos safe | .vscode/x/tasks.json.d
+read@macos safe | .cursor/rules/x.mdc
+read@macos safe | .cursor/mcp.json.bak
+read@macos safe | .idea/workspace.xml
+read@macos safe | .idea/runConfigurationsx/x.xml
+read@macos safe | .husky-old/pre-commit
+read@macos safe | .huskyx
+read@macos safe | .pre-commit-hooks.yaml
+read@macos safe | lefthook.yml.bak
+read@macos safe | my-lefthook.yml
+read@macos safe | lefthook
+read@macos safe | .github/dependabot.yml
+read@macos safe | .github/ISSUE_TEMPLATE/bug.md
+read@macos safe | .github/workflows-old/ci.yml
+read@macos safe | .githubx/workflows/ci.yml
+read@macos safe | .github/hooks/x
+read@macos safe | .gitlab/issue_templates/x.md
+read@macos safe | .gitlab-ci.yml.bak
+read@macos safe | Jenkinsfile.md
+read@macos safe | .devcontainerx/x
+read@macos safe | .devcontainer.jsonx
+read@macos safe | src/.gitignore
+write@windows safe | Makefile
+write@windows safe | justfile
+write@windows safe | package.json
+write@windows safe | Cargo.toml
+write@windows safe | build.rs
+write@windows safe | scripts/build.sh
+write@windows safe | .cargo/config.toml
+write@windows safe | .env
+write@windows safe | .envrcx
+write@windows safe | x.envrc
+write@windows safe | .envrc.bak
+write@windows safe | .env/rc
+write@windows safe | envrc
+write@windows safe | tasks.json
+write@windows safe | launch.json
+write@windows safe | mcp.json
+write@windows safe | .vscode/extensions.json
+write@windows safe | .vscode/tasks.json.bak
+write@windows safe | .vscodex/tasks.json
+write@windows safe | vscode/tasks.json
+write@windows safe | .vscode/x/tasks.json.d
+write@windows safe | .cursor/rules/x.mdc
+write@windows safe | .cursor/mcp.json.bak
+write@windows safe | .idea/workspace.xml
+write@windows safe | .idea/runConfigurationsx/x.xml
+write@windows safe | .husky-old/pre-commit
+write@windows safe | .huskyx
+write@windows safe | .pre-commit-hooks.yaml
+write@windows safe | lefthook.yml.bak
+write@windows safe | my-lefthook.yml
+write@windows safe | lefthook
+write@windows safe | .github/dependabot.yml
+write@windows safe | .github/ISSUE_TEMPLATE/bug.md
+write@windows safe | .github/workflows-old/ci.yml
+write@windows safe | .githubx/workflows/ci.yml
+write@windows safe | .github/hooks/x
+write@windows safe | .gitlab/issue_templates/x.md
+write@windows safe | .gitlab-ci.yml.bak
+write@windows safe | Jenkinsfile.md
+write@windows safe | .devcontainerx/x
+write@windows safe | .devcontainer.jsonx
+write@windows safe | src/main.rs
+write@windows safe | src/.gitignore
+read@windows safe | Makefile
+read@windows safe | justfile
+read@windows safe | package.json
+read@windows safe | Cargo.toml
+read@windows safe | build.rs
+read@windows safe | scripts/build.sh
+read@windows safe | .cargo/config.toml
+read@windows safe | .env
+read@windows safe | .envrcx
+read@windows safe | x.envrc
+read@windows safe | .envrc.bak
+read@windows safe | .env/rc
+read@windows safe | envrc
+read@windows safe | tasks.json
+read@windows safe | launch.json
+read@windows safe | mcp.json
+read@windows safe | .vscode/extensions.json
+read@windows safe | .vscode/tasks.json.bak
+read@windows safe | .vscodex/tasks.json
+read@windows safe | vscode/tasks.json
+read@windows safe | .vscode/x/tasks.json.d
+read@windows safe | .cursor/rules/x.mdc
+read@windows safe | .cursor/mcp.json.bak
+read@windows safe | .idea/workspace.xml
+read@windows safe | .idea/runConfigurationsx/x.xml
+read@windows safe | .husky-old/pre-commit
+read@windows safe | .huskyx
+read@windows safe | .pre-commit-hooks.yaml
+read@windows safe | lefthook.yml.bak
+read@windows safe | my-lefthook.yml
+read@windows safe | lefthook
+read@windows safe | .github/dependabot.yml
+read@windows safe | .github/ISSUE_TEMPLATE/bug.md
+read@windows safe | .github/workflows-old/ci.yml
+read@windows safe | .githubx/workflows/ci.yml
+read@windows safe | .github/hooks/x
+read@windows safe | .gitlab/issue_templates/x.md
+read@windows safe | .gitlab-ci.yml.bak
+read@windows safe | Jenkinsfile.md
+read@windows safe | .devcontainerx/x
+read@windows safe | .devcontainer.jsonx
+read@windows safe | src/.gitignore
+
+# Spellings of one are one file: absolute, from home, from the working
+# directory.
+write finds=write_sensitive | /home/me/work/repo/.envrc
+write finds=write_sensitive | ~/work/repo/.envrc
+write finds=write_sensitive | ~/work/repo/.vscode/tasks.json
+write finds=write_sensitive | ./.envrc
+write finds=write_sensitive | src/../.envrc
+write finds=write_sensitive | ../repo/.envrc
+write finds=write_sensitive | /home/me/work/./repo/.envrc
+# Doubled and dotted separators, `..` inside the name's folder.
+write finds=write_sensitive | .//.envrc
+write finds=write_sensitive | .vscode//tasks.json
+write finds=write_sensitive | .vscode/./tasks.json
+write finds=write_sensitive | .vscode/x/../tasks.json
+write finds=write_sensitive | .github//workflows//ci.yml
+write finds=write_sensitive | .github/workflows/
+write finds=write_sensitive | .husky/
+write finds=write_sensitive | .husky/.
+write finds=write_sensitive | .github/x/../workflows/ci.yml
+# Without case: a Mac and Windows ignore it.
+write finds=write_sensitive | .ENVRC
+write finds=write_sensitive | .Envrc
+write finds=write_sensitive | .VSCode/Tasks.JSON
+write finds=write_sensitive | .GitHub/Workflows/CI.yml
+write finds=write_sensitive | .HUSKY/pre-commit
+write finds=write_sensitive | JENKINSFILE
+write finds=write_sensitive | LeftHook.YML
+write finds=write_sensitive | .PRE-COMMIT-CONFIG.YAML
+write finds=write_sensitive | .Devcontainer/devcontainer.json
+# The widest fold, as a Mac's file system reads it: the Kelvin sign U+212A
+# is a `k`.
+write finds=write_sensitive | lefthoo\u{212A}.yml
+write finds=write_sensitive | src/.ENVRC
+
+# A Mac reads the same names by its links and its fold.
+write@macos finds=write_sensitive | /Users/me/dev/repo/.envrc
+write@macos finds=write_sensitive | /Users/me/dev/repo/.vscode/tasks.json
+write@macos finds=write_sensitive | .ENVRC
+write@macos finds=write_sensitive | .VSCODE/TASKS.JSON
+write@macos finds=write_sensitive | .GITHUB/WORKFLOWS/ci.yml
+write@macos finds=write_sensitive | /System/Volumes/Data/Users/me/dev/repo/.envrc
+write@macos finds=write_sensitive | /Volumes/Macintosh HD/Users/me/dev/repo/.vscode/tasks.json
+write@macos finds=write_sensitive | /Volumes/Macintosh HD - Data/Users/me/dev/repo/.husky/pre-commit
+write@macos finds=write_sensitive | ../../../../System/Volumes/Data/Users/me/dev/repo/.envrc
+write@macos finds=write_sensitive | ~/dev/repo/.envrc
+# The long s is an `s` there.
+write@macos finds=write_sensitive | .vſcode/tasks.json
+write@macos finds=write_sensitive | Jenkinſfile
+
+# Windows reads every spelling it resolves to one name: every place on the
+# list, as written and with its slashes as backslashes.
+write@windows finds=write_sensitive | .vscode/settings.json
+write@windows finds=write_sensitive | proj.code-workspace
+write@windows finds=write_sensitive | a/b/My Project.code-workspace
+write@windows finds=write_sensitive | mise.toml
+write@windows finds=write_sensitive | .mise.toml
+write@windows finds=write_sensitive | mise.local.toml
+write@windows finds=write_sensitive | .mise.local.toml
+write@windows finds=write_sensitive | .zed/tasks.json
+write@windows finds=write_sensitive | .gitpod.yml
+write@windows finds=write_sensitive | .gitea/workflows/ci.yml
+write@windows finds=write_sensitive | .forgejo/workflows/ci.yml
+write@windows finds=write_sensitive | .woodpecker.yml
+write@windows finds=write_sensitive | .woodpecker/build.yml
+write@windows finds=write_sensitive | .githooks/pre-commit
+write@windows finds=write_sensitive | .githooks
+write@windows finds=write_sensitive | .cursor/hooks.json
+write@windows finds=write_sensitive | .windsurf/hooks.json
+write@windows finds=write_sensitive | .claude/settings.json
+write@windows finds=write_sensitive | .claude/settings.local.json
+write@windows finds=write_sensitive | .gemini/settings.json
+write@windows finds=write_sensitive | .codex/config.toml
+write@windows finds=write_sensitive | .roo/mcp.json
+write@windows finds=write_sensitive | .amazonq/mcp.json
+write@windows finds=write_sensitive | .kiro/settings/mcp.json
+write@windows finds=write_sensitive | .kiro/hooks/x.kiro.hook
+write@windows finds=write_sensitive | .continue/mcpServers/x.yaml
+write@windows finds=write_sensitive | .vscode/tasks.json
+write@windows finds=write_sensitive | .vscode/launch.json
+write@windows finds=write_sensitive | .vscode/mcp.json
+write@windows finds=write_sensitive | .cursor/mcp.json
+write@windows finds=write_sensitive | .mcp.json
+write@windows finds=write_sensitive | .idea/runConfigurations
+write@windows finds=write_sensitive | .idea/runConfigurations/Build.xml
+write@windows finds=write_sensitive | .envrc
+write@windows finds=write_sensitive | .husky
+write@windows finds=write_sensitive | .husky/pre-commit
+write@windows finds=write_sensitive | .husky/_/husky.sh
+write@windows finds=write_sensitive | .pre-commit-config.yaml
+write@windows finds=write_sensitive | lefthook.yml
+write@windows finds=write_sensitive | lefthook.yaml
+write@windows finds=write_sensitive | .lefthook.yml
+write@windows finds=write_sensitive | .lefthook.yaml
+write@windows finds=write_sensitive | lefthook-local.yml
+write@windows finds=write_sensitive | .lefthook-local.yml
+write@windows finds=write_sensitive | .github/workflows
+write@windows finds=write_sensitive | .github/workflows/ci.yml
+write@windows finds=write_sensitive | .github/workflows/deep/er/x.yml
+write@windows finds=write_sensitive | .github/actions/setup/action.yml
+write@windows finds=write_sensitive | .gitlab-ci.yml
+write@windows finds=write_sensitive | .circleci/config.yml
+write@windows finds=write_sensitive | .buildkite/pipeline.yml
+write@windows finds=write_sensitive | .travis.yml
+write@windows finds=write_sensitive | .drone.yml
+write@windows finds=write_sensitive | Jenkinsfile
+write@windows finds=write_sensitive | azure-pipelines.yml
+write@windows finds=write_sensitive | bitbucket-pipelines.yml
+write@windows finds=write_sensitive | .devcontainer
+write@windows finds=write_sensitive | .devcontainer/devcontainer.json
+write@windows finds=write_sensitive | .devcontainer/Dockerfile
+write@windows finds=write_sensitive | .devcontainer/features/x/install.sh
+write@windows finds=write_sensitive | .devcontainer.json
+write@windows finds=write_sensitive | src/.envrc
+write@windows finds=write_sensitive | a/b/c/.vscode/tasks.json
+write@windows finds=write_sensitive | packages/app/.github/workflows/ci.yml
+write@windows finds=write_sensitive | vendor/x/.husky/pre-commit
+write@windows finds=write_sensitive | docs/Jenkinsfile
+write@windows finds=write_sensitive | .vscode\\settings.json
+write@windows finds=write_sensitive | a\\b\\My Project.code-workspace
+write@windows finds=write_sensitive | .zed\\tasks.json
+write@windows finds=write_sensitive | .gitea\\workflows\\ci.yml
+write@windows finds=write_sensitive | .forgejo\\workflows\\ci.yml
+write@windows finds=write_sensitive | .woodpecker\\build.yml
+write@windows finds=write_sensitive | .githooks\\pre-commit
+write@windows finds=write_sensitive | .cursor\\hooks.json
+write@windows finds=write_sensitive | .windsurf\\hooks.json
+write@windows finds=write_sensitive | .claude\\settings.json
+write@windows finds=write_sensitive | .claude\\settings.local.json
+write@windows finds=write_sensitive | .gemini\\settings.json
+write@windows finds=write_sensitive | .codex\\config.toml
+write@windows finds=write_sensitive | .roo\\mcp.json
+write@windows finds=write_sensitive | .amazonq\\mcp.json
+write@windows finds=write_sensitive | .kiro\\settings\\mcp.json
+write@windows finds=write_sensitive | .kiro\\hooks\\x.kiro.hook
+write@windows finds=write_sensitive | .continue\\mcpServers\\x.yaml
+write@windows finds=write_sensitive | .vscode\\tasks.json
+write@windows finds=write_sensitive | .vscode\\launch.json
+write@windows finds=write_sensitive | .vscode\\mcp.json
+write@windows finds=write_sensitive | .cursor\\mcp.json
+write@windows finds=write_sensitive | .idea\\runConfigurations
+write@windows finds=write_sensitive | .idea\\runConfigurations\\Build.xml
+write@windows finds=write_sensitive | .husky\\pre-commit
+write@windows finds=write_sensitive | .husky\\_\\husky.sh
+write@windows finds=write_sensitive | .github\\workflows
+write@windows finds=write_sensitive | .github\\workflows\\ci.yml
+write@windows finds=write_sensitive | .github\\workflows\\deep\\er\\x.yml
+write@windows finds=write_sensitive | .github\\actions\\setup\\action.yml
+write@windows finds=write_sensitive | .circleci\\config.yml
+write@windows finds=write_sensitive | .buildkite\\pipeline.yml
+write@windows finds=write_sensitive | .devcontainer\\devcontainer.json
+write@windows finds=write_sensitive | .devcontainer\\Dockerfile
+write@windows finds=write_sensitive | .devcontainer\\features\\x\\install.sh
+write@windows finds=write_sensitive | src\\.envrc
+write@windows finds=write_sensitive | a\\b\\c\\.vscode\\tasks.json
+write@windows finds=write_sensitive | packages\\app\\.github\\workflows\\ci.yml
+write@windows finds=write_sensitive | vendor\\x\\.husky\\pre-commit
+write@windows finds=write_sensitive | docs\\Jenkinsfile
+# Drive, case, separators, long path.
+write@windows finds=write_sensitive | C:\\Users\\me\\dev\\repo\\.envrc
+write@windows finds=write_sensitive | c:\\users\\ME\\dev\\repo\\.ENVRC
+write@windows finds=write_sensitive | C:/Users/me/dev/repo/.envrc
+write@windows finds=write_sensitive | \\Users\\me\\dev\\repo\\.envrc
+write@windows finds=write_sensitive | \\\\?\\C:\\Users\\me\\dev\\repo\\.envrc
+write@windows finds=write_sensitive | //?/C:/Users/me/dev/repo/.vscode/tasks.json
+write@windows finds=write_sensitive | ~\\dev\\repo\\.envrc
+write@windows finds=write_sensitive | C:.envrc
+write@windows finds=write_sensitive | c:.vscode\\tasks.json
+# Mixed and doubled separators, dots.
+write@windows finds=write_sensitive | .vscode\\/tasks.json
+write@windows finds=write_sensitive | .vscode\\\\tasks.json
+write@windows finds=write_sensitive | .vscode\\.\\tasks.json
+write@windows finds=write_sensitive | .vscode\\x\\..\\tasks.json
+write@windows finds=write_sensitive | src\\..\\.envrc
+write@windows finds=write_sensitive | .github\\workflows\\
+# Trailing dots and spaces a name loses on Windows.
+write@windows finds=write_sensitive | .envrc.
+write@windows finds=write_sensitive | .envrc\s
+write@windows finds=write_sensitive | .envrc. .
+write@windows finds=write_sensitive | .vscode.\\tasks.json
+write@windows finds=write_sensitive | .vscode\\tasks.json.
+write@windows finds=write_sensitive | .vscode\\tasks.json\s
+write@windows finds=write_sensitive | .github.\\workflows.\\ci.yml
+# Case.
+write@windows finds=write_sensitive | .VSCODE\\TASKS.JSON
+write@windows finds=write_sensitive | .GitHub\\Workflows\\CI.yml
+write@windows finds=write_sensitive | JENKINSFILE
+# 8.3 short names, whole or in part.
+write@windows finds=write_sensitive | VSCODE~1\\TASKS~1.JSO
+write@windows finds=write_sensitive | VSCODE~1\\tasks.json
+write@windows finds=write_sensitive | .vscode\\TASKS~1.JSO
+write@windows finds=write_sensitive | vscode~1\\launch~1.jso
+write@windows finds=write_sensitive | VSCODE~1\\MCP~1.JSO
+write@windows finds=write_sensitive | VSCODE~1\\MCP.JSON
+write@windows finds=write_sensitive | ENVRC~1
+write@windows finds=write_sensitive | envrc~1
+write@windows finds=write_sensitive | GITHUB~1\\WORKFL~1\\ci.yml
+write@windows finds=write_sensitive | GITHUB~1\\workflows\\ci.yml
+write@windows finds=write_sensitive | GITHUB~1\\ACTIONS\\x\\action.yml
+write@windows finds=write_sensitive | GITHUB~1\\ACTION~1\\x\\action.yml
+write@windows finds=write_sensitive | HUSKY~1\\pre-commit
+write@windows finds=write_sensitive | PRE-CO~1.YAM
+write@windows finds=write_sensitive | GITLAB~1.YML
+write@windows finds=write_sensitive | LEFTHO~1.YML
+write@windows finds=write_sensitive | JENKIN~1
+write@windows finds=write_sensitive | AZURE-~1.YML
+write@windows finds=write_sensitive | DEVCON~1\\devcontainer.json
+write@windows finds=write_sensitive | DEVCON~1.JSO
+write@windows finds=write_sensitive | CIRCLE~1\\config.yml
+# The form a name hashes to once short names collide.
+write@windows finds=write_sensitive | VS1A2B~1\\tasks.json
+write@windows finds=write_sensitive | EN1A2B~1
+# Beside the repository's history and under another folder.
+write@windows finds=write_sensitive | src\\ENVRC~1
+write@windows finds=write_sensitive | packages\\app\\GITHUB~1\\workflows\\ci.yml
+
+# Windows keeps the everyday names safe.
+write@windows safe | VSCODE~1\\EXTENS~1.JSO
+write@windows safe | .vscode\\extensions.json
+write@windows safe | GITHUB~1\\ISSUE_~1\\bug.md
+write@windows safe | GITHUB~1\\DEPEND~1.YML
+write@windows safe | GITHUB~1\\workflows-old\\x
+write@windows safe | ENVRCX~1
+write@windows safe | MAKEFI~1
+write@windows safe | PACKAG~1.JSO
+write@windows safe | JUSTFI~1
+write@windows safe | .github\\hooks\\x
+write@windows safe | C:\\Users\\me\\dev\\repo\\Makefile
+write@windows safe | C:\\Users\\me\\dev\\repo\\package.json
+write@windows safe | \\\\?\\C:\\Users\\me\\dev\\repo\\justfile
+# A short name of another kind of name is a plain name.
+write@windows safe | PROGRA~1\\x
+write@windows safe | VSCODE~X
+write@windows safe | ENVRC~
+
+# What Windows cannot read to a name stays unreadable.
+write@windows rules=unreadable | .vscode\\tasks.json::$DATA
+write@windows rules=unreadable | .envrc:stream
+write@windows rules=unreadable | .github\\workflows\\x \\ci.yml
+write@windows rules=unreadable | D:.envrc
+
+# Only the workspace's own paths are found. Beyond the workspace the place
+# already says so, and nothing is added to it.
+write rules=write_outside | /home/me/other/.envrc
+write rules=write_outside | /home/me/.vscode/tasks.json
+# `~` is also a folder named `~` in the working directory, which is the
+# workspace's own, and that reading is judged too.
+write rules=write_outside,write_sensitive | ~/.envrc
+write rules=write_outside | /etc/.envrc
+write rules=write_outside | /home/me/work/.github/workflows/ci.yml
+# A temporary file is the agent's own.
+write safe | /tmp/x/.envrc
+write safe | /tmp/.vscode/tasks.json
+write safe | /var/tmp/x/.github/workflows/ci.yml
+# The repository's history, a hook and a key keep their words.
+write rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | .git/.envrc
+write rules=write_sensitive | vendor/x/.git/hooks/.envrc
+
+# A protected path keeps its own words.
+paths protected base=posix file=/home/me/work/repo/.vscode/tasks.json words="the agent's settings" folder=/home/me/work/repo/.github/workflows words="the agent's rules"
+write@protected rules=write_protected | .vscode/tasks.json
+write@protected rules=write_protected first=write_protected reason="writes to the agent's rules" | .github/workflows/ci.yml
+# Not protected: one finding of its own.
+write@protected rules=write_sensitive | .vscode/launch.json
+write@protected rules=write_sensitive | .github/actions/x/action.yml
+
+# A write in a workspace that is the home directory is found too.
+paths home cwd=/home/me home=/home/me workspace=/home/me
+write@home rules=write_sensitive | .envrc
+write@home rules=write_sensitive | proj/.vscode/tasks.json
+write@home rules=write_sensitive | ~/proj/.github/workflows/ci.yml
+# What the home directory holds keeps its own words.
+write@home rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | .bashrc
+write@home rules=write_sensitive | .ssh/id_rsa
+write@home safe | proj/Makefile
+
+# A bracket class inside the workspace is read as a pattern: a class that
+# can pick one of the places is one.
+write finds=write_sensitive | .vscode/[t]asks.json
+write finds=write_sensitive | [.]vscode/tasks.json
+write finds=write_sensitive | .github/workflows/[a-z].yml
+
+# A share or a device is not the workspace's own.
+write@windows rules=write_outside,network_share | \\\\srv\\share\\.envrc
+write@windows rules=write_outside | \\\\.\\C:\\Users\\me\\dev\\repo\\.envrc
+write@windows rules=write_outside,network_share | \\\\?\\GLOBALROOT\\Device\\x\\.envrc
+# A workspace on a share: its own paths are found, and the share is the
+# caller's own.
+paths share cwd=\\\\srv\\share\\repo home=C:\\Users\\me workspace=\\\\srv\\share\\repo
+write@share rules=write_sensitive | \\\\srv\\share\\repo\\.envrc
+write@share rules=write_sensitive | //srv/share/repo/.vscode/tasks.json
+write@share rules=write_sensitive | \\\\?\\UNC\\srv\\share\\repo\\.github\\workflows\\ci.yml
+write@share rules=write_sensitive | .github\\workflows\\ci.yml
+write@share safe | \\\\srv\\share\\repo\\Makefile

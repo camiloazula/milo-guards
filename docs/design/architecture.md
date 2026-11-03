@@ -71,7 +71,7 @@ milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
 A guard that needs another guard's answer is not a guard. The caller asks both
 and combines the answers, because deciding what to do with them is the
 caller's job. Where two guards must give one answer, the front door tests it:
-`crates/guards/tests/agree.rs` runs every path of the file guard's tables
+`crates/guards/tests/agree.rs` runs every path of the file guard's case files
 through the shell guard, and neither guard knows of the other.
 
 `crates/guards/tests/contract.rs` reads every `Cargo.toml` and fails when a
@@ -174,10 +174,10 @@ has its place:
   Rust version agree).
 
 Some names are read by other files: `just no-inline` runs
-`crates/shell/tests/inline_off.rs` by name, `agree.rs` reads the file
-guard's `posix.rs`, `windows.rs` and `protected.rs`, and the shell guard's
-`tests/cases.rs` holds each case file in `tests/cases` to the test file of
-its name, which checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
+`crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file
+in the file guard's `tests/cases`, and each guard's `tests/cases.rs` holds
+each case file in its `tests/cases` to the test file of its name, which
+checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
 
 ## Why tree-sitter is held at 0.26
 

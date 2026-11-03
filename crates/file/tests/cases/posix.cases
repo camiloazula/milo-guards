@@ -1,0 +1,938 @@
+# Reads and writes judged against a POSIX machine's paths, and a Mac's. One
+# section for each behaviour. The format is in CONTRIBUTING.md.
+
+# Everyday reads are safe.
+read safe | src/main.rs
+read safe | ./Cargo.toml
+read safe | README.md
+read safe | /home/me/work/repo/src/lib.rs
+read safe | src/../Cargo.lock
+read safe | /etc/hosts
+read safe | /etc/passwd
+read safe | /etc/os-release
+read safe | /usr/include/stdio.h
+read safe | /proc/cpuinfo
+read safe | /home/me/notes.txt
+read safe | ~/notes.txt
+read safe | ~/Documents/todo.md
+read safe | ~
+read safe | ~/
+read safe | ../other/x.rs
+read safe | /tmp/build.log
+read safe | /dev/null
+read safe | /dev/zero
+read safe | /dev/urandom
+# The repository's history is not a secret.
+read safe | .git/config
+read safe | .git/HEAD
+read safe | .git/objects/ab/cdef
+read safe | /home/me/work/repo/.git/config
+read safe | .GIT/config
+# Startup files and git's settings are read for what they say.
+read safe | ~/.zshrc
+read safe | ~/.bashrc
+read safe | ~/.profile
+read safe | ~/.gitconfig
+read safe | ~/.config/fish/config.fish
+read safe | ~/.bash_logout
+# Beside a secret place is not under it.
+read safe | /home/me/.sshx/id_rsa
+read safe | /home/me/.ssh.d/id_rsa
+read safe | ~/.config/other/x
+read safe | ~/.configx/gh/hosts.yml
+read safe | ~/.cargo/config.toml
+read safe | ~/.cargo/registry/index
+read safe | /home/me/.awsx/credentials
+read safe | /etc/sshd_config
+read safe | /etc/shadowx
+read safe | /etc/ssl/certs/ca-certificates.crt
+# A backslash is a plain character in a POSIX name.
+read safe | ~/.ssh\\id_rsa
+# Characters that are plain in a file name.
+read safe | app/[id]/page.tsx
+read safe | src/routes/[slug]/+page.svelte
+read safe | price$.txt
+read safe | a$
+read safe | dir$/x
+read safe | docs/100%.md
+read safe | a%20b.txt
+read safe | 50%/60%
+read safe | a.$
+read safe | a/~b
+read safe | weird name (1).txt
+read safe | 'quoted'.txt
+
+# A read of a key or a credential is a finding.
+read finds=read_secret | ~/.ssh/id_ed25519
+read finds=read_secret | /home/me/.aws/credentials
+read finds=read_secret | ~/.gnupg/private-keys-v1.d/x.key
+read finds=read_secret | ~/.docker/config.json
+read finds=read_secret | ~/.kube/config
+read finds=read_secret | ~/.azure/accessTokens.json
+read finds=read_secret | ~/.netrc
+read finds=read_secret | ~/.git-credentials
+read finds=read_secret | ~/.npmrc
+read finds=read_secret | ~/.pypirc
+read finds=read_secret | ~/.vault-token
+read finds=read_secret | ~/.password-store/x.gpg
+read finds=read_secret | ~/.config/gh/hosts.yml
+read finds=read_secret | ~/.config/gcloud/credentials.db
+read finds=read_secret | ~/.config/git/credentials
+read finds=read_secret | ~/.cargo/credentials.toml
+read finds=read_secret | ~/.local/share/keyrings/login.keyring
+read finds=read_secret | /etc/shadow
+read finds=read_secret | /etc/gshadow
+read finds=read_secret | /etc/ssh/ssh_host_ed25519_key
+read finds=read_secret | /etc/ssl/private/ssl-cert-snakeoil.key
+read finds=read_secret | /etc/wireguard/wg0.conf
+# Another user's, and the root user's.
+read finds=read_secret | /home/other/.ssh/id_rsa
+read finds=read_secret | ../../../other/.ssh/id_rsa
+read finds=read_secret | ~/../other/.aws/credentials
+read finds=read_secret | /root/.ssh/id_rsa
+read finds=read_secret | /var/root/.ssh/id_rsa
+# The bytes of a disk hold every key on it.
+read finds=read_secret | /dev/sda
+read finds=read_secret | /dev/sda1
+read finds=read_secret | /dev/nvme0n1
+read finds=read_secret | /dev/disk0
+read finds=read_secret | /dev/mapper/root
+# Accepted false alarms: the table says "under", not "which file", so a
+# public key and the list of hosts are findings too.
+read finds=read_secret | ~/.ssh/id_ed25519.pub
+read finds=read_secret | ~/.ssh/known_hosts
+read finds=read_secret | ~/.ssh/config
+read finds=read_secret | ~/.docker/contexts/meta/x/meta.json
+read finds=read_secret | ~/.config/gh/config.yml
+read finds=read_secret | /etc/ssh/sshd_config
+read finds=read_secret | /etc/ssh/ssh_host_ed25519_key.pub
+
+# Every spelling of a key is the key, to a read and to a write.
+read finds=read_secret | ~/.ssh/id_rsa
+read finds=read_secret | /home/me/.ssh/id_rsa
+read finds=read_secret | /home/me/.ssh//id_rsa
+read finds=read_secret | /home/me/./.ssh/id_rsa
+read finds=read_secret | /home/me/.ssh/./id_rsa
+read finds=read_secret | /home/me/.ssh/x/../id_rsa
+read finds=read_secret | /home/me/../me/.ssh/id_rsa
+read finds=read_secret | /../home/me/.ssh/id_rsa
+read finds=read_secret | //home/me/.ssh/id_rsa
+read finds=read_secret | ///home///me/.ssh/id_rsa
+read finds=read_secret | ~/.ssh/../.ssh/id_rsa
+read finds=read_secret | ~/./.ssh/id_rsa
+read finds=read_secret | ~//.ssh/id_rsa
+read finds=read_secret | ~/work/../.ssh/id_rsa
+read finds=read_secret | ~/../me/.ssh/id_rsa
+read finds=read_secret | ../../.ssh/id_rsa
+read finds=read_secret | src/../../../.ssh/id_rsa
+read finds=read_secret | /home/me/work/repo/../../.ssh/id_rsa
+# Case: a Mac's file system and a Windows one ignore it.
+read finds=read_secret | ~/.SSH/id_rsa
+read finds=read_secret | ~/.Ssh/ID_RSA
+read finds=read_secret | /HOME/ME/.ssh/id_rsa
+read finds=read_secret | /Home/Me/.SSH/Id_Rsa
+# The long s and the Kelvin sign are an `s` and a `k` to them.
+read finds=read_secret | /home/me/.\u{17f}sh/id_rsa
+read finds=read_secret | /home/me/.\u{17f}\u{17f}h/id_rsa
+# The folder and what is under it.
+read finds=read_secret | ~/.ssh
+read finds=read_secret | /home/me/.ssh/
+read finds=read_secret | /home/me/.ssh/id_rsa/
+read finds=read_secret | /home/me/.ssh/id_rsa/.
+read finds=read_secret | /home/me/.ssh/id_rsa/..
+write finds=write_sensitive | ~/.ssh/id_rsa
+write finds=write_sensitive | /home/me/.ssh/id_rsa
+write finds=write_sensitive | /home/me/.ssh//id_rsa
+write finds=write_sensitive | /home/me/./.ssh/id_rsa
+write finds=write_sensitive | /home/me/.ssh/./id_rsa
+write finds=write_sensitive | /home/me/.ssh/x/../id_rsa
+write finds=write_sensitive | /home/me/../me/.ssh/id_rsa
+write finds=write_sensitive | /../home/me/.ssh/id_rsa
+write finds=write_sensitive | //home/me/.ssh/id_rsa
+write finds=write_sensitive | ///home///me/.ssh/id_rsa
+write finds=write_sensitive | ~/.ssh/../.ssh/id_rsa
+write finds=write_sensitive | ~/./.ssh/id_rsa
+write finds=write_sensitive | ~//.ssh/id_rsa
+write finds=write_sensitive | ~/work/../.ssh/id_rsa
+write finds=write_sensitive | ~/../me/.ssh/id_rsa
+write finds=write_sensitive | ../../.ssh/id_rsa
+write finds=write_sensitive | src/../../../.ssh/id_rsa
+write finds=write_sensitive | /home/me/work/repo/../../.ssh/id_rsa
+write finds=write_sensitive | ~/.SSH/id_rsa
+write finds=write_sensitive | ~/.Ssh/ID_RSA
+write finds=write_sensitive | /HOME/ME/.ssh/id_rsa
+write finds=write_sensitive | /Home/Me/.SSH/Id_Rsa
+write finds=write_sensitive | /home/me/.\u{17f}sh/id_rsa
+write finds=write_sensitive | /home/me/.\u{17f}\u{17f}h/id_rsa
+write finds=write_sensitive | ~/.ssh
+write finds=write_sensitive | /home/me/.ssh/
+write finds=write_sensitive | /home/me/.ssh/id_rsa/
+write finds=write_sensitive | /home/me/.ssh/id_rsa/.
+write finds=write_sensitive | /home/me/.ssh/id_rsa/..
+
+# The Kelvin sign is a `k`.
+read finds=read_secret | /home/me/.\u{212a}ube/config
+
+# Every spelling of a workspace file is safe, to a read and to a write.
+read safe | ./src/main.rs
+read safe | src//main.rs
+read safe | src/./main.rs
+read safe | src/../src/main.rs
+read safe | /home/me/work/repo/src/main.rs
+read safe | /home/me/work/repo//src///main.rs
+read safe | /home/me/work/./repo/src/main.rs
+read safe | ../repo/src/main.rs
+read safe | /home/me/work/other/../repo/src/main.rs
+read safe | ~/work/repo/src/main.rs
+read safe | ~/work/../work/repo/src/main.rs
+write safe | ./src/main.rs
+write safe | src//main.rs
+write safe | src/./main.rs
+write safe | src/../src/main.rs
+write safe | /home/me/work/repo/src/main.rs
+write safe | /home/me/work/repo//src///main.rs
+write safe | /home/me/work/./repo/src/main.rs
+write safe | ../repo/src/main.rs
+write safe | /home/me/work/other/../repo/src/main.rs
+write safe | ~/work/repo/src/main.rs
+write safe | ~/work/../work/repo/src/main.rs
+
+# Everyday writes are safe.
+write safe | src/main.rs
+write safe | ./x
+write safe | new/dir/file.txt
+write safe | /home/me/work/repo/x
+write safe | src/../x
+write safe | .gitignore
+write safe | .gitattributes
+write safe | .gitx/config
+write safe | x.git/config
+write safe | .env
+write safe | .hidden
+write safe | node_modules/.bin/tool
+write safe | target/debug/build.log
+write safe | app/[id]/page.tsx
+write safe | src/routes/[slug]/+page.svelte
+write safe | price$.txt
+write safe | docs/100%.md
+write safe | a/~b
+# A temporary file, and the null device.
+write safe | /tmp/x
+write safe | /tmp/a/b/c.txt
+write safe | /var/tmp/x
+write safe | /private/tmp/x
+write safe | /dev/null
+write safe | /dev/stderr
+write safe | /dev/fd/1
+# Beside a sensitive place is not it.
+write safe | /home/me/work/repo/.sshx
+write safe | src/.ssh.rs
+
+# A write beyond the workspace is a finding.
+write finds=write_outside | ../other/x
+write finds=write_outside | src/../../x
+write finds=write_outside | ~/notes.txt
+write finds=write_outside | /home/me/x
+write finds=write_outside | /home/me/work/other/x
+write finds=write_outside | /etc/hosts
+write finds=write_outside | /usr/local/bin/tool
+write finds=write_outside | /x
+write finds=write_outside | /
+write finds=write_outside | //
+write finds=write_outside | /..
+# The workspace itself, and the folders around it.
+write finds=write_outside | .
+write finds=write_outside | ./
+write finds=write_outside | src/..
+write finds=write_outside | /home/me/work/repo
+write finds=write_outside | /home/me/work
+write finds=write_outside | ..
+write finds=write_outside | /home/me
+write finds=write_outside | ~
+write finds=write_outside | ~/
+write finds=write_outside | /home
+write finds=write_outside | /tmp
+write finds=write_outside | /tmp/
+# A disk.
+write finds=write_outside | /dev/sda
+write finds=write_outside | /dev/disk0
+# Case does not make a path the workspace's.
+write finds=write_outside | /HOME/me/work/repo/x
+write finds=write_outside | /home/me/WORK/repo/x
+
+# A write to a key, a startup file or the history is a finding.
+write finds=write_sensitive | ~/.ssh/config
+write finds=write_sensitive | ~/.ssh/authorized_keys
+write finds=write_sensitive | ~/.aws/credentials
+write finds=write_sensitive | ~/.gnupg/gpg.conf
+write finds=write_sensitive | ~/.netrc
+write finds=write_sensitive | ~/.npmrc
+write finds=write_sensitive | ~/.zshrc
+write finds=write_sensitive | ~/.bashrc
+write finds=write_sensitive | ~/.bash_profile
+write finds=write_sensitive | ~/.zprofile
+write finds=write_sensitive | ~/.zshenv
+write finds=write_sensitive | ~/.profile
+write finds=write_sensitive | ~/.gitconfig
+write finds=write_sensitive | ~/.config/fish/config.fish
+write finds=write_sensitive | ~/.config/autostart/x.desktop
+write finds=write_sensitive | /home/me/.ZSHRC
+# The repository's history, spelled any way.
+write finds=write_sensitive | .git/HEAD
+write finds=write_sensitive | .git/config
+write finds=write_sensitive | .git/hooks/pre-commit
+write finds=write_sensitive | .git
+write finds=write_sensitive | .git/
+write finds=write_sensitive | ./.git/HEAD
+write finds=write_sensitive | .GIT/HEAD
+write finds=write_sensitive | src/../.git/HEAD
+write finds=write_sensitive | /home/me/work/repo/.git/config
+write finds=write_sensitive | ~/work/repo/.git/config
+# The system's own, and another user's.
+write finds=write_sensitive | /etc/shadow
+write finds=write_sensitive | /root/.ssh/authorized_keys
+write finds=write_sensitive | /home/other/.ssh/authorized_keys
+write finds=write_sensitive | /home/other/.bashrc
+
+# A path that is not one literal path is unreadable, to a read and to a
+# write: empty, a control character, a leading space, a character that is a
+# space only to some, ...
+read finds=unreadable |
+read finds=unreadable | \u{0}
+read finds=unreadable | a\u{0}b
+read finds=unreadable | src/main.rs\u{0}.txt
+read finds=unreadable | \ssrc/main.rs
+read finds=unreadable | \tsrc/x
+read finds=unreadable | \n
+read finds=unreadable | src/x\n
+read finds=unreadable | src/a\nb
+read finds=unreadable | src/\u{1b}[31mx
+read finds=unreadable | src/\u{7f}x
+read finds=unreadable | src/\u{85}x
+read finds=unreadable | \u{a0}x
+read finds=unreadable | \u{3000}x
+# A wildcard.
+read finds=unreadable | *
+read finds=unreadable | *.rs
+read finds=unreadable | src/*.rs
+read finds=unreadable | src/?.rs
+read finds=unreadable | src/**/x
+read finds=unreadable | src/x?
+read finds=unreadable | ~/.ss?/id_rsa
+read finds=unreadable | ~/.s*/id_rsa
+read finds=unreadable | /home/me/.ssh/id_*
+read finds=unreadable | /home/me/.ssh/*
+read finds=unreadable | /etc/sh*dow
+# A variable.
+read finds=unreadable | $HOME/x
+read finds=unreadable | $HOME
+read finds=unreadable | ${HOME}/.ssh/id_rsa
+read finds=unreadable | $(pwd)/x
+read finds=unreadable | `pwd`/x
+read finds=unreadable | $PWD/x
+read finds=unreadable | $1
+read finds=unreadable | $$
+read finds=unreadable | ~/$X
+read finds=unreadable | src/$name.rs
+read finds=unreadable | $'\\x2essh'/id_rsa
+read finds=unreadable | $"x"
+read finds=unreadable | x/$ x/$y
+read finds=unreadable | %USERPROFILE%/.ssh/id_rsa
+read finds=unreadable | %HOME%
+read finds=unreadable | src/%NAME%.rs
+read finds=unreadable | $env:USERPROFILE/x
+read finds=unreadable | ${env:HOME}/x
+# Another user's home directory is not one this can name.
+read finds=unreadable | ~root/.ssh/id_rsa
+read finds=unreadable | ~me/x
+read finds=unreadable | ~me
+read finds=unreadable | ~+/x
+read finds=unreadable | ~-/x
+read finds=unreadable | ~~
+read finds=unreadable | ~.ssh/id_rsa
+# A backslash does not end the name after `~` on a POSIX machine.
+read finds=unreadable | ~\\.ssh/id_rsa
+# A pattern in a class, where it is not the agent's own folder.
+read finds=unreadable | ~/[.]ssh/id_rsa
+read finds=unreadable | /etc/[h]osts
+read finds=unreadable | [.]git/config
+read finds=unreadable | ~/.s[s]h/id_rsa
+read finds=unreadable | /home/me/.ssh/id_[r]sa
+write finds=unreadable |
+write finds=unreadable | \u{0}
+write finds=unreadable | a\u{0}b
+write finds=unreadable | src/main.rs\u{0}.txt
+write finds=unreadable | \ssrc/main.rs
+write finds=unreadable | \tsrc/x
+write finds=unreadable | \n
+write finds=unreadable | src/x\n
+write finds=unreadable | src/a\nb
+write finds=unreadable | src/\u{1b}[31mx
+write finds=unreadable | src/\u{7f}x
+write finds=unreadable | src/\u{85}x
+write finds=unreadable | \u{a0}x
+write finds=unreadable | \u{3000}x
+write finds=unreadable | *
+write finds=unreadable | *.rs
+write finds=unreadable | src/*.rs
+write finds=unreadable | src/?.rs
+write finds=unreadable | src/**/x
+write finds=unreadable | src/x?
+write finds=unreadable | ~/.ss?/id_rsa
+write finds=unreadable | ~/.s*/id_rsa
+write finds=unreadable | /home/me/.ssh/id_*
+write finds=unreadable | /home/me/.ssh/*
+write finds=unreadable | /etc/sh*dow
+write finds=unreadable | $HOME/x
+write finds=unreadable | $HOME
+write finds=unreadable | ${HOME}/.ssh/id_rsa
+write finds=unreadable | $(pwd)/x
+write finds=unreadable | `pwd`/x
+write finds=unreadable | $PWD/x
+write finds=unreadable | $1
+write finds=unreadable | $$
+write finds=unreadable | ~/$X
+write finds=unreadable | src/$name.rs
+write finds=unreadable | $'\\x2essh'/id_rsa
+write finds=unreadable | $"x"
+write finds=unreadable | x/$ x/$y
+write finds=unreadable | %USERPROFILE%/.ssh/id_rsa
+write finds=unreadable | %HOME%
+write finds=unreadable | src/%NAME%.rs
+write finds=unreadable | $env:USERPROFILE/x
+write finds=unreadable | ${env:HOME}/x
+write finds=unreadable | ~root/.ssh/id_rsa
+write finds=unreadable | ~me/x
+write finds=unreadable | ~me
+write finds=unreadable | ~+/x
+write finds=unreadable | ~-/x
+write finds=unreadable | ~~
+write finds=unreadable | ~.ssh/id_rsa
+write finds=unreadable | ~\\.ssh/id_rsa
+write finds=unreadable | ~/[.]ssh/id_rsa
+write finds=unreadable | /etc/[h]osts
+write finds=unreadable | [.]git/config
+write finds=unreadable | ~/.s[s]h/id_rsa
+write finds=unreadable | /home/me/.ssh/id_[r]sa
+
+# An unreadable path has one finding, with the reason.
+read rules=unreadable first=unreadable reason="is empty" |
+read rules=unreadable first=unreadable reason="has a control character" | a\u{0}b
+read rules=unreadable first=unreadable reason="starts with a space" | \sx
+read rules=unreadable first=unreadable reason="has a wildcard" | *.rs
+read rules=unreadable first=unreadable reason="has a wildcard" | src/x?
+read rules=unreadable first=unreadable reason="has a variable or a command" | $HOME/x
+read rules=unreadable first=unreadable reason="has a variable or a command" | %USERPROFILE%/x
+read rules=unreadable first=unreadable reason="is another user's home directory" | ~root/x
+read rules=unreadable first=unreadable reason="has a pattern that can name more than one file" | /etc/[h]osts
+
+# A finding names what it would do, in a few words, and the path.
+read rules=read_secret first=read_secret reason="reads your SSH keys" | ~/.ssh/id_ed25519
+read rules=read_secret first=read_secret reason="reads the system's password hashes" | /etc/shadow
+read rules=read_secret first=read_secret reason="reads a disk, and every key on it" | /dev/sda
+write rules=write_outside first=write_outside reason="writes to a path outside the workspace" | ../other/x
+write rules=write_outside first=write_outside reason="writes to a system folder" | /etc/hosts
+write rules=write_outside first=write_outside reason="writes to your home directory" | ~
+write rules=write_outside first=write_outside reason="writes to the whole workspace" | .
+write rules=write_outside first=write_outside reason="writes to a temporary folder" | /tmp
+write rules=write_outside first=write_outside reason="writes to a disk" | /dev/sda
+write rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | ~/.zshrc
+write rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | .git/HEAD
+write rules=write_sensitive first=write_sensitive reason="writes to your AWS credentials" | ~/.aws/credentials
+
+# A tilde is the home directory and also a folder of that name: a file API
+# may not expand `~`, so `~/x` may be a folder named `~` in the working
+# directory. Both are judged, and either one is a finding. Here the home
+# directory is the workspace and the working directory is not: `~/x` is safe
+# as home and not as a folder in `/etc`.
+paths outside cwd=/etc home=/home/me workspace=/home/me
+write@outside rules=write_outside | ~/x
+write@outside rules=write_outside | x
+write@outside safe | /home/me/x
+# A `~` folder in the workspace is no key.
+read rules=read_secret | ~/.ssh/id_rsa
+read safe | ./~/.ssh/id_rsa
+read safe | ~/x
+
+# The home directory as the workspace keeps its keys.
+paths home cwd=/home/me home=/home/me workspace=/home/me
+read@home rules=read_secret | .ssh/id_rsa
+read@home rules=read_secret | ~/.ssh/id_rsa
+read@home rules=read_secret | /home/me/.aws/credentials
+read@home rules=read_secret | /home/other/.ssh/id_rsa
+read@home safe | .zshrc
+read@home safe | src/main.rs
+read@home safe | .sshx/id
+write@home rules=write_sensitive | .ssh/authorized_keys
+write@home rules=write_sensitive | ~/.ssh/authorized_keys
+write@home rules=write_sensitive | .zshrc
+write@home rules=write_sensitive | .git/config
+write@home safe | src/main.rs
+write@home safe | notes.txt
+write@home safe | ~/notes.txt
+write@home safe | .sshx/id
+write@home rules=write_outside | ..
+write@home rules=write_outside | .
+
+# A read and a write can break different rules.
+read rules=read_secret | /etc/shadow
+write rules=write_sensitive | /etc/shadow
+write rules=write_outside | /etc/hosts
+write rules=write_sensitive | ~/.zshrc
+
+# A path inside a workspace that is under a key folder is the agent's.
+paths nested cwd=/home/me/.docker/proj home=/home/me workspace=/home/me/.docker/proj
+write@nested safe | src/x.rs
+write@nested safe | ./y
+read@nested safe | src/x.rs
+read@nested finds=read_secret | /home/me/.docker/config.json
+
+# Everyday reads on a Mac are safe.
+read@macos safe | src/main.rs
+read@macos safe | /Users/me/dev/repo/src/lib.rs
+read@macos safe | /System/Library/CoreServices/SystemVersion.plist
+read@macos safe | /Applications/Safari.app/Contents/Info.plist
+read@macos safe | /private/etc/hosts
+read@macos safe | /etc/hosts
+read@macos safe | ~/Library/Preferences/com.apple.finder.plist
+read@macos safe | ~/Library/Application Support/Code/User/settings.json
+read@macos safe | ~/Documents/x.pdf
+read@macos safe | /tmp/x
+read@macos safe | /var/folders/zz/abc/T/x
+read@macos safe | /Users/me/dev/repo/.git/config
+read@macos safe | ~/Library/LaunchAgents/com.example.plist
+read@macos safe | ~/.zshrc
+
+# A read of a key on a Mac is a finding.
+read@macos finds=read_secret | ~/.ssh/id_ed25519
+read@macos finds=read_secret | ~/Library/Keychains/login.keychain-db
+read@macos finds=read_secret | ~/library/keychains/login.keychain-db
+read@macos finds=read_secret | /Users/me/LIBRARY/KEYCHAINS/x
+read@macos finds=read_secret | /Library/Keychains/System.keychain
+read@macos finds=read_secret | /System/Library/Keychains/SystemRootCertificates.keychain
+read@macos finds=read_secret | /private/etc/master.passwd
+read@macos finds=read_secret | /etc/master.passwd
+read@macos finds=read_secret | /private/var/db/dslocal/nodes/Default/users/me.plist
+read@macos finds=read_secret | /var/db/dslocal/nodes/Default/users/me.plist
+read@macos finds=read_secret | /Users/me/.ssh/id_rsa
+# The home directory by another case, and through the data volume the system
+# mounts the same files at.
+read@macos finds=read_secret | /users/me/.ssh/id_rsa
+read@macos finds=read_secret | /USERS/ME/.SSH/ID_RSA
+read@macos finds=read_secret | /System/Volumes/Data/Users/me/.ssh/id_rsa
+read@macos finds=read_secret | /System/Volumes/Data/private/etc/master.passwd
+read@macos finds=read_secret | /Users/other/.ssh/id_rsa
+read@macos finds=read_secret | /Users/Shared/.ssh/id_rsa
+read@macos finds=read_secret | /var/root/.ssh/id_rsa
+read@macos finds=read_secret | /private/var/root/.ssh/id_rsa
+
+# Writes on a Mac.
+write@macos safe | src/main.rs
+write@macos safe | /Users/me/dev/repo/x
+write@macos safe | /tmp/x
+write@macos safe | /private/tmp/x
+write@macos safe | /var/folders/zz/abc/T/x
+write@macos safe | /private/var/folders/zz/abc/T/x
+write@macos safe | /dev/null
+# The data volume holds the workspace too.
+write@macos safe | /System/Volumes/Data/Users/me/dev/repo/x
+write@macos finds=write_outside | ~/notes.txt
+write@macos finds=write_outside | ~/Library/Preferences/x.plist
+write@macos finds=write_outside | /Applications/x
+write@macos finds=write_outside | /System/Library/x
+write@macos finds=write_outside | /Library/LaunchDaemons/x.plist
+write@macos finds=write_outside | /System/Volumes/Data/Users/me/notes.txt
+write@macos finds=write_sensitive | ~/Library/LaunchAgents/x.plist
+write@macos finds=write_sensitive | /Users/me/Library/launchagents/x.plist
+write@macos finds=write_sensitive | ~/.zshrc
+write@macos finds=write_sensitive | ~/Library/Keychains/login.keychain-db
+write@macos finds=write_sensitive | .git/config
+write@macos finds=write_sensitive | /etc/master.passwd
+# Accepted false alarm: a Mac ignores case, so this is the workspace, spelled
+# by another case than the caller's.
+write@macos finds=write_outside | /Users/me/DEV/repo/x
+
+# A workspace on a Mac spelled by another case than the home still holds its
+# keys.
+paths mac_upper cwd=/Users/ME home=/Users/me workspace=/Users/ME
+read@mac_upper finds=read_secret | .ssh/id_rsa
+read@mac_upper finds=read_secret | /Users/me/.ssh/id_rsa
+write@mac_upper finds=write_sensitive | .ssh/authorized_keys
+
+# A path on a machine with no workspace is outside.
+paths none cwd=/srv/app home=/home/me
+read@none safe | x
+read@none safe | /etc/hosts
+write@none finds=write_outside | x
+write@none finds=write_outside | /home/me/work/repo/x
+write@none safe | /tmp/x
+write@none safe | /dev/null
+
+# A relative working directory puts every path outside.
+paths relative cwd=repo home=/home/me workspace=/home/me/repo
+write@relative finds=write_outside | x
+read@relative finds=read_secret | ~/.ssh/id_rsa
+
+# The data volume and the boot volume are the root, however the path is
+# spelled.
+read@macos finds=read_secret | /System/Volumes/Data/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | /system/volumes/data/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | ../../../../System/Volumes/Data/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | ../../../../system/volumes/data/users/me/.ssh/id_ed25519
+read@macos finds=read_secret | ~/../../System/Volumes/Data/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | ~/../../Volumes/Macintosh HD/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | /Volumes/Macintosh HD/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | /volumes/macintosh hd/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | /Volumes/Macintosh HD - Data/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | ../../../../Volumes/Macintosh HD/Users/me/.ssh/id_ed25519
+read@macos finds=read_secret | /Volumes/Macintosh HD/System/Volumes/Data/Users/me/.ssh/id
+read@macos finds=read_secret | /Volumes/Macintosh HD/private/etc/master.passwd
+read@macos finds=read_secret | /Volumes/Macintosh HD/dev/mem
+read@macos finds=read_secret | /System/Volumes/Data/proc/self/environ
+read@macos finds=read_secret | /Sy\u{17f}tem/Volumes/Data/Users/me/.ssh/id_rsa
+read@macos finds=read_secret | /Volume\u{17f}/Macintosh HD/Users/me/.ssh/id_rsa
+read@macos finds=read_secret | /Volumes/Macinto\u{17f}h HD/Users/me/.ssh/id_rsa
+read@macos finds=read_secret | /Sy\u{17f}tem/Volume\u{17f}/Data/Users/me/.ssh/id_rsa
+# A working directory at the root, with the workspace elsewhere.
+paths at_root cwd=/ home=/Users/me workspace=/Users/me/dev/repo
+read@at_root finds=read_secret | System/Volumes/Data/Users/me/.ssh/id_rsa
+read@at_root finds=read_secret | Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+read@at_root finds=read_secret | Users/me/.ssh/id_rsa
+read@at_root finds=read_secret | proc/self/environ
+read@at_root finds=read_secret | dev/mem
+# The same links reach the workspace, and a temporary folder.
+write@macos safe | /Volumes/Macintosh HD/Users/me/dev/repo/x
+write@macos safe | ../../../../Volumes/Macintosh HD/Users/me/dev/repo/x
+write@macos safe | ../../../../System/Volumes/Data/tmp/x
+# A Mac's file system folds the long s to `s`: the same folders.
+write@macos safe | /Sy\u{17f}tem/Volumes/Data/Users/me/dev/repo/x
+write@macos safe | /Volume\u{17f}/Macintosh HD/Users/me/dev/repo/x
+write@macos safe | /volume\u{17f}/macinto\u{17f}h hd/Users/me/dev/repo/x
+write@macos finds=write_outside | ../../../../System/Volumes/Data/Users/me/notes.txt
+write@macos finds=write_outside | /Volumes/Backup/Users/me/dev/repo/x
+write@macos finds=write_sensitive | ../../../../System/Volumes/Data/Users/me/.zshrc
+write@macos finds=write_sensitive | ~/../../Volumes/Macintosh HD/Users/me/.zshrc
+
+# A device or a kernel file is not a file to read, on Linux and on a Mac (a
+# Mac has no `/proc`, but the path is read the same way).
+read finds=read_secret | /dev/mem
+read finds=read_secret | /dev/kmem
+read finds=read_secret | /dev/port
+read finds=read_secret | /dev/loop0
+read finds=read_secret | /dev/root
+read finds=read_secret | /dev/nbd0
+read finds=read_secret | /dev/zd0
+read finds=read_secret | /dev/vda1
+read finds=read_secret | /dev/pts/0
+read finds=read_secret | /dev/ptmx
+read finds=read_secret | /dev/console
+read finds=read_secret | /dev/shm/x
+read finds=read_secret | /dev/fd/3
+read finds=read_secret | /dev/fd/10
+read finds=read_secret | /dev/fd/00
+read finds=read_secret | /dev/null/x
+read finds=read_secret | /dev/stdin/x
+read finds=read_secret | /DEV/MEM
+read finds=read_secret | /dev/../dev/mem
+read finds=read_secret | /dev/./mem
+read finds=read_secret | ../../../../../dev/mem
+read finds=read_secret | ~/../../../dev/mem
+read finds=read_secret | /proc/self/environ
+read finds=read_secret | /proc/1/environ
+read finds=read_secret | /proc/thread-self/environ
+read finds=read_secret | /proc/self/task/1/environ
+read finds=read_secret | /proc/self/mem
+read finds=read_secret | /proc/self/cmdline
+read finds=read_secret | /proc/self/maps
+read finds=read_secret | /proc/self/fd/3
+read finds=read_secret | /proc/self/root/home/me/.ssh/id_rsa
+read finds=read_secret | /proc/1234/root/etc/hosts
+read finds=read_secret | /proc/self/cwd/x
+read finds=read_secret | /proc/self/cwd/../../.ssh/id_rsa
+read finds=read_secret | /proc/kcore
+read finds=read_secret | /proc/kallsyms
+read finds=read_secret | /proc/sys/kernel/hostname
+read finds=read_secret | /proc
+read finds=read_secret | /PROC/SELF/ENVIRON
+read finds=read_secret | /proc/./self/environ
+read finds=read_secret | src/../../../../../../proc/self/environ
+read finds=read_secret | /dev/disk2s1
+read@macos finds=read_secret | /dev/mem
+read@macos finds=read_secret | /dev/kmem
+read@macos finds=read_secret | /dev/port
+read@macos finds=read_secret | /dev/loop0
+read@macos finds=read_secret | /dev/root
+read@macos finds=read_secret | /dev/nbd0
+read@macos finds=read_secret | /dev/zd0
+read@macos finds=read_secret | /dev/vda1
+read@macos finds=read_secret | /dev/pts/0
+read@macos finds=read_secret | /dev/ptmx
+read@macos finds=read_secret | /dev/console
+read@macos finds=read_secret | /dev/shm/x
+read@macos finds=read_secret | /dev/fd/3
+read@macos finds=read_secret | /dev/fd/10
+read@macos finds=read_secret | /dev/fd/00
+read@macos finds=read_secret | /dev/null/x
+read@macos finds=read_secret | /dev/stdin/x
+read@macos finds=read_secret | /dev
+read@macos finds=read_secret | /DEV/MEM
+read@macos finds=read_secret | /dev/../dev/mem
+read@macos finds=read_secret | /dev/./mem
+read@macos finds=read_secret | ../../../../../dev/mem
+read@macos finds=read_secret | ~/../../../dev/mem
+read@macos finds=read_secret | /proc/self/environ
+read@macos finds=read_secret | /proc/1/environ
+read@macos finds=read_secret | /proc/thread-self/environ
+read@macos finds=read_secret | /proc/self/task/1/environ
+read@macos finds=read_secret | /proc/self/mem
+read@macos finds=read_secret | /proc/self/cmdline
+read@macos finds=read_secret | /proc/self/maps
+read@macos finds=read_secret | /proc/self/status
+read@macos finds=read_secret | /proc/self/fd/3
+read@macos finds=read_secret | /proc/self/root/home/me/.ssh/id_rsa
+read@macos finds=read_secret | /proc/1234/root/etc/hosts
+read@macos finds=read_secret | /proc/self/cwd/x
+read@macos finds=read_secret | /proc/self/cwd/../../.ssh/id_rsa
+read@macos finds=read_secret | /proc/kcore
+read@macos finds=read_secret | /proc/kallsyms
+read@macos finds=read_secret | /proc/sys/kernel/hostname
+read@macos finds=read_secret | /proc
+read@macos finds=read_secret | /PROC/SELF/ENVIRON
+read@macos finds=read_secret | /proc/./self/environ
+read@macos finds=read_secret | src/../../../../../../proc/self/environ
+read@macos finds=read_secret | /dev/disk2s1
+# What is readable: what discards, what is random or zero, the terminal and
+# the standard streams, and the machine's own facts.
+read safe | /dev/random
+read safe | /dev/tty
+read safe | /dev/stdout
+read safe | /dev/stderr
+read safe | /dev/fd/0
+read safe | /dev/fd/1
+read safe | /dev/fd/2
+read safe | /DEV/NULL
+read safe | /dev/./null
+read safe | /proc/meminfo
+read safe | /proc/version
+read safe | /proc/loadavg
+read safe | /proc/uptime
+read safe | /proc/filesystems
+read safe | /home/me/dev/mem
+read safe | /home/me/proc/self/environ
+read safe | src/dev/mem
+read safe | dev/mem
+read safe | proc/self/environ
+read safe | /devx/mem
+read safe | /processes/x
+read rules=read_secret | /dev/mem
+read rules=read_secret | /proc/self/environ
+# A disk keeps its own words.
+read rules=read_secret | /dev/sda
+read rules=read_secret first=read_secret reason="reads a device file" | /dev/mem
+read rules=read_secret first=read_secret reason="reads a device file" | /dev/loop0
+read rules=read_secret first=read_secret reason="reads the kernel's process files" | /proc/self/environ
+read rules=read_secret first=read_secret reason="reads the kernel's process files" | /proc/self/root/etc/hosts
+# A write to a device is judged by its place: `/dev/null` takes it, any other
+# is beyond the workspace.
+write rules=write_outside | /dev/mem
+write rules=write_outside | /proc/self/mem
+write rules=write_outside | /proc/self/environ
+
+# Another user's home is one whatever this user's home is: root's, a service
+# account's, and a home that is its own workspace.
+paths root_home cwd=/root/repo home=/root workspace=/root/repo
+paths ci_home cwd=/var/lib/ci/repo home=/var/lib/ci workspace=/var/lib/ci/repo
+paths srv_home cwd=/srv/x home=/srv/x workspace=/srv/x
+read@root_home finds=read_secret | /home/alice/.ssh/id_rsa
+read@root_home finds=read_secret | /HOME/ALICE/.SSH/id_rsa
+read@root_home finds=read_secret | /Users/alice/.aws/credentials
+read@root_home finds=read_secret | /home/alice/.config/gh/hosts.yml
+write@root_home finds=write_sensitive | /home/alice/.ssh/authorized_keys
+write@root_home finds=write_sensitive | /home/alice/.zshrc
+write@root_home finds=write_outside | /home/alice/notes.txt
+read@root_home safe | /home/alice/notes.txt
+read@ci_home finds=read_secret | /home/alice/.ssh/id_rsa
+read@ci_home finds=read_secret | /HOME/ALICE/.SSH/id_rsa
+read@ci_home finds=read_secret | /Users/alice/.aws/credentials
+read@ci_home finds=read_secret | /home/alice/.config/gh/hosts.yml
+write@ci_home finds=write_sensitive | /home/alice/.ssh/authorized_keys
+write@ci_home finds=write_sensitive | /home/alice/.zshrc
+write@ci_home finds=write_outside | /home/alice/notes.txt
+read@ci_home safe | /home/alice/notes.txt
+read@srv_home finds=read_secret | /home/alice/.ssh/id_rsa
+read@srv_home finds=read_secret | /HOME/ALICE/.SSH/id_rsa
+read@srv_home finds=read_secret | /Users/alice/.aws/credentials
+read@srv_home finds=read_secret | /home/alice/.config/gh/hosts.yml
+write@srv_home finds=write_sensitive | /home/alice/.ssh/authorized_keys
+write@srv_home finds=write_sensitive | /home/alice/.zshrc
+write@srv_home finds=write_outside | /home/alice/notes.txt
+read@srv_home safe | /home/alice/notes.txt
+
+# The credential stores and startup places that have twins are listed.
+write finds=write_sensitive | ~/.config/git/config
+write finds=write_sensitive | ~/.config/powershell/Microsoft.PowerShell_profile.ps1
+write finds=write_sensitive | ~/.config/powershell/
+write finds=write_sensitive | ~/.config/systemd/user/x.service
+write finds=write_sensitive | ~/.config/systemd/user/default.target.wants/x
+write finds=write_sensitive | ~/.CONFIG/Git/Config
+read safe | ~/.config/git/config
+read safe | ~/.config/powershell/profile.ps1
+read safe | ~/.config/systemd/user/x.service
+read safe | ~/.config/git/ignore
+write finds=write_outside | ~/.config/systemd/system/x
+
+# A git folder at any depth is history, and its hooks run code: a write to
+# one is a finding, a read is safe.
+write finds=write_sensitive | .GIT/Hooks/pre-commit
+write finds=write_sensitive | vendor/x/.git/hooks/pre-commit
+write finds=write_sensitive | vendor/x/.git/hooks/
+write finds=write_sensitive | vendor/x/.git/../.git/hooks/pre-commit
+write finds=write_sensitive | ../other/.git/hooks/post-merge
+write finds=write_sensitive | ~/work/other/.git/hooks/x
+write finds=write_sensitive | /tmp/clone/.git/hooks/pre-push
+write finds=write_sensitive | a/b/c/d/e/.git/hooks/pre-commit
+write finds=write_sensitive | .git/modules/m/hooks/pre-commit
+write finds=write_sensitive | vendor/x/.git/config
+write finds=write_sensitive | vendor/x/.git/HEAD
+write finds=write_sensitive | packages/app/.git
+write finds=write_sensitive | packages/app/.git/
+write finds=write_sensitive | packages/app/.GIT/objects/ab/cd
+write finds=write_sensitive | a/b/c/d/e/.git/index
+write finds=write_sensitive | /tmp/clone/.git/config
+write finds=write_sensitive | ~/work/other/.git/config
+read safe | .git/hooks/pre-commit
+read safe | .GIT/Hooks/pre-commit
+read safe | vendor/x/.git/hooks/pre-commit
+read safe | vendor/x/.git/hooks/
+read safe | vendor/x/.git/../.git/hooks/pre-commit
+read safe | ../other/.git/hooks/post-merge
+read safe | ~/work/other/.git/hooks/x
+read safe | /tmp/clone/.git/hooks/pre-push
+read safe | a/b/c/d/e/.git/hooks/pre-commit
+read safe | .git/modules/m/hooks/pre-commit
+read safe | vendor/x/.git/config
+read safe | vendor/x/.git/HEAD
+read safe | packages/app/.git
+read safe | packages/app/.git/
+read safe | packages/app/.GIT/objects/ab/cd
+read safe | a/b/c/d/e/.git/index
+read safe | /tmp/clone/.git/config
+read safe | ~/work/other/.git/config
+# The reasons: a hook says it runs code; the rest is the history.
+write rules=write_sensitive first=write_sensitive reason="writes to a git hook, which runs code" | .git/hooks/pre-commit
+write rules=write_sensitive first=write_sensitive reason="writes to a git hook, which runs code" | vendor/x/.git/hooks/pre-commit
+write rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | .git/config
+write rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | vendor/x/.git/config
+write rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | .git
+# Not a git folder.
+write safe | .github/hooks/x
+write safe | hooks/pre-commit
+write safe | scripts/hooks/pre-commit
+write safe | x.git/hooks/x
+write safe | src/.gitx/hooks/x
+write safe | git/hooks/x
+
+# More credential stores are listed.
+read finds=read_secret | ~/.pgpass
+read finds=read_secret | ~/.my.cnf
+read finds=read_secret | ~/.s3cfg
+read finds=read_secret | ~/.gem/credentials
+read finds=read_secret | ~/.m2/settings.xml
+read finds=read_secret | ~/.terraform.d/credentials.tfrc.json
+read finds=read_secret | ~/.config/rclone/rclone.conf
+read finds=read_secret | ~/.config/op/config
+read finds=read_secret | ~/.config/sops/age/keys.txt
+read finds=read_secret | ~/.config/hub
+read safe | ~/.gem/specs
+read safe | ~/.m2/repository/x.jar
+read safe | ~/.terraform.d/plugins/x
+
+# A write to a device is beyond the workspace unless it discards.
+write rules=write_outside | /dev/fd/3
+write rules=write_outside | /dev/fd/10
+write rules=write_outside | /dev/shm/x
+write safe | /dev/stdout
+write safe | /dev/tty
+
+# A Mac's links to the root are not links on any other system. On Linux
+# these paths do not exist, and a write creates folders outside the
+# workspace: they are not the workspace's, and not the root.
+write rules=write_outside | /Volumes/Macintosh HD/home/me/work/repo/x
+write rules=write_outside | /System/Volumes/Data/home/me/work/repo/x
+write rules=write_outside | /volumes/macintosh hd/home/me/work/repo/x
+write rules=write_outside | /Volume\u{17f}/Macintosh HD/home/me/work/repo/x
+write rules=write_outside | /Sy\u{17f}tem/Volumes/Data/home/me/work/repo/x
+write rules=write_outside | /Volumes/Macintosh HD - Data/home/me/work/repo/x
+write rules=write_outside | ../../../../Volumes/Macintosh HD/home/me/work/repo/x
+write rules=write_outside | /System/Volumes/Data/tmp/x
+# A read of a secret is a finding however it is spelled: the links are
+# dropped on every system when looking one up, which is noise on Linux
+# (accepted: matching too much fails closed).
+read finds=read_secret | /Volumes/Macintosh HD/home/me/.ssh/id_rsa
+read finds=read_secret | /System/Volumes/Data/home/me/.ssh/id_rsa
+read finds=read_secret | /System/Volumes/Data/etc/shadow
+read finds=read_secret | /Volumes/Macintosh HD/etc/shadow
+read finds=read_secret | /System/Volumes/Data/proc/self/environ
+read finds=read_secret | /Volumes/Macintosh HD/dev/mem
+read safe | /Volumes/Macintosh HD/home/me/work/repo/src/main.rs
+read safe | /Volumes/Backup/x
+# On a Mac, whose home is under `/Users`, the same paths are the root.
+read@macos finds=read_secret | /Volumes/Macintosh HD/etc/shadow
+read@macos finds=read_secret | /System/Volumes/Data/etc/shadow
+
+# A container's secrets and the memory a system keeps on disk are secrets.
+read finds=read_secret | /run/secrets/x
+read finds=read_secret | /run/secrets
+read finds=read_secret | /RUN/Secrets/db_password
+read finds=read_secret | /var/run/secrets/kubernetes.io/serviceaccount/token
+read finds=read_secret | /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+read finds=read_secret | /var/vm/sleepimage
+read finds=read_secret | /private/var/vm/sleepimage
+read finds=read_secret | /private/var/vm/swapfile0
+read finds=read_secret | /private/var/vm/swapfile1.encrypted
+read@macos finds=read_secret | /private/var/vm/sleepimage
+read@macos finds=read_secret | /System/Volumes/Data/private/var/vm/sleepimage
+read safe | /run/user/1000/x
+read safe | /run/secrets-x/y
+read safe | /var/run/docker.pid
+read safe | /var/vmx/x
+read safe | /var/lib/x
+write finds=write_sensitive | /run/secrets/x
+write finds=write_sensitive | /private/var/vm/sleepimage
+
+# A Mac whose home is root's reads every link spelling, by either spelling
+# of root's home.
+paths var_root cwd=/tmp/w home=/var/root workspace=/tmp/w
+paths private_var_root cwd=/tmp/w home=/private/var/root workspace=/tmp/w
+read@var_root finds=read_secret | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+read@var_root finds=read_secret | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+read@var_root finds=read_secret | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+read@var_root finds=read_secret | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+read@var_root finds=read_secret | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+read@var_root finds=read_secret | /Volumes/Macintosh HD/etc/master.passwd
+read@var_root finds=read_secret | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+read@var_root finds=read_secret | /Sy\u{17f}tem/Volumes/Data/Users/alice/.ssh/id_rsa
+read@var_root finds=read_secret | /Volumes/Macintosh HD - Data/Users/alice/.ssh/id_rsa
+read@private_var_root finds=read_secret | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+read@private_var_root finds=read_secret | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+read@private_var_root finds=read_secret | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+read@private_var_root finds=read_secret | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+read@private_var_root finds=read_secret | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+read@private_var_root finds=read_secret | /Volumes/Macintosh HD/etc/master.passwd
+read@private_var_root finds=read_secret | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+read@private_var_root finds=read_secret | /Sy\u{17f}tem/Volumes/Data/Users/alice/.ssh/id_rsa
+read@private_var_root finds=read_secret | /Volumes/Macintosh HD - Data/Users/alice/.ssh/id_rsa
+# The workspace by a link, on such a Mac.
+write@var_root safe | /System/Volumes/Data/tmp/w/x
+write@var_root safe | /Volumes/Macintosh HD/tmp/w/x
+write@var_root safe | /tmp/w/x
+write@private_var_root safe | /System/Volumes/Data/tmp/w/x
+write@private_var_root safe | /Volumes/Macintosh HD/tmp/w/x
+write@private_var_root safe | /tmp/w/x
+write@var_root finds=write_sensitive | /Volumes/Macintosh HD/Users/alice/.zshrc
+write@var_root finds=write_sensitive | /Volumes/Macintosh HD/etc/master.passwd
+write@private_var_root finds=write_sensitive | /Volumes/Macintosh HD/Users/alice/.zshrc
+write@private_var_root finds=write_sensitive | /Volumes/Macintosh HD/etc/master.passwd
+# A protected path by a link is protected on any system.
+paths agent base=posix folder=/home/me/.agent words="the agent's settings"
+write@agent rules=write_protected | /Volumes/Macintosh HD/home/me/.agent/x

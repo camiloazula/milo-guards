@@ -1745,7 +1745,7 @@ a key can be read through the shell, so the two guards give the same answer
 for the same file: `cat <path>` is `read_secret` exactly when the file guard
 calls a read of `<path>` one, in the place's own words (`reads your SSH keys`,
 `reads the system's password hashes`). `crates/guards/tests/agree.rs` holds
-them to it: it takes every path the file guard's tables name, on a POSIX
+them to it: it takes every path the file guard's case files name, on a POSIX
 machine, a Mac and a Windows one, and runs it through `cat` (POSIX),
 `Get-Content` (PowerShell) and `type` (cmd).
 
