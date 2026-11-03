@@ -413,10 +413,19 @@ anywhere in it (`Walker::define`, kept in `powershell::Aliases`):
 - **An alias**: `Set-Alias` and `New-Alias` (also `sal` and `nal`), with the
   name and the command given by name or by position (`-Name` first, then
   `-Value`), and the other parameters skipped with their values
-  (`-Description`, `-Option`, `-Scope`); `Set-Item` (also `si`) on one item of
+  (`-Description`, `-Option`, `-Scope`); `Set-Item` (also `si`) on items of
   the `Alias:` drive (`Set-Item Alias:x Remove-Item`, also `-Path Alias:\x
-  -Value …`, `-LiteralPath`), which is an `overwrite` of an item outside
-  the workspace as well; and an assignment to `$alias:x` or `${alias:x}`.
+  -Value …`, `-LiteralPath`, a list of paths, each set), which is an
+  `overwrite` of an item outside the workspace as well; and an assignment to
+  `$alias:x` or `${alias:x}`. The arguments are bound as PowerShell binds
+  them (`Walker::bound_args`): a list (`-Option ReadOnly,AllScope`) is one
+  argument, so it moves neither the name nor the command, and a bare `--`
+  ends the parameters, so `Set-Alias -- x Remove-Item` sets `x`. In an
+  assignment to several targets (`$alias:x, $y = 'Remove-Item', 1`) each
+  target takes the value in its place, the last one what is left; a target
+  whose value cannot be paired so (the value is not a list written out, or
+  its items are not one for each target) is set to something only known
+  when it runs.
   Other writes to the `Alias:` and `Function:` drives (`New-Item`,
   `Set-Content`, a path after `cd Alias:`) are not read as names, and are
   that `overwrite`.
@@ -450,7 +459,10 @@ the name is set is judged by it too, which matters for one that runs after it
 runs (`Invoke-Expression 'Set-Alias x Remove-Item'`) is read when that script
 is, so a command of that name judged before is not judged by it: `unknown`,
 with the reason `sets an alias or function for a command the line may have
-run already`.
+run already`. The names are one table for the whole line, a child shell's
+(`pwsh -c "Set-Alias …"`) among them, though a child cannot change what its
+parent runs: `Get-ChildItem; pwsh -c "Set-Alias Get-ChildItem Get-Date"` is
+`unknown` by that reason. It is rare, and fails closed.
 
 `unknown`, as what cannot be read:
 
@@ -461,8 +473,10 @@ run already`.
 - a function whose body is only known when it runs: a command of the name is
   `runs a function the line sets to a block only known when it runs`;
 - an alias whose name is only known when it runs (`Set-Alias $n Remove-Item`,
-  `Set-Alias @p`), which may be any command after it: `sets an alias whose
-  name is only known when it runs`.
+  `Set-Alias @p`), or not given at all, as `Set-Alias`, `New-Alias` and
+  `Set-Item` also take it from the properties of what the pipeline hands them
+  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it:
+  `sets an alias whose name is only known when it runs`.
 
 A name set to something only known when it runs, with no command of that
 name, is safe: `Set-Alias x $t` alone runs nothing. A line reads at most 64

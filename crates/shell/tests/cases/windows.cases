@@ -247,11 +247,44 @@ powershell finds=unknown | ${function:foo} = $b; foo
 powershell finds=unknown | $function:foo = 'Remove-Item -Recurse -Force ~'; foo
 powershell finds=unknown | $function:foo = $b; & foo
 powershell finds=unknown | nmo $b
+# Both cmdlets also take the name and the target from the properties of what
+# the pipeline hands them, so one given no name sets a name only known when
+# it runs.
+powershell finds=unknown reason="sets an alias whose name is only known when it runs" | [pscustomobject]@{Name='x';Value='Remove-Item'} | Set-Alias; x -Recurse -Force ~
+powershell finds=unknown | Import-Csv a.csv | Set-Alias; x -Recurse -Force ~
+powershell finds=unknown | $o | New-Alias; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Alias -Value Remove-Item; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Alias x; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Item; x -Recurse -Force ~
+# A list is one argument, so it moves neither the name nor the target, and
+# `--` ends the parameters: what follows is taken by position.
+powershell finds=delete | Set-Alias -Option ReadOnly,AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | New-Alias -Option AllScope,Constant x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name x -Option ReadOnly,AllScope Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Description a,b x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option ReadOnly, AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option:ReadOnly,AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option 'ReadOnly','AllScope' x Remove-Item; x -Recurse -Force ~
+powershell finds=unknown | Set-Alias a,b Remove-Item; Get-Date
+powershell finds=delete | Set-Item -Path Alias:y,Alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -- x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name x -- Remove-Item; x -Recurse -Force ~
+# Each target of an assignment to several takes the value in its place;
+# one whose value cannot be paired so is only known when it runs.
+powershell finds=delete | $alias:x, $y = 'Remove-Item', 1; x -Recurse -Force ~
+powershell finds=delete | $y, ${alias:x} = 1, 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | [string]$alias:x = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=unknown | $function:x, $y = $b, 1; x
+powershell finds=unknown | $alias:x, $y = $v; x ~
+powershell finds=unknown | $y, $alias:x = 1, 'Remove-Item', 2; x ~
+powershell finds=unknown | $y, $alias:x = 1, $t; x ~
 # Stays safe.
 powershell safe | Set-Alias ll Get-ChildItem; ll
 powershell safe | function foo { Get-Date }; foo
 powershell safe | $function:foo = { Get-Date }; foo
 powershell safe | ${function:foo} = { Get-Date }; foo
+powershell safe | $function:foo, $y = { Get-Date }, 1; foo
+powershell safe | Set-Alias -Option ReadOnly,AllScope ll Get-ChildItem; ll
 powershell safe | Set-Alias x Remove-Item
 powershell safe | Set-Alias x Remove-Item; x build
 powershell safe | Set-Alias x Get-Date; y -Recurse -Force ~

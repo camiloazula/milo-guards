@@ -1169,13 +1169,21 @@ impl Walker<'_> {
         }
     }
 
-    /// The alias a command sets: `Set-Alias` and `New-Alias` (`sal`, `nal`),
-    /// and `Set-Item` (`si`) on a path of the `Alias:` drive. The name is
-    /// `None` when it is only known when it runs; the text is the command's.
-    fn alias_command(&self, node: Node<'_>) -> Option<(Option<String>, Stands, String)> {
-        let key = self.command_key(node)?;
+    /// The aliases a command sets: `Set-Alias` and `New-Alias` (`sal`,
+    /// `nal`), and `Set-Item` (`si`) on paths of the `Alias:` drive. A name
+    /// is `None` when it is only known when it runs: given by a variable or a
+    /// splat, or not given at all, as both cmdlets also take their name from
+    /// the properties of what the pipeline hands them. The text is the
+    /// command's.
+    fn alias_command(&self, node: Node<'_>) -> Vec<(Option<String>, Stands, String)> {
+        let Some(key) = self.command_key(node) else {
+            return Vec::new();
+        };
+        if !matches!(key.as_str(), "set-alias" | "new-alias" | "set-item") {
+            return Vec::new();
+        }
         let text = unit::text(&node, self.source).to_string();
-        let args = self.plain_args(node, Some(&key));
+        let bound = self.bound_args(node);
         let splat = node
             .child_by_field_name("command_elements")
             .is_some_and(|elements| {
@@ -1189,49 +1197,178 @@ impl Walker<'_> {
             Some(Arg::Known(command)) => Stands::Command(command.clone()),
             _ => Stands::Unknown,
         };
-        match key.as_str() {
-            "set-alias" | "new-alias" => {
-                let params = Params::cmdlet(&args, &SET_ALIAS);
-                let (name, value) = by_position(&params, &["name"], &["value"]);
-                // A splat may hold the name, or the value, or both.
-                if splat && !(params.has(&["name"]) && params.has(&["value"])) {
-                    return Some((None, Stands::Unknown, text));
-                }
-                let name = name?;
-                Some((name.known().map(str::to_string), target(value), text))
-            }
-            "set-item" => {
-                let params = Params::cmdlet(&args, &SET_ITEM);
-                let (path, value) = by_position(&params, &["path", "literalpath"], &["value"]);
-                let name = alias_item(path?.known()?)?;
-                Some((Some(name), target(value), text))
-            }
-            _ => None,
+        let unknown = || vec![(None, Stands::Unknown, text.clone())];
+        if key == "set-item" {
+            let params = bound.params(&SET_ITEM);
+            let (path, value) = by_position(&params, &["path", "literalpath"], &["value"]);
+            // No path: it may come from what the pipeline hands it.
+            let Some(path) = path else {
+                return unknown();
+            };
+            let stands = target(value);
+            // A list of paths sets each one.
+            return bound
+                .items(path)
+                .iter()
+                .filter_map(|path| alias_item(path.known()?))
+                .map(|name| (Some(name), stands.clone(), text.clone()))
+                .collect();
+        }
+        let params = bound.params(&SET_ALIAS);
+        let (name, value) = by_position(&params, &["name"], &["value"]);
+        // A splat may hold the name, or the value, or both.
+        if splat && !(params.has(&["name"]) && params.has(&["value"])) {
+            return unknown();
+        }
+        match name {
+            Some(name) => vec![(name.known().map(str::to_string), target(value), text)],
+            None => unknown(),
         }
     }
 
-    /// The name an assignment sets: `$alias:x = 'Remove-Item'` an alias,
+    /// The arguments of a command as `Set-Alias`, `New-Alias` and `Set-Item`
+    /// bind them: a list (`-Option ReadOnly,AllScope`, `'a','b'`) is one
+    /// argument, which holds its items, and a bare `--` ends the parameters,
+    /// so every argument after it is taken by position.
+    fn bound_args(&self, command: Node<'_>) -> Bound {
+        let mut bound = Bound::default();
+        let Some(elements) = command.child_by_field_name("command_elements") else {
+            return bound;
+        };
+        // Whether a `,` came last, so the next argument is one more item of
+        // the list before it; and whether that one is a parameter's name.
+        let mut comma = false;
+        let mut after_parameter = false;
+        let mut cursor = elements.walk();
+        for element in elements.children(&mut cursor) {
+            let source = unit::text(&element, self.source);
+            match element.kind() {
+                "," => {
+                    comma = true;
+                    continue;
+                }
+                "command_argument_sep" => {
+                    if source.contains(':') {
+                        attach_colon(&mut bound.args);
+                    }
+                    continue;
+                }
+                "redirection" | "comment" => continue,
+                _ if !element.is_named() => continue,
+                "command_parameter" if source == "--" && bound.end.is_none() => {
+                    bound.end = Some(bound.args.len());
+                    comma = false;
+                    after_parameter = false;
+                    continue;
+                }
+                _ => {}
+            }
+            let items = if element.kind() == "array_literal_expression"
+                && element.named_child_count() > 1
+            {
+                let mut items = element.walk();
+                element
+                    .named_children(&mut items)
+                    .map(|item| self.expr(item))
+                    .collect()
+            } else {
+                vec![self.expr(element)]
+            };
+            let parameter = element.kind() == "command_parameter";
+            let joins = comma && !after_parameter && !parameter;
+            match (joins, bound.args.last_mut(), bound.lists.last_mut()) {
+                (true, Some(last), Some(list)) => {
+                    let mut joined = list.take().unwrap_or_else(|| vec![last.clone()]);
+                    joined.extend(items);
+                    *last = Arg::Unknown(format!("{},{source}", last.text()));
+                    *list = Some(joined);
+                }
+                _ => {
+                    if items.len() > 1 {
+                        bound.args.push(Arg::Unknown(source.to_string()));
+                        bound.lists.push(Some(items));
+                    } else {
+                        bound.args.extend(items);
+                        bound.lists.push(None);
+                    }
+                }
+            }
+            comma = false;
+            after_parameter = parameter;
+        }
+        bound
+    }
+
+    /// The names an assignment sets: `$alias:x = 'Remove-Item'` an alias,
     /// `$function:f = $b` a function whose body is only known when it runs
     /// (a block written out is read where it stands, as the body it is).
-    fn assigned_name(&self, node: Node<'_>) -> Option<(Option<String>, Stands, String)> {
-        let left = node.named_child(0)?;
-        let value = node.child_by_field_name("value")?;
-        let left = unit::text(&left, self.source).trim().to_ascii_lowercase();
-        let name = left
-            .strip_prefix("${")
-            .and_then(|rest| rest.strip_suffix('}'))
-            .or_else(|| left.strip_prefix('$'))?;
-        let text = unit::text(&node, self.source).to_string();
-        if let Some(name) = name.strip_prefix("alias:") {
-            let stands = match self.expr(blocks::unwrap(value)) {
-                Arg::Known(command) => Stands::Command(command),
-                _ => Stands::Unknown,
+    /// With several targets (`$alias:x, $y = 'Remove-Item', 1`) each takes
+    /// the value in its place, and the last one what is left, so a target
+    /// whose value cannot be paired so is only known when it runs.
+    fn assigned_name(&self, node: Node<'_>) -> Vec<(Option<String>, Stands, String)> {
+        let (Some(left), Some(value)) = (node.named_child(0), node.child_by_field_name("value"))
+        else {
+            return Vec::new();
+        };
+        let text = unit::text(&node, self.source);
+        let left = assigned_list(left);
+        let targets: Vec<Option<Node<'_>>> = match left.kind() {
+            "array_literal_expression" if left.named_child_count() > 1 => {
+                let mut cursor = left.walk();
+                let targets = left
+                    .named_children(&mut cursor)
+                    .map(assigned_variable)
+                    .collect();
+                targets
+            }
+            _ => vec![assigned_variable(left)],
+        };
+        let value = blocks::unwrap(value);
+        // The value each target takes, when it is written out.
+        let values: Vec<Node<'_>> = if targets.len() == 1 {
+            vec![value]
+        } else if value.kind() == "array_literal_expression" {
+            let mut cursor = value.walk();
+            let values: Vec<Node<'_>> = value.named_children(&mut cursor).collect();
+            if values.len() == targets.len() {
+                values
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let mut found = Vec::new();
+        for (at, target) in targets.into_iter().enumerate() {
+            let Some(target) = target else {
+                continue;
             };
-            return Some((Some(unscoped(name).to_string()), stands, text));
+            let name = unit::text(&target, self.source).trim().to_ascii_lowercase();
+            let Some(name) = name
+                .strip_prefix("${")
+                .and_then(|rest| rest.strip_suffix('}'))
+                .or_else(|| name.strip_prefix('$'))
+            else {
+                continue;
+            };
+            let value = values.get(at).copied();
+            if let Some(alias) = name.strip_prefix("alias:") {
+                let stands = match value.map(|value| self.expr(blocks::unwrap(value))) {
+                    Some(Arg::Known(command)) => Stands::Command(command),
+                    _ => Stands::Unknown,
+                };
+                found.push((Some(unscoped(alias).to_string()), stands, text.to_string()));
+            } else if let Some(function) = name.strip_prefix("function:") {
+                if !value.is_some_and(blocks::written) {
+                    found.push((
+                        Some(unscoped(function).to_string()),
+                        Stands::Function,
+                        text.to_string(),
+                    ));
+                }
+            }
         }
-        let name = name.strip_prefix("function:")?;
-        (!blocks::written(value))
-            .then(|| (Some(unscoped(name).to_string()), Stands::Function, text))
+        found
     }
 
     /// Mark every node that has a `Get-Process` below it. Each climb stops at
@@ -2271,6 +2408,87 @@ fn by_position<'a>(
     };
     let first = take(first);
     (first, take(second))
+}
+
+/// A command's arguments as [`Walker::bound_args`] reads them.
+#[derive(Debug, Default)]
+struct Bound {
+    /// Each argument, a list as one only known when it runs.
+    args: Vec<Arg>,
+    /// For each argument, the items of the list it is, when it is one.
+    lists: Vec<Option<Vec<Arg>>>,
+    /// Where a bare `--` ended the parameters, when one did.
+    end: Option<usize>,
+}
+
+impl Bound {
+    /// The arguments read by a cmdlet's parameters `own`, those after `--`
+    /// taken by position.
+    fn params(&self, own: &[Param]) -> Params<'_> {
+        let end = self.end.unwrap_or(self.args.len());
+        let (named, after) = self.args.split_at(end);
+        let mut params = Params::cmdlet(named, own);
+        params.positional.extend(after);
+        params
+    }
+
+    /// The items of `arg`, one of the arguments: those of the list it is, or
+    /// itself.
+    fn items<'a>(&'a self, arg: &'a Arg) -> Vec<&'a Arg> {
+        self.args
+            .iter()
+            .position(|other| std::ptr::eq(other, arg))
+            .and_then(|at| self.lists.get(at))
+            .and_then(Option::as_ref)
+            .map_or_else(|| vec![arg], |items| items.iter().collect())
+    }
+}
+
+/// The left side of an assignment inside the nodes the grammar wraps it in:
+/// a variable, a cast of one, or a list of targets.
+fn assigned_list(node: Node<'_>) -> Node<'_> {
+    let mut node = node;
+    while matches!(
+        node.kind(),
+        "left_assignment_expression"
+            | "logical_expression"
+            | "bitwise_expression"
+            | "comparison_expression"
+            | "additive_expression"
+            | "multiplicative_expression"
+            | "format_expression"
+            | "range_expression"
+            | "array_literal_expression"
+            | "unary_expression"
+    ) && node.named_child_count() == 1
+    {
+        match node.named_child(0) {
+            Some(only) => node = only,
+            None => break,
+        }
+    }
+    node
+}
+
+/// The variable a target of an assignment sets (`$x`, `[string]$x`), when it
+/// is one: not an item or a member of one (`$a[0]`, `$a.b`).
+fn assigned_variable(node: Node<'_>) -> Option<Node<'_>> {
+    let mut node = node;
+    loop {
+        node = match node.kind() {
+            "variable" => return Some(node),
+            "cast_expression" => {
+                let last = node.named_child_count().checked_sub(1)?;
+                node.named_child(u32::try_from(last).ok()?)?
+            }
+            "unary_expression" | "expression_with_unary_operator" | "array_literal_expression"
+                if node.named_child_count() == 1 =>
+            {
+                node.named_child(0)?
+            }
+            _ => return None,
+        };
+    }
 }
 
 /// The alias a path of the `Alias:` drive names (`Alias:x`, `alias:\x`), when
