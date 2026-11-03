@@ -1073,8 +1073,14 @@ impl Walker<'_> {
                         self.startup_words(&[self.arg(child)], written);
                     }
                 }
+                let first = self.split.units.len();
                 self.declaration(node, stage);
+                let own = first..self.split.units.len();
                 self.children(node, stage, level);
+                // What its substitutions run is handed to it, as to a
+                // command: `export $(cat .env)` sets what `cat` prints.
+                self.split
+                    .nest(own.clone(), own.end..self.split.units.len());
             }
             // `(( GLOBIGNORE=1 ))`
             "binary_expression" => {
@@ -1332,6 +1338,31 @@ impl Walker<'_> {
         }
     }
 
+    /// Whether `last`, the last argument of `command`, is the number written
+    /// right against the redirect after the command (`0` in `exec 0<.env`):
+    /// its descriptor, which the grammar reads apart.
+    fn descriptor_of_redirect(&self, command: Node<'_>, last: Node<'_>) -> bool {
+        if last.kind() != "number" || last.end_byte() != command.end_byte() {
+            return false;
+        }
+        let Some(statement) = command
+            .parent()
+            .filter(|parent| parent.kind() == "redirected_statement")
+        else {
+            return false;
+        };
+        let mut cursor = statement.walk();
+        let found = statement
+            .children_by_field_name("redirect", &mut cursor)
+            .next()
+            .is_some_and(|redirect| {
+                redirect.kind() == "file_redirect"
+                    && redirect.start_byte() == last.end_byte()
+                    && redirect.child_by_field_name("descriptor").is_none()
+            });
+        found
+    }
+
     /// Whether `redirect` opens a file that a relative name picks by the
     /// folder the shell is in.
     fn opens_by_folder(&self, redirect: Node<'_>) -> bool {
@@ -1562,9 +1593,17 @@ impl Walker<'_> {
         }
         let program = self.arg(name);
         let mut cursor = node.walk();
-        let nodes: Vec<Node<'_>> = node
+        let mut nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // The grammar reads the `0` of `cmd 0< f` as an argument and the `<`
+        // as a redirect of its own: the `0` is the redirect's descriptor.
+        if nodes
+            .last()
+            .is_some_and(|last| self.descriptor_of_redirect(node, *last))
+        {
+            nodes.pop();
+        }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
         let qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());

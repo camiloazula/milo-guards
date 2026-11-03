@@ -757,6 +757,10 @@ pub(crate) struct Split {
     /// The units of each function body and alias the line defines, by name:
     /// what a call of the name runs (see [`Split::bodies_of`]).
     called_bodies: HashMap<String, Vec<Range<usize>>>,
+    /// The names among [`Split::called_bodies`] an `alias` defines, whose
+    /// call is its value followed by the call's words (see
+    /// [`Split::is_alias`]).
+    aliases: HashSet<String>,
     /// The functions whose body moves the line, or whose definition is
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
@@ -1761,6 +1765,18 @@ impl Split {
             }
         }
         bodies.push(units);
+    }
+
+    /// Note that `units` are the value of `alias name=…`: a call of `name`
+    /// runs it, with the call's words after its last command.
+    pub(crate) fn alias_body(&mut self, name: &str, units: Range<usize>) {
+        self.body(name, units);
+        self.aliases.insert(name.to_string());
+    }
+
+    /// Whether an `alias` on the line defines `name`.
+    pub(crate) fn is_alias(&self, name: &str) -> bool {
+        self.aliases.contains(name)
     }
 
     /// The units of the bodies a unit that runs the program `name` may run:
