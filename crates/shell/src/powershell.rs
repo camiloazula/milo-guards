@@ -623,7 +623,7 @@ impl Walker<'_> {
                     // the program splits them by its own rules. `cmd` puts
                     // the variables in itself, and is read so.
                     let key = program_key.as_deref().unwrap_or_default();
-                    for word in native::words(key, own) {
+                    for word in native::words(key, &args, own) {
                         args.push(if key == "cmd" {
                             Arg::Known(word)
                         } else {
@@ -1520,18 +1520,54 @@ impl Walker<'_> {
         Arg::Known(value)
     }
 
-    /// Whether `node` is the variable `$null` (in any case, or as
-    /// `${null}`), not in a string.
+    /// Whether `node` gives a native program nothing: the variable `$null`
+    /// (in any case, or as `${null}`), not in a string; an empty `$()` or
+    /// `@()`; a pipeline that ends in `Out-Null`; or one of these in
+    /// parentheses or a subexpression (`(Out-Null)`, `$($null)`).
     fn is_null(&self, node: Node<'_>) -> bool {
         let mut node = node;
-        while matches!(node.kind(), "array_literal_expression" | "unary_expression") {
-            match only_child(node) {
-                Some(only) => node = only,
-                None => return false,
+        for _ in 0..unit::MAX_TREE_DEPTH {
+            match node.kind() {
+                "array_literal_expression"
+                | "unary_expression"
+                | "parenthesized_expression"
+                | "statement_list"
+                | "pipeline"
+                | "logical_expression"
+                | "bitwise_expression"
+                | "comparison_expression"
+                | "additive_expression"
+                | "multiplicative_expression"
+                | "format_expression"
+                | "range_expression" => match only_child(node) {
+                    Some(only) => node = only,
+                    None => return false,
+                },
+                "sub_expression" | "array_expression" => match only_child(node) {
+                    Some(only) => node = only,
+                    None => return node.named_child_count() == 0,
+                },
+                // A pipeline gives what its last stage does.
+                "pipeline_chain" => {
+                    let count = node.named_child_count();
+                    match node
+                        .named_child(u32::try_from(count.saturating_sub(1)).unwrap_or(u32::MAX))
+                    {
+                        Some(last) if last.kind() == "command" => {
+                            return self.command_key(last).as_deref() == Some("out-null")
+                        }
+                        Some(only) if count == 1 => node = only,
+                        _ => return false,
+                    }
+                }
+                "command" => return self.command_key(node).as_deref() == Some("out-null"),
+                "variable" => {
+                    return matches!(self.variable(unit::text(&node, self.source)), Arg::Null)
+                }
+                _ => return false,
             }
         }
-        node.kind() == "variable"
-            && matches!(self.variable(unit::text(&node, self.source)), Arg::Null)
+        false
     }
 
     fn is_item(&self, source: &str) -> bool {
@@ -1715,11 +1751,12 @@ fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'s
 }
 
 /// Whether the program `key` names (lower case, an alias read as its
-/// cmdlet) is a cmdlet: a name of an approved verb, a dash and a noun. Any
-/// other is taken for a native program.
+/// cmdlet) is a cmdlet: a name of an approved verb, a dash and a noun, or a
+/// built-in `-Object` cmdlet (`ForEach-Object`, `Tee-Object`). Any other is
+/// taken for a native program.
 fn is_cmdlet(key: &str) -> bool {
     key.split_once('-')
-        .is_some_and(|(verb, noun)| !noun.is_empty() && VERBS.contains(&verb))
+        .is_some_and(|(verb, noun)| !noun.is_empty() && (VERBS.contains(&verb) || noun == "object"))
 }
 
 /// PowerShell's approved verbs (`Get-Verb`), in lower case.
@@ -2262,11 +2299,12 @@ const COMMON: [Param; 12] = [
     Param::value("pipelinevariable", &["pv"]),
 ];
 
-/// A parameter's name with its `-`, when `arg` is one.
+/// A parameter's name with its `-`, when `arg` is one. A word with white
+/// space in it is a string, never a parameter (`'-c "x"'`).
 fn parameter(arg: &Arg) -> Option<&str> {
     let text = arg.known()?;
     let name = text.strip_prefix('-')?;
-    name.starts_with(|c: char| c.is_ascii_alphabetic())
+    (name.starts_with(|c: char| c.is_ascii_alphabetic()) && !name.contains(char::is_whitespace))
         .then_some(name)
 }
 

@@ -396,19 +396,13 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
             line.push(text);
             continue;
         }
-        args.extend(
-            native::words(&key, &line.join(" "))
-                .into_iter()
-                .map(Arg::Known),
-        );
+        let words = native::words(&key, &args, &line.join(" "));
+        args.extend(words.into_iter().map(Arg::Known));
         line.clear();
         args.push(arg.clone());
     }
-    args.extend(
-        native::words(&key, &line.join(" "))
-            .into_iter()
-            .map(Arg::Known),
-    );
+    let words = native::words(&key, &args, &line.join(" "));
+    args.extend(words.into_iter().map(Arg::Known));
     let mut wrappers = unit.wrappers.clone();
     wrappers.push("start-process".to_string());
     if params.values(&["verb"]).iter().any(|verb| {
