@@ -1,7 +1,7 @@
 //! The line as the rules saw it: [`explain`](crate::explain) and the types it
 //! returns.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::detect::Judged;
@@ -249,8 +249,10 @@ fn resolved(
 }
 
 /// Where each word lands, by the folder it runs from, its shell, whether its
-/// wildcards match hidden names, and its text.
-type Placed<'a> = BTreeMap<(Option<&'a str>, &'static str, bool, &'a str), Option<&'static str>>;
+/// wildcards match hidden names, and its text. The folder is the whole
+/// [`Arg`], not its text: `cd '$Y'` and `cd $Y` spell the same text, but one
+/// is a folder the text names and the other one only known when it runs.
+type Placed<'a> = HashMap<(Option<&'a Arg>, &'static str, bool, &'a str), Option<&'static str>>;
 
 fn of_unit<'a>(
     unit: &'a Unit,
@@ -261,7 +263,7 @@ fn of_unit<'a>(
     // In a POSIX shell the first `--` ends the options: what follows it is an
     // operand, whatever it starts with (`rm -- -rf` deletes a file `-rf`).
     let mut ended = false;
-    let dir = unit.dir.as_ref().map(Arg::text);
+    let dir = unit.dir.as_ref();
     UnitExplanation {
         shell: unit.shell,
         depth: unit.depth,
@@ -330,9 +332,10 @@ fn is_option(text: &str, shell: Shell) -> bool {
 /// tree escapes.
 struct Escaped<'a>(&'a str);
 
-/// The format characters of Unicode (general category `Cf`): they draw
-/// nothing, and the bidi controls among them (U+202A to U+202E, U+2066 to
-/// U+2069) reorder the text around them.
+/// The format characters of Unicode 17.0 (general category `Cf`, from its
+/// `DerivedGeneralCategory.txt`): they draw nothing, and the bidi controls
+/// among them (U+202A to U+202E, U+2066 to U+2069) reorder the text around
+/// them.
 const FORMAT: [(char, char); 21] = [
     ('\u{00ad}', '\u{00ad}'),
     ('\u{0600}', '\u{0605}'),
@@ -525,6 +528,37 @@ mod tests {
                 let printed = Escaped(&c.to_string()).to_string();
                 assert_eq!(printed, format!("\\u{{{:x}}}", u32::from(c)));
             }
+        }
+    }
+
+    /// Written out here, not read from `FORMAT`, so a character the table
+    /// lost is caught: every bidi control, and the format characters that
+    /// most often hide in text.
+    #[test]
+    fn the_bidi_controls_and_common_invisible_characters_are_escapes() {
+        let required = [
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{00ad}',
+            '\u{061c}',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{2060}',
+            '\u{feff}',
+            '\u{e0001}',
+        ];
+        for c in required {
+            assert!(escaped(c), "{:x}", u32::from(c));
         }
     }
 

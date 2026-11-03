@@ -4137,8 +4137,10 @@ the program takes it as a path (`reset` in `git reset` lands inside the
 workspace); which arguments are paths is the rules' business, not the tree's.
 In a POSIX shell nothing after the first `--` is an option: in `rm -- -rf
 ~/x` and `rm -rf -- -x ~`, `rm` takes `-rf` and `-x` as files, so they get a
-place and the `--` gets none (a second `--` is a file too). A PowerShell or cmd
-`--` ends nothing here.
+place and the `--` gets none (a second `--` is a file too). The tree follows
+only a POSIX `--` for now: PowerShell's `--` ends its parameters too, but the
+tree does not read it yet, so a word after it that starts with a dash still
+shows as an option. A cmd `--` ends nothing.
 
 The tree never shows the line's text raw where it could mislead: a control
 character (a newline, a tab, an ESC), a line or paragraph separator (U+2028,

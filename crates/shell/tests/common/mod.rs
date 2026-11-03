@@ -20,8 +20,9 @@ use milo_guards_shell::{
     Shell,
 };
 
-/// The format characters of Unicode (category `Cf`), which the tree writes
-/// as escapes.
+/// The format characters of Unicode 17.0 (category `Cf`), which the tree
+/// writes as escapes. The library's own test lists the ones it must hold
+/// without reading this table.
 const FORMAT: [(char, char); 21] = [
     ('\u{00ad}', '\u{00ad}'),
     ('\u{0600}', '\u{0605}'),

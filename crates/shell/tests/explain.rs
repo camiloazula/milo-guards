@@ -126,11 +126,8 @@ fn an_argument_after_a_posix_double_dash_is_an_operand_whatever_it_starts_with()
         explanation.assessment(),
         classify("rm -- -rf ~/x", Shell::Posix, &posix())
     );
-    // A PowerShell or cmd `--` is not a POSIX one: the dashes stay options.
-    assert_eq!(
-        placed("Remove-Item -- -Recurse", Shell::PowerShell, &windows()),
-        pairs(&[("--", false), ("-Recurse", false)])
-    );
+    // PowerShell's own `--` ends its parameters too, but the tree does not
+    // read it yet, so nothing here pins what it shows after one.
 }
 
 #[test]
@@ -239,6 +236,60 @@ fn the_folder_a_cd_moved_to_is_shown() {
     let explanation = explain("cd sub && rm *", Shell::Posix, &posix());
     assert_eq!(explanation.units[0].dir, None);
     assert_eq!(explanation.units[1].dir.as_deref(), Some("sub"));
+}
+
+#[test]
+fn a_word_is_placed_from_its_own_folder_when_another_folder_is_spelled_the_same() {
+    // A folder the text names and one only known when it runs can be
+    // spelled the same (`cd '$Y'`, `cd $Y`): each unit's words are placed as
+    // they are when its part of the line is explained alone.
+    let resolved = |line: &str, shell: Shell, paths: &Paths, unit: usize| {
+        explain(line, shell, paths).units[unit]
+            .args
+            .iter()
+            .map(|arg| (arg.written.clone(), arg.resolved.clone()))
+            .collect::<Vec<_>>()
+    };
+    for (line, alone, shell, paths) in [
+        (
+            "cd '$Y' && ls a; cd $Y && ls a b",
+            "cd $Y && ls a b",
+            Shell::Posix,
+            posix(),
+        ),
+        (
+            "cd '\"$Y\"' && ls a; cd \"$Y\" && ls a b",
+            "cd \"$Y\" && ls a b",
+            Shell::Posix,
+            posix(),
+        ),
+        (
+            "cd '$env:X'; Remove-Item a; cd $env:X; Remove-Item a, b",
+            "cd $env:X; Remove-Item a, b",
+            Shell::PowerShell,
+            windows(),
+        ),
+        (
+            "cd '$null'; Remove-Item a; cd $null; Remove-Item a, b",
+            "cd $null; Remove-Item a, b",
+            Shell::PowerShell,
+            windows(),
+        ),
+    ] {
+        assert_eq!(
+            resolved(line, shell, &paths, 3),
+            resolved(alone, shell, &paths, 1),
+            "{line}"
+        );
+    }
+    let args = resolved(
+        "cd '$Y' && ls a; cd $Y && ls a b",
+        Shell::Posix,
+        &posix(),
+        3,
+    );
+    assert_eq!(args[0].1, args[1].1);
+    assert_eq!(args[0].1.as_deref(), Some("a path only known when it runs"));
 }
 
 #[test]
