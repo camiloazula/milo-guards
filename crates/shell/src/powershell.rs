@@ -2977,36 +2977,56 @@ impl Walker<'_> {
     /// A .NET call that unpacks an archive into a folder
     /// (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`,
     /// `[Formats.Tar.TarFile]::ExtractToDirectory(…)`,
-    /// `$zip.ExtractToDirectory(dir)`) is judged as `Expand-Archive` into that folder: the second argument
-    /// of a static method, which takes the archive first, and the first of
-    /// one called on an archive.
-    fn unpack_call(&mut self, method: &str, children: &[Node<'_>], stage: Option<Stage>) {
-        if !matches!(method, "extracttodirectory" | "extracttodirectoryasync") {
-            return;
+    /// `$zip.ExtractToDirectory(dir)`) is judged as `Expand-Archive` into that
+    /// folder, and one that unpacks an entry into a file
+    /// (`$entry.ExtractToFile(path)`,
+    /// `[IO.Compression.ZipFileExtensions]::ExtractToFile($e, path)`) as
+    /// `Out-File` of that file: the second argument of a static call (`::`),
+    /// which takes the archive or the entry first, and the first of one
+    /// called on it (`.`). The operator, not the object, tells them apart, as
+    /// a type may be held in a variable (`$t::ExtractToDirectory(…)`) or in
+    /// parentheses; when it cannot be read, both of the first two arguments
+    /// are judged.
+    fn unpack_call(
+        &mut self,
+        node: Node<'_>,
+        method: &str,
+        children: &[Node<'_>],
+        stage: Option<Stage>,
+    ) {
+        let (program, parameter) = match method {
+            "extracttodirectory" | "extracttodirectoryasync" => {
+                ("Expand-Archive", "-DestinationPath")
+            }
+            "extracttofile" | "extracttofileasync" => ("Out-File", "-FilePath"),
+            _ => return,
+        };
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| matches!(child.kind(), "::" | "."))
+            .map(|child| child.kind());
+        let arguments = self.call_arguments(children);
+        let targets: Vec<Arg> = match operator {
+            Some("::") => arguments.into_iter().skip(1).take(1).collect(),
+            Some(_) => arguments.into_iter().take(1).collect(),
+            None => arguments.into_iter().take(2).collect(),
+        };
+        let names = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .map(|list| variables(*list, self.source))
+            .unwrap_or_default();
+        for target in targets {
+            let mut unit = Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                vec![Arg::Known(parameter.to_string()), target],
+                stage,
+            );
+            unit.names = Some(names.clone());
+            self.split.push(unit);
         }
-        let on_type = children
-            .first()
-            .is_some_and(|object| object.kind() == "type_literal");
-        let mut arguments = self.call_arguments(children);
-        let at = usize::from(on_type);
-        if at >= arguments.len() {
-            return;
-        }
-        let folder = arguments.swap_remove(at);
-        let mut unit = Unit::new(
-            Shell::PowerShell,
-            Arg::Known("Expand-Archive".to_string()),
-            vec![Arg::Known("-DestinationPath".to_string()), folder],
-            stage,
-        );
-        unit.names = Some(
-            children
-                .iter()
-                .find(|child| child.kind() == "argument_list")
-                .map(|list| variables(*list, self.source))
-                .unwrap_or_default(),
-        );
-        self.split.push(unit);
     }
 
     /// A .NET method call that changes files or the system
@@ -3033,7 +3053,7 @@ impl Walker<'_> {
             return false;
         };
         let sends = self.secret_call(&method, &children, stage);
-        self.unpack_call(&method, &children, stage);
+        self.unpack_call(node, &method, &children, stage);
         // A member of the session reached by a way the guard cannot name
         // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
         // method that runs code.

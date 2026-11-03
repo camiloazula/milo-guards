@@ -188,6 +188,9 @@ posix finds=overwrite | sudo cpio -idm -D / < a.cpio
 posix finds=overwrite | find . | cpio -pdm ~
 posix finds=overwrite | find . | cpio --pass-through ~/backup
 posix finds=overwrite | find . | cpio -p -D ~ out
+posix safe | find . | cpio -pdm -W none build
+posix finds=overwrite | find . | cpio -pdm -W none ~
+posix finds=overwrite | find . | cpio -p --warning none ~
 posix finds=overwrite | cpio "$mode" -D ~ < a.cpio
 posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | cpio -idm --absolute-filenames < a.cpio
 posix finds=overwrite | bsdcpio -idm --insecure < a.cpio
@@ -204,6 +207,9 @@ posix finds=overwrite | ditto -xk a.zip "$DEST"
 posix finds=overwrite | ditto -V -x -k --sequesterRsrc a.zip ~/Library
 posix finds=overwrite | cd ~ && ditto -xk a.zip Library
 posix@macos finds=overwrite | ditto -xk a.zip /Applications
+posix safe | ditto src build
+posix finds=overwrite reason="copies into your home directory" | ditto src ~
+posix finds=overwrite | ditto --rsrc src /Applications/X.app
 posix safe | pax -r -f a.pax
 posix safe | pax -f a.pax
 posix safe | pax -w -f a.pax src
@@ -261,6 +267,10 @@ posix finds=overwrite | unar -f -o ~/Library a.zip
 posix finds=overwrite | unar -o "$DEST" a.zip
 posix finds=overwrite | cd ~ && unar a.zip
 posix finds=overwrite | cd ~ && unar -p secret a.zip
+posix safe | unar "$f"
+posix safe | unar -o build "$f"
+posix finds=overwrite | unar "$o" ~ a.zip
+posix finds=overwrite | unar $OPTS a.zip
 posix safe | jar xf a.jar
 posix safe | jar -xf a.jar
 posix safe | jar tf a.jar
@@ -303,6 +313,12 @@ posix finds=overwrite | python3 -m tarfile -e a.tar ~
 posix finds=overwrite | python3 -m tarfile -v --extract a.tar /etc
 posix finds=overwrite | python3 -m tarfile --filter data -e a.tar ~
 posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | python3 -m tarfile --filter fully_trusted -e a.tar build
+posix safe | python3 -m tarfile --extract=a.tar
+posix safe | python3 -m tarfile -vl a.tar
+posix finds=overwrite | cd ~ && python3 -m tarfile --extract=a.tar
+posix finds=overwrite | cd ~ && python3 -m tarfile --ext=a.tar
+posix finds=overwrite | cd ~ && python3 -m tarfile -ea.tar
+posix finds=overwrite | cd ~ && python3 -m tarfile -ve a.tar
 powershell safe | [System.IO.Compression.ZipFile]::ExtractToDirectory('x.zip', 'build')
 powershell safe | [IO.Compression.ZipFile]::ExtractToDirectory('x.zip', "$env:TEMP\\x")
 powershell safe | $zip.ExtractToDirectory('build')
@@ -315,6 +331,17 @@ powershell finds=overwrite | Add-Type -AssemblyName System.IO.Compression.FileSy
 powershell finds=overwrite | [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($archive, 'C:\\Windows')
 powershell finds=overwrite | [System.Formats.Tar.TarFile]::ExtractToDirectory('x.tar', $HOME, $true)
 powershell finds=overwrite | $zip.ExtractToDirectory('C:\\Windows')
+powershell safe | $entry.ExtractToFile('build\\x.txt')
+powershell safe | [IO.Compression.ZipFileExtensions]::ExtractToFile($e, 'build\\x.txt', $true)
+powershell finds=overwrite | $t = [IO.Compression.ZipFile]; $t::ExtractToDirectory('x.zip', $HOME)
+powershell finds=overwrite | ([IO.Compression.ZipFile])::ExtractToDirectory('x.zip', $HOME)
+powershell finds=overwrite | [type]'IO.Compression.ZipFile' | % { $_::ExtractToDirectory('x.zip', $HOME) }
+powershell finds=overwrite reason="writes to a shell startup file" | $entry.ExtractToFile("$HOME\\.bashrc", $true)
+powershell finds=overwrite | [IO.Compression.ZipFileExtensions]::ExtractToFile($e, 'C:\\Windows\\x.dll', $true)
+powershell finds=overwrite | $zip.Entries | % { [IO.Compression.ZipFileExtensions]::ExtractToFile($_, "$HOME\\x.txt") }
+powershell finds=overwrite | $zip.Entries | % { $_.ExtractToFile("$HOME\\x.txt") }
+powershell finds=overwrite | $zip.ExtractToFileAsync('C:\\Windows\\x.dll')
+powershell finds=overwrite | & "C:\\Program Files\\WinRAR\\WinRAR.exe" x a.rar C:\\Windows\\
 powershell finds=overwrite | python -m zipfile -e a.zip C:\\Windows
 powershell finds=overwrite | unrar x a.rar C:\\Windows\\
 powershell finds=overwrite | jar xf a.jar -C ~
@@ -322,6 +349,8 @@ cmd safe | unrar x a.rar build\\
 cmd safe | unrar.exe x a.rar
 cmd finds=overwrite | unrar x a.rar C:\\Windows\\
 cmd finds=overwrite | "C:\\Program Files\\WinRAR\\UnRAR.exe" x a.rar C:\\
+cmd safe | WinRAR.exe x a.rar build\\
+cmd finds=overwrite | "C:\\Program Files\\WinRAR\\WinRAR.exe" x a.rar C:\\Windows\\
 cmd finds=overwrite | rar x a.rar %USERPROFILE%\\
 cmd finds=overwrite | cd C:\\ && jar xf a.jar
 cmd finds=overwrite | py -m zipfile -e a.zip C:\\Windows

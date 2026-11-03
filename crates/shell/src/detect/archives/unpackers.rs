@@ -7,7 +7,7 @@
 
 use super::{long_option, readable, unknown_long, Unpack};
 use crate::path::within;
-use crate::unit::Arg;
+use crate::unit::{could_be, may_split, unknown_start, Arg};
 use crate::Shell;
 
 /// Where the unpacker `key` writes, or `None` when it is not one or its
@@ -17,8 +17,9 @@ pub(super) fn unpack(key: &str, args: &[Arg], shell: Shell) -> Option<Unpack> {
         "cpio" | "gcpio" | "bsdcpio" => cpio(args, shell),
         "ditto" => ditto(args),
         "pax" => pax(args),
-        "unrar" | "rar" => rar(args),
-        "unar" => unar(args),
+        // WinRAR.exe takes the commands and switches of `rar`.
+        "unrar" | "rar" | "winrar" => rar(args),
+        "unar" => unar(args, shell),
         "jar" => jar(args),
         _ if key == "py" || key.starts_with("python") => {
             let (module, args) = python_module(args)?;
@@ -81,7 +82,7 @@ impl Cpio {
         attached: Option<Arg>,
         iter: &mut impl Iterator<Item = &'a Arg>,
     ) {
-        const VALUES: [&str; 10] = [
+        const VALUES: [&str; 11] = [
             "file",
             "format",
             "pattern-file",
@@ -92,6 +93,7 @@ impl Cpio {
             "rsh-command",
             "rename-batch-file",
             "passphrase",
+            "warning",
         ];
         let mut value = |attached: Option<Arg>| attached.or_else(|| iter.next().cloned());
         if long_option(name, "extract", 2) {
@@ -114,7 +116,7 @@ impl Cpio {
     /// A bundle of one-letter options (`-idm`, `-iD dir`, `-iDdir`).
     fn short<'a>(&mut self, letters: &str, iter: &mut impl Iterator<Item = &'a Arg>) {
         // The letters that take a value, which ends the bundle.
-        const VALUES: &str = "CDEFHIMOR";
+        const VALUES: &str = "CDEFHIMORW";
         for (at, letter) in letters.char_indices() {
             if VALUES.contains(letter) {
                 let rest = &letters[at + letter.len_utf8()..];
@@ -191,8 +193,10 @@ fn cpio(args: &[Arg], shell: Shell) -> Option<Unpack> {
 }
 
 /// The folder `ditto -x` unpacks into: its last operand, after the archives.
-/// `ditto -c` makes an archive, and `ditto` with neither copies, which this
-/// rule does not read; a mode only known when it runs may be `-x`.
+/// `ditto` with neither `-x` nor `-c` copies its sources into the last
+/// operand, which is judged as the destination of `cp`. `ditto -c` makes an
+/// archive, which this rule does not read; a mode only known when it runs
+/// may be `-x`.
 fn ditto(args: &[Arg]) -> Option<Unpack> {
     const VALUES: [&str; 3] = ["--arch", "--bom", "--zlibCompressionLevel"];
     let mut extract = false;
@@ -222,12 +226,15 @@ fn ditto(args: &[Arg]) -> Option<Unpack> {
             operands.push(arg);
         }
     }
-    if create || !(extract || unknown) || operands.len() < 2 {
+    if create || operands.len() < 2 {
         return None;
     }
-    operands
-        .last()
-        .map(|folder| Unpack::filling(vec![(*folder).clone()]))
+    let folder = vec![(*operands.last()?).clone()];
+    Some(if extract || unknown {
+        Unpack::filling(folder)
+    } else {
+        copies(folder)
+    })
 }
 
 /// What `pax` is asked to do: `-r` unpacks into the working directory,
@@ -296,7 +303,7 @@ fn pax(args: &[Arg]) -> Option<Unpack> {
     Some(unpack)
 }
 
-/// The folders `unrar` and `rar` unpack into with `x` and `e`: an operand
+/// The folders `unrar`, `rar` and `WinRAR.exe` unpack into with `x` and `e`: an operand
 /// after the archive's name that ends with a separator is the folder, and
 /// any other may be one that exists, which the line does not show, so each
 /// is a folder; with none that ends with a separator, and no `-op`, the
@@ -362,8 +369,11 @@ fn rar(args: &[Arg]) -> Option<Unpack> {
 
 /// The folder `unar` unpacks into: `-o` (`-output-directory`), or the
 /// working directory; `-o -` writes to the screen. Its options take one
-/// dash or two.
-fn unar(args: &[Arg]) -> Option<Unpack> {
+/// dash or two. A word only known when it runs that may be `-o` takes the
+/// word after it as the folder (`unar "$o" ~ a.zip`), and one that may split
+/// into words (`unar $OPTS a.zip`) may hold `-o` and a folder only known
+/// when it runs.
+fn unar(args: &[Arg], shell: Shell) -> Option<Unpack> {
     const VALUES: [&str; 8] = [
         "p",
         "password",
@@ -375,10 +385,25 @@ fn unar(args: &[Arg]) -> Option<Unpack> {
         "forks",
     ];
     let mut folders = Vec::new();
+    let mut maybe = Vec::new();
     let mut to_screen = false;
-    let mut iter = args.iter();
+    let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
-        let Some(text) = arg.known() else { continue };
+        let Some(text) = arg.known() else {
+            if may_split(arg, shell) {
+                maybe.push(Arg::Unknown(arg.text().to_string()));
+            } else if unknown_start(arg, shell).is_none_or(|start| {
+                (start.is_empty() || start.starts_with('-'))
+                    && could_be(&start, Some('o'), Some("output-directory"))
+            }) {
+                maybe.extend(
+                    iter.peek()
+                        .filter(|next| !next.known().is_some_and(|t| t.starts_with('-')))
+                        .map(|next| (*next).clone()),
+                );
+            }
+            continue;
+        };
         if text == "--" {
             break;
         }
@@ -399,11 +424,12 @@ fn unar(args: &[Arg]) -> Option<Unpack> {
             iter.next();
         }
     }
-    if folders.is_empty() {
-        if to_screen {
-            return None;
-        }
+    if folders.is_empty() && !to_screen {
         folders.push(here());
+    }
+    folders.extend(maybe);
+    if folders.is_empty() {
+        return None;
     }
     Some(Unpack::filling(folders))
 }
@@ -569,10 +595,13 @@ fn zipfile(args: &[Arg]) -> Option<Unpack> {
 }
 
 /// The folder `python -m tarfile -e ARCHIVE [FOLDER]` (`--extract`) unpacks
-/// into: the one named, or the working directory. `--filter fully_trusted`
-/// keeps the stored paths as they are, and so may a filter only known when
-/// it runs. `-l`, `-c` and `-t` write no folder. A mode only known when it
-/// runs may be `-e`.
+/// into: the one named, or the working directory. A value attached to the
+/// option (`--extract=a.tar`, `-ea.tar`) is the archive, and argparse then
+/// takes no other, so it unpacks into the working directory. `--filter
+/// fully_trusted` keeps the stored paths as they are, and so may a filter
+/// only known when it runs. `-l`, `-c` and `-t` write no folder. Short
+/// options may be bundled (`-ve a.tar`). A mode only known when it runs may
+/// be `-e`.
 fn tarfile(args: &[Arg]) -> Option<Unpack> {
     let long = |text: &str, full: &str| {
         text.strip_prefix("--")
@@ -587,19 +616,46 @@ fn tarfile(args: &[Arg]) -> Option<Unpack> {
             unknown |= arg.is_unknown();
             continue;
         };
-        if text == "-e" || long(text, "extract") {
-            // Every word up to the next option: the archive and the folder.
-            let mut taken = Vec::new();
-            while let Some(next) =
-                iter.next_if(|next| !next.known().is_some_and(|t| t.starts_with('-')))
-            {
-                taken.push(next.clone());
+        // What follows `-e` or `--extract`: `None` for a word that is
+        // neither, a value attached to it, or nothing.
+        let extract = if long(text, "extract") {
+            Some(text.split_once('=').map(|(_, value)| value))
+        } else if text.starts_with("--") {
+            None
+        } else if let Some(letters) = text.strip_prefix('-') {
+            let mut found = None;
+            for (at, letter) in letters.char_indices() {
+                match letter {
+                    'e' => {
+                        let rest = &letters[at + 1..];
+                        found = Some((!rest.is_empty()).then_some(rest));
+                        break;
+                    }
+                    'l' | 'c' | 't' => return None,
+                    'v' => {}
+                    _ => break,
+                }
             }
-            values = Some(taken);
-        } else if matches!(text, "-l" | "-c" | "-t")
-            || ["list", "create", "test"]
-                .iter()
-                .any(|mode| long(text, mode))
+            found
+        } else {
+            None
+        };
+        if let Some(attached) = extract {
+            values = Some(if let Some(archive) = attached {
+                vec![Arg::Known(archive.to_string())]
+            } else {
+                // Every word up to the next option: the archive and the folder.
+                let mut taken = Vec::new();
+                while let Some(next) =
+                    iter.next_if(|next| !next.known().is_some_and(|t| t.starts_with('-')))
+                {
+                    taken.push(next.clone());
+                }
+                taken
+            });
+        } else if ["list", "create", "test"]
+            .iter()
+            .any(|mode| long(text, mode))
         {
             return None;
         } else if long(text, "filter") {

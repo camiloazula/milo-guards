@@ -368,7 +368,7 @@ impl Checker<'_> {
                 self.pack_and_remove(unit, key);
             }
             "unzip" | "expand-archive" | "cpio" | "gcpio" | "bsdcpio" | "ditto" | "pax"
-            | "unrar" | "unar" | "jar" | "py" => self.unpack(unit, key),
+            | "unrar" | "winrar" | "unar" | "jar" | "py" => self.unpack(unit, key),
             _ if key.starts_with("python") => self.unpack(unit, key),
             "rar" => {
                 self.unpack(unit, key);
