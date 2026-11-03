@@ -60,6 +60,20 @@ impl Walker<'_> {
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
             return;
         }
+        // The right side of an `&&` after a statement runs when it
+        // succeeded, whatever a `cd` before it did (see
+        // [`Split::statement`]).
+        if matches!(
+            node.kind(),
+            "pipe_stmt"
+                | "cond_exec"
+                | "redirect_stmt"
+                | "variable_assignment"
+                | "for_stmt"
+                | "if_stmt"
+        ) {
+            self.split.statement();
+        }
         match node.kind() {
             "cmd" | "call_stmt" => {
                 if !self.statement(node, stage, level) {

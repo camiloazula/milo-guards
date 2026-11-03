@@ -837,10 +837,16 @@ fn assigned<'t>(
     unit::for_each_node(root, |node| {
         also(node);
         match node.kind() {
-            "variable_assignment" => names.extend(
-                node.child_by_field_name("name")
-                    .map(|name| unit::text(&name, source).to_string()),
-            ),
+            // `cdpath[1]=/` sets `cdpath`.
+            "variable_assignment" => names.extend(node.child_by_field_name("name").map(|name| {
+                let text = unit::text(&name, source);
+                text.split('[').next().unwrap_or(text).to_string()
+            })),
+            // `: ${CDPATH:=/}` sets it when it is empty.
+            "expansion" => names.extend(default_set(unit::text(&node, source))),
+            // `declare -n r=CDPATH` makes `r` a name for another variable,
+            // which an assignment to `r` sets.
+            "declaration_command" => names.extend(named_by_reference(node, source)),
             "unset_command" => {
                 let mut cursor = node.walk();
                 names.extend(
@@ -849,6 +855,7 @@ fn assigned<'t>(
                 );
             }
             _ => {
+                names.extend(set_by_builtin(node, source));
                 let found = loop_variables(node, source);
                 names.extend(found.iter().cloned());
                 looped.extend(found);
@@ -856,6 +863,91 @@ fn assigned<'t>(
         }
     });
     (names, looped)
+}
+
+/// The variable `${NAME:=…}` or `${NAME=…}` sets, from the expansion's text.
+fn default_set(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("${")?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let (name, after) = rest.split_at(end);
+    (!name.is_empty() && (after.starts_with(":=") || after.starts_with('=')))
+        .then(|| name.to_string())
+}
+
+/// The variables a nameref declaration (`declare -n r=CDPATH`, `typeset
+/// -n`, `local -n`) makes another name for: the name it is given, and,
+/// when that is only known when it runs, `CDPATH`, which moves a `cd`.
+fn named_by_reference(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    let nameref = children.iter().any(|child| {
+        let text = unit::text(child, source);
+        child.kind() != "variable_assignment"
+            && text.starts_with('-')
+            && !text.starts_with("--")
+            && text.contains('n')
+    });
+    if !nameref {
+        return Vec::new();
+    }
+    let mut names = vec!["CDPATH".to_string()];
+    for child in children
+        .iter()
+        .filter(|child| child.kind() == "variable_assignment")
+    {
+        if let Some(value) = child.child_by_field_name("value") {
+            let text = unit::text(&value, source).trim_matches(['"', '\'']);
+            names.push(text.split('[').next().unwrap_or(text).to_string());
+        }
+    }
+    names
+}
+
+/// The variables a builtin that is not an assignment sets: `printf -v
+/// NAME`, the array of `mapfile` and `readarray`, and the variable of
+/// `getopts`. Any word that is not an option may be one.
+fn set_by_builtin(node: Node<'_>, source: &str) -> Vec<String> {
+    if node.kind() != "command" {
+        return Vec::new();
+    }
+    let Some(name) = node.child_by_field_name("name") else {
+        return Vec::new();
+    };
+    let program = unit::text(&name, source);
+    let mut cursor = node.walk();
+    let args: Vec<&str> = node
+        .children_by_field_name("argument", &mut cursor)
+        .map(|arg| unit::text(&arg, source).trim_matches(['"', '\'']))
+        .collect();
+    // A name only known when it runs may be `CDPATH`.
+    let bare = |text: &str| {
+        if text.contains(['$', '`']) {
+            "CDPATH".to_string()
+        } else {
+            text.split('[').next().unwrap_or(text).to_string()
+        }
+    };
+    match program {
+        "printf" => {
+            let mut names = Vec::new();
+            for (at, arg) in args.iter().enumerate() {
+                if *arg == "-v" {
+                    names.extend(args.get(at + 1).map(|name| bare(name)));
+                } else if let Some(name) = arg.strip_prefix("-v") {
+                    names.push(bare(name));
+                }
+            }
+            names
+        }
+        "mapfile" | "readarray" | "getopts" => args
+            .iter()
+            .filter(|arg| !arg.starts_with('-'))
+            .map(|arg| bare(arg))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The variable of a `for` statement, or the names a `read` is given.
@@ -962,6 +1054,30 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
     });
     found
 }
+
+/// The kinds of node that are a statement of their own: the right side of
+/// an `&&` after one runs when it succeeded, whatever a `cd` before it did
+/// (see [`Split::statement`]).
+const STATEMENTS: [&str; 18] = [
+    "command",
+    "redirected_statement",
+    "variable_assignment",
+    "variable_assignments",
+    "declaration_command",
+    "unset_command",
+    "test_command",
+    "negated_command",
+    "list",
+    "pipeline",
+    "subshell",
+    "compound_statement",
+    "if_statement",
+    "case_statement",
+    "while_statement",
+    "for_statement",
+    "c_style_for_statement",
+    "function_definition",
+];
 
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
@@ -1181,7 +1297,16 @@ impl Walker<'_> {
             return;
         }
         self.split.branches += usize::from(background);
+        // Kept out of `node` too, whose frame is the deepest nesting's.
+        let kind = node.kind();
+        if STATEMENTS.contains(&kind) {
+            self.split.statement();
+        }
         self.node(node, stage, level);
+        // `! cd s && rm -rf ../x` runs `rm` when the `cd` failed.
+        if kind == "negated_command" {
+            self.split.statement();
+        }
         self.split.branches -= usize::from(background);
     }
 

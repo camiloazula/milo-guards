@@ -376,7 +376,11 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each `${`), took a tenth of a second to a second at the length limit,
     // and 3.4 s on a slow machine for `${` repeated, inside the budget of
     // what a lexer reads: they are counted before parsing (`Openers` in
-    // `tangled.rs`). A release build reads each in
+    // `tangled.rs`). A path is judged again from each other folder a `cd`
+    // that may have failed or not run may have left the line in, which made
+    // the `cd` rows two to three times slower until a `cd ..` back from one
+    // after `&&` added none and every folder only known when it runs counted
+    // as one (`MAX_ELSEWHERE` in `unit.rs`). A release build reads each in
     // tens of milliseconds; the bounds leave room for a machine busy with
     // other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
@@ -422,6 +426,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("a|a\n|", "", "")),
         (Shell::Posix, fit("cd a; cd ..; ", "", "rm x")),
         (Shell::Posix, fit("cd a; cat b; cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("cd a && cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("x && cd a; cat b > c; ", "", "bash c")),
         (Shell::PowerShell, fit("cd a; cd ..; ", "", "Remove-Item x")),
         (Shell::Posix, fit("echo x | ", "", "|")),
         (Shell::Posix, fit("|", "", "")),

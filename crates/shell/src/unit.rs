@@ -781,6 +781,11 @@ pub(crate) struct Split {
     /// when the folders in [`Self::stayed`] were too many.
     named_writes: usize,
     named_units: usize,
+    /// Whether the line may have turned on bash's `cdable_vars` or zsh's
+    /// `cdablevars`: a `cd` to a name that is not a folder then goes to the
+    /// folder the variable of that name holds, as one by `CDPATH` goes to
+    /// a place only known when it runs (see [`by_cdpath`]).
+    cdable: bool,
     /// The folders the last unit added to [`Self::stayed`], when it is a
     /// plain `cd`: the right side of `&&` after it runs only when it ran.
     last_stayed: Vec<Option<Arg>>,
@@ -1165,6 +1170,10 @@ pub(crate) struct Link {
     moves: usize,
     /// Every folder the line may have been in when it began.
     places: Vec<Option<Arg>>,
+    /// Whether the left side ends with a plain `cd` that may have failed
+    /// (see [`Split::stayed`]): when this side does not run, that `cd`
+    /// failed, and the line is where it stayed, not where it went.
+    after_cd: bool,
 }
 
 /// What a list of commands joined by `&&` or `||` (its left sides that are
@@ -1250,7 +1259,7 @@ impl Split {
     /// Whether the line sets `CDPATH` and moves: the folder `cd` finds on it
     /// is the name `PWD` takes.
     fn moves_by_cdpath(&self) -> bool {
-        self.moved > 0 && self.reassigned("CDPATH")
+        self.moved > 0 && (self.cdable || self.reassigned("CDPATH"))
     }
 
     /// Note a `PS4` or `BASH_ENV` value written with `$PWD` in it, which the
@@ -1374,7 +1383,8 @@ impl Split {
             }
             moved = moved.and_then(|target| self.cmd_target(&unit, target));
         }
-        if unit.shell == Shell::Posix && self.reassigned("CDPATH") {
+        self.cdable |= unit.shell == Shell::Posix && cdable(&unit);
+        if unit.shell == Shell::Posix && (self.cdable || self.reassigned("CDPATH")) {
             moved = moved.map(|target| by_cdpath(&unit, target));
         }
         // A `Pop-Location` the line is certain to run, of a folder the line
@@ -2114,6 +2124,16 @@ impl Split {
         self.chain.stayed.clear();
     }
 
+    /// A statement the walk reads begins, or one that negates what it runs
+    /// (`! cd s`, `-not (Set-Location s)`) ends: the right side of an `&&`
+    /// after it runs when that statement succeeded, which says nothing of a
+    /// plain `cd` before it (`cd s; [ -d b ] && rm -rf ../x`), so it is
+    /// judged from the folders that `cd` may have stayed in too (see
+    /// [`Self::link_start`]).
+    pub(crate) fn statement(&mut self) {
+        self.last_stayed.clear();
+    }
+
     /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
     /// it. It may not run, so it is a branch. After `&&` it runs only when
     /// the left side did, so the folders a plain `cd` that ends the left side
@@ -2121,7 +2141,8 @@ impl Split {
     /// [`Chain::stayed`]).
     pub(crate) fn link_start(&mut self) -> Link {
         let held = std::mem::take(&mut self.last_stayed);
-        if !held.is_empty() {
+        let after_cd = !held.is_empty();
+        if after_cd {
             self.stayed.retain(|folder| !held.contains(folder));
             self.chain.stayed.extend(held);
         }
@@ -2130,12 +2151,16 @@ impl Split {
         Link {
             moves: self.moves,
             places: self.places(),
+            after_cd,
         }
     }
 
     /// End `link`, a right side of `list`: when it moved the line, it may
     /// not have run, so the list may have stopped where the line was before
-    /// it, or where the list began, if the left side did not move it. A
+    /// it, or where the list began, if the left side did not move it. After
+    /// a plain `cd` that may have failed it does not run only when that `cd`
+    /// failed, which leaves the line where it stayed ([`Chain::stayed`]), so
+    /// not where the `cd` went: `cd a && cd ..` ends where it began. A
     /// command later in the list runs only when this side did, so these are
     /// left for after the list (see [`Chain::stops`]): a chain of `n` `cd`s
     /// leaves the line in at most `n + 1` folders.
@@ -2144,7 +2169,9 @@ impl Split {
         self.links -= 1;
         if self.moves != link.moves {
             self.maybe_moved = true;
-            self.chain.stops.extend(link.places);
+            if !link.after_cd {
+                self.chain.stops.extend(link.places);
+            }
             self.chain.stops.extend(list.places.iter().cloned());
             if self.chain.or {
                 self.add_stops();
@@ -3139,18 +3166,34 @@ fn others(
     });
     let mut folders: Vec<Option<Arg>> = Vec::new();
     for folder in elsewhere.iter().chain(stayed).cloned().chain(lost) {
-        if folder.as_ref() != dir && !folders.contains(&folder) {
+        if !same_folder(folder.as_ref(), dir)
+            && !folders
+                .iter()
+                .any(|known| same_folder(known.as_ref(), folder.as_ref()))
+        {
             folders.push(folder);
         }
     }
     folders
 }
 
+/// Whether `a` and `b` are the same folder to judge a path from: the same
+/// one, or two only known when they run, from which every relative path is
+/// only known when it runs too, whatever their text says.
+fn same_folder(a: Option<&Arg>, b: Option<&Arg>) -> bool {
+    a == b || matches!((a, b), (Some(a), Some(b)) if a.known().is_none() && b.known().is_none())
+}
+
 /// The folder `folder` names, with the `..` a `cd` folds folded under the
 /// rules of `folds`, the shell whose spelling it is (`None`: not folded), so
-/// two spellings of one folder compare equal; `None` is where the line began.
+/// two spellings of one folder compare equal, as do any two only known when
+/// they run; `None` is where the line began.
 fn folder_key(folder: Option<&Arg>, folds: Option<Shell>) -> Option<Cow<'_, Arg>> {
     match (folder, folds) {
+        // Every folder only known when it runs is one (see [`same_folder`]).
+        (Some(folder), _) if folder.known().is_none() => {
+            Some(Cow::Owned(Arg::Unknown(String::new())))
+        }
         (Some(Arg::Known(text)), Some(shell)) if text.contains("..") => {
             match fold_dots(text, shell) {
                 Some(folded) if matches!(folded.as_str(), "" | ".") => None,
@@ -3162,10 +3205,37 @@ fn folder_key(folder: Option<&Arg>, folds: Option<Shell>) -> Option<Cow<'_, Arg>
     }
 }
 
+/// Whether `unit` may turn on bash's `cdable_vars` or zsh's `cdablevars`
+/// (`shopt -s cdable_vars`, `setopt CDABLE_VARS`, `set -o cdablevars`,
+/// `unsetopt nocdablevars`): any word that names it, however zsh spells it,
+/// whichever way it is switched, or an option only known when it runs.
+fn cdable(unit: &Unit) -> bool {
+    let Some(key) = unit.key() else {
+        return false;
+    };
+    if !matches!(key.as_str(), "shopt" | "setopt" | "unsetopt" | "set") {
+        return false;
+    }
+    unit.args.iter().any(|arg| match arg.known() {
+        Some(text) => {
+            let name: String = text
+                .chars()
+                .filter(|c| *c != '_')
+                .collect::<String>()
+                .to_ascii_lowercase();
+            let name = name.trim_start_matches(['-', '+']);
+            matches!(name, "cdablevars" | "nocdablevars")
+        }
+        None => key != "set",
+    })
+}
+
 /// Where a POSIX `cd` or `pushd` to `target` goes when the line sets
 /// `CDPATH`: a relative name that does not start with `.` or `..` is looked
 /// up in each folder `CDPATH` names before the working folder, so it goes to
-/// a place only known when it runs.
+/// a place only known when it runs. So it does with `cdable_vars` on (see
+/// [`Split::cdable`]), which takes a name that is not a folder for a
+/// variable that holds one.
 fn by_cdpath(unit: &Unit, target: Arg) -> Arg {
     let searched = matches!(unit.key().as_deref(), Some("cd" | "chdir" | "pushd"))
         && target.known().is_some_and(|text| {

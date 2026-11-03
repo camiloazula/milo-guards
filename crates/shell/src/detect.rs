@@ -66,6 +66,10 @@ pub(crate) const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
+/// What the reason of a finding judged from another folder a `cd` before it
+/// may have left the line in ends with (see [`Unit::others`]).
+const MOVED_OFF: &str = " if a cd before it failed or did not run";
+
 /// What the rules found in a split line: the findings of the whole line,
 /// and where each came from.
 #[derive(Debug, Default)]
@@ -121,9 +125,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         // have left the line in another folder: its paths are judged from
         // there too. A run of a file the line wrote is judged from each of
         // them already.
+        let own = checker.found.len();
         for dir in unit.others() {
             checker.unit(at, &unit.in_folder(dir), false);
         }
+        checker.moved_off(before, own);
         checker.loose(at, before);
         units.push(checker.found[before..].to_vec());
     }
@@ -136,18 +142,41 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     // folder a `cd` that may have failed left the line in stays one of them
     // for the units after it: the same file from the same folder is judged
     // once.
-    let mut judged: HashMap<(Shell, Option<&Arg>, bool, &Arg), Vec<Finding>> = HashMap::new();
+    type Key<'s> = (Shell, Option<&'s Arg>, bool, &'s Arg, bool);
+    let mut judged: HashMap<Key<'_>, Vec<Finding>> = HashMap::new();
+    // What the redirect being read found from the folders the walk has the
+    // line in (the writes of one redirect come together, those first): from
+    // another folder the line may be in, the same finding is that one.
+    let mut plain: (Option<&Arg>, Vec<Finding>) = (None, Vec::new());
     for write in &split.writes {
-        let key = (write.shell, write.dir.as_ref(), write.hidden, &write.target);
-        if let Some(found) = judged.get(&key) {
-            checker.found.extend_from_slice(found);
-            writes.push(found.clone());
-            continue;
+        if !write.also && plain.0 != Some(&write.target) {
+            plain = (Some(&write.target), Vec::new());
         }
-        let before = checker.found.len();
-        checker.write(write.shell, write.scope(), &write.target, "writes to");
-        let found = checker.found[before..].to_vec();
-        judged.insert(key, found.clone());
+        let key = (
+            write.shell,
+            write.dir.as_ref(),
+            write.hidden,
+            &write.target,
+            write.also,
+        );
+        let found = if let Some(found) = judged.get(&key) {
+            checker.found.extend_from_slice(found);
+            found.clone()
+        } else {
+            let before = checker.found.len();
+            checker.write(write.shell, write.scope(), &write.target, "writes to");
+            if write.also {
+                let mine = std::mem::take(&mut plain.1);
+                checker.moved_off_from(&mine, before);
+                plain.1 = mine;
+            }
+            let found = checker.found[before..].to_vec();
+            judged.insert(key, found.clone());
+            found
+        };
+        if !write.also {
+            plain.1.extend_from_slice(&found);
+        }
         writes.push(found);
     }
     // Inline code the guard did not read whole is `unknown`, but only where
@@ -452,6 +481,31 @@ impl Checker<'_> {
             .any(|found| found.rule == Rule::ReadSecret)
         {
             self.found.push(finding.clone());
+        }
+    }
+
+    /// The findings from `own` on were judged from another folder a `cd`
+    /// before the unit may have left the line in (see [`Unit::others`]): one
+    /// the unit made from where the walk has the line (from `before`) is
+    /// that one, and any other says where it comes from, so a caller sees
+    /// what to change (`&&` after the `cd`, or `|| exit`).
+    fn moved_off(&mut self, before: usize, own: usize) {
+        let mine = self.found[before..own].to_vec();
+        self.moved_off_from(&mine, own);
+    }
+
+    /// As [`Self::moved_off`], with what was found from where the walk has
+    /// the line given as `mine`.
+    fn moved_off_from(&mut self, mine: &[Finding], own: usize) {
+        let others = self.found.split_off(own);
+        for mut finding in others {
+            if mine.contains(&finding) {
+                continue;
+            }
+            finding.reason.push_str(MOVED_OFF);
+            if !self.found[own..].contains(&finding) {
+                self.found.push(finding);
+            }
         }
     }
 
