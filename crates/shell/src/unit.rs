@@ -762,9 +762,10 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
-    /// The values `ZIPOPT` is given for the program being added, noted as
-    /// `node_options` is: `zip` reads them as options before its own.
-    pub(crate) zip_options: Vec<Arg>,
+    /// What `ZIPOPT` and `ZIP` hold for the program being added: `zip`
+    /// reads them as options before its own. One value each, which an
+    /// assignment replaces.
+    pub(crate) zip_env: crate::zipopt::ZipEnv,
     /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
     /// the program being added, by name, noted as `node_options` is:
     /// terraform reads them as arguments of its command.

@@ -52,6 +52,7 @@ mod startup;
 mod tangled;
 mod unit;
 mod values;
+mod zipopt;
 
 pub use effect::{Effect, How, Reach, ReadPath};
 pub use explain::{

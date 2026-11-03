@@ -309,6 +309,29 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("zip -T{} x.zip src", " -TT 'unzip -t'".repeat(4_000)),
         format!("{}zip -r x.zip src", "ZIPOPT='-q -m' ".repeat(4_000)),
         format!("ZIPOPT='{}' zip -r x.zip src", "-q ".repeat(20_000)),
+        // A value read again at each of many `zip` calls: one too long to
+        // split, one as long as the guard splits, and many assignments.
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(10_000),
+            "zip x; ".repeat(5_000)
+        ),
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!(
+            "export ZIP='{}'; {}",
+            "\"-q\" ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!("{}{}", "ZIPOPT=-q; ".repeat(4_000), "zip x; ".repeat(3_000)),
+        format!(
+            "{}{}",
+            "ZIPOPT+=-q; ".repeat(4_000),
+            "zip x; ".repeat(2_000)
+        ),
         format!("rar m x.rar{}", " ~/a".repeat(15_000)),
     ];
     for line in &rows {

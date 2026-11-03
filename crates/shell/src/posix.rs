@@ -1976,7 +1976,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …` and `ZIPOPT=… zip`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
-        let zip = self.split.zip_options.len();
+        let zip = self.split.zip_env.clone();
         let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
@@ -1998,7 +1998,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
-        self.split.zip_options.truncate(zip);
+        self.split.zip_env = zip;
         self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
     }
@@ -2259,10 +2259,12 @@ impl Walker<'_> {
                     self.split.python_path.push(Arg::Known(value.to_string()));
                 } else if text == "PYTHONPATH" {
                     self.split.python_path.push(Arg::Unknown(text.to_string()));
-                } else if let Some(value) = text.strip_prefix("ZIPOPT=") {
-                    self.split.zip_options.push(Arg::Known(value.to_string()));
-                } else if text == "ZIPOPT" {
-                    self.split.zip_options.push(Arg::Unknown(text.to_string()));
+                } else if let Some((name, value)) = text.split_once('=') {
+                    self.split
+                        .zip_env
+                        .set(name, &Arg::Known(value.to_string()), false);
+                } else {
+                    self.split.zip_env.export(text, text);
                 }
             }
             None if source.starts_with("NODE_OPTIONS") => {
@@ -2275,12 +2277,16 @@ impl Walker<'_> {
                     .python_path
                     .push(Arg::Unknown(source.to_string()));
             }
-            None if source.starts_with("ZIPOPT") => {
-                self.split
-                    .zip_options
-                    .push(Arg::Unknown(source.to_string()));
-            }
-            None => {}
+            None => match source.split_once('=') {
+                Some((name, _)) => {
+                    self.split
+                        .zip_env
+                        .set(name, &Arg::Unknown(source.to_string()), false);
+                }
+                None => {
+                    self.split.zip_env.export(source, source);
+                }
+            },
         }
     }
 
@@ -2305,7 +2311,7 @@ impl Walker<'_> {
     }
 
     /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
-    /// `ZIPOPT`, `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of
+    /// `ZIPOPT`, `ZIP`, `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of
     /// those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
@@ -2313,20 +2319,27 @@ impl Walker<'_> {
         };
         let name = unit::text(&name, self.source);
         let terraform = unit::tf_cli_args(name);
-        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT") && !terraform {
+        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT" | "ZIP") && !terraform {
             return;
         }
-        let value = assignment
-            .child_by_field_name("value")
-            .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
+        let right = assignment.child_by_field_name("value");
+        let value = right.map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
         if terraform {
             self.split.tf_cli_args.push((name.to_string(), value));
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
-        } else if name == "ZIPOPT" {
-            self.split.zip_options.push(value);
-        } else {
+        } else if name == "NODE_OPTIONS" {
             self.split.node_options.push(value);
+        } else {
+            // `ZIPOPT+=…` adds to the value the line gave it.
+            let appends = unit::text(&assignment, self.source)
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with("+="));
+            if appends {
+                self.split.zip_env.append(name, &value);
+            } else {
+                self.split.zip_env.set(name, &value, false);
+            }
         }
     }
 

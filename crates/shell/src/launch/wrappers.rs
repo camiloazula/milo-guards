@@ -459,14 +459,15 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .collect()
 }
 
-/// The values `ZIPOPT` is given by the wrapper's own arguments, as
-/// [`node_options`] reads `NODE_OPTIONS`.
-pub(super) fn zip_options(args: &[Arg], start: usize) -> Vec<Arg> {
+/// The values `ZIPOPT` and `ZIP` are given by the wrapper's own arguments,
+/// by name and in order, as [`node_options`] reads `NODE_OPTIONS`.
+pub(super) fn zip_env(args: &[Arg], start: usize) -> Vec<(&str, Arg)> {
     args.iter()
         .take(start)
         .filter_map(Arg::known)
-        .filter_map(|text| text.strip_prefix("ZIPOPT="))
-        .map(|value| Arg::Known(value.to_string()))
+        .filter_map(|text| text.split_once('='))
+        .filter(|(name, _)| matches!(*name, "ZIPOPT" | "ZIP"))
+        .map(|(name, value)| (name, Arg::Known(value.to_string())))
         .collect()
 }
 

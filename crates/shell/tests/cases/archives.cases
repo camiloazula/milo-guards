@@ -341,6 +341,16 @@ posix finds=delete | sudo tar -xf x.tar --to-command='rm -rf ~'
 posix finds=delete | tar -cf x.tar -C ~ notes.txt --checkpoint=1 --checkpoint-action=exec='rm .bashrc'
 posix finds=delete | tar -xf x.tar -C build --to-command='rm -rf .'
 posix safe | tar -I zstd -cf x.tar.zst -C build .
+# `-I` that names a compressor is GNU tar's, not bsdtar's file of members;
+# any other value may be either.
+posix safe | tar -cf x.tar -I zstd src --remove-files
+posix safe | tar -cf x.tar -I 'xz -9' src --remove-files
+posix safe | tar -cf x.tar -I /usr/bin/pigz src --remove-files
+posix finds=delete | tar -cf x.tar -I list.txt src --remove-files
+posix safe | gtar -cf x.tar -I ./my-compressor src --remove-files
+# `--rmt-command` runs on the machine of a `host:` archive, which the paths
+# on the line do not reach: it is not read.
+posix safe | tar -cf host:x.tar --rmt-command=/usr/sbin/rmt src
 posix finds=unknown | tar -xf x.tar --to-command="$CMD"
 posix finds=unknown | tar -xf x.tar --to-command "$CMD"
 posix finds=unknown | tar -cf x.tar -I "$PROG" src
@@ -554,6 +564,41 @@ posix finds=delete | env ZIPOPT=-m zip -r x.zip ~
 posix finds=delete | ZIPOPT=-m sudo zip -r x.zip ~
 posix finds=unknown | ZIPOPT="$OPTS" zip -r x.zip src
 posix finds=unknown | export ZIPOPT; zip -r x.zip src
+# One value: an assignment replaces the one before it, and one in front of a
+# command is that command's only.
+posix finds=read_secret lacks=delete | ZIPOPT=-m; ZIPOPT=-q; zip -r x.zip ~
+posix finds=read_secret lacks=delete | export ZIPOPT=-m; export ZIPOPT=-q; zip -r x.zip ~
+posix finds=read_secret lacks=delete | ZIPOPT=-m zip -r x.zip src; zip -r y.zip ~
+posix finds=read_secret lacks=delete | env ZIPOPT=-m zip -r x.zip src; zip -r y.zip ~
+posix finds=delete | ZIPOPT=-q; ZIPOPT+=' -m'; zip -r x.zip ~
+posix finds=delete | ZIPOPT=-q; ZIPOPT=-m zip -r x.zip ~
+posix safe | ZIPOPT=-m; export ZIPOPT; zip -r x.zip src
+posix finds=delete | ZIPOPT=-m; export ZIPOPT; zip -r x.zip ~
+# zip reads `ZIP` when `ZIPOPT` holds no word, and takes a word in double
+# quotes as one, without them.
+posix finds=delete | ZIP=-m zip -r x.zip ~
+posix finds=delete | export ZIP=-m; zip -r x.zip ~
+posix finds=delete | env ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT=' ' ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT="$OPTS" ZIP=-m zip -r x.zip ~
+posix finds=read_secret lacks=delete | ZIPOPT=-q ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT='"-m"' zip -r x.zip ~
+posix finds=delete | ZIPOPT='-q "-m"' zip -r x.zip ~
+posix finds=unknown | ZIP="$OPTS" zip -r x.zip src
+# A value longer than the guard splits holds options only known when it runs.
+posix finds=unknown | ZIPOPT='-q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q' zip -r x.zip src
+# On Windows too: `$env:ZIPOPT` in PowerShell, `set ZIPOPT=` in cmd.
+powershell safe | $env:ZIPOPT='-q'; zip -qr x.zip src
+powershell finds=delete | $env:ZIPOPT='-m'; zip -qr x.zip ~
+powershell finds=delete | $env:ZIPOPT='-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=delete | $env:zipopt = '-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=delete | $env:ZIP='-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=unknown | $env:ZIPOPT=$opts; zip -qr x.zip src
+powershell finds=unknown | Set-Item env:ZIPOPT $opts; zip -qr x.zip src
+cmd safe | set ZIPOPT=-q && zip -qr x.zip src
+cmd finds=delete | set ZIPOPT=-m && zip -qr x.zip %USERPROFILE%
+cmd finds=delete | set "ZIPOPT=-m" & zip -qr x.zip C:\\Users\\me
+cmd finds=delete | set zip=-m & zip -qr x.zip C:\\Users\\me
 # `-TT` (`--unzip-command`) is a command zip runs to test the archive.
 posix safe | zip -T x.zip src
 posix safe | zip -T -TT 'unzip -tqq' x.zip src
@@ -561,6 +606,10 @@ posix finds=delete | zip -T -TT 'rm -rf ~' x.zip src
 posix finds=delete | zip -T --unzip-command 'rm -rf ~' x.zip src
 posix finds=delete | zip -T --unzip-command='rm -rf ~' x.zip src
 posix finds=unknown | zip -T -TT "$CMD" x.zip src
+posix safe | zip -T -TT='unzip -tqq' x.zip src
+posix finds=delete | zip -T -TT='rm -rf ~' x.zip src
+posix finds=delete | zip -T -TT=rm\\ -rf\\ ~ x.zip src
+posix finds=delete | ZIPOPT='-T "-TT=rm -rf ~"' zip x.zip src
 
 # `7z a -sdel` (and `u`) deletes the members it archives. With no name after
 # the archive's it packs, and deletes, everything in the folder; a switch

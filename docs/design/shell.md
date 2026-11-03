@@ -1793,14 +1793,23 @@ the name of a file to pack. A line cannot show which `tar` runs, so the guard
 reads `tar`, `gtar` and `bsdtar` alike, as GNU tar: a cautious choice, not how
 bsdtar behaves (`bsdtar -cf x.tar ~ --remove-files` is `delete`).
 
-`ZIPOPT` holds options `zip` reads before its own. A value the line gives it
-in front of `zip` (`ZIPOPT=-m zip -r x.zip ~`, `env ZIPOPT=-m zip …`), or
-earlier (`export ZIPOPT=-m; zip …`, `ZIPOPT=-m; zip …`, since the variable may
-already be exported), is split at white space and read as `zip`'s first
-options. A value only known when it runs may hold any option: `unknown`
-("gives zip options only known when it runs"). `GZIP`, `XZ_OPT` and `BZIP2`
-are not read: they are options of the compressor `tar` pipes the archive
-through, which can neither delete what `tar` packs nor run a command.
+`ZIPOPT` holds options `zip` reads before its own, and `ZIP` does when
+`ZIPOPT` holds no word. A value the line gives either in front of `zip`
+(`ZIPOPT=-m zip -r x.zip ~`, `env ZIP=-m zip …`), or earlier (`export
+ZIPOPT=-m; zip …`, `ZIPOPT=-m; zip …`, since the variable may already be
+exported; `$env:ZIPOPT = '-m'` in PowerShell, `set ZIPOPT=-m` in cmd, in any
+case), is split as `zip` splits it, at white space, with a word that starts
+with `"` running to the next `"` and read without the quotes, and is read as
+`zip`'s first options. Each variable holds one value: an assignment replaces
+the one before it (`ZIPOPT+=…` adds to it), and one in front of a command is
+that command's only. `ZIP` is read too unless the line gives `ZIPOPT` a word,
+so a `ZIPOPT` only known when it runs leaves both read. A value only known
+when it runs may hold any option: `unknown` ("gives zip options only known
+when it runs"), and so is one of more than 64 words or 1 KiB ("gives zip
+options too long to read"), which the guard does not split, so that a line
+of many `zip` calls costs no more than their words. `GZIP`, `XZ_OPT` and
+`BZIP2` are not read: they are options of the compressor `tar` pipes the
+archive through, which can neither delete what `tar` packs nor run a command.
 
 ### Commands an archiver runs
 
@@ -1812,13 +1821,15 @@ judged as a line of its own, nested under the archiver, so `tar -xf x.tar
 
 | Program | The command |
 | --- | --- |
-| `tar`, `gtar`, `bsdtar` | `--to-command` (a filter for each member), `-I` and `--use-compress-program` (the compressor; `-I` is a file of members to bsdtar, so to `tar`, which may be either, it is both), `--checkpoint-action=exec=…` (a value only known when it runs is a command, unless it starts with an action that runs none: `bell`, `dot`, `.`, `echo`, `sleep`, `totals`, `ttyout`, `wait`), `-F`, `--info-script` and `--new-volume-script` (run at the end of each volume), `--rsh-command` (the remote shell); each long option may be a unique prefix (`--to-com`, `--use-comp`) |
-| `zip` | `-TT command`, `-TTcommand`, `--unzip-command` (`=command`): what tests the archive |
+| `tar`, `gtar`, `bsdtar` | `--to-command` (a filter for each member), `-I` and `--use-compress-program` (the compressor; `-I` is a file of members to bsdtar, so to `tar`, which may be either, it is both, unless its program is a known compressor such as `zstd`, `xz` or `pigz`), `--checkpoint-action=exec=…` (a value only known when it runs is a command, unless it starts with an action that runs none: `bell`, `dot`, `.`, `echo`, `sleep`, `totals`, `ttyout`, `wait`), `-F`, `--info-script` and `--new-volume-script` (run at the end of each volume), `--rsh-command` (the remote shell); each long option may be a unique prefix (`--to-com`, `--use-comp`) |
+| `zip` | `-TT command`, `-TTcommand`, `-TT=command`, `--unzip-command` (`=command`): what tests the archive |
 
 A filter, a checkpoint's command and a volume script run where `tar` is when
 it runs them, which a `-C` before them changes: with any `-C` on the line the
 command is judged from a folder only known when it runs, as `git submodule
-foreach`'s is, and the rest of the line is where it was. `tar -czf x.tgz src`,
+foreach`'s is, and the rest of the line is where it was. `--rmt-command` is
+not read: GNU tar runs it on the machine of a `host:` archive, where the paths
+on the line do not lead. `tar -czf x.tgz src`,
 `tar -I zstd -cf x.tar.zst src`, `tar -xf x.tar --to-command=cat` and `zip -T
 -TT 'unzip -tqq' x.zip src` stay safe.
 

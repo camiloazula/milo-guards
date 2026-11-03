@@ -446,13 +446,15 @@ impl TarRead<'_> {
                     // The members are in a file the line does not show.
                     ('T', _) => self.members.push(from_list()),
                     // A compressor to GNU tar, the file of members to
-                    // bsdtar; `tar` may be either.
+                    // bsdtar; `tar` may be either, unless the value names a
+                    // compressor (`-I zstd`, `-I 'xz -9'`).
                     ('I', value) => {
+                        let compressor = value.as_ref().is_some_and(names_compressor);
+                        if self.key != "gtar" && !compressor {
+                            self.members.push(from_list());
+                        }
                         if self.key != "bsdtar" {
                             self.commands.extend(value);
-                        }
-                        if self.key != "gtar" {
-                            self.members.push(from_list());
                         }
                     }
                     // The script GNU tar runs at the end of each volume.
@@ -477,6 +479,23 @@ impl TarRead<'_> {
             }
         }
     }
+}
+
+/// Whether `value`, given to `tar -I`, is a command that runs a compressor
+/// (`zstd`, `xz -9`, `/usr/bin/pigz`): GNU tar's reading, and not a file of
+/// members bsdtar would read.
+fn names_compressor(value: &Arg) -> bool {
+    const COMPRESSORS: [&str; 18] = [
+        "brotli", "bzip2", "bzip3", "compress", "gzip", "lbzip2", "lrzip", "lz4", "lzip", "lzma",
+        "lzop", "pbzip2", "pigz", "pixz", "plzip", "xz", "zstd", "pzstd",
+    ];
+    let Some(text) = value.known() else {
+        return false;
+    };
+    let program = text.split_whitespace().next().unwrap_or_default();
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    COMPRESSORS.contains(&name)
 }
 
 /// Members read from a list the line does not show.
@@ -786,13 +805,15 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
                 'b' | 'O' | 'P' | 'Z' => separate = rest.is_empty(),
                 // `-t date` and `-tt date`.
                 't' => separate = rest.is_empty() || rest == "t",
-                // `-TT command` and `-TTcommand`: the command that tests
-                // the archive.
+                // `-TT command`, `-TTcommand` and `-TT=command`: the
+                // command that tests the archive.
                 'T' => {
                     separate = rest == "T";
                     inside = rest.starts_with('T') && !separate;
                     if inside {
-                        commands.push(Arg::Known(rest[1..].to_string()));
+                        let command = &rest[1..];
+                        let command = command.strip_prefix('=').unwrap_or(command);
+                        commands.push(Arg::Known(command.to_string()));
                     }
                 }
                 // `-s size` and `-s100m` (`-sf` and its kin are flags).
