@@ -56,6 +56,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         last_command: 0..0,
         tail_of: Vec::new(),
         tail: None,
+        unstaged: None,
     }
     .walk(tree.root_node(), None, 0);
 }
@@ -570,6 +571,38 @@ fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
     (last.kind() == "command").then_some(last)
 }
 
+/// Whether `node`, the left side of a list, is a list of its own (`a && b &&
+/// c` is `(a && b) && c`), or one a redirect on its last command wraps
+/// (`a && b > log && c` is `(a && b > log) && c`, the redirect on `b`): its
+/// commands are then part of the same list, whose body is walked first.
+/// So is a pipeline whose first stage is such a list (`a && b 2>&1 | c && d`,
+/// see [`Walker::unstaged`]).
+fn heads_list(node: Node<'_>) -> bool {
+    match node.kind() {
+        "list" => true,
+        "redirected_statement" => redirected_list(node).is_some(),
+        "pipeline" => first_named(node).and_then(redirected_list).is_some(),
+        _ => false,
+    }
+}
+
+/// The list a redirect on its last command wraps, when `node` is one.
+fn redirected_list(node: Node<'_>) -> Option<Node<'_>> {
+    (node.kind() == "redirected_statement")
+        .then(|| node.child_by_field_name("body"))
+        .flatten()
+        .filter(|body| body.kind() == "list")
+}
+
+/// The first named child of `node` that is not a comment.
+fn first_named(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let first = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() != "comment");
+    first
+}
+
 /// The last named child of `node` that is not a comment.
 fn last_child(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
@@ -813,6 +846,12 @@ struct Walker<'a> {
     /// Where the line is, and how many `cd`s were read, just before the last
     /// command of the list in `tail_of` that was walked last.
     tail: Option<Tail>,
+    /// The list the grammar holds as the first stage of a pipeline when a
+    /// redirect is on its last command (`a && b 2>&1 | c` is `(a && b 2>&1)
+    /// | c`; the shell reads `a && (b 2>&1 | c)`), by its node id, with the
+    /// stage the pipeline itself is in: only its last command is in the
+    /// pipeline, and the ones before it run where the pipeline does.
+    unstaged: Option<(usize, Option<Stage>)>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -822,7 +861,6 @@ struct Tail {
     here: OpensFrom,
     moved: usize,
     moves: usize,
-    uncertain: usize,
     first: usize,
 }
 
@@ -1210,18 +1248,32 @@ impl Walker<'_> {
     /// may not run.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        let before = self.split.moves_so_far();
+        let list = self.split.list_start();
         let mut at = 0;
         let last = self
             .tail_of
             .contains(&node.id())
             .then(|| last_child(node).map(|last| last.id()))
             .flatten();
+        // The first stage of a pipeline that the grammar made of the list
+        // before it (see [`Walker::unstaged`]): only the last command is in
+        // the pipeline.
+        let staged = match self.unstaged.take() {
+            Some((id, outer)) if id == node.id() => last_child(node).map(|last| (last.id(), outer)),
+            other => {
+                self.unstaged = other;
+                None
+            }
+        };
         for child in node.children(&mut cursor) {
+            let stage = match staged {
+                Some((last, outer)) if child.id() != last => outer,
+                _ => stage,
+            };
             // The right side of `||` only runs when the left failed: a `cd`
             // on the left may not have moved the line.
             if child.kind() == "||" {
-                self.split.may_not_have_moved(before);
+                self.split.list_or(&list);
             }
             if !child.is_named() {
                 continue;
@@ -1233,15 +1285,24 @@ impl Walker<'_> {
                     here: self.split.opens_here(),
                     moved: self.split.moved_so_far(),
                     moves: self.split.moves_so_far(),
-                    uncertain: self.split.uncertain_so_far(),
                     first: self.split.units.len(),
                 });
             }
-            self.split.branches += usize::from(at > 0);
-            self.walk(child, stage, level + 1);
-            self.split.branches -= usize::from(at > 0);
+            // A `cd` on the right side runs only when the left let it: when
+            // it did not (`cd sub && cd sub2`), the line may still be where
+            // that side began, or where the list did.
+            if at > 0 {
+                let link = self.split.link_start();
+                self.walk(child, stage, level + 1);
+                self.split.link_end(&list, link);
+            } else {
+                self.split.list_head(heads_list(child));
+                self.walk(child, stage, level + 1);
+                self.split.list_head(false);
+            }
             at += 1;
         }
+        self.split.list_end(list);
     }
 
     /// Note a function definition before its body is read: its name, where
@@ -1399,10 +1460,18 @@ impl Walker<'_> {
                     pipeline,
                     index: next,
                 };
+                // `a && b 2>&1 | c`: only `b` is in the pipeline.
+                if next == 0 {
+                    if let Some(list) = redirected_list(child) {
+                        let outer = self.split.parents.get(&pipeline).copied();
+                        self.unstaged = Some((list.id(), outer));
+                    }
+                }
                 // A stage runs in a subshell of its own.
                 self.split.apart += 1;
                 self.walk(child, Some(stage), level + 1);
                 self.split.apart -= 1;
+                self.unstaged = None;
                 next += 1;
             }
         }
@@ -2088,7 +2157,6 @@ impl Walker<'_> {
         let here = self.split.opens_here();
         let moved_before = self.split.moved_so_far();
         let moves_before = self.split.moves_so_far();
-        let uncertain_before = self.split.uncertain_so_far();
         // The units the redirects are opened before: a plain command's own,
         // or the last command of a list, pipeline or negation.
         let mut placed = 0..0;
@@ -2169,7 +2237,6 @@ impl Walker<'_> {
                         tail.first..own.end,
                         tail.moved,
                         tail.moves,
-                        tail.uncertain,
                         by_folder,
                     )
                 } else {
@@ -2178,7 +2245,6 @@ impl Walker<'_> {
                         own.clone(),
                         moved_before,
                         moves_before,
-                        uncertain_before,
                         by_folder,
                     )
                 };

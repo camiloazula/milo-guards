@@ -453,9 +453,10 @@ a function body, and where the line began too if an earlier `cd` may not have
 moved it. A `cd` in the body that may not have run (in a branch of an `if` or a
 `case`, after `&&` or `||` or on the left of `||`, in a loop body, in a pipeline
 stage or behind a wrapper) leaves the line in a folder that is not certain. The
-redirect itself still opens from where the statement began, but a later run of
-a file it wrote may be from either folder, so the file counts as written from
-where the line is when the statement ends too, for that judgement only. `if
+redirect itself still opens from where the statement began, but the line may
+end there or where the `cd` took it, so a later run of a file it wrote is
+judged from both folders, as after any `cd` that may not have run (see "A
+script a line writes and then runs" below). `if
 false; then cd sub; else echo x; fi > x.sh; bash x.sh`, `{ echo x; false && cd
 sub; } > x.sh; bash x.sh` and `for i in $l; do cd sub; echo x; done > x.sh; bash
 x.sh` may run the `x.sh` they wrote, when the `cd` did not run, so they are
@@ -467,8 +468,10 @@ one that may not have run (unless a function of that name is defined, or the
 line has an `alias`, `enable` or `disable`, which can change what the name
 stands for). That is all it changes: for the option, a function definition and
 where a later `cd` starts it is a branch like any other `if`. After such a
-statement a later `cd` is placed from both folders too: `{ echo x; false && cd
-sub; } > x.sh; cd ..; bash x.sh` may run the `x.sh` it wrote.
+statement a later `cd` moves the line on from both folders: `{ echo x; false &&
+cd sub; } > x.sh; cd ..; bash x.sh` may run the `x.sh` it wrote, and so may
+`{ false && cd s; } > x0.sh; false && cd t; bash x0.sh`, where each `cd` may
+not have run.
 
 A redirect on a call to a function whose body moves the line
 (`f() { cd sub; }; f < ../../.ssh/id_rsa`) is opened before the body runs as
@@ -2071,6 +2074,45 @@ Some risks only show when units are read together.
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
   A line that writes nothing has no such script.
+  A run is judged from every folder the line may be in when it runs: a `cd`
+  that may not have run (in a branch, after `&&` or `||` or on the left of
+  `||`, in a loop or a function body, in a pipeline stage of a POSIX shell or
+  cmd, or behind a wrapper; not in an `if true` body, nor in a PowerShell
+  pipeline, whose stages run in the line's own session) may leave the line
+  where it was, and a `cd` on the right side of `&&` or `||` runs only when
+  the left let it, so the line may also be where that list began. Each later
+  `cd` moves every one of those folders on. So `echo x > x.sh; false && cd s;
+  bash x.sh`, `echo x > x.sh; [ -d s ] && cd s; bash x.sh`, `echo x > x.sh; cd
+  a && cd s; bash x.sh` and `echo x > x.sh; cd a; false && cd s; bash ../x.sh`
+  may run the file they wrote and are `unknown`, while `echo x > log.txt; test
+  -d sub && cd sub; ./app` runs no file it wrote from any of them and stays
+  safe. A list of `&&` stops at its first failing command, so it may only end
+  where it began or where one of its `cd`s took the line, one folder more
+  than it has `cd`s, and a command later in the same list runs only when
+  every `cd` before it did, so it is in one folder: the folders the list may
+  have stopped in count for the commands after the list, and are not moved
+  on by the list's own later `cd`s. `cd a && make > log && cd ../b && make >
+  log && cd .. && ./run` and `echo x > log; cd a && cd b && cd c && cd d;
+  ./app` stay safe, while `echo x > x.sh; cd a && cd b && cd c && cd d; bash
+  ../../x.sh` (the list stopped after `cd b`) is `unknown`. An `||` lets its
+  right side run where the list may have stopped, and lets a command after
+  it run where the left of it left the line, so from an `||` on those
+  folders count for the rest of the list too. A redirect on the last command
+  of a list keeps it one list (`cd a && make > log && cd ../b` is still one
+  list of `&&`, and so is `cd a && make 2>&1 | tee log && cd ../b`, where only
+  `make` is in the pipeline), so `cd a && make > log && cd ../b && make > log
+  && cd ../c && make > log && cd ../d && make > log && cd .. && ./run` stays
+  safe. A file written where the line may already be in more than one folder
+  (after a `cd` that may not have run) is placed only from where the walk has
+  the line, and a later `cd` may bring the folders together again, so the
+  guard does not follow which file each folder holds: a later run of a script
+  of that file's name, in any folder, is `unknown`. `false && cd s; echo x >
+  x.sh; cd /home/me/work/repo; bash x.sh` runs the file it wrote when `cd s`
+  did not run; `false && cd s; echo x > x.sh; cd s; bash x.sh` does not, but
+  is `unknown` all the same, while `test -d build && cd build; make >
+  build.log; ./app` runs no file of a name it wrote and stays safe. Past
+  eight such folders the line may be anywhere, and a run of a script by a
+  relative path is `unknown` once the line writes any file.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

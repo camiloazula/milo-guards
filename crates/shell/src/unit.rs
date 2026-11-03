@@ -103,6 +103,10 @@ pub(crate) struct Unit {
     /// Where an earlier `cd` in the line moved to, when one did: relative
     /// paths resolve from there.
     pub(crate) dir: Option<Arg>,
+    /// The other folders the line may be in when it runs, because a `cd`
+    /// before it may not have run (see [`Split::elsewhere`]): a script it
+    /// runs may be the file of that name in any of them.
+    pub(crate) elsewhere: Vec<Option<Arg>>,
     /// Whether an earlier unit in the line turned on a shell option that
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
@@ -208,6 +212,7 @@ impl Unit {
             reads: Reads::Nothing,
             stdin: None,
             dir: None,
+            elsewhere: Vec::new(),
             hidden: false,
             startup: Rc::default(),
             repeated: false,
@@ -414,12 +419,6 @@ pub(crate) enum OpensFrom {
     /// The folder a unit starts in (as [`Unit::dir`]; `None`: where the
     /// line began).
     Start(Option<Arg>),
-    /// The folder a unit starts in, as [`Self::Start`], when the body that
-    /// runs after it holds a `cd` that may not have run: the redirect is
-    /// still opened from that folder, but the line may end in that folder or
-    /// the one the `cd` took it to, so a later run of a file a redirect wrote
-    /// is also judged from where the line ends (see [`Split::later_writes`]).
-    Unsure(Option<Arg>),
     /// The folder a unit starts in, and also where the line is when the
     /// redirect is read (where the unit goes): the folder the unit starts in
     /// is not certain, because its body runs more than once or an earlier
@@ -540,11 +539,13 @@ struct Reaching {
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
-    /// The files a redirect wrote from a folder the line may not be in when
-    /// the redirect is read (see [`OpensFrom::Unsure`]), as if from where the
-    /// line is then: only a later run of a file is judged from these, never
-    /// where the redirect itself writes.
-    pub(crate) later_writes: Vec<Write>,
+    /// The redirects' writes made where the line may be in more than one
+    /// folder, because a `cd` before them may not have run (see
+    /// [`Self::elsewhere`]): when it did not, the file is in a folder the walk
+    /// may no longer have once a later `cd` moves the line on, so a later
+    /// run of a script of its name, from any folder, may be it. Only that
+    /// judgement reads these.
+    pub(crate) unsure_writes: Vec<Write>,
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
@@ -596,10 +597,18 @@ pub(crate) struct Split {
     /// or is the left side of `||`. Where the next `cd` starts is then not
     /// certain.
     maybe_moved: bool,
-    /// How many times a `cd` read so far was taken as one that may not have
-    /// moved the line (see [`Self::maybe_moved`]): a body that adds to it
-    /// leaves the line in a folder that is not certain.
-    uncertain: usize,
+    /// The other folders the line may be in now, besides [`Self::dir`]:
+    /// where it was before each `cd` that may not have run (in a branch,
+    /// after `&&` or `||` or on the left of `||`, in a loop or a function
+    /// body, in a pipeline stage or behind a wrapper, but not in an `if
+    /// true` body), each moved on by every `cd` read since (a list of `&&`
+    /// keeps the folders it may have stopped in until it ends, see
+    /// [`Chain::stops`]). Only a run of a
+    /// file is judged from them (see [`Unit::elsewhere`]): a file written
+    /// before such a `cd` and run after it may be the one the line runs. At
+    /// most [`MAX_ELSEWHERE`]; past that, one folder only known when it
+    /// runs.
+    elsewhere: Vec<Option<Arg>>,
     /// The units that move the line from a folder that is not certain (see
     /// [`Self::maybe_moved`]; a loop or a function body runs again from where
     /// its last `cd` went), by their place in `units`.
@@ -681,6 +690,17 @@ pub(crate) struct Split {
     /// `Walker::always_taken`): it still counts as a branch for everything
     /// else, and is left out only for whether a `cd` in it may not have run.
     pub(crate) taken: usize,
+    /// How many of [`Self::branches`] are the right side of `&&` or `||` in
+    /// a list (see [`Self::link_start`]): a `cd` there is left out of
+    /// whether it may not have run, which the list says for itself, once,
+    /// when that side ends.
+    links: usize,
+    /// The list of commands joined by `&&` or `||` being read (see
+    /// [`Chain`]).
+    chain: Chain,
+    /// Whether the next list read is the left side of the one being read
+    /// (`a && b && c` is `(a && b) && c`), and so part of its chain.
+    joins: bool,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -841,7 +861,48 @@ pub(crate) struct Place {
     moves: usize,
     later: usize,
     maybe_moved: bool,
-    uncertain: usize,
+    elsewhere: Vec<Option<Arg>>,
+}
+
+/// A list of commands joined by `&&` or `||` being read, from
+/// [`Split::list_start`] to [`Split::list_end`].
+#[derive(Debug)]
+pub(crate) struct List {
+    /// How many `cd`s this shell had run when the list began.
+    moves: usize,
+    /// Every folder the line may have been in when the list began.
+    places: Vec<Option<Arg>>,
+    /// The chain of the list this one is in, given back when this one ends;
+    /// `None` when this list is the left side of the one being read, whose
+    /// chain it is part of.
+    outer: Option<Chain>,
+}
+
+/// The right side of `&&` or `||` in a list, from [`Split::link_start`] to
+/// [`Split::link_end`].
+#[derive(Debug)]
+pub(crate) struct Link {
+    /// How many `cd`s this shell had run when it began.
+    moves: usize,
+    /// Every folder the line may have been in when it began.
+    places: Vec<Option<Arg>>,
+}
+
+/// What a list of commands joined by `&&` or `||` (its left sides that are
+/// lists themselves included) leaves for the commands after it.
+#[derive(Debug, Default)]
+struct Chain {
+    /// The folders the list may have stopped in: where the line was before
+    /// each right side that moved it, which may not have run, and where the
+    /// list began. A command later in the list runs only when the ones
+    /// before it let it, so only a command after the list may be in one of
+    /// them, until an `||` (see [`Self::or`]).
+    stops: Vec<Option<Arg>>,
+    /// Whether the list has an `||`: a command after one runs when a side
+    /// before it failed, or when the left of the `||` ran without the ones
+    /// between, so from then on each folder the list may have stopped in is
+    /// one the rest of it may run in too.
+    or: bool,
 }
 
 /// An action that runs later, in this shell, from wherever the line has
@@ -956,6 +1017,7 @@ impl Split {
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
+        unit.elsewhere.clone_from(&self.elsewhere);
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
         self.note_call(&unit);
@@ -985,6 +1047,9 @@ impl Split {
             self.psdrive = true;
         }
         let mut moved = moves_to(&unit);
+        // Whether this `cd` may not have run, so the line may still be where
+        // it was.
+        let mut unsure = false;
         if moved.is_some() {
             // A `cd` in a loop or a function body starts from where the
             // last pass left the line; one after a `cd` that may not have
@@ -1003,14 +1068,15 @@ impl Split {
             {
                 self.maybe_moved = true;
                 // An `if true` body surely runs, so its `cd` does not leave
-                // the line unsure where a redirect on the `if` ends.
-                if self.branches > self.taken
+                // the line where it was; nor does a stage of a PowerShell
+                // pipeline (each of its commands is one), which runs in the
+                // line's own session.
+                // The right side of `&&` or `||` is left to the list it is
+                // in (see [`Self::link_end`]).
+                unsure = self.branches > self.taken + self.links
                     || self.repeats > 0
-                    || unit.stage.is_some()
-                    || !unit.wrappers.is_empty()
-                {
-                    self.uncertain += 1;
-                }
+                    || (unit.stage.is_some() && unit.shell != Shell::PowerShell)
+                    || !unit.wrappers.is_empty();
             }
         }
         if unit.shell == Shell::Cmd {
@@ -1023,15 +1089,18 @@ impl Split {
         if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
-            let dir = crate::path::within(self.dir.as_ref(), &target, unit.shell);
-            // Once the line makes a drive, a drive letter may name it: the
-            // place is only known when it runs.
-            let dir = match dir {
-                Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
-                    Arg::Unknown(text)
-                }
-                dir => dir,
-            };
+            let dir = self.moved_to(self.dir.as_ref(), &target, unit.shell);
+            // Every other folder the line may be in moves too; a `cd` that
+            // may not have run also leaves the line where it was.
+            let mut elsewhere: Vec<Option<Arg>> = self
+                .elsewhere
+                .iter()
+                .map(|from| Some(self.moved_to(from.as_ref(), &target, unit.shell)))
+                .collect();
+            if unsure {
+                elsewhere.push(self.dir.clone());
+                elsewhere.extend(self.elsewhere.iter().cloned());
+            }
             // The folder holds code when the target does (it replaced the
             // folder, or was put after it), or when the folder did and the
             // target was put after it: a join is longer than its target.
@@ -1046,8 +1115,39 @@ impl Split {
             };
             self.pwd.unplain |= self.dir_code;
             self.dir = Some(dir);
+            self.set_elsewhere(elsewhere);
         }
         self.units.push(unit);
+    }
+
+    /// Where a `cd` to `target` takes the line from `from`.
+    fn moved_to(&self, from: Option<&Arg>, target: &Arg, shell: Shell) -> Arg {
+        match crate::path::within(from, target, shell) {
+            // Once the line makes a drive, a drive letter may name it: the
+            // place is only known when it runs.
+            Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
+                Arg::Unknown(text)
+            }
+            dir => dir,
+        }
+    }
+
+    /// Say the line may also be in each of `folders` (see
+    /// [`Self::elsewhere`]), once each and not where the walk has it; more
+    /// than [`MAX_ELSEWHERE`] is one folder only known when it runs.
+    fn set_elsewhere(&mut self, folders: Vec<Option<Arg>>) {
+        let mut kept: Vec<Option<Arg>> = Vec::new();
+        for folder in folders {
+            if folder != self.dir && !kept.contains(&folder) {
+                kept.push(folder);
+            }
+        }
+        if kept.len() > MAX_ELSEWHERE {
+            kept = vec![Some(Arg::Unknown(
+                "where a cd that may not have run left the line".to_string(),
+            ))];
+        }
+        self.elsewhere = kept;
     }
 
     /// Where the cmd unit `unit`, which moves to `target`, takes the line,
@@ -1266,20 +1366,16 @@ impl Split {
     /// `moved_before` is how many `cd`s had been read when the statement
     /// began, and `moves_before` how many this shell had run: the body moves
     /// the line only if it ran one that a subshell did not give back.
-    /// `by_folder` is as for [`Self::starts_in`]. `uncertain_before` is how
-    /// many `cd`s had been taken as ones that may not have run (see
-    /// [`Self::uncertain_so_far`]): when the body added one (a `cd` in a
-    /// branch, after `&&` or `||`, or in a loop), the line may be where it
-    /// started or where the `cd` took it ([`OpensFrom::Unsure`]): the redirect
-    /// still opens from where it started, and only a later run of a file it
-    /// wrote is also judged from where the line ends.
+    /// `by_folder` is as for [`Self::starts_in`]. When the body holds a `cd`
+    /// that may not have run, the redirect still opens from where it started;
+    /// a later run of a file it wrote is also judged from where the line
+    /// began (see [`Self::elsewhere`]).
     pub(crate) fn opens_before(
         &mut self,
         start: OpensFrom,
         units: Range<usize>,
         moved_before: usize,
         moves_before: usize,
-        uncertain_before: usize,
         by_folder: bool,
     ) -> OpensFrom {
         let moved = self.moves != moves_before;
@@ -1288,19 +1384,12 @@ impl Split {
         } else {
             Vec::new()
         };
-        let unsure = self.uncertain != uncertain_before;
         if dirs.is_empty() {
-            return match start {
-                OpensFrom::Start(dir) if moved && unsure => OpensFrom::Unsure(dir),
-                start if moved => start,
-                _ => OpensFrom::Line,
-            };
+            return if moved { start } else { OpensFrom::Line };
         }
         if moved {
             match start {
-                OpensFrom::Start(dir) | OpensFrom::Unsure(dir) | OpensFrom::Both(dir) => {
-                    dirs.push(dir);
-                }
+                OpensFrom::Start(dir) | OpensFrom::Both(dir) => dirs.push(dir),
                 OpensFrom::Among(more) => dirs.extend(more),
                 OpensFrom::Line => {}
             }
@@ -1354,29 +1443,106 @@ impl Split {
         }
     }
 
-    /// Note that what the walk has read so far may have left the line
-    /// somewhere else than it thinks, when `moved` (how many `cd`s it had
-    /// read when the part began) is not how many it has read now: for the
-    /// left side of `||`, which only runs the right side when it failed.
-    pub(crate) fn may_not_have_moved(&mut self, moves: usize) {
-        if self.moves != moves {
+    /// Every folder the line may be in now: where the walk has it, then the
+    /// others (see [`Self::elsewhere`]).
+    fn places(&self) -> Vec<Option<Arg>> {
+        std::iter::once(self.dir.clone())
+            .chain(self.elsewhere.iter().cloned())
+            .collect()
+    }
+
+    /// Begin a list of commands joined by `&&` or `||`; [`Self::list_end`]
+    /// ends it. When [`Self::list_head`] said it is the left side of the
+    /// list being read, it is part of that one's chain.
+    pub(crate) fn list_start(&mut self) -> List {
+        let outer = if std::mem::take(&mut self.joins) {
+            None
+        } else {
+            Some(std::mem::take(&mut self.chain))
+        };
+        List {
+            moves: self.moves,
+            places: self.places(),
+            outer,
+        }
+    }
+
+    /// Say whether the next list read, the left side of the one being read,
+    /// is a list itself (`a && b && c` is `(a && b) && c`): it is then part
+    /// of the same chain, whose commands it runs first.
+    pub(crate) fn list_head(&mut self, head: bool) {
+        self.joins = head;
+    }
+
+    /// End `list`: the line may now be in any folder the list may have
+    /// stopped in (see [`Chain::stops`]), unless the list is the left side
+    /// of another, which says so when it ends.
+    pub(crate) fn list_end(&mut self, list: List) {
+        if let Some(outer) = list.outer {
+            self.add_stops();
+            self.chain = outer;
+        }
+    }
+
+    /// An `||` in `list`: its right side runs only when the left failed, so
+    /// a `cd` on the left may not have moved the line, and the line may be
+    /// where the list began or in any folder it may have stopped in.
+    pub(crate) fn list_or(&mut self, list: &List) {
+        self.chain.or = true;
+        if self.moves != list.moves {
             self.maybe_moved = true;
-            self.uncertain += 1;
+            self.chain.stops.extend(list.places.iter().cloned());
+        }
+        self.add_stops();
+    }
+
+    /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
+    /// it. It may not run, so it is a branch.
+    pub(crate) fn link_start(&mut self) -> Link {
+        self.branches += 1;
+        self.links += 1;
+        Link {
+            moves: self.moves,
+            places: self.places(),
+        }
+    }
+
+    /// End `link`, a right side of `list`: when it moved the line, it may
+    /// not have run, so the list may have stopped where the line was before
+    /// it, or where the list began, if the left side did not move it. A
+    /// command later in the list runs only when this side did, so these are
+    /// left for after the list (see [`Chain::stops`]): a chain of `n` `cd`s
+    /// leaves the line in at most `n + 1` folders.
+    pub(crate) fn link_end(&mut self, list: &List, link: Link) {
+        self.branches -= 1;
+        self.links -= 1;
+        if self.moves != link.moves {
+            self.maybe_moved = true;
+            self.chain.stops.extend(link.places);
+            self.chain.stops.extend(list.places.iter().cloned());
+            if self.chain.or {
+                self.add_stops();
+            }
+        }
+    }
+
+    /// Say the line may be in any folder the list being read may have
+    /// stopped in (see [`Chain::stops`]).
+    fn add_stops(&mut self) {
+        let stops = std::mem::take(&mut self.chain.stops);
+        if !stops.is_empty() {
+            let mut folders = std::mem::take(&mut self.elsewhere);
+            folders.extend(stops);
+            self.set_elsewhere(folders);
         }
     }
 
     /// How many `cd`s this shell has run so far, for
-    /// [`Self::may_not_have_moved`] and [`Self::opens_before`]: a subshell
+    /// [`Self::opens_before`]: a subshell
     /// gives the count back, as it does the directory, so a `cd` in one has
     /// not moved the line.
     pub(crate) fn moves_so_far(&self) -> usize {
         self.moves
-    }
-
-    /// How many `cd`s have been taken as ones that may not have run so far,
-    /// for [`Self::opens_before`].
-    pub(crate) fn uncertain_so_far(&self) -> usize {
-        self.uncertain
     }
 
     /// How many `cd`s the walk has read, in a subshell or not, for
@@ -1405,7 +1571,7 @@ impl Split {
     fn redirect_dirs(&self) -> Vec<Option<Arg>> {
         match &self.opens_from {
             OpensFrom::Line => vec![self.dir.clone()],
-            OpensFrom::Start(dir) | OpensFrom::Unsure(dir) => vec![dir.clone()],
+            OpensFrom::Start(dir) => vec![dir.clone()],
             OpensFrom::Both(dir) => vec![dir.clone(), self.dir.clone()],
             OpensFrom::Among(dirs) => dirs
                 .iter()
@@ -1584,8 +1750,17 @@ impl Split {
                 hidden,
             });
         }
-        if matches!(self.opens_from, OpensFrom::Unsure(_)) {
-            self.later_writes.push(Write {
+        // Whether the line may be in more than one folder where the redirect
+        // opens: a group's, loop's or branch's opens before its body runs,
+        // and one from the folder a unit started in only when that was
+        // certain.
+        let unsure = match &self.opens_from {
+            OpensFrom::Line => !self.elsewhere.is_empty(),
+            OpensFrom::Start(_) => false,
+            OpensFrom::Both(_) | OpensFrom::Among(_) => true,
+        };
+        if unsure {
+            self.unsure_writes.push(Write {
                 shell,
                 target,
                 dir: self.dir.clone(),
@@ -1872,7 +2047,7 @@ impl Split {
             moves: self.moves,
             later: self.later.len(),
             maybe_moved: self.maybe_moved,
-            uncertain: self.uncertain,
+            elsewhere: self.elsewhere.clone(),
         }
     }
 
@@ -1895,7 +2070,7 @@ impl Split {
         self.drive_guess = place.drive_guess;
         self.moves = place.moves;
         self.maybe_moved = place.maybe_moved;
-        self.uncertain = place.uncertain;
+        self.elsewhere = place.elsewhere;
     }
 
     /// Record that the line sets or unsets the variable `name`, for `effect`.
@@ -2289,6 +2464,12 @@ const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
 /// from, and a line that calls more than this many (each from another
 /// folder) under one redirect is unknown, not read from them all.
 const MAX_CALL_STARTS: usize = 32;
+
+/// The most other folders the line is kept as maybe being in (see
+/// [`Split::elsewhere`]): each is a folder a run of a file the line wrote is
+/// judged from, and past this many the line may be anywhere, so such a run is
+/// unknown.
+const MAX_ELSEWHERE: usize = 8;
 
 /// The most functions that move the line or whose definition is redirected
 /// that a line may define (a name defined again counts again, kept or

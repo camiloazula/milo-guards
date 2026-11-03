@@ -416,6 +416,12 @@ posix finds=unknown | { echo x; false && cd sub; } > x.sh; cd ..; bash x.sh
 # From where the line began, `cd sub` makes `../x.sh` the file that was
 # written.
 posix finds=unknown | { echo x; false && cd sub; } > x.sh; cd sub; bash ../x.sh
+# A later `cd` that may not have run leaves the line in yet another folder that
+# is not certain: the run is judged from every one of them.
+posix finds=unknown | { false && cd s; } > x0.sh; false && cd t; bash x0.sh
+posix finds=unknown | { false && cd s; } > x0.sh; if false; then cd t; fi; bash x0.sh
+posix finds=unknown | if false; then cd s; fi > a.sh; if false; then cd t; fi > b.sh; bash a.sh
+posix finds=unknown | { false && cd s; } > x0.sh; { false && cd s; } > x1.sh; bash x0.sh
 posix finds=unknown | { echo x; false && cd sub; } > x.sh && bash x.sh
 posix finds=unknown | { echo x; false && cd sub; } > x.sh; bash x.sh &
 posix finds=unknown | { echo x; false && cd /tmp; } > x.sh; bash x.sh

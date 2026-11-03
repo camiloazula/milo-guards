@@ -71,20 +71,30 @@ impl Walker<'_> {
             // left may not have moved the line.
             "cond_exec" => {
                 let mut cursor = node.walk();
-                let before = self.split.moves_so_far();
+                let list = self.split.list_start();
                 let mut at = 0;
                 for child in node.children(&mut cursor) {
                     if child.kind() == "||" {
-                        self.split.may_not_have_moved(before);
+                        self.split.list_or(&list);
                     }
                     if !child.is_named() {
                         continue;
                     }
-                    self.split.branches += usize::from(at > 0);
-                    self.walk(child, stage, level + 1);
-                    self.split.branches -= usize::from(at > 0);
+                    // A `cd` on the right side runs only when the left let
+                    // it: when it did not, the line may still be where that
+                    // side began, or where the list did.
+                    if at > 0 {
+                        let link = self.split.link_start();
+                        self.walk(child, stage, level + 1);
+                        self.split.link_end(&list, link);
+                    } else {
+                        self.split.list_head(child.kind() == "cond_exec");
+                        self.walk(child, stage, level + 1);
+                        self.split.list_head(false);
+                    }
                     at += 1;
                 }
+                self.split.list_end(list);
             }
             // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
             // command's input feeds the units it runs.
