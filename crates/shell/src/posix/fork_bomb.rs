@@ -243,10 +243,13 @@ impl Walker<'_> {
             depth: self.depth + 1,
             split: &mut *self.split,
             redirected: None,
+            lost: None,
             last_command: 0..0,
             tail_of: Vec::new(),
             tail: None,
             unstaged: None,
+            sets: HashMap::new(),
+            functions: HashSet::new(),
         };
         walker.calls_in(root, scope, from, index, &varies, calls);
     }

