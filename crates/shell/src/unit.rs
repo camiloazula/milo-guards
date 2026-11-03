@@ -10,6 +10,7 @@ use std::rc::Rc;
 use crate::dotglob;
 use crate::effect::Kind;
 use crate::extended;
+use crate::inline;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -164,6 +165,12 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
+    /// For a PowerShell unit the walk reads, whether each argument goes on
+    /// the comma list of the one before it (`Set-Content a,b x`: `b`), in
+    /// step with `args`; empty for any other unit. A cmdlet is handed the
+    /// items of a list as one argument, which the words alone cannot show:
+    /// see [`Unit::list`].
+    pub(crate) joined: Vec<bool>,
     /// The values the line gives the variables a program reads as its own
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
@@ -265,10 +272,51 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
+            joined: Vec::new(),
             argument_variables: Rc::default(),
             depth: 0,
             names: None,
         }
+    }
+
+    /// The comma list `arg`, one of the unit's arguments, starts: `arg`
+    /// and each argument after it that goes on it. `None` when the unit
+    /// does not know its lists: it is not one the walk read, or its
+    /// arguments changed since.
+    pub(crate) fn list<'a>(&'a self, arg: &'a Arg) -> Option<Vec<&'a Arg>> {
+        let at = self.at(arg)?;
+        let mut items = vec![arg];
+        items.extend(
+            self.args[at + 1..]
+                .iter()
+                .zip(&self.joined[at + 1..])
+                .take_while(|(_, joined)| **joined)
+                .map(|(item, _)| item),
+        );
+        Some(items)
+    }
+
+    /// Whether `arg`, one of the unit's arguments, goes on the list of the
+    /// one before it; `None` when the unit does not know its lists (see
+    /// [`Unit::list`]).
+    pub(crate) fn continues(&self, arg: &Arg) -> Option<bool> {
+        self.at(arg).map(|at| self.joined[at])
+    }
+
+    /// Where `arg` is among the unit's arguments, when it is one of them
+    /// and the unit knows its lists.
+    fn at(&self, arg: &Arg) -> Option<usize> {
+        if self.joined.len() != self.args.len() {
+            return None;
+        }
+        // Found by where it sits in memory, so a long list costs one step
+        // for each argument, not one scan.
+        let offset = (std::ptr::from_ref(arg) as usize).checked_sub(self.args.as_ptr() as usize)?;
+        let at = offset / size_of::<Arg>();
+        self.args
+            .get(at)
+            .filter(|other| std::ptr::eq(*other, arg))
+            .map(|_| at)
     }
 
     /// The variables the unit's arguments read: [`Unit::names`] when the
@@ -844,6 +892,58 @@ pub(crate) fn argument_variable(name: &str) -> Option<String> {
 }
 
 /// Everything a line was split into.
+/// The values `NODE_OPTIONS` is given for the program being added, in the
+/// order the line gives them, with where the first that loads a module is
+/// (see [`inline::preloads`]) as each was added: asked for every program the
+/// line starts, that is a lookup, not a read of every value.
+#[derive(Debug, Default)]
+pub(crate) struct NodeOptions {
+    values: Vec<Arg>,
+    /// For each value, the first of the values up to it that loads a module.
+    preloads: Vec<Option<usize>>,
+}
+
+impl NodeOptions {
+    pub(crate) fn push(&mut self, value: Arg) {
+        let first = self
+            .preloads
+            .last()
+            .copied()
+            .flatten()
+            .or_else(|| inline::preloads(&value).then_some(self.values.len()));
+        self.values.push(value);
+        self.preloads.push(first);
+    }
+
+    pub(crate) fn extend(&mut self, values: impl IntoIterator<Item = Arg>) {
+        for value in values {
+            self.push(value);
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.values.truncate(len);
+        self.preloads.truncate(len);
+    }
+
+    pub(crate) fn values(&self) -> &[Arg] {
+        &self.values
+    }
+
+    /// The first value that loads a module before any script node runs.
+    pub(crate) fn preload(&self) -> Option<&Arg> {
+        self.preloads
+            .last()
+            .copied()
+            .flatten()
+            .and_then(|at| self.values.get(at))
+    }
+}
+
 #[derive(Debug, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -1026,7 +1126,10 @@ pub(crate) struct Split {
     /// prefix assignment, `env NODE_OPTIONS=…`, an `export` earlier in the
     /// line. Node reads them as its own options, and a script it starts gets
     /// them too.
-    pub(crate) node_options: Vec<Arg>,
+    pub(crate) node_options: NodeOptions,
+    /// The process substitutions of the line whose commands download, as
+    /// written (`<(curl -s https://x)`): run as a script, each is a download.
+    pub(crate) downloads: HashSet<String>,
     /// The values `PYTHONPATH` is given for the program being added, noted
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
@@ -3681,7 +3784,7 @@ impl Split {
         Finding {
             rule: Rule::Unknown,
             reason: "runs code the guard does not read fully".to_string(),
-            target: Some(crate::inline::shorten(code)),
+            target: Some(inline::shorten(code)),
         }
     }
 

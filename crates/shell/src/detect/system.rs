@@ -1,9 +1,10 @@
 //! The rules about the system: disks, permissions, stopping it, and its
 //! settings (Windows, services, scheduled jobs, accounts, the firewall).
 
+use super::files::item_paths;
 use super::settings::firewall;
 use super::Checker;
-use crate::powershell::Params;
+use crate::powershell::{Params, SET_ACL};
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -60,12 +61,16 @@ impl Checker<'_> {
                 }
             }
             "set-acl" => {
-                let params = Params::read(args);
-                let mut targets = params.values(&["path", "literalpath"]);
-                if targets.is_empty() {
-                    targets.extend(params.positional.first().copied());
-                }
-                self.permissions(unit, &targets, "changes permissions of");
+                // `-InputObject` is the item itself, given as an object:
+                // its permissions change as a path's do.
+                let params = Params::cmdlet(args, &SET_ACL);
+                let targets = item_paths(unit, &params, &["path", "literalpath", "inputobject"]);
+                let targets = self.listed_paths(unit, targets);
+                self.permissions(
+                    unit,
+                    &targets.iter().collect::<Vec<_>>(),
+                    "changes permissions of",
+                );
             }
 
             // Stopping the system.

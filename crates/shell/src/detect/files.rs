@@ -1,11 +1,14 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
 use super::{
-    dd_outputs, downloads_to, or_here, sources_and_destination, Checker, CONTENTS, COPY_VALUED,
+    dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination, Checker, Pattern,
+    CONTENTS, COPY_VALUED,
 };
 use crate::launch::{find_targets, find_unread_primary, perl_edits};
 use crate::path::{Access, Place};
-use crate::powershell::Params;
+use crate::powershell::{
+    Param, Params, CLEAR_CONTENT, FOREACH_OBJECT, NEW_ITEM, OUT_FILE, SET_CONTENT, TEE_OBJECT,
+};
 use crate::unit::{
     could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split, plain,
     switch_names, switch_value, unread_option, Arg, Flagged, Scope, Unit,
@@ -67,12 +70,17 @@ impl Checker<'_> {
             }
             "remove-item" => {
                 let params = Params::read(args);
-                let mut targets = params.values(&["path", "literalpath"]);
-                targets.extend(params.positional.iter().copied());
+                let mut targets: Vec<&Arg> = params
+                    .values(&["path", "literalpath"])
+                    .into_iter()
+                    .flat_map(|value| unit.list(value).unwrap_or_else(|| vec![value]))
+                    .collect();
+                targets.extend(free(unit, &params));
                 if targets.is_empty() && from_pipe(unit) {
                     self.delete(unit, &[&Arg::Input], "deletes");
                 } else {
-                    self.delete(unit, &targets, "deletes");
+                    let targets = narrowed(unit, &params, dedup(targets));
+                    self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
                 }
             }
             "clear-recyclebin" => self.add(Rule::Delete, "empties the recycle bin", None),
@@ -132,9 +140,15 @@ impl Checker<'_> {
                     .cloned()
                     .collect();
                 let operands = builtin(key, &kept);
-                let operands: Vec<&Arg> = operands.iter().collect();
+                let mut operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
                     self.move_away(unit, &operands[..operands.len() - 1], "moves");
+                }
+                // `copy` and `xcopy` given only a source copy it into the
+                // folder the line is in.
+                let here = Arg::Known(".".to_string());
+                if key != "move" && operands.len() == 1 {
+                    operands.push(&here);
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
@@ -259,6 +273,9 @@ impl Checker<'_> {
                 }
             }
             "copy-item" | "move-item" => self.copy_item(unit, key),
+            "foreach-object" if shell == Shell::PowerShell && from_pipe(unit) => {
+                self.file_method(unit);
+            }
 
             // Renaming: the new name is a name in the source's folder, and
             // that is where the file lands.
@@ -294,17 +311,16 @@ impl Checker<'_> {
                 let doubtful =
                     params.named.iter().any(|(name, value)| {
                         value.is_none() && "newname".starts_with(name.as_str())
-                    }) || params
-                        .positional
-                        .iter()
-                        .any(|arg| arg.known() == Some("--"))
+                    }) || params.ended
                         || splatted(args);
                 // What is renamed away is judged as the items the cmdlet
                 // works on: a path, else what the stage before lists.
                 let mut paths = params.values(&["path", "literalpath"]);
                 paths.extend(
-                    without_dashes(&params)
-                        .into_iter()
+                    params
+                        .positional
+                        .iter()
+                        .copied()
                         .enumerate()
                         .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
                         .map(|(_, arg)| arg),
@@ -312,7 +328,7 @@ impl Checker<'_> {
                 let items = self.listed_paths(unit, paths);
                 self.move_away(unit, &items.iter().collect::<Vec<_>>(), "renames");
                 let mut sources = params.values(&["path", "literalpath"]);
-                let mut positional = without_dashes(&params).into_iter();
+                let mut positional = params.positional.iter().copied();
                 if sources.is_empty() {
                     sources.extend(positional.next());
                 }
@@ -372,8 +388,15 @@ impl Checker<'_> {
                 self.unpack(unit, key);
                 self.pack_and_remove(unit, key);
             }
-            "unzip" | "expand-archive" => self.unpack(unit, key),
-            "zip" | "rar" => self.pack_and_remove(unit, key),
+            "unzip" | "expand-archive" | "cpio" | "gcpio" | "bsdcpio" | "ditto" | "pax"
+            | "unrar" | "winrar" | "unar" | "jar" => self.unpack(unit, key),
+            // `python3 -m zipfile -e a.zip DIR`.
+            key if crate::launch::is_python(key) => self.unpack(unit, key),
+            "rar" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {
@@ -420,38 +443,32 @@ impl Checker<'_> {
             }
             "set-content" | "add-content" | "out-file" | "tee-object" | "new-item"
             | "clear-content" => {
-                // `-Type` is `New-Item`'s other name for `-ItemType`.
-                let owned: Vec<Arg>;
-                let args = if key == "new-item" {
-                    owned = args
-                        .iter()
-                        .map(|arg| match arg.known() {
-                            Some(text) if text.eq_ignore_ascii_case("-type") => {
-                                Arg::Known("-ItemType".to_string())
-                            }
-                            _ => arg.clone(),
-                        })
-                        .collect();
-                    owned.as_slice()
-                } else {
-                    args
-                };
-                let params = Params::read(args);
-                let mut targets: Vec<Arg> = params
-                    .values(&["path", "literalpath", "filepath"])
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                if targets.is_empty() && key == "new-item" {
+                let params = Params::cmdlet(args, content_params(key));
+                let mut targets: Vec<Arg> = if key == "new-item" {
                     // Only `-Path` is positional, so with no `-Path` named
                     // every positional is judged (an extra one only makes
-                    // the command fail), and a bare `-n` (`-Name`), a `--`
-                    // or a `-Type` cannot hide the path behind another
-                    // argument.
-                    targets.extend(without_dashes(&params).into_iter().cloned());
-                } else if targets.is_empty() {
-                    targets.extend(params.positional.first().copied().cloned());
-                }
+                    // the command fail).
+                    let mut folders = named_lists(unit, &params, &["path"]);
+                    if folders.is_empty() {
+                        folders = free(unit, &params);
+                    }
+                    folders.extend(unit.args.iter().filter(|arg| is_splat(arg)));
+                    let folders = dedup(folders);
+                    if folders.is_empty() && from_pipe(unit) {
+                        self.listed_paths(unit, Vec::new())
+                    } else {
+                        folders.into_iter().cloned().collect()
+                    }
+                } else {
+                    let files = item_paths(unit, &params, &["path", "literalpath", "filepath"]);
+                    // `Out-File` and `Tee-Object` take no path from the
+                    // pipeline: what they are handed is what they write.
+                    if matches!(key, "out-file" | "tee-object") {
+                        files.into_iter().cloned().collect()
+                    } else {
+                        self.listed_paths(unit, files)
+                    }
+                };
                 let verb = if key == "clear-content" {
                     "empties"
                 } else {
@@ -476,12 +493,19 @@ impl Checker<'_> {
                     }
                     // The item is `Path\Name`, with any `..` in the name
                     // applied, so a device path is never the item itself.
-                    let names = params.values(&["name"]);
-                    if !names.is_empty() {
-                        targets = targets
-                            .iter()
-                            .flat_map(|path| names.iter().map(|name| item_path(path, name)))
-                            .collect();
+                    // `-Name` is one name: a list given to it is joined
+                    // into one, with a space between the items.
+                    // Every path with a long name is more text than the line
+                    // holds: past that, the item is a path only known when
+                    // it runs.
+                    if let Some(name) = params.values(&["name"]).first() {
+                        let name = one_name(unit, name);
+                        targets = if targets.len().saturating_mul(name.text().len()) > MAX_ITEM_TEXT
+                        {
+                            vec![Arg::Unknown(name.text().to_string())]
+                        } else {
+                            targets.iter().map(|path| item_path(path, &name)).collect()
+                        };
                     }
                 }
                 let kind = params.values(&["itemtype"]);
@@ -496,13 +520,23 @@ impl Checker<'_> {
                         self.write_as(shell, unit.scope(), target, verb, access);
                     }
                 }
-                // A link reaches what it names, as `ln` does.
-                let link = kind.is_some_and(|kind| {
-                    let kind = kind.to_ascii_lowercase();
-                    ["s", "h", "j"].iter().any(|first| kind.starts_with(first))
+                // A link reaches what it names, as `ln` does. A type only
+                // known when it runs may be a link's. With no `-Value`, the
+                // target is what the stage before hands on.
+                let link = params.values(&["itemtype"]).first().is_some_and(|kind| {
+                    kind.known().is_none_or(|kind| {
+                        let kind = kind.to_ascii_lowercase();
+                        ["s", "h", "j"].iter().any(|first| kind.starts_with(first))
+                    })
                 });
                 if key == "new-item" && link {
-                    for value in params.values(&["value"]) {
+                    let values = params.values(&["value"]);
+                    let handed = if values.is_empty() && from_pipe(unit) {
+                        self.listed_paths(unit, Vec::new())
+                    } else {
+                        values.into_iter().cloned().collect()
+                    };
+                    for value in &handed {
                         self.links_to(shell, unit.scope(), value);
                     }
                 }
@@ -519,21 +553,19 @@ impl Checker<'_> {
                 // bare named parameter that may take a value (`-n`, read as
                 // a switch, leaves its value among the positionals), a `--`
                 // or a splat (`@p` may bind `-Path`).
-                let doubtful = params.unclear()
-                    || params
+                let doubtful = params.unclear() || params.ended || splatted(args);
+                targets.extend(
+                    params
                         .positional
                         .iter()
-                        .any(|arg| arg.known() == Some("--"))
-                    || splatted(args);
-                targets.extend(
-                    without_dashes(&params)
-                        .into_iter()
+                        .copied()
                         .enumerate()
                         .filter(|(at, arg)| *at == 0 || doubtful || arg.known().is_some())
                         .map(|(_, arg)| arg),
                 );
-                for target in targets {
-                    self.write_as(shell, unit.scope(), target, "changes", Access::Item);
+                // With no path, the items the stage before hands on.
+                for target in self.listed_paths(unit, targets) {
+                    self.write_as(shell, unit.scope(), &target, "changes", Access::Item);
                 }
             }
             // A value moved or copied between keys: the path, the destination and
@@ -629,18 +661,170 @@ fn splatted(args: &[Arg]) -> bool {
     args.iter().any(is_splat)
 }
 
-/// The positionals, without a `--` (the end of the parameters, not a path).
-fn without_dashes<'a>(params: &Params<'a>) -> Vec<&'a Arg> {
+/// The parameters of a cmdlet that writes into items or makes them, by its
+/// key, which [`Params::cmdlet`] reads its arguments by: a prefix is looked
+/// up among the cmdlet's own names (`Set-Content -Fil` is `-Filter`, as it
+/// has no `-FilePath`).
+fn content_params(key: &str) -> &'static [Param] {
+    match key {
+        "clear-content" => &CLEAR_CONTENT,
+        "out-file" => &OUT_FILE,
+        "tee-object" => &TEE_OBJECT,
+        "new-item" => &NEW_ITEM,
+        _ => &SET_CONTENT,
+    }
+}
+
+/// Each value of the parameters `names` (see [`Params::values`]), with the
+/// rest of the comma list it starts (`-Path a,b`).
+pub(super) fn named_lists<'a>(unit: &'a Unit, params: &Params<'a>, names: &[&str]) -> Vec<&'a Arg> {
+    params
+        .values(names)
+        .into_iter()
+        .flat_map(|value| unit.list(value).unwrap_or_else(|| vec![value]))
+        .collect()
+}
+
+/// The arguments no parameter takes, each with the rest of its list: the
+/// items of a list a parameter's value starts are that parameter's. Every
+/// positional when the unit does not know its lists.
+pub(super) fn free<'a>(unit: &'a Unit, params: &Params<'a>) -> Vec<&'a Arg> {
+    positionals(unit, params).into_iter().flatten().collect()
+}
+
+/// The arguments no parameter takes, by position: each a list, with the rest
+/// of it (see [`free`]), or each alone when the unit does not know its
+/// lists.
+pub(super) fn positionals<'a>(unit: &'a Unit, params: &Params<'a>) -> Vec<Vec<&'a Arg>> {
     params
         .positional
         .iter()
         .copied()
-        .filter(|arg| arg.known() != Some("--"))
+        .filter_map(|arg| match unit.continues(arg) {
+            // On a list another argument starts, with that one.
+            Some(true) => None,
+            Some(false) => Some(unit.list(arg).unwrap_or_else(|| vec![arg])),
+            None => Some(vec![arg]),
+        })
+        .collect()
+}
+
+/// The items a cmdlet that takes a list of paths by its parameters `names`
+/// or by its first position works on: each value given by name, with the
+/// rest of its list (`Set-Content -Path src\a,~\.bashrc -Value x`), or
+/// with none, the first positional and the rest of its list (`Set-Content
+/// x,~\.bashrc x`). Every positional when the guard cannot tell which is
+/// the path: the unit does not know its lists, or a name that is none of
+/// the cmdlet's may have taken a value. A splat (`@p`) may bind the path,
+/// so it is a path only known when it runs.
+pub(super) fn item_paths<'a>(unit: &'a Unit, params: &Params<'a>, names: &[&str]) -> Vec<&'a Arg> {
+    let mut items = named_lists(unit, params, names);
+    let mut positionals = positionals(unit, params).into_iter();
+    if items.is_empty() {
+        items.extend(positionals.next().unwrap_or_default());
+    }
+    if params.unbound || unit.joined.len() != unit.args.len() {
+        items.extend(positionals.flatten());
+    }
+    items.extend(unit.args.iter().filter(|arg| is_splat(arg)));
+    dedup(items)
+}
+
+/// The paths a `Remove-Item` given `targets` deletes, its own `-Include`
+/// and `-Filter` read: a wildcard at the end of a path (`*`, `src\*`)
+/// takes only what a pattern picks, so `Remove-Item * -Include *.tmp
+/// -Recurse` deletes `*.tmp`, not the whole workspace. Each pattern is read
+/// in the folder as a hidden listing's is (see [`hidden_matches`]), so one
+/// that can match `.git`, or a name it holds when the delete recurses, still
+/// takes it. A path whose last part holds no wildcard, or that ends in a
+/// drive or provider (`C:*`, `FileSystem::*`), is judged as written.
+fn narrowed(unit: &Unit, params: &Params<'_>, targets: Vec<&Arg>) -> Vec<Arg> {
+    let pattern = |filter: bool| {
+        move |arg: &Arg| Pattern {
+            arg: arg.clone(),
+            filter,
+        }
+    };
+    let mut patterns: Vec<Pattern> = params
+        .values(&["filter"])
+        .into_iter()
+        .map(pattern(true))
+        .collect();
+    patterns.extend(
+        params
+            .values(&["include"])
+            .into_iter()
+            .flat_map(|value| unit.list(value).unwrap_or_else(|| vec![value]))
+            .map(pattern(false)),
+    );
+    if patterns.is_empty() {
+        return targets.into_iter().cloned().collect();
+    }
+    let recurses = params
+        .named
+        .iter()
+        .any(|(name, _)| "recurse".starts_with(name.as_str()));
+    // The wildcard paths are matched with the patterns together, each once,
+    // so a long list of both is bounded as a listing's is.
+    let mut seen = HashSet::new();
+    let (wild, mut kept): (Vec<Arg>, Vec<Arg>) = targets
+        .into_iter()
+        .filter(|target| match target {
+            Arg::Known(text) => seen.insert(text.as_str()),
+            _ => true,
+        })
+        .cloned()
+        .partition(|target| match target {
+            Arg::Known(text) => text
+                .rfind(['/', '\\', ':'])
+                .map_or(Some(0), |at| {
+                    (text.as_bytes().get(at) != Some(&b':')).then_some(at + 1)
+                })
+                .is_some_and(|last| glob::has_wildcard(&text[last..])),
+            _ => false,
+        });
+    kept.extend(hidden_matches(&wild, &patterns, recurses));
+    kept
+}
+
+/// `items` without one given twice (the same argument, not the same text).
+fn dedup(items: Vec<&Arg>) -> Vec<&Arg> {
+    let mut seen: HashSet<*const Arg> = HashSet::with_capacity(items.len());
+    items
+        .into_iter()
+        .filter(|item| seen.insert(std::ptr::from_ref(*item)))
         .collect()
 }
 
 /// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
 /// only known when either is.
+/// The most text the items `New-Item` makes, each path with its name, are
+/// read for: the length of a line.
+const MAX_ITEM_TEXT: usize = 64 * 1024;
+
+/// The one name a `[string]` parameter is given by `value`: the value, or
+/// the items of the list it starts joined by a space, as PowerShell makes a
+/// list into text (`-Name a,b` is `a b`); only known when it runs when an
+/// item is.
+fn one_name(unit: &Unit, value: &Arg) -> Arg {
+    match unit.list(value) {
+        Some(items) if items.len() > 1 => {
+            let known: Option<Vec<&str>> = items.iter().map(|item| item.known()).collect();
+            let text = items
+                .iter()
+                .map(|item| item.text())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if known.is_some() {
+                Arg::Known(text)
+            } else {
+                Arg::Unknown(text)
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
 fn item_path(path: &Arg, name: &Arg) -> Arg {
     match (path, name) {
         (Arg::Known(path), Arg::Known(name)) => {
@@ -1059,15 +1243,30 @@ impl Checker<'_> {
         let args = unit.args.as_slice();
         let shell = unit.shell;
         let params = Params::read(args);
-        let paths = params.values(&["path", "literalpath"]);
+        // A list is one argument, the items of one position (`Copy-Item
+        // a.dll,b.dll` copies both, to no destination).
+        let paths = named_lists(unit, &params, &["path", "literalpath"]);
+        let positions = positionals(unit, &params);
         let recursive = key == "copy-item"
             && params
                 .named
                 .iter()
                 .any(|(name, _)| "recurse".starts_with(name.as_str()));
         let mut operands = paths.clone();
-        operands.extend(params.positional.iter().copied());
-        let destination = params.values(&["destination"]).first().copied();
+        operands.extend(positions.iter().flatten().copied());
+        let here = Arg::Known(".".to_string());
+        // With no destination, by name or by position, the item goes to the
+        // folder the line is in (`Copy-Item C:\x\a.txt`); a splat may hold
+        // one.
+        let taken = usize::from(paths.is_empty());
+        let alone = positions.len() <= taken
+            && !splatted(args)
+            && (!operands.is_empty() || from_pipe(unit));
+        let destination = params
+            .values(&["destination"])
+            .first()
+            .copied()
+            .or_else(|| alone.then_some(&here));
         // A splat (`@p`) with no `-Destination` named may bind it: it is
         // judged as a place too, beside a destination that is known
         // (`Copy-Item @p src\a`, where `@p` may be the `-Destination` and
@@ -1102,7 +1301,13 @@ impl Checker<'_> {
             self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
             return;
         }
-        let first = paths.len().max(1);
+        // The operands that are sources whatever the reading: the paths
+        // named, or the first position.
+        let first = if paths.is_empty() {
+            positions.first().map_or(1, Vec::len)
+        } else {
+            paths.len()
+        };
         if key == "move-item" {
             // Each operand is a source of some reading when there are two
             // readings or more, and with one, all but its destination are.
@@ -1160,6 +1365,39 @@ impl Checker<'_> {
                 &destination,
                 recursive,
             );
+        }
+    }
+
+    /// A method of a file that `ForEach-Object` calls on each item it is
+    /// handed, by name (`% CopyTo C:\x`, `-MemberName Open`): `CopyTo` and
+    /// `MoveTo` write to the file their first argument names, and `Open` and
+    /// `OpenWrite` may write each item, which is judged where it lands, as a
+    /// write cmdlet given no path is. `Delete` and `MoveTo` are judged where
+    /// the member is read.
+    fn file_method(&mut self, unit: &Unit) {
+        let params = Params::cmdlet(&unit.args, &FOREACH_OBJECT);
+        let mut words = params.positional.iter().copied();
+        let named = params.values(&["membername"]);
+        let Some(method) = named.first().copied().or_else(|| words.next()) else {
+            return;
+        };
+        let Some(method) = method.known() else {
+            return;
+        };
+        let mut arguments = params.values(&["argumentlist"]);
+        arguments.extend(words);
+        match method.to_ascii_lowercase().as_str() {
+            "copyto" | "moveto" => {
+                if let Some(file) = arguments.first() {
+                    self.write(unit.shell, unit.scope(), file, "writes to");
+                }
+            }
+            "open" | "openwrite" => {
+                for item in self.listed_paths(unit, Vec::new()) {
+                    self.write_as(unit.shell, unit.scope(), &item, "opens", Access::Item);
+                }
+            }
+            _ => {}
         }
     }
 

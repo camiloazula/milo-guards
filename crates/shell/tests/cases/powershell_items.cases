@@ -5,11 +5,15 @@
 # the item (a listing that shows hidden files hands those on too); a
 # `-LiteralPath` alias, a splat, a common parameter or a switch never hides
 # which argument is the item; and `Start-Process` reads its program under
-# every alias of `-FilePath`. cmd's renames are not provider paths. The format
-# is in CONTRIBUTING.md.
+# every alias of `-FilePath`. A write cmdlet reads its parameters by its own
+# names, and `--` ends them; a stage that only narrows hands on what the
+# stage before lists; and `Remove-Item`'s own `-Include` narrows a wildcard.
+# cmd's renames are not provider paths. The format is in CONTRIBUTING.md.
 
 # A machine with a second workspace folder on `D:`.
 paths two_workspaces base=windows workspace=D:\\ws2
+# A machine whose working folder is on `D:`.
+paths on_d cwd=D:\\work\\repo home=D:\\Users\\me workspace=D:\\work\\repo
 
 # Item cmdlets on the registry change the system.
 powershell finds=system_settings | Clear-Item HKCU:\\Software\\x
@@ -407,10 +411,11 @@ powershell finds=delete | Start-Process -RedirectStandardOutput o.txt -File cmd.
 powershell finds=permissions | Set-Acl -Fil x ~\\.ssh $a
 
 # Copy-Item and Move-Item read each operand after the first as the
-# destination of the others (a comma list is flattened), once for each
-# spelling: the readings of one destination given twice are the same.
+# destination of the others (a comma list is one operand, its items the
+# sources), once for each spelling: the readings of one destination given
+# twice are the same.
 powershell rules=overwrite,overwrite | Copy-Item a.txt lefthook.yml sub
-powershell rules=overwrite,overwrite | Copy-Item lefthook.yml, a.txt sub
+powershell rules=overwrite | Copy-Item lefthook.yml, a.txt sub
 powershell rules=overwrite | Copy-Item lefthook.yml sub sub
 powershell rules=overwrite,overwrite | Copy-Item .envrc .envrc sub
 powershell safe | Copy-Item lefthook.yml sub
@@ -419,3 +424,163 @@ powershell rules=delete,overwrite | Move-Item a ~\\x b
 powershell rules=delete | Move-Item ~\\x a b
 powershell safe | Move-Item -Path a b c
 powershell finds=overwrite reason="writes to your SSH keys" | Copy-Item id_rsa x ~\\.ssh
+
+# A comma list of paths is judged whole, every item of it, given by name or
+# by position: the cmdlet is handed the list as one argument.
+powershell finds=overwrite reason="writes to a shell startup file" | Set-Content x,~\\.bashrc x
+powershell finds=overwrite reason="writes to your SSH keys" | Set-Content -Path src\\a, ~\\.ssh\\authorized_keys -Value x
+powershell finds=overwrite | Add-Content -Path src\\a,C:\\Windows\\x -Value y
+powershell finds=overwrite | Clear-Content src\\a,C:\\Windows\\x
+powershell finds=overwrite | New-Item x,C:\\Windows\\evil.dll -Force
+powershell finds=overwrite | New-Item -Path x,C:\\Windows\\evil.dll -Force
+powershell finds=permissions | Set-Acl x,C:\\Windows $a
+powershell finds=system_settings | Set-ItemProperty x,HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run -Name a -Value b
+powershell finds=delete | Remove-Item -Path x, C:\\Windows -Recurse
+powershell finds=overwrite | "x" | Out-File -FilePath src\\a,C:\\Windows\\x
+powershell finds=overwrite | Set-Content -Path:src\\a,~\\.bashrc -Value x
+powershell finds=overwrite | Set-Content @('x', 'C:\\Windows\\x') y
+powershell finds=overwrite | Set-Content -LiteralPath x,$p y
+# A comma after a space starts the grammar's next word, and puts it on the
+# list of the argument before, or starts a list of one.
+powershell finds=delete | Remove-Item x ,~ -Recurse -Force
+powershell finds=delete | Remove-Item ,~ -Recurse -Force
+powershell finds=overwrite reason="writes to a shell startup file" | Set-Content x ,~\\.bashrc y
+powershell finds=overwrite | Clear-Content x ,C:\\Windows\\x
+powershell finds=permissions | Set-Acl x ,C:\\Windows $a
+powershell finds=overwrite | Get-Item src\\a ,~\\.bashrc | Clear-Content
+powershell finds=overwrite | Set-Content x ,'C:\\Windows\\x' y
+powershell finds=delete | Remove-Item -Path ,~ -Recurse
+powershell safe | Set-Content x ,b.txt y
+# A list is the path's, and a value or a list given to another parameter is
+# not a path.
+powershell safe | Set-Content src\\a.txt x
+powershell safe | Set-Content a.txt,b.txt x
+powershell safe | Set-Content a.txt C:\\Windows
+powershell safe | Set-Content a.txt -Value C:\\Windows,~\\.bashrc
+powershell safe | Set-Content -Path a.txt -Value x, C:\\Windows
+powershell finds=overwrite reason="writes to a shell startup file" | Set-Content -Value x,y ~\\.bashrc
+
+# `--` ends the parameters: the words after it are positionals, and `--`
+# itself is no path.
+powershell finds=overwrite | Set-Content -- C:\\Windows\\x.dll x
+powershell finds=overwrite | Add-Content -- C:\\Windows\\x 1
+powershell finds=overwrite | "x" | Out-File -- C:\\Windows\\x
+powershell finds=delete reason="deletes the root of the disk" | Start-Process -- cmd "/c rd /s /q C:\\"
+powershell safe | Set-Content -- src\\a.txt x
+
+# A splat may bind the path: it is a path only known when it runs.
+powershell finds=overwrite reason="writes to a file only known when it runs" | $p = @{ Path = 'C:\\Windows\\x' }; Set-Content x @p
+powershell finds=overwrite | Clear-Content x @p
+powershell finds=overwrite | Add-Content @p
+
+# A parameter's prefix is looked up among the cmdlet's own names: neither
+# `Set-Content` nor `Clear-Content` has a `-FilePath`, so `-Fil` and `-Fi`
+# are `-Filter`, and the path is the next positional.
+powershell finds=overwrite reason="writes to a shell startup file" | Set-Content -Fil x ~\\.bashrc -Value y
+powershell finds=overwrite | Set-Content -Fi x ~\\.bashrc -Value y
+powershell finds=overwrite reason="empties a shell startup file" | Clear-Content -Fil x ~\\.bashrc
+powershell finds=overwrite | "x" | Out-File -Fi ~\\.bashrc
+# A name that is none of the cmdlet's may take a value or not: every
+# positional is judged.
+powershell finds=overwrite | Set-Content -Bogus x ~\\.bashrc
+
+# `Copy-Item` and `Move-Item` with no destination copy into the folder the
+# line is in.
+powershell finds=overwrite reason="writes to a system folder" | cd C:\\Windows\\System32; Copy-Item C:\\x\\evil.dll
+powershell finds=overwrite reason="writes to your SSH keys" | cd ~\\.ssh; Copy-Item C:\\x\\authorized_keys -Force
+powershell finds=delete,overwrite | cd C:\\Windows; Move-Item C:\\x\\a.txt
+powershell finds=overwrite | cd C:\\Windows; Get-Item C:\\x\\a.txt | Copy-Item
+powershell safe | Copy-Item C:\\x\\a.txt
+# A list is one position: its last item is no destination.
+powershell finds=overwrite | cd C:\\Windows; Copy-Item ~\\dev\\repo\\a.dll,~\\dev\\repo\\b.dll
+powershell finds=overwrite | cd C:\\Windows; Copy-Item -Path ~\\dev\\repo\\a.dll,~\\dev\\repo\\b.dll
+powershell finds=overwrite | cd C:\\Windows; Move-Item ~\\dev\\repo\\a.dll,~\\dev\\repo\\b.dll
+powershell safe | Copy-Item C:\\x\\a.txt,C:\\x\\b.txt
+powershell safe | Copy-Item a.txt,b.txt dest
+# cmd's `copy` and `xcopy` with one operand copy into the folder the line is
+# in too.
+cmd finds=overwrite | cd /d C:\\Windows\\System32 && copy C:\\x\\evil.dll
+cmd finds=overwrite | cd /d C:\\Windows\\System32 && xcopy C:\\x\\evil.dll
+cmd finds=overwrite | cd /d %USERPROFILE%\\.ssh && copy C:\\x\\authorized_keys
+powershell finds=overwrite | cd C:\\Windows\\System32; cmd /c copy C:\\x\\evil.dll
+cmd safe | copy C:\\x\\a.txt
+cmd safe | xcopy C:\\x\\a.txt
+powershell safe | Copy-Item -Path C:\\x\\a.txt
+powershell finds=overwrite | Copy-Item C:\\x\\.envrc
+
+# A write cmdlet given no path writes to what the stage before hands on.
+powershell finds=overwrite reason="empties a shell startup file" | Get-Item ~\\.bashrc | Clear-Content
+powershell finds=overwrite reason="writes to a shell startup file" | Get-Item ~\\.bashrc | Set-Content -Value x
+powershell finds=overwrite | Get-Item ~\\.bashrc | Add-Content -Value x
+powershell finds=overwrite | Get-ChildItem -File ~ | Clear-Content
+powershell finds=system_settings | Get-Item HKCU:\\x | Set-ItemProperty -Name a -Value b
+powershell finds=system_settings | Get-ChildItem HKCU:\\Software | Clear-ItemProperty -Name x
+powershell finds=permissions | Get-Item C:\\Windows | Set-Acl -AclObject $a
+powershell finds=permissions | Set-Acl -InputObject $o -AclObject $a
+powershell finds=permissions | Set-Acl -AclObject $a -InputObject (Get-Item C:\\Windows)
+powershell finds=system_settings | Get-Item HKCU:\\x | Rename-ItemProperty -Name a -NewName b
+powershell finds=overwrite | "x" | Set-Content
+powershell safe | Get-Item src\\a.txt | Set-ItemProperty -Name IsReadOnly -Value $true
+powershell safe | Get-ChildItem src | Clear-Content
+powershell safe | Get-ChildItem | Clear-Content
+powershell finds=overwrite | Get-ChildItem -Force | Clear-Content
+# So does a file method `ForEach-Object` calls by name.
+powershell finds=overwrite | Get-ChildItem | % CopyTo C:\\x
+powershell finds=overwrite | Get-ChildItem | ForEach-Object -MemberName CopyTo -ArgumentList C:\\x
+powershell finds=overwrite | Get-ChildItem | ForEach-Object -Args C:\\x CopyTo
+powershell finds=overwrite | Get-ChildItem | ForEach-Object -Arg C:\\x -MemberName CopyTo
+powershell finds=overwrite | Get-ChildItem ~ | % Open Truncate
+powershell finds=delete | Get-ChildItem src | % MoveTo C:\\x
+powershell safe | Get-ChildItem | % CopyTo src\\x
+powershell safe | Get-ChildItem src | % Open Truncate
+
+# A link's target is read as `mklink` and `ln` read it.
+powershell finds=overwrite reason="links to a system folder" | New-Item -ItemType SymbolicLink -Path link -Target C:\\Windows
+powershell finds=overwrite reason="links to a system folder" | New-Item -ItemType Junction -Path j -Target C:\\Windows
+powershell finds=overwrite | New-Item -ItemType HardLink -Path x -Target C:\\Windows\\System32\\drivers\\etc\\hosts
+powershell finds=overwrite | ni -ItemType SymbolicLink l -Target C:\\Users\\me\\.ssh
+powershell finds=overwrite | New-Item -Type SymbolicLink -Path link -Value C:\\Windows
+cmd finds=overwrite reason="links to a system folder" | mklink /J link C:\\Windows
+posix finds=overwrite reason="links to a system folder" | ln -s /etc x
+powershell safe | New-Item -ItemType SymbolicLink -Path l -Target .\\src
+powershell finds=system_settings | New-Item -n x HKCU:\\Software
+# A type only known when it runs may be a link, and a link's target may be
+# what the stage before hands on.
+powershell finds=overwrite | $t = 'SymbolicLink'; New-Item -ItemType $t -Path l -Target C:\\Windows
+powershell finds=overwrite | New-Item -ItemType ("Sym"+"bolicLink") -Path l -Target C:\\Windows
+powershell finds=overwrite | "C:\\Windows" | New-Item -ItemType SymbolicLink -Path l
+powershell finds=overwrite reason="links to a system folder" | Get-Item C:\\Windows | New-Item -ItemType Junction -Path j
+powershell safe | Get-Item src | New-Item -ItemType Junction -Path j
+powershell safe | New-Item -ItemType File -Path a.txt -Value C:\\Windows
+# `-Name` is one name: a list given to it is joined into one.
+powershell safe | New-Item -Path a,b -Name c,d
+powershell finds=overwrite | New-Item -Path a,C:\\Windows -Name c,d
+
+# A stage that hands on some of what it is handed, unchanged, passes on
+# what the stage before lists.
+powershell lacks=delete | Get-ChildItem *.txt | Where-Object { $_.Length -gt 0 } | Rename-Item -NewName { $_.Name + '.bak' }
+powershell lacks=delete | Get-ChildItem src | Sort-Object Name | Rename-Item -NewName { $_.Name }
+powershell safe | Get-ChildItem *.txt | Where-Object { $_.Length -gt 0 } | Rename-Item -NewName x.bak
+powershell safe | Get-ChildItem *.log | Where-Object { $_.Length -gt 0 } | Remove-Item
+powershell safe | Get-ChildItem src | ? Length -gt 0 | sort Name | Select-Object -First 3 | Get-Unique | Remove-Item
+powershell finds=delete | Get-ChildItem C:\\Windows | Where-Object { $_.Length -gt 0 } | Remove-Item
+powershell finds=delete | Get-ChildItem -Force | Where-Object Name -eq .git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem src | Select-Object -ExpandProperty Parent | Remove-Item -Recurse
+powershell finds=overwrite | Get-ChildItem ~ | Sort-Object | Clear-Content
+
+# `Remove-Item`'s own `-Include` and `-Filter` narrow what a wildcard at the
+# end of its path deletes.
+powershell safe | Remove-Item * -Include *.tmp -Recurse
+powershell safe | Remove-Item .\\* -Include *.tmp -Recurse -Force
+powershell safe | Remove-Item src\\* -Filter *.log
+powershell safe | Remove-Item * -Include *.tmp,*.log -Recurse
+powershell finds=delete reason="deletes the whole workspace" | Remove-Item * -Recurse
+powershell finds=delete | Remove-Item C:\\Windows\\* -Include *.tmp -Recurse
+powershell finds=delete | Remove-Item * -Include .git -Recurse -Force
+powershell finds=delete | Remove-Item * -Include config -Recurse -Force
+powershell finds=delete | Remove-Item * -Include $x -Recurse
+powershell finds=delete | Remove-Item * -Include * -Recurse
+# A path that ends in a drive or a provider is judged as written.
+powershell@on_d finds=delete | Remove-Item C:* -Include *.tmp -Recurse
+powershell finds=delete | Remove-Item FileSystem::C:\\Windows\\* -Include *.tmp
+powershell finds=system_settings | Remove-Item HKCU:\\Software\\* -Include x -Recurse
