@@ -2097,11 +2097,22 @@ Some risks only show when units are read together.
   ../../x.sh` (the list stopped after `cd b`) is `unknown`. An `||` lets its
   right side run where the list may have stopped, and lets a command after
   it run where the left of it left the line, so from an `||` on those
-  folders count for the rest of the list too. The write is placed only from
-  where the walk has the line and the run from every folder it may be in, so
-  a `cd` that may not have run counts whether it comes before the write or
-  after it. Past eight such folders the line may be anywhere, and a run of a
-  script by a relative path is `unknown` once the line writes any file.
+  folders count for the rest of the list too. A redirect on the last command
+  of a list keeps it one list (`cd a && make > log && cd ../b` is still one
+  list of `&&`, and so is `cd a && make 2>&1 | tee log && cd ../b`, where only
+  `make` is in the pipeline), so `cd a && make > log && cd ../b && make > log
+  && cd ../c && make > log && cd ../d && make > log && cd .. && ./run` stays
+  safe. A file written where the line may already be in more than one folder
+  (after a `cd` that may not have run) is placed only from where the walk has
+  the line, and a later `cd` may bring the folders together again, so the
+  guard does not follow which file each folder holds: a later run of a script
+  of that file's name, in any folder, is `unknown`. `false && cd s; echo x >
+  x.sh; cd /home/me/work/repo; bash x.sh` runs the file it wrote when `cd s`
+  did not run; `false && cd s; echo x > x.sh; cd s; bash x.sh` does not, but
+  is `unknown` all the same, while `test -d build && cd build; make >
+  build.log; ./app` runs no file of a name it wrote and stays safe. Past
+  eight such folders the line may be anywhere, and a run of a script by a
+  relative path is `unknown` once the line writes any file.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

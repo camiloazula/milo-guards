@@ -89,6 +89,7 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         written: HashSet::new(),
         unplaced_write: false,
         patterns: Vec::new(),
+        unsure_names: HashSet::new(),
         anywhere: false,
         downloaders: HashMap::new(),
         producers: HashMap::new(),
@@ -128,6 +129,11 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
         let by_cmdlet = writes_by_cmdlet(unit);
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
+            // Written where a `cd` that may not have run may have left the
+            // line, as for a redirect (see [`Split::unsure_writes`]).
+            if !unit.elsewhere.is_empty() {
+                checker.written_anywhere(&target, unit.shell);
+            }
             // A file a write cmdlet names only when it runs (`$x` in `Set-Content
             // a.txt,$x y`, which is not told from the value of `Set-Content a.txt
             // $x`) may be any file: a script the line runs may be it.
@@ -138,6 +144,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     }
     for write in &split.writes {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
+    }
+    for write in &split.unsure_writes {
+        checker.written_anywhere(&write.target, write.shell);
     }
     checker.flow = checker.trace();
     // What each step adds to `found` is what that step found: the findings
@@ -242,6 +251,11 @@ struct Checker<'a> {
     /// The file name part of each pattern the line writes by (`*.ps1`), with
     /// the shell that wrote it: every file it matches is written.
     patterns: Vec<WrittenPattern>,
+    /// The file name of each file the line writes where it may be in more
+    /// than one folder (see [`Split::unsure_writes`]), in lower case: when a
+    /// `cd` before it did not run, the file is in a folder the walk may no
+    /// longer have, so a script of that name, in any folder, may be it.
+    unsure_names: HashSet<String>,
     /// Whether the line writes a file that is any file: a name a write
     /// cmdlet takes only when it runs, or more patterns, or longer ones,
     /// than are read ([`MAX_PATTERNS`]). Any script the line runs may be it.
@@ -306,40 +320,69 @@ impl Checker<'_> {
                 // A folder that cannot be placed (a pattern in it too) is
                 // any folder.
                 let folder = self.resolver.file_key(dir, &Arg::Known(folder), shell);
-                let pattern = WrittenPattern {
+                self.add_pattern(WrittenPattern {
                     folder,
                     name: name.to_string(),
                     shell,
-                };
-                // The same pattern again adds nothing; too many, or one too
-                // long to match cheaply, is any file.
-                if pattern.name.len() > MAX_PATTERN_LEN {
-                    self.anywhere = true;
-                } else if !self.patterns.contains(&pattern) {
-                    if self.patterns.len() < MAX_PATTERNS {
-                        self.patterns.push(pattern);
-                    } else {
-                        self.anywhere = true;
-                    }
-                }
+                });
+            }
+        }
+    }
+
+    /// Note a file the line writes from a folder it may not have when a
+    /// later run is read (see [`Split::unsure_writes`]): a script of that
+    /// name, in any folder, may be it.
+    fn written_anywhere(&mut self, target: &Arg, shell: Shell) {
+        let Arg::Known(text) = target else {
+            return;
+        };
+        let (_, name) = split_name(text, shell);
+        if name.is_empty() {
+            return;
+        }
+        if glob::has_wildcard(name) {
+            self.add_pattern(WrittenPattern {
+                folder: None,
+                name: name.to_string(),
+                shell,
+            });
+        } else {
+            self.unsure_names.insert(name.to_lowercase());
+        }
+    }
+
+    /// Note a pattern the line writes by: the same pattern again adds
+    /// nothing; too many, or one too long to match cheaply, is any file.
+    fn add_pattern(&mut self, pattern: WrittenPattern) {
+        if pattern.name.len() > MAX_PATTERN_LEN {
+            self.anywhere = true;
+        } else if !self.patterns.contains(&pattern) {
+            if self.patterns.len() < MAX_PATTERNS {
+                self.patterns.push(pattern);
+            } else {
+                self.anywhere = true;
             }
         }
     }
 
     /// Whether the line may write the file `script` names from `dir`, other
     /// than by a name it can read: it writes any file (see
-    /// [`Self::anywhere`]), or by a pattern whose folder is the script's and
-    /// whose name matches its name. Each call costs a bounded amount: at most
+    /// [`Self::anywhere`]), a file of its name from a folder it may not have
+    /// (see [`Self::unsure_names`]), or by a pattern whose folder is the
+    /// script's and whose name matches its name. Each call costs a bounded amount: at most
     /// [`MAX_PATTERNS`] matches of at most [`MAX_PATTERN_LEN`] bytes against
     /// a name of at most [`MAX_NAME_LEN`].
     fn pattern_written(&self, dir: Option<&Arg>, script: &str, shell: Shell) -> bool {
         if self.anywhere {
             return true;
         }
+        let (folder, name) = split_name(script, shell);
+        if self.unsure_names.contains(&name.to_lowercase()) {
+            return true;
+        }
         if self.patterns.is_empty() {
             return false;
         }
-        let (folder, name) = split_name(script, shell);
         if name.len() > MAX_NAME_LEN {
             return true;
         }

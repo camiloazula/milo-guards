@@ -539,6 +539,13 @@ struct Reaching {
 pub(crate) struct Split {
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
+    /// The redirects' writes made where the line may be in more than one
+    /// folder, because a `cd` before them may not have run (see
+    /// [`Self::elsewhere`]): when it did not, the file is in a folder the walk
+    /// may no longer have once a later `cd` moves the line on, so a later
+    /// run of a script of its name, from any folder, may be it. Only that
+    /// judgement reads these.
+    pub(crate) unsure_writes: Vec<Write>,
     /// The redirects of files onto units, for the rules that follow a
     /// secret from a file to where it is sent.
     pub(crate) redirects: Vec<Redirect>,
@@ -1740,6 +1747,23 @@ impl Split {
                 shell,
                 target: target.clone(),
                 dir,
+                hidden,
+            });
+        }
+        // Whether the line may be in more than one folder where the redirect
+        // opens: a group's, loop's or branch's opens before its body runs,
+        // and one from the folder a unit started in only when that was
+        // certain.
+        let unsure = match &self.opens_from {
+            OpensFrom::Line => !self.elsewhere.is_empty(),
+            OpensFrom::Start(_) => false,
+            OpensFrom::Both(_) | OpensFrom::Among(_) => true,
+        };
+        if unsure {
+            self.unsure_writes.push(Write {
+                shell,
+                target,
+                dir: self.dir.clone(),
                 hidden,
             });
         }

@@ -95,6 +95,40 @@ posix safe | cd client && npm ci > ci.log && cd ../server && npm ci > ci.log && 
 posix safe | cd packages/a && npm run build > build.log && cd ../b && npm run build > build.log && cd ../c && npm run build > build.log && cd ../.. && ./scripts/test.sh
 posix safe | cd services/api && go test ./... > test.log && cd ../web && npm test > test.log && cd ../cli && cargo test > test.log && cd ../.. && ./ci/report.sh
 posix safe | cd a && make > log && cd ../b && make > log && cd ../c && make > log && cd .. && ./run
+# A redirect on the last command of a list keeps it one list, past as many
+# folders as the guard keeps: `bash` runs in `a/b`, and `a/x.sh` was never
+# written. So does one on the first stage of a pipeline in it, which the
+# grammar holds with the list before it.
+posix safe | cd a && make > log && cd ../b && make > log && cd ../c && make > log && cd ../d && make > log && cd .. && ./run
+posix safe | cd a && make > log && cd ../b && make > log && cd ../c && make > log && cd ../d && make > log; cd ..; ./run
+posix safe | cd a && npm ci > l && cd ../b && npm ci > l && cd ../c && npm ci > l && cd ../d && npm ci > l && cd ../e && npm ci > l && cd ..; ./x
+posix safe | cd a && make 2>&1 | tee log && cd ../b && make 2>&1 | tee log && cd ../c && make 2>&1 | tee log && cd ../d && make 2>&1 | tee log && cd .. && ./run
+posix safe | cd a && { make; } > log && cd ../b && { make; } > log && cd ../c && { make; } > log && cd ../d && { make; } > log && cd .. && ./run
+posix safe | echo x > x.sh; cd a && cd b && true > log && bash ../x.sh
+posix safe | echo x > x.sh; cd a && cd b && make 2>/dev/null && bash ../x.sh
+posix safe | echo x > x.sh; cd a && cd b && true 2>&1 | cat && bash ../x.sh
+posix finds=unknown | echo x > a/x.sh; cd a && cd b && true > log || bash x.sh
+posix finds=unknown | echo x > a/x.sh; cd a && cd b && true 2>&1 | cat || bash x.sh
+posix finds=unknown | echo x > x.sh; true && cd a 2>&1 | cat; bash x.sh
+posix finds=unknown | echo x > x.sh; { cd a && true 2>&1 | cat; } | cat; bash x.sh
+# A file written where the line may be in more than one folder (after a `cd`
+# that may not have run) may be in a folder the walk no longer has once a
+# later `cd` brings the folders together: a later run of a script of its name
+# is unknown from any folder, even where neither folder holds it.
+posix finds=unknown | false && cd s; echo x > x.sh; cd /home/me/work/repo; bash x.sh
+posix finds=unknown | false && cd s; echo x > x.sh; cd /home/me/work/repo/s; bash ../x.sh
+posix finds=unknown | false && cd s; echo x > x.sh; cd ..; bash repo/x.sh
+posix finds=unknown | if false; then cd s; fi; echo x > x.sh; cd /home/me/work/repo; bash x.sh
+posix finds=unknown | false && cd s; echo x > x.sh; cd s; bash x.sh
+posix finds=unknown | false && cd s; echo x | tee x.sh; cd /home/me/work/repo; bash x.sh
+posix finds=unknown | false && cd s; echo x > *.sh; cd /home/me/work/repo; bash x.sh
+posix finds=unknown | cd a; false && cd s; { cd /tmp; echo x; } > x.sh; cd /home/me/work/repo/a; bash x.sh
+powershell finds=unknown | if ($a) { cd s }; 'x' > x.ps1; cd t; .\\x.ps1
+cmd finds=unknown | if exist s cd s & echo x > x.bat & cd t & x.bat
+posix safe | test -d build && cd build; make > build.log; ./app
+posix safe | [ -d build ] && cd build; cmake .. > cmake.log; make > make.log; ./bin/app
+powershell safe | if (Test-Path build) { cd build }; npm run build > build.log; .\\run.ps1
+cmd safe | if exist build cd build & make > build.log & run.bat
 posix safe | echo x > log; cd a && cd b && cd c && cd d; ./app
 posix safe | cd a && cd b && cd c && cd d; echo x > log; ./app
 posix safe | echo x > x.sh; cd a && cd b && bash ../x.sh
