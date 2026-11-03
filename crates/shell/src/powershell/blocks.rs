@@ -289,15 +289,21 @@ const WRAPPERS: [&str; 19] = [
 
 /// Whether an expression (an assigned value, a method's argument) is a script
 /// block written out, however many nodes the grammar wraps it in.
-fn written(node: Node<'_>) -> bool {
+pub(super) fn written(node: Node<'_>) -> bool {
+    super::is_script_block(unwrap(node))
+}
+
+/// What an expression holds inside the nodes the grammar wraps it in, each
+/// with one child.
+pub(super) fn unwrap(node: Node<'_>) -> Node<'_> {
     let mut node = node;
     while WRAPPERS.contains(&node.kind()) && node.named_child_count() == 1 {
         match node.named_child(0) {
             Some(only) => node = only,
-            None => return false,
+            None => break,
         }
     }
-    super::is_script_block(node)
+    node
 }
 
 /// The name of a parameter (`-Action`, `-Action:`), in lower case.

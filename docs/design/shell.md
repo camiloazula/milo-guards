@@ -180,8 +180,10 @@ Hidden`, `-Credential`, `-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`,
 of `-ArgumentList` are joined into one command line that the program splits as
 it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'` is
 `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError` write
-their file, as a redirect does. So do the words that
-run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+their file, as a redirect does. A wrapper's option that starts the program in
+another folder (`env -C`, `start /d`, `Start-Process -WorkingDirectory`) is
+followed (see [Where a line is](#where-a-line-is)). The words that run the
+command after them in a POSIX shell come off too: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
 multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
@@ -341,8 +343,96 @@ knows whether the word was quoted, and reads a wildcard as one either way,
 also behind zsh's `noglob` (`noglob ./*`), which keeps the shell from
 expanding it. A `[` alone is a name, as the program `[` is.
 
+**Tools that run their arguments as a command** come off as `sudo` does,
+each with the options it reads and those of them that take a value, as
+`getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
+
+- Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
+  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
+  a shell line; otherwise the words after the file it records to are the
+  command (the BSDs and macOS), and `-p` plays a recording back and runs
+  nothing. `-F` takes a value on FreeBSD (`-F pipe`) and none on macOS, so
+  both readings are judged and the riskier counts.
+- `launchctl asuser UID` and `launchctl bsexec PID` run the words after them;
+  `launchctl submit … -- cmd` starts the command as a job (with `-p`, the
+  program `-p` names, given the words after `--`).
+- `lima` runs its words in the default Lima machine. `nix run INSTALLABLE --
+  ARGS` runs the package's program, named by the attribute after `#`
+  (`nixpkgs#hello` runs `hello`, `nixpkgs#bash -- -c '…'` reads the script);
+  a package sets which of its programs runs, which need not be its name and
+  may be one that runs its arguments, so the words after `--` are also read
+  as a command, and the riskier reading counts; with no installable (`nix
+  run -- ARGS`, the flake of the folder it is in), they are read as one.
+- The runners that load secrets into the command's environment first:
+  `aws-vault exec PROFILE [--] cmd`, `doppler run`, `op run`, `infisical
+  run`, `direnv exec DIR cmd` and `dotenv` (dotenv-cli, `-e`, `-v`, `-p`
+  and `-c` take a value). `doppler run --command` and `infisical run
+  --command` run a shell line: POSIX on a POSIX line, cmd on Windows.
+- `wsl` runs its words as a line in the Linux shell of a distribution, from
+  any shell of Windows: after its options (`-d`, `-u`, `--cd`,
+  `--shell-type`, `--distribution-id` take a value; a `~` among them starts
+  in the home directory, as `--cd ~` does), or every word after
+  `--`, read in the POSIX grammar. `-e` (`--exec`) runs the words after it
+  as a program and its arguments, with no shell. Any other option
+  (`--list`, `--install`, `--shutdown`) manages WSL and runs nothing. Windows
+  hands `wsl` one command line, which it passes on to the shell as it is;
+  whether the line it is started from quotes an argument with a space is not
+  on the line, so both are read and the riskier counts: `wsl pwsh -c
+  "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The shell starts in the folder
+  `--cd` names, read as a Linux path: `~` is the home directory, and an
+  absolute Windows path is where WSL mounts it (`C:\Windows` is
+  `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
+
+GNU **`parallel`** runs a command once for each value: its options, the
+command, then the values after `:::` (or the files after `::::`, or `-a`),
+or with neither, its input. Each job is a line its shell runs: the command's
+words joined with spaces, each value put in, quoted, where a replacement
+string stands (`{}` or the `-I` string, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`,
+`{%}`, and `{1}` to name a source) or after the words when none does. Every
+job is judged, each source's values in turn, and one more line that gives
+the command every value at once, since the jobs run together (`parallel
+docker rm -f ::: web db` removes several containers). A word with a space
+splits when the words are joined. `-q` quotes each word instead, its values
+put in before it is quoted, so a value stays one word with the text around
+it (`parallel -q sh -c 'make -C {}' ::: crates/*`). The guard reads a word
+after the program that way too (`parallel sh -c 'rm -rf {}' ::: ~`), and the
+riskier reading counts. `--trim` takes the spaces off the sides of each value
+it names before the value is put in. With no command each
+value is a line of its own, and lines read from the input are its input run
+as a shell runs it. A command of plain words fed its input is read as
+`xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
+or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs
+or 32 sources, for jobs whose lines together are longer than the longest
+line (64 KiB, which is as far as they are built), for a replacement string
+that is empty or longer than 64 bytes, for a `{= … =}` expression (Perl),
+a numbered string where several values go to a job (`-n`, `-N`, `-L`,
+`-X`, `-m`, `--link`, `:::+`), an option that changes how values are
+split, named or separated (`--colsep`, `--csv`, `--header`, `--plus`,
+`--rpl`, `--arg-sep`, the `--…replace` options), or an option the guard
+does not know (a long one may be shortened to an unambiguous start, as
+`parallel` reads it), the line is `Unreadable`.
+
+`env -S` splits its string into words that are `env`'s own arguments again,
+with the arguments after it (`env -S 'rm -rf' ~`): GNU env puts them back
+among its arguments, so they may hold its options and assignments as well
+as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` again with
+them in the string's place. The string may be attached (`env -S'rm -rf ~'`,
+`env -iS'…'`), and `--split-string=` and a shorter start of the long name
+(`--split=…`, `--s`) are the same. The string is split as `env` splits it,
+its own escapes too (`\_` for a space, `\c` to end it); how a `${NAME}` in it
+and a string `env` refuses are read is under [Where a line is](#where-a-line-is).
+
+A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
+rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
+is judged as one: its `$1` and `$@` name a different value each time, only
+known when it runs.
+
 A script handed to a shell is split again, in its own grammar: `bash -c`,
-`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. So is the value
+`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command
+`git submodule foreach` runs in each submodule (see Git tags and submodules).
+So is the value
 of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
 read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
@@ -362,6 +452,9 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Wrappers in front of a program | 15 | `sudo env nice … rm` |
 | `find` inside `find -exec` | 16 | the walk, so the stack |
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
+| Jobs `parallel` runs | 256 | each a line built from the command and a value of each source, judged one by one |
+| Sources of values to `parallel` | 32 | each job holds a value of each `:::`, `::::` or `-a` |
+| Lines `parallel` builds | 64 KiB | the jobs' lines together are one script, read no further than the longest line, so built no further; a value put in at each of thousands of `{}` is megabytes otherwise |
 | Brackets opened with none closed | 400 | counted before parsing, outside the literals below: `(` in every shell, `${` in a POSIX shell (where any other `{` may be a word) and `{`, `${` and `[` in PowerShell, each kind closed only by its own closer, all added up. Past the parse tree depth the line is unreadable whatever the grammar makes of it, and the grammars take long to find that out: cmd's time grows with the square of the depth, PowerShell's lexer reads on to the next `}` at every `${` (`${` repeated took 21 ms on one machine, stopped by the budget of what a lexer reads, and 3.4 s on a slower one), and the grammars recover from an error at each bracket (at the length limit, in POSIX `a${` 0.28 s, `${a` 0.26 s, `${` 0.17 s; in PowerShell `$a{` 0.9 s, `${a}{` 0.8 s, `$[` 0.1 s) |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
 | Here-documents started on one line (POSIX) | 256 | counted before parsing, outside the literals below: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more) |
@@ -605,6 +698,105 @@ line leaves things, whichever is more conservative and needs the least state:
   it stands, when the trap is set, and is a placeholder variable in the text
   the action is read from, so it is not read twice.
 
+### Aliases and functions a PowerShell line sets
+
+A PowerShell line can give a command a new name and then use it:
+`Set-Alias x Remove-Item; x -Recurse -Force ~` deletes the home directory.
+Before its commands are judged, the walk reads every name the line sets,
+anywhere in it (`Walker::define`, kept in `powershell::Aliases`):
+
+- **An alias**: `Set-Alias` and `New-Alias` (also `sal` and `nal`), with the
+  name and the command given by name or by position (`-Name` first, then
+  `-Value`), and the other parameters skipped with their values
+  (`-Description`, `-Option`, `-Scope`); `Set-Item` (also `si`) on items of
+  the `Alias:` drive (`Set-Item Alias:x Remove-Item`, also `-Path Alias:\x
+  -Value …`, `-LiteralPath`, a list of paths, each set), which is an
+  `overwrite` of an item outside the workspace as well; and an assignment to
+  `$alias:x` or `${alias:x}`. The arguments are bound as PowerShell binds
+  them (`Walker::bound_args`): a list (`-Option ReadOnly,AllScope`) is one
+  argument, so it moves neither the name nor the command, and a bare `--`
+  ends the parameters, so `Set-Alias -- x Remove-Item` sets `x`. In an
+  assignment to several targets (`$alias:x, $y = 'Remove-Item', 1`) each
+  target takes the value in its place, the last one what is left; a target
+  whose value cannot be paired so (the value is not a list written out, or
+  its items are not one for each target) is set to something only known
+  when it runs. A target may be in parentheses (`($alias:x) = …`,
+  `($alias:x, $y) = …`), as PowerShell takes one; any other variable of the
+  `Alias:` or `Function:` drive on the left side that is not read as a target
+  sets its name to what is only known when it runs, so a spelling the guard
+  does not read fails closed.
+  Other writes to the `Alias:` and `Function:` drives (`New-Item`,
+  `Set-Content`, a path after `cd Alias:`) are not read as names, and are
+  that `overwrite`.
+- **A function whose body is only known when it runs**: an assignment to
+  `$function:f` or `${function:f}` (a scope in front, `$function:global:f`,
+  is taken off) of anything but a block written out (`$b`, a string, which
+  PowerShell turns into a block). A block written out (`${function:f} = {
+  … }`), like `function f { … }`, is read where it stands, as its body is
+  judged as if it stood on the line.
+
+A command whose program is a name the line sets (in any case, also after `&`)
+is then judged as its own program and as each command the name may stand
+for, every one of them, the riskier counting: an alias that is set in a
+branch, or that PowerShell refuses (a read-only built-in alias, a name the
+line made read-only, `-WhatIf`), leaves the name what it was, so the name
+itself is always one reading. `Set-Alias ls Remove-Item; ls -Recurse -Force
+~` is the `delete` of `~` though `ls` is `Get-ChildItem`; `Set-Alias ll
+Get-ChildItem; ll` stays safe. Each reading is a unit of its own, built from
+the same arguments by the rules of its program, so an alias to `pwsh`,
+`Start-Process`, `Invoke-Command` or `iex` is read as that cmdlet is (its
+script, its script block, a download it runs); the readings past the first
+are read as if in a branch, since they may not be what runs. A target that
+is a name the line sets too is followed (`Set-Alias y x`), as PowerShell
+looks an alias up again when it runs, each name once. Two commands with the
+same key are one reading. A block is read as running apart from the session
+(a `Start-Job`'s, a `Start-ThreadJob`'s, a `ForEach-Object -Parallel` one's)
+only when every reading runs it so: `Set-Alias x Start-Job; x { cd ~ };
+Remove-Item -Recurse -Force *` may run the block in the session, which then
+moves the line home.
+
+As the names are read from the whole line first, a command written before
+the name is set is judged by it too, which matters for one that runs after it
+(in a function body, a loop or a `trap`): `function f { x -Recurse -Force ~
+}; Set-Alias x Remove-Item; f` is a `delete`. A name set by a script the line
+runs (`Invoke-Expression 'Set-Alias x Remove-Item'`) is read when that script
+is, so a command of that name judged before is not judged by it: `unknown`,
+with the reason `sets an alias or function for a command the line may have
+run already`. The names are one table for the whole line, a child shell's
+(`pwsh -c "Set-Alias …"`) among them, though a child cannot change what its
+parent runs: `Get-ChildItem; pwsh -c "Set-Alias Get-ChildItem Get-Date"` is
+`unknown` by that reason. It is rare, and fails closed.
+
+`unknown`, as what cannot be read:
+
+- an alias to a command only known when it runs (`Set-Alias x $t`, `Set-Item
+  Alias:x $t`, `$alias:x = $t`, a splat that may hold the value): a command
+  of the name is `runs an alias the line sets to a command only known when it
+  runs`;
+- a function whose body is only known when it runs: a command of the name is
+  `runs a function the line sets to a block only known when it runs`;
+- an alias whose name is only known when it runs (`Set-Alias $n Remove-Item`,
+  `Set-Alias @p`), or not given at all, as `Set-Alias`, `New-Alias` and
+  `Set-Item` also take it from the properties of what the pipeline hands them
+  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it;
+  and `Import-Alias` (also `ipal`), which sets every alias in a file the line
+  may have written itself (`'x,Remove-Item' | Set-Content a.csv; Import-Alias
+  a.csv; x -Recurse -Force ~`): `sets an alias whose name is only known when
+  it runs`.
+
+A name set to something only known when it runs, with no command of that
+name, is safe: `Set-Alias x $t` alone runs nothing. A line reads at most 64
+names (the same name set to the same command again counts once), past which
+it is `unknown` (`sets more aliases and functions than the guard reads`),
+and adds at most 256 readings in all, past which it is `unreadable` (`runs
+commands through more aliases than the guard reads`): each reading is one
+more unit to judge, so the work stays bounded however many times a name is
+used. What a name stands for is worked out once, with the key of each
+target taken when it is set, so a command of a name costs one lookup however
+many targets of its own key the name has. A module's aliases and functions,
+and the names a profile sets, are not read; only what the line itself
+writes.
+
 ### Values read again as code
 
 bash reads some values a second time, and runs the code it finds in them
@@ -724,6 +916,10 @@ PowerShell's `Invoke-Expression` runs (`iex 'cd C:\Windows'`), since the session
 has one location; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A script a program runs in a folder of its own choosing, which the line does
+not say (`git submodule foreach` runs its command in each submodule), is read
+as after a `cd` to an unknown place, and the rest of the line is read from
+where it was.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
@@ -731,6 +927,49 @@ overwrite of a file only known when it runs. `$null` is the device only in
 PowerShell, and only as the null value itself. In a POSIX shell it is the variable
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
+
+A wrapper or a runner that starts its command in a folder of its own option
+moves that command, and only it: its relative paths, the script it runs and
+the code it is given are judged from that folder, as after a `cd` that ran,
+and the rest of the line from where it was (`env -C / true; rm -rf etc` is
+safe). The options read so are `env -C DIR` (`--chdir`), `sudo -D` and `run0
+-D` (`--chdir`), pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's
+`--directory`, PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or
+`powershell -WorkingDirectory` for the script given with `-Command`, and cmd's
+`start /d DIR` (`/dDIR`), which names the drive too, and `wsl --cd DIR`, a
+Linux path (see [Wrappers and scripts](#wrappers-and-scripts)): `env -C ~ rm -rf .ssh`,
+`pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s /q
+System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
+x.obj` are safe. When one is given more than once, the last counts. A folder
+only known when it runs makes the command's relative paths known only when
+they run.
+
+Each is read the way its program reads its options. `env` and `sudo` read
+theirs as `getopt_long` does: in a bundle (`env -iC DIR`, `sudo -nD DIR`),
+with the value joined (`-CDIR`), and a long option by any prefix that names it
+alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
+also `-S'…'`) splits the string into words, as `env` does, and reads them again
+as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`. A
+`${NAME}` in it, outside single quotes, is filled in from `env`'s environment,
+so the word it stands in is only known when it runs (`env -S 'rm -rf ${HOME}'`
+deletes a path only known when it runs). A string `env` refuses (any other
+`$`, an escape it does not know, a quote left open) runs nothing, since GNU's
+and BSD's `env` both stop there; it is still read as the shell line it looks
+like, so `env -S 'rm -rf $HOME'` stays `delete`. BSD's `env -P altpath` and
+FreeBSD's `-L` and `-U user[/class]` take a value, so `env -P /bin -C / rm -rf
+etc` is `delete`. `pwsh` takes any prefix of `-WorkingDirectory` from `-wo`
+on, and `-wd`, also joined with a colon (`-wo:DIR`), and drops a second
+leading dash before it matches a parameter, as pwsh does (`--wd DIR`, `--c`).
+npm's and npx's `--prefix` (`-C`) is read as npm reads its options, so
+`--prefi` too. A cmd line reads what `bun --cwd DIR` starts as it reads what
+`bun` starts without it.
+
+Two of them name a project rather than the folder the command runs in, and
+whether the runner also starts the command there has changed between
+versions, so the command is judged from both folders: `uv run --project DIR`,
+and npm's and npx's `--prefix` for what `npm exec` runs (npm 11 runs it where
+the line is). So `npm --prefix a/b/c exec rimraf ../..` is `delete`, as is
+`npm --prefix ~ exec rimraf .ssh`.
 
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not
@@ -1100,6 +1339,71 @@ Not read, so the caller has to account for them: an option set by `~/.zshenv`
 or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
 from the environment the guard's caller runs in.
 
+### Extended patterns
+
+With zsh's `extendedglob` on, `#`, `##`, `^` and `~` in an unquoted word are
+parts of a pattern: `x#` is any number of `x` and `x##` one or more, `^x` is
+any name but `x` (to the end of its part, so `^foo/bar` is `bar` in every
+folder but `foo`), and `x~y` is what `x` matches and `y` does not. So `rm -rf
+.gi#t` and `rm -rf .g^x` delete `.git`. Read as plain names they do not.
+zsh does not glob a word whose only operator is `~` (`.git~x` is that name),
+but the guard reads `x~y` as `x` all the same: `rm -rf .git~x` is judged as
+the delete of `.git`, which costs only a word that names nothing.
+
+- **On.** `setopt extendedglob` (any case, any underscores:
+  `EXTENDED_GLOB`), `unsetopt noextendedglob`, `set -o extendedglob`,
+  `setopt -m` with any pattern, an option name only known when it runs,
+  `emulate`'s `-o extendedglob` before its `-c` (`emulate -L zsh -o
+  extendedglob`: `-L` does not limit it outside a function), an assignment to
+  zsh's `options` table that names it or a key only known when it runs and is
+  not `off` (`options[extendedglob]=on`, `options+=(extendedglob on)`),
+  `source` and `.` (the file may set it), and a zsh started with `-o
+  extendedglob`, `--extendedglob` or `--extended-glob`. Off by the opposite
+  switches, where the line is sure to run them in this shell, as for zsh's
+  `globdots` (see Hidden names); it reaches as far, and a subshell or a script
+  in a process of its own gives it back as it was.
+- **Both readings.** bash has no such option and `setopt` fails there, so the
+  line may be run either way: a command with a word the option reads another
+  way is judged twice, with the word as written and with it as zsh reads it,
+  and the riskier counts (a fork, as for `bun`, counted against the same 32
+  per line, past which the line is unreadable). `curl -F f=@~/.aws/credentials`
+  is still the send of a key, though zsh reads that word as `f=@` but not
+  `/.aws/credentials`. A redirect target zsh reads another way is opened both
+  ways too (`echo x > .gi#t/config`), and a listing piped on hands on what
+  each reading lists (`ls -d .gi#t | xargs rm -rf` deletes `.git`): every
+  listing at the stage before the delete is read, not only the first. A
+  `cd`, `pushd` or `popd` is not read
+  twice, since the second would start where the first went: a word the option
+  changes in it is only known when it runs.
+- **zsh's reading** is a plain pattern that takes every name zsh's does:
+  `x#` and `x##` are `*` (`.gi#t` is `.g*t`), `^` and the rest of its part
+  are `*` (`.g^x` is `.g*`), and `x~y` is `x` (`*.o~*.c` is `*.o`, which still
+  cannot match a hidden name). The finding names that pattern. A single `#`
+  on plain characters that start a name may leave them out, so a dot after
+  them starts the name: `x#.git` matches `.git` and `x.git`, and is read as
+  two patterns, `.git` and `*.git`, each judged (a third reading, one more
+  fork). A wildcard or a bracket that starts a name never takes its dot,
+  even repeated (`[x]#.git` is not `.git`), so it reads as `*`. A leading dot
+  repeated (`.#git` is `git` and `.git`), a second such split in the word,
+  or a group (`(a|b)#`, `(#i)`) has no plain pattern that takes what it
+  does, so the word is a place only known when it runs. A quoted or escaped
+  operator (`'.gi#t'`, `.gi\#t`) is itself, a `~` that starts the word is
+  the home folder, and one in a bracket (`[~]`) is a member. What an
+  expansion gives is itself too (zsh reads its value as a pattern only with
+  `globsubst`), but the rest of the word is still read: `$PWD/.gi#t` is
+  `$PWD/.g*t`. When the value is only known when it runs and the rest of the
+  word holds an operator, the word is a place only known when it runs.
+  Where each bracket closes is found in one pass from the end of the word, so
+  a long run of `[` that never closes is read in linear time.
+- **Bodies.** A function body or a loop may run after the option is on, so
+  when the line turns it on anywhere, the line is read again with the words in
+  them read as zsh reads them: `f() { rm -rf .gi#t; }; setopt extendedglob;
+  f`.
+
+Not read: the option set by an rc file (a plain word is read as written
+then, so `rm -rf .gi#t` alone is safe), the script of `emulate -c`, a `for`
+list, and the program's own name.
+
 ## The rules
 
 A rule reads a unit's program, its flags, its operands and its redirects. It
@@ -1111,7 +1415,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
@@ -1539,10 +1843,55 @@ not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
 ### Git tags and submodules
 
 `git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
-has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
-is `git_discard` too: it throws away the submodule's changes; without `-f`
-git refuses when there are some. Deleting a tag on a remote (`git push
+has no reflog to bring it back from. For the same reason a tag given again by
+force (`git tag -f v1`, `git tag --force v1 HEAD~1`) is `git_discard` ("moves
+a tag, losing where it pointed"): the tag moves and where it pointed is gone.
+A tag listed or verified (`-l`, `-v`) moves nothing, and nor does a `-f` with
+no tag named. `git submodule deinit -f` (or `--force`) is `git_discard` too:
+it throws away the submodule's changes; without `-f` git refuses when there
+are some. So is `git submodule update -f` ("throws away changes in
+submodules"): it checks the recorded commit out over what each submodule
+holds. `git submodule--helper`, the helper `git submodule` calls, runs the
+same commands when called directly, so it is read as `git submodule`
+everywhere here (`git submodule--helper update --force`, `git
+submodule--helper foreach 'rm -rf ~'`). Deleting a tag on a remote (`git push
 --delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+`git submodule foreach` runs its command in each submodule with a shell, and
+the guard reads that command as a nested script, as `bash -c`'s: one argument
+is a shell line (`git submodule foreach 'rm -rf ~'` is `delete`); with
+several, git puts the first in a shell line as written and hands the others
+to it as words, so the line read is the first as it is and each other quoted
+(`git submodule foreach git clean -fdx` is `git_discard`). Its options
+(`--recursive`, `--quiet`) come before the command, and any other word with a
+dash there is taken as one, so the command is read past it. The command runs
+in each submodule's folder, which the line does not say, so it is read as
+after a `cd` to an unknown place: `rm -rf *` there is a delete of what is only
+known when it runs, and so is a write (`git submodule foreach 'git log >
+log.txt'`). A command only known when it runs (`"$cmd"`) is `unknown`, and one
+that only reads (`git submodule foreach git status`) is safe. It is read
+under PowerShell and cmd too, as a POSIX line: git runs it with `sh` there as
+well.
+
+### Git's abbreviated long options
+
+git takes any prefix of a long option that names only one of its options
+(`git clean --f` is `--force`, `git reset --h` is `--hard`, `git tag --d` is
+`--delete`) and refuses a prefix that names several. So a git rule takes a
+long option written as any prefix of one it reads as that option: when the
+prefix names more than that one, git runs nothing. This holds for the options
+that keep a line safe too: `git clean -f --d` is a dry run (`--dry-run` is
+the one long option of `clean` that starts with `d`), and `git branch --d x`
+is `git branch -d x`, which refuses a branch that is not merged. A value
+given with `=` is read the same way: `git gc --pr=now` is `--prune=now`.
+git reads its options in order, so an option that keeps a line safe is read
+in order with its `--no-` form: the last of `-n`, `--dry-run` and
+`--no-dry-run` (or a prefix of it, `--no-d`) wins, and `git clean -f -n
+--no-d` deletes. The value of `-e`/`--exclude` is a pattern, not an option,
+so the `n` in `git clean -f -enx` or `-e -n` is no dry run. git's own options
+before the subcommand (`-C`, `-c`, `--git-dir`) take no prefix, and those that
+take a value take the next word as it (`--attr-source HEAD`), so that word is
+not the subcommand.
 
 ### Running a download through `Invoke-Expression`
 
@@ -2641,11 +2990,17 @@ A line is never safe because the guard gave up on it. These come back risky:
   `runs code the guard does not read fully`, unless it is found to do
   something worse (see [Inline code](#inline-code)).
 - A .NET call that deletes, writes or starts a program.
+- A PowerShell command whose name the line sets to something only known
+  when it runs: an alias to a command not written out (`Set-Alias x $t; x`),
+  a function whose body is not a block written out (`$function:f = $b; f`),
+  an alias whose name is not written out (`Set-Alias $n Remove-Item`), and a
+  name a script the line runs sets after a command of that name was judged
+  (see [Aliases and functions a PowerShell line sets](#aliases-and-functions-a-powershell-line-sets)).
 - PowerShell code known only when it runs: a script block that is not written
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
   `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
-  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module`,
+  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module` (also `nmo`),
   `Measure-Command`, `Trace-Command -Expression`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
@@ -3787,7 +4142,10 @@ could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
-start sessions: those wrap a reader into `Unknown`. A shell started with a
+start sessions: those wrap a reader into `Unknown`. So do the other tools that
+run a command (`strace -o` and `script` write files, `parallel` runs many,
+`wsl` another system's shell, and the secret runners hand it an environment
+the line does not show). A shell started with a
 script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
 table does not know, so it is `Unknown` even when the script it holds only
 reads.
@@ -4414,13 +4772,18 @@ a nasty line against a 200 ms bound;
   `just verify` runs (500 ms and 2 s). In a release build the longest takes
   under 100 ms, and most are far quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
-  ones of several levels, are timed the same.
+  ones of several levels, are timed the same, as are `parallel` lines that
+  would build megabytes of jobs and the other wrappers that read their words
+  as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
+  length limit, and PowerShell lines at the length limit that use a name the
+  line sets as an alias, to a hundred commands or to one, in every command
+  after it.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,
   the most shells in shells, wrappers in front of a program, finds in finds,
   here-documents started on a line, the `find -exec` work (in places, at a
-  fixed weight), brackets still open and cmd's `&` and `|` that still read:
+  fixed weight), the jobs, sources and bytes `parallel` builds, brackets still open and cmd's `&` and `|` that still read:
   the last two inside a string, where the grammar sees no nesting, so the count
   alone is measured. One past each is unreadable, so a later
   change to a limit, or to how deep a grammar nests, fails loudly. `find`s
