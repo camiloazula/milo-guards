@@ -182,6 +182,11 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
         units,
         writes,
     } = judged;
+    // Arguments run from the same folder land in the same place: each word
+    // is placed once for each folder (a runner read many ways hands
+    // thousands of copies of a few words on, a loop runs one word in
+    // thousands of units).
+    let mut placed = Placed::new();
     Explanation {
         command: command.to_string(),
         shell,
@@ -189,7 +194,7 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
             .units
             .iter()
             .zip(units)
-            .map(|(unit, findings)| of_unit(unit, findings, resolver))
+            .map(|(unit, findings)| of_unit(unit, findings, resolver, &mut placed))
             .collect(),
         redirects: redirects(split, writes, resolver),
         line: line.clone(),
@@ -243,14 +248,20 @@ fn resolved(
     Some(place.words())
 }
 
-fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplanation {
+/// Where each word lands, by the folder it runs from, its shell, whether its
+/// wildcards match hidden names, and its text.
+type Placed<'a> = BTreeMap<(Option<&'a str>, &'static str, bool, &'a str), Option<&'static str>>;
+
+fn of_unit<'a>(
+    unit: &'a Unit,
+    findings: &[Finding],
+    resolver: &Resolver,
+    placed: &mut Placed<'a>,
+) -> UnitExplanation {
     // In a POSIX shell the first `--` ends the options: what follows it is an
     // operand, whatever it starts with (`rm -- -rf` deletes a file `-rf`).
     let mut ended = false;
-    // A unit's arguments share its folder, so the same word lands in the
-    // same place: each is placed once (a runner read many ways hands
-    // thousands of copies of a few words on).
-    let mut placed: BTreeMap<&str, Option<&'static str>> = BTreeMap::new();
+    let dir = unit.dir.as_ref().map(Arg::text);
     UnitExplanation {
         shell: unit.shell,
         depth: unit.depth,
@@ -277,16 +288,18 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                     .known()
                     .filter(|_| !option)
                     .and_then(|text| {
-                        *placed.entry(text).or_insert_with(|| {
-                            resolved(
-                                arg,
-                                unit.dir.as_ref(),
-                                unit.shell,
-                                unit.hidden,
-                                resolver,
-                                false,
-                            )
-                        })
+                        *placed
+                            .entry((dir, shell_name(unit.shell), unit.hidden, text))
+                            .or_insert_with(|| {
+                                resolved(
+                                    arg,
+                                    unit.dir.as_ref(),
+                                    unit.shell,
+                                    unit.hidden,
+                                    resolver,
+                                    false,
+                                )
+                            })
                     })
                     .map(str::to_string),
             })
