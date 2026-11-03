@@ -1,0 +1,860 @@
+# Stopping processes in a POSIX shell. A process stopped by a plain name that
+# is not the system's is safe; a name, a pattern, an option or a service the
+# system needs, every process of a user, a group or the caller's own group
+# (`kill 0`, a negative id), and a fork bomb are `stop_system`. An id, a
+# name, a listing or a substitution the guard cannot read for sure may be any
+# process and is `stop_unknown`; signal 0 sends nothing, but only in its one
+# plain shape. The format is in CONTRIBUTING.md.
+
+# Stopping a process by name is safe unless the system needs it.
+posix safe | killall node
+posix safe | pkill node
+posix safe | killall -9 node
+posix safe | killall -s HUP nginx
+posix safe | killall --signal HUP nginx
+posix safe | killall Finder
+posix safe | killall Dock
+posix safe | pkill -f 'node server.js'
+posix safe | pkill -9 -f vite
+posix safe | pkill -HUP -f gunicorn
+posix safe | pkill -TERM node
+posix safe | pkill --signal KILL node
+posix safe | pkill -x node
+posix safe | pkill '^node$'
+posix safe | pkill -f 'node.*server'
+posix safe | pkill '(node|vite)'
+posix safe | pkill -f "python -m http.server"
+posix safe | pkill -u me node
+posix safe | pkill -fu me node
+posix safe | killall -u me node
+posix safe | killall --user me node
+posix safe | killall -r 'node.*'
+posix safe | pkill --sig KILL node
+posix safe | pkill --frobnicate node
+posix safe | pkill -- node
+posix safe | pkill '[n]ode'
+posix safe | pkill '[]a]x'
+posix safe | pkill 'a{x}'
+posix safe | pkill 'a{0'
+posix safe | pkill 'ab{2}'
+posix safe | pkill -P 1234
+posix safe | pgrep node
+posix safe | pgrep -f .
+posix safe | pgrep -u me
+posix safe | killall
+posix safe | pkill
+posix safe | pkill -f "node server.js"
+posix safe | pkill -f 'npm run dev'
+posix safe | pkill -f vite
+posix safe | pkill -f ./target/debug/myapp
+posix safe | killall -user me node
+posix safe | killall -ignore-case node
+posix safe | killall gnome-terminal
+posix safe | killall ssh-agent
+posix safe | pkill ssh-agent
+posix safe | pkill -f 'ssh-agent -a /tmp/x'
+posix safe | pkill gnome-calculator
+posix safe | pkill -f /usr/bin/node
+posix safe | pkill -f 'dwmbar'
+posix safe | pgrep sshd
+posix safe | pgrep -f gnome-shell
+# A name with a folder is the process of that file.
+posix safe | killall /usr/local/bin/node
+posix safe | killall /opt/app/server
+posix safe | killall /sbin/initd
+
+posix finds=stop_system | killall -9 WindowServer
+posix finds=stop_system | killall loginwindow
+posix finds=stop_system | killall launchd
+posix finds=stop_system | killall systemd
+posix finds=stop_system | killall init
+posix finds=stop_system | killall -u me launchd
+posix finds=stop_system | killall node launchd
+posix finds=stop_system | pkill launchd
+posix finds=stop_system | pkill -9 -f launchd
+posix finds=stop_system | pkill '^systemd$'
+posix finds=stop_system | pkill -f /sbin/init
+posix finds=stop_system | pkill 'node|systemd'
+posix finds=stop_system | pkill Explorer
+posix finds=stop_system | pkill sshd
+posix finds=stop_system | killall -9 sshd
+posix finds=stop_system | sudo pkill sshd
+posix finds=stop_system | killall cfprefsd
+posix finds=stop_system | killall SystemUIServer
+posix finds=stop_system | killall Xorg
+posix finds=stop_system | pkill gnome-shell
+posix finds=stop_system | killall plasmashell
+posix finds=stop_system | killall -9 kwin_x11
+posix finds=stop_system | killall kwin_wayland
+posix finds=stop_system | pkill dbus-daemon
+posix finds=stop_system | killall systemd-logind
+posix finds=stop_system | killall svchost
+posix finds=stop_system | pkill -x svchost
+# In any case, with a folder in front, and several names.
+posix finds=stop_system | killall SSHD
+posix finds=stop_system | killall -I xorg
+posix finds=stop_system | killall /usr/sbin/sshd
+posix finds=stop_system | killall node sshd
+posix finds=stop_system | pkill -i XORG
+posix finds=stop_system | pkill -9 -x sshd
+posix finds=stop_system | pkill -SIGTERM gnome-shell
+posix finds=stop_system | pkill -u me sshd
+posix finds=stop_system | killall /sbin/launchd
+posix finds=stop_system | killall /usr/lib/systemd/systemd
+posix finds=stop_system | killall /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow
+posix finds=stop_system | sudo killall -9 /sbin/init
+posix finds=stop_system | killall -9 /sbin/init
+posix finds=stop_system | killall ./launchd
+# A regular expression that can match one, anchored or not.
+posix finds=stop_system | pkill '^sshd$'
+posix finds=stop_system | pkill 's[s]hd'
+posix finds=stop_system | pkill 'plasma.*'
+posix finds=stop_system | pkill ssh
+posix finds=stop_system | pkill dbus
+posix finds=stop_system | pkill kwin
+posix finds=stop_system | pkill -f gnome-shell
+posix finds=stop_system | killall -r 'kwin_.*'
+# `-f` searches the usual command line.
+posix finds=stop_system | pkill -f 'sshd -D'
+posix finds=stop_system | pkill -f /usr/sbin/sshd
+posix finds=stop_system | pkill -f 'dbus-daemon --session'
+posix finds=stop_system | pkill -f /usr/bin/gnome-shell
+posix finds=stop_system | pkill -f 'cfprefsd daemon'
+posix finds=stop_system | pkill -f SystemUIServer.app
+posix finds=stop_system | pkill -f 'systemd-logind'
+posix finds=stop_system | pkill -f /usr/lib/xorg
+# A name only known when it runs.
+posix finds=stop_unknown | killall $NAME
+posix finds=stop_unknown | pkill "$PATTERN"
+posix finds=stop_unknown | pkill -f $(cat pattern)
+posix finds=stop_unknown | echo node | xargs pkill
+# Behind a wrapper or a nested script.
+posix finds=stop_system | sudo killall WindowServer
+posix finds=stop_system | bash -c 'pkill -f .'
+posix finds=stop_system | timeout 5 killall -u me
+
+posix@macos finds=stop_system | killall cfprefsd
+posix@macos finds=stop_system | killall SystemUIServer
+posix@macos finds=stop_system | sudo killall -9 sshd
+posix@macos finds=stop_system | killall WindowServer
+
+# `pkill` and `killall -r` search their expression in each name; a plain word
+# is compared whole by `killall`, and `-x` wants the whole name. A pattern
+# that can match every process or a system name is `stop_system`.
+posix safe | killall login
+posix safe | killall Window
+posix safe | killall launch
+# `pkill -f server` is not in `WindowServer` (the case counts).
+posix safe | pkill -x login
+posix safe | pkill -x '^login$'
+posix safe | pkill -f server
+posix safe | pkill server
+posix safe | pkill '^window'
+posix safe | pkill 'ogin$'
+posix safe | pkill 'login.x'
+posix safe | killall -r server
+posix safe | killall -r Servers
+posix safe | pkill -f 'python -m http.server'
+posix safe | pkill -x 'login.*x'
+posix safe | pkill -x 'launch'
+posix safe | pkill -x '.aunch'
+posix safe | pkill 'launchdd'
+posix safe | pkill '[^l]aunchd$'
+posix safe | pkill '[[:upper:]]aunchd'
+posix safe | pkill '\\bnode\\b'
+posix safe | pkill '(node|vite)+'
+posix safe | pkill 'a{2}b'
+posix safe | pkill 'init.'
+posix safe | pkill 'x(a|b)*y'
+posix safe | killall -r 'node[0-9]+'
+# `pkill` sees a program's folder end at a `/`, and its sets are POSIX's.
+posix safe | pkill 'a/?node'
+posix safe | pkill 'node[[:alpha:]]x'
+
+# A pattern that matches every process.
+posix finds=stop_system | pkill -f .
+posix finds=stop_system | pkill .
+posix finds=stop_system | pkill ''
+posix finds=stop_system | pkill '.*'
+posix finds=stop_system | pkill '^'
+posix finds=stop_system | pkill '$'
+posix finds=stop_system | pkill 'a*'
+posix finds=stop_system | pkill 'x?'
+posix finds=stop_system | pkill '(a|)'
+posix finds=stop_system | pkill 'node|.'
+posix finds=stop_system | pkill '[a-z]*'
+posix finds=stop_system | pkill '\\w'
+posix finds=stop_system | pkill 'a{0,3}'
+posix finds=stop_system | pkill '(unclosed'
+posix finds=stop_system | pkill '[unclosed'
+posix finds=stop_system | pkill -9 -f .
+posix finds=stop_system | pkill -u me -f .
+posix finds=stop_system | killall -r .
+posix finds=stop_system | killall -r '.*'
+posix finds=stop_system | killall -m .
+posix finds=stop_system | killall --regexp .
+posix finds=stop_system | killall5
+posix finds=stop_system | killall5 -9
+# Every process but the ones named.
+posix finds=stop_system | pkill -v node
+posix finds=stop_system | pkill --inverse node
+posix finds=stop_system | pkill --inv node
+posix finds=stop_system | pkill '[[:alpha:]]*'
+posix finds=stop_system | pkill '[^]a]*'
+posix finds=stop_system | pkill '[[:alpha:]'
+posix finds=stop_system | pkill '(((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))'
+posix finds=stop_system | pkill 'a*|b'
+posix finds=stop_system | pkill -v -u me
+# A part of a system process's name.
+posix finds=stop_system | pkill login
+posix finds=stop_system | pkill ^login
+posix finds=stop_system | pkill '^login'
+posix finds=stop_system | pkill Window
+posix finds=stop_system | pkill launch
+posix finds=stop_system | pkill -f login
+posix finds=stop_system | pkill -9 launch
+posix finds=stop_system | pkill 'hd$'
+posix finds=stop_system | pkill 'kernel_'
+posix finds=stop_system | pkill '^kernel'
+posix finds=stop_system | pkill 'login.*'
+posix finds=stop_system | pkill '.*login.*'
+posix finds=stop_system | pkill '^login.*$'
+posix finds=stop_system | pkill -x 'login.*'
+posix finds=stop_system | pkill 'node|login'
+posix finds=stop_system | pkill '(login)'
+posix finds=stop_system | pkill -f /System/Library/CoreServices/loginw
+posix finds=stop_system | pkill -i server
+posix finds=stop_system | pkill --ignore-case server
+posix finds=stop_system | pkill Server
+posix finds=stop_system | pkill -9 loginwin
+posix finds=stop_system | killall -r login
+posix finds=stop_system | killall -r '^launch'
+posix finds=stop_system | killall -m launch
+posix finds=stop_system | killall -r -I server
+posix finds=stop_system | killall --regexp --ignore-case server
+# A regular expression with syntax is still compared with the system's names.
+posix finds=stop_system | pkill '[l]aunchd'
+posix finds=stop_system | pkill 'log.n'
+posix finds=stop_system | pkill 'W.ndowServer'
+posix finds=stop_system | pkill 'launc.'
+posix finds=stop_system | pkill -x 'launch.'
+posix finds=stop_system | pkill -x '[l]aunchd'
+posix finds=stop_system | pkill 'login(window)?'
+posix finds=stop_system | pkill 'xyz|[l]aunchd'
+posix finds=stop_system | killall -r 'systemd?'
+posix finds=stop_system | killall -m '[l]aunchd'
+posix finds=stop_system | killall -m 'Window.erver'
+posix finds=stop_system | pkill 'a+'
+posix finds=stop_system | pkill '[[:alpha:]]x'
+posix finds=stop_system | pkill '\\blaunchd\\b'
+posix finds=stop_system | pkill '(log|xyz)in'
+posix finds=stop_system | pkill 'l(a|b)unchd'
+posix finds=stop_system | pkill '[[:lower:]]aunchd'
+posix finds=stop_system | pkill -i 'W.NDOWSERVER'
+posix finds=stop_system | pkill -i '[W]indowserver'
+posix finds=stop_system | pkill -f '/sbin/[i]nit'
+posix finds=stop_system | pkill -f 'node /usr/lib/systemd/syst.md'
+posix finds=stop_system | pkill -x '(launch|xyz)d'
+posix finds=stop_system | pkill 'launch\\w'
+posix finds=stop_system | pkill 'l{1}aunchd'
+posix finds=stop_system | pkill 'k.*_task'
+posix finds=stop_system | sudo pkill '[l]aunchd'
+posix finds=stop_system | pkill '/sbin/[i]nit'
+posix finds=stop_system | pkill '^*init'
+posix finds=stop_system | pkill 'zz[[:alpha:]]|init'
+
+# `pkill -f` searches the whole command line, and a system process's is the
+# one it usually runs with; without `-f` only the name is searched.
+posix safe | pkill -9 -f 'python -m http.server'
+posix safe | pkill --full 'java -jar app.jar'
+posix safe | pkill 'WindowServer -daemon'
+posix safe | pkill 'systemd --user'
+posix finds=stop_system | pkill -f /System/Library
+posix finds=stop_system | pkill -f System
+posix finds=stop_system | pkill -f 'WindowServer -daemon'
+posix finds=stop_system | pkill -f 'loginwindow console'
+posix finds=stop_system | pkill -f 'systemd --user'
+posix finds=stop_system | pkill --full /lib/systemd
+posix finds=stop_system | pkill -f '^/sbin/init'
+posix finds=stop_system | pkill -fx '/sbin/launchd'
+posix finds=stop_system | pkill -f 'launchd -x'
+posix finds=stop_system | sudo pkill -f '/usr/lib/systemd'
+# launchd runs `loginwindow console` and `WindowServer -daemon`.
+posix@macos safe | pkill -f 'rails console'
+posix@macos safe | pkill -f 'node console.js'
+posix@macos safe | pkill -f 'node server.js'
+posix@macos finds=stop_system | pkill -f console
+posix@macos finds=stop_system | pkill -f -- -daemon
+posix@macos finds=stop_system | pkill -f daemon
+posix@macos finds=stop_system | pkill -f 'loginwindow console'
+posix@macos finds=stop_system | pkill -f 'WindowServer -daemon'
+posix@macos finds=stop_system | pkill -f 'WindowServer.*daemon'
+posix@macos finds=stop_system | pkill -f /System/Library
+
+# An option that selects by user, group, parent, terminal, session or
+# context, with no name, stops every process it picks; so does `-v` with only
+# a selection. Options are read with their values, by any prefix of a long
+# one that fits, and a capital option's attached value is no signal.
+posix safe | pkill -P $$
+posix safe | pkill -F pids.txt
+posix safe | pkill -P 1 node
+posix safe | pkill -P 12,34
+posix safe | pkill -t pts/1 node
+posix safe | pkill -USR1 node
+posix safe | pkill -USR2 node
+posix safe | pkill -KILL node
+posix safe | pkill -SIGHUP node
+posix safe | pkill -RTMIN+3 node
+posix safe | pkill -P1 node
+posix safe | pkill -U501 node
+posix safe | killall -USR1 node
+posix safe | killall -SIGTERM node
+posix safe | pkill --s KILL node
+posix safe | pkill --pa 1234 node
+posix safe | killall --u me node
+posix safe | killall --us=me node
+posix safe | killall --re 'node.*'
+posix safe | pkill -q 1 node
+posix safe | pkill --queue 1 node
+posix safe | pkill -r R node
+posix safe | pkill --runstates R node
+posix safe | pkill -s 1234
+posix safe | pkill -g 1234
+posix safe | pkill --session 1234
+posix safe | pkill -s 0 node
+posix safe | pkill -g 0 node
+posix safe | pkill -P "$(pgrep -x launchd)" node
+posix safe | killall -Z ctx node
+posix safe | killall --context ctx node
+# psmisc `killall` reads a long option with one dash.
+posix safe | killall -older-than 1h node
+posix safe | killall -signal HUP node
+posix safe | killall -regexp 'node.*'
+
+# Every process of a user or a group.
+posix finds=stop_system | pkill -u me
+posix finds=stop_system | pkill -U me
+posix finds=stop_system | pkill -G staff
+posix finds=stop_system | pkill -HUP -u me
+posix finds=stop_system | pkill -9 -u me
+posix finds=stop_system | pkill -xu me
+posix finds=stop_system | pkill -ume
+posix finds=stop_system | pkill --uid me
+posix finds=stop_system | pkill --euid=me
+posix finds=stop_system | killall -u me
+posix finds=stop_system | killall --user me
+posix finds=stop_system | killall -9 -u me
+# Only a selection: everything it picks.
+posix finds=stop_system | pkill -P 1
+posix finds=stop_system | pkill -P 0
+posix finds=stop_system | pkill -P 1,1234
+posix finds=stop_system | pkill --parent 1
+posix finds=stop_system | pkill --parent=1
+posix finds=stop_system | pkill --older 1
+posix finds=stop_system | pkill --runstates S
+posix finds=stop_system | pkill --cgroup /user.slice
+posix finds=stop_system | pkill --ns 1
+posix finds=stop_system | pkill --env HOME
+posix finds=stop_system | pkill -t ttys000
+posix finds=stop_system | pkill -t pts/1
+posix finds=stop_system | pkill --terminal pts/1
+posix finds=stop_system | killall -Z ctx
+posix finds=stop_system | killall --context ctx
+posix finds=stop_system | killall --cont ctx
+# A selection only known when it runs picks everything.
+posix finds=stop_system | pkill -P "$(pgrep -x launchd)"
+posix finds=stop_system | pkill -P $(cat ppid)
+posix finds=stop_system | pkill -P $PPID
+posix finds=stop_system | pkill --parent $(cat ppid)
+posix finds=stop_system | pkill -s 0
+posix finds=stop_system | pkill -g 0
+posix finds=stop_system | pkill --session 0
+posix finds=stop_system | pkill --pgroup 0
+posix finds=stop_system | pkill -s 1
+posix finds=stop_system | pkill -g 1
+posix finds=stop_system | pkill -s $SID
+posix finds=stop_system | pkill -g $(ps -o pgid= -p 1)
+# The inverse of only a selection: every other process.
+posix finds=stop_system | pkill -v -P 1234
+posix finds=stop_system | pkill -v -P $$
+posix finds=stop_system | pkill -v -F pids.txt
+posix finds=stop_system | pkill --inverse -F pids.txt
+posix finds=stop_system | pkill -v -t ttys000
+posix finds=stop_system | pkill -v -s 1234
+posix finds=stop_system | pkill -v -g 1234
+posix finds=stop_system | pkill -v --older 1
+posix finds=stop_system | pkill --inv -P 99
+posix finds=stop_system | pkill -vP 1234
+posix finds=stop_system | pkill -v
+# An attached value on a capital option is not a signal.
+posix finds=stop_system | pkill -P1
+posix finds=stop_system | pkill -P0
+posix finds=stop_system | pkill -U0
+posix finds=stop_system | pkill -U501
+posix finds=stop_system | pkill -G0
+posix finds=stop_system | pkill -Uno_such_user_zz
+posix finds=stop_system | pkill -U 501
+# A long option by any prefix that fits.
+posix finds=stop_system | pkill --pa 1
+posix finds=stop_system | pkill --par 1
+posix finds=stop_system | pkill --p 1
+posix finds=stop_system | pkill --eu me
+posix finds=stop_system | pkill --ui me
+posix finds=stop_system | pkill --u me
+posix finds=stop_system | pkill --te pts/1
+posix finds=stop_system | pkill --i node
+posix finds=stop_system | pkill --n 1
+posix finds=stop_system | pkill --o 1
+posix finds=stop_system | pkill --ru R
+posix finds=stop_system | pkill --nslist ipc
+posix finds=stop_system | killall --us me
+posix finds=stop_system | killall --u me
+posix finds=stop_system | killall --us=me
+posix finds=stop_system | killall --re .
+posix finds=stop_system | killall --r .
+posix finds=stop_system | killall --reg .
+# An option that takes a value hides no pattern.
+posix finds=stop_system | pkill -q 1 -u me
+posix finds=stop_system | pkill --queue 1 -u me
+posix finds=stop_system | pkill --q 1 -u me
+posix finds=stop_system | pkill -q 1 -P 1
+posix finds=stop_system | pkill -r R
+posix finds=stop_system | pkill --runstates R
+posix finds=stop_system | pkill -O 1
+# psmisc's one-dash long options: the value is not a name, and with no name
+# the filter picks every process it matches.
+posix finds=stop_system | killall -user me
+posix finds=stop_system | killall -context x
+posix finds=stop_system | killall -context=x
+# The long option is read as written, not as letters.
+posix finds=stop_system | killall -ignore-case -r WINDOW
+posix finds=stop_system | killall -ignore-case -regexp window
+posix finds=stop_system | killall -ignore-case -regexp SSH
+# The value is a name to the BSD reading, and the riskier counts.
+posix finds=stop_system | killall -user sshd node
+posix finds=stop_system | killall -user me sshd
+posix finds=stop_system | killall -user me WindowServer
+
+# macOS `killall` and `pkill` stop reading options at the first name, so
+# every later word is a name; GNU `pkill` reads on. Both are judged and the
+# riskier counts. `killall -c` takes a name and `-t` a terminal.
+posix@macos safe | killall node -s HUP
+posix@macos safe | killall -9 node nginx
+posix@macos safe | pkill node -f
+posix@macos safe | pkill vite -9
+posix@macos safe | pkill -f vite --signal HUP
+posix@macos safe | pkill -u me node
+posix@macos safe | pkill -fu me node
+posix@macos safe | killall -v node -u me
+posix@macos safe | killall -c node
+posix@macos safe | killall -t ttys000 node
+posix@macos finds=stop_system | killall node -u loginwindow
+posix@macos finds=stop_system | killall node -s WindowServer
+posix@macos finds=stop_system | killall node -t loginwindow
+posix@macos finds=stop_system | killall -v node -s loginwindow
+posix@macos finds=stop_system | pkill node -u launchd
+posix@macos finds=stop_system | pkill node -t loginwindow
+posix@macos finds=stop_system | pkill node -P loginwindow
+posix@macos finds=stop_system | pkill node -G launchd
+posix@macos finds=stop_system | pkill node -- launchd
+posix@macos finds=stop_system | pkill -- node launchd
+posix@macos finds=stop_system | killall -c loginwindow
+posix@macos finds=stop_system | killall -c WindowServer
+posix@macos finds=stop_system | killall -m -c .
+posix@macos finds=stop_system | killall -t ttys000
+posix@macos finds=stop_system | killall -cloginwindow
+posix@macos finds=stop_unknown | killall -c $NAME
+
+# `systemctl`, `service` and `launchctl` that stop a process the system needs
+# are read through the same list of names; anything else stays safe.
+posix safe | systemctl stop docker
+posix safe | systemctl stop nginx
+posix safe | systemctl stop postgresql.service
+posix safe | systemctl kill docker
+posix safe | systemctl restart sshd
+posix safe | systemctl status systemd-logind
+posix safe | systemctl start systemd-logind
+posix safe | systemctl --user stop dbus
+posix safe | service nginx stop
+posix safe | service sshd status
+posix safe | service nginx $action
+posix finds=stop_system | systemctl stop systemd-logind
+posix finds=stop_system | systemctl stop systemd-logind.service
+posix finds=stop_system | sudo systemctl stop systemd-logind
+posix finds=stop_system | systemctl --system stop systemd-logind
+posix finds=stop_system | systemctl kill systemd-logind
+posix finds=stop_system | systemctl kill -s KILL systemd-logind
+posix finds=stop_system | systemctl stop docker sshd
+posix finds=stop_system | systemctl stop sshd
+posix finds=stop_system | systemctl stop sshd.service
+posix finds=stop_system | systemctl stop ssh
+posix finds=stop_system | systemctl stop dbus
+posix finds=stop_system | service sshd stop
+posix finds=stop_system | service ssh stop
+posix finds=stop_system | service systemd-logind stop
+# An action only known when it runs may be `stop`.
+posix finds=stop_system | service sshd $action
+posix@macos safe | launchctl kill TERM gui/501/com.me.worker
+posix@macos safe | launchctl kill 15 gui/501/com.example.server
+posix@macos safe | launchctl kill $sig gui/501/com.me.worker
+posix@macos safe | launchctl stop com.me.worker
+posix@macos safe | launchctl start com.apple.WindowServer
+posix@macos safe | launchctl list
+posix@macos safe | launchctl print system/com.apple.WindowServer
+posix@macos finds=stop_system | launchctl kill SIGTERM system/com.apple.WindowServer
+posix@macos finds=stop_system | sudo launchctl kill SIGTERM system/com.apple.WindowServer
+posix@macos finds=stop_system | launchctl kill 9 system/com.apple.WindowServer
+posix@macos finds=stop_system | launchctl kill TERM system/com.apple.cfprefsd.xpc.daemon
+posix@macos finds=stop_system | launchctl kill TERM gui/501/com.apple.SystemUIServer.agent
+posix@macos finds=stop_system | launchctl kill TERM system/com.apple.loginwindow.501
+posix@macos finds=stop_system | launchctl kill TERM system/com.openssh.sshd
+posix@macos finds=stop_system | launchctl stop com.apple.WindowServer
+posix@macos finds=stop_system | launchctl stop com.apple.cfprefsd.xpc.daemon
+# A target only known when it runs.
+posix@macos finds=stop_unknown | launchctl kill TERM $target
+posix@macos finds=stop_unknown | launchctl stop "$label"
+
+# A signal to process 0 goes to every process in the caller's own group, the
+# program that ran the line included, and one to a negative id goes to a
+# whole group: both are `stop_system`, as is process 1. An id it cannot read
+# for sure, and the ids a listing, a substitution or a file hands it, may be
+# any process. An ordinary process and a job are safe.
+posix safe | kill 1234
+posix safe | kill 4242
+posix safe | kill -9 4242
+posix safe | kill -TERM 4242
+posix safe | kill -s KILL 4242
+posix safe | kill %1
+posix safe | kill -9 %1
+posix safe | kill -0 4242
+posix safe | kill -0 $pid
+posix safe | kill -s 0 $pid
+posix safe | kill -l -s 9 -1
+posix safe | kill -l
+posix safe | kill -L
+posix safe | kill $!
+posix safe | kill "$!"
+posix safe | kill $$
+posix safe | pgrep -f vite | head -1
+posix safe | lsof -ti:3000
+posix finds=stop_system | kill -9 0
+posix finds=stop_system | kill 0
+posix finds=stop_system | kill -- -1234
+posix finds=stop_system | kill -9 -- -1234
+posix finds=stop_system | kill -s KILL 0
+posix finds=stop_system | kill -n 9 0
+posix finds=stop_system | kill -TERM 0
+posix finds=stop_system | kill -SIGKILL 0
+posix finds=stop_system | kill --signal=KILL 0
+posix finds=stop_system | kill -s KILL -- -5
+posix finds=stop_system | kill -1234
+posix finds=stop_system | kill 4242 0
+posix finds=stop_system | kill 00
+posix finds=stop_system | kill +0
+posix finds=stop_system | sudo kill -9 0
+# (`trap 'kill 0' INT` is in posix.cases.)
+posix finds=stop_system | bash -c 'kill -9 0'
+posix finds=stop_unknown | xargs kill
+posix finds=stop_unknown | kill $pid
+posix finds=stop_unknown | kill -9 $(pgrep node)
+posix finds=stop_unknown | kill 99999999999999999999
+posix finds=stop_unknown | kill 4294967296
+posix finds=stop_unknown | kill '*'
+posix finds=stop_unknown | kill -- -$$
+posix finds=stop_unknown | kill -9 -- -$$
+posix finds=stop_unknown | kill -$$
+posix finds=stop_unknown | kill -9 -$$
+posix finds=stop_unknown | kill -TERM -$$
+posix finds=stop_unknown | kill -s TERM -$$
+posix finds=stop_unknown | sh -c 'kill -- -$$'
+posix finds=stop_unknown | bash -c 'kill -9 -$$'
+posix finds=stop_unknown | trap 'kill -- -$$' EXIT
+posix finds=stop_unknown | trap 'kill -TERM -$$' EXIT
+posix finds=stop_unknown | set -m; kill -- -$$
+posix finds=stop_unknown | kill $PPID
+posix finds=stop_unknown | kill -9 $PPID
+posix finds=stop_unknown | kill -9 "$PPID"
+posix finds=stop_unknown | kill -9 ${PPID}
+# A listing, a substitution or a file.
+posix finds=stop_unknown | kill $(pgrep node)
+posix finds=stop_unknown | kill -9 $(pgrep -f vite)
+posix finds=stop_unknown | kill `pgrep node`
+posix finds=stop_unknown | kill $(lsof -ti:3000)
+posix finds=stop_unknown | kill -9 $(lsof -t -i tcp:3000)
+posix finds=stop_unknown | kill "$(cat app.pid)"
+posix finds=stop_unknown | kill $(< app.pid)
+posix finds=stop_unknown | kill $(jobs -p)
+posix finds=stop_unknown | kill $(pidof node)
+posix finds=stop_unknown | kill ${pids[@]}
+posix finds=stop_unknown | pgrep node | xargs kill
+posix finds=stop_unknown | pgrep node | xargs -r kill -9
+posix finds=stop_unknown | pgrep node | xargs -I{} kill {}
+posix finds=stop_unknown | lsof -t -i :3000 | xargs kill
+posix finds=stop_unknown | ps aux | grep node | awk '{print $2}' | xargs kill
+posix finds=stop_unknown | cat pids.txt | xargs kill
+posix finds=stop_unknown | xargs -a pids.txt kill
+posix finds=stop_unknown | xargs kill < pids.txt
+posix finds=stop_unknown | jobs -p | xargs kill
+posix finds=stop_unknown | for p in $(pgrep node); do kill $p; done
+posix finds=stop_unknown | pgrep node | while read p; do kill $p; done
+posix finds=stop_unknown | while read p; do kill $p; done < pids.txt
+posix finds=stop_unknown | xargs pkill
+
+# A line is signal 0 only when the first word after `kill` is exactly `-0`,
+# `-s 0`, `-n 0` or `--signal=0`, and every later word is a literal positive
+# id, a job, `$!`, `$$`, `$PPID` or a plain variable. Otherwise the shell and
+# the `kill` program may still send a real signal, and the ids are judged.
+posix safe | kill --list
+posix safe | kill -l 9
+# A word after `--` is an id, and `-s` is not a number.
+posix safe | kill -0 4242 -- -s
+posix safe | kill -0 "$pid"
+posix safe | kill -0 4242 4343
+posix safe | kill -0 1
+posix safe | kill -0 %1
+posix safe | kill -0 %%
+posix safe | kill -0 %vim
+posix safe | kill -0 $!
+posix safe | kill -0 $$
+posix safe | kill -0 $PPID
+posix safe | kill -0 "$PPID"
+posix safe | kill -0 ${pid}
+posix safe | kill -0 $pid $other
+posix safe | kill -0 4242 $pid %1
+posix safe | kill -s 0 4242
+posix safe | kill -n 0 4242
+posix safe | kill -n 0 $pid
+posix safe | kill --signal=0 4242
+posix safe | kill --signal=0 $pid
+posix safe | env kill -0 4242
+# The shell keeps reading signal options after the first, the last one
+# winning.
+posix finds=stop_system | kill -s 0 -s KILL -1
+posix finds=stop_system | kill -s 0 -s KILL 1
+posix finds=stop_system | kill -s 0 -s KILL -- -1
+posix finds=stop_system | kill -s 0 -sKILL -1
+posix finds=stop_system | kill -n 0 -n 9 -1
+posix finds=stop_system | kill -0 -s KILL -1
+posix finds=stop_system | kill -0 -s KILL 1
+posix finds=stop_system | kill -s 0 -s KILL 0
+posix finds=stop_system | kill -n 0 -n 9 0
+posix finds=stop_system | kill -0 -s KILL 0
+posix finds=stop_system | kill -0 -sKILL 0
+posix finds=stop_system | kill -0 -n 9 0
+posix finds=stop_system | kill -0 -n9 0
+posix finds=stop_system | kill -00 -s 9 0
+posix finds=stop_system | kill -s 0 -s 9 -- -1234
+posix finds=stop_system | kill -s 0 -s $SIG 0
+# The shells and the BSD program read only the first word as a listing
+# option; later it is an id they skip (zsh warns and goes on), so the ids
+# after it are still killed.
+posix finds=stop_system | kill -9 -l -1
+posix finds=stop_system | kill -s 9 -l -1
+posix finds=stop_system | kill -9 -L -1
+posix finds=stop_system | kill -9 --list -1
+posix finds=stop_system | kill -s KILL --list -- -1
+posix finds=stop_system | kill -9 -l 0
+posix finds=stop_system | kill -TERM -l -1234
+posix finds=stop_system | sudo kill -9 -l -1
+# `--signal` is read anywhere among the options, the last one winning.
+posix finds=stop_system | kill -0 --signal 9 -1
+posix finds=stop_system | kill -0 --signal=KILL -1
+posix finds=stop_system | kill -0 --timeout 1000 KILL -1
+posix finds=stop_system | sudo kill -0 --signal KILL -1
+# The `kill` program reorders its words and reads `-s SIG` and `--signal SIG`
+# after an id, and a later `-1` as the id -1.
+posix finds=stop_system | kill -0 -$$ 1
+posix finds=stop_system | kill -0 -1 -s 9
+posix finds=stop_system | kill -0 4242 -s 9 -1
+posix finds=stop_system | /bin/kill -0 4242 -s 9 -1
+posix finds=stop_system | env kill -0 4242 -s 9 -1
+posix finds=stop_system | xargs kill -0 4242 -s 9 -1
+posix finds=stop_system | sudo kill -0 4242 -s 9 -1
+posix finds=stop_system | sudo kill -0 4242 --signal 9 -1
+posix finds=stop_system | /usr/bin/kill -0 4242 -s KILL 0
+posix finds=stop_system | nohup kill -0 4242 -s 9 -- -1234
+posix finds=stop_system | kill -0 4242 -sKILL -1
+posix finds=stop_system | kill -0 4242 --signal=KILL -1
+posix finds=stop_system | kill -0 %1 -s 9 -1
+posix finds=stop_system | kill -0 $! -s 9 -1
+posix finds=stop_system | kill -0 $$ -s 9 -1
+posix finds=stop_system | kill -0 -$$ -s 9 -1
+posix finds=stop_system | kill -0 4242 $more -1
+# An expansion may hold `-s` and a name, read as an option.
+posix finds=stop_system | kill -0 $X KILL -1
+posix finds=stop_system | kill -0 "$S" -1
+posix finds=stop_system | kill -s 0 $more -- -1
+# A substitution is not a plain word.
+posix finds=stop_unknown | kill -0 "$(cat app.pid)"
+posix finds=stop_unknown | kill -0 $(cat app.pid)
+posix finds=stop_unknown | kill -0 `cat app.pid`
+# Not the plain shape.
+posix finds=stop_system | kill -0 0
+posix finds=stop_system | kill -0 00
+posix finds=stop_system | kill -0 -1
+posix finds=stop_system | kill -0 -4242
+posix finds=stop_system | kill -0 -- 4242 -1
+posix finds=stop_system | kill -0 -- -1
+posix finds=stop_system | kill -s 0 -- -1
+posix finds=stop_system | kill -0 -9 0
+posix finds=stop_system | kill -0 -1234
+posix finds=stop_system | kill -s 0 -$$ -1
+posix finds=stop_system | kill -00 -1
+posix finds=stop_system | kill -s 00 -1
+posix finds=stop_unknown | kill -0 99999999999999999999
+posix finds=stop_system | kill -0 +5 0
+# A signal option, a brace list, a wildcard or another option around an id
+# the line signals.
+posix finds=stop_system | kill -0 -q 1 -s 9 -1
+posix finds=stop_system | kill -0 {-s,KILL} -1
+posix finds=stop_system | kill -0 -{s,}KILL -1
+posix finds=stop_system | kill -0 * -1
+posix finds=stop_system | kill -0 * 1
+posix finds=stop_system | kill -0 {-s,KILL} 1
+posix finds=stop_system | kill -0 ? -1
+posix finds=stop_system | kill -0 [-s]* -1
+posix finds=stop_system | kill -0 4242 -q -s 9 -1
+posix finds=stop_system | kill -0 4242 -s 9 0
+posix finds=stop_system | kill -0 4242 -- -1
+posix finds=stop_system | kill -0 4242 -s9 -1
+posix finds=stop_system | kill -0 4242 --signal 9 -1
+posix finds=stop_system | kill -0 --signal=9 -1
+posix finds=stop_system | kill --signal=0 -s 9 -1
+posix finds=stop_system | kill --signal=0 -1
+posix finds=stop_system | kill --signal=0 {-s,9} -1
+posix finds=stop_system | kill -s 0 {-s,9} -1
+posix finds=stop_system | kill -n 0 * -1
+posix finds=stop_system | kill -n 0 -s 9 0
+posix finds=stop_system | kill -0 ~ -1
+posix finds=stop_unknown | kill -0 $(echo -s 9 -1)
+posix finds=stop_system | kill -0 $((1)) -1
+posix finds=stop_unknown | kill -0 $@
+posix finds=stop_unknown | kill -0 "$@"
+posix finds=stop_unknown | kill -0 $*
+posix finds=stop_unknown | kill -0 ${pid:-0}
+posix finds=stop_unknown | kill -0 ${pid-0}
+posix finds=stop_unknown | kill -0 $pid-1
+posix finds=stop_system | kill -0 $pid ; kill -9 -1
+posix finds=stop_system | sudo kill -0 -q 1 -s 9 -1
+
+# Inline code that signals process 0 or a group is `stop_system`.
+posix finds=stop_system | python3 -c 'import os; os.kill(0, 9)'
+posix finds=stop_system | python3 -c 'import os; os.killpg(0, 9)'
+posix finds=stop_system | python3 -c 'import os; os.kill(-1234, 9)'
+posix finds=stop_system | node -e 'process.kill(0, 9)'
+posix finds=stop_system | node -e 'process.kill(-1234, 9)'
+posix finds=stop_system | deno eval 'Deno.kill(0, "SIGKILL")'
+
+# A fork bomb: a function that starts copies of itself without end, read
+# through quotes and escapes, in a nested function judged on its own.
+posix safe | f() { echo hi; }; f
+posix safe | build() { make & }; build
+posix safe | build() { make | tee log; }; build
+posix safe | f() { g & }; g() { echo hi; }; f
+posix safe | greet() { echo hi; }; greet & greet
+posix safe | :(){ :; }; :
+posix safe | f() { echo hi; g() { echo hi; }; }; f
+posix safe | f() { g() { h & }; }; f
+posix safe | f() { 'g' & }; f
+posix safe | f() { \\g & }; f
+posix safe | f() { echo "f" & }; f
+posix finds=stop_system | :(){ :|:& };:
+posix finds=stop_system | :(){ :|:&};:
+posix finds=stop_system | : () { : | : & } ; :
+posix finds=stop_system | bomb() { bomb | bomb & }; bomb
+posix finds=stop_system | f() { f & }; f
+posix finds=stop_system | f() { f|f& }
+posix finds=stop_system | f() { f | f; }; f
+posix finds=stop_system | f() { echo x | f; }
+posix finds=stop_system | function f { f | f & }; f
+posix finds=stop_system | function f() { f & f & }; f
+posix finds=stop_system | f() { ( f ) & }; f
+posix finds=stop_system | f() { if true; then f & fi; }; f
+posix finds=stop_system | bash -c ':(){ :|:& };:'
+posix finds=stop_system | eval ':(){ :|:& };:'
+# In a nested function.
+posix finds=stop_system | f() { g() { g & }; }
+posix finds=stop_system | f() { echo x; f() { f | f; }; }
+posix finds=stop_system | f() { f & g() { echo hi; }; }
+# Through quotes and escapes.
+posix finds=stop_system | :(){ \\:|\\:& };:
+posix finds=stop_system | f() { "f" | "f" & }; f
+posix finds=stop_system | f() { 'f' & }; f
+posix finds=stop_system | bomb() { b\\omb & }; bomb
+posix finds=stop_system | bomb() { b"om"b | b'omb' & }; bomb
+posix finds=stop_system | f() { \\f & }; f
+
+# An id, a name, a listing or a substitution the guard cannot read is
+# `stop_unknown` and never `stop_system`.
+posix finds=stop_unknown lacks=stop_system | kill $pid
+posix finds=stop_unknown lacks=stop_system | kill $(lsof -ti:3000)
+posix finds=stop_unknown lacks=stop_system | pgrep node | xargs kill
+posix finds=stop_unknown lacks=stop_system | lsof -ti:3000 | xargs kill -9
+posix finds=stop_unknown lacks=stop_system | xargs kill
+posix finds=stop_unknown lacks=stop_system | kill -9 $(pgrep node)
+posix finds=stop_unknown lacks=stop_system | kill "$(cat app.pid)"
+posix finds=stop_unknown lacks=stop_system | sudo kill $pid
+posix finds=stop_unknown lacks=stop_system | kill 99999999999999999999
+posix finds=stop_unknown lacks=stop_system | kill 4294967296
+posix finds=stop_unknown lacks=stop_system | kill '*'
+posix finds=stop_unknown lacks=stop_system | kill 12*
+posix finds=stop_unknown lacks=stop_system | kill {1,2}
+posix finds=stop_unknown lacks=stop_system | kill -s KILL $pid
+posix finds=stop_unknown lacks=stop_system | kill -9 $pid
+# The group of a process the line names with a variable: the guard cannot
+# say it is the caller's own.
+posix finds=stop_unknown lacks=stop_system | kill -- -$$
+posix finds=stop_unknown lacks=stop_system | kill -9 -$$
+posix finds=stop_unknown lacks=stop_system | kill -- -$PPID
+posix finds=stop_unknown lacks=stop_system | killall $NAME
+posix finds=stop_unknown lacks=stop_system | pkill "$PATTERN"
+posix finds=stop_unknown lacks=stop_system | xargs pkill
+posix finds=stop_unknown lacks=stop_system | launchctl stop $label
+posix finds=stop_unknown lacks=stop_system | launchctl kill TERM $target
+
+# A stop that is certain (process 0, a group, process 1, a system process by
+# name, every process, a shutdown) is `stop_system` and never `stop_unknown`.
+posix finds=stop_system lacks=stop_unknown | kill 0
+posix finds=stop_system lacks=stop_unknown | kill -9 0
+posix finds=stop_system lacks=stop_unknown | kill -9 -1234
+posix finds=stop_system lacks=stop_unknown | kill -- -1
+posix finds=stop_system lacks=stop_unknown | kill -- -1234
+posix finds=stop_system lacks=stop_unknown | kill -s KILL -1
+posix finds=stop_system lacks=stop_unknown | kill 1
+posix finds=stop_system lacks=stop_unknown | kill -9 1
+posix finds=stop_system lacks=stop_unknown | trap 'kill 0' INT
+posix finds=stop_system lacks=stop_unknown | bash -c 'kill -9 0'
+posix finds=stop_system lacks=stop_unknown | sudo kill -9 0
+posix finds=stop_system lacks=stop_unknown | pkill loginwindow
+posix finds=stop_system lacks=stop_unknown | killall loginwindow
+posix finds=stop_system lacks=stop_unknown | killall WindowServer
+posix finds=stop_system lacks=stop_unknown | pkill -v node
+posix finds=stop_system lacks=stop_unknown | pkill -u me
+posix finds=stop_system lacks=stop_unknown | pkill -f .
+posix finds=stop_system lacks=stop_unknown | pkill '.*'
+posix finds=stop_system lacks=stop_unknown | killall5
+posix finds=stop_system lacks=stop_unknown | shutdown now
+posix finds=stop_system lacks=stop_unknown | systemctl stop systemd-logind
+posix finds=stop_system lacks=stop_unknown | launchctl kill TERM system/com.apple.WindowServer
+posix finds=stop_system lacks=stop_unknown | :(){ :|:& };:
+
+# A line with a certain stop and an unknown one has both rules.
+posix finds=stop_system,stop_unknown | kill 0; kill $pid
+posix finds=stop_system,stop_unknown | kill $pid 0
+posix finds=stop_system,stop_unknown | kill $pid -1
+posix finds=stop_system,stop_unknown | pkill loginwindow; pkill $NAME
+posix finds=stop_system,stop_unknown | kill $(pgrep node) 1
+powershell finds=stop_system,stop_unknown | Stop-Process -Id 0; Stop-Process -Id $id
+powershell finds=stop_system,stop_unknown | Stop-Process -Name explorer; Stop-Process -Id $id
+
+# A stop the guard cannot read still changes the machine.
+posix effect=changes | kill $pid
+posix effect=changes | kill $(lsof -ti:3000)
+posix effect=changes | pgrep node | xargs kill
+posix effect=changes | lsof -ti:3000 | xargs kill -9
+
+# The rules give a reason a prompt can show.
+posix finds=stop_system reason="stops every process" | pkill -f .
+posix finds=stop_system reason="stops every process of a user" | pkill -u me
+posix finds=stop_system reason="stops a process the system needs" | killall WindowServer
+posix finds=stop_system reason="starts copies of itself without end" | :(){ :|:& };:

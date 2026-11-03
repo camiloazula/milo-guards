@@ -1,11 +1,19 @@
 //! Every kind of key, in the dress it comes in, is found whole: each byte of
 //! the secret is in a span. The tables hold the keys of each provider and
 //! format, where the value of a name ends, spans that overlap and are merged
-//! into one, and values that look like a stand-in but are real.
+//! into one, and values that look like a stand-in but are real. The texts
+//! that hold no value shaped like a real key are in
+//! `tests/cases/found_whole.cases`; what stays here builds such a value in
+//! Rust, so that none sits in the repository.
 
 mod common;
 
 use common::{fill, nothing_wrong, p};
+
+#[test]
+fn every_case() {
+    common::cases::check("found_whole");
+}
 
 #[test]
 fn every_kind_of_key_in_every_dress_is_found_whole() {
@@ -263,82 +271,6 @@ fn every_kind_of_key_in_every_dress_is_found_whole() {
         ),
         &fill("F4keNpmTok3n-0123-abcd", 36),
     );
-    // files of login details, headers and names of a key
-    for (l, t, s) in [
-        (
-            "netrc",
-            "machine api.fake.test login fakeuser password F4kePassw0rdZ",
-            "F4kePassw0rdZ",
-        ),
-        (
-            "netrc multiline",
-            "machine api.fake.test\n  login fakeuser\n  password F4kePassw0rdZ\n",
-            "F4kePassw0rdZ",
-        ),
-        ("pypirc", "[pypi]\nusername = __token__\npassword = pypi-AgEIcHlwaS5vcmcFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFake0123456789\n", "pypi-AgEIcHlwaS5vcmcFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFake0123456789"),
-        (
-            "pypirc plain password",
-            "[pypi]\nusername = fakeuser\npassword = F4kePassw0rdZ\n",
-            "F4kePassw0rdZ",
-        ),
-        (
-            "client_secret azure",
-            "client_secret=F4ke8Q~abcdefghijklmnopqrstuvwxyz0123456",
-            "F4ke8Q~abcdefghijklmnopqrstuvwxyz0123456",
-        ),
-        (
-            "api-key header",
-            "x-api-key: F4keApiKey0123456789abcdef",
-            "F4keApiKey0123456789abcdef",
-        ),
-        (
-            "api_key yaml",
-            "api_key: F4keApiKey0123456789abcdef",
-            "F4keApiKey0123456789abcdef",
-        ),
-        (
-            "apiKey js",
-            "const apiKey = 'F4keApiKey0123456789abcdef';",
-            "F4keApiKey0123456789abcdef",
-        ),
-        (
-            "OPENAI_API_KEY env",
-            "OPENAI_API_KEY=F4keApiKey0123456789abcdef",
-            "F4keApiKey0123456789abcdef",
-        ),
-        // base64-wrapped once
-        (
-            "k8s secret b64 of password",
-            "data:\n  password: RjRrZVBhc3M5d29yZA==\n",
-            "RjRrZVBhc3M5d29yZA==",
-        ),
-        (
-            "card visa",
-            "card 4242 4242 4242 4242 exp",
-            "4242 4242 4242 4242",
-        ),
-    ] {
-        p(&mut bad, l, t, s);
-    }
-    // connection strings
-    for (l, u, s) in [
-        ("pg", "postgres://fakeuser:F4kePass9@db.fake.test:5432/app", "F4kePass9"),
-        ("mysql", "mysql://fakeuser:F4kePass9@db.fake.test/app", "F4kePass9"),
-        ("mongo srv", "mongodb+srv://fakeuser:F4kePass9@cluster0.fake.mongodb.net/?retryWrites=true", "F4kePass9"),
-        ("redis no user", "redis://:F4kePass9@cache.fake.test:6379/0", "F4kePass9"),
-        ("amqp", "amqp://fakeuser:F4kePass9@mq.fake.test:5672/vhost", "F4kePass9"),
-        ("pg pass with %2F", "postgres://fakeuser:F4ke%2FPass9@db.fake.test/app", "F4ke%2FPass9"),
-        ("pg pass with %40", "postgres://fakeuser:F4ke%40Pass9@db.fake.test/app", "F4ke%40Pass9"),
-        ("pg user with %40 (azure)", "postgres://fakeuser%40fakeserver:F4kePass9@fakeserver.postgres.database.azure.com/app", "F4kePass9"),
-        ("pg pass with %23", "postgres://fakeuser:F4ke%23Pass9@db.fake.test/app", "F4ke%23Pass9"),
-        ("pg pass with %3F", "postgres://fakeuser:F4ke%3FPass9@db.fake.test/app", "F4ke%3FPass9"),
-        ("https creds %2F", "https://fakeuser:F4ke%2FPass9@git.fake.test/repo.git", "F4ke%2FPass9"),
-        ("jdbc", "jdbc:postgresql://db.fake.test:5432/app?user=fakeuser&password=F4kePass9", "F4kePass9"),
-        ("ado.net", "Server=tcp:fake.database.windows.net;Database=app;User ID=fakeuser;Password=F4kePass9;Encrypt=true", "F4kePass9"),
-        ("pg kv dsn", "host=db.fake.test user=fakeuser password=F4kePass9 dbname=app", "F4kePass9"),
-        ("pg pass with literal #", "postgres://fakeuser:F4ke#Pass9@db.fake.test/app", "F4ke#Pass9"),
-        ("pg pass with literal ?", "postgres://fakeuser:F4ke?Pass9@db.fake.test/app", "F4ke?Pass9"),
-    ] { p(&mut bad, &format!("conn {l}"), &format!("DATABASE_URL={u}"), s); }
     // provider prefixes
     for (l, key) in [
         (
@@ -387,162 +319,8 @@ fn every_kind_of_key_in_every_dress_is_found_whole() {
 }
 
 #[test]
-fn a_value_is_found_whole_up_to_where_it_ends() {
+fn the_body_of_a_key_is_found_whole() {
     let mut bad = Vec::new();
-    for (l, t, s) in [
-        // escapes that decode to a separator
-        (
-            "%26 in query value",
-            "https://api.fake.test/login?user=me&password=F4kePa%26ss9word&next=/",
-            "F4kePa%26ss9word",
-        ),
-        (
-            "%20 in value",
-            "password=F4kePass9%20more9",
-            "F4kePass9%20more9",
-        ),
-        (
-            "json escaped quote",
-            "{\"password\": \"F4kePass9\\\"tail0123\"}",
-            "F4kePass9\\\"tail0123",
-        ),
-        (
-            "json \\u0022",
-            "{\"password\": \"F4kePass9\\u0022tail0123\"}",
-            "F4kePass9\\u0022tail0123",
-        ),
-        (
-            "alt \\\" and %22",
-            "{\"password\": \"F4ke\\\"Pa%22ss\\\"9w%22ord\"}",
-            "F4ke\\\"Pa%22ss\\\"9w%22ord",
-        ),
-        (
-            "alt %22 unquoted",
-            "password=F4ke%22Pa%22ss9word",
-            "F4ke%22Pa%22ss9word",
-        ),
-        (
-            "generic quoted with newline-escape",
-            "password = \"F4ke\\nPass9word\"",
-            "F4ke\\nPass9word",
-        ),
-        // the dress of a name and its value
-        (
-            "generic yaml single",
-            "db_password: 'F4kePass9'",
-            "F4kePass9",
-        ),
-        (
-            "yaml single quoted '' ",
-            "db_password: 'F4ke''Pass9'",
-            "F4ke''Pass9",
-        ),
-        (
-            "generic env export",
-            "export DB_PASSWORD=F4kePass9",
-            "F4kePass9",
-        ),
-        (
-            "generic --password=",
-            "run --password=F4kePass9 now",
-            "F4kePass9",
-        ),
-        // a character that is no separator of an unquoted value
-        ("pipe", "SECRET=F4kePass9|tail0123", "F4kePass9|tail0123"),
-        ("comma", "SECRET=F4ke,Pass9word", "F4ke,Pass9word"),
-        (
-            "semicolon no pair",
-            "password=F4ke;Pass9word",
-            "F4ke;Pass9word",
-        ),
-        ("amp no pair", "SECRET=F4ke&Pass9word", "F4ke&Pass9word"),
-        (
-            "generic value with ( )",
-            "SECRET=F4ke(Pass9)word",
-            "F4ke(Pass9)word",
-        ),
-        (
-            "generic value with backtick",
-            "SECRET=F4ke`Pass9word",
-            "F4ke`Pass9word",
-        ),
-        // a separator inside quotes or braces
-        (
-            "query & inside quoted value",
-            "?user=me&password=\"F4ke&Pass9=x\"&next=1",
-            "F4ke&Pass9=x",
-        ),
-        (
-            "adonet ; inside quoted pw",
-            "Server=db;User Id=me;Password=\"F4ke;Pass9=x\";Encrypt=true",
-            "F4ke;Pass9=x",
-        ),
-        (
-            "adonet ; inside single-quoted pw",
-            "Server=db;User Id=me;Password='F4ke;Pass9=x';Encrypt=true",
-            "F4ke;Pass9=x",
-        ),
-        (
-            "odbc braces plain",
-            "Driver={SQL};Uid=me;Pwd={F4kePass9};",
-            "F4kePass9",
-        ),
-        (
-            "odbc braces ; inside",
-            "Driver={SQL};Uid=me;Pwd={F4ke;Pass9=x};",
-            "F4ke;Pass9=x",
-        ),
-        // the quote or bracket the name sits in
-        (
-            "unbalanced ( open",
-            "(password=F4kePass9word",
-            "F4kePass9word",
-        ),
-        (
-            "name in json string, escaped quote in value",
-            "[\"password=F4kePa\\\"ss9word\"]",
-            "F4kePa\\\"ss9word",
-        ),
-        (
-            "name in single-quoted, '' in value",
-            "'password=F4kePa''ss9word'",
-            "F4kePa''ss9word",
-        ),
-        (
-            "quoted never closes",
-            "password=\"F4kePass9word and more",
-            "F4kePass9word",
-        ),
-        // the password of an address
-        (
-            "pg %2F",
-            "postgres://fakeuser:F4ke%2FPass9@db.fake.test/app",
-            "F4ke%2FPass9",
-        ),
-        (
-            "pg user %40",
-            "postgres://fakeuser%40fakeserver:F4kePass9@fake.postgres.database.azure.com/app",
-            "F4kePass9",
-        ),
-        (
-            "https %2F",
-            "https://fakeuser:F4ke%2FPass9@git.fake.test/r.git",
-            "F4ke%2FPass9",
-        ),
-        (
-            "pg %2F%40 mix",
-            "postgres://u%40s:F4%2Fke%40Pa%3Ass9@db.fake.test/app",
-            "F4%2Fke%40Pa%3Ass9",
-        ),
-        (
-            "pg password with literal space? no; tab",
-            "postgres://u:F4kePass9@db",
-            "F4kePass9",
-        ),
-    ] {
-        p(&mut bad, l, t, s);
-    }
-    // the body of a key
     p(&mut bad, "pgp comment email", &format!("-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nComment: Fake <fake@example.org>\n\n{}\n=Ab3d\n-----END PGP PRIVATE KEY BLOCK-----", fill("FakeKeyBody0+/", 256)), &fill("FakeKeyBody0+/", 256)[..64]);
     let b = fill("FakeKeyBody0+/", 64);
     p(
@@ -581,12 +359,6 @@ fn spans_that_overlap_are_merged_into_one_that_holds_each_secret_whole() {
     );
     p(
         &mut bad,
-        "email inside pw",
-        "postgres://u:F4ke.me@fake.io@db.fake.test/x",
-        "F4ke.me@fake.io",
-    );
-    p(
-        &mut bad,
         "chain gh + email + ip in pw",
         &format!("password=\"{gh}:me@fake.io:8.8.4.4\""),
         &format!("{gh}:me@fake.io:8.8.4.4"),
@@ -613,100 +385,8 @@ fn spans_that_overlap_are_merged_into_one_that_holds_each_secret_whole() {
 }
 
 #[test]
-fn a_value_that_looks_like_a_stand_in_but_is_real_is_found_whole() {
+fn a_provider_key_with_a_tail_of_low_variety_is_found_whole() {
     let mut bad = Vec::new();
-    for (l, t, s) in [
-        ("Password1", "password=Password1", "Password1"),
-        ("MyPassword!", "password=MyPassword!", "MyPassword!"),
-        ("supersecret42", "secret=supersecret42", "supersecret42"),
-        ("token-8f3a hex", "token=token-8f3a9c2e", "token-8f3a9c2e"),
-        (
-            "token-8f3a long",
-            "token=token-8f3a9c2e7b1d4f60",
-            "token-8f3a9c2e7b1d4f60",
-        ),
-        (
-            "prod_api_key_9X",
-            "api_key=prod_api_key_9Xq",
-            "prod_api_key_9Xq",
-        ),
-        (
-            "prod_api_key long",
-            "api_key=prod_api_key_9XqZwTnV",
-            "prod_api_key_9XqZwTnV",
-        ),
-        (
-            "Secret!Strong",
-            "client_secret: \"MySecret!Strong#Pass\"",
-            "MySecret!Strong#Pass",
-        ),
-        ("P@ssword2024", "DB_PASSWORD=P@ssword2024", "P@ssword2024"),
-        ("Passw0rd!", "password=Passw0rd!", "Passw0rd!"),
-        (
-            "pg Password1",
-            "postgres://admin:Password1@db.fake.test/app",
-            "Password1",
-        ),
-        (
-            "mysecretpassword",
-            "POSTGRES_PASSWORD=mysecretpassword",
-            "mysecretpassword",
-        ),
-        (
-            "secret_key django",
-            "SECRET_KEY = 'django-insecure-secret-key-9x'",
-            "django-insecure-secret-key-9x",
-        ),
-        (
-            "token own + 3 digits",
-            "token=mytoken_A1b2C3zz",
-            "mytoken_A1b2C3zz",
-        ),
-        (
-            "upper snake env",
-            "DB_PASSWORD=K7X_93QZ_M2PL_W8RT",
-            "K7X_93QZ_M2PL_W8RT",
-        ),
-        (
-            "upper snake quoted",
-            "secret: \"QZ7W_P3XK_M2LV_9TRB\"",
-            "QZ7W_P3XK_M2LV_9TRB",
-        ),
-        (
-            "upper snake in pg",
-            "postgres://u:PROD_PW_7X3K@db.fake.test/x",
-            "PROD_PW_7X3K",
-        ),
-        (
-            "upper snake jwt secret",
-            "JWT_SECRET=MY_APP_JWT_KEY_2024",
-            "MY_APP_JWT_KEY_2024",
-        ),
-        ("stem Example", "password=Example#2024", "Example#2024"),
-        ("stem Sample", "password=Sample1234", "Sample1234"),
-        ("stem Todo", "secret=Todo4Ever99", "Todo4Ever99"),
-        ("stem Replace", "token=Replace!Me9x", "Replace!Me9x"),
-        (
-            "stem in pg",
-            "postgres://u:Dummy2024x@db.fake.test/x",
-            "Dummy2024x",
-        ),
-        ("elided real", "password=ab...cd9X", "ab...cd9X"),
-        (
-            "repeated tail pw",
-            "password=Zq9!aaaaaaaaaaaaaaaaaa",
-            "Zq9!aaaaaaaaaaaaaaaaaa",
-        ),
-        ("mask-ish pw", "password=-_-_-_-_", "-_-_-_-_"),
-        (
-            "long low variety key",
-            "api_key=a1b2c3a1b2c3a1b2c3a1b2c3",
-            "a1b2c3a1b2c3a1b2c3a1b2c3",
-        ),
-    ] {
-        p(&mut bad, l, t, s);
-    }
-    // provider rows with low variety tails
     for (l, tail) in [
         ("ghp low variety tail", "ab12"),
         ("ghp 5 distinct tail", "abc12"),

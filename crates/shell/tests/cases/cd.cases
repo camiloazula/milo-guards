@@ -1,0 +1,176 @@
+# Where a `cd`, `pushd` or cmd `cd` leaves the line, so the line that follows
+# is judged from there. The format is in CONTRIBUTING.md.
+
+# A machine whose working directory is on `C:` and whose workspaces are on
+# `C:` and `D:`.
+paths two_drives cwd=C:\\Users\\me\\repo home=C:\\Users\\me workspace=C:\\Users\\me\\repo workspace=D:\\ws
+# A working directory on no drive.
+paths share cwd=\\\\host\\share\\repo home=C:\\Users\\me workspace=D:\\ws
+# A working directory on `D:`.
+paths on_d cwd=D:\\work\\repo home=D:\\Users\\me workspace=D:\\work\\repo
+# A working directory that is the home folder.
+paths at_home cwd=C:\\Users\\me home=C:\\Users\\me workspace=C:\\Users\\me\\repo
+
+# An option of pushd is not the folder it moves to.
+# `-n` only changes the stack: what follows runs where the line began.
+posix safe | pushd -n ~/.ssh && cat id_rsa
+posix safe | pushd -n /etc && cat shadow
+posix safe | pushd -n ~
+posix safe | pushd -n
+posix safe | pushd -nP ~/.ssh && cat README.md
+posix safe | pushd -n -P ~/.ssh && cat README.md
+posix safe | pushd -n -- ~/.ssh && cat README.md
+posix safe | pushd -n +1 && cat README.md
+posix safe | pushd -n $dir && cat README.md
+posix finds=read_secret | pushd -P ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -L ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -PL ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -P -L ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -P ~/.ssh; cat id_rsa
+posix finds=read_secret | pushd -P -- ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -- ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -P ~/.ssh >/dev/null; cat id_rsa
+posix finds=read_secret | pushd -P ~/.aws && cat credentials
+posix finds=read_secret | pushd ~/.ssh && cat id_rsa
+posix finds=read_secret | cd -P ~/.ssh && cat id_rsa
+posix finds=read_secret | pushd -L /etc && cat shadow
+posix finds=read_secret | pushd -P /etc && cat shadow
+
+# The line after pushd is read from where pushd leaves it (the paths it lists
+# are in cd.rs).
+posix effect=reads_workspace | pushd -n ~/.ssh && cat id_rsa
+posix effect=reads_workspace | pushd -n ~
+posix effect=reads_workspace | pushd -P src && cat a.rs
+posix effect=reads_workspace | pushd -P src && cat ../x
+# `cat ../../x` from `src` reads outside the workspace.
+posix effect=reads_beyond | pushd -P src && cat ../../x
+posix effect=reads_beyond | pushd -L src && cat ../../x
+posix effect=reads_beyond | pushd -P ~/.ssh && cat id_rsa
+# An option the guard does not know: nothing says where these go, so what
+# follows is judged from nowhere known, never from a folder named for the
+# option, and no path is listed.
+posix effect=unknown | pushd -q ~/.ssh && cat id_rsa
+posix effect=unknown | pushd -s ~/.ssh && cat id_rsa
+posix effect=unknown | pushd --help && cat id_rsa
+posix effect=unknown | pushd --foo ~/.ssh && cat id_rsa
+posix effect=unknown | pushd -P -q ~/.ssh && cat id_rsa
+posix effect=unknown | pushd -Pq ~/.ssh && cat id_rsa
+posix effect=unknown | pushd +1 && cat id_rsa
+posix effect=unknown | pushd -1 && cat id_rsa
+posix effect=unknown | pushd - && cat id_rsa
+posix effect=unknown | pushd && cat id_rsa
+posix effect=unknown | pushd -P && cat id_rsa
+posix effect=unknown | pushd -P $dir && cat id_rsa
+posix effect=unknown | pushd $opt ~/.ssh && cat id_rsa
+posix effect=unknown | pushd -- && cat id_rsa
+
+# A cmd cd to another drive moves the line only with /d.
+# With `/d`, or on the same drive, the line moves.
+cmd@two_drives safe | cd /d D:\\ws\\a & rd /s /q b
+cmd@two_drives safe | cd /D D:\\ws\\a & rd /s /q b
+cmd@two_drives safe | chdir /d D:\\ws\\a & rd /s /q b
+cmd@two_drives safe | cd /d D:\\ws\\a & cd D:\\ws\\a\\b & rd /s /q c
+cmd@two_drives safe | cd C:\\Users\\me\\repo\\a & rd /s /q b
+cmd@two_drives safe | cd c:\\Users\\me\\repo\\a & rd /s /q b
+cmd@two_drives safe | cd sub & del *.obj
+cmd@two_drives safe | cd sub\\deep & rd /s /q build
+cmd@two_drives safe | pushd D:\\ws\\a & rd /s /q b
+cmd@two_drives safe | D: & cd D:\\ws\\a & rd /s /q b
+# A drive alone without `/d` shows its folder and moves nothing.
+cmd@two_drives safe | cd D: & del *.obj
+cmd@two_drives safe | cd C: & del *.obj
+# Without `/d` the line stays where it was.
+cmd@two_drives finds=delete | cd D:\\ws\\a\\b\\c & rd /s /q ..\\..
+cmd@two_drives finds=delete | chdir D:\\ws\\a\\b\\c & rd /s /q ..\\..
+cmd@two_drives finds=delete | cd d:\\ws\\a\\b\\c & rd /s /q ..\\..
+cmd@two_drives finds=delete | cd D:\\ws\\a & rd /s /q ..\\..\\..\\Users
+# It stays on the first drive, so the folder is judged there.
+cmd@two_drives finds=delete | cd /d D:\\ws\\a & cd C:\\x & rd /s /q ..\\..
+cmd@two_drives finds=delete | cd D:\\ws\\a & cd C:\\x & rd /s /q ..\\..
+# With `/d`, or on the same drive, a `..` goes up from where it moved.
+cmd@two_drives finds=delete | cd /d D:\\ws\\a & rd /s /q ..\\..
+cmd@two_drives finds=delete | cd /d D:\\ws\\a & rd /s /q ..\\..\\..
+cmd@two_drives finds=delete | cd C:\\Users\\me\\repo\\sub & rd /s /q ..\\..
+cmd@two_drives finds=delete | cd /d D:\\ws\\a & cd D:\\ws\\a\\b & rd /s /q ..\\..
+cmd@two_drives finds=delete | pushd D:\\ws\\a\\b\\c & rd /s /q ..\\..\\..\\..
+cmd@two_drives finds=delete | cd /d D: & del *.obj
+# Each really deletes under `C:\Windows`: the move to `D:` does not run (a
+# branch that is not taken, a pipe stage, `start`) or fails, so the
+# `cd C:\Windows` that follows really moves the line.
+cmd@two_drives finds=delete | ver || cd /d D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | dir q && cd /d D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | if exist q (cd /d D:\\ws\\a) & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | (if exist q cd /d D:\\ws\\a) & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | ver | cd /d D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | start cd /d D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | ver || pushd D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | ver || D: & cd D:\\ws\\a & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | cd /d D:\\ws\\nonexist & cd C:\\Windows & rd /s /q System32
+cmd@two_drives finds=delete | pushd D:\\ws\\a & cd C:\\Windows & del /q System32\\x.dll
+cmd@two_drives finds=delete | cd /d D:\\ws\\a & cd C:\\Users\\me\\repo\\x & rd /s /q b
+
+# A cmd cd that may have changed the drive leaves the place unknown.
+# `/d` that is not first, or glued to the path: whether cmd reads it is not
+# known.
+cmd@two_drives finds=delete | cd D:\\ws\\a /d & rd /s /q b
+cmd@two_drives finds=delete | cd /dD:\\ws\\a & rd /s /q b
+# The drive the line is on is not known after `popd`, a path only known when
+# it runs, or a program only known when it runs.
+cmd@two_drives finds=delete | popd & cd D:\\ws\\a & rd /s /q b
+cmd@two_drives finds=delete | cd %X% & cd D:\\ws\\a & rd /s /q b
+cmd@two_drives finds=delete | %X% & cd D:\\ws\\a & rd /s /q b
+# A working directory on no drive: the drive the line is on is not known.
+cmd@share finds=delete | cd D:\\ws\\a & rd /s /q b
+
+# A drive-relative path is unknown in cmd, on the drive the line is on and on
+# another one.
+cmd@two_drives finds=delete | del C:x
+cmd@two_drives finds=delete | rd /s /q C:x
+cmd@two_drives finds=delete | del C:*.obj
+cmd@two_drives finds=delete | del C:..\\x
+cmd@two_drives finds=delete | del C:
+cmd@two_drives finds=delete | del D:x
+cmd@two_drives finds=delete | rd /s /q D:b
+cmd@two_drives finds=delete | del D:..\\x
+cmd@two_drives finds=delete | del D:
+cmd@two_drives finds=delete | cd sub & del C:x
+cmd@two_drives finds=delete | cd D:\\ws\\a & del D:x
+cmd@two_drives finds=delete | cd D:\\ws\\a & rd /s /q D:b
+cmd@two_drives finds=delete | cd D:\\ws\\a && rd /s /q D:b
+cmd@two_drives finds=delete | (cd D:\\ws\\a) & rd /s /q D:b
+cmd@two_drives finds=delete | (cd D:\\ws\\a & rd /s /q D:b)
+cmd@two_drives finds=delete | cd D:\\ws\\a && echo ok & rd /s /q D:b
+cmd@two_drives finds=delete | dir x & cd D:\\ws\\a & rd /s /q D:b
+# A write is as unknown as a delete.
+cmd@two_drives finds=overwrite | echo hi >> C:x
+cmd@two_drives finds=overwrite | echo hi > D:x
+# The working directory is on `D:`.
+cmd@on_d safe | del *.obj
+cmd@on_d finds=delete | del D:*.obj
+cmd@on_d finds=delete | del D:x
+cmd@on_d finds=delete | rd /s /q C:x
+# What the guard reads from the line's own folder when it matters is still
+# judged as it lands: a key is a key.
+cmd@at_home finds=read_secret | type C:..\\..\\.ssh\\config
+cmd@at_home finds=read_secret | type C:..\\..\\.ssh\\id_rsa
+
+# A cmd cd with more than one word goes to the words joined as written.
+cmd@two_drives safe | cd My Folder & del *.obj
+cmd@two_drives safe | chdir My Folder & del *.obj
+cmd@two_drives safe | pushd My Folder & del *.obj
+cmd@two_drives safe | cd /d My Folder & del *.obj
+cmd@two_drives safe | cd My  Folder   & del *.obj
+cmd@two_drives safe | cd a b c & del *.obj
+cmd@two_drives safe | cd My Folder\\sub & del x
+# The spaces are part of the name, so `..` goes up from it.
+cmd@two_drives safe | cd x y\\.. & del z
+cmd@two_drives safe | cd x %USERPROFILE%\\.. & del z
+cmd@two_drives finds=delete | cd x y\\..\\..\\.. & del z
+cmd@two_drives finds=delete | cd /d x y\\..\\..\\.. & del z
+cmd@two_drives finds=delete | pushd x y\\..\\..\\.. & del z
+cmd@two_drives finds=delete | cd x y\\..\\.. & del z
+# A word only known when it runs, or a later `/d`, leaves the folder unknown.
+cmd@two_drives finds=delete | cd x %X% & del z
+cmd@two_drives finds=delete | cd %X% y & del z
+cmd@two_drives finds=delete | cd My Folder %X% & del *.obj
+cmd@two_drives finds=delete | cd My /d Folder & del z

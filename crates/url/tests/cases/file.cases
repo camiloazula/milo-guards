@@ -1,0 +1,76 @@
+# A `file:` URL is always a finding; where its path lands only sharpens the
+# words, and the path is placed through core's resolver like any other. A
+# URL is judged on `posix` unless the case names its paths.
+
+# A file URL says where its path lands.
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your AWS credentials" | file:///home/me/.aws/credentials
+rules=local_file first=local_file reason="reads a path inside the workspace" | file:///home/me/work/repo/src/main.rs
+rules=local_file first=local_file reason="reads the repository's history" | file:///home/me/work/repo/.git/config
+rules=local_file first=local_file reason="reads a path outside the workspace" | file:///home/me/notes.txt
+rules=local_file first=local_file reason="reads your home directory" | file:///home/me
+rules=local_file first=local_file reason="reads a temporary file" | file:///tmp/x.txt
+rules=local_file first=local_file reason="reads a system folder" | file:///etc/passwd
+rules=local_file first=local_file reason="reads the root of the disk" | file:///
+
+# A file URL is a finding even inside the workspace.
+finds=local_file | file:///home/me/work/repo/README.md
+finds=local_file | file:///tmp/x
+finds=local_file | file:///dev/null
+
+# The path is judged after escapes and dot segments, and the target is the
+# path.
+rules=local_file first=local_file reason="reads your SSH keys" | FILE:///home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | File:///home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:/home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file://localhost/home/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh//id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/./.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" target="/home/me/.ssh/id_rsa" | file:///home/me/.ssh/../.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/work/repo/../../.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/%2essh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh/%69d_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/%2e%2e/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/%2E%2E/me/.ssh/id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh%2fid_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh%2Fid_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh\\id_rsa
+rules=local_file first=local_file reason="reads your SSH keys" | \sfile:///home/me/.ssh/id_rsa\s
+rules=local_file first=local_file target="/home/me/a b.txt" | file:///home/me/a%20b.txt
+
+# The words are core's, and a file URL is a finding whatever they are: core
+# compares the SSH folder's name without case on every host.
+rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.SSH/id_rsa
+rules=local_file first=local_file reason="reads a path outside the workspace" | file:///home/me/.sshx/id_rsa
+
+# A path that is not what it reads as is known only when it runs.
+rules=local_file first=local_file reason="reads a path only known when it runs" target="/home/me/.ssh\u{fffd}/id_rsa" | file:///home/me/.ssh%00/id_rsa
+
+# A macOS home is the same.
+@macos rules=local_file first=local_file reason="reads your SSH keys" | file:///Users/me/.ssh/id_rsa
+@macos rules=local_file first=local_file reason="reads a path inside the workspace" | file:///Users/me/dev/repo/x.rs
+
+# A Windows path is read as one; `repo/..` is `dev`, a sibling of the SSH
+# folder, not the folder.
+@windows rules=local_file first=local_file reason="reads your SSH keys" | file:///C:/Users/me/.ssh/id_rsa
+@windows rules=local_file first=local_file reason="reads your SSH keys" | file:///c:/users/me/.ssh/id_rsa
+@windows rules=local_file first=local_file reason="reads your SSH keys" | file:///C|/Users/me/.ssh/id_rsa
+@windows rules=local_file first=local_file reason="reads your SSH keys" | file:///C:\\Users\\me\\.ssh\\id_rsa
+@windows rules=local_file first=local_file reason="reads a path inside the workspace" | file:///C:/Users/me/dev/repo/src/x.rs
+@windows rules=local_file first=local_file reason="reads the Windows account database" | file:///C:/Windows/System32/config/SAM
+@windows rules=local_file first=local_file reason="reads a system folder" | file:///C:/Windows/System32/notepad.exe
+@windows rules=local_file first=local_file reason="reads a path outside the workspace" | file:///C:/Users/me/dev/repo/../.ssh/id_rsa
+
+# What the caller gates with is read in its words.
+paths agent base=posix folder=/home/me/.agent words="the agent's settings"
+@agent rules=local_file first=local_file reason="reads the agent's settings" | file:///home/me/.agent/config.yaml
+@agent rules=local_file first=local_file reason="reads a path inside the workspace" | file:///home/me/work/repo/src/x.rs
+
+# A file on another machine is named so, and its host is judged; and
+# `file://user@host/` is not a URL.
+rules=local_file,local_address first=local_file reason="reads a file from another machine" | file://127.0.0.1/etc/passwd
+finds=local_address reason="fetches your own machine" | file://127.0.0.1/etc/passwd
+@windows first=local_file reason="reads a file from another machine" | file://server/share/x
+@windows first=local_file reason="reads a file from another machine" | file://evil.example.com/share/x
+first=unreadable | file://user@host/x

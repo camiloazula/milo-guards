@@ -1,0 +1,368 @@
+# Files a tool runs on its own, as the path model says it: a write into one
+# (`into`, `Resolver::place_into`) is `Sensitive` with the kind `Startup`,
+# found at any depth in a workspace folder (`startup`, and `below` for a
+# folder that can hold one); `place`, which a read or a delete asks, still
+# says the workspace's own. Each case is a spelling a review could try.
+
+# A write into one is sensitive, and everything else is unchanged: a read, a
+# delete and a move ask `place`, and `place_hidden`.
+posix into="startup:a file a tool runs on its own" place=inside place_hidden=inside | .envrc
+posix into="startup:a file a tool runs on its own" place=inside place_hidden=inside | .vscode/tasks.json
+posix into="startup:a file a tool runs on its own" place=inside place_hidden=inside | .github/workflows/ci.yml
+posix into="startup:a file a tool runs on its own" place=inside place_hidden=inside | .husky/pre-commit
+posix into="startup:a file a tool runs on its own" place=inside place_hidden=inside | src/deep/.envrc
+posix into=inside | Makefile
+posix into=inside | justfile
+posix into=inside | package.json
+posix into=inside | src/main.rs
+
+# Only a workspace's own paths are one: what a write into another is, is what
+# it was.
+posix into="history:the repository's history" place="history:the repository's history" startup=none below=none | .git/.envrc
+posix into="history:the repository's history" place="history:the repository's history" startup=none below=none | .git/hooks/pre-commit
+posix into=outside place=outside startup=none below=none | /home/me/other/.envrc
+posix into=outside place=outside startup=none below=none | /home/me/.envrc
+posix into=in_temp place=in_temp startup=none below=none | /tmp/x/.envrc
+posix into="top:a system folder" place="top:a system folder" startup=none below=none | /etc/.envrc
+posix into="secret:your SSH keys" place="secret:your SSH keys" startup=none below=none | /home/me/.ssh/.envrc
+posix into="startup:a shell startup file" place="startup:a shell startup file" startup=none below=none | /home/me/.bashrc
+
+# A POSIX machine finds every spelling.
+posix startup="a file a tool runs on its own" | .envrc
+posix startup="a file a tool runs on its own" | ./.envrc
+posix startup="a file a tool runs on its own" | src/../.envrc
+posix startup="a file a tool runs on its own" | .//.envrc
+posix startup="a file a tool runs on its own" | /home/me/work/repo/.envrc
+posix startup="a file a tool runs on its own" | /home/me/work/./repo/.envrc
+posix startup="a file a tool runs on its own" | ../repo/.envrc
+posix startup="a file a tool runs on its own" | .vscode//tasks.json
+posix startup="a file a tool runs on its own" | .vscode/./tasks.json
+posix startup="a file a tool runs on its own" | .vscode/x/../tasks.json
+posix startup="a file a tool runs on its own" | .github/workflows/
+posix startup="a file a tool runs on its own" | .github/workflows/a/b/c/d.yml
+posix startup="a file a tool runs on its own" | a/b/c/.vscode/launch.json
+posix startup="a file a tool runs on its own" | a/.cursor/mcp.json
+posix startup="a file a tool runs on its own" | a/.mcp.json
+posix startup="a file a tool runs on its own" | .ENVRC
+posix startup="a file a tool runs on its own" | .VSCODE/TASKS.JSON
+posix startup="a file a tool runs on its own" | jenkinsfile
+posix startup="a file a tool runs on its own" | LeftHook-Local.YAML
+posix startup="a file a tool runs on its own" | lefthoo\u{212a}.yml
+# A backslash is part of a name on POSIX.
+posix startup=none | .vscode\\tasks.json
+posix startup=none | .github\\workflows\\ci.yml
+# Near misses are plain names.
+posix startup=none | .envrcx
+posix startup=none | x.envrc
+posix startup=none | .env
+posix startup=none | .vscode
+posix startup="a file a tool runs on its own" | .vscode/settings.json
+posix startup=none | .vscode/extensions.json
+posix startup=none | .vscodex/tasks.json
+posix startup=none | .github
+posix startup=none | .github/workflows-old/x
+posix startup=none | .githubx/workflows/x
+posix startup=none | .husky-x/x
+posix startup=none | workflows/ci.yml
+posix startup=none | Makefile
+posix startup=none | justfile
+posix startup=none | package.json
+posix startup=none | .cargo/config.toml
+# A Windows short name is a plain name on POSIX.
+posix startup=none | VSCODE~1/TASKS~1.JSO
+posix startup=none | ENVRC~1
+
+# A Mac reads its links and its fold.
+posix@macos startup="a file a tool runs on its own" | .envrc
+posix@macos startup="a file a tool runs on its own" | .ENVRC
+posix@macos startup="a file a tool runs on its own" | /Users/me/dev/repo/.envrc
+posix@macos startup="a file a tool runs on its own" | /System/Volumes/Data/Users/me/dev/repo/.envrc
+posix@macos startup="a file a tool runs on its own" | /Volumes/Macintosh HD/Users/me/dev/repo/.vscode/tasks.json
+posix@macos startup="a file a tool runs on its own" | /Volumes/Macintosh HD - Data/Users/me/dev/repo/.github/workflows/x
+posix@macos startup="a file a tool runs on its own" | ../../../../System/Volumes/Data/Users/me/dev/repo/.envrc
+posix@macos startup="a file a tool runs on its own" | .v\u{17f}code/tasks.json
+posix@macos startup=none | /users/ME/dev/repo/.envrc
+posix@macos startup=none | /Users/me/other/.envrc
+posix@macos startup=none | Makefile
+
+# Windows reads every spelling as one name.
+windows startup="a file a tool runs on its own" | .envrc
+windows startup="a file a tool runs on its own" | .vscode\\tasks.json
+windows startup="a file a tool runs on its own" | .vscode/tasks.json
+windows startup="a file a tool runs on its own" | .vscode\\/tasks.json
+windows startup="a file a tool runs on its own" | .vscode\\\\tasks.json
+windows startup="a file a tool runs on its own" | C:\\Users\\me\\dev\\repo\\.envrc
+windows startup="a file a tool runs on its own" | c:\\users\\ME\\dev\\REPO\\.ENVRC
+windows startup="a file a tool runs on its own" | \\\\?\\C:\\Users\\me\\dev\\repo\\.envrc
+windows startup="a file a tool runs on its own" | \\Users\\me\\dev\\repo\\.envrc
+windows startup="a file a tool runs on its own" | C:.envrc
+windows startup="a file a tool runs on its own" | .envrc.
+windows startup="a file a tool runs on its own" | .envrc\s
+windows startup="a file a tool runs on its own" | .vscode.\\tasks.json
+windows startup="a file a tool runs on its own" | .github.\\workflows.\\x.yml
+windows startup="a file a tool runs on its own" | .ENVRC
+windows startup="a file a tool runs on its own" | .GITHUB\\WORKFLOWS\\X.YML
+windows startup="a file a tool runs on its own" | ENVRC~1
+windows startup="a file a tool runs on its own" | VSCODE~1\\TASKS~1.JSO
+windows startup="a file a tool runs on its own" | VSCODE~1\\tasks.json
+windows startup="a file a tool runs on its own" | GITHUB~1\\WORKFL~1\\x.yml
+windows startup="a file a tool runs on its own" | GITHUB~1\\ACTION~1\\x\\a.yml
+windows startup="a file a tool runs on its own" | HUSKY~1\\pre-commit
+windows startup="a file a tool runs on its own" | GITLAB~1.YML
+windows startup="a file a tool runs on its own" | LEFTHO~1.YML
+windows startup="a file a tool runs on its own" | JENKIN~1
+windows startup="a file a tool runs on its own" | VS1A2B~1\\tasks.json
+windows startup="a file a tool runs on its own" | src\\ENVRC~1
+# What Windows cannot read to a name is `Unknown`, not one.
+windows startup=none | .vscode\\tasks.json::$DATA
+windows startup=none | .envrc:s
+windows startup=none | D:.envrc
+windows startup=none | .github\\workflows\\x \\y.yml
+# Plain names.
+windows startup=none | PROGRA~1
+windows startup=none | ENVRCX~1
+windows startup="a file a tool runs on its own" | VSCODE~1\\SETTIN~1.JSO
+windows startup=none | VSCODE~1\\EXTENS~1.JSO
+windows startup="a file a tool runs on its own" | .vscode\\settings.json
+windows startup=none | .vscode\\extensions.json
+windows startup=none | Makefile
+windows startup=none | C:\\Users\\me\\other\\.envrc
+
+# A folder that holds one counts for a write that can replace what is below.
+# The place itself.
+posix below="a file a tool runs on its own" | .github/workflows
+posix below="a file a tool runs on its own" | .vscode/tasks.json
+# A folder that ends in the first names of one.
+posix below="a file a tool runs on its own" | .github
+posix below="a file a tool runs on its own" | .vscode
+posix below="a file a tool runs on its own" | .idea
+posix below="a file a tool runs on its own" | .cursor
+posix below="a file a tool runs on its own" | sub/.github
+posix below="a file a tool runs on its own" | sub/.vscode/
+posix below="a file a tool runs on its own" | ./.GitHub
+posix below="a file a tool runs on its own" | src/../.idea
+# Not one: the workspace and any folder can hold one, which a name cannot
+# tell.
+posix below=none | .
+posix below=none | /home/me/work/repo
+posix below=none | src
+posix below=none | dist
+posix below=none | .config
+posix below=none | .vscodex
+posix below=none | .github-x
+posix below=none | workflows
+posix below=none | /tmp/x/.github
+posix below=none | /home/me/other/.github
+windows below="a file a tool runs on its own" | .github
+windows below="a file a tool runs on its own" | GITHUB~1
+windows below="a file a tool runs on its own" | VSCODE~1
+windows below="a file a tool runs on its own" | .GITHUB.
+windows below="a file a tool runs on its own" | sub\\.vscode
+windows below=none | src
+windows below=none | PROGRA~1
+
+# A pattern that can pick one is one. Below a folder on the list.
+posix startup="a file a tool runs on its own" | .github/workflows/*
+posix startup="a file a tool runs on its own" | .github/workflows/*.yml
+posix startup="a file a tool runs on its own" | .github/workflows/c?.yml
+posix startup="a file a tool runs on its own" | .github/workflows/[c]i.yml
+posix startup="a file a tool runs on its own" | .husky/*
+posix startup="a file a tool runs on its own" | sub/.husky/pre-*
+posix startup="a file a tool runs on its own" | .devcontainer/*
+posix startup="a file a tool runs on its own" | .circleci/*
+# A pattern that picks the last names of one.
+posix startup="a file a tool runs on its own" | .vscode/*.json
+posix startup="a file a tool runs on its own" | .vscode/*
+posix startup="a file a tool runs on its own" | .vscode/t*
+posix startup="a file a tool runs on its own" | .vscode/[t]asks.json
+posix startup="a file a tool runs on its own" | .vscode/?asks.json
+posix startup="a file a tool runs on its own" | .cursor/mcp.*
+posix startup="a file a tool runs on its own" | .github/*/ci.yml
+posix startup="a file a tool runs on its own" | .github/*
+posix startup="a file a tool runs on its own" | src/.vscode/*.json
+# A pattern that names one by a part that is more than stars.
+posix startup="a file a tool runs on its own" | *.yml
+posix startup="a file a tool runs on its own" | src/*.yml
+posix startup="a file a tool runs on its own" | lefthook.*
+posix startup="a file a tool runs on its own" | Jenkins*
+posix startup="a file a tool runs on its own" | */Jenkinsfile
+posix startup="a file a tool runs on its own" | **/Jenkinsfile
+posix startup="a file a tool runs on its own" | src/**/Jenkinsfile
+# Wildcards alone take what the folder holds, which is its own.
+posix startup=none | *
+posix startup=none | src/*
+posix startup=none | src/*/*
+posix startup=none | src/**
+posix startup=none | **/*
+posix startup=none | src/?*
+# Patterns that cannot pick one.
+posix startup=none | *.rs
+posix startup=none | src/*.js
+posix startup=none | *.md
+posix startup=none | *.json
+posix startup="a file a tool runs on its own" | *.toml
+posix startup="a file a tool runs on its own" | .vscode/s*
+posix startup=none | .vscode/e*
+posix startup=none | .vscode/*.txt
+posix startup=none | .github/*.md
+posix startup=none | .github/ISSUE_*/*
+posix startup=none | lefthook.y
+posix startup=none | Makefile*
+posix startup=none | justfil?
+posix startup=none | package.*
+
+# A pattern whose first part starts with a dot can pick `.git`, so it is
+# already the repository's history at the workspace root and below it: what
+# it is says so, and nothing is added.
+posix into="history:a hidden file such as the repository's history" startup=none | .env*
+posix into="history:a hidden file such as the repository's history" startup=none | .?nvrc
+posix into="history:a hidden file such as the repository's history" startup=none | .e*
+posix into="history:a hidden file such as the repository's history" startup=none | */.envrc
+posix into="history:a hidden file such as the repository's history" startup=none | .*/mcp.json
+posix into="history:a hidden file such as the repository's history" startup=none | .*/tasks.json
+posix into="history:a hidden file such as the repository's history" startup=none | src/.env*
+
+# A wildcard picks a leading dot where the shell says so.
+posix startup=none | */tasks.json
+posix hidden startup="a file a tool runs on its own" | */tasks.json
+posix startup=none | */*.json
+posix hidden startup="a file a tool runs on its own" | */*.json
+posix hidden startup="a file a tool runs on its own" | *.json
+posix startup=none | [.]envrc
+posix hidden startup="a file a tool runs on its own" | [.]envrc
+posix hidden startup="a file a tool runs on its own" | .vscode/[t]asks.json
+posix startup=none | */mcp.json
+posix hidden startup="a file a tool runs on its own" | */mcp.json
+posix hidden startup=none | *
+# On Windows a wildcard always matches a leading dot.
+windows startup="a file a tool runs on its own" | *.json
+windows startup="a file a tool runs on its own" | *.yml
+windows startup="a file a tool runs on its own" | *\\tasks.json
+windows startup="a file a tool runs on its own" | *\\*.json
+windows startup="a file a tool runs on its own" | .vscode\\*.json
+windows startup="a file a tool runs on its own" | GITHUB~1\\workflows\\*
+windows startup="a file a tool runs on its own" | VSCODE~*\\tasks.json
+windows startup="a file a tool runs on its own" | VSCODE~1\\*
+windows startup=none | *.rs
+windows startup=none | *
+windows startup=none | src\\*
+
+# A pattern that goes below a folder by a `..` is read where it lands.
+posix startup="a file a tool runs on its own" | src/*/../../.envrc
+posix startup="a file a tool runs on its own" | src/*/../../.vscode/tasks.json
+posix startup=none | src/*/../x
+posix startup=none | src/*/../../.vscode/extensions.json
+
+# A `home` spelling reads from the home directory, here the workspace.
+paths home cwd=/home/me home=/home/me workspace=/home/me
+posix@home home startup="a file a tool runs on its own" | proj/.envrc
+posix@home home startup="a file a tool runs on its own" | .vscode/tasks.json
+posix@home home startup=none | proj/Makefile
+# The home directory's own startup files and keys are what they were.
+posix@home home startup=none | .bashrc
+posix@home home startup=none | .ssh/id_rsa
+# Beside the workspace, not in it.
+posix home startup=none | .envrc
+posix home startup="a file a tool runs on its own" | work/repo/.envrc
+
+# Every workspace folder counts.
+paths two base=posix workspace=/home/me/work/other
+posix@two startup="a file a tool runs on its own" | /home/me/work/other/.envrc
+posix@two startup=none | /home/me/work/third/.envrc
+
+# A protected path wins.
+paths protected base=posix folder=/home/me/work/repo/.github words="the agent's rules"
+posix@protected into="protected:the agent's rules" startup=none | .github/workflows/ci.yml
+posix@protected startup="a file a tool runs on its own" | .vscode/tasks.json
+
+# The places added after the first list, each as a file or below a folder.
+posix startup="a file a tool runs on its own" | proj.code-workspace
+posix startup="a file a tool runs on its own" | .code-workspace
+posix startup="a file a tool runs on its own" | a/b/My Project.code-workspace
+posix startup="a file a tool runs on its own" | x.CODE-WORKSPACE
+posix startup="a file a tool runs on its own" | mise.toml
+posix startup="a file a tool runs on its own" | .mise.toml
+posix startup="a file a tool runs on its own" | mise.local.toml
+posix startup="a file a tool runs on its own" | .mise.local.toml
+posix startup="a file a tool runs on its own" | sub/mise.toml
+posix startup="a file a tool runs on its own" | .zed/tasks.json
+posix startup="a file a tool runs on its own" | .gitpod.yml
+posix startup="a file a tool runs on its own" | .gitea/workflows/ci.yml
+posix startup="a file a tool runs on its own" | .forgejo/workflows/ci.yml
+posix startup="a file a tool runs on its own" | .woodpecker.yml
+posix startup="a file a tool runs on its own" | .woodpecker/build.yml
+posix startup="a file a tool runs on its own" | .githooks/pre-commit
+posix startup="a file a tool runs on its own" | .githooks
+posix startup="a file a tool runs on its own" | .cursor/hooks.json
+posix startup="a file a tool runs on its own" | .windsurf/hooks.json
+posix startup="a file a tool runs on its own" | .claude/settings.json
+posix startup="a file a tool runs on its own" | .claude/settings.local.json
+posix startup="a file a tool runs on its own" | .gemini/settings.json
+posix startup="a file a tool runs on its own" | .codex/config.toml
+posix startup="a file a tool runs on its own" | .roo/mcp.json
+posix startup="a file a tool runs on its own" | .amazonq/mcp.json
+posix startup="a file a tool runs on its own" | .kiro/settings/mcp.json
+posix startup="a file a tool runs on its own" | .kiro/hooks/x.kiro.hook
+posix startup="a file a tool runs on its own" | .continue/mcpServers/x.yaml
+posix startup=none | x.code-workspace.bak
+posix startup=none | code-workspace
+posix startup=none | x.code-workspaces
+posix startup=none | mise.toml.bak
+posix startup=none | mise.lock
+posix startup=none | .mise
+posix startup=none | .zed/settings.json
+posix startup=none | .zed/tasks.json.bak
+posix startup=none | .gitpod.yaml
+posix startup=none | .gitpod/Dockerfile
+posix startup=none | .gitea/ISSUE_TEMPLATE/x.md
+posix startup=none | .forgejo/ISSUE_TEMPLATE/x.md
+posix startup=none | .woodpecker.yaml
+posix startup=none | .githooksx/x
+posix startup=none | .githook/x
+posix startup=none | .cursor/rules/x.mdc
+posix startup=none | .claude/commands/x.md
+posix startup=none | .gemini/GEMINI.md
+posix startup=none | .codex/prompts/x.md
+posix startup=none | .kiro/steering/x.md
+posix startup=none | .continue/rules/x.md
+posix startup=none | .github/hooks/x
+posix startup=none | .github/ISSUE_TEMPLATE/x.md
+# A short name keeps three characters of the extension.
+windows startup="a file a tool runs on its own" | PROJ~1.COD
+windows startup="a file a tool runs on its own" | proj~1.cod
+windows startup="a file a tool runs on its own" | src\\MY-PRO~1.COD
+windows startup="a file a tool runs on its own" | proj.code-workspace
+windows startup="a file a tool runs on its own" | PROJ.CODE-WORKSPACE.
+windows startup=none | PROJ~1.TXT
+windows startup=none | PROJ~1.CODE
+windows startup=none | PROJ.COD
+windows startup="a file a tool runs on its own" | MISE~1.TOM
+windows startup=none | MISE~1.TXT
+windows startup="a file a tool runs on its own" | MISE.TOML
+windows startup="a file a tool runs on its own" | GITHOO~1\\pre-commit
+windows startup="a file a tool runs on its own" | GITHOO~1
+windows startup="a file a tool runs on its own" | GITEA~1\\WORKFL~1\\ci.yml
+windows startup="a file a tool runs on its own" | FORGEJ~1\\workflows\\ci.yml
+windows startup="a file a tool runs on its own" | WOODPE~1.YML
+windows startup="a file a tool runs on its own" | WOODPE~1\\build.yml
+windows startup="a file a tool runs on its own" | .GITPOD.YML
+windows startup="a file a tool runs on its own" | GITPOD~1.YML
+windows startup="a file a tool runs on its own" | ZED~1\\tasks.json
+windows startup="a file a tool runs on its own" | .zed\\TASKS~1.JSO
+
+# A pattern can pick a workspace file.
+posix startup="a file a tool runs on its own" | *.code-workspace
+posix startup="a file a tool runs on its own" | src/*.code-workspace
+posix startup="a file a tool runs on its own" | *.code-*
+posix startup="a file a tool runs on its own" | *.c*
+posix startup="a file a tool runs on its own" | *.[c]ode-workspace
+posix startup="a file a tool runs on its own" | *work?pace
+posix startup=none | *.workspace
+posix startup=none | *.code
+posix startup="a file a tool runs on its own" | mise.*
+posix startup="a file a tool runs on its own" | .woodpecker/*
+posix startup="a file a tool runs on its own" | .githooks/*
+posix startup="a file a tool runs on its own" | .gitea/workflows/*
+posix startup="a file a tool runs on its own" | .gitea/*/ci.yml
+posix startup="a file a tool runs on its own" | .kiro/hooks/*
+posix startup="a file a tool runs on its own" | .kiro/*/mcp.json

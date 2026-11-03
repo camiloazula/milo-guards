@@ -1,10 +1,18 @@
 //! One sample per row of the table: each finds exactly its secret, with the
 //! rule and the reason of its row, and a finding never repeats the secret.
+//! The samples are built in `tests/common`, so that no value shaped like a
+//! real key sits in the repository; the plain texts are in
+//! `tests/cases/rows.cases`.
 
 mod common;
 
 use common::{pem, samples};
 use milo_guards_secrets::{find, find_spans, Rule};
+
+#[test]
+fn every_case() {
+    common::cases::check("rows");
+}
 
 #[test]
 fn every_row_finds_exactly_its_secret() {
@@ -112,18 +120,6 @@ fn a_target_shows_the_prefix_and_the_length() {
     assert_eq!(
         assessment.findings()[0].target.as_deref(),
         Some("ghp_… (40 chars)")
-    );
-}
-
-#[test]
-fn a_secret_that_begins_with_itself_shows_only_its_length() {
-    let assessment = find("password=fakePass0word1");
-    let finding = &assessment.findings()[0];
-    assert_eq!(finding.target.as_deref(), Some("… (14 chars)"));
-    let assessment = find("card 4111111111111111");
-    assert_eq!(
-        assessment.findings()[0].target.as_deref(),
-        Some("… (16 chars)")
     );
 }
 

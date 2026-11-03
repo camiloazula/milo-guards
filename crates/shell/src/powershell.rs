@@ -2257,7 +2257,7 @@ mod tests {
     /// which can be the target of a delete (`Remove-Item -Depth ~ -Recurse`), so
     /// a cmdlet's own value parameters belong to its reader (`Get-ChildItem
     /// -Depth` is in `effect`), and this list changes only with a row for each
-    /// name in `tests/windows.rs`.
+    /// name in `tests/cases/windows.cases`.
     const PINNED: [&str; 46] = [
         "path",
         "literalpath",

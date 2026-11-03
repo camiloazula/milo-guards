@@ -65,6 +65,149 @@ cargo install cargo-llvm-cov   # for just coverage
 cargo install cargo-deny       # for just deny and just advisories
 ```
 
+## Case files
+
+A plain case, a line and the answer it must get, is written in a case file,
+not as a row of a Rust table, and a fix or a new rule adds its cases as lines
+there, not as Rust. The cases of a behaviour are in
+`crates/<crate>/tests/cases/<what-it-checks>.cases`, beside the test file of
+the same name, `tests/<what-it-checks>.rs`, which checks them all with one
+call: `common::cases::check("<what-it-checks>")`. What is not a plain case
+stays in that Rust file: cases made in a loop, long or nested input, timing,
+tests of the API itself, and tests that check a structure (the paths a line
+lists, the tree `explain` draws). The shell, file, URL and secrets guards,
+the path model in `core` and the `code` reader read case files; the secrets
+guard's cases hold no value shaped like a real key, which its tests build in
+Rust so that none sits in the repository. The front door's
+`crates/guards/tests/everyday.rs` reads its `tests/cases/everyday.cases` with
+the shell guard's runner, and judges each line through
+`milo_local_guards::shell` too.
+
+One case to a line, and nothing else on it:
+
+```text
+# A comment: its first character is `#`. Blank lines are skipped.
+posix safe | cd ../.. < .ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa
+cmd finds=overwrite | cd sub > ..\\x.txt
+posix effect=changes | cd sub > ../x
+posix finds=delete reason="deletes your home directory" | tar -cf x.tar ~ --remove-files
+posix safe | cd sub <<EOF > out.txt\nx\nEOF
+paths home cwd=/home/me home=/home/me workspace=/home/me
+posix@home finds=delete | rm -rf .ssh
+```
+
+The words before ` | ` say how the line is judged and what it must get. The
+text after it, from one space after the bar to the end of the line, is the
+command line, and it may hold anything, a ` | ` included.
+
+- **The shell and the paths.** The first word is the shell, `posix`,
+  `powershell` or `cmd`, and may name the paths after an `@`: `posix`, `macos`
+  or `windows` (core's test machines), or a name a `paths` line declared
+  earlier in the file. Without one, a POSIX line is judged on `posix` and the
+  others on `windows`.
+- **The answer.** `safe`, or one or more fields: `finds=RULES` (each rule is
+  found; `a/b` is either of two), `rules=RULES` (exactly these, in order),
+  `first=RULE` (the first finding), `lacks=RULES` (none of them),
+  `reason="..."` (the reason of the `first` finding, or of the one rule of
+  `finds`) and `effect=` with `reads_workspace`, `reads_beyond`, `changes` or
+  `unknown`. A rule is its wire name; a list is comma separated. A value
+  with a space is quoted. Every case is also held to the agreement checks:
+  its `effect`, `explain` and `effect_paths` agree with `classify`.
+- **A `paths` line** names a machine: `base=MACHINE`, or `cwd=` and `home=`;
+  then `workspace=` for each workspace folder (added to the base's), and
+  `folder=` or `file=` for a protected path, each followed by its `words=`.
+- **Escapes.** A backslash starts one of `\\` (a backslash), `\n`, `\t`, `\r`,
+  `\s` (a space) and `\u{HEX}` (any character), and `\"` in a quoted value.
+  A Windows path doubles its backslashes, as in a Rust string. Any other
+  character, non-ASCII included, is written as it is.
+
+A case file is refused, every bad line named by its file and line, for a
+raw tab, carriage return or other control character, a space at the start or
+end of a line or of a command line (write `\s`), an unknown escape, an unknown
+word, field, shell, rule, effect or paths name, an answer that is not whole
+(no answer, `safe` with a rule, `reason` without its one rule, a field
+twice), a case without its `| LINE`, and a case that repeats another (the
+same shell, paths, line and answer). A missing file fails its test, and
+`tests/cases.rs` fails for a case file no test file checks and for a case
+that repeats one in another file checked in the same build (a test file that
+starts `#![cfg(...)]`, as `tests/inline_off.rs` does, is checked in another,
+where the same line may get the same answer). A case that gets another answer
+is named by its file and line with what it got.
+
+To list every case, one to a line (where it is, the shell, the paths, the
+answer and the line as Rust writes a string, tab separated):
+
+```sh
+cargo test -p milo-guards-shell --all-features --test cases -- --ignored --nocapture dump
+```
+
+The file guard's case files are the same but for the first word and the
+text: a case is `ACCESS[@PATHS] ANSWER... | PATH`, where `ACCESS` is `read`
+or `write`, a case without `@PATHS` is judged on `posix`, there is no
+`effect=`, and the text is the path the file API is given. Every case is also
+held to name the path as written in each finding (none past the longest path
+judged). Its dump is `cargo test -p milo-guards-file --all-features --test
+cases -- --ignored --nocapture dump`.
+
+```text
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+paths home cwd=/home/me home=/home/me workspace=/home/me
+write@home rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | .bashrc
+```
+
+The URL guard's case is `[@PATHS] ANSWER... | URL`: no first word but the
+paths, `posix` without them, no `effect=`, and `target="..."` beside
+`reason=` (the target of the same finding). Every case is also held to carry
+no target on a finding that the URL is unreadable. The secrets guard's case
+is `ANSWER... | TEXT`: no paths, no `effect=`, `target=` as the URL guard's,
+`span="..."` (the text has one span, and it covers exactly this) and
+`covers="..."` (every byte of the first place this is in the text is in a
+span); every case is also held to spans that agree with the findings, one
+for one, in order and apart. Their dumps are the same command with
+`-p milo-guards-url` and `-p milo-guards-secrets`.
+
+```text
+first=local_address target="127.0.0.1" | http://2130706433/
+@windows first=local_file reason="reads a file from another machine" | file://server/share/x
+rules=generic_secret span="F4kePass9" | password=F4kePass9&x=1
+covers="F4kePassw0rdZ" | machine api.fake.test login fakeuser password F4kePassw0rdZ
+```
+
+The path model's case is `FLAVOUR[@PATHS] [home] [hidden] [deep]
+ANSWER... | PATH`: `FLAVOUR` is `posix` or `windows`, how the path is
+spelled, judged on `posix` or `windows` without `@PATHS` (declared as the
+shell guard's). `home` gives the path as `Spelling::Home`, the part below the
+home directory; `hidden` says a wildcard matches a leading dot, and `deep`
+that a folder is read whole. The answer is one or more questions asked of the
+`Resolver`, each with the answer it must give: `place=`, `into=`
+(`place_into`) and `place_hidden=` give a place (`inside`, `outside`,
+`unknown`, `disk`, `null`, `registry`, `temp`, `in_temp`, `workspace`,
+`holds_workspace`, `home`, `holds_home`, or `top:`, `secret:`, `startup:`,
+`history:` and `protected:` with the words); `startup=`, `below=`
+(`startup_below`), `picks=` (`picks_secret`), `kernel=` and `git=` give the
+words or `none`; `absolute=` and `opened=` the path or `none`; `reaches=`
+(`reaches_secret`) and `network=` give `yes` or `no`. The code reader's case
+is `WHAT ANSWER... | CODE`: `WHAT` is `python`, `javascript`, `python2`
+(`understand_python2`) or `module` (a module specifier), and the answer is
+`acts="..."` (the acts `read` finds, as `tests/common` spells them),
+`understand=yes|importing|no`, `other_encoding=yes|no` (Python), and
+`data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
+command with `-p milo-guards-core` and `-p milo-guards-code`.
+
+```text
+posix@macos place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+windows home absolute=C:\\Users\\me\\AppData | \\AppData
+posix hidden picks="your SSH keys" | /home/me/*
+python acts="remove /home/me" understand=no | import shutil\nshutil.rmtree('/home/me')
+```
+
+The reading of the format is shared, in `crates/core/tests/common/cases.rs`
+(tested by `crates/core/tests/cases.rs`); what the words mean for a guard,
+and the runner, are in its `tests/common/cases.rs` (for the path model,
+`crates/core/tests/common/runner.rs`, which its tests call
+`common::cases`).
+
 ## Submitting a change
 
 - `main` takes pull requests only. The commits that set the repository up are
@@ -72,12 +215,16 @@ cargo install cargo-deny       # for just deny and just advisories
 - Commit messages describe the change and why. No tool trailers (no
   `Co-Authored-By` or "Generated with" lines) on commits or pull request
   descriptions.
-- A new rule comes with table tests of safe and risky lines
-  ([GUIDELINES.md](GUIDELINES.md)), and a rule's wire name never changes once
-  a caller uses it.
+- A new rule comes with cases of safe and risky lines
+  ([GUIDELINES.md](GUIDELINES.md), [Case files](#case-files)), and a rule's
+  wire name never changes once a caller uses it.
+- A fix adds a case line, not Rust: the line that was judged wrong and the
+  answer it must get, in the case file of what it checks
+  ([Case files](#case-files)). It writes Rust only for what a case file
+  cannot hold.
 - A test goes in the file named by what it checks, never in one named after
-  a ticket or a review; a fix adds rows to that file
-  ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a source file's own
+  a ticket or a review ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a
+  source file's own
   helpers goes in that file's `#[cfg(test)] mod tests`; a test of what a crate
   does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
   with shared helpers in `tests/common`; a test of the front door from end to

@@ -71,7 +71,7 @@ milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
 A guard that needs another guard's answer is not a guard. The caller asks both
 and combines the answers, because deciding what to do with them is the
 caller's job. Where two guards must give one answer, the front door tests it:
-`crates/guards/tests/agree.rs` runs every path of the file guard's tables
+`crates/guards/tests/agree.rs` runs every path of the file guard's case files
 through the shell guard, and neither guard knows of the other.
 
 `crates/guards/tests/contract.rs` reads every `Cargo.toml` and fails when a
@@ -154,13 +154,14 @@ permissive licences.
 
 A test file is named by what it checks (`cd.rs`, `drop_data.rs`,
 `found_whole.rs`), never by the ticket, the issue or the review that asked
-for it. A fix adds its rows to the file of what it checks; a second file for
-one thing is only for a large one (`stop_processes.rs` and
-`stop_processes_windows.rs`). Rows that only differ by their data are one
-table, and a row is kept once: the same input under the same shell and paths
-with the same answer is a duplicate, the same input under another shell, other
-paths or for another answer is not. There are three kinds of test, and each
-has its place:
+for it. A fix adds a case line to the case file of what it checks
+(`tests/cases/<what-it-checks>.cases`, the format in
+[CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), not Rust; a second file
+for one thing is only for a large one (`stop_processes.rs` and
+`stop_processes_windows.rs`). A case is kept once, and the runner refuses a
+repeat: the same input under the same shell and paths with the same answer is
+a duplicate, the same input under another shell, other paths or for another
+answer is not. There are three kinds of test, and each has its place:
 
 - A test of a source file's own helpers is in that file's
   `#[cfg(test)] mod tests`.
@@ -170,12 +171,16 @@ has its place:
 - A test of the front door from end to end is in `crates/guards/tests`:
   `agree.rs` (the shell and the file guard give one answer), `contract.rs`
   (the contract and the direction of the dependencies), `everyday.rs` (the
-  everyday commands stay safe) and `toolchain.rs` (the places that name the
+  everyday commands stay safe, its lines in `tests/cases/everyday.cases`) and
+  `toolchain.rs` (the places that name the
   Rust version agree).
 
 Some names are read by other files: `just no-inline` runs
-`crates/shell/tests/inline_off.rs` by name, and `agree.rs` reads the file
-guard's `posix.rs`, `windows.rs` and `protected.rs`.
+`crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file
+in the file guard's `tests/cases`, and each guard's, core's and the code
+reader's `tests/cases.rs` holds
+each case file in its `tests/cases` to the test file of its name, which
+checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
 
 ## Why tree-sitter is held at 0.26
 
@@ -209,9 +214,12 @@ A new guard is a new crate. Follow these steps.
    does, so a caller does not write the type parameter.
 4. **Keep the contract.** What cannot be read is risky. Read structure, not raw
    text. Reasons are a few plain words a permission prompt can show.
-5. **Test it.** Use core's `testing` module as a dev-dependency with the
-   `testing` feature: a table of safe inputs, and a table of risky inputs each
-   with the rule it must break. Add a test that walks `Rule::ALL` and checks
+5. **Test it.** Write its safe inputs, and its risky inputs each with the
+   rule it must break, in case files
+   ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), read by a runner in
+   its `tests/common` on core's shared reading of the format; core's `testing`
+   module (a dev-dependency with the `testing` feature) checks what is made
+   in Rust. Add a test that walks `Rule::ALL` and checks
    the wire names are what you documented. Add a `robust.rs` that feeds it
    noise and checks that it never panics.
 6. **Add it to the front door.** In `crates/guards/Cargo.toml` add an optional

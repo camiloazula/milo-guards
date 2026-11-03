@@ -1,0 +1,570 @@
+# Reads and writes judged against a Windows machine's paths: every spelling
+# Windows reads as one name must be judged as that name. One section for each
+# behaviour. The format is in CONTRIBUTING.md; a backslash is doubled.
+
+# Everyday reads are safe.
+read@windows safe | src\\main.rs
+read@windows safe | .\\Cargo.toml
+read@windows safe | src/main.rs
+read@windows safe | C:\\Users\\me\\dev\\repo\\src\\x.rs
+read@windows safe | c:\\users\\me\\DEV\\REPO\\x
+read@windows safe | C:\\Windows\\System32\\drivers\\etc\\hosts
+read@windows safe | C:\\Windows\\notepad.exe
+read@windows safe | C:\\Program Files\\App\\x.dll
+read@windows safe | C:\\Users\\me\\notes.txt
+read@windows safe | ~\\notes.txt
+read@windows safe | ~/notes.txt
+read@windows safe | ~
+read@windows safe | ~\\
+read@windows safe | NUL
+read@windows safe | nul
+read@windows safe | CON
+read@windows safe | C:\\Users\\me\\AppData\\Local\\Temp\\x.log
+read@windows safe | C:\\Windows\\Temp\\x
+# The repository's history is not a secret.
+read@windows safe | .git\\config
+read@windows safe | .GIT\\config
+read@windows safe | .git.\\config
+read@windows safe | GIT~1\\config
+read@windows safe | \\\\?\\C:\\Users\\me\\dev\\repo\\.git\\config
+# Startup files are read for what they say.
+read@windows safe | ~\\.zshrc
+read@windows safe | ~\\Documents\\PowerShell\\profile.ps1
+read@windows safe | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\x.lnk
+# Beside a secret place is not under it.
+read@windows safe | C:\\Users\\me\\.sshx\\id
+read@windows safe | C:\\Users\\me\\.ssh.d\\id
+read@windows safe | C:\\Users\\me\\SSH~2.txt
+read@windows safe | C:\\Windows\\System32\\configx\\x
+# A long path to a plain file, and a drive-relative one.
+read@windows safe | \\\\?\\C:\\Windows\\System32\\drivers\\etc\\hosts
+read@windows safe | \\\\?\\C:\\Users\\me\\dev\\repo\\src\\x.rs
+read@windows safe | C:x
+read@windows safe | c:src\\x.rs
+read@windows safe | \\Users\\me\\dev\\repo\\x
+# A POSIX path is read from the working directory's drive.
+read@windows safe | /Windows/notepad.exe
+# Characters that are plain in a file name.
+read@windows safe | app\\[id]\\page.tsx
+read@windows safe | price$.txt
+read@windows safe | docs/100%.md
+read@windows safe | a%20b.txt
+
+# A read of a key or a credential is a finding.
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\.aws\\credentials
+read@windows finds=read_secret | C:\\Users\\me\\.kube\\config
+read@windows finds=read_secret | C:\\Users\\me\\.npmrc
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Credentials\\x
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Protect\\S-1-5\\x
+read@windows finds=read_secret | C:\\Windows\\System32\\config\\SAM
+read@windows finds=read_secret | C:\\ProgramData\\ssh\\ssh_host_rsa_key
+# Another user's.
+read@windows finds=read_secret | C:\\Users\\other\\.ssh\\id_rsa
+read@windows finds=read_secret | ..\\..\\..\\other\\.ssh\\id_rsa
+read@windows finds=read_secret | ~\\..\\other\\.ssh\\id_rsa
+# A disk, and a namespace that is not a file path at all.
+read@windows finds=read_secret | \\\\.\\PhysicalDrive0
+read@windows finds=read_secret | \\\\.\\C:
+read@windows finds=read_secret | \\\\?\\GLOBALROOT\\Device\\Harddisk0\\Partition1
+# Accepted false alarm: a public key is under `.ssh`.
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa.pub
+
+# Every spelling of a key is the key, to a read and to a write.
+read@windows finds=read_secret | C:/Users/me/.ssh/id_rsa
+read@windows finds=read_secret | C:/Users\\me/.ssh\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\.\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\x\\..\\id_rsa
+read@windows finds=read_secret | C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa
+# Case.
+read@windows finds=read_secret | c:\\users\\me\\.ssh\\id_rsa
+read@windows finds=read_secret | C:\\USERS\\ME\\.SSH\\ID_RSA
+read@windows finds=read_secret | C:\\Users\\Me\\.Ssh\\Id_Rsa
+# What Windows drops from a name.
+read@windows finds=read_secret | C:\\Users\\me\\.ssh.\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa.
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa\s
+read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa. .\s
+read@windows finds=read_secret | C:\\Users\\me.\\.ssh\\id_rsa
+# Short names: the folder's own, and the long name's.
+read@windows finds=read_secret | C:\\Users\\me\\SSH~1\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\ssh~1\\ID_RS~1
+read@windows finds=read_secret | C:\\Users\\me\\SSH~2\\id_rsa
+read@windows finds=read_secret | C:\\Users\\ME\\SSH~1
+# Rooted, drive-relative, climbing, and from the home directory.
+read@windows finds=read_secret | \\Users\\me\\.ssh\\id_rsa
+read@windows finds=read_secret | /Users/me/.ssh/id_rsa
+read@windows finds=read_secret | \\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | ~\\.ssh\\id_rsa
+read@windows finds=read_secret | ~/.ssh/id_rsa
+read@windows finds=read_secret | ~\\.SSH\\id_rsa
+read@windows finds=read_secret | ~\\SSH~1\\id_rsa
+read@windows finds=read_secret | ~\\.\\.ssh\\id_rsa
+read@windows finds=read_secret | ~\\x\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | ..\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | src\\..\\..\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | C:..\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | c:..\\..\\.SSH\\id_rsa
+read@windows finds=read_secret | C:src\\..\\..\\..\\.ssh\\id_rsa
+read@windows finds=read_secret | C:\\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+# A long path, with either separator.
+read@windows finds=read_secret | \\\\?\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows finds=read_secret | \\\\?\\c:\\users\\me\\.SSH\\id_rsa
+read@windows finds=read_secret | //?/C:/Users/me/.ssh/id_rsa
+read@windows finds=read_secret | \\/?\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows finds=read_secret | \\\\?\\C:\\Users\\me\\SSH~1\\id_rsa
+read@windows finds=read_secret | \\\\?\\C:\\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:/Users/me/.ssh/id_rsa
+write@windows finds=write_sensitive | C:/Users\\me/.ssh\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\.\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\x\\..\\id_rsa
+write@windows finds=write_sensitive | C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa
+write@windows finds=write_sensitive | c:\\users\\me\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:\\USERS\\ME\\.SSH\\ID_RSA
+write@windows finds=write_sensitive | C:\\Users\\Me\\.Ssh\\Id_Rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh.\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\id_rsa.
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\id_rsa\s
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\id_rsa. .\s
+write@windows finds=write_sensitive | C:\\Users\\me.\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\SSH~1\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\ssh~1\\ID_RS~1
+write@windows finds=write_sensitive | C:\\Users\\me\\SSH~2\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\ME\\SSH~1
+write@windows finds=write_sensitive | \\Users\\me\\.ssh\\id_rsa
+write@windows finds=write_sensitive | /Users/me/.ssh/id_rsa
+write@windows finds=write_sensitive | \\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | ~\\.ssh\\id_rsa
+write@windows finds=write_sensitive | ~/.ssh/id_rsa
+write@windows finds=write_sensitive | ~\\.SSH\\id_rsa
+write@windows finds=write_sensitive | ~\\SSH~1\\id_rsa
+write@windows finds=write_sensitive | ~\\.\\.ssh\\id_rsa
+write@windows finds=write_sensitive | ~\\x\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | ..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | src\\..\\..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | c:..\\..\\.SSH\\id_rsa
+write@windows finds=write_sensitive | C:src\\..\\..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | C:\\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+write@windows finds=write_sensitive | \\\\?\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows finds=write_sensitive | \\\\?\\c:\\users\\me\\.SSH\\id_rsa
+write@windows finds=write_sensitive | //?/C:/Users/me/.ssh/id_rsa
+write@windows finds=write_sensitive | \\/?\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows finds=write_sensitive | \\\\?\\C:\\Users\\me\\SSH~1\\id_rsa
+write@windows finds=write_sensitive | \\\\?\\C:\\Users\\me\\dev\\repo\\..\\..\\.ssh\\id_rsa
+
+# A device namespace is a disk whatever it names: `\\.\C:\x` is `C:\x` to
+# Windows, and `\\?\GLOBALROOT\...` can be any file by an object name. Both
+# are judged as the disk they reach.
+read@windows rules=read_secret | \\\\.\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret | //./C:/Users/me/.ssh/id_rsa
+read@windows rules=read_secret | \\/.\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret | /\\.\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret | \\\\.\\\\C:\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret | \\\\.\\C:\\Users\\me\\dev\\repo\\x
+read@windows rules=read_secret | \\\\.\\PhysicalDrive0
+read@windows rules=read_secret | \\\\.\\pipe\\x
+read@windows rules=read_secret | \\\\?\\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret | \\\\?\\C:x
+read@windows rules=read_secret | \\\\?\\
+read@windows rules=read_secret | \\\\?\\X
+read@windows rules=read_secret | \\\\?\\PhysicalDrive0
+write@windows rules=write_outside | \\\\.\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside | //./C:/Users/me/.ssh/id_rsa
+write@windows rules=write_outside | \\/.\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside | /\\.\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside | \\\\.\\\\C:\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside | \\\\.\\C:\\Users\\me\\dev\\repo\\x
+write@windows rules=write_outside | \\\\.\\PhysicalDrive0
+write@windows rules=write_outside | \\\\.\\pipe\\x
+write@windows rules=write_outside | \\\\?\\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside | \\\\?\\C:x
+write@windows rules=write_outside | \\\\?\\
+write@windows rules=write_outside | \\\\?\\X
+write@windows rules=write_outside | \\\\?\\PhysicalDrive0
+# `GLOBALROOT` can also be a share (`\\?\GLOBALROOT\Device\Mup\server\share`),
+# so it is one as well; and a share with no server.
+read@windows rules=read_secret,network_share | \\\\.\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret,network_share | \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret,network_share | \\\\?\\globalroot\\x
+read@windows rules=read_secret,network_share | \\\\?\\UNC
+read@windows rules=read_secret,network_share | \\\\?\\UNC\\
+write@windows rules=write_outside,network_share | \\\\.\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside,network_share | \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\.ssh\\id_rsa
+write@windows rules=write_outside,network_share | \\\\?\\globalroot\\x
+write@windows rules=write_outside,network_share | \\\\?\\UNC
+write@windows rules=write_outside,network_share | \\\\?\\UNC\\
+
+# Everyday writes are safe.
+write@windows safe | src\\main.rs
+write@windows safe | .\\x
+write@windows safe | src/x
+write@windows safe | C:\\Users\\me\\dev\\repo\\x
+write@windows safe | c:\\USERS\\me\\dev\\repo\\x
+write@windows safe | C:/Users/me/dev/repo/x
+write@windows safe | \\Users\\me\\dev\\repo\\x
+write@windows safe | .gitignore
+write@windows safe | .gitx\\config
+write@windows safe | C:x
+write@windows safe | c:src\\x.rs
+write@windows safe | app\\[id]\\page.tsx
+write@windows safe | price$.txt
+# A temporary file, and the null device.
+write@windows safe | C:\\Users\\me\\AppData\\Local\\Temp\\x
+write@windows safe | C:\\Windows\\Temp\\x
+write@windows safe | ~\\AppData\\Local\\Temp\\x
+write@windows safe | NUL
+write@windows safe | nul
+write@windows safe | NUL:
+# A long path to the workspace.
+write@windows safe | \\\\?\\C:\\Users\\me\\dev\\repo\\x
+write@windows safe | \\\\?\\c:\\users\\me\\dev\\repo\\x
+write@windows safe | //?/C:/Users/me/dev/repo/x
+
+# A write beyond the workspace is a finding.
+write@windows finds=write_outside | C:\\Users\\me\\notes.txt
+write@windows finds=write_outside | ~\\notes.txt
+write@windows finds=write_outside | ~/notes.txt
+write@windows finds=write_outside | C:\\Windows\\x
+write@windows finds=write_outside | C:\\Windows\\System32\\drivers\\etc\\hosts
+write@windows finds=write_outside | C:\\Program Files\\x
+write@windows finds=write_outside | D:\\x
+write@windows finds=write_outside | D:\\x\\y
+write@windows finds=write_outside | ..\\other\\x
+write@windows finds=write_outside | ..\\..\\x
+write@windows finds=write_outside | C:..\\..\\x
+write@windows finds=write_outside | \\x
+write@windows finds=write_outside | C:\\
+write@windows finds=write_outside | C:/
+write@windows finds=write_outside | \\\\?\\C:\\
+# The workspace itself, and the folders around it.
+write@windows finds=write_outside | .
+write@windows finds=write_outside | C:\\Users\\me\\dev\\repo
+write@windows finds=write_outside | C:
+write@windows finds=write_outside | c:.
+write@windows finds=write_outside | ..
+write@windows finds=write_outside | C:\\Users\\me
+write@windows finds=write_outside | ~
+write@windows finds=write_outside | C:\\Users
+# A disk, and a long path that is no drive.
+write@windows finds=write_outside | \\\\.\\PhysicalDrive0
+write@windows finds=write_outside | \\\\.\\C:\\x
+write@windows finds=write_outside | \\\\?\\GLOBALROOT\\x
+write@windows finds=write_outside | \\\\?\\C:x
+# Another drive and a share are not the workspace, even by the same path.
+write@windows finds=write_outside | \\\\?\\D:\\Users\\me\\dev\\repo\\x
+write@windows finds=write_outside | \\\\srv\\share\\Users\\me\\dev\\repo\\x
+
+# A write to a key, a startup file or the history is a finding.
+write@windows finds=write_sensitive | C:\\Users\\me\\.ssh\\config
+write@windows finds=write_sensitive | ~\\.ssh\\authorized_keys
+write@windows finds=write_sensitive | C:\\Users\\me\\.aws\\credentials
+write@windows finds=write_sensitive | C:\\Windows\\System32\\config\\SAM
+write@windows finds=write_sensitive | C:\\Users\\other\\.ssh\\authorized_keys
+write@windows finds=write_sensitive | C:\\ProgramData\\ssh\\sshd_config
+# What Windows starts, by any name for it.
+write@windows finds=write_sensitive | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\x.bat
+write@windows finds=write_sensitive | ~\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\x.bat
+write@windows finds=write_sensitive | ~\\Documents\\PowerShell\\profile.ps1
+write@windows finds=write_sensitive | ~\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1
+write@windows finds=write_sensitive | C:\\Users\\me\\DOCUME~1\\POWERS~1\\profile.ps1
+write@windows finds=write_sensitive | ~\\.zshrc
+write@windows finds=write_sensitive | ~\\.gitconfig
+# The repository's history, by every name Windows gives it.
+write@windows finds=write_sensitive | .git\\HEAD
+write@windows finds=write_sensitive | .git/HEAD
+write@windows finds=write_sensitive | .git
+write@windows finds=write_sensitive | .git\\
+write@windows finds=write_sensitive | .git.\\HEAD
+write@windows finds=write_sensitive | .git\\HEAD.
+write@windows finds=write_sensitive | .git\\HEAD\s
+write@windows finds=write_sensitive | .GIT\\HEAD
+write@windows finds=write_sensitive | GIT~1\\HEAD
+write@windows finds=write_sensitive | git~1\\head
+write@windows finds=write_sensitive | src\\..\\.git\\HEAD
+write@windows finds=write_sensitive | C:\\Users\\me\\dev\\repo\\.git\\HEAD
+write@windows finds=write_sensitive | c:\\users\\me\\dev\\repo\\.GIT\\HEAD
+write@windows finds=write_sensitive | \\\\?\\C:\\Users\\me\\dev\\repo\\.git\\HEAD
+write@windows finds=write_sensitive | C:.git\\HEAD
+write@windows finds=write_sensitive | C:..\\..\\.ssh\\config
+
+# A path that is not one literal path is unreadable, to a read and to a
+# write: empty, a variable, a wildcard, another user's `~`, a name Windows
+# reads at run time (a stream, a name of dots and spaces, a folder name that
+# ends in a space or two dots), and another drive's own working directory,
+# which is not known.
+read@windows finds=unreadable |
+read@windows finds=unreadable | %USERPROFILE%\\.ssh\\id_rsa
+read@windows finds=unreadable | %APPDATA%\\x
+read@windows finds=unreadable | %ProgramFiles(x86)%\\x
+read@windows finds=unreadable | $env:USERPROFILE\\x
+read@windows finds=unreadable | ${env:HOME}\\x
+read@windows finds=unreadable | $HOME\\x
+read@windows finds=unreadable | $(Get-Location)\\x
+read@windows finds=unreadable | `$HOME\\x
+read@windows finds=unreadable | C:\\Users\\me\\x.txt::$DATA
+read@windows finds=unreadable | C:\\Users\\me\\.ssh::$INDEX_ALLOCATION\\id_rsa
+read@windows finds=unreadable | ~\\*
+read@windows finds=unreadable | \\\\server\\share\\*
+read@windows finds=unreadable | C:\\Users\\me\\dev\\repo\\*.rs
+read@windows finds=unreadable | C:\\Users\\me\\.ss?\\id_rsa
+read@windows finds=unreadable | C:\\Users\\me\\.s*\\id_rsa
+read@windows finds=unreadable | C:*
+read@windows finds=unreadable | \\\\?\\C:\\x*
+read@windows finds=unreadable | \\\\?\\C:\\Users\\me\\dev\\repo\\x?
+read@windows finds=unreadable | \\\\?\\?
+read@windows finds=unreadable | ~root\\x
+read@windows finds=unreadable | ~me
+read@windows finds=unreadable | ~.ssh\\id_rsa
+read@windows finds=unreadable | C:\\Users\\me\\x.txt:stream
+read@windows finds=unreadable | x.txt:stream
+read@windows finds=unreadable | C:\\Users\\me\\.ssh:stream\\id_rsa
+read@windows finds=unreadable | .git:$I30:$INDEX_ALLOCATION\\HEAD
+read@windows finds=unreadable | .git ::$INDEX_ALLOCATION\\HEAD
+read@windows finds=unreadable | C:\\Users\\me\\.ssh \\id_rsa
+read@windows finds=unreadable | C:\\Users\\me\\.ssh..\\id_rsa
+read@windows finds=unreadable | .git \\HEAD
+read@windows finds=unreadable | ...
+read@windows finds=unreadable | C:\\Users\\me\\...\\x
+read@windows finds=unreadable | x\\. \\y
+read@windows finds=unreadable | src\\ \\x
+read@windows finds=unreadable | D:x
+read@windows finds=unreadable | D:
+read@windows finds=unreadable | d:..\\..\\x
+read@windows finds=unreadable | D:.ssh\\id_rsa
+read@windows finds=unreadable | E:*
+write@windows finds=unreadable |
+write@windows finds=unreadable | %USERPROFILE%\\.ssh\\id_rsa
+write@windows finds=unreadable | %APPDATA%\\x
+write@windows finds=unreadable | %ProgramFiles(x86)%\\x
+write@windows finds=unreadable | $env:USERPROFILE\\x
+write@windows finds=unreadable | ${env:HOME}\\x
+write@windows finds=unreadable | $HOME\\x
+write@windows finds=unreadable | $(Get-Location)\\x
+write@windows finds=unreadable | `$HOME\\x
+write@windows finds=unreadable | C:\\Users\\me\\x.txt::$DATA
+write@windows finds=unreadable | C:\\Users\\me\\.ssh::$INDEX_ALLOCATION\\id_rsa
+write@windows finds=unreadable | ~\\*
+write@windows finds=unreadable | \\\\server\\share\\*
+write@windows finds=unreadable | C:\\Users\\me\\dev\\repo\\*.rs
+write@windows finds=unreadable | C:\\Users\\me\\.ss?\\id_rsa
+write@windows finds=unreadable | C:\\Users\\me\\.s*\\id_rsa
+write@windows finds=unreadable | C:*
+write@windows finds=unreadable | \\\\?\\C:\\x*
+write@windows finds=unreadable | \\\\?\\C:\\Users\\me\\dev\\repo\\x?
+write@windows finds=unreadable | \\\\?\\?
+write@windows finds=unreadable | ~root\\x
+write@windows finds=unreadable | ~me
+write@windows finds=unreadable | ~.ssh\\id_rsa
+write@windows finds=unreadable | C:\\Users\\me\\x.txt:stream
+write@windows finds=unreadable | x.txt:stream
+write@windows finds=unreadable | C:\\Users\\me\\.ssh:stream\\id_rsa
+write@windows finds=unreadable | .git:$I30:$INDEX_ALLOCATION\\HEAD
+write@windows finds=unreadable | .git ::$INDEX_ALLOCATION\\HEAD
+write@windows finds=unreadable | C:\\Users\\me\\.ssh \\id_rsa
+write@windows finds=unreadable | C:\\Users\\me\\.ssh..\\id_rsa
+write@windows finds=unreadable | .git \\HEAD
+write@windows finds=unreadable | ...
+write@windows finds=unreadable | C:\\Users\\me\\...\\x
+write@windows finds=unreadable | x\\. \\y
+write@windows finds=unreadable | src\\ \\x
+write@windows finds=unreadable | D:x
+write@windows finds=unreadable | D:
+write@windows finds=unreadable | d:..\\..\\x
+write@windows finds=unreadable | D:.ssh\\id_rsa
+write@windows finds=unreadable | E:*
+
+# A drive-relative path is from the working directory on that drive. On the
+# drive the working directory is on: from it.
+read@windows safe | C:.git\\config
+read@windows rules=read_secret | C:..\\..\\.ssh\\id_rsa
+read@windows safe | C:..\\..\\notes.txt
+read@windows rules=unreadable | D:x
+write@windows rules=write_outside | C:..\\..\\notes.txt
+write@windows rules=write_outside | C:..
+write@windows rules=unreadable | D:x
+# A working directory on D:, with a second workspace on C:.
+paths d_work cwd=D:\\work home=C:\\Users\\me workspace=D:\\work workspace=C:\\Users\\me\\dev\\repo
+write@d_work safe | D:x
+write@d_work rules=write_outside | D:..\\x
+write@d_work rules=unreadable | C:x
+write@d_work safe | C:\\Users\\me\\dev\\repo\\x
+write@d_work rules=write_sensitive | C:\\Users\\me\\.ssh\\config
+read@d_work rules=unreadable | C:x
+read@d_work rules=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+read@d_work safe | x
+
+# A network share is a finding whatever it is spelled, to a read and to a
+# write.
+read@windows finds=network_share | \\\\server\\share\\x
+read@windows finds=network_share | //server/share/x
+read@windows finds=network_share | \\\\server\\share
+read@windows finds=network_share | \\\\server
+read@windows finds=network_share | \\\\?\\UNC\\server\\share\\x
+read@windows finds=network_share | \\\\?\\unc\\server\\share\\x
+read@windows finds=network_share | //?/UNC/server/share/x
+read@windows finds=network_share | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+read@windows finds=network_share | \\\\127.0.0.1\\C$\\x
+read@windows finds=network_share | \\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa
+read@windows finds=network_share | \\\\wsl.localhost\\Ubuntu\\home\\me\\x
+read@windows finds=network_share | \\\\server\\..\\x
+write@windows finds=network_share | \\\\server\\share\\x
+write@windows finds=network_share | //server/share/x
+write@windows finds=network_share | \\\\server\\share
+write@windows finds=network_share | \\\\server
+write@windows finds=network_share | \\\\?\\UNC\\server\\share\\x
+write@windows finds=network_share | \\\\?\\unc\\server\\share\\x
+write@windows finds=network_share | //?/UNC/server/share/x
+write@windows finds=network_share | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+write@windows finds=network_share | \\\\127.0.0.1\\C$\\x
+write@windows finds=network_share | \\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa
+write@windows finds=network_share | \\\\wsl.localhost\\Ubuntu\\home\\me\\x
+write@windows finds=network_share | \\\\server\\..\\x
+read@windows rules=network_share | \\\\server\\share\\x
+read@windows rules=network_share | \\\\?\\UNC\\server\\share\\x
+read@windows rules=network_share | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+# The device namespace is a disk as well.
+read@windows rules=read_secret,network_share | \\\\.\\UNC\\server\\share\\x
+read@windows rules=read_secret,network_share | \\\\?\\GLOBALROOT\\Device\\Mup\\server\\share\\x
+# A share that cannot be told apart from what it says is both.
+read@windows rules=unreadable,network_share | \\\\server\\share\\*
+read@windows rules=unreadable,network_share | \\\\*\\share
+write@windows rules=write_outside,network_share | \\\\server\\share\\x
+write@windows rules=write_outside,network_share | \\\\?\\UNC\\server\\share\\x
+write@windows rules=write_outside,network_share | \\\\server\\share
+# Not a share: a drive, a long path to one, a device.
+read@windows lacks=network_share | C:\\x
+read@windows lacks=network_share | \\x
+read@windows lacks=network_share | \\\\?\\C:\\x
+read@windows lacks=network_share | //?/C:/x
+read@windows lacks=network_share | /x
+read@windows lacks=network_share | C:\\\\x
+read@windows lacks=network_share | src\\x
+# On a POSIX machine two separators are one.
+read safe | //server/share/x
+read safe | \\\\server\\share\\x
+
+# A workspace on a share is the agent's own.
+paths share cwd=\\\\srv\\share\\repo home=C:\\Users\\me workspace=\\\\srv\\share\\repo
+write@share safe | src/x
+write@share safe | \\\\srv\\share\\repo\\src\\x
+write@share safe | \\\\SRV\\Share\\repo\\src\\x
+write@share safe | \\\\?\\UNC\\srv\\share\\repo\\src\\x
+write@share rules=write_outside,network_share | \\\\srv\\share\\other\\x
+write@share rules=write_outside,network_share | \\\\evil\\share\\repo\\src\\x
+write@share rules=write_sensitive | \\\\srv\\share\\repo\\.git\\HEAD
+write@share rules=write_outside | \\\\srv\\share\\repo
+read@share safe | \\\\srv\\share\\repo\\src\\x
+read@share safe | \\\\srv\\share\\repo\\.git\\config
+read@share rules=network_share | \\\\srv\\share\\other\\x
+read@share rules=network_share | \\\\evil\\share\\x
+
+# A workspace spelled as a long path is still the workspace: a canonical path
+# on Windows carries the long-path prefix.
+paths long cwd=\\\\?\\C:\\Users\\me\\dev\\repo home=\\\\?\\C:\\Users\\me workspace=\\\\?\\C:\\Users\\me\\dev\\repo
+write@long safe | src/x
+write@long safe | C:\\Users\\me\\dev\\repo\\src\\x
+write@long safe | \\\\?\\C:\\Users\\me\\dev\\repo\\src\\x
+write@long rules=write_outside | C:\\Users\\me\\notes.txt
+write@long rules=write_sensitive | C:\\Users\\me\\.ssh\\config
+read@long rules=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+read@long rules=read_secret | \\\\?\\C:\\Users\\me\\.ssh\\id_rsa
+read@long safe | src/x
+
+# A home directory with a long name is judged by its short name too.
+paths long_name cwd="C:\\Users\\Camilo Azula\\dev\\repo" home="C:\\Users\\Camilo Azula" workspace="C:\\Users\\Camilo Azula\\dev\\repo"
+read@long_name rules=read_secret | C:\\Users\\Camilo Azula\\.ssh\\id_rsa
+read@long_name rules=read_secret | C:\\Users\\CAMILO~1\\.ssh\\id_rsa
+read@long_name rules=read_secret | C:\\Users\\camilo~1\\SSH~1\\id_rsa
+read@long_name rules=read_secret | C:\\Users\\CAMILO~1\\.aws\\credentials
+read@long_name safe | C:\\Users\\CAMILO~1\\notes.txt
+read@long_name safe | C:\\Users\\CAMILO~1\\dev\\repo\\src\\x.rs
+read@long_name rules=read_secret | ~\\.ssh\\id_rsa
+write@long_name rules=write_sensitive | C:\\Users\\CAMILO~1\\.ssh\\config
+write@long_name rules=write_outside | C:\\Users\\CAMILO~1\\notes.txt
+write@long_name rules=write_outside | C:\\Users\\CAMILO~1
+# The workspace by its short name is, conservatively, beyond it.
+write@long_name rules=write_outside | C:\\Users\\CAMILO~1\\dev\\repo\\x
+write@long_name safe | C:\\Users\\Camilo Azula\\dev\\repo\\x
+
+# A workspace that is the home directory keeps its keys.
+paths home cwd=C:\\Users\\me home=C:\\Users\\me workspace=C:\\Users\\me
+read@home rules=read_secret | .ssh\\id_rsa
+read@home rules=read_secret | SSH~1\\id_rsa
+read@home rules=read_secret | C:\\Users\\ME\\.SSH\\id_rsa
+read@home safe | src\\x.rs
+write@home rules=write_sensitive | .ssh\\config
+write@home rules=write_sensitive | .git\\HEAD
+write@home safe | src\\x.rs
+
+# Only the names NTFS folds make the workspace the workspace. The Kelvin
+# sign, the Ångström sign, the Ohm sign and the capital sharp s are not the
+# letters they look like to NTFS: a folder by those names is another folder,
+# so a write to it is beyond the workspace.
+paths work cwd=C:\\Users\\me\\work home=C:\\Users\\me workspace=C:\\Users\\me\\work
+write@work safe | C:\\Users\\me\\work\\x
+write@work rules=write_outside | C:\\Users\\me\\wor\u{212a}\\x
+paths wora cwd=C:\\Users\\me\\wor\u{e5} home=C:\\Users\\me workspace=C:\\Users\\me\\wor\u{e5}
+write@wora safe | C:\\Users\\me\\wor\u{e5}\\x
+write@wora rules=write_outside | C:\\Users\\me\\wor\u{212b}\\x
+paths woromega cwd=C:\\Users\\me\\wor\u{3c9} home=C:\\Users\\me workspace=C:\\Users\\me\\wor\u{3c9}
+write@woromega safe | C:\\Users\\me\\wor\u{3c9}\\x
+write@woromega rules=write_outside | C:\\Users\\me\\wor\u{2126}\\x
+paths strasse cwd=C:\\Users\\me\\stra\u{df}e home=C:\\Users\\me workspace=C:\\Users\\me\\stra\u{df}e
+write@strasse safe | C:\\Users\\me\\stra\u{df}e\\x
+write@strasse rules=write_outside | C:\\Users\\me\\stra\u{1e9e}e\\x
+# Where matching too much fails closed, they still match: the home
+# directory, a key's folder, a protected path.
+paths kim cwd=C:\\Users\\Kim\\dev home=C:\\Users\\Kim workspace=C:\\Users\\Kim\\dev
+read@kim rules=read_secret | C:\\Users\\\u{212a}im\\.ssh\\id_rsa
+read@kim rules=read_secret | C:\\Users\\Kim\\.\u{212a}ube\\config
+
+# The credential stores and startup places that have twins are listed.
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\GitHub CLI\\hosts.yml
+read@windows finds=read_secret | ~\\AppData\\Roaming\\GitHub CLI\\hosts.yml
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\gcloud\\credentials.db
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\gnupg\\private-keys-v1.d\\x.key
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault\\x
+read@windows finds=read_secret | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Vault\\x
+read@windows finds=read_secret | C:\\ProgramData\\Microsoft\\Vault\\x
+read@windows finds=read_secret | C:\\Users\\me\\APPDAT~1\\Roaming\\GITHUB~1\\hosts.yml
+# Another user's, whatever this user's home is.
+read@windows finds=read_secret | C:\\Users\\alice\\AppData\\Roaming\\GitHub CLI\\hosts.yml
+write@windows finds=write_sensitive | C:\\Users\\me\\.config\\git\\config
+write@windows finds=write_sensitive | ~\\.config\\powershell\\Microsoft.PowerShell_profile.ps1
+write@windows finds=write_sensitive | C:\\Users\\me\\OneDrive\\Documents\\PowerShell\\profile.ps1
+write@windows finds=write_sensitive | C:\\Users\\me\\OneDrive\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1
+write@windows finds=write_sensitive | C:\\Users\\me\\onedrive\\documents\\powershell\\profile.ps1
+write@windows finds=write_sensitive | C:\\Users\\me\\.config\\systemd\\user\\x.service
+read@windows safe | C:\\Users\\me\\OneDrive\\Documents\\PowerShell\\profile.ps1
+read@windows safe | C:\\Users\\me\\.config\\git\\config
+
+# Another user's home is one whatever this user's home is.
+paths profiles cwd=D:\\profiles\\me\\repo home=D:\\profiles\\me workspace=D:\\profiles\\me\\repo
+read@profiles finds=read_secret | C:\\Users\\alice\\.ssh\\id_rsa
+read@profiles finds=read_secret | c:\\users\\ALICE\\.SSH\\id_rsa
+read@profiles finds=read_secret | D:\\Users\\alice\\.ssh\\id_rsa
+read@profiles finds=read_secret | D:\\profiles\\alice\\.ssh\\id_rsa
+read@profiles safe | C:\\Users\\alice\\notes.txt
+
+# A git folder at any depth is history, and its hooks run code: a write to
+# one is a finding, a read is safe.
+write@windows finds=write_sensitive | src\\.git\\x
+write@windows finds=write_sensitive | src\\GIT~1\\x
+write@windows finds=write_sensitive | vendor\\x\\.git\\hooks\\pre-commit
+write@windows finds=write_sensitive | vendor\\x\\GIT~1\\hooks\\pre-commit
+write@windows finds=write_sensitive | vendor\\x\\.git.\\hooks\\pre-commit
+write@windows finds=write_sensitive | vendor\\x\\.GIT\\HOOKS\\pre-commit
+write@windows finds=write_sensitive | ..\\other\\.git\\hooks\\x
+read@windows safe | vendor\\x\\.git\\hooks\\pre-commit
+read@windows safe | vendor\\x\\.git\\config
+# The reasons: a hook says it runs code; the rest is the history.
+write@windows rules=write_sensitive first=write_sensitive reason="writes to a git hook, which runs code" | vendor\\x\\.git\\hooks\\pre-commit
+write@windows rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | vendor\\x\\.git\\config
+# Not a git folder.
+write@windows safe | src\\GITHUB~1\\x
+write@windows safe | src\\.github\\x
+write@windows safe | hooks\\x

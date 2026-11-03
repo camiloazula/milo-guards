@@ -1,0 +1,223 @@
+# A redirect on a `cd`, `chdir`, `pushd`, `Set-Location` or cmd `cd` is
+# opened before the command runs, so its file is placed from the folder the
+# command starts in, not from the folder it goes to. The format is in
+# CONTRIBUTING.md.
+
+# A read on a cd is placed from where the cd starts.
+# The key is in the folder the line starts in, not in `sub`'s.
+posix safe | cd ../.. < .ssh/id_rsa
+posix safe | cd sub < ../x
+posix safe | cd src/sub < ../x.rs
+# After the `cd`, the folder is the one it went to.
+posix safe | cd sub && cat < ../../.ssh/id_rsa
+posix safe | cd sub; cat < ../../.ssh/id_rsa
+posix safe | ls && cd sub && cat < ../../.ssh/id_rsa
+# The redirect of the `cd` ends with it: the next one is placed where the line
+# now is.
+posix safe | cd sub < ../x; cat < ../../.ssh/id_rsa
+# The key is not at `a/b/../../../../.ssh`: `b` is opened from `a`, which gives
+# `/home/.ssh/id_rsa`.
+posix safe | cd a && cd b < ../../../../.ssh/id_rsa
+# After `&&`, `|` or `!`.
+posix safe | ls && cd sub < ../x
+posix safe | true | cd sub < ../x
+posix safe | ! cd sub < ../x
+posix finds=read_secret | cat ../../.ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa && ls
+posix finds=read_secret | cd -P sub < ../../.ssh/id_rsa
+posix finds=read_secret | cd < ../../.ssh/id_rsa
+posix finds=read_secret | cd sub/x < ../../.ssh/id_rsa
+posix finds=read_secret | cd -- sub < ../../.ssh/id_rsa
+posix finds=read_secret | chdir sub < ../../.ssh/id_rsa
+posix finds=read_secret | pushd sub < ../../.ssh/id_rsa
+posix finds=read_secret | pushd -P sub < ../../.ssh/id_rsa
+posix finds=read_secret | builtin cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | command cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | < ../../.ssh/id_rsa cd sub
+posix finds=read_secret | cd sub 0< ../../.ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa < ../x
+posix finds=read_secret | cd sub < ../x < ../../.ssh/id_rsa
+posix finds=read_secret | cd sub < ../../.ssh/id_rsa | cat
+posix finds=send_secret | cd sub < ../../.ssh/id_rsa | nc h 1
+posix finds=read_secret | cd ../.. && cat < .ssh/id_rsa
+posix finds=read_secret | cd sub < ~/.ssh/id_rsa
+# Inside a group, a branch, a function, a subshell, and with a folder only
+# known when it runs.
+posix finds=read_secret | { cd sub < ../../.ssh/id_rsa; }
+posix finds=read_secret | (cd sub < ../../.ssh/id_rsa)
+posix finds=read_secret | if true; then cd sub < ../../.ssh/id_rsa; fi
+posix finds=read_secret | f() { cd sub < ../../.ssh/id_rsa; }; f
+posix finds=read_secret | cd "$d" < ../../.ssh/id_rsa
+posix finds=read_secret | cd sub < ../x; cd sub < ../../../.ssh/id_rsa
+# Still found after a `cd` that comes first.
+posix finds=read_secret | cd a && cd b < ../../../.ssh/id_rsa
+# After `&&`, `||`, `|`, `!` or `;`.
+posix finds=read_secret | ls && cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | true && cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | ls || cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | true | cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | ! cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | ls; cd sub < ../../.ssh/id_rsa
+posix finds=read_secret | cd ~ && cd sub < .ssh/id_rsa
+posix finds=read_secret | cd ~/.ssh && cd ~ < id_rsa
+posix finds=read_secret | cd ~/.ssh && cd /tmp < id_rsa
+posix finds=read_secret | cd ~ && cd sub < .ssh/id_rsa | cat
+posix finds=read_secret | cd ~ && cd sub < .ssh/id_rsa && true
+
+# A write on a cd is placed from where the cd starts.
+posix safe | cd ../.. > x
+posix safe | cd sub > ../repo/x
+posix safe | cd sub > out.txt
+posix safe | ls && cd sub > out.txt
+posix safe | cd ~ && cd /tmp > work/repo/out.txt
+posix finds=overwrite | cd sub > ../x
+posix finds=overwrite | cd sub >> ../x
+posix finds=overwrite | cd sub 2> ../x
+posix finds=overwrite | cd sub &> ../x
+posix finds=overwrite | pushd sub > ../x
+posix finds=overwrite | chdir sub > ../x
+posix finds=overwrite | cd sub > ../x && ls
+posix finds=overwrite | cd sub > ~/x
+# After the `cd`, the folder is the one it went to.
+posix finds=overwrite | cd .. && echo hi > x
+# After `&&` or `;`.
+posix finds=overwrite | cd ~ && cd /tmp > .bashrc
+posix finds=overwrite | cd ~/.ssh && cd /tmp > authorized_keys
+posix finds=overwrite | cd ~; cd /tmp > .bashrc
+# A write is a change wherever it is placed.
+posix effect=changes | cd sub > ../x
+
+# A redirect after a here-document start on a cd is placed from where it
+# starts.
+posix safe | cd sub <<EOF > out.txt\nx\nEOF
+posix safe | cd sub <<EOF < ../x\nx\nEOF
+posix finds=read_secret | cd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF
+posix finds=read_secret | cd sub <<-EOF < ../../.ssh/id_rsa\nx\nEOF
+posix finds=read_secret | pushd sub <<EOF < ../../.ssh/id_rsa\nx\nEOF
+posix finds=read_secret | cd sub <<< x < ../../.ssh/id_rsa
+posix finds=read_secret | pushd sub <<< x < ../../.ssh/id_rsa
+posix finds=overwrite | cd sub <<EOF > ../../.bashrc\nx\nEOF
+posix finds=overwrite | cd sub <<-EOF > ../../.bashrc\nx\nEOF
+posix finds=overwrite | pushd sub <<EOF > ../../.bashrc\nx\nEOF
+posix finds=overwrite | cd sub <<< x > ../../.bashrc
+posix finds=overwrite | pushd sub <<< x > ../../.bashrc
+
+# A read on a cd stays in the workspace when its file does, placed from where
+# the cd starts (the paths it lists are in redirect_on_cd.rs).
+posix effect=reads_workspace | cd x < f
+posix effect=reads_workspace | pushd x < f
+posix effect=reads_workspace | cd x && cat < f
+posix effect=reads_workspace | cd x < ../repo/f
+# `../x.rs` from the line's starting folder is outside it.
+posix effect=reads_beyond | cd src/sub < ../x.rs
+posix effect=reads_beyond | cd sub < ../x
+
+# A write on a Set-Location is placed from where it starts.
+powershell safe | Set-Location ..\\.. > x.txt
+powershell safe | cd sub > ..\\repo\\x.txt
+# An argument that does not move the line changes nothing.
+powershell safe | Set-Location $(Get-Item sub) > ..\\repo\\x.txt
+powershell finds=overwrite | Set-Location sub > ..\\x.txt
+powershell finds=overwrite | cd sub > ..\\x.txt
+powershell finds=overwrite | sl sub > ..\\x.txt
+powershell finds=overwrite | Set-Location sub 2> ..\\x.txt
+powershell finds=overwrite | Push-Location sub > ..\\x.txt
+powershell finds=overwrite | Set-Location -Path sub > ..\\x.txt
+powershell finds=overwrite | Set-Location sub >> ..\\x.txt
+powershell finds=overwrite | Set-Location .. ; 'x' > ..\\x.txt
+powershell finds=overwrite | Set-Location $(Get-Item sub) > ..\\x.txt
+powershell finds=overwrite | Set-Location $x > ..\\x.txt
+
+# A write on a cmd cd is placed from where it starts.
+cmd safe | cd ..\\.. > x.txt
+cmd safe | cd sub > ..\\repo\\x.txt
+cmd finds=overwrite | cd sub > ..\\x.txt
+cmd finds=overwrite | chdir sub > ..\\x.txt
+cmd finds=overwrite | pushd sub > ..\\x.txt
+cmd finds=overwrite | > ..\\x.txt cd sub
+cmd finds=overwrite | cd sub 2> ..\\x.txt
+cmd finds=overwrite | cd sub >> ..\\x.txt
+cmd finds=overwrite | cd sub > ..\\x.txt & dir
+
+# A redirect on a cd in a loop or a function is also placed from where it
+# goes. The body runs more than once: the next pass starts where the last
+# one's `cd` went, so the file may be opened from either folder.
+posix safe | for i in 1 2; do cd sub > out.txt; done
+posix safe | f() { cd sub < ../x; }; f; f
+posix finds=overwrite | for i in 1 2; do cd .. > x; done
+posix finds=overwrite | while true; do cd .. > x; done
+posix finds=overwrite | until false; do cd .. > x; done
+posix finds=read_secret | for i in 1 2; do cd .. < ../.ssh/id_rsa; done
+posix finds=read_secret | while true; do cd .. < ../.ssh/id_rsa; done
+posix finds=overwrite | f() { cd .. > x; }; f; f
+posix finds=read_secret | f() { cd .. < ../.ssh/id_rsa; }; f; f
+powershell safe | Set-Location sub > out.txt
+powershell finds=overwrite | foreach ($i in 1..2) { cd .. > x.txt }
+powershell finds=overwrite | 1..2 | ForEach-Object { cd .. > x.txt }
+powershell finds=overwrite | while ($true) { Set-Location .. > x.txt }
+powershell finds=overwrite | for ($i=0; $i -lt 2; $i++) { Set-Location .. > x.txt }
+powershell finds=overwrite | function f { Set-Location .. > x.txt }; f; f
+
+# A redirect on a cd after a cd that may not have moved is also placed from
+# where it goes. The first `cd` may not have moved the line (it failed, ran in
+# a pipeline stage or in the background, or its branch did not run): the
+# second one may start in the folder the line began in.
+posix safe | cd sub && cd .. > x
+posix safe | cd sub; cd .. > ../repo/x
+posix safe | if true; then cd sub > out.txt; fi
+posix finds=overwrite | cd sub || cd .. > ../x
+posix finds=overwrite | cd sub | cd .. > ../x
+posix finds=overwrite | cd sub & cd .. > ../x
+posix finds=overwrite | if false; then cd sub; fi; cd .. > ../x
+posix finds=overwrite | true || cd sub; cd .. > ../x
+powershell finds=overwrite | cd sub || cd .. > ..\\x.txt
+powershell finds=overwrite | if ($false) { cd sub }; cd .. > ..\\x.txt
+powershell finds=overwrite | cd sub | cd .. > ..\\x.txt
+cmd finds=overwrite | cd sub | cd .. > ..\\x.txt
+cmd finds=overwrite | cd sub || cd .. > ..\\x.txt
+
+# A cd run through a wrapper does not move the line, so a later redirect is
+# also placed from where it goes. `env cd`, `nohup cd`, `timeout 5 cd` and the
+# like run the `cd` as a program of its own, and `coproc` runs it in a
+# subshell: the line never moves, so the second `cd` starts in the folder the
+# line began in.
+posix finds=overwrite | env cd a/b/c; cd .. > ../../../home/me/.bashrc
+posix finds=overwrite | nohup cd a/b/c; cd .. > ../../../home/me/.bashrc
+posix finds=overwrite | timeout 5 cd a/b/c; cd .. > ../../../home/me/.bashrc
+posix finds=overwrite | xargs cd a/b/c; cd .. > ../../../home/me/.bashrc
+posix finds=overwrite | coproc cd a/b/c; cd .. > ../../../home/me/.bashrc
+posix finds=overwrite | env cd sub; cd .. > ../x
+posix finds=overwrite | nohup cd sub; cd .. > ../x
+posix finds=overwrite | timeout 5 cd sub; cd .. > ../x
+posix finds=overwrite | xargs cd sub; cd .. > ../x
+posix finds=overwrite | stdbuf -o0 cd sub; cd .. > ../x
+posix finds=overwrite | nice cd sub; cd .. > ../x
+posix finds=overwrite | setsid cd sub; cd .. > ../x
+posix finds=overwrite | chroot / cd sub; cd .. > ../x
+posix finds=overwrite | coproc cd sub; cd .. > ../x
+posix finds=overwrite | coproc { cd sub; }; cd .. > ../x
+posix finds=overwrite | coproc X { cd sub; }; cd .. > ../x
+# `start` opens a new window: the `cd` there does not move this one.
+cmd finds=overwrite | start cd sub & cd .. > ..\\x.txt
+cmd finds=overwrite | start "" cd sub & cd .. > ..\\x.txt
+cmd finds=overwrite | start /b cd sub & cd .. > ..\\x.txt
+cmd finds=overwrite | start cd a\\b\\c & cd .. > ..\\..\\..\\x.txt
+cmd finds=read_secret | start cd sub & cd .. < ..\\..\\.ssh\\id_rsa
+
+# A redirect in or after an argument that moves the line is opened where it
+# has moved. PowerShell runs a `$()` argument in the session first: a redirect
+# inside it is made from the folder that moved the session to, and the
+# command's own redirect file is in the folder the argument moved to, not
+# where the outer command starts.
+powershell finds=overwrite | cd $(cd ..\\..; 'x' > y.txt; 'sub')
+powershell finds=overwrite | cd $(cd ..\\..; 'x' > y.txt)
+powershell finds=overwrite | cd sub $(cd ..\\..; 'x' > y.txt)
+powershell finds=overwrite | cd $(cd ..\\..; $v > y.txt; 'sub')
+powershell finds=overwrite | cd $(cd ..\\..; "x" >> y.txt; 'sub')
+powershell finds=overwrite | cd $(cd ~; 'x' > .profile; 'sub')
+powershell finds=overwrite | Push-Location $(Push-Location ..\\..; 'x' > y.txt; 'sub')
+powershell finds=overwrite | Set-Location $(Set-Location ..\\..; 'x' > y.txt; 'sub')
+powershell finds=overwrite | Set-Location $(cd ..\\..; 'sub') > x.txt
+powershell finds=overwrite | Set-Location $(cd ..\\..; 'sub') > dev\\repo\\x.txt
+powershell finds=overwrite | cd $(cd ..\\..; 'sub') >> x.txt

@@ -1,0 +1,735 @@
+# Files a tool runs on its own (`.vscode/tasks.json`, `.envrc`, `.husky/*`,
+# `.github/workflows/*`...): a line that writes one, at any depth in a
+# workspace folder and however it is spelled, is `overwrite` with "a file a
+# tool runs on its own"; a line that reads one, or deletes one, is safe; and
+# the files that only run when someone asks (`Makefile`, `justfile`,
+# `package.json`) stay safe. Every spelling a review could try is a case.
+# Every writer of every place, and the reads and deletes of each, are made
+# in startup.rs. The format is in CONTRIBUTING.md.
+
+# A protected folder of the caller's in the workspace.
+paths workspace_folder base=posix folder=/home/me/work/repo/.agent words="the agent's settings"
+# The same folder on Windows.
+paths windows_workspace_folder base=windows folder=C:\\Users\\me\\dev\\repo\\.agent words="the agent's settings"
+# A protected folder that is also a place on the list.
+paths github_rules base=posix folder=/home/me/work/repo/.github words="the agent's rules"
+
+# Said in the words of the place: `writes to`, and the verb of the line.
+posix rules=overwrite first=overwrite reason="writes to a file a tool runs on its own" | echo x > .envrc
+posix rules=overwrite first=overwrite reason="writes to a file a tool runs on its own" | tee .vscode/tasks.json
+posix rules=overwrite first=overwrite reason="writes to a file a tool runs on its own" | cp a .envrc
+posix rules=overwrite first=overwrite reason="edits a file a tool runs on its own" | sed -i s/a/b/ .github/workflows/ci.yml
+posix rules=overwrite first=overwrite reason="creates a file a tool runs on its own" | touch .envrc
+posix rules=overwrite first=overwrite reason="truncates a file a tool runs on its own" | truncate -s 0 .envrc
+# A finding names the path as written (its target is in startup.rs).
+posix first=overwrite reason="writes to a file a tool runs on its own" | echo x > .Vscode/Tasks.json
+
+# Spellings of one are one file.
+# Quoted, escaped and expanded.
+posix finds=overwrite | echo x > '.envrc'
+posix finds=overwrite | echo x > ".envrc"
+posix finds=overwrite | echo x > .en""vrc
+posix finds=overwrite | echo x > .e'n'vrc
+posix finds=overwrite | echo x > .env\\rc
+posix finds=overwrite | echo x > $'.envrc'
+posix finds=overwrite | echo x > $'.\\x65nvrc'
+posix finds=overwrite | echo x > $'\\056envrc'
+posix finds=overwrite | echo x > ${EMPTY:-.envrc}
+posix finds=overwrite | echo x > .vscode/"tasks".json
+# Absolute, from home, from the working directory.
+posix finds=overwrite | echo x > /home/me/work/repo/.envrc
+posix finds=overwrite | echo x > ~/work/repo/.envrc
+posix finds=overwrite | echo x > $HOME/work/repo/.envrc
+posix finds=overwrite | echo x > ${HOME}/work/repo/.vscode/tasks.json
+posix finds=overwrite | echo x > ./.envrc
+posix finds=overwrite | echo x > src/../.envrc
+posix finds=overwrite | echo x > ../repo/.envrc
+posix finds=overwrite | echo x > .//.envrc
+posix finds=overwrite | echo x > .vscode//tasks.json
+posix finds=overwrite | echo x > .vscode/./tasks.json
+posix finds=overwrite | echo x > .vscode/x/../tasks.json
+posix finds=overwrite | echo x > /home/me/work/./repo/.vscode/../.envrc
+# Without case (`\u{212a}` is the Kelvin sign, which folds to `k`).
+posix finds=overwrite | echo x > .ENVRC
+posix finds=overwrite | echo x > .VSCode/Tasks.JSON
+posix finds=overwrite | echo x > .GitHub/Workflows/CI.yml
+posix finds=overwrite | echo x > JENKINSFILE
+posix finds=overwrite | echo x > lefthoo\u{212a}.yml
+# A `cd` moves where a relative path is.
+posix finds=overwrite | cd .vscode && echo x > tasks.json
+posix finds=overwrite | cd .github/workflows; echo x > ci.yml
+posix finds=overwrite | cd .github && cp a workflows/ci.yml
+posix finds=overwrite | cd .husky; sed -i s/a/b/ pre-commit
+posix finds=overwrite | cd src && echo x > .envrc
+posix finds=overwrite | cd /home/me/work/repo/.vscode && tee launch.json
+# In a subshell, a group, a pipeline, a loop and a function.
+posix finds=overwrite | (echo x > .envrc)
+posix finds=overwrite | { echo x > .envrc; }
+posix finds=overwrite | true && echo x > .envrc
+posix finds=overwrite | cat a | tee .envrc
+posix finds=overwrite | for f in a b; do echo x > .envrc; done
+posix finds=overwrite | f() { echo x > .envrc; }; f
+posix finds=overwrite | sh -c 'echo x > .envrc'
+posix finds=overwrite | bash -c "echo x > .vscode/tasks.json"
+posix finds=overwrite | cat <<'EOF' > .envrc\nx\nEOF
+posix finds=overwrite | sudo tee .envrc
+# Several at once.
+posix finds=overwrite | cp a b .husky/
+posix finds=overwrite | tee a.txt .envrc
+
+# A Mac reads its links and its fold (`\u{17f}` is the long s, which folds to
+# `s`).
+posix@macos finds=overwrite | echo x > .envrc
+posix@macos finds=overwrite | echo x > .ENVRC
+posix@macos finds=overwrite | echo x > .VSCODE/TASKS.JSON
+posix@macos finds=overwrite | echo x > /Users/me/dev/repo/.envrc
+posix@macos finds=overwrite | echo x > ~/dev/repo/.github/workflows/ci.yml
+posix@macos finds=overwrite | echo x > /System/Volumes/Data/Users/me/dev/repo/.envrc
+posix@macos finds=overwrite | echo x > '/Volumes/Macintosh HD/Users/me/dev/repo/.vscode/tasks.json'
+posix@macos finds=overwrite | echo x > '/Volumes/Macintosh HD - Data/Users/me/dev/repo/.husky/pre-commit'
+posix@macos finds=overwrite | echo x > ../../../../System/Volumes/Data/Users/me/dev/repo/.envrc
+posix@macos finds=overwrite | echo x > .v\u{17f}code/tasks.json
+posix@macos finds=overwrite | sed -i '' s/a/b/ .envrc
+posix@macos finds=overwrite | cp a .GitHub/Workflows/x.yml
+posix@macos safe | cat .envrc
+posix@macos safe | rm .envrc
+posix@macos safe | echo x > Makefile
+
+# A write beyond the workspace keeps its own words.
+posix rules=overwrite first=overwrite reason="writes to a file outside the workspace" | echo x > /home/me/other/.envrc
+posix rules=overwrite first=overwrite reason="writes to a file outside the workspace" | echo x > ~/.vscode/tasks.json
+posix rules=overwrite first=overwrite reason="writes to a system folder" | echo x > /etc/.envrc
+posix rules=overwrite first=overwrite reason="writes to the repository's history" | echo x > .git/.envrc
+posix rules=overwrite first=overwrite reason="writes to your SSH keys" | echo x > ~/.ssh/.envrc
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | echo x > ~/.bashrc
+# A temporary file is the agent's own.
+posix safe | echo x > /tmp/x/.envrc
+posix safe | echo x > /tmp/.vscode/tasks.json
+posix safe | cp a /var/tmp/x/.github/workflows/ci.yml
+posix safe | echo x > $TMPDIR/.envrc
+
+# A protected path and the history keep their words.
+posix@github_rules rules=overwrite first=overwrite reason="writes to the agent's rules" | echo x > .github/workflows/ci.yml
+posix@github_rules rules=overwrite first=overwrite reason="writes to a file a tool runs on its own" | echo x > .vscode/tasks.json
+
+# A file lands at its own name in a folder.
+posix safe | cp a.txt .vscode/
+posix safe | cp a.txt .husky-old/
+posix safe | cp -r a .vscode-x
+posix safe | cp lefthook.yml.bak sub/
+posix safe | cp .envrc /tmp/
+posix safe | mv Makefile sub/
+posix safe | cp *.md docs/
+posix safe | cp *.yaml conf/
+posix safe | cp *.yml deploy/
+posix safe | mv *.json dist/
+posix safe | cp 'x*/.env' sub/
+posix finds=overwrite | cp lefthook.yml sub/
+posix finds=overwrite | cp a/lefthook.yml sub/
+posix finds=overwrite | cp a/.envrc sub/
+posix finds=overwrite | cp a/.envrc .
+posix finds=overwrite | cp a/.envrc ./
+posix finds=overwrite | cp a/tasks.json .vscode/
+posix finds=overwrite | cp -t .vscode a/tasks.json
+posix finds=overwrite | cp a/ci.yml .github/workflows/
+posix finds=overwrite | cp a/pre-commit .husky
+posix finds=overwrite | mv a/.envrc sub/
+posix finds=overwrite | mv x/Jenkinsfile .
+posix finds=overwrite | install a/.envrc sub/
+posix finds=overwrite | ln -s a/.envrc sub/
+posix finds=overwrite | ln -sf a/Jenkinsfile sub/
+posix finds=overwrite | cp a/.envrc a/lefthook.yml sub/
+posix finds=overwrite | cp .envrc .vscode/tasks.json sub/
+
+# A recursive copy can replace what is below (and `cp -r a .vscode-x` is
+# safe, above).
+posix safe | cp -r src dist
+posix safe | cp -r src dist/
+posix safe | cp -R src dist
+posix safe | cp -a src build
+posix safe | cp -r a/. src
+posix safe | cp -r a .githubx
+posix safe | cp -r a .config
+posix safe | rsync -a src/ dist/
+posix safe | cp -r ~/.config dist/
+posix safe | cp -r x /tmp/.github
+posix finds=overwrite | cp -r a .github
+posix finds=overwrite | cp -r a .github/
+posix finds=overwrite | cp -r a/. .github
+posix finds=overwrite | cp -R a .vscode
+posix finds=overwrite | cp -a a .idea
+posix finds=overwrite | cp -a a .cursor
+posix finds=overwrite | cp -r a sub/.github
+posix finds=overwrite | cp -r a .GitHub
+posix finds=overwrite | cp -r a src/../.vscode
+posix finds=overwrite | cp -r a ~/work/repo/.github
+posix finds=overwrite | cp -r a .github/workflows
+posix finds=overwrite | cp -r a .husky
+posix finds=overwrite | cp --recursive a .github
+posix finds=overwrite | cp -rt .github a
+posix finds=overwrite | cp -r .github sub/
+posix finds=overwrite | cp -r .vscode sub/
+posix finds=overwrite | cp -r a/.github .
+posix finds=overwrite | cp -r a/.github/ sub/
+posix finds=overwrite | rsync -a a/ .github/
+posix finds=overwrite | rsync -a a .vscode
+
+# A pattern that can pick one is one.
+posix safe | sed -i s/a/b/ src/*.rs
+posix safe | sed -i s/a/b/ *.md
+posix safe | sed -i s/a/b/ *.json
+posix safe | sed -i s/a/b/ src/*
+posix safe | tee src/*
+posix safe | echo x > src/*.txt
+posix safe | sed -i s/a/b/ .vscode/e*
+posix safe | sed -i s/a/b/ .github/*.md
+posix safe | sed -i s/a/b/ lefthook.y
+posix safe | sed -i s/a/b/ Makefile*
+posix safe | sed -i s/a/b/ package.*
+posix finds=overwrite | sed -i s/a/b/ .github/workflows/*
+posix finds=overwrite | sed -i s/a/b/ .github/workflows/*.yml
+posix finds=overwrite | echo x > .github/workflows/*
+posix finds=overwrite | tee .husky/*
+posix finds=overwrite | sed -i s/a/b/ .vscode/*.json
+posix finds=overwrite | sed -i s/a/b/ .vscode/*
+posix finds=overwrite | sed -i s/a/b/ .vscode/t*
+posix finds=overwrite | sed -i s/a/b/ .vscode/?asks.json
+posix finds=overwrite | sed -i s/a/b/ .vscode/[t]asks.json
+posix finds=overwrite | sed -i s/a/b/ .github/*/ci.yml
+posix finds=overwrite | sed -i s/a/b/ src/.vscode/*.json
+posix finds=overwrite | sed -i s/a/b/ */.vscode/tasks.json
+posix finds=overwrite | sed -i s/a/b/ *.yml
+posix finds=overwrite | sed -i s/a/b/ lefthook.*
+posix finds=overwrite | sed -i s/a/b/ Jenkins*
+posix finds=overwrite | sed -i s/a/b/ */Jenkinsfile
+posix finds=overwrite | sed -i s/a/b/ **/Jenkinsfile
+posix finds=overwrite | cp a .vscode/*
+posix finds=overwrite | cp a .github/workflows/*
+# A wildcard that matches a leading dot where the shell says so.
+posix finds=overwrite | shopt -s dotglob; sed -i s/a/b/ */tasks.json
+posix finds=overwrite | shopt -s dotglob; sed -i s/a/b/ *.json
+posix finds=overwrite | shopt -s dotglob; tee .v*/launch.json
+posix finds=overwrite | sed -i s/a/b/ .e*
+posix finds=overwrite | sed -i s/a/b/ .?nvrc
+posix finds=overwrite | echo x > .env*
+posix finds=overwrite | echo x > .*/mcp.json
+# A `..` after a wildcard part still climbs.
+posix finds=overwrite | sed -i s/a/b/ src/*/../../.envrc
+
+# What is known only when it runs is risky, as before.
+posix finds=overwrite | echo x > $F
+posix finds=overwrite | echo x > "$DIR/.envrc"
+posix finds=overwrite | echo x > $(pwd)/.envrc
+posix finds=overwrite | echo x > ~root/.envrc
+posix finds=overwrite | echo x > {.envrc,x}
+
+# cmd reads every spelling Windows resolves to one name.
+cmd safe | echo x > VSCODE~1\\EXTENS~1.JSO
+cmd safe | echo x > PROGRA~1\\x
+cmd safe | echo x > ENVRCX~1
+cmd safe | del VSCODE~1\\TASKS~1.JSO
+cmd safe | type VSCODE~1\\TASKS~1.JSO
+cmd finds=overwrite | echo x > .ENVRC
+cmd finds=overwrite | echo x > .Envrc.
+cmd finds=overwrite | echo x > .envrc.
+cmd finds=overwrite | echo x > .vscode/tasks.json
+cmd finds=overwrite | echo x > .vscode\\\\tasks.json
+cmd finds=overwrite | echo x > .VSCODE\\TASKS.JSON
+cmd finds=overwrite | echo x > .vscode.\\tasks.json
+cmd finds=overwrite | echo x > C:\\Users\\me\\dev\\repo\\.envrc
+cmd finds=overwrite | echo x > c:\\users\\ME\\dev\\repo\\.ENVRC
+cmd finds=overwrite | echo x > C:/Users/me/dev/repo/.envrc
+cmd finds=overwrite | echo x > \\Users\\me\\dev\\repo\\.envrc
+cmd finds=overwrite | echo x > \\\\?\\C:\\Users\\me\\dev\\repo\\.envrc
+cmd finds=overwrite | echo x > %USERPROFILE%\\dev\\repo\\.envrc
+cmd finds=overwrite | echo x > ~\\dev\\repo\\.envrc
+cmd finds=overwrite | echo x > C:.envrc
+cmd finds=overwrite | echo x > VSCODE~1\\TASKS~1.JSO
+cmd finds=overwrite | echo x > VSCODE~1\\tasks.json
+cmd finds=overwrite | echo x > .vscode\\TASKS~1.JSO
+cmd finds=overwrite | echo x > ENVRC~1
+cmd finds=overwrite | echo x > GITHUB~1\\WORKFL~1\\ci.yml
+cmd finds=overwrite | echo x > GITHUB~1\\workflows\\ci.yml
+cmd finds=overwrite | echo x > HUSKY~1\\pre-commit
+cmd finds=overwrite | echo x > GITLAB~1.YML
+cmd finds=overwrite | echo x > LEFTHO~1.YML
+cmd finds=overwrite | echo x > JENKIN~1
+cmd finds=overwrite | echo x > DEVCON~1\\devcontainer.json
+cmd finds=overwrite | echo x > VS1A2B~1\\tasks.json
+cmd finds=overwrite | echo x > src\\ENVRC~1
+cmd finds=overwrite | cd .vscode & echo x > tasks.json
+cmd finds=overwrite | cd .github\\workflows && copy a ci.yml
+cmd finds=overwrite | cd /d C:\\Users\\me\\dev\\repo\\.vscode && echo x > tasks.json
+cmd finds=overwrite | echo x>.envrc
+cmd finds=overwrite | echo x > .en^vrc
+cmd finds=overwrite | echo x > .vscode\\tasks.json 2>&1
+cmd finds=overwrite | cmd /c "echo x > .envrc"
+
+# cmd: recursive copies and patterns.
+cmd safe | xcopy /s /y a dist
+cmd safe | robocopy a dist /E
+cmd safe | copy a dist\\
+cmd safe | xcopy a .githubx\\ /s
+cmd finds=overwrite | xcopy /s /y a .github
+cmd finds=overwrite | xcopy /e /y a .vscode\\
+cmd finds=overwrite | robocopy a .github /E
+cmd finds=overwrite | robocopy a GITHUB~1 /E
+cmd finds=overwrite | xcopy /s a sub\\.github
+cmd finds=overwrite | copy a .vscode\\*
+cmd finds=overwrite | copy a .github\\workflows\\*.yml
+cmd finds=overwrite | copy lefthook.yml sub\\
+cmd finds=overwrite | copy a\\.envrc sub\\
+cmd finds=overwrite | copy a\\tasks.json .vscode\\
+cmd finds=overwrite | copy a\\ci.yml .github\\workflows\\
+cmd finds=overwrite | copy a *.yml
+cmd finds=overwrite | echo x > *.json
+
+# PowerShell reads every spelling Windows resolves to one name.
+powershell safe | Set-Content VSCODE~1\\EXTENS~1.JSO x
+powershell safe | Set-Content PROGRA~1\\x x
+powershell safe | Set-Content ENVRCX~1 x
+powershell safe | Set-Content .envrcx x
+powershell finds=overwrite | Set-Content .ENVRC x
+powershell finds=overwrite | Set-Content .envrc. x
+powershell finds=overwrite | Set-Content '.envrc ' x
+powershell finds=overwrite | Set-Content .vscode/tasks.json x
+powershell finds=overwrite | Set-Content .VSCODE\\TASKS.JSON x
+powershell finds=overwrite | Set-Content C:\\Users\\me\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Content c:\\users\\ME\\dev\\repo\\.ENVRC x
+powershell finds=overwrite | Set-Content C:/Users/me/dev/repo/.envrc x
+powershell finds=overwrite | Set-Content \\\\?\\C:\\Users\\me\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Content ~\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Content $HOME\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Content $env:USERPROFILE\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Content C:.envrc x
+powershell finds=overwrite | Set-Content VSCODE~1\\TASKS~1.JSO x
+powershell finds=overwrite | Set-Content VSCODE~1\\tasks.json x
+powershell finds=overwrite | Set-Content ENVRC~1 x
+powershell finds=overwrite | Set-Content GITHUB~1\\WORKFL~1\\ci.yml x
+powershell finds=overwrite | Set-Content HUSKY~1\\pre-commit x
+powershell finds=overwrite | Set-Content JENKIN~1 x
+powershell finds=overwrite | Set-Content VS1A2B~1\\tasks.json x
+powershell finds=overwrite | Set-Content .en`vrc x
+powershell finds=overwrite | Set-Content FileSystem::.envrc x
+powershell finds=overwrite | Set-Content Microsoft.PowerShell.Core\\FileSystem::C:\\Users\\me\\dev\\repo\\.envrc x
+powershell finds=overwrite | Set-Location .vscode; Set-Content tasks.json x
+powershell finds=overwrite | cd .github\\workflows; Out-File ci.yml
+powershell finds=overwrite | Push-Location .husky; Set-Content pre-commit x
+powershell finds=overwrite | & { Set-Content .envrc x }
+powershell finds=overwrite | pwsh -Command "Set-Content .envrc x"
+powershell finds=overwrite | powershell -NoProfile -Command "'x' | Out-File .vscode\\tasks.json"
+
+# PowerShell: recursive copies and patterns.
+powershell safe | Copy-Item -Recurse a dist
+powershell safe | Copy-Item -Recurse a .githubx
+powershell safe | Set-Content src\\*.rs x
+powershell safe | Set-Content *.md x
+powershell safe | Set-Content src\\* x
+powershell finds=overwrite | Copy-Item -Recurse a .github
+powershell finds=overwrite | Copy-Item -Recurse a .vscode\\
+powershell finds=overwrite | Copy-Item -Recurse a GITHUB~1
+powershell finds=overwrite | Copy-Item -Recurse a sub\\.github
+powershell finds=overwrite | Copy-Item -Recurse .vscode sub\\
+powershell finds=overwrite | Copy-Item lefthook.yml sub\\
+powershell finds=overwrite | Copy-Item a\\.envrc sub\\
+powershell finds=overwrite | Copy-Item a\\tasks.json .vscode\\
+powershell finds=overwrite | Copy-Item a .vscode\\*
+powershell finds=overwrite | Set-Content .github\\workflows\\*.yml x
+powershell finds=overwrite | Set-Content .husky\\* x
+powershell finds=overwrite | Set-Content *.yml x
+powershell finds=overwrite | Set-Content *\\tasks.json x
+powershell finds=overwrite | Set-Content *.json x
+powershell finds=overwrite | Set-Content .e* x
+
+# A destination that may be a file as well as a folder is judged as the
+# name it is: `cp .envrc .envrc.bak` is an everyday backup, and which of the
+# two a name is cannot be read. A folder that is one for certain (a trailing
+# separator, `.`, `..`, `-t`, several sources) is read as one (and
+# `cp a/.envrc sub/` and `cp -t .vscode a/tasks.json` are cases above).
+posix safe | cp .envrc .envrc.bak
+posix safe | cp .envrc backup
+posix safe | cp -r .vscode backup
+posix safe | cp a/lefthook.yml sub
+posix safe | mv a/.envrc sub
+posix safe | mv .vscode/tasks.json old-tasks
+posix safe | ln -s a/.envrc link
+posix finds=overwrite | cp a/.envrc sub/.
+posix finds=overwrite | cp a/.envrc ..
+posix finds=overwrite | cp -t sub a/.envrc
+posix finds=overwrite | cp --target-directory=sub a/.envrc
+posix finds=overwrite | cp -rt .vscode a
+posix finds=overwrite | mv -t .vscode a/tasks.json
+posix finds=overwrite | cp a/.envrc b/Jenkinsfile sub
+posix finds=overwrite | mv a/.envrc a/other sub
+
+# Reading one only reads, and what it reads is the project's own: a file a
+# tool runs on its own is no secret, so its `Reach` stays `Workspace`.
+# Writing one changes.
+posix effect=reads_workspace | cat .envrc
+posix effect=reads_workspace | cat .vscode/tasks.json
+posix effect=reads_workspace | grep x .github/workflows/*
+posix effect=reads_workspace | head -n 3 .husky/pre-commit
+posix effect=reads_workspace | wc -l lefthook.yml
+posix effect=reads_workspace | diff .envrc .envrc.bak
+posix effect=reads_workspace | ls -la .github/workflows
+posix effect=reads_workspace | git diff -- .github/workflows/ci.yml
+posix effect=changes | echo x > .envrc
+posix effect=changes | tee .vscode/tasks.json
+posix effect=changes | cp a .github/workflows/ci.yml
+posix effect=changes | sed -i s/a/b/ .husky/pre-commit
+posix effect=changes | cp -r a .github
+posix effect=changes | cat .envrc > .envrc.new
+cmd effect=reads_workspace | type .envrc
+cmd effect=reads_workspace | type .vscode\\tasks.json
+cmd effect=reads_workspace | findstr x .github\\workflows\\ci.yml
+powershell effect=reads_workspace | Get-Content .envrc
+powershell effect=reads_workspace | Select-String x .github\\workflows\\ci.yml
+# Reading the places all together (each place alone is read in
+# startup.rs).
+posix effect=reads_workspace | ls .github/workflows
+posix effect=reads_workspace | ls -la .husky .githooks .devcontainer
+posix effect=reads_workspace | grep -r x .github
+posix effect=reads_workspace | cat .github/workflows/*
+posix effect=reads_workspace | cat .vscode/*.json
+posix effect=reads_workspace | cat *.code-workspace
+posix effect=reads_workspace | cat **/.envrc
+posix effect=reads_workspace | find . -name Jenkinsfile
+# Beyond the workspace the same names are not the project's.
+posix effect=reads_beyond | cat ../.envrc
+posix effect=reads_beyond | cat ~/.envrc
+posix effect=reads_beyond | cat /etc/.vscode/tasks.json
+
+# More ways to write one.
+posix finds=overwrite | exec 3> .envrc
+posix finds=overwrite | exec 3>>.vscode/tasks.json
+posix finds=overwrite | echo x 1> .envrc
+posix finds=overwrite | echo x >.envrc
+posix finds=overwrite | echo x>.envrc
+posix finds=overwrite | rsync a .envrc
+posix finds=overwrite | rsync -a a/ .github/workflows/
+posix finds=overwrite | rsync a b/Jenkinsfile
+posix finds=overwrite | awk '{print}' a > .envrc
+posix finds=overwrite | rm .envrc && echo x > .envrc
+posix finds=overwrite | if true; then echo x > .envrc; fi
+posix finds=overwrite | while read l; do echo $l >> .envrc; done < a
+posix finds=overwrite | xargs -I{} cp {} .envrc < list
+posix finds=overwrite | echo x | sudo -u me tee .envrc
+posix finds=overwrite | env X=1 tee .envrc
+posix finds=overwrite | command tee .envrc
+posix finds=overwrite | nohup tee .envrc
+posix finds=overwrite | time sh -c 'echo x > .envrc'
+
+# An empty folder is no code: making the folder a place is not a finding
+# (`mkdir -p .github/workflows` comes before every workflow), and what is
+# written into it is.
+posix safe | mkdir .github/workflows
+posix safe | mkdir -p .github/workflows
+posix safe | mkdir -p .husky
+posix safe | mkdir .vscode
+posix safe | mkdir -p .devcontainer
+posix safe | mkdir -p .idea/runConfigurations
+posix safe | mkdir -p src/.github/workflows
+posix safe | mkdir -p .GitHub/Workflows
+posix safe | mkdir -m 755 .husky
+posix finds=overwrite | touch .envrc
+posix finds=overwrite | touch .husky/pre-commit
+posix finds=overwrite | mkfifo .envrc
+posix finds=overwrite | mkdir -p .github/workflows && echo x > .github/workflows/ci.yml
+posix finds=overwrite | mkdir -p /home/me/other/.husky
+cmd safe | md .github\\workflows
+cmd safe | md .husky
+cmd safe | md GITHUB~1\\WORKFL~1
+cmd safe | md src\\.devcontainer
+cmd finds=overwrite | md .github\\workflows & echo x > .github\\workflows\\ci.yml
+powershell safe | New-Item -ItemType Directory .github\\workflows
+powershell safe | New-Item -ItemType Directory -Path .husky -Force
+powershell safe | ni -ItemType Directory .github\\workflows
+powershell safe | New-Item -Path .devcontainer -ItemType Directory
+powershell safe | New-Item -ItemType dir .vscode
+powershell finds=overwrite | New-Item .envrc
+powershell finds=overwrite | New-Item -ItemType File .github\\workflows\\ci.yml
+powershell finds=overwrite | New-Item -ItemType File .husky
+
+# A rename lands the file at the new name, in the source's folder: what a
+# `Move-Item` and an `mv` find, a rename finds too.
+powershell safe | Rename-Item a b
+powershell safe | Rename-Item old.txt new.txt
+powershell safe | Rename-Item -Path a.txt -NewName b.txt
+powershell safe | ren a.txt b.txt
+powershell safe | rni a.txt b.txt
+powershell safe | Rename-Item README.md Readme.md
+powershell safe | Rename-Item .vscode\\old.json other.json
+powershell safe | Rename-Item .vscode\\old.json extensions.json
+powershell safe | Rename-Item sub\\a .envrcx
+powershell safe | Rename-Item .envrc old.txt
+powershell safe | Rename-Item -Path .husky -NewName old-husky
+powershell safe | New-Item -Path .vscode -Name extensions.json
+powershell safe | New-Item -ItemType SymbolicLink -Path link -Value target
+powershell safe | New-Item -ItemType Directory -Path .github -Name workflows
+powershell safe | New-Item -ItemType Directory -Name .husky
+powershell safe | New-Item -Type Directory .githooks
+powershell finds=overwrite | Rename-Item a .envrc
+powershell finds=overwrite | Rename-Item -Path a -NewName .envrc
+powershell finds=overwrite | Rename-Item -LiteralPath a -NewName .envrc
+powershell finds=overwrite | Rename-Item -NewName .envrc -Path a
+powershell finds=overwrite | Rename-Item -Path:a -NewName:.envrc
+powershell finds=overwrite | ren a .envrc
+powershell finds=overwrite | rni a .envrc
+powershell finds=overwrite | REN a .ENVRC
+powershell finds=overwrite | Rename-Item a .envrc.
+powershell finds=overwrite | Rename-Item a ENVRC~1
+powershell finds=overwrite | Rename-Item a '.envrc '
+powershell finds=overwrite | Rename-Item sub\\a .envrc
+powershell finds=overwrite | Rename-Item C:\\Users\\me\\dev\\repo\\sub\\a .envrc
+powershell finds=overwrite | Rename-Item .vscode\\old.json tasks.json
+powershell finds=overwrite | Rename-Item .vscode\\old.json TASKS~1.JSO
+powershell finds=overwrite | Rename-Item .vscode\\old.json settings.json
+powershell finds=overwrite | Rename-Item .github\\workflows\\a.txt ci.yml
+powershell finds=overwrite | Rename-Item .github\\a workflows
+powershell finds=overwrite | Rename-Item old .husky
+powershell finds=overwrite | Rename-Item old Jenkinsfile
+powershell finds=overwrite | Rename-Item old proj.code-workspace
+powershell finds=overwrite | Rename-Item old mise.toml
+powershell finds=overwrite | Get-ChildItem *.txt | Rename-Item -NewName .envrc
+# A name or a folder only known when it runs.
+powershell finds=overwrite | Rename-Item a $name
+powershell finds=overwrite | Rename-Item $path .envrc
+powershell finds=overwrite | Get-ChildItem | Rename-Item -NewName { $_.Name + 'x' }
+# Links.
+powershell finds=overwrite | New-Item -ItemType SymbolicLink -Path .envrc -Value a
+powershell finds=overwrite | New-Item -ItemType HardLink -Path .envrc -Value a
+powershell finds=overwrite | New-Item -ItemType Junction -Path .husky -Value x
+powershell finds=overwrite | New-Item -Type SymbolicLink -Path .vscode\\tasks.json -Value a
+powershell finds=overwrite | ni -Type SymbolicLink .envrc -Value a
+powershell finds=overwrite | ni -ItemType SymbolicLink .envrc -Value a
+powershell finds=overwrite | New-Item -ItemType SymbolicLink -Name .envrc -Value a
+powershell finds=overwrite | New-Item -ItemType SymbolicLink -Path l -Value C:\\Users\\me\\.ssh
+# `-Name` in the folder `-Path` names.
+powershell finds=overwrite | New-Item -Path .vscode -Name tasks.json
+powershell finds=overwrite | New-Item -Name .envrc
+powershell finds=overwrite | New-Item -Path . -Name .envrc -ItemType File
+powershell finds=overwrite | New-Item -ItemType File -Path .github\\workflows -Name ci.yml
+powershell finds=overwrite | New-Item -Path .github\\workflows\\ -Name ci.yml
+powershell finds=overwrite | New-Item -Path GITHUB~1\\workflows -Name ci.yml
+
+# cmd renames and links write the new name.
+cmd safe | ren a b
+cmd safe | ren a.txt b.txt
+cmd safe | rename a.txt b.txt
+cmd safe | ren sub\\a .envrcx
+cmd safe | ren .vscode\\old.json extensions.json
+cmd safe | ren .envrc old.txt
+cmd safe | ren .husky old-husky
+cmd safe | mklink link target
+cmd safe | mklink /d link target
+cmd safe | mklink /h link target
+cmd safe | mklink /j link target
+cmd finds=overwrite | ren a .envrc
+cmd finds=overwrite | rename a .envrc
+cmd finds=overwrite | REN a .ENVRC
+cmd finds=overwrite | ren a .envrc.
+cmd finds=overwrite | ren a ENVRC~1
+cmd finds=overwrite | ren sub\\a .envrc
+cmd finds=overwrite | ren C:\\Users\\me\\dev\\repo\\sub\\a .envrc
+cmd finds=overwrite | ren .vscode\\old.json tasks.json
+cmd finds=overwrite | ren .vscode\\old.json settings.json
+cmd finds=overwrite | ren .github\\workflows\\a.txt ci.yml
+cmd finds=overwrite | ren old .husky
+cmd finds=overwrite | ren old Jenkinsfile
+cmd finds=overwrite | ren old %NAME%
+cmd finds=overwrite | ren %OLD% .envrc
+cmd finds=overwrite | cd .vscode & ren old.json tasks.json
+cmd finds=overwrite | mklink .envrc a
+cmd finds=overwrite | mklink /h .envrc a
+cmd finds=overwrite | mklink /H .envrc a
+cmd finds=overwrite | mklink /d .github\\workflows x
+cmd finds=overwrite | mklink /D .husky x
+cmd finds=overwrite | mklink /j .husky x
+cmd finds=overwrite | mklink /d /j .husky x
+cmd finds=overwrite | mklink .vscode\\tasks.json a
+cmd finds=overwrite | mklink /h .vscode/tasks.json a
+cmd finds=overwrite | mklink ENVRC~1 a
+cmd finds=overwrite | mklink /d link C:\\Users\\me\\.ssh
+cmd finds=overwrite | mklink /h link C:\\Users\\me\\.ssh\\id_rsa
+
+# A POSIX rename writes the new name.
+posix safe | rename .htm .html *.htm
+posix safe | rename -n a b f
+posix safe | rename -v old new old.txt
+posix safe | rename -vn old new old.txt
+posix safe | rename --verbose --no-act old new old.txt
+posix safe | rename -o old new old.txt
+posix safe | rename -s old new old.txt
+posix safe | rename -i old new old.txt
+posix safe | rename --no-overwrite --symlink --interactive old new old.txt
+posix safe | rename old .envrcx old
+posix safe | rename -- old new old
+posix safe | rename -a o x old
+posix safe | rename.ul old new old.txt
+posix safe | rename.ul -v .htm .html a.htm
+posix safe | rename .htm .html a.htm b.htm
+posix safe | ln -s a b
+posix safe | ln a b
+posix finds=overwrite | rename old .envrc old
+posix finds=overwrite | rename.ul old .envrc old
+posix finds=overwrite | rename -v old .envrc old
+posix finds=overwrite | rename -a old .envrc old
+posix finds=overwrite | rename --all old .envrc old
+posix finds=overwrite | rename -vn old .envrc old
+posix finds=overwrite | rename -- old .envrc old
+posix finds=overwrite | rename old .envrc sub/old
+posix finds=overwrite | rename old tasks.json .vscode/old
+posix finds=overwrite | rename old .ENVRC old
+posix finds=overwrite | rename old ci.yml .github/workflows/old
+posix finds=overwrite | rename old .envrc a b old
+# A `TO` only known when it runs, and a file too.
+posix finds=overwrite | rename old $NEW old
+posix finds=overwrite | rename $FROM .envrc old
+posix finds=overwrite | rename old .envrc $F
+# An option that is not read changes what the new name is: an option that
+# takes the last one (`-l X Jenkinsfile X.d/X`).
+posix finds=overwrite | rename -l X Jenkinsfile X.d/X
+posix finds=unknown | rename -l X Jenkinsfile X.d/X
+posix finds=overwrite | rename -x old .envrc old
+posix finds=unknown | rename -x old .envrc old
+posix finds=unknown | rename -V old .envrc old
+posix finds=overwrite | rename --last old .envrc old
+posix finds=unknown | rename --last old .envrc old
+posix finds=unknown | rename -vx old new old.txt
+posix finds=unknown | rename --verbose=1 old new old.txt
+posix finds=overwrite | rename --nopath old .envrc a/old
+posix finds=unknown | rename -d old .envrc a/old
+# Perl's `rename` takes an expression, which is code the guard does not
+# read: it is never worked out to a new name.
+posix finds=unknown | rename 's/a/b/' x
+posix finds=overwrite | rename 's/a/b/' x
+posix finds=unknown | rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | rename 's/^tmp$/.envrc/' tmp
+posix finds=overwrite | rename 's/^tmp$/.envrc/' tmp
+posix finds=overwrite | rename 's/old/.envrc/' sub/old
+posix finds=overwrite | rename 's/x\\.txt$/.envrc/' x.txt
+posix finds=overwrite | rename 's/a/.vscode\\/tasks.json/' a
+posix finds=overwrite | rename 's|a|.vscode/tasks.json|' a
+posix finds=unknown | rename 's/\\.htm$/.html/' *.htm
+posix finds=unknown | rename 's/ /_/g' *
+posix finds=unknown | rename 's/foo/bar/' *
+posix finds=unknown | rename 's/(.*)/$1/' a
+posix finds=unknown | rename 's/a/b/i' x
+posix finds=unknown | rename 's/a/b/e' x
+posix finds=unknown | rename 'y/a-z/A-Z/' x
+posix finds=overwrite | rename 's/a+/.envrc/' a
+posix finds=overwrite | rename 's/a/b/' $F
+posix finds=unknown | rename '$_ .= q(x)' a
+posix finds=unknown | rename 'lc' a
+posix finds=unknown | rename old new
+posix finds=overwrite | rename old new
+posix finds=unknown | rename -e 's/a/.envrc/' a
+posix finds=overwrite | rename -e 's/a/.envrc/' a
+posix finds=overwrite | rename -e 's/a/b/' -e 's/b/.envrc/' a
+posix finds=unknown | rename --expr='s/a/.envrc/' a
+posix finds=overwrite | rename --expr='s/a/.envrc/' a
+posix finds=unknown | rename -n 's/a/.envrc/' a
+posix finds=overwrite | rename -n 's/a/.envrc/' a
+posix finds=unknown | perl-rename 's/x/.envrc/' x
+posix finds=overwrite | perl-rename 's/x/.envrc/' x
+posix finds=unknown | perl-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | perl-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | perl-rename -n 's/a/b/' a
+posix finds=unknown | perl-rename old .envrc old
+posix finds=overwrite | perl-rename old .envrc old
+posix finds=unknown | perl-rename -e 's/a/b/' a
+posix finds=unknown | prename 's/x/.envrc/' x
+posix finds=overwrite | prename 's/x/.envrc/' x
+posix finds=unknown | prename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | prename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | prename -n 's/a/b/' a
+posix finds=unknown | prename old .envrc old
+posix finds=overwrite | prename old .envrc old
+posix finds=unknown | prename -e 's/a/b/' a
+posix finds=unknown | file-rename 's/x/.envrc/' x
+posix finds=overwrite | file-rename 's/x/.envrc/' x
+posix finds=unknown | file-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | file-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | file-rename -n 's/a/b/' a
+posix finds=unknown | file-rename old .envrc old
+posix finds=overwrite | file-rename old .envrc old
+posix finds=unknown | file-rename -e 's/a/b/' a
+posix finds=unknown | /usr/bin/prename 's/x/.envrc/' x
+posix finds=overwrite | /usr/bin/prename 's/x/.envrc/' x
+posix finds=unknown | /usr/bin/prename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | /usr/bin/prename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | /usr/bin/prename -n 's/a/b/' a
+posix finds=unknown | /usr/bin/prename old .envrc old
+posix finds=overwrite | /usr/bin/prename old .envrc old
+posix finds=unknown | /usr/bin/prename -e 's/a/b/' a
+posix finds=unknown | /usr/bin/perl-rename 's/x/.envrc/' x
+posix finds=overwrite | /usr/bin/perl-rename 's/x/.envrc/' x
+posix finds=unknown | /usr/bin/perl-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=overwrite | /usr/bin/perl-rename 's/x/@{[system q(rm -rf ~)]}/' x
+posix finds=unknown | /usr/bin/perl-rename -n 's/a/b/' a
+posix finds=unknown | /usr/bin/perl-rename old .envrc old
+posix finds=overwrite | /usr/bin/perl-rename old .envrc old
+posix finds=unknown | /usr/bin/perl-rename -e 's/a/b/' a
+posix finds=unknown | PRENAME 's/x/.envrc/' x
+posix finds=overwrite | prename 's/agent/b/' .agent
+posix finds=unknown | rename -d 's/^x/.envrc/' a/x
+posix finds=overwrite | rename -d 's/^x/.envrc/' a/x
+posix finds=unknown | rename --nopath 's/^x/.envrc/' a/x
+posix finds=overwrite | rename --nopath 's/^x/.envrc/' a/x
+posix finds=unknown | rename -v 's/a/.envrc/g' a
+posix finds=overwrite | rename 's/^old/.git/' old/x
+# Links without `-f`.
+posix finds=overwrite | ln a .envrc
+posix finds=overwrite | ln -s a .envrc
+posix finds=overwrite | ln -sr a .envrc
+posix finds=overwrite | ln -T a .envrc
+posix finds=overwrite | ln -s a .husky/pre-commit
+posix finds=overwrite | ln -s a .github/workflows/ci.yml
+posix finds=overwrite | ln -sf a .envrc
+posix finds=overwrite | ln -sfn a .husky
+posix finds=overwrite | ln -s a sub/.envrc
+
+# The same hole for the caller's own files: a rename or a link onto a
+# protected name is a write of it.
+powershell@windows_workspace_folder safe | Rename-Item a b
+powershell@windows_workspace_folder safe | ren a .agentx
+powershell@windows_workspace_folder safe | New-Item -Name .agentx
+powershell@windows_workspace_folder finds=overwrite | Rename-Item a .agent
+powershell@windows_workspace_folder finds=overwrite | Rename-Item a .AGENT
+powershell@windows_workspace_folder finds=overwrite | Rename-Item -Path a -NewName .agent
+powershell@windows_workspace_folder finds=overwrite | ren a .agent
+powershell@windows_workspace_folder finds=overwrite | rni a AGENT~1
+powershell@windows_workspace_folder finds=overwrite | Rename-Item .\\a .agent
+powershell@windows_workspace_folder finds=overwrite | New-Item -ItemType SymbolicLink -Path .agent -Value a
+powershell@windows_workspace_folder finds=overwrite | New-Item -Name .agent -ItemType Junction -Value x
+powershell@windows_workspace_folder finds=overwrite | New-Item -Path .agent -Name rules
+# What is renamed away is a delete of it, as `mv` is.
+powershell@windows_workspace_folder finds=delete | Rename-Item .agent old
+powershell@windows_workspace_folder finds=delete | ren .agent old
+cmd@windows_workspace_folder safe | ren a b
+cmd@windows_workspace_folder safe | ren a .agentx
+cmd@windows_workspace_folder safe | mklink link target
+cmd@windows_workspace_folder finds=overwrite | ren a .agent
+cmd@windows_workspace_folder finds=overwrite | rename a .AGENT
+cmd@windows_workspace_folder finds=overwrite | ren a AGENT~1
+cmd@windows_workspace_folder finds=overwrite | ren .\\a .agent
+cmd@windows_workspace_folder finds=overwrite | mklink .agent a
+cmd@windows_workspace_folder finds=overwrite | mklink /d .agent a
+cmd@windows_workspace_folder finds=overwrite | mklink /j .agent\\rules a
+cmd@windows_workspace_folder finds=delete | ren .agent old
+posix@workspace_folder safe | rename old new old
+posix@workspace_folder safe | ln -s a b
+posix@workspace_folder finds=overwrite | rename old .agent old
+posix@workspace_folder finds=overwrite | rename 's/^old$/.agent/' old
+# What is renamed away is a delete of it, as `mv` is.
+posix@workspace_folder finds=delete | rename .agent b .agent
+posix@workspace_folder finds=delete | prename 's/agent/b/' .agent
+posix@workspace_folder finds=delete | perl-rename 's/agent/b/' .agent
+posix@workspace_folder finds=delete | file-rename 's/agent/b/' .agent
+posix@workspace_folder finds=delete | rename 's/agent/b/' .agent
+posix@workspace_folder finds=delete | rename -x .agent b .agent
+posix@workspace_folder finds=delete | rename .agent b .agent/rules
+posix@workspace_folder finds=overwrite | ln -s a .agent
+posix@workspace_folder finds=overwrite | ln a .agent/rules
+posix@workspace_folder finds=overwrite | ln -sf a .AGENT

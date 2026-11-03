@@ -1,0 +1,158 @@
+# What the caller gates with: a write to it breaks `write_protected` with the
+# caller's words, wherever it sits and however it is spelled, and a read of
+# it is safe. One section for each behaviour, with the protected paths it is
+# judged on. The format is in CONTRIBUTING.md.
+
+# A folder in the home directory, a folder in the workspace and a file in the
+# workspace.
+paths posix_paths base=posix folder=/home/me/.agent words="the agent's settings" folder=/home/me/work/repo/.agent words="the agent's settings" file=/home/me/work/repo/conf/app/x.yaml words="the agent's settings"
+# The same on Windows.
+paths windows_paths base=windows folder=C:\\Users\\me\\.agent words="the agent's settings" folder=C:\\Users\\me\\dev\\repo\\.agent words="the agent's settings" file=C:\\Users\\me\\dev\\repo\\conf\\app\\x.yaml words="the agent's settings"
+
+# A write to a protected path is a finding with the caller's words.
+write@posix_paths finds=write_protected | ~/.agent/config.yaml
+write@posix_paths finds=write_protected | /home/me/.agent/config.yaml
+write@posix_paths finds=write_protected | ~/.agent
+write@posix_paths finds=write_protected | ~/.agent/
+write@posix_paths finds=write_protected | ~/.agent/a/b/c
+write@posix_paths finds=write_protected | .agent/rules
+write@posix_paths finds=write_protected | .agent
+write@posix_paths finds=write_protected | ./.agent/x
+write@posix_paths finds=write_protected | conf/app/x.yaml
+write@posix_paths finds=write_protected | /home/me/work/repo/conf/app/x.yaml
+# Spelled another way.
+write@posix_paths finds=write_protected | src/../.agent/x
+write@posix_paths finds=write_protected | ~/./.agent/x
+write@posix_paths finds=write_protected | ~/work/../.agent/x
+write@posix_paths finds=write_protected | ~//.agent//x
+write@posix_paths finds=write_protected | conf/./app/../app/x.yaml
+# Names compare without case on every host.
+write@posix_paths finds=write_protected | ~/.AGENT/x
+write@posix_paths finds=write_protected | .Agent/x
+write@posix_paths finds=write_protected | conf/APP/X.YAML
+write@posix_paths finds=write_protected | /HOME/ME/.agent/x
+# A folder that holds it is judged as it is: a file API names the file
+# itself, and nothing here holds a folder's contents.
+write@posix_paths finds=write_protected | conf
+write@posix_paths finds=write_protected | conf/app
+write@posix_paths finds=write_protected | conf/
+# One finding, with the caller's words.
+write@posix_paths rules=write_protected first=write_protected reason="writes to the agent's settings" | ~/.agent/config.yaml
+write@posix_paths rules=write_protected first=write_protected reason="writes to the agent's settings" | .agent/x
+write@posix_paths rules=write_protected first=write_protected reason="writes to the agent's settings" | conf/app/x.yaml
+
+# A protected path wins over the workspace and a temporary folder. Inside the
+# workspace it is `write_protected`, not safe.
+write@posix_paths rules=write_protected | .agent/x
+write@posix_paths safe | src/x
+paths temp base=posix folder=/tmp/state words="the agent's settings"
+write@temp rules=write_protected | /tmp/state/x
+write@temp safe | /tmp/other/x
+# And in the home directory it is the caller's file, not a path outside.
+write@posix_paths rules=write_protected | ~/.agent/x
+
+# A write beside a protected path is not a finding.
+write@posix_paths safe | conf/app/y.yaml
+write@posix_paths safe | conf/new.txt
+write@posix_paths safe | conf/app/x.yaml.bak
+write@posix_paths safe | conf/app/x
+write@posix_paths safe | .agentx/x
+write@posix_paths safe | .agent.d/x
+write@posix_paths safe | x.agent
+write@posix_paths safe | src/.agent.rs
+write@posix_paths safe | src/.agent/x
+write@posix_paths safe | agent/x
+write@posix_paths rules=write_outside | ~/.agentx/x
+write@posix_paths rules=write_outside | ~/agent/x
+
+# A read of a protected path is safe.
+read@posix_paths safe | ~/.agent/config.yaml
+read@posix_paths safe | /home/me/.agent
+read@posix_paths safe | .agent/rules
+read@posix_paths safe | .AGENT/rules
+read@posix_paths safe | conf/app/x.yaml
+read@posix_paths safe | conf
+
+# A pattern is not one path, even if it picks a protected one.
+write@posix_paths finds=unreadable | *
+write@posix_paths finds=unreadable | .a*/x
+write@posix_paths finds=unreadable | **/x.yaml
+write@posix_paths finds=unreadable | [.]agent/x
+write@posix_paths finds=unreadable | conf/app/[x].yaml
+write@posix_paths finds=unreadable | ~/.ag[e]nt/x
+write@posix_paths safe | app/[id]/page.tsx
+
+# A protected path on Windows is judged by every name Windows gives it.
+write@windows_paths finds=write_protected | C:\\Users\\me\\.agent\\config.yaml
+write@windows_paths finds=write_protected | ~\\.agent\\config.yaml
+write@windows_paths finds=write_protected | ~/.agent/config.yaml
+write@windows_paths finds=write_protected | .agent\\rules
+write@windows_paths finds=write_protected | conf\\app\\x.yaml
+# Case.
+write@windows_paths finds=write_protected | C:\\USERS\\ME\\.AGENT\\x
+write@windows_paths finds=write_protected | .AGENT\\x
+# What Windows drops from a name.
+write@windows_paths finds=write_protected | .agent.\\x
+write@windows_paths finds=write_protected | .agent\\x.
+write@windows_paths finds=write_protected | .agent\\x\s
+# Short names, the folder's and the file's.
+write@windows_paths finds=write_protected | AGENT~1\\x
+write@windows_paths finds=write_protected | agent~1\\x
+write@windows_paths finds=write_protected | ~\\AGENT~1\\x
+write@windows_paths finds=write_protected | C:\\Users\\me\\AGENT~2\\x
+write@windows_paths finds=write_protected | conf\\app\\X~1.YAM
+write@windows_paths finds=write_protected | CONF\\APP\\X.YAML
+# Long paths and a drive-relative path.
+write@windows_paths finds=write_protected | \\\\?\\C:\\Users\\me\\.agent\\x
+write@windows_paths finds=write_protected | \\\\?\\C:\\Users\\me\\dev\\repo\\.agent\\x
+write@windows_paths finds=write_protected | C:.agent\\x
+write@windows_paths finds=write_protected | C:..\\..\\.agent\\x
+write@windows_paths finds=write_protected | C:\\Users\\me\\dev\\repo\\..\\..\\.agent\\x
+write@windows_paths finds=write_protected | \\Users\\me\\.agent\\x
+# A folder that holds it.
+write@windows_paths finds=write_protected | conf
+# A stream or a trailing space on a folder is known only when it runs.
+write@windows_paths finds=unreadable | .agent::$INDEX_ALLOCATION\\x
+write@windows_paths finds=unreadable | .agent \\x
+write@windows_paths finds=unreadable | C:\\Users\\me\\.agent:s\\x
+write@windows_paths safe | conf\\app\\y.yaml
+write@windows_paths safe | .agentx\\x
+write@windows_paths safe | src\\AGENT~1.rs
+write@windows_paths safe | src\\.agent\\x
+read@windows_paths safe | ~\\.agent\\config.yaml
+read@windows_paths safe | AGENT~1\\x
+read@windows_paths safe | .agent\\x
+
+# A protected path on a Mac compares without case.
+paths mac_paths base=macos folder=/Users/me/.agent words="the agent's settings" folder=/Users/me/dev/repo/.agent words="the agent's settings"
+write@mac_paths finds=write_protected | ~/.agent/x
+write@mac_paths finds=write_protected | ~/.Agent/x
+write@mac_paths finds=write_protected | /users/me/.AGENT/x
+write@mac_paths finds=write_protected | .AGENT/x
+write@mac_paths finds=write_protected | /System/Volumes/Data/Users/me/.agent/x
+
+# With no protected paths the same path is judged by its place.
+write safe | .agent/rules
+write rules=write_outside | ~/.agent/x
+
+# What the caller gates with may also hold a secret. Protected wins: the
+# caller named it on purpose, and a write to it is the caller's to refuse,
+# even where it lies under a key's folder.
+paths ssh_file base=posix file=/home/me/.ssh/agent.conf words="the agent's settings"
+write@ssh_file rules=write_protected | ~/.ssh/agent.conf
+write@ssh_file rules=write_sensitive | ~/.ssh/config
+# A read is safe: reading the caller's own file is not what it gates.
+read@ssh_file safe | ~/.ssh/agent.conf
+read@ssh_file rules=read_secret | ~/.ssh/id_rsa
+
+# A protected path by the data volume or a wide fold is still protected:
+# relative, from `~`, and by the links to the root, all the same folder once
+# the path is absolute.
+paths mac_agent base=macos folder=/Users/me/.agent words="the agent's settings"
+write@mac_agent finds=write_protected | ../../../../System/Volumes/Data/Users/me/.agent/x
+write@mac_agent finds=write_protected | ../../../../Volumes/Macintosh HD/Users/me/.agent/x
+write@mac_agent finds=write_protected | /System/Volumes/Data/Users/me/.agent/x
+paths kelvin base=posix folder=/home/me/.k words="the agent's settings"
+write@kelvin finds=write_protected | /home/me/.\u{212a}/x
+paths windows_kelvin base=windows folder=C:\\Users\\me\\.agent\\k words="the agent's settings"
+write@windows_kelvin finds=write_protected | C:\\Users\\me\\.agent\\\u{212a}\\x

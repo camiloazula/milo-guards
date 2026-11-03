@@ -1,0 +1,379 @@
+# How a line that may destroy resources is read: the options before the
+# command (with a value or without) are skipped to find it, a rehearsal or a
+# help flag makes it safe only where the tool reads it as one, a word only
+# known when it runs is unknown where a verb could be and split where the
+# shell splits it, a loop removes every item it reaches, and kubectl's
+# replica count is read as kubectl reads it. The format is in
+# CONTRIBUTING.md.
+
+# Global options are skipped to find the command.
+posix safe | cdk --json synth
+posix safe | minikube --logtostderr status
+posix safe | pulumi --logflow preview
+posix safe | aws --cli-auto-prompt s3 ls
+posix safe | gcloud --log-http storage ls gs://b
+posix safe | pulumi --stack dev preview
+posix safe | kubectl --proxy-url http://p:3128 get pods
+posix safe | podman --ssh native ps
+posix safe | helm --color always list
+posix safe | cdktf --log-level debug synth
+posix safe | minikube --user me status
+posix safe | pulumi --tracing-header x preview
+posix safe | podman-compose --podman-run-args x up
+posix safe | hcloud --config f --context prod server list
+posix safe | hcloud --poll-interval 1s --context prod server describe web
+# A flag without a value does not hide the command.
+posix finds=destroy_resources | cdk --json destroy
+posix finds=destroy_resources | cdk -j destroy
+posix finds=destroy_resources | cdk --ignore-errors destroy
+posix finds=destroy_resources | cdk --lookups destroy
+posix finds=destroy_resources | cdk --staging destroy
+posix finds=destroy_resources | cdk --notices destroy
+posix finds=destroy_resources | cdk --version-reporting destroy
+posix finds=destroy_resources | cdk --asset-metadata destroy
+posix finds=destroy_resources | cdk --path-metadata destroy
+posix finds=destroy_resources | cdk --app 'node app.js' destroy
+posix finds=destroy_resources | minikube --logtostderr delete --all
+posix finds=destroy_resources | minikube --skip_log_headers delete
+posix finds=destroy_resources | minikube --rootless delete
+posix finds=destroy_resources | minikube --profile dev delete
+posix finds=destroy_resources | pulumi --logflow destroy --yes
+posix finds=destroy_resources | aws --cli-auto-prompt s3 rb s3://x --force
+posix finds=destroy_resources | gcloud --log-http storage rm -r gs://b
+posix finds=destroy_resources | gcloud --user-output-enabled storage rm -r gs://b
+# An option that takes a value is skipped with its value, so the value is not
+# read as the command.
+posix finds=destroy_resources | kubectl --proxy-url http://p:3128 delete ns prod
+posix finds=destroy_resources | kubectl --kuberc x delete ns prod
+posix finds=destroy_resources | kubectl --as-user-extra a=b delete ns prod
+posix finds=destroy_resources | oc --kuberc x delete project prod
+posix finds=destroy_resources | podman --out /dev/null system reset -f
+posix finds=destroy_resources | podman --ssh native volume rm x
+posix finds=destroy_resources | podman --tls-ca F volume rm x
+posix finds=destroy_resources | podman --tls-cert F volume rm x
+posix finds=destroy_resources | podman --tls-key F volume rm x
+posix finds=destroy_resources | podman --tls-details F volume rm x
+posix finds=destroy_resources | podman --cdi-spec-dir D volume rm x
+posix finds=destroy_resources | podman --network-cmd-path P volume rm x
+posix finds=destroy_resources | podman --volumepath P volume rm x
+posix finds=destroy_resources | podman --db-backend sqlite volume rm x
+posix finds=destroy_resources | nerdctl --host-gateway-ip 1.2.3.4 volume rm x
+posix finds=destroy_resources | helm --color always uninstall api
+posix finds=destroy_resources | helm --colour always uninstall api
+posix finds=destroy_resources | helm --content-cache /tmp/x uninstall api
+posix finds=destroy_resources | cdktf --log-level debug destroy
+posix finds=destroy_resources | cdktf --app "node x" destroy
+posix finds=destroy_resources | cdktf -a x destroy
+posix finds=destroy_resources | cdktf -o out destroy
+posix finds=destroy_resources | cdktf --output out destroy
+posix finds=destroy_resources | minikube --user me delete
+posix finds=destroy_resources | minikube -b kubeadm delete
+posix finds=destroy_resources | minikube --bootstrapper kubeadm delete
+posix finds=destroy_resources | minikube --log_backtrace_at f.go:1 delete
+posix finds=destroy_resources | pulumi --tracing-header x destroy -y
+posix finds=destroy_resources | podman-compose --podman-pull-args x down -v
+posix finds=destroy_resources | podman-compose --podman-push-args x down -v
+posix finds=destroy_resources | podman-compose --podman-build-args x down -v
+posix finds=destroy_resources | podman-compose --podman-inspect-args x down -v
+posix finds=destroy_resources | podman-compose --podman-run-args x down -v
+posix finds=destroy_resources | podman-compose --podman-start-args x down -v
+posix finds=destroy_resources | podman-compose --podman-stop-args x down -v
+posix finds=destroy_resources | podman-compose --podman-rm-args x down -v
+posix finds=destroy_resources | podman-compose --podman-volume-args x down -v
+posix finds=destroy_resources | hcloud --config f --context prod server delete web
+posix finds=destroy_resources | hcloud --poll-interval 1s --context prod server delete web
+posix finds=destroy_resources | hcloud --endpoint http://x --debug-file log --config f server delete web
+posix finds=destroy_resources | hcloud --context prod volume delete data
+
+# terragrunt reads the command after `--` and every option before.
+posix safe | terragrunt run --all --queue-include-dir a --queue-exclude-dir b -- plan
+posix safe | terragrunt run --all --parallelism 4 -- apply
+posix safe | terragrunt run --all -- apply -destroy=false
+posix safe | terragrunt run-all --terragrunt-include-dir a --terragrunt-exclude-dir b plan
+posix safe | terragrunt run --all -- terraform plan
+posix safe | terragrunt run --all --source s --iam-assume-role r --log-format json -- plan
+posix safe | terragrunt run --all --queue-include-dir a -- plan
+posix finds=destroy_resources | terragrunt run --all --queue-include-dir a --queue-include-dir b --queue-exclude-dir c -- destroy
+posix finds=destroy_resources | terragrunt run-all --terragrunt-include-dir a --terragrunt-include-dir b --terragrunt-exclude-dir c destroy
+posix finds=destroy_resources | terragrunt run --all --parallelism 4 --queue-include-dir a --queue-exclude-dir b -- destroy
+posix finds=destroy_resources | terragrunt run --all --terragrunt-parallelism 2 --terragrunt-source s --terragrunt-iam-role r --log-format json -- destroy
+posix finds=destroy_resources | terragrunt run --all --source s --iam-assume-role r --queue-include-dir a --queue-exclude-dir b -- destroy
+posix finds=destroy_resources | terragrunt run --all -- apply -destroy
+posix finds=destroy_resources | terragrunt run --all -- apply -auto-approve -destroy
+posix finds=destroy_resources | terragrunt run --all -destroy -- apply
+posix finds=destroy_resources | terragrunt exec -- terraform destroy
+posix finds=destroy_resources | terragrunt exec -- tofu apply -destroy
+posix finds=destroy_resources | terragrunt run --all -- -chdir=x destroy
+posix finds=destroy_resources | terragrunt --queue-include-dir a destroy
+posix finds=unknown | terragrunt run --all --queue-include-dir a -- $cmd
+
+# A rehearsal (`--dry-run`, `--dryrun`, `--preview-only`) or a help flag makes
+# the line safe only when it is on, read as a flag (not past `--`, not as the
+# value of another option) and the last of its kind; a value only known when
+# it runs, or one that is neither yes nor no, is no rehearsal. For the
+# destroying flag `-destroy` it is the other way round: a value only known
+# when it runs counts as on.
+posix safe | pulumi destroy --preview-only
+posix safe | pulumi destroy --yes --preview-only
+posix safe | pulumi destroy --yes --preview-only=true
+posix safe | pulumi destroy --yes --preview-only=1
+posix safe | helm uninstall api --dry-run
+posix safe | helm uninstall api --dry-run=true
+posix safe | helm uninstall api --dry-run=server
+posix safe | helm uninstall api --dry-run=client
+posix safe | helm uninstall api --dry-run="true"
+posix safe | kubectl delete ns prod --dry-run=server
+# A later known value is read again.
+posix safe | helm uninstall api --dry-run=$D --dry-run
+posix safe | terraform apply -destroy=false
+posix safe | terraform plan -destroy=$D
+# The value of another option is no flag; a flag after one is.
+posix safe | kubectl delete ns prod --help
+posix safe | kubectl delete ns prod -n x --dry-run=server
+posix safe | kubectl delete ns prod --cache-dir d --dry-run=server
+posix safe | kubectl delete ns prod --cache-dir d --help
+posix safe | kubectl delete ns prod --dry-run=server --cache-dir d
+posix safe | minikube kubectl -- delete ns prod --help
+posix safe | minikube kubectl -- delete ns prod --dry-run=client
+posix safe | helm uninstall api --description x --dry-run
+posix safe | helm uninstall api --timeout 5s --dry-run
+posix safe | helm uninstall api --cascade foreground --dry-run
+posix safe | pulumi destroy --yes -m x --preview-only
+posix safe | pulumi destroy --yes --stack dev --preview-only
+posix safe | terraform apply -destroy=false -auto-approve
+posix safe | terraform apply -- -destroy
+# aws reads the last of `--dry-run` and `--no-dry-run`.
+posix safe | aws ec2 terminate-instances --instance-ids i-1 --dry-run
+posix safe | aws ec2 terminate-instances --instance-ids i-1 --no-dry-run --dry-run
+posix safe | aws ec2 terminate-instances --no-dry-run --instance-ids i-1 --dry-run
+posix safe | aws s3 rm s3://b --recursive --dryrun
+# After `--` it is no flag, so the rehearsal stands.
+posix safe | aws ec2 terminate-instances --instance-ids i-1 --dry-run -- --no-dry-run
+# A rehearsal turned off is not one.
+posix finds=destroy_resources | pulumi destroy --yes --preview-only=false
+posix finds=destroy_resources | pulumi destroy --preview-only=false
+posix finds=destroy_resources | pulumi destroy --preview-only --preview-only=false
+posix finds=destroy_resources | helm uninstall api --dry-run=false
+posix finds=destroy_resources | helm uninstall api --dry-run --dry-run=false
+posix finds=destroy_resources | kubectl delete pod web --dry-run=none
+posix finds=destroy_resources | kubectl delete pod web --dry-run=client --dry-run=none
+# A rehearsal whose value is only known when it runs.
+posix finds=destroy_resources | helm uninstall api --dry-run=$DRY
+posix finds=destroy_resources | helm uninstall api --dry-run="$DRY"
+posix finds=destroy_resources | helm uninstall api --dry-run=$(cat flag)
+posix finds=destroy_resources | helm uninstall api --dry-run --dry-run=$DRY
+posix finds=destroy_resources | pulumi destroy --yes --preview-only=$P
+posix finds=destroy_resources | pulumi destroy --yes --preview-only="$P"
+posix finds=destroy_resources | pulumi destroy --preview-only --preview-only=$P
+# A value that is neither yes nor no is no rehearsal either.
+posix finds=destroy_resources | helm uninstall api --dry-run=maybe
+# The destroying flag with a value only known when it runs.
+posix finds=destroy_resources | terraform apply -destroy=$D
+posix finds=destroy_resources | terraform apply -destroy="$D" -auto-approve
+posix finds=destroy_resources | terraform apply -destroy=false -destroy=$D
+posix finds=destroy_resources | terragrunt run-all apply -destroy=$D
+# Past `--`, or as the value of another option, it is no flag.
+posix finds=destroy_resources | helm uninstall api -- --dry-run
+posix finds=destroy_resources | pulumi destroy --yes -- --preview-only
+posix finds=destroy_resources | kubectl delete ns prod -- --help
+posix finds=destroy_resources | kubectl delete ns prod -- --dry-run=server
+posix finds=destroy_resources | helm uninstall api --description --dry-run
+posix finds=destroy_resources | helm uninstall api --timeout --dry-run
+posix finds=destroy_resources | helm uninstall api --cascade --dry-run
+posix finds=destroy_resources | pulumi destroy --yes -m --preview-only
+posix finds=destroy_resources | pulumi destroy --yes --stack --preview-only
+posix finds=destroy_resources | kubectl delete ns prod --cache-dir --dry-run=server
+posix finds=destroy_resources | kubectl delete ns prod --cache-dir --help
+posix finds=destroy_resources | kubectl delete ns prod -n --help
+posix finds=destroy_resources | microk8s kubectl delete ns prod --cache-dir --help
+posix finds=destroy_resources | minikube kubectl -- delete ns prod --cache-dir --help
+posix finds=destroy_resources | minikube kubectl -- delete ns prod -- --help
+posix finds=destroy_resources | terraform apply -destroy -backup -destroy=false -auto-approve
+posix finds=destroy_resources | terraform apply -auto-approve -destroy -- -destroy=false
+posix finds=destroy_resources | terraform apply -destroy -destroy=false
+posix finds=destroy_resources | aws ec2 terminate-instances --instance-ids i-1 --dry-run --no-dry-run
+posix finds=destroy_resources | aws ec2 terminate-instances --instance-ids i-1 --no-dry-run
+posix finds=destroy_resources | aws ec2 terminate-instances --dry-run --instance-ids i-1 --no-dry-run
+# PowerShell passes `--dry-run=False` for `$false`.
+powershell safe | helm uninstall api --dry-run
+powershell safe | helm uninstall api --dry-run=true
+powershell finds=destroy_resources | helm uninstall api --dry-run=$false
+powershell finds=destroy_resources | helm uninstall api --dry-run=false
+powershell finds=destroy_resources | pulumi destroy --yes --preview-only=$p
+
+# A word only known when it runs is unknown past the first.
+posix safe | gcloud compute instances describe $VM
+posix safe | gcloud compute instances list --filter=$F
+posix safe | az vm show -g rg -n $VM
+posix safe | az vm show --ids $ID
+posix safe | doctl compute droplet get $ID
+posix safe | kind create cluster --name $N
+posix safe | kind load docker-image $IMG
+posix safe | k3d cluster create $name
+posix safe | pulumi stack select $S
+posix safe | terragrunt plan $dir
+posix safe | terragrunt run-all plan $dir
+posix finds=unknown | gcloud projects $verb prod
+posix finds=unknown | gcloud compute instances "$action" vm
+posix finds=unknown | az group $verb -n rg
+posix finds=unknown | doctl compute droplet $verb web
+posix finds=unknown | fly apps $verb app
+posix finds=unknown | kind delete $what
+posix finds=unknown | k3d cluster $verb dev
+posix finds=unknown | pulumi stack $verb dev
+posix finds=unknown | terragrunt run-all $cmd
+posix finds=unknown | terragrunt run --all -- $cmd
+posix finds=destroy_resources | gcloud $group delete prod
+posix finds=destroy_resources | gcloud projects delete $id
+
+# A container named by a word the shell splits into several (an unquoted
+# variable, `"$@"`, an array, a word after a quoted head, a brace list) is a
+# container chosen when it runs; a quoted word is one container. Neither
+# PowerShell nor cmd expands braces.
+posix safe | docker rm -f "$name"
+posix safe | docker rm -f "$*"
+posix safe | docker rm -f "$a"
+posix safe | docker rm -f "a$b"
+posix safe | docker rm -f "$a""$b"
+posix safe | docker rm -f "$a"x
+posix safe | docker rm -f 'web$b'
+posix safe | docker rm -f web\\$b
+posix safe | docker rm -f "${a:-x,y}"
+posix safe | docker rm -f "$a"'{1,2}'
+posix safe | docker rm -f web{1}
+posix safe | docker rm -f 'web{1,2'
+posix finds=destroy_resources | docker rm -f "$@"
+posix finds=destroy_resources | docker rm -f "${@}"
+posix finds=destroy_resources | docker rm -f "${ids[@]}"
+posix finds=destroy_resources | docker rm "$@"
+posix finds=destroy_resources | docker rm -f ${ids[@]}
+posix finds=destroy_resources | docker rm -f "$a"$b
+posix finds=destroy_resources | docker rm -f "$a"${b}
+posix finds=destroy_resources | docker rm -f "$a"$b"c"
+posix finds=destroy_resources | docker rm -f "$a"-$b
+posix finds=destroy_resources | docker rm "$a"$b
+posix finds=destroy_resources | docker rm -f $a
+posix finds=destroy_resources | docker rm -f web{1,2,3}
+posix finds=destroy_resources | docker rm -f {web,db}
+posix finds=destroy_resources | docker rm -f web{1..3}
+posix finds=destroy_resources | docker rm web{1,2}
+posix finds=destroy_resources | docker rm -f "$a"{1,2}
+posix finds=destroy_resources | docker rm -f web{1,2}$x
+posix finds=destroy_resources | docker container rm -f {web,db}
+posix finds=destroy_resources | docker rm -f "web"{1,2}
+# A brace list whose commas hold a variable or quote.
+posix finds=destroy_resources | docker rm -f {"$a",db}
+powershell safe | docker rm -f "$name"
+powershell safe | docker rm -f "$ids"
+powershell safe | docker rm -f $env:NAME
+powershell safe | docker rm -f "$a"
+powershell finds=destroy_resources | docker rm -f $ids
+powershell finds=destroy_resources | docker rm $ids
+powershell finds=destroy_resources | docker rm -f @ids
+powershell finds=destroy_resources | docker rm -f $containers.Id
+powershell finds=destroy_resources | $ids = docker ps -aq; docker rm -f $ids
+powershell finds=destroy_resources | docker rm -f $a
+cmd safe | docker rm -f "%IDS%"
+cmd finds=destroy_resources | docker rm -f %IDS%
+cmd finds=destroy_resources | docker rm %IDS%
+cmd finds=destroy_resources | docker rm -f !IDS!
+# These break this rule and no other.
+posix rules=destroy_resources | docker rm -f $names
+posix rules=destroy_resources | docker rm -f "$(docker ps -aq)"
+powershell rules=destroy_resources | docker rm -f $name
+
+# A loop removes every item it reaches, whatever its variable is called and
+# even when the variable is quoted: the loop's own, one set from it, a
+# function's argument, or one no loop sets at all. A variable no loop or read
+# sets, outside a loop, is one value.
+posix safe | docker rm -f "$id"
+posix safe | docker rm "$c"
+posix safe | docker rm -f "$id"; for c in a b; do echo "$c"; done
+posix safe | id=web; docker rm -f "$id"
+posix safe | for c in a b; do docker rm -f web; done
+posix safe | for c in a b; do docker ps -q; done
+posix finds=destroy_resources | for c in $(docker ps -aq); do docker rm -f "$c"; done
+posix finds=destroy_resources | docker ps -aq | while read c; do docker rm -f "$c"; done
+posix finds=destroy_resources | docker ps -aq | while IFS= read -r c; do docker rm -f "$c"; done
+posix finds=destroy_resources | for c in web db; do docker rm -f "$c"; done
+posix finds=destroy_resources | for c in web db; do docker rm -f "${c}"; done
+posix finds=destroy_resources | for c in web db; do docker rm -f $c; done
+posix finds=destroy_resources | for c in $(docker ps -aq); do docker container rm -f "$c"; done
+posix finds=destroy_resources | for c in $(docker ps -aq); do id="$c"; docker rm -f "$id"; done
+posix finds=destroy_resources | docker ps -aq | while read -r line; do id=${line%% *}; docker rm -f "$id"; done
+posix finds=destroy_resources | for c in $(docker ps -aq); do name=$(docker inspect -f '{{.Name}}' "$c"); docker rm -f "$name"; done
+posix finds=destroy_resources | set -- $(docker ps -aq); while [ $# -gt 0 ]; do docker rm -f "$1"; shift; done
+posix finds=destroy_resources | f() { docker rm -f "$1"; }; for c in $(docker ps -aq); do f "$c"; done
+posix finds=destroy_resources | until false; do docker rm -f "$x"; done
+posix finds=destroy_resources | for ((i=0;i<3;i++)); do docker container rm "$x"; done
+posix finds=destroy_resources | while true; do docker pod rm "$x"; done
+# A loop in a script a shell is handed.
+posix finds=destroy_resources | sh -c 'for c in a b; do docker rm -f "$x"; done'
+powershell safe | docker rm -f "$id"
+powershell safe | docker rm -f $env:ID
+powershell safe | docker rm -f "$env:ID"
+powershell safe | $id = 'web'; docker rm -f "$id"
+powershell safe | docker rm -f "$id"; foreach ($c in 'a','b') { echo "$c" }
+powershell safe | docker ps -aq | ForEach-Object { docker rm -f web }
+powershell safe | foreach ($c in 'a','b') { docker rm -f web }
+powershell finds=destroy_resources | docker ps -aq | % { docker rm -f "$_" }
+powershell finds=destroy_resources | docker ps -aq | ForEach-Object { docker rm -f "$PSItem" }
+powershell finds=destroy_resources | foreach ($c in docker ps -aq) { docker rm -f "$c" }
+powershell finds=destroy_resources | docker ps -aq | % { docker rm -f $_ }
+powershell finds=destroy_resources | docker ps -aq | ForEach-Object { docker rm -f $PSItem }
+powershell finds=destroy_resources | foreach ($c in docker ps -aq) { docker rm -f $c }
+powershell finds=destroy_resources | foreach ($c in 'a','b') { docker rm -f "$c" }
+powershell finds=destroy_resources | docker ps -aq | ForEach-Object { $c = $_; docker rm -f "$c" }
+powershell finds=destroy_resources | docker ps -aq | % { $c = $_; docker rm -f "$c" }
+powershell finds=destroy_resources | foreach ($c in docker ps -aq) { $id = $c; docker rm -f "$id" }
+powershell finds=destroy_resources | for ($i = 0; $i -lt 3; $i++) { docker rm -f "$x" }
+powershell finds=destroy_resources | while ($true) { docker container rm "$x" }
+powershell finds=destroy_resources | do { docker pod rm "$x" } while ($true)
+powershell finds=destroy_resources | function f { docker rm -f "$args" }
+# No word of cmd's `for` is one container.
+cmd safe | for %%c in (web db) do docker rm -f web
+cmd safe | for %%c in (web db) do echo %%c
+cmd safe | docker rm -f web
+cmd finds=destroy_resources | for /f "delims=" %%i in ('docker ps -aq') do docker rm -f "%%i"
+cmd finds=destroy_resources | for /f "delims=" %%i in ('docker ps -aq') do @docker rm -f "%%i"
+cmd finds=destroy_resources | for %%c in (web db) do docker rm -f "%%c"
+cmd finds=destroy_resources | for /f "delims=" %%i in ('docker ps -aq') do (set id=%%i& docker rm -f "!id!")
+cmd finds=destroy_resources | for /f "delims=" %%i in ('docker ps -aq') do docker container rm "%%~i"
+
+# `kubectl scale` to zero replicas stops everything; the count is read as Go
+# reads an integer, so a prefix or an underscore does not make a count that
+# is not 0, and the last count given counts.
+posix safe | kubectl scale deploy web --replicas=3
+posix safe | kubectl scale --replicas 2 deploy/web
+posix safe | kubectl scale deploy web --replicas=0 --dry-run=client
+posix safe | kubectl scale deploy web --replicas 3
+posix safe | kubectl scale deploy web --replicas=010
+posix safe | kubectl scale deploy web --replicas=-1
+posix safe | kubectl scale deploy web --cache-dir --replicas=0 --replicas=3
+posix safe | kubectl scale deploy web --replicas=3 -- --replicas=0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0
+posix finds=destroy_resources | kubectl scale --replicas=0 deploy/web
+posix finds=destroy_resources | kubectl scale deploy web --replicas 0
+posix finds=destroy_resources | kubectl -n prod scale deploy web --replicas=0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=00
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0x0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0X0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0b0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0o0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0_0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=0x_0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=-0x0
+posix finds=destroy_resources | kubectl scale deploy web --replicas=+0b0
+posix finds=destroy_resources | kubectl scale deploy web --replicas 0x0
+# The last one given counts, and a value of another option is not one.
+posix finds=destroy_resources | kubectl scale deploy web --replicas=3 --replicas=0x0
+posix finds=destroy_resources | kubectl scale deploy web --cache-dir --replicas=3 --replicas=0
+# A count that is not a plain decimal and not a zero is not one the guard
+# reads.
+posix finds=unknown | kubectl scale deploy web --replicas=0x5
+posix finds=unknown | kubectl scale deploy web --replicas=0b1
+posix finds=unknown | kubectl scale deploy web --replicas=1_0
+posix finds=unknown | kubectl scale deploy web --replicas=0_
+posix finds=unknown | kubectl scale deploy web --replicas=0x
+posix finds=unknown | kubectl scale deploy web --replicas=abc
+posix finds=unknown | kubectl scale deploy web --replicas=$N

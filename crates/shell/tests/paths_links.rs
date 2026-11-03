@@ -2,15 +2,16 @@
 //! applies a `..` after it has followed the link before it, so
 //! `cat link/../etc/hosts` with `link -> /etc` reads `/etc/hosts`, while the
 //! same path with its `..` applied by spelling is `<cwd>/etc/hosts`. `effect`
-//! keeps judging by spelling, as before. The plain lists (operands, patterns,
+//! keeps judging by spelling, as before: those lines and their answers are in
+//! `tests/cases/paths_links.cases`. The plain lists (operands, patterns,
 //! walks) are in `paths.rs`.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{check_effect, exact, glob, lists, posix, walk, windows};
-use milo_guards_shell::{effect, effect_paths, Effect, How, Paths, Reach, ReadPath, Shell};
+use common::{exact, glob, lists, posix, walk, windows};
+use milo_guards_shell::{effect_paths, How, Paths, ReadPath, Shell};
 
 const ROOT: &str = "/home/me/work/repo";
 const WIN_ROOT: &str = r"C:\Users\me\dev\repo";
@@ -71,7 +72,7 @@ fn a_dotdot_after_a_link_is_left_for_the_caller_to_apply_on_the_disk() {
     let paths = posix();
     // With `link -> /etc`, the shell reads `/etc/hosts`, and the list lets a
     // caller resolve to it (`effect` judges by spelling, so it still calls
-    // this inside: see `effect_keeps_judging_by_spelling`).
+    // this inside: see `tests/cases/paths_links.cases`).
     let line = "cat link/../etc/hosts";
     lists(
         Shell::Posix,
@@ -228,38 +229,10 @@ fn applying_the_dotdot_of_each_listed_path_by_spelling_is_the_old_answer() {
     }
 }
 
+/// `effect` keeps judging by spelling.
 #[test]
-fn effect_keeps_judging_by_spelling() {
-    let paths = posix();
-    // Inside by spelling, whatever the link before the `..` is.
-    check_effect(
-        Shell::Posix,
-        &paths,
-        Effect::ReadsOnly(Reach::Workspace),
-        &[
-            "cat link/../etc/hosts",
-            "cat src/../README.md",
-            "cat src/../../repo/a",
-            "cat ./a/../b",
-            "rg TODO src/..",
-            "cat link/../*.rs",
-            "ls link/..",
-            "cd link/.. && cat x",
-            "cd src && cd .. && cat x",
-        ],
-    );
-    // Beyond by spelling (`cat ../x` and `cat src/../../x` are in `reach.rs`).
-    check_effect(
-        Shell::Posix,
-        &paths,
-        Effect::ReadsOnly(Reach::Beyond),
-        &[
-            "cat link/../../x",
-            "cd .. && cat x",
-            "cat /etc/../etc/hosts",
-            "cat ~/link/../x",
-        ],
-    );
+fn every_case_holds() {
+    common::cases::check("paths_links");
 }
 
 #[test]
@@ -745,17 +718,7 @@ fn powershell_and_cmd_paths_keep_their_dotdot_too() {
             ),
         ],
     );
-    // By spelling, still inside.
-    for (shell, line) in [
-        (Shell::PowerShell, r"Get-Content link\..\x"),
-        (Shell::Cmd, r"type link\..\x"),
-    ] {
-        assert_eq!(
-            effect(line, shell, &win),
-            Effect::ReadsOnly(Reach::Workspace),
-            "{line}"
-        );
-    }
+    // By spelling, still inside: see `tests/cases/paths_links.cases`.
 }
 
 #[test]

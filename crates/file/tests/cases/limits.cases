@@ -1,0 +1,68 @@
+# What the guard does not see, kept as cases so a change to any of them is a
+# decision and not an accident. A case here is a limit named in
+# docs/design/file.md, not a goal: a symlink is judged by its own name, and
+# core's table lists places known to hold a secret, not every one. The
+# format is in CONTRIBUTING.md.
+
+# A symlink is judged by its own name: a link in the workspace to `~/.ssh`
+# looks like any file in it. (The kernel's own links, `/proc/self/root` and
+# `cwd`, are refused by name.)
+read safe | link-to-ssh/id_rsa
+read safe | /dev/stdin
+
+# A place not in the table is read for what it says.
+read safe | .env
+read safe | config/secrets.yml
+read safe | ~/.mozilla/firefox/x/cookies.sqlite
+read safe | /mnt/c/Users/me/.ssh/id_rsa
+
+# A name that differs by Unicode normal form is a different name. A file
+# system that ignores the difference between `é` and `e` and an accent reads
+# these as one folder; the guard compares code points. The path is still
+# beyond the workspace, but it is `write_outside`, not the caller's
+# `write_protected`.
+paths jose cwd=/home/josé/x home=/home/josé workspace=/home/josé/x folder=/home/josé/.agent words="the agent's settings"
+write@jose rules=write_protected | /home/josé/.agent/x
+write@jose rules=write_outside | /home/jose\u{301}/.agent/x
+
+# A path as another system spells it is read as this one does: Git Bash's
+# `/c/Users/...` is `C:\c\Users\...` to Windows itself.
+read@windows safe | /c/Users/me/.ssh/id_rsa
+read@windows safe | /cygdrive/c/Users/me/.ssh/id_rsa
+
+# A Windows reserved device name is a file here.
+write@windows safe | COM1
+write@windows safe | PRN
+write@windows safe | AUX
+write@windows safe | LPT1
+
+# A workspace of the root makes a system write safe. The caller chose it: a
+# workspace is where the agent may write, and the root holds everything.
+# Keys and the repository's history stay what they are.
+paths root cwd=/ home=/home/me workspace=/
+write@root safe | /etc/hosts
+write@root safe | /usr/local/bin/x
+write@root safe | /home/me/notes.txt
+write@root rules=write_sensitive | /home/me/.ssh/authorized_keys
+write@root rules=write_sensitive | /home/me/.zshrc
+write@root rules=write_sensitive | /etc/shadow
+write@root rules=write_sensitive | .git/config
+
+# A company OneDrive folder is not the OneDrive folder: the profile moved by
+# `OneDrive - Org` is beyond the workspace, but not named a startup file.
+write@windows rules=write_outside | C:\\Users\\me\\OneDrive - Org\\Documents\\PowerShell\\profile.ps1
+
+# A few places are accepted false alarms for a read: the folder and the
+# descriptors folder themselves, and a process's status. Anything under
+# `/dev` and `/proc` that is not on the short whitelist is refused.
+read finds=read_secret | /dev
+read finds=read_secret | /dev/fd
+read finds=read_secret | /proc/self/status
+
+# A workspace directly under `/home` is a home directory to core, so its own
+# `.npmrc` is a login.
+paths under_home cwd=/home/ws home=/home/me workspace=/home/ws
+read@under_home finds=read_secret | .npmrc
+read@under_home finds=read_secret | /home/ws/.ssh/config
+read@under_home safe | src/main.rs
+read@under_home safe | package.json

@@ -121,80 +121,11 @@ fn a_line_left_open_is_risky_unless_its_shell_reads_the_end_as_plain() {
     assert!(wrong.is_empty(), "called safe:\n{}", wrong.join("\n"));
 }
 
+/// The lines left open or broken, the lines a shell reads as plain words,
+/// and the plain lines beside the limits below.
 #[test]
-fn a_line_left_open_or_broken_is_risky() {
-    let everywhere = [
-        "echo \"abc",
-        "{ echo",
-        "[[ x",
-        "echo ||",
-        "echo &&",
-        "echo |",
-        "|",
-        "&&",
-        "echo \0",
-        "echo >",
-        "echo <",
-        "if x",
-        "for x in",
-        "echo 'a\nrm -rf /",
-        "cat <<EOF\nrm -rf /",
-    ];
-    // cmd has no `'`, backtick, `$(` or `${`: they are plain words there.
-    let posix_and_powershell = [
-        "echo 'abc",
-        "echo $(echo",
-        "echo `ls",
-        "echo ${x",
-        "echo (",
-        "echo )",
-        "echo $(",
-        "echo $((1",
-    ];
-    let posix_only = [
-        "echo \\",
-        "case x",
-        ";",
-        "echo <<EOF",
-        "echo x <<'EOF'\nrm -rf /",
-    ];
-    let mut wrong = Vec::new();
-    for (shell, lines) in [
-        (
-            Shell::Posix,
-            [&everywhere[..], &posix_and_powershell, &posix_only].concat(),
-        ),
-        (
-            Shell::PowerShell,
-            [&everywhere[..], &posix_and_powershell].concat(),
-        ),
-        (Shell::Cmd, everywhere.to_vec()),
-    ] {
-        for line in lines {
-            if classify(line, shell, &paths_for(shell)).is_safe() {
-                wrong.push(format!("{shell:?}: {line:?}"));
-            }
-        }
-    }
-    assert!(wrong.is_empty(), "called safe:\n{}", wrong.join("\n"));
-    // And the lines a shell reads as plain words are safe there: the lists
-    // above are what the grammars say, not a guess.
-    for (shell, line) in [
-        (Shell::Cmd, "echo 'abc"),
-        (Shell::Cmd, "echo `ls"),
-        (Shell::Cmd, "echo $(echo"),
-        (Shell::Cmd, "echo ${x"),
-        (Shell::Cmd, "echo ("),
-        (Shell::PowerShell, "echo <<EOF"),
-        (Shell::PowerShell, "echo \\"),
-        (Shell::Posix, "echo }"),
-        (Shell::Posix, "echo x <<'EOF'\nrm -rf /\nEOF"),
-    ] {
-        assert!(
-            classify(line, shell, &paths_for(shell)).is_safe(),
-            "{shell:?}: {line:?}"
-        );
-    }
+fn every_case_holds() {
+    common::cases::check("limits");
 }
 
 /// The largest `n` in `1..limit` that `reads` accepts, found by halving the
@@ -305,8 +236,8 @@ fn the_most_shells_in_shells_that_read_is_the_limit() {
         }
         reads_the_delete(&line)
     });
-    // `edge` counts from one shell; the line with none is the plain delete.
-    assert!(reads_the_delete("rm -rf /"));
+    // `edge` counts from one shell; the line with none is the plain delete
+    // (in limits.cases).
     assert_eq!(found, 8);
 }
 
@@ -474,12 +405,5 @@ fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
     };
     assert!(!stopped_by(&heavy(348), Shell::Posix, why));
     assert!(stopped_by(&heavy(349), Shell::Posix, why));
-    // Everyday finds are far under it.
-    for line in [
-        "find . -name '*.o' -exec rm {} \\;",
-        "find src tests docs -type f -name '*.rs' -exec grep -l foo {} +",
-        "find . -exec find . -exec echo {} \\; \\;",
-    ] {
-        assert!(!stopped_by(line, Shell::Posix, why), "{line}");
-    }
+    // Everyday finds are far under it (in limits.cases).
 }

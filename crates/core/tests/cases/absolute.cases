@@ -1,0 +1,58 @@
+# The absolute path a spelling names, as spelled (`Resolver::absolute`):
+# nothing read from the disk, so a link is not followed and no case is
+# folded. `home` gives the part below the home directory (`~`).
+
+# A POSIX path is made absolute with its dots applied.
+posix absolute=/home/me/work/repo/src/main.rs | src/main.rs
+posix absolute=/home/me/work/repo | .
+posix absolute=/home/me/work/repo/a | ./src/../a
+posix absolute=/home/me/work/repo/src/a | src//a/
+posix absolute=/home/me/work | ..
+posix absolute=/ | ../../../../..
+posix absolute=/etc/hosts | /etc/hosts
+posix absolute=/a/c | /a/./b/../c
+posix absolute=/ | /
+posix home absolute=/home/me |
+posix home absolute=/home/me/.ssh/config | /.ssh/config
+posix home absolute=/home/you | /../you
+
+# A POSIX name keeps its case, and a backslash is part of it.
+posix absolute=/home/me/work/repo/Src\\A/B | Src\\A/B
+
+# The names of the root volume are kept as spelled.
+posix@macos absolute=/System/Volumes/Data/Users/me/x | /System/Volumes/Data/Users/me/x
+posix@macos absolute="/Volumes/Macintosh HD/x" | /Volumes/Macintosh HD/x
+
+# A Windows path is written with backslashes and its drive.
+windows absolute=C:\\Users\\me\\dev\\repo\\src\\main.rs | src/main.rs
+windows absolute=C:\\Users\\me\\dev\\repo\\src\\b | src\\.\\a\\..\\b
+windows absolute=C:\\Users\\me\\dev | ..
+windows absolute=C:\\ | C:\\
+windows absolute=C:\\Users\\me | c:/Users/me
+windows absolute=D:\\x\\y | D:\\x\\y
+windows absolute=C:\\Windows | \\Windows
+windows home absolute=C:\\Users\\me |
+windows home absolute=C:\\Users\\me\\AppData | \\AppData
+windows absolute=C:\\Users\\me\\dev\\repo\\x | C:x
+windows absolute=C:\\Users\\me\\dev\\repo | C:
+# A long path is the plain path it names.
+windows absolute=C:\\Users\\me\\x | \\\\?\\C:\\Users\\me\\x
+windows absolute=\\\\server\\share\\dir | \\\\?\\UNC\\Server\\Share\\dir
+windows absolute=\\\\server\\share | \\\\server\\share
+windows absolute=\\\\server\\share\\b | \\\\server\\share\\a\\..\\b
+
+# A Windows name loses what Windows drops from its end.
+windows absolute=C:\\Users\\me\\dev\\repo\\src\\a | src.\\a.\s
+
+# What is not one place on a disk has no path.
+posix absolute=none | /dev/null
+posix absolute=none | /dev/zero
+posix absolute=none | /dev/urandom
+windows absolute=none | NUL
+windows absolute=none | \\\\.\\PhysicalDrive0
+windows absolute=none | D:x
+windows absolute=none | E:
+windows absolute=none | d:y/z
+
+# A drive-relative path on the drive of the working directory is from it.
+windows absolute=C:\\Users\\me\\dev\\repo\\y | c:x/../y

@@ -1,0 +1,615 @@
+# Archives. Unpacking writes into a folder: the one an option names, or the
+# working directory with none, judged like any write, in every shell and by
+# every prefix of tar's long options; a mode only known when it runs may
+# unpack. Archiving that deletes what it archives (`tar --remove-files`,
+# `zip -m`, `7z a -sdel`) deletes its members, judged as `rm` judges its
+# operands and with the reasons of `rm`; without such an option it deletes
+# nothing. The format is in CONTRIBUTING.md.
+
+# A home that is the working directory.
+paths home_is_cwd cwd=/home/me home=/home/me workspace=/home/me/work/repo
+
+# Unpacking an archive is judged by the folder it fills.
+posix safe | tar -xf x.tar
+posix safe | tar xf x.tar
+posix safe | tar xzvf x.tgz
+posix safe | tar -xzf x.tgz -C build
+posix safe | tar -xf x.tar -C ./out/deps
+posix safe | tar -xf x.tar -C .
+posix safe | tar -xf x.tar --directory build
+posix safe | tar --extract --file=x.tar --directory=build
+posix safe | tar -xf x.tar -C /tmp/scratch
+posix safe | tar -xf x.tar -C ~/work/repo/vendor
+posix safe | tar -xf x.tar -C /home/me/work/repo
+posix safe | tar -C build -xf x.tar
+posix safe | tar -xOf x.tar notes.txt | head
+posix safe | tar --to-stdout -xf x.tar notes.txt
+posix safe | tar -cf x.tar src
+posix safe | tar czf out.tgz -C ~/work/repo/src .
+posix safe | tar -czf out.tgz -C ~ notes
+posix safe | tar -tf x.tar
+posix safe | tar tvf x.tar
+posix safe | unzip x.zip
+posix safe | unzip -o x.zip
+posix safe | unzip x.zip -d build
+posix safe | unzip -o x.zip -d build/deps
+posix safe | unzip -qod build x.zip
+posix safe | unzip -dbuild x.zip
+posix safe | unzip -l x.zip
+posix safe | unzip -p x.zip notes.txt | head
+posix safe | unzip -c x.zip notes.txt
+posix safe | unzip -t x.zip
+posix safe | unzip -Z x.zip
+posix safe | unzip -P secret x.zip -d build
+posix safe | 7z x a.7z
+posix safe | 7z x a.7z -obuild
+posix safe | 7z x -obuild a.7z
+posix safe | 7z e a.7z -o/tmp/scratch
+posix safe | 7z l a.7z
+posix safe | 7z a out.7z src
+posix safe | 7z x a.7z -aoa
+posix safe | cd build && tar -xf ../x.tar
+# With no folder, into the working directory.
+posix safe | cd build && tar -xf x.tar
+posix safe | cd build && unzip x.zip
+posix finds=overwrite | tar -xf x.tar -C ~
+posix finds=overwrite | tar xf x.tar -C ~
+posix finds=overwrite | tar -xzf x.tgz -C ~
+posix finds=overwrite | tar -xzf x.tgz -C /usr/local
+posix finds=overwrite | tar -xf x.tar -C /
+posix finds=overwrite | tar -xf x.tar -C ..
+posix finds=overwrite | tar -xf x.tar -C ../other
+posix finds=overwrite | tar -xf x.tar -C ~/.ssh
+posix finds=overwrite | tar -xf x.tar -C~
+posix finds=overwrite | tar -xf x.tar -C$HOME
+posix finds=overwrite | tar -xf x.tar -C "$DEST"
+posix finds=overwrite | tar -xf x.tar --directory ~
+posix finds=overwrite | tar -xf x.tar --directory=~
+posix finds=overwrite | tar -xf x.tar --dir ~
+posix finds=overwrite | tar --extract -f x.tar -C ~
+posix finds=overwrite | tar --get -f x.tar -C ~
+posix finds=overwrite | tar -C ~ -xf x.tar
+posix finds=overwrite | tar -xf x.tar -C build -C ~
+posix finds=overwrite | tar xCf ~ x.tar
+posix finds=overwrite | tar -xf x.tar --one-top-level=/etc
+posix finds=overwrite | bsdtar -xf x.tar -C ~
+posix finds=overwrite | gtar -xf x.tar -C ~
+posix finds=overwrite | sudo tar -xf x.tar -C /usr/local
+posix finds=overwrite | unzip -o x.zip -d ~
+posix finds=overwrite | unzip x.zip -d ~
+posix finds=overwrite | unzip x.zip -d /etc
+posix finds=overwrite | unzip x.zip -d ..
+posix finds=overwrite | unzip -d ~ x.zip
+posix finds=overwrite | unzip -d~ x.zip
+posix finds=overwrite | unzip -qod ~ x.zip
+posix finds=overwrite | unzip x.zip -x '*.o' -d ~
+posix finds=overwrite | unzip x.zip -d "$DEST"
+posix finds=overwrite | 7z x a.7z -o~
+posix finds=overwrite | 7z x -o/etc a.7z
+posix finds=overwrite | 7z e a.7z -o..
+posix finds=overwrite | 7z x a.7z -O/etc
+posix finds=overwrite | 7za x a.7z -o~
+posix finds=overwrite | 7zz x a.7z -o~
+posix finds=overwrite | 7z x a.7z -o$DEST
+# With no folder, into the working directory.
+posix finds=overwrite | cd ~ && tar -xf x.tar
+posix finds=overwrite | cd ~ && unzip x.zip
+posix finds=overwrite | cd ~ && 7z x a.7z
+posix finds=overwrite | cd / && tar xf x.tar
+posix finds=overwrite | cd .. && tar xf x.tar
+posix finds=overwrite | cd /etc && unzip x.zip
+posix finds=overwrite | cd ~/.ssh && tar -xf x.tar
+posix finds=overwrite | cd $SOMEWHERE && tar -xf x.tar
+posix finds=overwrite | cd ~ && tar -xf x.tar -C .
+posix finds=overwrite | cd ~ && unzip x.zip -d .
+# The same lines from a home that is the working directory.
+posix@home_is_cwd finds=overwrite | tar -xf x.tar
+posix@home_is_cwd finds=overwrite | unzip x.zip
+posix@home_is_cwd finds=overwrite | 7z x a.7z
+posix@macos safe | tar -xf x.tar -C build
+posix@macos safe | unzip x.zip -d /tmp/x
+posix@macos finds=overwrite | tar -xf x.tar -C ~
+posix@macos finds=overwrite | tar -xf x.tar -C /Users/me
+posix@macos finds=overwrite | unzip x.zip -d /Applications
+
+# Archives in PowerShell and cmd are judged by their folder.
+powershell safe | Expand-Archive x.zip -DestinationPath build
+powershell safe | Expand-Archive x.zip -DestinationPath build -Force
+powershell safe | Expand-Archive -Path x.zip -DestinationPath build
+powershell safe | Expand-Archive -LiteralPath x.zip -DestinationPath .
+powershell safe | Expand-Archive x.zip build
+powershell safe | Expand-Archive -Path x.zip build
+powershell safe | Expand-Archive x.zip
+powershell safe | Expand-Archive x.zip -DestinationPath "$env:TEMP\\x"
+powershell safe | Expand-Archive x.zip -DestinationPath C:\\Users\\me\\dev\\repo\\vendor
+powershell safe | tar -xf x.tar -C build
+powershell safe | tar -xf x.zip
+powershell safe | tar -tf x.zip
+powershell safe | 7z x a.7z -obuild
+powershell finds=overwrite | Expand-Archive x.zip -DestinationPath ~
+powershell finds=overwrite | Expand-Archive -Path x.zip -DestinationPath C:\\Windows
+powershell finds=overwrite | Expand-Archive -LiteralPath x.zip -DestinationPath $HOME
+powershell finds=overwrite | Expand-Archive x.zip C:\\
+powershell finds=overwrite | Expand-Archive -Path x.zip ~
+powershell finds=overwrite | Expand-Archive x.zip ~\\Documents
+powershell finds=overwrite | Expand-Archive x.zip -Dest ~
+powershell finds=overwrite | Expand-Archive x.zip -DestinationPath $dest
+powershell finds=overwrite | Set-Location ~; Expand-Archive x.zip
+powershell finds=overwrite | cd C:\\; Expand-Archive x.zip -Force
+powershell finds=overwrite | tar -xf x.tar -C C:\\Windows
+powershell finds=overwrite | tar -xf x.zip -C ~
+powershell finds=overwrite | 7z x a.7z -oC:\\Windows
+powershell finds=overwrite | unzip x.zip -d C:\\
+cmd safe | tar -xf x.zip -C build
+cmd safe | 7z x a.7z -obuild
+cmd safe | 7z.exe x a.7z -obuild
+cmd finds=overwrite | tar -xf x.zip -C C:\\Windows
+cmd finds=overwrite | tar.exe -xf x.zip -C C:\\
+cmd finds=overwrite | 7z x a.7z -oC:\\Windows
+cmd finds=overwrite | 7z.exe x a.7z -oC:\\
+cmd finds=overwrite | cd C:\\ && tar -xf x.zip
+
+# tar takes any unique prefix of a long option. A prefix that is a flag to one
+# tar and an option with a value to another takes no value: `--inc` is
+# `--incremental` in GNU tar and `--include` in bsdtar, and `--mod` is
+# `--mode` in GNU tar and the only prefix of `--modification-time` (`-m`) in
+# bsdtar; the next argument is a member or an option.
+posix safe | tar --cre -f x.tar -C ~ .
+posix safe | tar --crea -f x.tar -C ~ .
+posix safe | tar --lis -f x.tar -C ~
+posix safe | tar --upd -f x.tar -C ~ .
+posix safe | tar --app -f x.tar -C ~ .
+posix safe | tar --dif -f x.tar -C ~
+posix safe | tar --com -f x.tar -C ~
+posix safe | tar --ext --to-stdout -f x.tar -C ~
+posix safe | tar --ext --to-s -f x.tar -C ~
+posix safe | tar --extr --to-std -f x.tar -C ~
+posix safe | tar --ex -f x.tar -C ~
+posix safe | tar --one-file-system -f x.tar -C ~
+posix safe | tar --ext -f x.tar -C build
+posix safe | tar --ext --dir build -f x.tar
+posix safe | tar --ext --one-top=build -f x.tar
+posix safe | tar -cf x.tar --inc src --remove-files
+posix finds=overwrite | tar --ext -f x.tar -C ~
+posix finds=overwrite | tar --extr -f x.tar -C ~
+posix finds=overwrite | tar --extra -f x.tar -C ~
+posix finds=overwrite | tar --extrac -f x.tar -C ~
+posix finds=overwrite | tar --ext -C ~ -f x.tar
+posix finds=overwrite | tar --ext -f x.tar --dir ~
+posix finds=overwrite | tar --ext -f x.tar --one-top=~
+posix finds=overwrite | tar --ext -f x.tar --one-top-level=~
+posix finds=overwrite | bsdtar --ext -f x.tar -C ~
+posix finds=overwrite | gtar --extr -f x.tar -C /etc
+posix finds=overwrite | tar --ext -f x.tar -C "$d"
+posix finds=delete | gtar -cf x.tar --inc ~ --remove-files
+posix finds=delete | tar -cf x.tar --incremental ~ --remove-files
+posix finds=overwrite | tar -xf x.tar --inc -C /etc
+posix finds=overwrite | gtar -xf x.tar --inc -C /etc
+posix finds=overwrite | tar -xf x.tar --mod -C /etc
+posix finds=overwrite | bsdtar -xf x.tar --mod -C /etc
+posix finds=overwrite | tar -xpf x.tar --mod -C ~
+
+# tar with a mode only known when it runs may unpack.
+posix safe | tar -czf "$out" -C ~ .
+posix safe | tar -cf "$out" -C ~ "$file"
+posix safe | tar -tf "$a" -C ~
+posix safe | tar "$mode" -f x.tar -C build
+posix safe | tar $mode -f x.tar -C .
+posix safe | tar "$mode" -f x.tar -O -C ~
+posix safe | tar --create -f "$out" -C ~ .
+posix safe | tar -xf x.tar "$file"
+posix finds=overwrite | tar "$mode" -f x.tar -C ~
+posix finds=overwrite | tar $mode -C ~
+posix finds=overwrite | tar -f x.tar $mode -C ~
+posix finds=overwrite | tar -f x.tar -C ~ "-$mode"
+posix finds=overwrite | tar "$mode" -f x.tar -C /usr/local
+posix finds=overwrite | tar $(echo xf) x.tar -C ~
+posix finds=overwrite | cd ~ && tar $mode x.tar
+
+# `tar --remove-files` deletes the members it archives, read from where each
+# `-C` moves; members only known when it runs, from a list or from a mode
+# only known when it runs may be anything. Members inside the workspace, and
+# packing without the option, stay safe.
+posix safe | tar -cf x.tar *
+posix safe | tar -cf x.tar src --remove-files
+posix safe | tar -czf x.tgz src docs --remove-files
+posix safe | tar --remove-files -cf x.tar src/a.txt
+posix safe | tar -cf x.tar -C src . --remove-files
+posix safe | tar -cf x.tar -C ~/work/repo/build out --remove-files
+posix safe | tar -cf x.tar -C /tmp/scratch . --remove-files
+posix safe | tar -cf x.tar /tmp/scratch/a --remove-files
+posix safe | tar -cf x.tar *.log --remove-files
+posix safe | tar -cf x.tar *git --remove-files
+posix safe | tar -cf x.tar --exclude=keep.txt src --remove-files
+posix safe | tar -cf x.tar --exclude ~ src --remove-files
+posix safe | tar -cf x.tar --exclude-from ~/skip.txt src --remove-files
+posix safe | tar -cf x.tar --transform 's,^,pre/,' src --remove-files
+posix safe | tar -cf x.tar --sparse src --remove-files
+posix safe | tar -cf x.tar --checkpoint src --remove-files
+posix safe | tar -cf x.tar --remove-files --file-not-an-option src
+posix safe | tar -xf x.tar --remove-files
+posix safe | tar -xf x.tar notes --remove-files
+posix safe | tar -cf x.tar -C src a --remove-files
+posix safe | tar -cf x.tar -C build -C out . --remove-files
+posix safe | tar -cf x.tar a -C ~ --remove-files
+posix finds=delete | tar -cf x.tar ~ --remove-files
+posix finds=delete | tar -cf x.tar ~/ --remove-files
+posix finds=delete | tar -cf x.tar $HOME --remove-files
+posix finds=delete | tar cf x.tar ~ --remove-files
+posix finds=delete | tar --remove-files -cf x.tar ~
+posix finds=delete | tar -czf x.tgz ~ --remove-files
+posix finds=delete | tar -rf x.tar ~ --remove-files
+posix finds=delete | tar -uf x.tar ~ --remove-files
+posix finds=delete | tar --create --file=x.tar ~ --remove-files
+posix finds=delete | tar --create --file x.tar ~ --remove-files
+posix finds=delete | tar --append -f x.tar ~ --remove-files
+posix finds=delete | tar --update -f x.tar ~ --remove-files
+posix finds=delete | tar -cf x.tar ~ --remove
+posix finds=delete | tar -cf x.tar ~ --rem
+posix finds=delete | tar -cf x.tar ~ --remove-files=ignored
+posix finds=delete | tar -cf x.tar * --remove-files
+posix finds=delete | tar -cf x.tar . --remove-files
+posix finds=delete | tar -cf x.tar .. --remove-files
+posix finds=delete | tar -cf x.tar ../other-project --remove-files
+posix finds=delete | tar -cf x.tar .git --remove-files
+posix finds=delete | tar -cf x.tar ~/.ssh --remove-files
+posix finds=delete | tar -cf x.tar /etc --remove-files
+posix finds=delete | tar -cf x.tar / --remove-files
+posix finds=delete | tar -cf x.tar src ~ --remove-files
+posix finds=delete | tar -cf x.tar ~ src --remove-files
+posix finds=delete | tar -cf x.tar --exclude=a ~ --remove-files
+posix finds=delete | tar -cf x.tar --exclude a ~ --remove-files
+posix finds=delete | tar -cf x.tar --exclude ~ ~ --remove-files
+posix finds=delete | tar -cf x.tar --sparse ~ --remove-files
+posix finds=delete | tar -cf x.tar --checkpoint ~ --remove-files
+posix finds=delete | tar -cf x.tar -z ~ --remove-files
+posix finds=delete | tar -cvf x.tar ~ --remove-files
+posix finds=delete | gtar -cf x.tar ~ --remove-files
+posix finds=delete | bsdtar -cf x.tar ~ --remove-files
+posix finds=delete | sudo tar -cf x.tar /etc --remove-files
+posix finds=delete | cd ~ && tar -cf x.tar * --remove-files
+posix finds=delete | cd ~ && tar -cf x.tar . --remove-files
+posix finds=delete | cd /etc && tar -cf x.tar passwd --remove-files
+posix finds=delete | tar -cf x.tar --remove-files -- ~
+posix finds=delete | echo ok; tar -cf x.tar ~ --remove-files
+# Where `-C` moves.
+posix finds=delete | tar -cf x.tar -C ~ . --remove-files
+posix finds=delete | tar -cf x.tar -C ~ notes --remove-files
+posix finds=delete | tar -cf x.tar -C ~/.ssh . --remove-files
+posix finds=delete | tar -cf x.tar -C /etc passwd --remove-files
+posix finds=delete | tar -cf x.tar -C/etc passwd --remove-files
+posix finds=delete | tar -cf x.tar --directory /etc passwd --remove-files
+posix finds=delete | tar -cf x.tar --directory=/etc passwd --remove-files
+posix finds=delete | tar -C /etc -cf x.tar passwd --remove-files
+posix finds=delete | tar cCf /etc x.tar passwd --remove-files
+posix finds=delete | tar -cf x.tar -C .. repo --remove-files
+posix finds=delete | tar -cf x.tar -C src -C .. . --remove-files
+posix finds=delete | tar -cf x.tar -C build -C ~ . --remove-files
+posix finds=delete | tar -cf x.tar -C src a -C ~ b --remove-files
+posix finds=delete | tar -cf x.tar -C "$DIR" a --remove-files
+posix finds=delete | tar -cf x.tar -C ~ --add-file a --remove-files
+posix finds=delete | cd ~ && tar -cf x.tar -C src a --remove-files
+# Members only known when it runs.
+posix finds=delete | tar -cf x.tar "$DIR" --remove-files
+posix finds=delete | tar -cf x.tar $FILES --remove-files
+posix finds=delete | tar -cf x.tar $(ls) --remove-files
+posix finds=delete | tar -cf x.tar -T list.txt --remove-files
+posix finds=delete | tar -cf x.tar -Tlist.txt --remove-files
+posix finds=delete | tar -cf x.tar --files-from list.txt --remove-files
+posix finds=delete | tar -cf x.tar --files-from=list.txt --remove-files
+posix finds=delete | tar -cf x.tar --add-file ~ --remove-files
+posix finds=delete | tar -cf x.tar --add-file=~ --remove-files
+posix finds=delete | tar "$mode" -f x.tar ~ --remove-files
+posix finds=delete | tar $mode -f x.tar src --remove-files
+posix finds=delete | ls | xargs tar -rf x.tar --remove-files
+posix finds=delete | ls ~ | xargs tar -rf x.tar --remove-files
+
+# `zip -m` (`--move`) deletes the members it archives; members inside the
+# workspace, and packing without it, stay safe.
+posix safe | zip x.zip src
+posix safe | zip -r x.zip *
+posix safe | zip x.zip /etc/hosts
+posix safe | zip -m x.zip src/a.txt
+posix safe | zip -mr x.zip src
+posix safe | zip -r -m x.zip src docs
+posix safe | zip -m x.zip build/out.o -x ~
+posix safe | zip -mr x.zip src -x '*.o'
+posix safe | zip -mr x.zip src --exclude '*.o'
+posix safe | zip -m x.zip
+posix safe | zip -mr x.zip *.log
+posix safe | zip -mr -P ~ x.zip src
+posix safe | zip -mr -b ~ x.zip src
+posix safe | zip -mr -t 20200101 x.zip src
+posix safe | zip -mr -tt 20200101 x.zip src
+posix safe | zip -mr -n .zip x.zip src
+posix safe | zip -mr -sf x.zip src
+posix finds=delete | zip -mr x.zip ~
+posix finds=delete | zip -rm x.zip ~
+posix finds=delete | zip -r -m x.zip ~
+posix finds=delete | zip -r x.zip ~ -m
+posix finds=delete | zip -m x.zip ~
+posix finds=delete | zip --move -r x.zip ~
+posix finds=delete | zip --mov -r x.zip ~
+posix finds=delete | zip -mr x.zip *
+posix finds=delete | zip -mr x.zip '*'
+posix finds=delete | zip -mr x.zip .
+posix finds=delete | zip -mr x.zip ..
+posix finds=delete | zip -mr x.zip /etc
+posix finds=delete | zip -mr x.zip ../other-project
+posix finds=delete | zip -mr x.zip .git
+posix finds=delete | zip -mr x.zip '*git'
+posix finds=delete | zip -mr x.zip src ~
+posix finds=delete | zip -mr x.zip ~ -x '*.o'
+posix finds=delete | zip -mr x.zip ~ -x ~/keep
+posix finds=delete | zip -mr x.zip ~ --exclude '*.o'
+posix finds=delete | zip -mr x.zip -i ~
+posix finds=delete | zip -mr x.zip ~ -i '*.c'
+posix finds=delete | zip -mr -b /tmp x.zip ~
+posix finds=delete | zip -mr -t 20200101 x.zip ~
+posix finds=delete | zip -mr -tt 20200101 x.zip ~
+posix finds=delete | zip -mr -P secret x.zip ~
+posix finds=delete | zip -mr -O out.zip x.zip ~
+posix finds=delete | zip -mr -s 100m x.zip ~
+posix finds=delete | zip -mr -s100m x.zip ~
+posix finds=delete | zip -mr -ds 10m x.zip ~
+posix finds=delete | zip -mr --password secret x.zip ~
+posix finds=delete | zip -mr --password=secret x.zip ~
+posix finds=delete | zip -mr -- x.zip ~
+posix finds=delete | zip -mr x.zip "$DIR"
+posix finds=delete | zip -mr x.zip $FILES
+posix finds=delete | zip -mr $ARGS
+posix finds=delete | zip -mr -@ x.zip
+posix finds=delete | zip -mr x.zip --names-stdin
+posix finds=delete | ls ~ | zip -m x.zip -@
+posix finds=delete | ls | xargs zip -m x.zip
+posix finds=delete | ls ~ | xargs zip -m x.zip
+posix finds=delete | sudo zip -mr x.zip /etc
+posix finds=delete | cd ~ && zip -mr x.zip *
+posix finds=delete | cd ~ && zip -mr x.zip .
+
+# The options zip reads to find the archive and its members.
+posix safe | zip -m -x'*.o' x.zip src
+posix safe | zip -m -xb x.zip src
+posix safe | zip -m -x=b x.zip src
+posix safe | zip -m --exclude=b x.zip src
+posix safe | zip -m --exc=b x.zip src
+posix safe | zip -mr -x'*.o' x.zip src
+# A bare `-x` keeps the names after it out of the members.
+posix safe | zip -m x.zip src -x ~
+posix safe | zip -m x.zip src --exclude ~ ~
+posix safe | zip -m x.zip src -x ~ @
+posix safe | zip -m x.zip -x b @ src
+posix safe | zip -m -db x.zip src
+posix safe | zip -dbm x.zip src
+posix safe | zip -mr x.zip src -li
+posix safe | zip -mr x.zip src -li keep
+posix safe | zip -mr --logfile-path log x.zip src
+posix safe | zip -mr --logfile-path=log x.zip src
+posix safe | zip -m -UN warn x.zip src
+posix safe | zip -m --unicode warn x.zip src
+posix safe | zip -m x.zip src -x "$X" '*.o'
+# `-xpat`, `-x=pat`, `--exclude=pat` and `-ipat` are one value; the archive's
+# name and the members after them stay operands.
+posix finds=delete | zip -m -x'*.o' x.zip ~
+posix finds=delete | zip -mr -x'*.o' x.zip ~
+posix finds=delete | zip -m -xb x.zip ~
+posix finds=delete | zip -m -x=b x.zip ~
+posix finds=delete | zip -m --exclude=b x.zip ~
+posix finds=delete | zip -m --exc=b x.zip ~
+posix finds=delete | zip -m -mx'*.o' x.zip ~
+posix finds=delete | zip -m -i'*.c' x.zip ~
+posix finds=delete | zip -m -i=b x.zip ~
+posix finds=delete | zip -m --include=b x.zip ~
+posix finds=delete | zip -m --include=b x.zip ~ -x b
+posix finds=delete | zip -m -xb x.zip src ~
+posix finds=delete | zip -m -xb -m x.zip ~
+posix finds=delete | zip -m --exclude=b -- x.zip ~
+# A bare one still opens a list that swallows what follows.
+posix finds=delete | zip -m x.zip ~ -x b
+posix finds=delete | zip -m x.zip ~ --exclude b
+# `@` ends an exclude or include list.
+posix finds=delete | zip -m -x b @ x.zip ~
+posix finds=delete | zip -m x.zip -x b @ ~
+posix finds=delete | zip -m x.zip src -x b @ ~
+posix finds=delete | zip -m x.zip -x b c @ ~
+posix finds=delete | zip -m x.zip --exclude b @ ~
+posix finds=delete | zip -m x.zip -i b @ ~
+posix finds=delete | zip -m x.zip -i b @ ~ -x c
+posix finds=delete | zip -m -x b @ x.zip src ~
+# Two-letter flags ending in `b` or `s` take no value; the single letters
+# still take theirs.
+posix finds=delete | zip -m -db x.zip ~
+posix finds=delete | zip -m -sb x.zip ~
+posix finds=delete | zip -m -ws x.zip ~
+posix finds=delete | zip -dbm x.zip ~
+posix finds=delete | zip -sbm x.zip ~
+posix finds=delete | zip -r -dbm x.zip ~
+posix finds=delete | zip -mdb x.zip ~
+posix finds=delete | zip -mwsr x.zip ~
+# `-li` is a flag and opens no include list.
+posix finds=delete | zip -mr x.zip src -li ~
+posix finds=delete | zip -m x.zip src -rli ~
+posix finds=delete | zip -mr x.zip src -lli ~
+# A long option takes a value only when zip has it by that name.
+posix finds=delete | zip -mr --unzip-command cmd x.zip ~
+posix finds=delete | zip -mr --logfile-path log x.zip ~
+posix finds=delete | zip -mr --test x.zip ~
+# A value attached to its option ends the bundle.
+posix finds=delete | zip -m -lfout x.zip ~
+posix finds=delete | zip -m -n.dat x.zip ~
+posix finds=delete | zip -m -n.mat x.zip ~
+posix finds=delete | zip -m -s1t x.zip ~
+posix finds=delete | zip -m -s1x x.zip ~ src
+# `-UN` (`--unicode`) takes `q`, `w`, `i`, `n` or a word; its last letter
+# must not be read as `-n`, which would take the archive's name.
+posix finds=delete | zip -m -UN=warn x.zip ~
+posix finds=delete | zip -m -UN=n x.zip ~
+posix finds=delete | zip -UNwarn -m x.zip ~
+posix finds=delete | zip -mUNn x.zip ~
+posix finds=delete | zip -m --unicode warn x.zip ~
+# A variable can be a switch or `@`, which zip ends a list at, so the names
+# after it are operands again.
+posix finds=delete | zip -m x.zip src -x "$X" ~
+posix finds=delete | zip -m x.zip src -x $X ~
+posix finds=delete | zip -m x.zip -x "$X" ~
+posix finds=delete | zip -mr x.zip src -x "$X" /etc
+posix finds=delete | zip -m x.zip src --exclude "$X" ~
+posix finds=delete | zip -m x.zip src -i "$X" ~
+
+# `7z a -sdel` (and `u`) deletes the members it archives. With no name after
+# the archive's it packs, and deletes, everything in the folder; a switch
+# with a value only known when it runs starts with `-` and is no operand.
+posix safe | 7z a x.7z src
+posix safe | 7z a x.7z *
+posix safe | 7z a x.7z src -sdel
+posix safe | 7z a -sdel x.7z src
+posix safe | 7z u x.7z src/a.txt -sdel
+posix safe | 7z a x.7z *.log -sdel
+posix safe | 7z a x.7z src -sdel -x!~
+posix safe | 7z l x.7z ~ -sdel
+posix safe | 7z x a.7z -sdel
+posix safe | 7z d x.7z ~ -sdel
+posix safe | 7z a x.7z src -tzip -mx9
+# A name or an `-i` switch says what to pack; so do commands that do not add.
+posix safe | 7z a x.7z -sdel -i!src
+posix safe | 7z a x.7z -sdel -ir!src
+posix safe | 7z a x.7z
+posix safe | 7z a x.7z -x!keep
+posix safe | 7z a -sdel
+posix safe | 7z l x.7z -sdel
+posix safe | 7z x x.7z -sdel
+posix safe | 7z d x.7z -sdel
+posix safe | 7z a -p"$PASS" x.7z src -sdel
+posix finds=delete | 7z a x.7z ~ -sdel
+posix finds=delete | 7z a -sdel x.7z ~
+posix finds=delete | 7z a x.7z -sdel ~
+posix finds=delete | 7z u x.7z ~ -sdel
+posix finds=delete | 7z a x.7z ~ -SDEL
+posix finds=delete | 7z A x.7z ~ -sdel
+posix finds=delete | 7z a x.7z * -sdel
+posix finds=delete | 7z a x.7z '*' -sdel
+posix finds=delete | 7z a x.7z . -sdel
+posix finds=delete | 7z a x.7z .git -sdel
+posix finds=delete | 7z a x.7z '*git' -sdel
+posix finds=delete | 7z a x.7z /etc -sdel -r
+posix finds=delete | 7z a x.7z ../other-project -sdel
+posix finds=delete | 7z a x.7z src ~ -sdel
+posix finds=delete | 7z a -tzip -mx9 x.zip ~ -sdel
+posix finds=delete | 7z a x.7z ~ -x!'*.o' -sdel
+posix finds=delete | 7z a x.7z @list.txt -sdel
+posix finds=delete | 7z a x.7z -i!~ -sdel
+posix finds=delete | 7z a x.7z -ir!/etc/* -sdel
+posix finds=delete | 7z a x.7z -ir0!/etc/* -sdel
+posix finds=delete | 7z a x.7z -i@list.txt -sdel
+posix finds=delete | 7z a x.7z "$DIR" -sdel
+posix finds=delete | 7z $CMD x.7z ~ -sdel
+posix finds=delete | 7za a x.7z ~ -sdel
+posix finds=delete | 7zr a x.7z ~ -sdel
+posix finds=delete | 7zz a x.7z ~ -sdel
+posix finds=delete | ls | xargs 7z a x.7z -sdel
+posix finds=delete | sudo 7z a x.7z /etc -sdel
+posix finds=delete | cd ~ && 7z a x.7z * -sdel
+# No name: everything in the folder.
+posix finds=delete | cd ~ && 7z a -sdel x.7z
+posix finds=delete | cd ~ && 7z u -sdel x.7z
+posix finds=delete | 7z a x.7z -sdel -i!~
+posix finds=delete | 7z a x.7z -sdel -i@list.txt
+# A switch with a value only known when it runs.
+posix finds=delete | 7z a -p"$PASS" x.7z -sdel
+posix finds=delete | 7z a -sdel -p"$PASS" x.7z
+posix finds=delete | 7z a -x!"$SKIP" x.7z -sdel
+posix finds=delete | 7z a -sdel -mx="$LEVEL" backup.7z
+posix finds=delete | 7z a -t"$FMT" -sdel out.7z
+posix finds=delete | 7z a -w"$T" x.7z -sdel
+posix finds=delete | 7z a $OPTS x.7z -sdel
+posix finds=delete | 7z a "$OPTS" x.7z -sdel
+posix finds=delete | 7z a x.7z -i"$PAT" -sdel
+posix finds=delete | 7z a x.7z -i!"$PAT" -sdel
+
+# `7z -sdel` on Windows.
+powershell safe | 7z a x.7z src -sdel
+powershell safe | 7z x a.7z -sdel
+powershell safe | 7z a -sdel x.7z src
+powershell finds=delete | 7z a x.7z ~ -sdel
+powershell finds=delete | 7z a x.7z $HOME -sdel
+powershell finds=delete | 7z a x.7z C:\\Users\\me -sdel
+powershell finds=delete | 7z a x.7z C:\\Windows -sdel
+powershell finds=delete | 7z a x.7z * -sdel
+powershell finds=delete | 7z a x.7z $dir -sdel
+powershell finds=delete | 7z a -sdel x.7z
+powershell finds=delete | 7z u x.7z -sdel
+powershell finds=delete | cd ~; 7z a -sdel x.7z
+cmd safe | 7z a x.7z src -sdel
+cmd safe | 7z a x.7z C:\\Windows
+cmd safe | 7z a -sdel x.7z src
+cmd finds=delete | 7z a x.7z C:\\Windows -sdel
+cmd finds=delete | 7z a x.7z %USERPROFILE% -sdel
+cmd finds=delete | 7z a x.7z * -sdel
+cmd finds=delete | 7z a -sdel x.7z
+cmd finds=delete | 7z u x.7z -sdel -x!keep
+cmd finds=delete | cd %USERPROFILE% && 7z a -sdel x.7z
+cmd finds=delete | 7z a -sdel -p%PW% x.7z
+
+# Archiving that deletes is judged from the machine's home.
+posix@macos safe | tar -cf x.tar src --remove-files
+posix@macos safe | zip -mr x.zip src
+posix@macos finds=delete | tar -cf x.tar ~ --remove-files
+posix@macos finds=delete | tar -cf x.tar /Users/me --remove-files
+posix@macos finds=delete | zip -mr x.zip /Users/me
+posix@macos finds=delete | 7z a x.7z /Applications -sdel
+
+# Packing the home folder reads the keys in it (`read_secret`), but with no
+# option that deletes what it archives it is no `delete`. `7z a` adds a named
+# folder with everything under it, so it reads the keys in the home as well;
+# that read is not judged yet (a followup), so its cases are held only to "no
+# `delete`", not to safe.
+posix finds=read_secret lacks=delete | tar -cf x.tar ~
+posix finds=read_secret lacks=delete | tar -rf x.tar ~
+posix finds=read_secret lacks=delete | zip -r x.zip ~
+posix finds=read_secret lacks=delete | tar -tf x.tar ~ --remove-files
+posix finds=read_secret lacks=delete | zip -r x.zip ~ --no-dir-entries
+posix finds=read_secret lacks=delete | zip -r -s100m x.zip ~
+posix finds=read_secret lacks=delete | zip -r -n.mp3 x.zip ~
+posix finds=read_secret lacks=delete | zip -r -ds10m x.zip ~
+posix finds=read_secret lacks=delete | zip -r -lfmain.log x.zip ~
+posix lacks=delete | 7z a x.7z ~
+powershell lacks=delete | 7z a x.7z ~\s
+
+# The delete of each archiver gives the reason `rm -rf` gives for the same
+# members; with no name, `7z` packs `*`. Each `rm -rf` line is held to that
+# reason too: here, or in `posix.cases` for `rm -rf ~`, `*`, `.git` and
+# `/etc`.
+posix finds=delete reason="deletes the whole workspace" | rm -rf .
+posix finds=delete reason="deletes a path outside the workspace" | rm -rf ~/notes
+posix finds=delete reason="deletes a system folder" | rm -rf /etc/passwd
+posix finds=delete reason="deletes a path only known when it runs" | rm -rf "$DIR"
+posix finds=delete reason="deletes your home directory" | cd ~ && rm -rf *
+posix finds=delete reason="deletes your home directory" | tar -cf x.tar ~ --remove-files
+posix finds=delete reason="deletes the whole workspace" | tar -cf x.tar * --remove-files
+posix finds=delete reason="deletes the whole workspace" | tar -cf x.tar . --remove-files
+posix finds=delete reason="deletes the repository's history" | tar -cf x.tar .git --remove-files
+posix finds=delete reason="deletes a path outside the workspace" | tar -cf x.tar -C ~ notes --remove-files
+posix finds=delete reason="deletes a system folder" | tar -cf x.tar -C /etc passwd --remove-files
+posix finds=delete reason="deletes a path only known when it runs" | tar -cf x.tar "$DIR" --remove-files
+posix finds=delete reason="deletes your home directory" | cd ~ && tar -cf x.tar * --remove-files
+posix finds=delete reason="deletes your home directory" | zip -mr x.zip ~
+posix finds=delete reason="deletes the whole workspace" | zip -mr x.zip *
+posix finds=delete reason="deletes the whole workspace" | zip -mr x.zip .
+posix finds=delete reason="deletes a system folder" | zip -mr x.zip /etc
+posix finds=delete reason="deletes a path only known when it runs" | zip -mr x.zip "$DIR"
+posix finds=delete reason="deletes your home directory" | 7z a x.7z ~ -sdel
+posix finds=delete reason="deletes the whole workspace" | 7z a x.7z * -sdel
+posix finds=delete reason="deletes the whole workspace" | 7z a x.7z . -sdel
+posix finds=delete reason="deletes a system folder" | 7z a x.7z /etc -sdel
+posix finds=delete reason="deletes the whole workspace" | 7z a -sdel x.7z
+posix finds=delete reason="deletes the whole workspace" | 7z a x.7z -sdel -x!keep
+posix finds=delete reason="deletes the whole workspace" | 7za a -sdel x.7z
+posix finds=delete reason="deletes the whole workspace" | 7z u -sdel x.7z
+posix finds=delete reason="deletes the whole workspace" | 7z a x.7z -sdel -r
+
+# The rules give a reason a prompt can show (the reason of `tar
+# --remove-files` on the home is above).
+posix finds=overwrite reason="unpacks into your home directory" | tar -xf x.tar -C ~
+posix finds=overwrite reason="unpacks into a system folder" | unzip x.zip -d /etc
+posix finds=overwrite reason="unpacks into a folder outside the workspace" | tar -xf x.tar -C ../x
+posix finds=overwrite reason="unpacks into a folder only known when it runs" | tar -xf x.tar -C "$D"

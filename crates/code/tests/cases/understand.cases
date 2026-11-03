@@ -1,0 +1,163 @@
+# Which code is understood (`understand`): the strict, fail-closed subset.
+# Anything outside it is not understood, and each language holds a case for
+# every way out of it. `importing` is understood code that loads a module when
+# it runs, as Python does even without an import.
+
+# Python that computes is understood. What is understood does nothing to a
+# file: no act found in understood code is no act.
+python understand=importing acts="" | print(1+1)
+python understand=importing | print('hi')
+python understand=importing | x = 1\nx += 2\nprint(x)
+python understand=importing | a, b = 1, 2\nprint(a + b)
+python understand=importing | x = 1\nif x:\n    print(x)\nelse:\n    print(0)
+python understand=importing | print(len('abc'), max(1, 2), sorted([3, 1]))
+# The modules built into the interpreter binary.
+python understand=importing | import sys\nprint(sys.argv)
+python understand=importing | import sys; print(sys.version)
+python understand=importing acts="" | import sys\nprint(sys.stdin.read())
+python understand=importing | import time\nprint(time.time())
+python understand=importing | import errno\nprint(errno.ENOENT)
+python understand=importing | import itertools, errno
+python understand=importing | import sys, time, errno\nprint(sys.argv, time.monotonic())
+# `open` is on the list because the reader judges it by its path and mode
+# (`acts.cases`).
+python understand=importing | open('out.txt', 'w')
+python understand=importing | print(open('x').read())
+python understand=importing | print('x'.upper(), [1, 2].count(1))
+
+# Python outside the subset is not understood. It does not parse, or holds
+# no statement.
+python understand=no | if 1:
+python understand=no |
+python understand=no | # a comment
+python understand=no | pass if
+# It does not run straight through.
+python understand=no | def f(): return 1
+python understand=no | class A: pass
+python understand=no | f = lambda: 1
+python understand=no | for i in range(3): print(i)
+python understand=no | while False: pass
+python understand=no | print([i for i in range(3)])
+python understand=no | print(i for i in range(3))
+python understand=no | try:\n    print(1)\nexcept Exception:\n    pass
+python understand=no | with open('x') as f:\n    print(1)
+python understand=no | match 1:\n    case 1:\n        print(1)
+python understand=no | @dec\ndef f(): pass
+python understand=no | print(*[1, 2])
+# A call or an import that is not on the list.
+python understand=no | import os\nprint(os.getcwd())
+python understand=no | import os\nos.remove('x')
+python understand=no | import os.path
+python understand=no | import json as j\nj.dumps(1)
+# A module that is a file looked up in the folder the code runs in first,
+# however little the code does with it.
+python understand=no | import json
+python understand=no | import json, sys\njson.load(sys.stdin)
+python understand=no | import re\nprint(re.sub('a', 'b', 'abc'))
+python understand=no | import math\nprint(math.pi)
+python understand=no | import sys, json
+python understand=no | import enum
+# The built-in modules, used beyond the few members on the list.
+python understand=no | import builtins\nbuiltins.exec('1')
+python understand=no | import builtins\nprint(builtins.len('a'))
+python understand=no | import time\ntime.sleep(0)
+python understand=no | import itertools\nprint(itertools.count())
+python understand=no | import errno\nprint(errno.strerror(2))
+python understand=no | import sys\nprint(sys.modules)
+python understand=no | import sys\nsys.stdout.write('x')
+python understand=no | from json import dumps\ndumps(1)
+python understand=no | import sys\nsys.exit(0)
+python understand=no | import sys\nprint(sys.path)
+python understand=no | input()
+python understand=no | exit()
+python understand=no | getattr(print, '__call__')(1)
+python understand=no | x = print\nx(1)
+python understand=no | print(list(map(open, ['a'])))
+python understand=no | f()()
+# Run-time code, and a name nothing bound.
+python understand=no | eval('1')
+python understand=no | exec('x = 1')
+python understand=no | __import__('os')
+python understand=no | print(os.getcwd())
+python understand=no | print(math.pi)
+python understand=no | json.dumps(1)
+# Reaching into an object, and a name that is not plain.
+python understand=no | print(().__class__)
+python understand=no | _x = 1
+python understand=no | print = 1
+python understand=no | import os\nos.environ['X'] = '1'
+python understand=no | print(\u{ff3f}\u{ff3f}class\u{ff3f}\u{ff3f})
+# A control character, a line separator.
+python understand=no | print(1)\u{0}
+python understand=no | print(1)\u{2028}print(2)
+
+# JavaScript that computes is understood, and does nothing to a file.
+javascript understand=yes acts="" | console.log(1)
+javascript understand=yes | console.log('hi')
+javascript understand=yes | let x = 1; x += 2; console.log(x)
+javascript understand=yes | const a = [1, 2]; console.log(a.length)
+javascript understand=yes | if (1) { console.log(1) } else { console.log(0) }
+javascript understand=yes | console.log(Math.max(1, 2), parseInt('3'))
+javascript understand=yes acts="" | console.log(JSON.stringify({a: 1}))
+javascript understand=yes | console.log('x'.toUpperCase().trim())
+javascript understand=yes | 1 + 1
+
+# JavaScript outside the subset is not understood. It does not parse, or
+# holds no statement.
+javascript understand=no | if (
+javascript understand=no |
+javascript understand=no | // a comment
+javascript understand=no | {}
+javascript understand=no | if (1) {}
+# It does not run straight through.
+javascript understand=no | function f() { return 1 }
+javascript understand=no | const f = () => 1
+javascript understand=no | class A {}
+javascript understand=no | for (let i = 0; i < 3; i++) console.log(i)
+javascript understand=no | while (false) {}
+javascript understand=no | try { console.log(1) } catch (e) {}
+javascript understand=no | switch (1) { case 1: console.log(1) }
+javascript understand=no | (async () => { await 1 })()
+javascript understand=no | console.log(...[1, 2])
+javascript understand=no | new Date()
+# A call, a member or a module that is not on the list.
+javascript understand=no | process.exit(0)
+javascript understand=no | process.env
+javascript understand=no | console.log(process.version)
+javascript understand=no | require('fs')
+javascript understand=no | import('fs')
+javascript understand=no | require('fs').readFileSync('x')
+javascript understand=no | setTimeout(() => 1, 1)
+javascript understand=no | Date.now()
+javascript understand=no | Buffer.from('x')
+javascript understand=no | Object.keys({})
+javascript understand=no | Bun.write('f', 'x')
+javascript understand=no | Deno.readTextFileSync('x')
+javascript understand=no | const p = console.log; p(1)
+javascript understand=no | eval('1')
+javascript understand=no | Function('return 1')()
+# Writing to what is not a plain name.
+javascript understand=no | console.log = 1
+javascript understand=no | process.env.X = '1'
+javascript understand=no | ({}).__proto__
+javascript understand=no | console.log(\u{ff43}onsole)
+# A control character, a line separator.
+javascript understand=no | console.log(1)\u{0}
+javascript understand=no | console.log(1)\u{2028}console.log(2)
+
+# Python 2 (`understand_python2`) imports only `sys` and `errno` whole.
+python2 understand=importing | print(1+1)
+python2 understand=importing | import sys\nprint(sys.argv)
+python2 understand=importing | import sys; print(sys.version)
+python2 understand=importing | import errno\nprint(errno.ENOENT)
+python2 understand=importing | import sys, errno
+# Not built into the Python 2 binary: looked up in the working folder first.
+python2 understand=no | import builtins
+python2 understand=no | import time
+python2 understand=no | import time\nprint(time.time())
+python2 understand=no | import itertools
+python2 understand=no | import sys, time
+python2 understand=no | import json
+python2 understand=no | print(time.time())
+python2 understand=no | time = 1
+python2 understand=no | import sys\nsys.exit(0)

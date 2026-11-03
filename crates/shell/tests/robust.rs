@@ -58,6 +58,11 @@ const PIECES: [&str; 40] = [
 ];
 
 #[test]
+fn every_case_holds() {
+    common::cases::check("robust");
+}
+
+#[test]
 fn random_lines_never_panic() {
     let mut random = Lcg(7);
     for _ in 0..3_000 {
@@ -225,8 +230,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
-    // A few reads of a short script are fine.
-    assert!(classify("eval eval eval : hi", Shell::Posix, &posix()).is_safe());
+    // A few reads of a short script are fine (in robust.cases).
 }
 
 #[test]

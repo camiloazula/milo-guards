@@ -1,10 +1,14 @@
 //! What the tests share: values that match each provider's published format
 //! and are obviously fake, built here so no credential-shaped literal sits in
-//! the repository, and one sample per row of the guard's table.
+//! the repository, one sample per row of the guard's table, and (in
+//! [`cases`]) the runner of the case files in `tests/cases`, which hold the
+//! texts that need no such value.
 
 #![allow(dead_code, unreachable_pub)]
 
-use milo_guards_secrets::{find, find_spans, Rule};
+pub mod cases;
+
+use milo_guards_secrets::{find_spans, Rule};
 
 /// `length` characters made by repeating `seed`.
 pub fn fill(seed: &str, length: usize) -> String {
@@ -41,15 +45,7 @@ pub fn p(bad: &mut Vec<String>, label: &str, text: &str, secret: &str) {
     }
 }
 
-/// A row: the text must be Safe.
-pub fn s(bad: &mut Vec<String>, label: &str, text: &str) {
-    let assessment = find(text);
-    if !assessment.is_safe() {
-        bad.push(format!("{label}: {:?}", assessment.findings()));
-    }
-}
-
-/// The rows `p` and `s` found wrong, all of them in one message.
+/// The rows `p` found wrong, all of them in one message.
 pub fn nothing_wrong(bad: &[String]) {
     assert!(
         bad.is_empty(),

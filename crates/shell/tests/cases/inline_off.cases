@@ -1,0 +1,184 @@
+# The shell guard without the reader of inline code: the `inline` feature
+# off. The line is still found (`python3 -c CODE`, `node -e CODE`, a
+# here-document fed to an interpreter), but none of the code is read, so
+# every such line is `unknown`, whatever the code is, and neither grammar is
+# built. Only `tests/inline_off.rs` checks these cases, and only without the
+# feature (`just no-inline`). The format is in CONTRIBUTING.md.
+
+# Lines whose code the guard reads when the feature is on, and finds nothing
+# in, a delete in or a key in: with it off, `unknown` for all, and never
+# reads-only. The interpreter is not one of `effect`'s readers: it is
+# unknown, or (`bun`) a program that changes things.
+posix rules=unknown effect=unknown | python3 -c 'print(1+1)'
+posix rules=unknown effect=unknown | python -c 'print("hi")'
+posix rules=unknown effect=unknown | python3.12 -c 'print(1)'
+posix rules=unknown effect=unknown | python3 -c "import json,sys; json.load(sys.stdin)"
+posix rules=unknown effect=unknown | node -e 'console.log(1)'
+posix rules=unknown effect=unknown | node --eval 'console.log(1)'
+posix rules=unknown effect=unknown | node -p 'process.version'
+posix rules=unknown effect=changes | bun -e 'console.log(1)'
+posix rules=unknown effect=changes | bun --print '1+1'
+posix rules=unknown effect=unknown | deno eval 'console.log(1)'
+# Code that deletes, writes and reads a key is not read either: the line
+# says only that it runs code the guard does not read.
+posix rules=unknown effect=unknown | python3 -c "import shutil; shutil.rmtree('/home/me')"
+posix rules=unknown effect=unknown | python3 -c "open('/home/me/.ssh/id_rsa').read()"
+posix rules=unknown effect=unknown | python3 -c "import os; os.system('rm -rf ~')"
+posix rules=unknown effect=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix rules=unknown effect=unknown | node -e "require('child_process').execSync('rm -rf ~')"
+# Code from the input.
+posix rules=unknown effect=unknown | python3 - <<'PY'\nprint(1)\nPY
+posix rules=unknown effect=unknown | python3 <<< 'print(1)'
+posix rules=unknown effect=unknown | node <<< 'console.log(1)'
+posix rules=unknown effect=unknown | echo 'print(1)' | python3
+# Around the interpreter.
+posix rules=unknown effect=unknown | FOO=1 python3 -c 'print(1)'
+posix rules=unknown effect=unknown | python3 -W ignore -c 'print(1)'
+posix rules=unknown effect=unknown | node -r ts-node/register -e 'console.log(1)'
+posix rules=unknown effect=unknown | bash -c "python3 -c 'print(1)'"
+posix rules=unknown effect=unknown | cd /tmp && python3 -c 'print(1)'
+
+# Lines for every shell, with the quotes each of them reads as one word, and
+# with a module or loader option in front of bun's code flag. cmd and
+# PowerShell lines are not read with the feature on either, and a line that
+# runs code is unknown there as it is under a POSIX shell, whichever path
+# setup the caller has; on `posix` none is reads-only. (The POSIX line that
+# deletes the home folder with node is the one above.)
+posix rules=unknown effect=unknown | python3 -c "print(1)"
+posix rules=unknown effect=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+posix rules=unknown effect=unknown | node -e "console.log(1)"
+posix rules=unknown effect=unknown | node -p "process.version"
+posix rules=unknown effect=changes | bun -e "console.log(1)"
+posix rules=unknown effect=changes | bun --print "1+1"
+posix rules=unknown effect=unknown | deno eval "console.log(1)"
+posix rules=unknown effect=changes | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix rules=unknown effect=changes | bun --import r.js -e "$X"
+posix rules=unknown effect=changes | bun --require r.js -e "$X"
+posix rules=unknown effect=changes | bun --loader .js:jsx -p "$X"
+posix rules=unknown effect=changes | bun -r ./x.js -e 'console.log(1)'
+posix rules=unknown effect=changes | bun --import data:text/javascript -e "console.log(1)"
+posix@macos rules=unknown | python3 -c "print(1)"
+posix@macos rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+posix@macos rules=unknown | node -e "console.log(1)"
+posix@macos rules=unknown | node -p "process.version"
+posix@macos rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix@macos rules=unknown | bun -e "console.log(1)"
+posix@macos rules=unknown | bun --print "1+1"
+posix@macos rules=unknown | deno eval "console.log(1)"
+posix@macos rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix@macos rules=unknown | bun --import r.js -e "$X"
+posix@macos rules=unknown | bun --require r.js -e "$X"
+posix@macos rules=unknown | bun --loader .js:jsx -p "$X"
+posix@macos rules=unknown | bun -r ./x.js -e 'console.log(1)'
+posix@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+posix@windows rules=unknown | python3 -c "print(1)"
+posix@windows rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+posix@windows rules=unknown | node -e "console.log(1)"
+posix@windows rules=unknown | node -p "process.version"
+posix@windows rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix@windows rules=unknown | bun -e "console.log(1)"
+posix@windows rules=unknown | bun --print "1+1"
+posix@windows rules=unknown | deno eval "console.log(1)"
+posix@windows rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix@windows rules=unknown | bun --import r.js -e "$X"
+posix@windows rules=unknown | bun --require r.js -e "$X"
+posix@windows rules=unknown | bun --loader .js:jsx -p "$X"
+posix@windows rules=unknown | bun -r ./x.js -e 'console.log(1)'
+posix@windows rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+powershell@posix rules=unknown effect=unknown | python3 -c "print(1)"
+powershell@posix rules=unknown effect=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+powershell@posix rules=unknown effect=unknown | node -e "console.log(1)"
+powershell@posix rules=unknown effect=unknown | node -p "process.version"
+powershell@posix rules=unknown effect=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+powershell@posix rules=unknown effect=changes | bun -e "console.log(1)"
+powershell@posix rules=unknown effect=changes | bun --print "1+1"
+powershell@posix rules=unknown effect=unknown | deno eval "console.log(1)"
+powershell@posix rules=unknown effect=changes | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+powershell@posix rules=unknown effect=changes | bun --import r.js -e "$X"
+powershell@posix rules=unknown effect=changes | bun --require r.js -e "$X"
+powershell@posix rules=unknown effect=changes | bun --loader .js:jsx -p "$X"
+powershell@posix rules=unknown effect=changes | bun -r ./x.js -e 'console.log(1)'
+powershell@posix rules=unknown effect=changes | bun --import data:text/javascript -e "console.log(1)"
+powershell@macos rules=unknown | python3 -c "print(1)"
+powershell@macos rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+powershell@macos rules=unknown | node -e "console.log(1)"
+powershell@macos rules=unknown | node -p "process.version"
+powershell@macos rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+powershell@macos rules=unknown | bun -e "console.log(1)"
+powershell@macos rules=unknown | bun --print "1+1"
+powershell@macos rules=unknown | deno eval "console.log(1)"
+powershell@macos rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+powershell@macos rules=unknown | bun --import r.js -e "$X"
+powershell@macos rules=unknown | bun --require r.js -e "$X"
+powershell@macos rules=unknown | bun --loader .js:jsx -p "$X"
+powershell@macos rules=unknown | bun -r ./x.js -e 'console.log(1)'
+powershell@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+powershell rules=unknown | python3 -c "print(1)"
+powershell rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+powershell rules=unknown | node -e "console.log(1)"
+powershell rules=unknown | node -p "process.version"
+powershell rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+powershell rules=unknown | bun -e "console.log(1)"
+powershell rules=unknown | bun --print "1+1"
+powershell rules=unknown | deno eval "console.log(1)"
+powershell rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+powershell rules=unknown | bun --import r.js -e "$X"
+powershell rules=unknown | bun --require r.js -e "$X"
+powershell rules=unknown | bun --loader .js:jsx -p "$X"
+powershell rules=unknown | bun -r ./x.js -e 'console.log(1)'
+powershell rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+cmd@posix rules=unknown effect=unknown | python3 -c "print(1)"
+cmd@posix rules=unknown effect=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+cmd@posix rules=unknown effect=unknown | node -e "console.log(1)"
+cmd@posix rules=unknown effect=unknown | node -p "process.version"
+cmd@posix rules=unknown effect=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+cmd@posix rules=unknown effect=changes | bun -e "console.log(1)"
+cmd@posix rules=unknown effect=changes | bun --print "1+1"
+cmd@posix rules=unknown effect=unknown | deno eval "console.log(1)"
+cmd@posix rules=unknown effect=changes | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+cmd@posix rules=unknown effect=changes | bun --import r.js -e "$X"
+cmd@posix rules=unknown effect=changes | bun --require r.js -e "$X"
+cmd@posix rules=unknown effect=changes | bun --loader .js:jsx -p "$X"
+cmd@posix rules=unknown effect=changes | bun -r ./x.js -e 'console.log(1)'
+cmd@posix rules=unknown effect=changes | bun --import data:text/javascript -e "console.log(1)"
+cmd@macos rules=unknown | python3 -c "print(1)"
+cmd@macos rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+cmd@macos rules=unknown | node -e "console.log(1)"
+cmd@macos rules=unknown | node -p "process.version"
+cmd@macos rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+cmd@macos rules=unknown | bun -e "console.log(1)"
+cmd@macos rules=unknown | bun --print "1+1"
+cmd@macos rules=unknown | deno eval "console.log(1)"
+cmd@macos rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+cmd@macos rules=unknown | bun --import r.js -e "$X"
+cmd@macos rules=unknown | bun --require r.js -e "$X"
+cmd@macos rules=unknown | bun --loader .js:jsx -p "$X"
+cmd@macos rules=unknown | bun -r ./x.js -e 'console.log(1)'
+cmd@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+cmd rules=unknown | python3 -c "print(1)"
+cmd rules=unknown | python -c "import shutil; shutil.rmtree('/home/me')"
+cmd rules=unknown | node -e "console.log(1)"
+cmd rules=unknown | node -p "process.version"
+cmd rules=unknown | node -e "require('fs').rmSync('/home/me', {recursive: true})"
+cmd rules=unknown | bun -e "console.log(1)"
+cmd rules=unknown | bun --print "1+1"
+cmd rules=unknown | deno eval "console.log(1)"
+cmd rules=unknown | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+cmd rules=unknown | bun --import r.js -e "$X"
+cmd rules=unknown | bun --require r.js -e "$X"
+cmd rules=unknown | bun --loader .js:jsx -p "$X"
+cmd rules=unknown | bun -r ./x.js -e 'console.log(1)'
+cmd rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+
+# A script file is the workspace's own code, as before.
+posix safe | python3 scripts/gen.py
+posix safe | node app.js
+posix safe | python3 --version
+
+# With the reader there, `./setup.js` is a file of the workspace and a
+# `data:` URL or a module outside it is not. Without it nothing tells them
+# apart, so each is code the guard does not read.
+posix rules=unknown | node --import data:text/javascript,x script.js
+posix rules=unknown | node --import ./setup.js script.js
+posix rules=unknown | node -r ./setup.js script.js
+posix rules=unknown | PYTHONPATH=/tmp/x python3 <<< 'print(1)'

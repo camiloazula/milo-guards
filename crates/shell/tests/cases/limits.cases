@@ -1,0 +1,97 @@
+# The plain lines beside the limits `limits.rs` searches for: lines left
+# open or broken, which are never safe, and the lines a shell reads as plain
+# words, which are safe there (what the grammars say, not a guess). The
+# format is in CONTRIBUTING.md.
+
+# Left open or broken in every shell. PowerShell has no here-documents and
+# cmd no single quotes, so there the delete on the next line is read.
+posix finds=unreadable | echo "abc
+posix finds=unreadable | { echo
+posix finds=unreadable | [[ x
+posix finds=unreadable | echo ||
+posix finds=unreadable | echo &&
+posix finds=unreadable | echo |
+posix finds=unreadable | |
+posix finds=unreadable | &&
+posix finds=unreadable | echo \u{0}
+posix finds=unreadable | echo >
+posix finds=unreadable | echo <
+posix finds=unreadable | if x
+posix finds=unreadable | for x in
+posix finds=unreadable | echo 'a\nrm -rf /
+posix finds=unreadable | cat <<EOF\nrm -rf /
+powershell finds=unreadable | echo "abc
+powershell finds=unreadable | { echo
+powershell finds=unreadable | [[ x
+powershell finds=unreadable | echo ||
+powershell finds=unreadable | echo &&
+powershell finds=unreadable | echo |
+powershell finds=unreadable | |
+powershell finds=unreadable | &&
+powershell finds=unreadable | echo \u{0}
+powershell finds=unreadable | echo >
+powershell finds=unreadable | echo <
+powershell finds=unreadable | if x
+powershell finds=unreadable | for x in
+powershell finds=unreadable | echo 'a\nrm -rf /
+powershell finds=delete | cat <<EOF\nrm -rf /
+cmd finds=unreadable | echo "abc
+cmd finds=unreadable | { echo
+cmd finds=unreadable | [[ x
+cmd finds=unreadable | echo ||
+cmd finds=unreadable | echo &&
+cmd finds=unreadable | echo |
+cmd finds=unreadable | |
+cmd finds=unreadable | &&
+cmd finds=unreadable | echo \u{0}
+cmd finds=unreadable | echo >
+cmd finds=unreadable | echo <
+cmd finds=unreadable | if x
+cmd finds=unreadable | for x in
+cmd finds=delete | echo 'a\nrm -rf /
+cmd finds=unreadable | cat <<EOF\nrm -rf /
+
+# Left open in a POSIX shell and PowerShell: cmd has no `'`, backtick, `$(`
+# or `${`, so they are plain words there (below).
+posix finds=unreadable | echo 'abc
+posix finds=unreadable | echo $(echo
+posix finds=unreadable | echo `ls
+posix finds=unreadable | echo ${x
+posix finds=unreadable | echo (
+posix finds=unreadable | echo )
+posix finds=unreadable | echo $(
+posix finds=unreadable | echo $((1
+powershell finds=unreadable | echo 'abc
+powershell finds=unreadable | echo $(echo
+powershell finds=unreadable | echo `ls
+powershell finds=unreadable | echo ${x
+powershell finds=unreadable | echo (
+powershell finds=unreadable | echo )
+powershell finds=unreadable | echo $(
+powershell finds=unreadable | echo $((1
+
+# Left open in a POSIX shell only.
+posix finds=unreadable | echo \\
+posix finds=unreadable | case x
+posix finds=unreadable | ;
+posix finds=unreadable | echo <<EOF
+posix finds=unreadable | echo x <<'EOF'\nrm -rf /
+
+# What a shell reads as plain words is safe there.
+cmd safe | echo 'abc
+cmd safe | echo `ls
+cmd safe | echo $(echo
+cmd safe | echo ${x
+cmd safe | echo (
+powershell safe | echo <<EOF
+powershell safe | echo \\
+posix safe | echo }
+posix safe | echo x <<'EOF'\nrm -rf /\nEOF
+
+# The plain delete is read: the shells in shells that read start from it.
+posix finds=delete lacks=unreadable | rm -rf /
+
+# Everyday finds are far under the work `find -exec` may do.
+posix lacks=unreadable | find . -name '*.o' -exec rm {} \\;
+posix lacks=unreadable | find src tests docs -type f -name '*.rs' -exec grep -l foo {} +
+posix lacks=unreadable | find . -exec find . -exec echo {} \\; \\;

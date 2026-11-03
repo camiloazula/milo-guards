@@ -1,0 +1,330 @@
+# The text a database client gets, read as the client gets it: what `printf`
+# and `echo` print (their escapes, octal, and what a shell leaves as written),
+# what `cat` passes on, here-documents and templates, every program of a
+# stage and every client after it, SQL that runs SQL it holds, and what a
+# client or its server reads in it (backslashes, the client's variables). A
+# text only known when it runs is `unknown`. What each client does with a
+# statement is in `drop_data.cases`. The format is in CONTRIBUTING.md.
+
+# Text fed to a client.
+posix safe | psql <<EOF\nSELECT 1;\nEOF
+posix safe | psql app <<EOF\nINSERT INTO t VALUES (1);\nEOF
+posix safe | psql app <<'EOF'\nSELECT '$x';\nEOF
+posix safe | psql <<< 'SELECT 1'
+posix safe | psql <<< "SELECT * FROM users WHERE id = $id"
+posix safe | psql <<EOF\nDELETE FROM users WHERE id = $id;\nEOF
+posix safe | mysql <<< 'SELECT 1'
+posix safe | sqlite3 data.db <<< 'DROP TABLE t'
+posix safe | sqlite3 data.db <<EOF\nDROP TABLE t;\nEOF
+posix safe | cat <<EOF\nDROP TABLE t;\nEOF
+posix safe | echo 'DROP TABLE users' | cat
+posix safe | echo 'SELECT 1' | psql
+posix safe | printf 'SELECT 1;\\n' | psql app
+posix safe | cat schema.sql | psql app
+posix safe | echo 'DROP TABLE users' | tee log.txt
+posix finds=drop_data | psql <<EOF\nDROP TABLE users;\nEOF
+posix finds=drop_data | psql app <<EOF\nSELECT 1;\nDELETE FROM users;\nEOF
+posix finds=drop_data | psql app <<-EOF\n\tTRUNCATE users;\n\tEOF
+posix finds=drop_data | psql app <<'EOF'\nDROP TABLE $x;\nEOF
+posix finds=drop_data | psql <<EOF\nDROP TABLE $t;\nEOF
+posix finds=drop_data | psql <<< 'DROP TABLE users'
+posix finds=drop_data | psql <<< "DELETE FROM users"
+posix finds=drop_data | psql <<< "DROP TABLE $t"
+posix finds=drop_data | mysql <<< 'TRUNCATE users'
+posix finds=drop_data | mysql app <<EOF\nDROP TABLE users;\nEOF
+posix finds=drop_data | sqlite3 ~/x.db <<< 'DELETE FROM t'
+posix finds=unknown | psql <<< "$Q"
+posix finds=unknown | psql <<EOF\n$Q\nEOF
+posix finds=unknown | psql <<EOF\n$(cat q.sql)\nEOF
+posix finds=drop_data | psql <<EOF | cat\nDROP TABLE users;\nEOF
+posix finds=drop_data | psql app <<EOF && echo done\nDROP TABLE users;\nEOF
+posix finds=drop_data | { psql app; } <<EOF\nDROP TABLE users;\nEOF
+posix finds=drop_data | psql -c 'SELECT 1' <<< 'DROP TABLE users'
+posix finds=drop_data | echo 'DROP TABLE users' | psql
+posix finds=drop_data | echo 'DROP TABLE users;' | psql app
+posix finds=drop_data | echo "TRUNCATE users" | mysql app
+posix finds=drop_data | printf 'DROP TABLE %s;' users | psql
+posix finds=drop_data | echo -n 'DROP TABLE users' | psql
+posix finds=drop_data | cat <<EOF | psql app\nDROP TABLE users;\nEOF
+posix finds=unknown | echo "$Q" | psql
+
+# `printf` and `echo` decode their escapes.
+posix safe | printf 'SELECT 1;\\n' | psql
+posix safe | printf '%s\\n' 'SELECT 1' | psql
+posix safe | printf 'SELECT %d;\\n' 1 | psql
+posix safe | printf 'SELECT %s;\\n' "$id" | psql
+posix safe | printf '%%\\n' | psql
+posix safe | echo 'SELECT 1;\\nSELECT 2;' | psql
+posix safe | echo -e 'SELECT 1;\\tSELECT 2;' | psql
+posix safe | echo -n 'SELECT 1' | psql
+posix safe | printf 'SELECT 1;\\n' | redis-cli
+posix safe | printf 'SELECT 1;\\n' | sqlite3 data.db
+# Octal, as every shell reads it.
+posix safe | printf 'SELECT \\061;\\n' | psql
+posix safe | printf 'SELECT 1;\\0121' | psql
+# `%b` and `echo` take `\0NNN`.
+posix safe | printf '%b' 'SELECT \\0061;' | psql
+posix finds=drop_data | printf 'SELECT 1;\\nDROP TABLE users;\\n' | psql
+posix finds=drop_data | printf 'BEGIN;\\nDELETE FROM users;\\nCOMMIT;\\n' | psql app
+posix finds=drop_data | echo -e 'SELECT 1;\\nDROP TABLE users;' | psql
+posix finds=drop_data | echo 'SELECT 1;\\nDROP TABLE users;' | psql
+posix finds=drop_data | echo -e 'SELECT 1;\\nDROP TABLE users;' | mysql app
+posix finds=drop_data | printf 'SET a 1\\nFLUSHALL\\n' | redis-cli
+posix finds=drop_data | printf '\\x44ROP TABLE users' | psql
+posix finds=drop_data | printf 'D\\122OP TABLE users' | psql
+posix finds=drop_data | echo -e 'DR\\x4fP TABLE users' | psql
+posix finds=drop_data | printf 'DR%sP TABLE users' O | psql
+posix finds=drop_data | printf 'DR%bP TABLE users' '\\x4f' | psql
+posix finds=drop_data | printf 'SELECT %d;\\nDROP TABLE t;' 1 | psql
+# The format is used again while arguments are left.
+posix finds=drop_data | printf '%s\\n' 'SELECT 1' 'DROP TABLE users' | psql
+posix finds=drop_data | printf '%s;%s' 'SELECT 1' 'DROP TABLE users' | psql
+posix finds=drop_data | printf "DROP TABLE %s\\n" "$t" | psql
+# `\0121` is a newline and a `1` in a format, not a `Q`: the DROP is not in
+# the comment.
+posix finds=drop_data | printf 'SELECT -- x\\0121 AS a; DROP TABLE t;' | psql
+# `%b` and `echo` read `\0121` as a `Q`.
+posix finds=drop_data | printf '%b' 'SELECT -- x\\0121 AS a;\\nDROP TABLE t;' | psql
+posix finds=drop_data | printf '%b' 'SELECT 1;\\0121\\nDROP TABLE t;' | psql
+posix finds=drop_data | printf '%b' 'D\\0122OP TABLE t' | psql
+# The first digit of an escape in a format may be any octal one.
+posix finds=drop_data | printf 'DROP TABLE t;\\101' | psql
+# dash's `printf` leaves `\xHH` as written, and decodes `\n`: the quote is
+# not one there, and the DROP runs.
+posix finds=drop_data | printf 'SELECT 1;\\x27\\nDROP TABLE t;\\n\\x27' | psql
+posix finds=drop_data | echo -e 'SELECT 1;\\x27\\nDROP TABLE t;\\n\\x27' | psql
+posix finds=drop_data | echo 'SELECT 1;\\x27\\nDROP TABLE t;\\n\\x27' | psql
+posix finds=drop_data | printf '%b' 'SELECT 1;\\x27\\nDROP TABLE t;\\n\\x27' | psql
+# Where bash's `echo -e` and zsh's leave `\NNN` as written, dash decodes it.
+posix finds=drop_data | echo 'SELECT 1;\\47\\nDROP TABLE t;\\n\\47' | psql
+# Bash decodes `\'` and zsh and dash leave it.
+posix finds=drop_data | printf "SELECT 'a\\\\'; DROP TABLE t; --'" | psql
+# Anything else printf does is not read.
+posix finds=unknown | printf '%q' x | psql
+posix finds=unknown | printf '%5s\\n' x | psql
+posix finds=unknown | printf '%d' x | psql
+posix finds=unknown | printf '\\u0044ROP TABLE t' | psql
+posix finds=unknown | printf '\\q' | psql
+posix finds=unknown | printf '%s' "$Q" | psql
+posix finds=unknown | printf '\\x80' | psql
+# `\c` in a format is read differently: unknown.
+posix finds=unknown | printf 'SELECT 1;\\c' | psql
+
+# A `cat` that reads its input passes the text on.
+# A file operand and no `-`: the text is not read.
+posix safe | cat seed.sql <<< 'DROP TABLE t' | psql
+posix safe | cat schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix safe | cat -n schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix safe | cat -- schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix safe | cat -- -n <<EOF | psql\nDROP TABLE t;\nEOF
+posix safe | cat schema.sql | psql
+# What it passes on is read.
+posix safe | cat - <<< 'SELECT 1' | psql
+posix safe | cat -n <<< 'SELECT 1' | psql
+posix safe | cat <<EOF | psql\nSELECT 1;\nEOF
+posix safe | cat -s <<EOF | psql\nSELECT 1;\nEOF
+posix safe | cat - schema.sql <<EOF | psql\nSELECT 1;\nEOF
+posix finds=drop_data | cat <<< 'DROP TABLE t' | psql
+posix finds=drop_data | cat - <<< 'DROP TABLE t' | psql
+posix finds=drop_data | cat - - <<< 'DROP TABLE t' | psql
+posix finds=drop_data | cat - <<EOF | psql\nDROP TABLE t\nEOF
+posix finds=drop_data | cat <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat - <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat - schema.sql <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat schema.sql - <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat /dev/stdin <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -s <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -n -- - <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -A - a.sql <<EOF | psql\nDROP TABLE t;\nEOF
+# An operand only known when it runs may be `-`.
+posix finds=drop_data | cat $f <<EOF | psql\nDROP TABLE t;\nEOF
+posix finds=drop_data | cat -s <<< 'DROP TABLE t;' | psql
+
+# An unquoted here-document is read as the shell feeds it.
+# A quoted delimiter feeds the body as it is.
+posix safe | psql <<'EOF'\nSELECT '\\$HOME' AS a;\nEOF
+posix safe | psql <<\\EOF\nSELECT '$HOME' AS a;\nEOF
+# `\$` is a `$` that the client gets, so the string is a string.
+posix safe | psql <<EOF\nSELECT '\\$HOME' AS a;\nEOF
+# `\\` is one backslash.
+posix safe | psql <<EOF\nSELECT 'it\\\\' AS a;\nEOF
+posix safe | psql <<EOF\nSELECT 1,\\\n2;\nEOF
+# With `<<-` the tabs of the line that goes on stay in every shell (bash, sh,
+# dash, ksh, zsh), so the client gets `DR`, a tab and `OP TABLE t`, not
+# `DROP`.
+posix safe | psql <<-EOF\n\tDR\\\n\tOP TABLE t\n\tEOF
+# What a dollar-quoted string holds is not code, when its `$` are the
+# client's.
+posix safe | psql <<EOF\nSELECT \\$\\$ ; DROP TABLE t; \\$\\$;\nEOF
+posix safe | psql <<'EOF'\nSELECT $$ ; DROP TABLE t; $$;\nEOF
+# A backslash and a newline are taken out: `DROP`.
+posix finds=drop_data | psql <<EOF\nDR\\\nOP TABLE t\nEOF
+posix finds=drop_data | cat <<EOF | psql\nDR\\\nOP TABLE t\nEOF
+posix finds=drop_data | psql <<-EOF\n\tDR\\\nOP TABLE t\n\tEOF
+# `$$` is the shell's process id, not a string.
+posix finds=drop_data | psql <<EOF\nSELECT $$ ; DROP TABLE t; $$\nEOF
+posix finds=drop_data | cat <<EOF | psql\nSELECT $$ ; DROP TABLE t; $$\nEOF
+# `\\!` is `\!` for the client.
+posix finds=unknown | psql <<EOF\n\\\\! touch x\nEOF
+# `\$x` is `$x` and not a string.
+posix finds=drop_data | psql <<EOF\nSELECT 1; \\$x ; DROP TABLE t\nEOF
+posix finds=drop_data | psql <<EOF\nSELECT 1; \\`x\\` ; DROP TABLE t\nEOF
+# A body that has both an escaped and an expanding `$` is only known when it
+# runs.
+posix finds=unknown | psql <<EOF\nSELECT 1; \\$( ; DROP TABLE t; $x\nEOF
+# A MySQL string that the backslashes leave open.
+posix finds=unknown | mysql <<EOF\nSELECT 'a\\\\' AS x;\nEOF
+
+# An escaped dollar or backtick in a template is not known.
+# No escape: the expansions are read where they stand.
+posix safe | psql <<< "SELECT 1 $x"
+posix safe | echo "SELECT 1 $x" | psql
+# Escapes with no expansion are a plain string.
+posix safe | psql <<< "SELECT '\\$HOME'"
+posix safe | echo "SELECT '\\$HOME'" | psql
+posix finds=unknown | psql <<< "SELECT \\$( ; DROP TABLE t; ) $x"
+posix finds=unknown | psql <<< "SELECT 1 \\`; DROP TABLE t; \\` $x"
+posix finds=unknown | psql <<< "SELECT \\${ ; DROP TABLE t; } $x"
+posix finds=unknown | echo "SELECT 1 \\`; DROP TABLE t; \\` $x" | psql
+posix finds=unknown | echo "SELECT \\$( ; DROP TABLE t; ) $x" | psql
+posix finds=unknown | printf "SELECT \\${ ; DROP TABLE t; } $x" | psql
+posix finds=unknown | psql -c "SELECT \\$( ; DROP TABLE t; ) $x"
+# Read as written, a drop still is one.
+posix finds=drop_data | psql <<< "DROP TABLE t; $x"
+posix finds=drop_data | echo "DROP TABLE $x" | psql
+
+# An expansion stuck to a word ends the word.
+posix safe | psql -c "SELECT 1 FROM t WHERE a = $x"
+posix safe | psql -c "SELECT a$x FROM t"
+posix safe | psql -c "SELECT $x FROM t"
+posix safe | psql -c "DELETE FROM t WHERE a = $x"
+posix safe | mongosh --eval "db.users.find$x()"
+posix safe | mongosh --eval "db.users.find({a: $x})"
+# A `$` that is no expansion stays in the word.
+posix safe | psql -c 'DROP$x TABLE t'
+posix finds=drop_data | psql -c "DROP$x TABLE t"
+posix finds=drop_data | psql -c "DROP${x} TABLE t"
+posix finds=drop_data | psql -c "DROP$(x) TABLE t"
+posix finds=drop_data | psql -c "TRUNCATE$x t"
+posix finds=drop_data | psql -c "DELETE$opts FROM t"
+posix finds=drop_data | mysql -e "DROP$x TABLE t"
+posix finds=drop_data | mongosh --eval "db.dropDatabase$x()"
+posix finds=drop_data | mongosh --eval "db.dropDatabase${x}()"
+posix finds=drop_data | mongosh --eval "db.users.remove$x()"
+posix finds=drop_data | mongosh --eval "db.users.drop${x}()"
+posix finds=drop_data | mongosh --eval "db.drop${x}Database()"
+
+# On PowerShell and cmd an expansion in a statement is unknown: an expansion
+# in a double-quoted word is not read as a word there, so what it holds is
+# only known when it runs.
+powershell safe | psql -c "SELECT 1"
+powershell safe | psql -c 'DELETE FROM t WHERE id = $id'
+powershell safe | psql -c "DELETE FROM t WHERE id = 3"
+powershell finds=unknown | psql -c "DELETE FROM t WHERE id = $id"
+powershell finds=unknown | psql -c "SELECT * FROM t WHERE name = '$name'"
+powershell finds=unknown | psql -c "DROP TABLE t; $x"
+cmd safe | psql -c "SELECT 1"
+cmd safe | psql -c "DELETE FROM t WHERE id = 3"
+cmd finds=unknown | psql -c "DELETE FROM t WHERE id = %id%"
+cmd finds=unknown | psql -c "DROP TABLE t; %x%"
+
+# Every program of a stage feeds one text to the clients after it, and every
+# client of the next stage reads it, each where it runs.
+posix safe | { echo 'SELECT 1'; echo 'SELECT 2'; } | psql
+posix safe | (echo 'BEGIN;'; echo 'SELECT 1;'; echo 'COMMIT;') | psql
+posix safe | { echo 'SELECT 1'; printf 'SELECT 2;\\n'; } | psql
+posix safe | { echo 'DROP TABLE users'; } | cat
+posix safe | { echo 'SELECT 1;'; } | { psql; mysql; sqlite3 :memory:; }
+posix safe | { echo '.backup backup.db'; } | { sqlite3 d.db; sqlite3 e.db; }
+posix safe | { echo '.backup /tmp/b.db'; } | sqlite3 d.db
+posix finds=drop_data | { echo 'BEGIN;'; echo 'DELETE FROM users;'; echo 'COMMIT;'; } | psql
+posix finds=drop_data | (echo 'SELECT 1'; echo 'DROP TABLE users') | psql
+posix finds=drop_data | (echo 'DROP TABLE users'; echo 'SELECT 1') | psql
+posix finds=drop_data | { echo 'SELECT 1'; printf 'DROP TABLE users;\\n'; } | psql
+posix finds=drop_data | (echo 'SELECT 1'; echo 'FLUSHALL') | redis-cli
+posix finds=drop_data | if true; then echo 'DROP TABLE users'; fi | psql
+# What they say one after the other is one text.
+posix finds=drop_data | { echo -n 'DR'; echo -n 'OP TABLE users'; } | psql
+posix finds=drop_data | (printf 'DELETE FROM'; printf ' users') | psql
+posix finds=unknown | (echo 'SELECT 1'; echo "$Q") | psql
+# Every client after the stage.
+posix finds=drop_data | { echo 'DROP TABLE t;'; } | { psql; mysql; }
+posix finds=drop_data | { echo 'DROP TABLE t;'; } | { sqlite3 :memory:; psql; }
+posix finds=drop_data | { echo 'FLUSHALL'; } | { redis-cli; redis-cli; }
+posix finds=drop_data | { printf 'DROP TABLE t;'; } | { redis-cli; psql; }
+# What a stage backs up is judged where each client runs.
+posix finds=drop_data | { echo '.backup ~/prod.db'; } | { sqlite3 d.db; sqlite3 e.db; }
+posix finds=drop_data | { echo '.backup backup.db'; } | { sqlite3 d.db; cd /home/me; sqlite3 e.db; }
+posix finds=drop_data | { echo '.backup ~/prod.db'; echo '.save ~/x.db'; } | duckdb d.db
+
+# Dynamic SQL in text on the line is read.
+posix safe | psql -c "DO 'BEGIN PERFORM 1; END'"
+posix safe | psql -c "DO \\$\\$ BEGIN PERFORM 1; END \\$\\$"
+posix safe | psql -c "DO \\$\\$ BEGIN CREATE TRIGGER x AFTER INSERT ON t FOR EACH ROW EXECUTE FUNCTION f(); END \\$\\$"
+posix safe | mysql -e "PREPARE s FROM 'SELECT 1'; EXECUTE s"
+posix safe | sqlcmd -Q "EXEC sp_MSforeachtable 'SELECT COUNT(*) FROM ?'"
+posix safe | sqlcmd -Q "EXEC('SELECT 1')"
+posix safe | sqlcmd -Q "EXECUTE ('SELECT 1')"
+posix safe | sqlcmd -Q "EXEC sp_executesql N'SELECT 1'"
+posix safe | sqlcmd -Q "EXEC sp_executesql N'DELETE FROM t WHERE a = ''x''', N'@p int', @p = 1"
+posix safe | sqlcmd -Q "EXEC sys.sp_executesql @stmt = N'SELECT 1'"
+posix finds=drop_data | psql -c "DO 'BEGIN DROP TABLE t; END'"
+posix finds=drop_data | psql -c "DO LANGUAGE plpgsql 'BEGIN DELETE FROM t; END'"
+posix finds=unknown | psql -c "DO 'BEGIN EXECUTE ''DROP TABLE t''; END'"
+posix finds=unknown | psql -c "DO \\$\\$ DECLARE r RECORD; BEGIN FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; END LOOP; END \\$\\$;"
+posix finds=unknown | psql -c "DO \\$\\$ BEGIN EXECUTE format('DROP TABLE %I', 't'); END \\$\\$"
+posix finds=drop_data | mysql -e "PREPARE s FROM 'DROP TABLE t'; EXECUTE s"
+posix finds=unknown | mysql -e "PREPARE s FROM @q; EXECUTE s"
+posix finds=drop_data | sqlcmd -Q "EXEC sp_MSforeachtable 'DELETE FROM ?'"
+posix finds=drop_data | sqlcmd -Q "EXEC sp_MSforeachdb @command1 = N'DROP TABLE t'"
+posix finds=unknown | sqlcmd -Q "EXEC sp_MSforeachtable @c"
+posix finds=drop_data | sqlcmd -Q "EXEC('DROP TABLE t')"
+posix finds=drop_data | sqlcmd -Q "EXECUTE('DROP TABLE t')"
+posix finds=drop_data | sqlcmd -Q "EXEC('DELETE FROM t WHERE a = ''x''; DROP TABLE t')"
+posix finds=unknown | sqlcmd -Q "EXEC('DROP ' + @t)"
+posix finds=unknown | sqlcmd -Q "EXEC(@sql)"
+posix finds=drop_data | sqlcmd -Q "EXEC sp_executesql N'DROP TABLE t'"
+posix finds=unknown | sqlcmd -Q "EXEC sp_executesql @sql"
+posix finds=drop_data | sqlcmd -Q "EXEC [sp_executesql] N'DROP TABLE t'"
+posix finds=unknown | sqlcmd -Q "EXEC sp_executesql N'DROP ' + @t"
+posix finds=unknown | sqlcmd -Q "EXEC('$verb TABLE t')"
+
+# A backslash in a string is read both ways where the server sets it.
+posix safe | mysql -e "SELECT 'it\\\\'s'"
+posix safe | mysql -e "INSERT INTO t VALUES ('it\\\\'s'); SELECT 1"
+posix safe | psql <<'EOF'\nSELECT E'it\\'s' AS a;\nEOF
+posix safe | psql -c "SELECT 'a\\\\nb' AS x; SELECT 1"
+posix safe | mysql -e 'SELECT 1; SELECT 2'
+# `NO_BACKSLASH_ESCAPES`: the string is `'a\'`, and the next statement runs.
+posix finds=drop_data | mysql -e "SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\\\'; DROP TABLE t; -- '"
+# `ANSI_QUOTES`: `"a\"` is an identifier.
+posix finds=drop_data | mysql -e "SET sql_mode='ANSI_QUOTES'; SELECT \\"a\\\\\\"; DROP TABLE t; -- \\""
+# `standard_conforming_strings` off: the string takes `\'`.
+posix finds=drop_data | psql <<'EOF'\nSET standard_conforming_strings = off;\nSELECT 'a\\'' ; DROP TABLE t; --';\nEOF
+posix finds=drop_data | psql -c "SET standard_conforming_strings = off; SELECT 'a\\\\'' ; DROP TABLE t; --';"
+# A program, from the other reading.
+posix finds=unknown | mysql -e "SELECT 'a\\\\'; \\! touch x; -- '"
+
+# A variable the client fills in is not read where a statement starts.
+posix safe | psql -c 'SELECT 1::int'
+posix safe | psql -c 'SELECT a::text FROM t'
+posix safe | psql -c "SELECT ':q'"
+posix safe | psql -c 'SELECT * FROM t WHERE a = :x'
+posix safe | psql -c 'SELECT 1; SELECT :x'
+posix safe | psql -c 'SELECT 1 -- :q'
+posix safe | sqlcmd -Q 'SELECT * FROM t WHERE a = $(x)'
+posix safe | sqlcmd -Q 'SELECT 1'
+# Only `psql` has `:name`, and only `sqlcmd` has `$(name)`.
+posix safe | mysql -e 'SELECT :x'
+posix safe | sqlite3 :memory: ':q'
+posix finds=unknown | psql -v q='DROP TABLE t' <<< ':q'
+posix finds=unknown | psql -v q='DROP TABLE t' <<< ":'q'"
+posix finds=unknown | psql -v q='DROP TABLE t' <<< ':"q"'
+posix finds=unknown | psql <<EOF\n\\set q 'DROP TABLE t'\n:q\nEOF
+posix finds=unknown | psql -c 'BEGIN; :q'
+posix finds=unknown | psql -c 'SELECT 1; :q;'
+posix finds=unknown | echo ':q' | psql -v q='DROP TABLE t'
+posix finds=unknown | sqlcmd -v s="DROP TABLE t" -Q '$(s)'
+posix finds=unknown | sqlcmd -Q 'SELECT 1; $(s)'
+# The statements the variable does not start are still read.
+posix finds=drop_data | psql -c ':q; DROP TABLE t'

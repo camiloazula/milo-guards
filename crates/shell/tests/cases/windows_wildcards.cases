@@ -1,0 +1,477 @@
+# Which names a Windows wildcard matches. Windows has no hidden dot names, so
+# `*git` matches `.git`, `*.*` is every entry, and a wildcard part is trimmed
+# of its trailing dots and spaces like a last part; a pattern can match `.git`
+# by its 8.3 short name. A listing piped into a delete is judged as the delete
+# of its pattern: a filtered or attribute-selected PowerShell listing reaches
+# `.git` when it lists hidden entries and its filter can match a name there
+# (the file system's short names and DOS wildcards included), and cmd's
+# `del /s` from the workspace reaches the files of `.git` its pattern can
+# match, by cmd's own wildcard rules. The format is in CONTRIBUTING.md.
+
+# A working directory inside `.git`.
+paths in_git cwd=C:\\Users\\me\\dev\\repo\\.git\\hooks home=C:\\Users\\me workspace=C:\\Users\\me\\dev\\repo
+
+# A Windows wildcard can match a dot name.
+powershell safe | Remove-Item -Recurse *.tmp
+powershell safe | Remove-Item -Recurse -Force *.TMP
+powershell safe | Remove-Item -Recurse -Force *gitx
+powershell safe | Remove-Item -Recurse -Force ?git2
+powershell safe | Remove-Item -Recurse -Force '[!x]git'
+powershell safe | Remove-Item -Recurse -Force *\\bin, *\\obj
+powershell safe | Remove-Item -Recurse -Force src\\*\\bin
+powershell safe | Remove-Item -Recurse -Force src\\*git
+powershell safe | Remove-Item -Recurse -Force node_modules\\*\\dist
+powershell safe | Remove-Item -Recurse -Force *\\*.o
+powershell finds=delete | Remove-Item -Recurse -Force *git
+powershell finds=delete | Remove-Item -Recurse -Force ?git
+powershell finds=delete | Remove-Item -Recurse -Force *GIT
+powershell finds=delete | Remove-Item -Recurse -Force '[!.]git'
+powershell first=delete reason="deletes a hidden file such as the repository's history" | Remove-Item -Recurse -Force '[!.]git'
+powershell finds=delete | Remove-Item -Recurse -Force '[^.]git'
+powershell finds=delete | Remove-Item -Recurse -Force '`.gi?'
+powershell finds=delete | Remove-Item -Recurse -Force ????
+powershell finds=delete | Remove-Item -Recurse -Force *\\objects
+powershell finds=delete | Remove-Item -Recurse -Force ????\\HEAD
+powershell finds=delete | Remove-Item -Recurse -Force *g?t\\objects
+powershell finds=delete | Remove-Item -Recurse -Force *\\bin, *\\objects
+powershell finds=delete | Get-ChildItem *git | Remove-Item -Recurse
+powershell finds=delete | Get-ChildItem *\\objects | Remove-Item -Recurse
+cmd safe | rd /s /q *gitx
+cmd safe | del /q *.tmp
+cmd safe | rd /s /q *\\bin
+cmd safe | rd /s /q src\\*\\bin
+cmd finds=delete | rd /s /q *git
+cmd first=delete reason="deletes a hidden file such as the repository's history" | rd /s /q *git
+cmd finds=delete | rd /s /q ?git
+cmd finds=delete | rd /s /q ?GIT
+cmd finds=delete | rmdir /s /q *g?t
+cmd finds=delete | rd /s /q [.]git
+cmd finds=delete | rd /s /q *\\objects
+cmd finds=delete | rd /s /q ????\\HEAD
+
+# `*.*` is every entry on Windows: `*` and `*.*` are judged alike.
+cmd safe | del /q build\\*.*
+cmd finds=delete | del /q *
+cmd first=delete reason="deletes the whole workspace" | del /q *
+cmd finds=delete | del /q *.*
+cmd first=delete reason="deletes the whole workspace" | del /q *.*
+powershell safe | Remove-Item -Recurse build\\*.*
+powershell finds=delete | Remove-Item -Recurse -Force *.*
+
+# A listing is judged as the delete of its pattern is.
+powershell safe | Get-ChildItem *.log | Remove-Item
+powershell safe | Get-ChildItem -Force x*\\..\\*.tmp | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force *\\bin | Remove-Item -Recurse -Force
+powershell finds=delete | Remove-Item -Recurse -Force *\\modules
+powershell finds=delete | Remove-Item -Recurse -Force *\\lfs
+powershell finds=delete | Remove-Item -Recurse -Force *\\worktrees
+powershell finds=delete | Get-ChildItem -Force x*\\..\\*git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force x*\\..\\*\\objects | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force src\\*\\..\\..\\*git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force *git | Remove-Item
+powershell first=delete reason="deletes a hidden file such as the repository's history" | Get-ChildItem -Force *git | Remove-Item
+
+# A pattern that picks names in a temporary folder is temporary files on
+# Windows.
+powershell safe | Get-ChildItem C:\\Users\\me\\AppData\\Local\\Temp\\*.log | Remove-Item
+powershell finds=delete | Remove-Item -Recurse C:\\Users\\me\\AppData\\Local\\Temp\\*
+
+# A Windows spelling of `.git` says what it deletes.
+cmd first=delete reason="deletes the repository's history" | rd /s /q .git.
+cmd first=delete reason="deletes the repository's history" | rd /s /q ".git "
+cmd first=delete reason="deletes the repository's history" | rd /s /q GIT~1
+cmd first=delete reason="deletes a path only known when it runs" | rd /s /q .git::$INDEX_ALLOCATION
+
+# A part before the last that Windows may trim is known only when it runs:
+# Windows reads `.` and `..` first, then drops one trailing dot from a part,
+# and every dot and space only from the last. A part this does not read to a
+# name is known only when it runs.
+cmd safe | rd /s /q src.\\build.
+cmd safe | del /q src\\.\\build\\x.obj
+cmd safe | del /q src\\..\\build\\x.obj.
+cmd finds=delete | rd /s /q .git\\...\\..\\objects
+cmd finds=delete | rd /s /q ".git\\. \\..\\objects"
+cmd finds=delete | rd /s /q ".git\\refs\\.. \\..\\heads"
+cmd finds=delete | rd /s /q "C:\\Users\\me\\dev\\repo \\x"
+cmd finds=delete | rd /s /q "..\\repo.. \\x"
+cmd finds=delete | rd /s /q ".\\.git .\\objects"
+cmd finds=delete | rd /s /q "src\\.. \\.git"
+cmd finds=delete | rd /s /q "x \\y"
+cmd finds=delete | rd /s /q "src\\.. "
+cmd finds=delete | rd /s /q ....
+powershell safe | Remove-Item src.\\build.
+powershell finds=delete | Remove-Item -Recurse -Force '.git\\...\\..\\objects'
+powershell finds=delete | Remove-Item -Recurse -Force '.git\\. \\..\\objects'
+powershell finds=delete | Remove-Item -Recurse -Force '.git\\refs\\.. \\..\\heads'
+powershell finds=delete | Remove-Item -Recurse 'C:\\Users\\me\\dev\\repo \\x'
+# From a working directory inside `.git`.
+cmd@in_git finds=delete | rd /s /q ...\\..\\..\\objects
+cmd@in_git finds=delete | rd /s /q ..\\objects
+
+# A wildcard part is trimmed like a last part.
+cmd safe | del *.obj
+cmd safe | del /s /q *gitx.
+cmd safe | del /s /q src\\*git.
+cmd safe | rd /s /q *\\bin.
+cmd safe | del /s /q *git.\\bin
+# The part after `.git`'s own is no short name of an entry.
+cmd safe | del /s /q *\\GIT~1
+cmd safe | del /s /q *\\G*
+cmd safe | del /s /q *\\*1
+cmd finds=delete | del /s /q *git.
+cmd finds=delete | del /s /q "*git "
+cmd finds=delete | del /s /q *git...
+cmd finds=delete | del /s /q "?git. ."
+cmd finds=delete | del /s /q ????.
+cmd finds=delete | del /s /q *git.\\objects
+cmd finds=delete | del /s /q *git.\\objects.
+cmd finds=delete | del /s /q *\\obj*s.
+cmd finds=delete | del /s /q "*\\HEA? "
+# Only the trimming of a wildcard part makes these reach `.git`.
+cmd finds=delete | del /s /q *.
+cmd finds=delete | del *.
+cmd finds=delete | del /s /q ?*.
+cmd finds=delete | del /s /q *.*.
+cmd finds=delete | del /s /q "*.* "
+cmd finds=delete | del /s /q *\\obj*.
+cmd finds=delete | del /s /q "*\\H?AD "
+cmd finds=delete | del /s /q *.\\objects
+cmd finds=delete | del /s /q *gi?.\\objects
+cmd finds=delete | rd /s /q *git.
+powershell safe | Remove-Item -Recurse -Force *gitx.
+powershell safe | Remove-Item -Recurse -Force 'src\\*git.'
+powershell safe | Remove-Item -Recurse -Force *\\bin.
+powershell safe | Remove-Item -Recurse -Force *\\G*
+powershell safe | Remove-Item -Recurse -Force *\\GIT~1
+powershell finds=delete | Remove-Item -Recurse -Force *git.
+powershell finds=delete | Remove-Item -Recurse -Force '*git '
+powershell finds=delete | Remove-Item -Recurse -Force *git.\\objects
+powershell finds=delete | Remove-Item -Recurse -Force *\\obj*s.
+powershell finds=delete | Remove-Item -Recurse -Force *.
+powershell finds=delete | Remove-Item -Recurse -Force *\\obj*.
+
+# A pattern can match the short name of `.git`.
+cmd safe | del /s /q GIT~
+cmd safe | del /s /q GIT~x
+cmd safe | del /s /q GIT~1x
+cmd safe | del /s /q GI~?
+cmd safe | del /s /q GITX~?
+cmd safe | del /s /q PROGRA~?
+cmd safe | del /s /q GITHUB~?
+cmd safe | del /s /q GITIGN~?
+cmd safe | del /s /q *~x
+cmd safe | del /s /q src\\GIT~?
+cmd safe | del /s /q src\\*~1
+cmd safe | del /s /q *~1\\bin
+cmd safe | del /s /q GIT~?.txt
+cmd safe | del /s /q GI??~1
+cmd safe | del /s /q GI?????~1
+cmd safe | del /s /q GI[g-z]???~1
+# No literal `~`: `cmd` skips a folder a wildcard matches.
+cmd safe | del /s /q git*
+cmd safe | del /s /q G*
+cmd safe | del /s /q Git*
+cmd safe | del /s /q git*\\objects
+# No `~`, so no hashed short name, but a `del /s` from the workspace searches
+# `.git` too and takes the files of it that the pattern matches (an object by
+# the shape of its name, `index`, `heads`).
+cmd finds=delete | del /s /q *2024*
+cmd finds=delete | del /s /q *a*
+cmd finds=delete | del /s /q *cafe*
+cmd finds=delete | del /s /q *1
+cmd finds=delete | del /s /q *2
+cmd finds=delete | del /s /q GIT~?
+cmd finds=delete | del /s /q git~*
+cmd finds=delete | del /s /q GIT~[0-9]
+cmd finds=delete | del /s /q GIT~??
+cmd finds=delete | del /s /q G?T~1
+cmd finds=delete | del /s /q *~1
+cmd finds=delete | del /s /q *~?
+cmd finds=delete | del /s /q *T~1
+cmd finds=delete | del /s /q GI????~1
+cmd finds=delete | del /s /q GI????~?
+cmd finds=delete | del /s /q GI3F2?~1
+cmd finds=delete | del /s /q GI[0-9a-f]???~1
+cmd finds=delete | del /s /q GIT~?\\objects
+cmd finds=delete | del /s /q *~1\\objects
+cmd finds=delete | del /s /q *~1\\
+cmd finds=delete | del /s /q GIT~?.
+cmd finds=delete | rd /s /q GIT~?
+powershell safe | Remove-Item -Recurse -Force PROGRA~?
+powershell safe | Remove-Item -Recurse -Force src\\GIT~?
+powershell safe | Remove-Item -Recurse -Force *2024*
+powershell safe | Remove-Item -Recurse -Force *a*
+powershell safe | Remove-Item -Recurse -Force *cafe*
+# No literal `~`: PowerShell matches no short name.
+powershell safe | Remove-Item -Recurse -Force git*
+powershell safe | Remove-Item -Recurse -Force G*
+powershell safe | Remove-Item -Recurse -Force *1
+powershell safe | Remove-Item -Recurse -Force *2
+powershell safe | Remove-Item -Recurse -Force Git*
+powershell safe | Remove-Item -Recurse -Force git*\\objects
+powershell finds=delete | Remove-Item -Recurse -Force GIT~?
+powershell finds=delete | Remove-Item -Recurse -Force *~1
+powershell finds=delete | Remove-Item -Recurse -Force GIT~?\\objects
+
+# A filtered hidden listing piped into a delete reaches the history.
+# A filter that cannot match a hidden folder, or a listing that does not list
+# hidden entries.
+powershell safe | Get-ChildItem -Filter *.log | Remove-Item
+powershell safe | Get-ChildItem -Recurse -Include *.tmp | Remove-Item
+powershell safe | Get-ChildItem -Force -Filter *.log | Remove-Item
+powershell safe | Get-ChildItem -Force -Filter *.tmp | Remove-Item -Force
+powershell safe | Get-ChildItem -Hidden -Filter *.log | Remove-Item
+powershell safe | Get-ChildItem -Attributes Directory -Filter *.tmp | Remove-Item
+powershell safe | Get-ChildItem -Attributes Hidden -Filter *.tmp | Remove-Item
+powershell safe | Get-ChildItem -Force -Exclude *.rs -Filter *.tmp | Remove-Item -Force
+powershell safe | Get-ChildItem -Force src -Filter .git | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Recurse -Depth 2 -Filter *.obj | Remove-Item
+powershell safe | Get-ChildItem -Filter .git | Remove-Item
+powershell safe | Get-ChildItem -Include .git -Recurse | Remove-Item
+powershell safe | Get-ChildItem -Exclude *.rs -Recurse | Remove-Item
+powershell finds=delete | Get-ChildItem -Force -Filter .git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter *git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter .git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Include .git -Recurse -Force | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes Hidden | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes H | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes Hidden,Directory | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes Directory,Hidden | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes Hidden -Recurse | Remove-Item -Recurse -Force
+powershell finds=delete | gci -Hidden -Filter .git | rm -Recurse -Force
+powershell finds=delete | gci -Force -Include .g* -Recurse | ri -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .git | Remove-Item
+powershell finds=delete | Get-ChildItem -Force -Exclude x -Depth 1 | Remove-Item -Recurse -Force
+# The spellings of the parameters and their values.
+powershell finds=delete | Get-ChildItem -Force -Filter .GIT | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter '[.]git' | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .gi? | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .git. | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter:.git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Fo -Fi .git | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Inc .git -r | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Include @('.git') | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter $f | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .git -ErrorAction 0 | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .git -Path src, . | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Filter .git .. | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes:Hidden | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Attributes Hidden+Directory | Remove-Item -Recurse -Force
+powershell finds=delete | gci -Attr Hidden, Directory | rm -r
+powershell finds=delete | Get-ChildItem -Force -Exclude *.rs | Remove-Item -Recurse -Force
+powershell finds=delete | gci -Force -Filter .git | % { Remove-Item $_ -Recurse -Force }
+powershell finds=delete | gci -Force -Filter .git | ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+powershell finds=delete | gci -fo -filter .git | ri -r
+
+# A filter is matched against the short name of `.git` (`GIT~1`) as well as
+# its name; an include only against the name. The filters that reach it are
+# in windows_wildcards.rs, made for each listing.
+powershell safe | Get-ChildItem -Force -Include g* | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Include *~1 | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Include ????? | Remove-Item -Recurse -Force
+# A filter that cannot match the short name either.
+powershell safe | Get-ChildItem -Force -Filter *.log | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Filter *.tmp | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Filter go.* | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Filter .gitignore | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Filter ?? | Remove-Item -Recurse -Force
+
+# A recursive listing of hidden entries hands on what is below the top of
+# `.git` (its files, folders and objects, by name or by the shape of the name)
+# only when a pattern can match one.
+powershell safe | Get-ChildItem -Include bin,obj -Recurse -Force | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Recurse -Force -Directory -Filter node_modules | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Recurse -Include *.tmp | Remove-Item
+powershell safe | Get-ChildItem -Recurse -Force -Filter *.orig | Remove-Item
+powershell safe | Get-ChildItem -Recurse -Hidden -Filter *.bak | Remove-Item -Force
+powershell safe | Get-ChildItem -Force -Depth 3 -Include bin,obj | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Depth 1 -Filter *.tmp | Remove-Item -Force
+powershell safe | Get-ChildItem -Force -Recurse -Include bin,obj,Debug | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Recurse -Filter node_modules | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Recurse -Include *.tmp,*.orig,*.log | Remove-Item -Force
+powershell safe | Get-ChildItem -Force -Recurse -Directory -Filter obj | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Recurse -Filter Debug | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter HEAD | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include config,index | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include bin,HEAD | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter $f | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include $a,obj | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter *.pack | Remove-Item -Force
+powershell finds=delete | Get-ChildItem C:\\Users\\me -Force -Recurse -Filter id_rsa | Remove-Item -Force
+# The folders and objects below the top of `.git`.
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter pack | Remove-Item -Recurse -Force
+powershell finds=delete | gci -Force -Recurse -Filter pack | rm -r -fo
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include heads | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include tags | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter remotes | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include origin | Remove-Item -Recurse -Force
+powershell finds=delete | gci -fo -r -include pack,heads | % { Remove-Item $_.FullName -Recurse -Force }
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter ?? | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include ?? | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Directory -Filter ?? | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Directory -Include ?? | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter 1* | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter *7* | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Include [a-f]* | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Recurse -Filter pack-1* | Remove-Item -Force
+# `stash` is one of the names `.git` holds.
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter stash | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter *stash* | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Include stash | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Hidden -Filter sta* | Remove-Item -Force
+
+# `del /s` from the workspace takes the files of `.git` when the pattern can
+# match them.
+cmd safe | del /s /q *.obj
+cmd safe | del /s /q *.tmp
+cmd safe | del /s /q *.pyc
+cmd safe | del /s /q *.exe *.dll
+cmd safe | del /s /q Thumbs.db
+cmd safe | del /q /s *.log
+cmd safe | del /s /q src\\HEAD
+cmd safe | del /s /q src\\*.
+cmd safe | del /s /q C:\\Users\\me\\dev\\repo\\src\\HEAD
+cmd safe | cd src & del /s /q HEAD
+cmd safe | del /q HEAD
+cmd safe | del HEAD
+cmd safe | del /f /q config
+cmd finds=delete | del /s /q HEAD
+cmd finds=delete | del /s /q head
+cmd finds=delete | del /s /q config
+cmd finds=delete | del /s /q index
+cmd finds=delete | del /s HEAD
+cmd finds=delete | del /S /Q HEAD
+cmd finds=delete | del /q /s /f HEAD
+cmd finds=delete | erase /s /q index
+cmd finds=delete | del /s /q "HEAD"
+cmd finds=delete | del /s /q .\\HEAD
+cmd finds=delete | del /s /q %CD%\\HEAD
+cmd finds=delete | del /s /q src\\..\\HEAD
+cmd finds=delete | del /s /q C:\\Users\\me\\dev\\repo\\HEAD
+cmd finds=delete | del /s /q x.txt,HEAD
+cmd finds=delete | del /s /q *.obj config
+cmd finds=delete | del /s /q /a:h HEAD
+cmd finds=delete | del /s /q H*
+cmd finds=delete | del /s /q ?????
+cmd finds=delete | del /s /q packed-refs
+cmd finds=delete | del /s /q ORIG_HEAD
+cmd finds=delete | del /s /q COMMIT_EDITMSG
+cmd finds=delete | del /s /q *.pack
+cmd finds=delete | del /s /q pack-*
+cmd finds=delete | cd .. & del /s /q HEAD
+cmd finds=delete | del /s /q ..\\HEAD
+
+# `del /s` reads cmd's own wildcard rules: cmd matches `*` and `?` its own way
+# (`x.*` takes `x`, `x?` takes `x`), which reaches the names `.git` holds; the
+# everyday cleans stay safe.
+cmd safe | del /s /q main.obj
+cmd safe | del /s /q *.log
+cmd safe | del /s /q *.orig
+cmd safe | del /s /q foo.*
+cmd safe | del /s /q foo?.*
+cmd safe | del /s /q a?.txt
+cmd safe | del /s /q mainx.*
+cmd safe | del /s /q ??.obj
+cmd safe | del /s /q build.?
+cmd finds=delete | del /s /q main.*
+cmd finds=delete | del /s /q master.*
+cmd finds=delete | del /s /q HEAD.*
+cmd finds=delete | del /s /q index.*
+cmd finds=delete | del /s /q config.*
+cmd finds=delete | del /s /q main.?
+cmd finds=delete | del /s /q HEAD?
+cmd finds=delete | del /s /q config?
+cmd finds=delete | del /s /q index?
+cmd finds=delete | del /s /q ????????
+cmd finds=delete | del /s /q main?.*
+cmd finds=delete | del /s /q HEA??.
+cmd finds=delete | del /s /q mai??.*
+cmd finds=delete | del /s /q ma?n?.?
+
+# `del /s` tries the short names of git files.
+cmd finds=delete | del /s /q *.pac
+cmd finds=delete | del /s /q *.PAC
+cmd finds=delete | del /s /q COMMIT~1
+cmd finds=delete | del /s /q PACKED~1
+cmd finds=delete | del /s /q DESCRI~1
+cmd finds=delete | del /s /q ORIG_H~1
+cmd finds=delete | del /s /q FETCH_~1
+cmd finds=delete | del /s /q MERGE_~1
+cmd finds=delete | del /s /q REBASE~1
+cmd finds=delete | del /s /q REBASE~2
+cmd finds=delete | del /s /q SEQUEN~1
+cmd finds=delete | del /s /q WORKTR~1
+cmd finds=delete | del /s /q PACK-0~1.PAC
+cmd finds=delete | del /s /q PACK-0~1.IDX
+cmd finds=delete | del /s /q PACK-0~1.*
+
+# `del /s` reaches the folders and objects of `.git` by the shape of their
+# names, `stash` among them.
+cmd safe | del /s /q bin
+cmd safe | del /s /q obj
+cmd safe | del /s /q node_modules
+cmd safe | del /s /q Debug
+cmd finds=delete | del /s /q 1*
+cmd finds=delete | del /s /q *7*
+cmd finds=delete | del /s /q ??
+cmd finds=delete | del /s /q pack
+cmd finds=delete | del /s /q origin
+cmd finds=delete | del /s /q ??????~1
+cmd finds=delete | del /s /q ab*~1
+cmd finds=delete | del /s /q stash
+cmd finds=delete | del /s /q *stash*
+cmd finds=delete | del /s /q STASH
+cmd finds=delete | del /s /q sta??
+
+# A filter reads the DOS wildcards of the file system: it reads `<`, `>` and
+# `"` as `*`, `?` and `.`, so they can reach the names of `.git`; an include
+# reads them as plain characters, and so does cmd's `del` in a quoted name.
+# More filters that reach it are in windows_wildcards.rs, made for each
+# listing.
+powershell safe | Get-ChildItem -Force -Include '<' | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Force -Include '.gi<' | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Recurse -Force -Include 'HEA<' | Remove-Item -Force
+powershell safe | Get-ChildItem -Recurse -Force -Include 'HEA>' | Remove-Item -Force
+# A filter with DOS characters that cannot reach `.git`.
+powershell safe | Get-ChildItem -Recurse -Force -Filter '*.t>' | Remove-Item -Force
+powershell safe | Get-ChildItem -Recurse -Force -Filter 'node_modules"' | Remove-Item -Force
+powershell safe | Get-ChildItem -Recurse -Force -Filter 'x<.tmp' | Remove-Item -Force
+powershell safe | Get-ChildItem -Force -Filter 'b>>n' | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter "HEA<" | Remove-Item -Recurse -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter 'HEA>' | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter "a<" | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter "o<" | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter 'HEAD"' | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter 'conf>>>' | Remove-Item -Force
+cmd safe | del /s /q "foo<.obj"
+cmd safe | del /s /q "a>>.txt"
+cmd safe | del /s /q "*.ob>"
+cmd finds=delete | del /s /q "HEA>"
+cmd finds=delete | del /s /q "HEA<"
+cmd finds=delete | del /s /q "<"
+cmd finds=delete | del /s /q "conf>>>"
+cmd finds=delete | del /s /q "mai<"
+
+# Every dot before a wildcard can match nothing, as in DOS, in a filter and in
+# `del`; a dot before a literal stays a plain dot. More filters, and a long
+# one, are in windows_wildcards.rs.
+powershell finds=delete | Get-ChildItem -Recurse -Force -Filter HEAD.*.* | Remove-Item -Force
+powershell finds=delete | Get-ChildItem -Force -Filter *.*.*.* | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Recurse -Force -Filter *.obj | Remove-Item -Force
+powershell safe | Get-ChildItem -Recurse -Force -Filter *.tmp | Remove-Item -Force
+powershell safe | Get-ChildItem -Recurse -Force -Filter test.*.js | Remove-Item -Force
+cmd safe | del /s /q test.*.js
+cmd finds=delete | del /s /q HEAD.*.*
+cmd finds=delete | del /s /q config.*.*
+cmd finds=delete | del /s /q *.?.?
+cmd finds=delete | del /s /q *.*.*.*
+
+# `del /s` from the workspace spelt as a long path reaches the history.
+cmd safe | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\src\\HEAD
+cmd finds=delete | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD
+cmd finds=delete | del /s /q "\\\\?\\C:\\Users\\me\\dev\\repo\\HEAD"
+cmd finds=delete | del /s /q //?/C:/Users/me/dev/repo/HEAD
+cmd finds=delete | del /s /q \\\\?\\c:\\users\\me\\dev\\repo\\HEAD
+cmd finds=delete | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\config
+cmd finds=delete | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\??
+powershell finds=delete | cmd /c del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD

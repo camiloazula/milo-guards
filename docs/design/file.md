@@ -77,7 +77,7 @@ purpose.
 The shell guard gives the same answer for the same file: `cat <path>` is its
 `read_secret` exactly when a read of `<path>` is this guard's. A test in the
 front door (`crates/guards/tests/agree.rs`) holds them to it on every path of
-this guard's tables; see [Shell](shell.md#reading-a-key).
+this guard's case files; see [Shell](shell.md#reading-a-key).
 
 ### Writing
 
@@ -150,8 +150,9 @@ A file API takes one literal path, so these are `unreadable`, never judged:
 
 ## Spellings it holds against
 
-Every spelling a review could try is a permanent row in the tests (`posix.rs`,
-`windows.rs`, `protected.rs`); core's own rows are in `crates/core/tests`.
+Every spelling a review could try is a permanent case in the tests
+(`tests/cases/posix.cases`, `windows.cases`, `protected.cases`); core's own
+rows are in `crates/core/tests`.
 
 - **Case**: a Mac and Windows ignore it. The home directory, the sensitive
   places and the protected paths compare without case on every host, by Unicode
@@ -270,8 +271,13 @@ Not covered, on purpose, and what to do:
 
 ## The tests
 
-The tables are `tests/posix.rs` (a POSIX machine and a Mac), `tests/windows.rs`,
-`tests/protected.rs`; `names.rs` holds the wire names over `Rule::ALL` and
-`robust.rs` feeds noise, a thousand `..` segments and very long paths. Each
-table is a list of safe paths and a list of risky paths with the rule each must
-break, over core's `testing::posix()`, `macos()` and `windows()`.
+The cases are in case files, one for each thing they check (the format is in
+[CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)): `tests/cases/posix.cases`
+(a POSIX machine and a Mac), `windows.cases`, `protected.cases`,
+`startup.cases` (the files a tool runs on its own) and `limits.cases` (what
+the guard does not see), each checked by the test file of its name. A case is
+a read or a write of a path and the answer it must get, safe or the rules it
+must find, over core's `testing::posix()`, `macos()` and `windows()` or a
+machine a `paths` line declares. `names.rs` holds the wire names over
+`Rule::ALL`, `robust.rs` feeds noise, a thousand `..` segments and very long
+paths, and `posix.rs` keeps the paths at and past the longest judged.

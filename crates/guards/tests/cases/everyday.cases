@@ -1,0 +1,154 @@
+# Everyday commands stay safe through the front door: what an agent runs all
+# day in a POSIX shell, in PowerShell and in cmd needs no one to ask. The
+# format is the shell guard's (CONTRIBUTING.md); each line is also judged by
+# `milo_local_guards::shell::classify`.
+
+# A POSIX shell.
+posix safe |
+posix safe | ls -la
+posix safe | cargo build && cargo test -- --nocapture
+posix safe | git status; git diff HEAD~1 | less
+posix safe | git commit -m 'undo reset --hard and rm -rf /'
+posix safe | echo "rm -rf /"
+posix safe | grep -rn 'rm -rf' docs/
+posix safe | rm build.log
+posix safe | rm -rf target
+posix safe | rm -rf ./node_modules dist/*
+posix safe | rm -r -f -- target
+posix safe | \\rm -fr target/debug
+posix safe | rm -rf /tmp/scratch-test-123
+posix safe | rm -f *.log
+posix safe | sed -i 's/a/b/' src/lib.rs
+posix safe | sed -i '' -e 's/a/b/' README.md
+posix safe | sed -n 's/a/b/p' ~/.zshrc
+posix safe | find src -type f | xargs --max-args 10 rm -f
+posix safe | git push --dry-run
+posix safe | git clean -n -d
+posix safe | git switch main
+posix safe | mkdir -p target/out
+posix safe | touch src/new.rs
+posix safe | mkdir -p /tmp/scratch
+posix safe | and cargo test
+posix safe | perl -pi -e 's/a/b/' src/lib.rs
+posix safe | perl -i.bak -pe 's/foo/bar/g' README.md
+posix safe | perl -pi -e 's/a/b/; tr/x/y/' src/a.rs src/b.rs
+posix safe | perl -pi -e 's|/usr/bin|/opt/bin|g' scripts/run.sh
+posix safe | rm -f */*.o
+posix safe | rm -f **/*.log
+posix safe | rm c:foo
+posix safe | git config --get core.pager
+posix safe | git config core.editor
+posix safe | git config --unset core.pager
+posix safe | bash -o pipefail scripts/test.sh
+posix safe | curl -fsSLo data.json https://x.example/d.json && jq . data.json
+posix safe | cat <<'EOF' > notes.md\ndon't\nEOF
+posix safe | find . -path './src/*.tmp' -delete
+posix safe | python3 -E script.py
+posix safe | ruby -E utf-8 script.rb
+posix safe | perl -pi.bak script.pl
+posix safe | cp -r ~/.config dist/
+posix safe | ln -s src/lib.rs target/link
+posix safe | find . -name '*.pyc' -delete
+posix safe | find . -name '*.log' -exec rm {} +
+posix safe | git config user.name 'A'
+posix safe | git -c user.name=A commit -m x
+posix safe | flock /tmp/l cargo build
+posix safe | taskset 1 cargo test
+posix safe | screen -dm cargo watch
+posix safe | git switch -c feature
+posix safe | crontab -l
+posix safe | rm -rf src/*/target
+posix safe | awk '{print $1}' data.txt
+posix safe | awk -F, '$2 > 5 || $3 == "x" {print $1}' data.csv
+posix safe | awk '{print > "/dev/stderr"}' data.txt
+posix safe | rsync -avz -e 'ssh -p 22' build/ server:/srv/app
+posix safe | echo hi # a note \\\nls
+posix safe | rm -f -- *.tmp src/*.bak
+posix safe | rm -rf "$TMPDIR/scratch"
+posix safe | find . -name '*.o' -exec rm {} \\;
+posix safe | find src -type f | xargs rm -f
+posix safe | mv old.rs new.rs
+posix safe | cp -r assets/ dist/assets
+posix safe | cp report.txt /tmp/
+posix safe | echo hi > out.txt 2>&1
+posix safe | cargo test 2>/dev/null >> log.txt
+posix safe | make > /dev/null
+posix safe | tee -a build.log < input
+posix safe | dd if=/dev/zero of=./disk.img bs=1M count=10
+posix safe | chmod +x scripts/run.sh
+posix safe | chmod -R 755 .
+posix safe | chmod -x tool.sh
+posix safe | git checkout -b feature
+posix safe | git checkout main
+posix safe | git reset --soft HEAD~1
+posix safe | git clean -n
+posix safe | git branch -d merged-branch
+posix safe | git push -u origin feature
+posix safe | git stash pop
+posix safe | git restore --staged src/lib.rs
+posix safe | git -C ../other status
+posix safe | kill 4242
+posix safe | kill -9 4242
+posix safe | timeout 5 cargo test
+posix safe | env RUST_LOG=debug cargo run
+posix safe | nice -n 10 make
+posix safe | bash scripts/test.sh
+posix safe | bash -c 'cargo fmt && cargo clippy'
+posix safe | sh -c "echo $HOME"
+posix safe | python3 -m json.tool data.json
+posix safe | python3 script.py
+posix safe | curl -fsSL https://example.com/x.json -o data.json
+posix safe | curl https://example.com | jq .
+posix safe | command -v rm
+posix safe | for f in *.txt; do wc -l "$f"; done
+posix safe | if [ -d target ]; then rm -rf target; fi
+posix safe | (cd crates && cargo check)
+posix safe | echo $(git rev-parse HEAD)
+posix safe | cat <<'EOF' > notes.md\nhello\nEOF
+posix safe | fdisk -l
+posix safe | systemctl status nginx
+posix safe | shutdown -c
+
+# PowerShell.
+powershell safe | Get-ChildItem -Recurse
+powershell safe | cargo build; cargo test
+powershell safe | git status && git diff
+powershell safe | Remove-Item -Recurse -Force .\\target
+powershell safe | rm -r -fo target
+powershell safe | Remove-Item -Path:"$env:TEMP\\scratch" -Recurse
+powershell safe | Get-ChildItem -Path .\\out -Filter *.tmp | Remove-Item -Force
+powershell safe | Get-ChildItem *.log | ForEach-Object { Remove-Item $_.FullName }
+powershell safe | Copy-Item src\\a.txt dist\\a.txt
+powershell safe | Move-Item old.txt new.txt
+powershell safe | Set-Content -Path notes.txt -Value hi
+powershell safe | "x" | Out-File log.txt
+powershell safe | cargo test > out.txt 2>&1
+powershell safe | cargo test > $null
+powershell safe | Invoke-WebRequest https://example.com/x.json -OutFile data.json
+powershell safe | git push -u origin feature
+powershell safe | pwsh -NoProfile -Command "cargo fmt"
+powershell safe | pwsh -Version
+powershell safe | Write-Output 'Remove-Item -Recurse C:\\'
+powershell safe | [Math]::Round(1.5)
+powershell safe | $sw = [Diagnostics.Stopwatch]::StartNew(); $sw.Start()
+powershell safe | $name.Replace('a', 'b')
+powershell safe | ni -ItemType File notes.txt
+
+# cmd.
+cmd safe | dir /b
+cmd safe | cargo build && cargo test
+cmd safe | rmdir /s/q build
+cmd safe | rd C:\\empty-folder-cmd-refuses-to-delete-unless-empty
+cmd safe | del /f /q build\\*.obj
+cmd safe | del /s /q %TEMP%\\scratch
+cmd safe | copy a.txt b.txt
+cmd safe | echo hi > out.txt 2>&1
+cmd safe | cargo test 2>nul
+cmd safe | if exist build (rd /s /q build) else echo none
+cmd safe | for %%f in (*.tmp) do echo %%f
+cmd safe | git status | findstr modified
+cmd safe | start "" notepad notes.txt
+cmd safe | shutdown /a
+cmd safe | rem build & deploy
+cmd safe | cd.. & dir
+cmd safe | cd src & del /q *.obj

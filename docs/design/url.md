@@ -239,10 +239,14 @@ through its octets and groups.
 
 ## Tests
 
-`tests/urls.rs` has the tables (safe, and risky with the rule each must
-break), the reasons and the targets. `tests/spellings.rs` is every spelling a
-reviewer tried, each a permanent row. `tests/file.rs` is the `file:` URLs,
-`tests/names.rs` checks the wire names and `Rule::ALL`, and `tests/robust.rs`
-feeds noise and very long URLs and checks that nothing panics, an unreadable
-URL is never safe and carries no copy of itself, and a password is never
-shown.
+The cases are in case files, one URL and its answer to a line
+([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), each checked by the
+test file of its name: `tests/cases/urls.cases` has what is safe, what is
+risky and under which rule, the reasons and the targets (and `tests/urls.rs`
+holds every answer of it to never show a password); `spellings.cases` is
+every spelling a reviewer tried, each a permanent case; `file.cases` is the
+`file:` URLs. Every case is also held to carry no target on a finding that
+the URL is unreadable. `tests/cases.rs` tests the runner. `tests/names.rs`
+checks the wire names and `Rule::ALL`, and `tests/robust.rs` feeds noise and
+very long URLs and checks that nothing panics, an unreadable URL is never
+safe and carries no copy of itself, and a password is never shown.

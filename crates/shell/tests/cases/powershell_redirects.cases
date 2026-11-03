@@ -1,0 +1,146 @@
+# In PowerShell the grammar reads `>`, `>>`, `2>` to `6>`, `*>` and their
+# doubled forms as redirect operators, but not `1>`, `7>`, or a `>` glued to
+# its word (`x>f`): those come out as words. They are redirects all the same,
+# so each writes its file, and a word that might be one and cannot be told
+# apart makes the line unknown. The format is in CONTRIBUTING.md.
+
+# A redirect the grammar reads as a word writes its file.
+# Inside the workspace, with and without the stream number.
+powershell safe | echo x > out.txt
+powershell safe | echo x 1> out.txt
+powershell safe | echo x 1>out.txt
+powershell safe | echo x 1>> out.txt
+powershell safe | echo x 1>>out.txt
+powershell safe | echo x>out.txt
+powershell safe | echo x>>out.txt
+powershell safe | echo x 2> err.txt 1> out.txt
+powershell safe | echo x 1> out.txt 2> err.txt
+powershell safe | Write-Output x 1> out.txt
+powershell safe | Set-Location sub 1> out.txt
+powershell safe | Get-Content a>out.txt
+# The null device and the null value write nothing.
+powershell safe | echo x 1> $null
+powershell safe | echo x 1>$null
+powershell safe | echo x 2>$null
+powershell safe | echo x 1> NUL
+# A merge, a string and a comment are no redirect.
+powershell safe | echo x 2>&1
+powershell safe | echo x 1>&2
+powershell safe | echo "x>..\\y.txt"
+powershell safe | echo 'x>..\\y.txt'
+powershell safe | echo "a","b>..\\y.txt"
+# `Set-Location sub` has moved by the time the next command runs.
+powershell safe | Set-Location sub; echo x 1> ..\\x.txt
+powershell finds=overwrite | echo x 1> ..\\x.txt
+powershell finds=overwrite | Write-Output x 1> ..\\x.txt
+powershell finds=overwrite | echo x>..\\x.txt
+powershell finds=overwrite | Set-Location sub 1> ..\\x.txt
+# Every stream the shell has, and the ones it does not.
+powershell finds=overwrite | echo x 2> ..\\x.txt
+powershell finds=overwrite | echo x 3> ..\\x.txt
+powershell finds=overwrite | echo x 4> ..\\x.txt
+powershell finds=overwrite | echo x 5> ..\\x.txt
+powershell finds=overwrite | echo x 6> ..\\x.txt
+powershell finds=overwrite | echo x *> ..\\x.txt
+powershell finds=overwrite | echo x 7> ..\\x.txt
+powershell finds=overwrite | echo x 0> ..\\x.txt
+powershell finds=overwrite | echo x 12> ..\\x.txt
+# Appending.
+powershell finds=overwrite | echo x 1>> ..\\x.txt
+powershell finds=overwrite | echo x 2>> ..\\x.txt
+powershell finds=overwrite | echo x *>> ..\\x.txt
+powershell finds=overwrite | echo x>>..\\x.txt
+# Glued to the file.
+powershell finds=overwrite | echo x 1>..\\x.txt
+powershell finds=overwrite | echo x 2>..\\x.txt
+powershell finds=overwrite | echo x *>..\\x.txt
+powershell finds=overwrite | echo x 1>>..\\x.txt
+powershell finds=overwrite | echo x >..\\x.txt
+powershell finds=overwrite | echo x1>..\\x.txt
+powershell finds=overwrite | Get-Content a>..\\x.txt
+powershell finds=overwrite | echo "x" 1>..\\x.txt
+# The file is another kind of word.
+powershell finds=overwrite | echo x 1> "..\\x.txt"
+powershell finds=overwrite | echo x 1> '..\\x.txt'
+powershell finds=overwrite | echo x 1> C:\\Windows\\x.txt
+powershell finds=overwrite | echo x 1>C:\\Windows\\x.txt
+powershell finds=overwrite | echo x 1> ~\\x.txt
+powershell finds=overwrite | echo x 1>~\\x.txt
+powershell finds=overwrite | echo x 1>$HOME
+powershell finds=overwrite | echo x 1>$env:USERPROFILE\\x.txt
+powershell finds=overwrite | echo x 1> $env:USERPROFILE\\x.txt
+# Among more redirects, pipes and moves.
+powershell finds=overwrite | echo x 1> out.txt 2>..\\err.txt
+powershell finds=overwrite | echo x 1> ..\\x.txt 1> out.txt
+# A `>` glued to a word the grammar lexes as a parameter.
+powershell finds=overwrite | git log --format=%h>..\\x.txt
+powershell finds=overwrite | git log --format=%h>>C:\\Windows\\x.txt
+powershell finds=overwrite | git log --pretty=oneline>..\\x.txt
+powershell finds=overwrite | echo --a=b>..\\x.txt
+powershell finds=overwrite | echo -a=b>..\\x.txt
+powershell finds=overwrite | Get-Content f 1> ..\\x.txt | Set-Content g
+powershell finds=overwrite | Set-Location ..; echo x 1> x.txt
+
+# A word that may be a redirect and cannot be told apart is unknown.
+# No file after the operator, or two operators in one word.
+powershell finds=unknown | echo x 1>
+powershell finds=unknown | echo x a>b>c
+powershell finds=unknown | echo x 1>..\\a>b
+# A quote or an escape in the word hides where the file starts.
+powershell finds=unknown | echo x 1>"..\\x.txt"
+powershell finds=unknown | echo x 1>'..\\x.txt'
+powershell finds=unknown | echo x 1>..\\x`.txt
+powershell finds=unknown | echo x"a">..\\x.txt
+# The name of the command.
+powershell finds=unknown | echo>..\\x.txt
+# Also after the call and dot-source operators.
+powershell finds=unknown | & echo>..\\x.txt
+powershell finds=unknown | & echo>>..\\x.txt
+powershell finds=unknown | & .\\run.ps1>..\\x.txt
+powershell finds=unknown | . .\\x.ps1>..\\x.txt
+# A quoted span that runs a command still writes.
+powershell finds=unknown | git log --format="$(echo a>..\\x.txt)"
+# A parameter after the operator may be the file or an argument.
+powershell finds=unknown | git reset 1> --hard
+powershell finds=unknown | git clean 1> -fdx
+powershell finds=unknown | git reset x> --hard
+powershell finds=unknown | echo x 1> -a
+# It stays an argument, so the discard is found too.
+powershell finds=git_discard | git reset 1> --hard
+powershell finds=git_discard | git clean 1> -fdx
+powershell finds=git_discard | git reset x> --hard
+
+# A redirect in a word is never reads-only.
+powershell effect=changes | echo x 1> out.txt
+powershell effect=changes | echo x 1> ..\\x.txt
+powershell effect=changes | echo x>..\\x.txt
+powershell effect=changes | Set-Location sub 1> ..\\x.txt
+powershell effect=changes | Write-Output x 1> ..\\x.txt
+powershell effect=changes | git log --format=%h>..\\x.txt
+powershell effect=changes | echo -a=b>..\\x.txt
+# The discard is changes whatever the redirect is.
+powershell effect=changes | git reset 1> --hard
+powershell effect=changes | git reset x> --hard
+powershell effect=unknown | echo x 1>
+powershell effect=unknown | echo x a>b>c
+powershell effect=unknown | echo x 1> -a
+
+# A greater-than in a quote of a parameter is text.
+powershell safe | git commit --author="Me <me@example.com>" -m "x"
+powershell safe | git log --format="%an <%ae>"
+powershell safe | git log -n 3 --format="%h <%ae>" --no-merges
+powershell safe | git log --format="%h %s" --author="Me <me@x.y>"
+powershell safe | git log --pretty=format:"%an <%ae>"
+powershell safe | git log --pretty=format:"%h %an <%ae>"
+powershell safe | git log --pretty=format:"%h -> %s"
+powershell safe | git log --format='%an <%ae>'
+powershell safe | git log --format="%h > %s"
+# A `>` outside the quote is still a redirect.
+powershell finds=unknown | git log --format="%h">..\\x.txt
+powershell finds=unknown | git log --format='%h'>..\\x.txt
+powershell effect=reads_workspace | git log --format="%an <%ae>"
+powershell effect=reads_workspace | git log -n 3 --format="%h <%ae>" --no-merges
+powershell effect=reads_workspace | git log --pretty=format:"%h -> %s"
+powershell effect=reads_workspace | git log --format='%an <%ae>'
+powershell effect=reads_workspace | git log --format="%h > %s"
+powershell effect=changes | git commit --author="Me <me@example.com>" -m "x"

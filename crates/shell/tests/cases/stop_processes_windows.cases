@@ -1,0 +1,804 @@
+# Stopping processes in PowerShell and cmd. `Stop-Process`, `taskkill`,
+# `tskill`, `wmic`, a method such as `.Kill()` and WMI's `Terminate` stop a
+# process safely only when the guard reads which one for sure: a name that is
+# not the system's, a `Get-Process` listing of those, or an id written out in
+# digits other than 0 and 1. A name, a filter or a listing that picks every
+# process or one the system needs (`explorer`, `svchost`, the compositor, the
+# remote login) is `stop_system`; an id, a variable, another cmdlet's
+# listing, a filter or a `-match` pattern the guard cannot read may be any
+# process and is `stop_unknown`. The format is in CONTRIBUTING.md.
+
+# Stopping a process by name is safe unless the system needs it.
+powershell safe | Stop-Process -Name node
+powershell safe | Stop-Process -Name node -Force
+powershell safe | Stop-Process -Name node,chrome
+powershell safe | Stop-Process -Name 'node*'
+powershell safe | stop-process -name NODE
+powershell safe | kill -Name node
+powershell safe | spps -Name node
+powershell safe | Stop-Process -Id 1234
+powershell safe | Stop-Process -Id 1234 -Force
+powershell safe | Get-Process node | Stop-Process
+powershell safe | Get-Process -Name node | Stop-Process -Force
+powershell safe | gps node | kill
+powershell safe | Get-Process
+powershell safe | Get-Process | Format-Table
+powershell safe | Stop-Process -Name svc
+powershell finds=stop_system | Stop-Process -Name explorer
+powershell finds=stop_system | Stop-Process -Name explorer -Force
+powershell finds=stop_system | Stop-Process -Name Explorer.exe
+powershell finds=stop_system | Stop-Process -Name csrss
+powershell finds=stop_system | Stop-Process -Name winlogon
+powershell finds=stop_system | Stop-Process -Name node,explorer
+powershell finds=stop_system | Stop-Process -Name explorer,node
+powershell finds=stop_system | Stop-Process -Name *
+powershell finds=stop_system | Stop-Process -Name '*' -Force
+powershell finds=stop_system | Stop-Process -Name ?*
+powershell finds=stop_system | Stop-Process -Name '[a-z]*'
+powershell finds=stop_system | Stop-Process -Name s*
+powershell finds=stop_system | Stop-Process -Name expl*
+powershell finds=stop_unknown | Stop-Process -Name $name
+powershell finds=stop_system | Stop-Process -Name e?plorer
+powershell finds=stop_system | Stop-Process -Name 'explore[r]'
+powershell finds=stop_system | kill -Name explorer
+powershell finds=stop_system | Get-Process | Stop-Process
+powershell finds=stop_system | Get-Process | Stop-Process -Force
+powershell finds=stop_system | gps | kill
+powershell finds=stop_system | Get-Process -Name * | Stop-Process
+powershell finds=stop_system | Get-Process explorer | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object CPU -gt 100 | Stop-Process
+powershell finds=stop_unknown | $procs | Stop-Process
+powershell finds=stop_unknown | Get-CimInstance Win32_Process | Stop-Process
+powershell finds=stop_system | powershell -Command "Stop-Process -Name *"
+powershell finds=stop_system | Stop-Process -Name svchost -Force
+powershell finds=stop_system | Stop-Process -Name SvcHost.exe
+powershell finds=stop_system | Stop-Process -Name svc*
+# The compositor and the remote login.
+powershell finds=stop_system | Stop-Process -Name dwm
+powershell finds=stop_system | Stop-Process -Name dwm -Force
+powershell finds=stop_system | Stop-Process -Name DWM.exe
+powershell finds=stop_system | Stop-Process -Name sshd
+powershell finds=stop_system | Stop-Process -Name node, dwm
+powershell finds=stop_system | Stop-Process -Name dw*
+powershell finds=stop_system | Get-Process dwm | Stop-Process
+powershell finds=stop_unknown | Stop-Process -Name $n
+
+# `Stop-Process` reads its own parameters.
+powershell safe | Stop-Process -N node
+powershell safe | Stop-Process -ProcessName node
+powershell safe | Stop-Process -Proc node -Force
+powershell safe | Stop-Process -Name:node
+powershell safe | Stop-Process -Name node -ErrorAction SilentlyContinue
+powershell safe | Stop-Process -ErrorAction SilentlyContinue -Name node
+powershell safe | spps -ea 0 -Name node
+powershell safe | kill -n node
+powershell safe | Stop-Process -Name node -PassThru -WhatIf
+powershell safe | Stop-Process -Id 12 -Confirm:$false
+powershell finds=stop_system | Stop-Process -N explorer
+powershell finds=stop_system | Stop-Process -Na explorer
+powershell finds=stop_system | Stop-Process -ProcessName explorer
+powershell finds=stop_system | Stop-Process -Proc explorer
+powershell finds=stop_system | Stop-Process -Name:explorer
+powershell finds=stop_system | Stop-Process -ErrorAction SilentlyContinue -Name explorer
+powershell finds=stop_system | Stop-Process -ea 0 -N explorer -Force
+powershell finds=stop_system | kill -n *
+powershell finds=stop_system | kill -ProcessName winlogon
+powershell finds=stop_system | Stop-Process -N node,explorer
+powershell finds=stop_unknown | Stop-Process -N $n
+
+# A `Get-Process` listing piped or handed to `Stop-Process` is judged like the
+# listing: a name, an id or a filter the guard reads narrows it, a
+# `Select-Object` that hands on other objects does not, and a member read off
+# it is the listing only for `Id` and `Name`. Another cmdlet's listing, a
+# variable and a part beside the listing are only known when it runs.
+powershell safe | Stop-Process -InputObject (Get-Process node)
+powershell safe | Stop-Process -Id (Get-Process -Name node).Id
+powershell safe | Stop-Process -Id (Get-Process node | Select-Object -First 1).Id
+powershell safe | Stop-Process (Get-Process node)
+powershell safe | Stop-Process -Id (Get-Process -Id $pid).Id
+powershell safe | Get-Process node | % { Stop-Process -Id $_.Id }
+powershell safe | Get-Process node | ForEach-Object { Stop-Process -InputObject $_ -Force }
+powershell safe | Get-Process | % { $_.Name }
+powershell safe | Get-Process -Id 123 | Stop-Process
+powershell safe | Get-Process -Id $pid | Stop-Process
+# Ids 12 and 13: 1 is the system's first process.
+powershell safe | gps -Id 12,13 | kill
+powershell safe | Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -like 'node*' } | Stop-Process -Force
+powershell safe | Get-Process | Where-Object { $PSItem.Name -eq 'node' } | Stop-Process -WhatIf
+powershell safe | gps | ? Name -eq node | kill
+powershell safe | Get-Process | Where-Object ProcessName -like 'node*' | Stop-Process
+powershell safe | Get-Process | Where-Object -Property ProcessName -eq -Value node | Stop-Process
+powershell safe | Get-Process | Where-Object -FilterScript { $_.Name -eq 'node' } | Stop-Process
+powershell safe | Get-Process node | Where-Object { $_.CPU -gt 100 } | Stop-Process
+powershell safe | Get-Process node | Sort-Object CPU | Select-Object -First 1 | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.ProcessName -ceq 'node' } | Stop-Process
+powershell safe | Get-Process node | Select-Object -First 1 | Stop-Process
+powershell safe | Get-Process node | select -Property Name | kill
+powershell safe | Get-Process node | Select-Object Id | Stop-Process
+powershell safe | Get-Process node | Select-Object -Last 2 | Stop-Process
+powershell safe | Get-Process node | Sort-Object CPU | Select-Object -First 1 | kill
+powershell safe | Get-Process node | select -ex 1 | kill
+powershell safe | Stop-Process -Id (Get-Process node).Id
+powershell safe | Stop-Process -Id ((Get-Process node).Id)
+powershell safe | Stop-Process -Id (Get-Process node).Id, 4242
+powershell safe | Stop-Process -InputObject (Get-Process node), (Get-Process vite)
+powershell safe | Stop-Process -Id (Get-Process node).ID
+powershell safe | Stop-Process -InputObject (Get-Process node).Name
+powershell safe | Stop-Process -InputObject ((Get-Process node).ProcessName)
+powershell safe | Stop-Process -Id (Get-Process -Id $PID).Id
+# Another cmdlet's listing, a variable and the item of a block that no
+# `Get-Process` feeds are processes only known when it runs, as
+# `kill $(lsof -ti:3000)` is.
+powershell finds=stop_unknown | Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess
+powershell finds=stop_unknown | Stop-Process -InputObject $p
+powershell finds=stop_unknown | $procs | % { Stop-Process -Id $_.Id }
+powershell finds=stop_unknown | Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id $_.OwningProcess }
+powershell finds=stop_system | Stop-Process -InputObject (Get-Process) -Force
+powershell finds=stop_system | Stop-Process -InputObject (Get-Process explorer)
+powershell finds=stop_system | Stop-Process -Id (Get-Process).Id
+powershell finds=stop_system | Stop-Process -Id $(Get-Process)
+powershell finds=stop_system | Stop-Process (Get-Process)
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process).Where({ $_.CPU -gt 1 }).Id
+powershell finds=stop_system | Get-Process | % { Stop-Process -InputObject $_ }
+powershell finds=stop_system | Get-Process | % { Stop-Process -Id $_.Id }
+powershell finds=stop_system | Get-Process | ForEach-Object { Stop-Process -Id $PSItem.Id -Force }
+powershell finds=stop_system | Get-Process -Name explorer | % { Stop-Process -Id $_.Id }
+powershell finds=stop_unknown | Get-Process | Where-Object CPU -gt 1 | % { Stop-Process -Id $_.Id }
+powershell finds=stop_system | Get-Process | % { if ($_.CPU -gt 1) { Stop-Process -Id $_.Id } }
+# A variable picks the processes only when it runs.
+powershell finds=stop_unknown | Get-Process -InputObject $x | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.ProcessName -eq 'explorer' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -like 'e*' } | Stop-Process
+powershell finds=stop_system | gps | ? Name -eq svchost | kill
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.ProcessName -ne 'node' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.ProcessName -eq 'a' -or $_.CPU -gt 1 } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.ProcessName -eq $n } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Id -eq 5 } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Select-Object -First 1 | Stop-Process
+powershell finds=stop_unknown | Get-Process | ForEach-Object { $_ } | Stop-Process
+powershell finds=stop_unknown | Get-Process node | ForEach-Object { Get-Process } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.ProcessName -eq 'node' } | Stop-Process; Get-Process | Stop-Process
+# A `Select-Object` that hands on other objects.
+powershell finds=stop_unknown | Get-Process node | Select-Object -ExpandProperty Parent | Stop-Process
+powershell finds=stop_unknown | Get-Process node | select -exp Parent | kill
+powershell finds=stop_unknown | Get-Process node | select -ExpandProperty:Parent | kill
+powershell finds=stop_unknown | Get-Process node | select -expa Parent | kill
+powershell finds=stop_unknown | Get-Process node | select @{n='x';e={$_.Parent}} | kill
+powershell finds=stop_unknown | Get-Process node | Select-Object -Property @{Name='P';Expression={$_.Parent}} | Stop-Process
+powershell finds=stop_unknown | Stop-Process -InputObject (Get-Process node | select -exp Parent)
+powershell finds=stop_unknown | Get-Process node | select -exp Parent | Select-Object -First 1 | kill
+# The listing says nothing of the id or the object beside it.
+powershell finds=stop_unknown | Stop-Process -Id ((Get-Process node).Id, $x)
+powershell finds=stop_unknown | Stop-Process -Id ($x, (Get-Process node).Id)
+powershell finds=stop_unknown | Stop-Process -Id $((Get-Process node).Id; $x)
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node).Id, $x
+powershell finds=stop_unknown | Stop-Process -InputObject ((Get-Process node), $x)
+powershell finds=stop_unknown | Stop-Process -InputObject (Get-Process node), $x
+powershell finds=stop_unknown | Stop-Process -Id ((Get-Process node).Id + 1)
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node).Id, (Get-Content app.pid)
+# A member other than `Id` and `Name`.
+powershell finds=stop_unknown | Stop-Process -InputObject (Get-Process notepad).Parent
+powershell finds=stop_unknown | Stop-Process -InputObject (Get-Process -Id $PID).Parent
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node).Parent.Id
+powershell finds=stop_unknown | Stop-Process -InputObject ((Get-Process node).Parent)
+powershell finds=stop_unknown | (Get-Process node).Parent | Stop-Process
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node | Select-Object -ExpandProperty Parent).Id
+powershell finds=stop_unknown | Stop-Process -Id ((Get-Process node).Parent.Id)
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node).Threads.Id
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process node).ParentX
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process -Id (Get-Process explorer).Id).Id
+powershell finds=stop_unknown | Stop-Process -Id (Get-Content pid.txt | % { (Get-Process $_).Parent.Id })
+
+# The item `$_` of a block a `Get-Process` feeds is that process, wrapped or
+# not; a member other than the process's own, and the item after anything
+# but a `Get-Process`, is another process only known when it runs.
+powershell safe | Get-Process notepad | % { Stop-Process -Id $_.Id }
+powershell safe | Get-Process notepad | % { Stop-Process -InputObject $_ }
+powershell safe | Get-Process notepad | % { Stop-Process $_.Id }
+powershell safe | Get-Process notepad | % { Stop-Process -Id $PSItem.Id -Force }
+powershell safe | Get-Process node | % { Stop-Process -Id ($_.Id) }
+powershell safe | Get-Process node | % { Stop-Process ($_) }
+powershell safe | Get-Process node | % { Stop-Process @($_) }
+powershell safe | Get-Process node | % { Stop-Process -InputObject ($_) }
+powershell safe | Get-Process node | % { Stop-Process -Id $($_.Id) }
+powershell safe | Get-Process node | % { Stop-Process -Id "$($_.Id)" }
+powershell safe | Get-Process node | % { Stop-Process -Id ([int]$_.Id) }
+powershell safe | Get-Process node | % { Stop-Process -Id "$_" }
+powershell finds=stop_unknown | Get-NetTCPConnection -LocalPort 3000 | % { Stop-Process -Id ($_.OwningProcess) }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -InputObject $_.Parent }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process $_.Parent }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -Id $_.Parent.Id -Force }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -Id $_.Threads.Id }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -Id ($_.Parent.Id) }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -Id ($_.Id + 1) }
+powershell finds=stop_unknown | Get-Process notepad | % { Stop-Process -Id $_.Id, $_.Parent.Id }
+powershell finds=stop_system | Get-Process | % { Stop-Process ($_) }
+powershell finds=stop_system | Get-Process | % { Stop-Process @($_) }
+powershell finds=stop_system | Get-Process | % { Stop-Process -InputObject ($_) }
+powershell finds=stop_system | Get-Process | % { Stop-Process -Id ($_.Id) }
+powershell finds=stop_system | Get-Process | % { Stop-Process -Id $($_.Id) }
+powershell finds=stop_system | Get-Process | % { Stop-Process -Id "$($_.Id)" }
+powershell finds=stop_system | Get-Process | % { Stop-Process -Id ([int]$_.Id) }
+# Not the item or one of its own members.
+powershell finds=stop_unknown | Get-Process node | % { Stop-Process -Id (-not $_.Id) }
+powershell finds=stop_unknown | Get-Process node | % { Stop-Process -Id ($_.Id + 1) }
+powershell finds=stop_unknown | Get-Process node | % { Stop-Process -Id "1$($_.Id)" }
+powershell finds=stop_unknown | Get-Process node | % { Stop-Process -Id ([int]$_.Parent.Id) }
+powershell finds=stop_unknown | Get-Process node | % { Stop-Process -Id $(Get-Process explorer | % { $_.Id }) }
+
+# No listing in them, so no listing finding, but a file's text is an id only
+# known when it runs.
+powershell finds=stop_unknown | Stop-Process -Id (Get-Content pid.txt)
+powershell finds=stop_unknown | Stop-Process -Id (cat pid.txt | Select-Object -First 1)
+powershell finds=stop_unknown | Stop-Process -Id (Foo (Get-Process explorer).Id)
+
+# A method that stops a process (`Kill`, `CloseMainWindow`, WMI's
+# `Terminate`) is judged like `Stop-Process` given the same object.
+powershell safe | (Get-Process node).Kill()
+powershell safe | (Get-Process -Name node).Kill()
+powershell safe | (Get-Process node).Kill($true)
+powershell safe | (Get-Process node | Select-Object -First 1).Kill()
+powershell safe | (Get-Process node).CloseMainWindow()
+powershell safe | Get-Process node | ForEach-Object { $_.Kill() }
+powershell safe | Get-Process node | % { $_.Kill() }
+powershell safe | Get-Process node | Foreach { $PSItem.Kill() }
+powershell safe | Get-Process node | % Kill
+powershell safe | Get-Process node | ForEach-Object Kill
+powershell safe | Get-Process node | ForEach-Object -MemberName Kill
+powershell safe | Get-Process node | % { $_.CloseMainWindow() }
+powershell safe | Get-Process | Where-Object { $_.Name -like 'node' } | ForEach-Object { $_.Kill() }
+powershell safe | Get-Process node | Where-Object CPU -gt 100 | % { $_.Kill() }
+powershell safe | [System.Diagnostics.Process]::GetProcessById(1234).Kill()
+powershell safe | [Diagnostics.Process]::GetProcessById(4242).Kill()
+powershell safe | (Get-Process -Id 1234).Kill()
+powershell safe | (Get-Process -Id $pid).Kill()
+powershell safe | Get-Process node | % { $_.Name }
+powershell safe | Get-CimInstance Win32_Process
+powershell safe | Get-WmiObject Win32_Process
+powershell safe | Get-CimInstance Win32_Process | Select-Object Name, ProcessId
+powershell finds=stop_system | (Get-Process).Kill()
+powershell finds=stop_system | (Get-Process explorer).Kill()
+powershell finds=stop_system | (Get-Process node, explorer).Kill()
+powershell finds=stop_unknown | (Get-Process | Where-Object CPU -gt 100).Kill()
+# The array's `.ForEach('Kill')` is a line the grammar does not read, so it
+# is risky for that.
+powershell finds=unreadable | (Get-Process).ForEach('Kill')
+powershell finds=unreadable | (Get-Process node).ForEach('Kill')
+powershell finds=stop_system | (Get-Process).CloseMainWindow()
+powershell finds=stop_system | Get-Process | ForEach-Object { $_.Kill() }
+powershell finds=stop_system | Get-Process | % { $_.Kill() }
+powershell finds=stop_system | Get-Process | Foreach { $_.Kill() }
+powershell finds=stop_system | Get-Process | % Kill
+powershell finds=stop_system | Get-Process | ForEach-Object Kill
+powershell finds=stop_system | Get-Process | ForEach-Object -MemberName Kill
+powershell finds=stop_system | Get-Process | % CloseMainWindow
+powershell finds=stop_system | Get-Process | % { $_.CloseMainWindow() }
+powershell finds=stop_system | Get-Process explorer | ForEach-Object { $_.Kill() }
+powershell finds=stop_system | Get-Process explorer | % Kill
+powershell finds=stop_unknown | Get-Process | Where-Object CPU -gt 100 | % { $_.Kill() }
+# Not the process itself: its parent, or an item of a list.
+powershell finds=stop_unknown | (Get-Process node).Parent.Kill()
+powershell finds=stop_unknown | Get-Process node | % { $_.Parent.Kill() }
+powershell finds=stop_unknown | (Get-Process node)[0].Kill()
+powershell finds=stop_unknown | ((Get-Process node), $x).Kill()
+# An object only known when it runs.
+powershell finds=stop_unknown | $p.Kill()
+powershell finds=stop_unknown | $proc.Kill($true)
+powershell finds=stop_unknown | $p = Get-Process; $p.Kill()
+powershell finds=stop_unknown | $procs | % { $_.Kill() }
+powershell finds=stop_unknown | $procs | % Kill
+powershell finds=stop_unknown | $procs.ForEach({ $_.Kill() })
+powershell finds=stop_unknown | % { $_.Kill() }
+powershell finds=stop_unknown | Get-Content pids.txt | % { (Get-Process -Id $_).Kill() }
+# .NET's lists, and an id that is not written out in digits or is the
+# group's or the system's own.
+powershell finds=stop_unknown | [System.Diagnostics.Process]::GetProcesses() | % { $_.Kill() }
+powershell finds=stop_unknown | [System.Diagnostics.Process]::GetProcessesByName('explorer').Kill()
+powershell finds=stop_system | [System.Diagnostics.Process]::GetProcessById(0).Kill()
+powershell finds=stop_system | [System.Diagnostics.Process]::GetProcessById(1).Kill()
+powershell finds=stop_unknown | [System.Diagnostics.Process]::GetProcessById($id).Kill()
+powershell finds=stop_unknown | [System.Diagnostics.Process]::GetProcessById(1234 + 0).Kill()
+powershell finds=stop_system | (Get-Process -Id 0).Kill()
+powershell finds=stop_unknown | (Get-Process -Id $id).Kill()
+# WMI stops processes through a method.
+powershell finds=stop_unknown | Get-CimInstance Win32_Process | Invoke-CimMethod -MethodName Terminate
+powershell finds=stop_unknown | Get-CimInstance Win32_Process -Filter "name='node.exe'" | Invoke-CimMethod -MethodName Terminate
+powershell finds=stop_unknown | Invoke-CimMethod -InputObject $p -MethodName terminate
+powershell finds=stop_unknown | Get-WmiObject Win32_Process | Invoke-WmiMethod -Name Terminate
+powershell finds=stop_unknown | Get-CimInstance Win32_Process | icim -MethodName Terminate
+powershell finds=stop_unknown | Get-WmiObject Win32_Process | iwmi -Name Terminate
+powershell finds=stop_unknown | Get-WmiObject Win32_Process | % { $_.Terminate() }
+powershell finds=stop_unknown | (Get-WmiObject Win32_Process -Filter "name='explorer.exe'").Terminate()
+powershell finds=stop_unknown | (Get-CimInstance Win32_Process -Filter "name='node.exe'").Terminate()
+
+# An id written out in digits is a process the agent picked, and so is the
+# shell's own `$PID`; 0 and 1 are the system's. An id only known when it
+# runs, or one that is not an id, may be any process.
+powershell safe | Stop-Process 1234
+powershell safe | Stop-Process -Id 1234,5678
+powershell safe | Stop-Process -Id 1234, 5678 -Force
+powershell safe | Stop-Process -Id "1234"
+powershell safe | Stop-Process -Id:1234
+powershell safe | Stop-Process -Id 4
+powershell safe | spps -Id 4242
+powershell safe | kill 4242
+powershell safe | kill -Id 4242
+powershell safe | Get-Process -Id 1234 | Stop-Process
+powershell safe | Get-Process -Id 12,13 | Stop-Process
+powershell safe | Get-Process -Id 12,13 | % { $_.Kill() }
+# The shell that runs the line.
+powershell safe | Stop-Process -Id $PID
+powershell safe | Stop-Process -Id $pid -Force
+powershell safe | Stop-Process $PID
+powershell safe | Get-Process -Id $PID | Stop-Process
+powershell finds=stop_system | Stop-Process -Id 0
+powershell finds=stop_system | Stop-Process 0
+powershell finds=stop_system | Stop-Process -Id 00
+powershell finds=stop_system | Stop-Process -Id "0"
+powershell finds=stop_system | Stop-Process -Id 0 -Force
+powershell finds=stop_system | Stop-Process -Id 1234,0
+powershell finds=stop_system | Stop-Process -Id 0,1234
+powershell finds=stop_system | kill 0
+powershell finds=stop_system | kill -Id 0
+powershell finds=stop_system | spps -Id 0
+powershell finds=stop_system | Stop-Process -Id 1
+powershell finds=stop_system | Stop-Process 1 -Force
+powershell finds=stop_system | Get-Process -Id 0 | Stop-Process
+powershell finds=stop_system | Get-Process -Id 1 | % { $_.Kill() }
+powershell finds=stop_system | Get-Process -Id 1234,0 | kill
+# A variable, a file's text and another cmdlet's listing.
+powershell finds=stop_unknown | Stop-Process -Id $id
+powershell finds=stop_unknown | Stop-Process $id
+powershell finds=stop_unknown | Stop-Process -Id $env:APP_PID
+powershell finds=stop_unknown | Stop-Process -Id 1234,$id
+powershell finds=stop_unknown | Stop-Process -Id (Get-Content app.pid)
+powershell finds=stop_unknown | Stop-Process -Id $(Get-Content app.pid)
+powershell finds=stop_unknown | Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000 -State Listen).OwningProcess -Force
+powershell finds=stop_unknown | Stop-Process -Id (netstat -ano)
+powershell finds=stop_unknown | kill $id
+powershell finds=stop_unknown | kill (Get-Content app.pid)
+# Not an id.
+powershell finds=stop_unknown | Stop-Process -Id ($x + 1)
+powershell finds=stop_unknown | Stop-Process -Id 0x10
+powershell finds=stop_unknown | Stop-Process -Id -1
+powershell finds=stop_unknown | Stop-Process -Id 1.5
+powershell finds=stop_unknown | Stop-Process -Id ' 1234'
+powershell finds=stop_unknown | Stop-Process -Id 99999999999999999999
+powershell finds=stop_unknown | Stop-Process -Id '1234,5678'
+powershell finds=stop_unknown | Stop-Process -Id $null
+# The item of a block, when no `Get-Process` feeds it.
+powershell finds=stop_unknown | $procs | % { Stop-Process $_ }
+powershell finds=stop_unknown | Get-Content app.pid | % { Stop-Process -Id $_ }
+powershell finds=stop_unknown | 1..3 | % { Stop-Process -Id $_ }
+powershell finds=stop_unknown | Get-Content app.pid | Stop-Process
+powershell finds=stop_unknown | Get-NetTCPConnection -LocalPort 3000 | Stop-Process
+powershell finds=stop_unknown | % { Stop-Process -Id $_ }
+# A listing by id takes the same ids.
+powershell finds=stop_unknown | Get-Process -Id $id | Stop-Process
+powershell finds=stop_unknown | Get-Process -Id (Get-Content app.pid) | Stop-Process
+powershell finds=stop_unknown | Get-Process -Id $id | % { $_.Kill() }
+powershell finds=stop_unknown | Stop-Process -Id (Get-Process -Id $id).Id
+
+# `taskkill` and `tskill` judge the names, ids and `PID` filters they are
+# given as `Stop-Process` judges its own, in cmd and in PowerShell; a
+# variable of the other shell is a plain word.
+cmd safe | taskkill /PID 1234
+cmd safe | taskkill /PID 1234 /F
+cmd safe | taskkill /F /PID 1234 /T
+cmd safe | taskkill /pid 4242 /f
+cmd safe | taskkill /PID 1234 /PID 5678
+cmd safe | taskkill /IM node.exe /F
+cmd safe | tskill node
+cmd safe | tskill node /a
+cmd safe | tskill node /v
+cmd safe | tskill 1234
+cmd safe | tskill 4242 /a /v
+cmd safe | tskill 1234 /server:build
+cmd safe | tskill.exe node
+cmd safe | tskill
+cmd safe | taskkill /F /FI "PID eq 1234"
+cmd safe | taskkill /FI "PID eq 4242" /F /T
+cmd safe | taskkill /FI "pid EQ 1234"
+cmd safe | taskkill /FI "PID eq 1234" /FI "USERNAME eq me"
+cmd safe | taskkill /FI "PID eq 1234" /FI "MEMUSAGE gt 1"
+cmd finds=stop_system | taskkill /PID 0
+cmd finds=stop_system | taskkill /F /PID 0
+cmd finds=stop_system | taskkill /PID 1
+cmd finds=stop_system | taskkill /PID 1234 /PID 0
+cmd finds=stop_system | taskkill /pid 00 /f
+cmd finds=stop_unknown | taskkill /PID abc
+cmd finds=stop_unknown | taskkill /PID -1
+cmd finds=stop_unknown | taskkill /PID 12.5
+cmd finds=stop_unknown | taskkill /F /PID %pid%
+cmd finds=stop_unknown | taskkill /F /PID $id
+cmd finds=stop_system | tskill explorer
+cmd finds=stop_system | tskill explorer /a
+cmd finds=stop_system | tskill /a explorer
+cmd finds=stop_system | tskill.exe explorer
+cmd finds=stop_system | tskill svchost /v
+cmd finds=stop_system | tskill node explorer
+cmd finds=stop_system | tskill *
+cmd finds=stop_system | tskill 0
+cmd finds=stop_system | tskill 1
+cmd finds=stop_system | tskill 0 /a
+cmd finds=stop_system | taskkill /F /FI "PID eq 0"
+cmd finds=stop_system | taskkill /F /FI "PID eq 1"
+cmd finds=stop_unknown | taskkill /F /FI "PID eq abc"
+cmd finds=stop_unknown | taskkill /F /FI "PID eq 1234 or 0"
+cmd finds=stop_unknown | taskkill /F /FI "PID eq"
+cmd finds=stop_system | taskkill /F /FI "PID ne 1234"
+cmd finds=stop_system | taskkill /F /FI "PID gt 0"
+cmd finds=stop_system | taskkill /F /FI "PID eq 1234" /FI "PID eq 0"
+cmd finds=stop_system | taskkill /F /FI "IMAGENAME ne node.exe"
+powershell safe | taskkill /PID 1234
+powershell safe | taskkill /PID 1234 /F
+powershell safe | taskkill /F /PID 1234 /T
+powershell safe | taskkill /pid 4242 /f
+powershell safe | taskkill /PID 1234 /PID 5678
+powershell safe | taskkill /IM node.exe /F
+powershell safe | tskill node
+powershell safe | tskill node /a
+powershell safe | tskill node /v
+powershell safe | tskill 1234
+powershell safe | tskill 4242 /a /v
+powershell safe | tskill 1234 /server:build
+powershell safe | tskill.exe node
+powershell safe | tskill
+powershell safe | taskkill /F /FI "PID eq 1234"
+powershell safe | taskkill /FI "PID eq 4242" /F /T
+powershell safe | taskkill /FI "pid EQ 1234"
+powershell safe | taskkill /FI "PID eq 1234" /FI "USERNAME eq me"
+powershell safe | taskkill /FI "PID eq 1234" /FI "MEMUSAGE gt 1"
+powershell finds=stop_system | taskkill /PID 0
+powershell finds=stop_system | taskkill /F /PID 0
+powershell finds=stop_system | taskkill /PID 1
+powershell finds=stop_system | taskkill /PID 1234 /PID 0
+powershell finds=stop_system | taskkill /pid 00 /f
+powershell finds=stop_unknown | taskkill /PID abc
+powershell finds=stop_unknown | taskkill /PID -1
+powershell finds=stop_unknown | taskkill /PID 12.5
+powershell finds=stop_unknown | taskkill /F /PID %pid%
+powershell finds=stop_unknown | taskkill /F /PID $id
+powershell finds=stop_system | tskill explorer
+powershell finds=stop_system | tskill explorer /a
+powershell finds=stop_system | tskill /a explorer
+powershell finds=stop_system | tskill.exe explorer
+powershell finds=stop_system | tskill svchost /v
+powershell finds=stop_system | tskill node explorer
+powershell finds=stop_system | tskill *
+powershell finds=stop_system | tskill 0
+powershell finds=stop_system | tskill 1
+powershell finds=stop_system | tskill 0 /a
+powershell finds=stop_system | taskkill /F /FI "PID eq 0"
+powershell finds=stop_system | taskkill /F /FI "PID eq 1"
+powershell finds=stop_unknown | taskkill /F /FI "PID eq abc"
+powershell finds=stop_unknown | taskkill /F /FI "PID eq 1234 or 0"
+powershell finds=stop_unknown | taskkill /F /FI "PID eq"
+powershell finds=stop_system | taskkill /F /FI "PID ne 1234"
+powershell finds=stop_system | taskkill /F /FI "PID gt 0"
+powershell finds=stop_system | taskkill /F /FI "PID eq 1234" /FI "PID eq 0"
+powershell finds=stop_system | taskkill /F /FI "IMAGENAME ne node.exe"
+# In PowerShell.
+powershell safe | taskkill /F /IM node.exe /T
+powershell safe | taskkill /F /FI "IMAGENAME eq node.exe"
+powershell safe | taskkill /F /IM svchostx.exe
+powershell safe | taskkill /IM node.exe
+powershell safe | tskill $pid
+powershell finds=stop_system | taskkill /IM explorer.exe /F
+powershell finds=stop_system | taskkill /F /T /IM winlogon.exe
+powershell finds=stop_system | taskkill /F /IM *
+powershell finds=stop_system | taskkill /F /IM *.exe
+powershell finds=stop_system | taskkill /IM node.exe /IM explorer.exe
+powershell finds=stop_system | taskkill /F /FI "USERNAME eq me"
+powershell finds=stop_system | taskkill /F /FI "IMAGENAME eq explorer.exe"
+powershell finds=stop_unknown | taskkill /F /IM $name
+powershell finds=stop_unknown | taskkill /F /FI $filter
+powershell finds=stop_system | taskkill /F /IM svchost.exe
+powershell finds=stop_system | taskkill /F /FI "IMAGENAME eq svchost.exe"
+powershell finds=stop_system | taskkill /IM dwm.exe /F
+powershell finds=stop_system | taskkill /IM sshd.exe
+powershell finds=stop_system | taskkill /FI "IMAGENAME eq dwm.exe"
+powershell finds=stop_system | tskill dwm
+powershell finds=stop_unknown | taskkill /F /PID (Get-Content app.pid)
+powershell finds=stop_unknown | taskkill /F /PID (Get-Process).Id
+powershell finds=stop_unknown | Get-Process node | ForEach-Object { taskkill /F /PID $_.Id }
+powershell finds=stop_unknown | Get-NetTCPConnection -LocalPort 3000 | % { taskkill /F /PID $_.OwningProcess }
+powershell finds=stop_unknown | tskill $n
+powershell finds=stop_unknown | tskill $n /a
+powershell finds=stop_unknown | tskill $id
+powershell finds=stop_unknown | tskill "$n"
+powershell finds=stop_unknown | tskill (Get-Content app.pid)
+powershell finds=stop_unknown | tskill ex$n
+powershell finds=stop_unknown | taskkill /F /FI "PID eq $id"
+# In cmd.
+cmd safe | taskkill /PID 12 /F
+cmd safe | tskill $n
+cmd safe | taskkill /IM node???????????????????.exe
+cmd finds=stop_system | taskkill /f /im explorer.exe
+cmd finds=stop_system | taskkill /F /IM *
+cmd finds=stop_system | taskkill /f /fi "username eq me"
+cmd finds=stop_unknown | tskill %n%
+cmd finds=stop_unknown | tskill %id% /a
+cmd finds=stop_unknown | taskkill /F /FI "PID eq %p%"
+# A wildcard longer than every name matches none of them.
+cmd finds=stop_system | taskkill /IM l???n*
+# A `for /f` loop over a listing is a line the grammar does not read.
+cmd finds=unreadable | for /f "tokens=5" %p in ('netstat -ano ^| findstr :3000') do taskkill /F /PID %p
+cmd finds=unreadable | for /f %i in ('tasklist') do taskkill /PID %i
+cmd finds=unreadable | for /f %i in (pids.txt) do taskkill /PID %i
+
+# `taskkill` with only a filter stops what the filter picks.
+powershell safe | taskkill /F /IM node.exe /FI "MEMUSAGE gt 1"
+powershell safe | taskkill /PID 12 /FI "STATUS eq RUNNING"
+powershell safe | taskkill /F /FI "STATUS eq NOT RESPONDING"
+powershell safe | taskkill /F /FI "status eq not responding"
+powershell safe | taskkill /F /FI "IMAGENAME eq node.exe" /FI "MEMUSAGE gt 1"
+powershell finds=stop_system | taskkill /F /FI "STATUS eq RUNNING"
+powershell finds=stop_system | taskkill /F /FI "MEMUSAGE gt 1"
+powershell finds=stop_system | taskkill /F /FI "SESSION eq 1"
+powershell finds=stop_system | taskkill /F /FI "WINDOWTITLE eq x*"
+powershell finds=stop_system | taskkill /F /FI "CPUTIME gt 00:00:01"
+powershell finds=stop_system | taskkill /F /FI "STATUS ne RUNNING"
+powershell finds=stop_system | taskkill /F /FI "STATUS eq UNKNOWN"
+powershell finds=stop_system | taskkill /F /FI "status eq running" /T
+powershell finds=stop_system | taskkill /F /FI "MEMUSAGE gt 1" /FI "STATUS eq NOT RESPONDING"
+powershell finds=stop_system | taskkill /F /FI ""
+cmd safe | taskkill /f /pid 4 /fi "status eq running"
+cmd finds=stop_system | taskkill /f /fi "status eq running"
+cmd finds=stop_system | taskkill /f /fi "memusage gt 1"
+
+# `wmic process` and `wmic path win32_process` stop the processes their
+# `where` clause picks; in PowerShell a value with a variable in it is only
+# known when it runs, while in cmd a `$` is a character of the name.
+cmd safe | wmic process get name,processid
+cmd safe | wmic process where name="node.exe" get processid
+cmd safe | wmic process where name="node.exe" call terminate
+cmd safe | wmic process where name='node.exe' call terminate
+cmd safe | wmic process where "name='node.exe'" call terminate
+cmd safe | wmic process where name="node.exe" delete
+cmd safe | wmic process where processid=1234 call terminate
+cmd safe | wmic process where processid="4242" delete
+cmd safe | wmic path win32_process get name
+cmd safe | wmic path win32_process where name="node.exe" get processid
+cmd safe | wmic path win32_process where name="node.exe" call terminate
+cmd safe | wmic path Win32_Process where "name='node.exe'" delete
+cmd safe | wmic path win32_process where processid=1234 call terminate
+cmd safe | wmic PATH WIN32_PROCESS where name="node.exe" delete
+cmd finds=stop_system | wmic process call terminate
+cmd finds=stop_system | wmic process delete
+cmd finds=stop_system | wmic process where name="explorer.exe" call terminate
+cmd finds=stop_system | wmic process where name="svchost.exe" delete
+cmd finds=stop_system | wmic process where processid=0 call terminate
+cmd finds=stop_system | wmic process where processid=1 delete
+cmd finds=stop_unknown | wmic process where "name like '%node%'" call terminate
+cmd finds=stop_unknown | wmic process where "name='node.exe' or name='explorer.exe'" call terminate
+cmd finds=stop_unknown | wmic process where name!="node.exe" call terminate
+cmd finds=stop_unknown | wmic process where "name='*'" call terminate
+cmd finds=stop_unknown | wmic process where parentprocessid=1234 call terminate
+cmd finds=stop_unknown | wmic process where name=%NAME% call terminate
+# `path win32_process` is the class the alias stands for.
+cmd finds=stop_system | wmic path win32_process call terminate
+cmd finds=stop_system | wmic path win32_process where name="explorer.exe" call terminate
+cmd finds=stop_system | wmic path Win32_Process where "name='explorer.exe'" delete
+cmd finds=stop_system | wmic PATH win32_process delete
+cmd finds=stop_system | wmic path cim_process delete
+cmd finds=stop_system | wmic path win32_process where processid=0 call terminate
+cmd finds=stop_unknown | wmic path win32_process where "name like '%node%'" call terminate
+cmd finds=unknown | wmic path win32_process call create "notepad.exe"
+powershell safe | wmic process get name,processid
+powershell safe | wmic process where name="node.exe" get processid
+powershell safe | wmic process where name="node.exe" call terminate
+powershell safe | wmic process where name='node.exe' call terminate
+powershell safe | wmic process where "name='node.exe'" call terminate
+powershell safe | wmic process where name="node.exe" delete
+powershell safe | wmic process where processid=1234 call terminate
+powershell safe | wmic process where processid="4242" delete
+powershell safe | wmic path win32_process get name
+powershell safe | wmic path win32_process where name="node.exe" get processid
+powershell safe | wmic path win32_process where name="node.exe" call terminate
+powershell safe | wmic path Win32_Process where "name='node.exe'" delete
+powershell safe | wmic path win32_process where processid=1234 call terminate
+powershell safe | wmic PATH WIN32_PROCESS where name="node.exe" delete
+powershell finds=stop_system | wmic process call terminate
+powershell finds=stop_system | wmic process delete
+powershell finds=stop_system | wmic process where name="explorer.exe" call terminate
+powershell finds=stop_system | wmic process where name="svchost.exe" delete
+powershell finds=stop_system | wmic process where processid=0 call terminate
+powershell finds=stop_system | wmic process where processid=1 delete
+powershell finds=stop_unknown | wmic process where "name like '%node%'" call terminate
+powershell finds=stop_unknown | wmic process where "name='node.exe' or name='explorer.exe'" call terminate
+powershell finds=stop_unknown | wmic process where name!="node.exe" call terminate
+powershell finds=stop_unknown | wmic process where "name='*'" call terminate
+powershell finds=stop_unknown | wmic process where parentprocessid=1234 call terminate
+powershell finds=stop_unknown | wmic process where name=%NAME% call terminate
+powershell finds=stop_system | wmic path win32_process call terminate
+powershell finds=stop_system | wmic path win32_process where name="explorer.exe" call terminate
+powershell finds=stop_system | wmic path Win32_Process where "name='explorer.exe'" delete
+powershell finds=stop_system | wmic PATH win32_process delete
+powershell finds=stop_system | wmic path cim_process delete
+powershell finds=stop_system | wmic path win32_process where processid=0 call terminate
+powershell finds=stop_unknown | wmic path win32_process where "name like '%node%'" call terminate
+powershell finds=unknown | wmic path win32_process call create "notepad.exe"
+# A variable in PowerShell.
+powershell safe | wmic process get name
+powershell finds=stop_unknown | wmic process where name=$n call terminate
+powershell finds=stop_unknown | wmic process where name=$n delete
+powershell finds=stop_unknown | wmic process where name="$n" call terminate
+powershell finds=stop_unknown | wmic process where name=$env:P call terminate
+powershell finds=stop_unknown | wmic process where processid=$id call terminate
+powershell finds=stop_unknown | wmic process where name=$($n) call terminate
+powershell finds=stop_unknown | wmic path win32_process where name=$n call terminate
+# A character of the name in cmd.
+cmd safe | wmic process where name=$n call terminate
+
+# A `Where-Object` name pattern (`-like`, `-match`) is read like a wildcard
+# around it. `-match` takes a .NET expression, read only in the subset it
+# shares with POSIX's: a lookaround, an inline option or comment, an escape
+# that spells a character (`\x6f`, `\157`, `\cO`), a Unicode class
+# (`\p{L}`), a named backreference, a backslash inside `[...]` (.NET reads
+# `[\]o]` as the set `]` and `o`; POSIX closes the set at the first `]`), and
+# a letter that is not ASCII (.NET ignores case by the current culture, so
+# `İ` and `ſ` can stand for `i` and `s`) are not read, so the filter is one
+# only known when it runs. (`\uXXXX` goes the same way, by the same code
+# path.)
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.ProcessName -imatch 'vite' } | Stop-Process -Force
+powershell safe | Get-Process | Where-Object { $_.Name -cmatch "node" } | Stop-Process
+powershell safe | Get-Process | ? { $_.Name -match 'node' } | Stop-Process
+powershell safe | Get-Process | Where-Object Name -match node | Stop-Process
+powershell safe | Get-Process | Where-Object -Property Name -Match -Value 'node' | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node|vite' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node' } | ForEach-Object { $_.Kill() }
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node' }
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node\\d*' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node\\.exe' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match '^node\\b' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match '^vite\\w*$' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node\\\\n' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node[0-9]+' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match '^[nN]ode$' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'no[d]e' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'no[^x]e\\.exe' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node\\[a' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'a/b' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node/?x' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match '^*node' } | Stop-Process
+powershell safe | Get-Process | Where-Object { $_.Name -match 'node$?' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'explorer' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'node|explorer' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'svc' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match '.*' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match '' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match '^' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'x|.*$|' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'a*' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match '\\w' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match '(' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match $pattern } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match "$dir" } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -notmatch 'node' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.CPU -match 'node' } | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match 'explorer' } | ForEach-Object { $_.Kill() }
+powershell finds=stop_system | Get-Process | Where-Object Name -match explorer | Stop-Process
+powershell finds=stop_system | Get-Process | Where-Object { $_.Name -match @('/?explorer') } | Stop-Process
+# Lookarounds.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node)' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node).*' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node$).+' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object Name -match '^(?!(node|vite)$)' | Stop-Process
+powershell finds=stop_unknown | Get-Process | ? { $_.Name -match '(?!x)' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where { $_.Name -match '(?!x)' } | kill
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?=e)' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?<!x)e' } | Stop-Process
+# Inline options, comments and conditionals.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?x) e x p l o r e r' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?x)expl orer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?i:EXPLORER)' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?#node)' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'node(?(x)|)' } | Stop-Process
+# Escapes that spell out a character.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl\\x6frer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'ex\\x70lorer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'lsas\\x73' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'explor\\x65r' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl\\157rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl\\0157rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl\\cOrer' } | Stop-Process
+# Unicode classes.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '\\p{L}' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '\\p{L}+' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '\\P{N}' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object -Property Name -Match -Value '\\p{L}' | Stop-Process
+# Named backreferences.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\\k<n>r' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '(?<n>e)xplor\\k{n}r' } | Stop-Process
+# The same filters in front of a method that stops them.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % Kill
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node)' } | % { $_.Kill() }
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^(?!node)' } | ForEach-Object { $_.Kill() }
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -imatch 'expl\\x6frer' } | % Kill
+# A backslash in a bracket expression.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '[\\]a-z]' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '^[\\]a-z]+$' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'ls[\\]a]ss' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[\\]o]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[o\\]]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[^\\]x]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[n-p\\]]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'node|expl[\\]o]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object Name -match 'expl[\\]o]rer' | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[]\\]o]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'expl[^]\\]x]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '[[:alpha:]\\]o]rer' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '[\\]a-z]' } | % Kill
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match '[\\]a-z]' } | ForEach-Object { $_.Kill() }
+powershell finds=stop_unknown | Get-Process | Where { $_.Name -match '[\\]a-z]' } | kill
+# A letter that is not ASCII.
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'İnit' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'İ' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'lſass' } | Stop-Process
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'wİnlogon' } | % Kill
+powershell finds=stop_unknown | Get-Process | Where-Object { $_.Name -match 'İ' } | ForEach-Object { $_.Kill() }
+powershell finds=stop_unknown | Get-Process | Where-Object Name -match 'İnit' | Stop-Process
+
+# An id, a name, a listing, an object or a filter the guard cannot read is
+# `stop_unknown` and never `stop_system`; a certain stop is `stop_system` and
+# never `stop_unknown`.
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -Id $id
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -InputObject $p
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -Name $n
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -Id (Get-Content app.pid)
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess
+powershell finds=stop_unknown lacks=stop_system | kill $id
+powershell finds=stop_unknown lacks=stop_system | taskkill /F /PID $id
+powershell finds=stop_unknown lacks=stop_system | taskkill /IM $n
+powershell finds=stop_unknown lacks=stop_system | taskkill /F /FI "PID eq $id"
+powershell finds=stop_unknown lacks=stop_system | tskill $n
+powershell finds=stop_unknown lacks=stop_system | $p.Kill()
+powershell finds=stop_unknown lacks=stop_system | (Get-Process node).Parent.Kill()
+powershell finds=stop_unknown lacks=stop_system | Get-Process | Where-Object CPU -gt 100 | Stop-Process
+powershell finds=stop_unknown lacks=stop_system | Get-Process | Select-Object -First 1 | Stop-Process
+powershell finds=stop_unknown lacks=stop_system | Get-Process | Where-Object { $_.Name -notmatch 'node' } | Stop-Process
+powershell finds=stop_unknown lacks=stop_system | Get-Process | Where-Object { $_.Name -match $p } | Stop-Process
+powershell finds=stop_unknown lacks=stop_system | Get-Process | Where-Object { $_.Name -match '^(?!node)' } | Stop-Process
+powershell finds=stop_unknown lacks=stop_system | Stop-Process -InputObject (Get-Process node).Parent
+powershell finds=stop_unknown lacks=stop_system | Invoke-CimMethod -MethodName Terminate
+powershell finds=stop_unknown lacks=stop_system | wmic process where name=$n call terminate
+powershell finds=stop_unknown lacks=stop_system | wmic process where name like 'n%' call terminate
+cmd finds=stop_unknown lacks=stop_system | tskill %n%
+cmd finds=stop_unknown lacks=stop_system | tskill %id% /a
+cmd finds=stop_unknown lacks=stop_system | taskkill /PID %p%
+powershell finds=stop_system lacks=stop_unknown | Stop-Process -Id 0
+powershell finds=stop_system lacks=stop_unknown | Stop-Process -Id 1
+powershell finds=stop_system lacks=stop_unknown | Stop-Process -Name explorer
+powershell finds=stop_system lacks=stop_unknown | Stop-Process -Name *
+powershell finds=stop_system lacks=stop_unknown | Get-Process | Stop-Process
+powershell finds=stop_system lacks=stop_unknown | Get-Process | Where-Object { $_.Name -match 'explorer' } | Stop-Process
+powershell finds=stop_system lacks=stop_unknown | Get-Process | Where-Object { $_.Name -match '.*' } | Stop-Process
+powershell finds=stop_system lacks=stop_unknown | taskkill /IM *
+powershell finds=stop_system lacks=stop_unknown | taskkill /PID 1
+powershell finds=stop_system lacks=stop_unknown | taskkill /IM explorer.exe
+powershell finds=stop_system lacks=stop_unknown | taskkill /F /FI "USERNAME eq me"
+powershell finds=stop_system lacks=stop_unknown | taskkill /F /FI "STATUS eq RUNNING"
+powershell finds=stop_system lacks=stop_unknown | tskill explorer
+powershell finds=stop_system lacks=stop_unknown | tskill 0
+powershell finds=stop_system lacks=stop_unknown | wmic process call terminate
+powershell finds=stop_system lacks=stop_unknown | wmic process where name="explorer.exe" call terminate
+cmd finds=stop_system lacks=stop_unknown | taskkill /IM *
+cmd finds=stop_system lacks=stop_unknown | taskkill /PID 1
+cmd finds=stop_system lacks=stop_unknown | tskill explorer
+
+# The rules give a reason a prompt can show.
+powershell finds=stop_system reason="stops every process" | Stop-Process -InputObject (Get-Process)
+powershell finds=stop_system reason="stops every process" | Get-Process | % { Stop-Process -Id $_.Id }
+powershell finds=stop_unknown reason="stops processes picked by a filter only known when it runs" | Stop-Process -Id (Get-Process | Where-Object CPU -gt 1).Id
+powershell finds=stop_unknown reason="stops processes picked by a filter only known when it runs" | Get-Process | Where-Object { $_.CPU -gt 100 } | Stop-Process
+powershell finds=stop_unknown reason="stops processes picked by a filter only known when it runs" | Get-Process | Select-Object -First 1 | Stop-Process
+powershell finds=stop_unknown reason="stops processes only known when it runs" | Get-Process | ForEach-Object { $_ } | Stop-Process
+powershell finds=stop_system reason="stops a process the system needs" | Get-Process | Where-Object { $_.Name -eq 'explorer' } | Stop-Process
+powershell finds=stop_system reason="stops every process" | Get-Process | Stop-Process
+powershell finds=stop_system reason="stops every process a filter picks" | taskkill /F /FI "PID gt 0"

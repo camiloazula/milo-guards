@@ -1,0 +1,135 @@
+# `Resolver::picks_secret`: which keys and credentials a pattern can name. A
+# pattern is read by the folder before its first wildcard part and by what
+# its parts can match below, as a protected path is; a part is matched
+# against each secret place's names one for one. `hidden` says a wildcard
+# matches a leading dot (`dotglob`).
+
+# A pattern that can name a key picks it.
+posix picks="your SSH keys" | /home/me/.s*/id_rsa
+posix picks="your SSH keys" | /home/me/.ss?/id_rsa
+posix picks="your SSH keys" | /home/me/.[s]sh/id_rsa
+posix picks="your SSH keys" | /home/me/.ssh/id_*
+posix picks="your SSH keys" | /home/me/.ssh/*
+posix picks="your SSH keys" | /home/me/.ssh/**
+posix picks="your SSH keys" | /home/me/.s*
+posix picks="your SSH keys" | /home/me/.*
+posix picks="your saved logins" | /home/me/.*rc
+posix picks="your AWS credentials" | /home/me/.aw*/credentials
+posix picks="your GitHub login" | /home/me/.config/g*/hosts.yml
+posix picks="your SSH keys" | /home/me/.*/id_rsa
+posix picks="the system's password hashes" | /etc/sh*dow
+posix picks="the system's password hashes" | /etc/shad?w
+posix picks="the system's SSH keys" | /etc/ssh/ssh_host_*_key
+posix picks="the system's private keys" | /etc/ssl/priv*/x.key
+posix picks="the system's password hashes" | /e*/shadow
+posix picks="your SSH keys" | /home/*/.ssh/id_rsa
+posix picks="your SSH keys" | /home/al*/.ssh/id_rsa
+posix picks="your SSH keys" | /home/alice/.s*/id_rsa
+posix picks="your AWS credentials" | /home/*/.aws/credentials
+posix picks="your SSH keys" | /h*/*/.ssh
+posix picks="your SSH keys" | /root/.s*/id_rsa
+posix picks="your SSH keys" | /ro*/.ssh/id_rsa
+posix picks="your SSH keys" | /var/root/.ss*/id_rsa
+posix picks="your SSH keys" | /home/me/../me/.s*/id_rsa
+posix picks="your SSH keys" | /home/me/x/../.s*/id_rsa
+posix picks="your SSH keys" | /home/me/.SS?/ID_RSA
+posix picks="the container's secrets" | /run/secrets/*
+posix picks="your GitHub login" | /home/me/.config/*
+posix picks="the system's password hashes" | /etc/*
+# A pattern that names no hidden entry does not match one without `dotglob`.
+posix picks=none | /home/me/*
+posix picks=none | /home/me/*/x
+posix picks=none | /home/me/*.txt
+posix picks=none | /home/me/work/*.rs
+posix picks=none | /home/me/work/*/id_rsa
+posix picks=none | /home/me/*/id_rsa
+# A name is matched whole.
+posix picks=none | /home/me/.sshx/*
+posix picks=none | /home/me/.ssh2/*
+posix picks=none | /home/me/.s*x/id_rsa
+posix picks=none | /home/me/.aw??/credentials
+posix picks=none | /home/me/.aws2*/x
+# A part that is a startup file or the history is not a secret.
+posix picks=none | /home/me/.zsh*
+posix picks=none | /home/me/.bash*
+posix picks=none | /home/me/.gitconf*
+posix picks=none | /home/me/.zshr?
+# A pattern that only stops at a folder holding a secret reads that folder's
+# name.
+posix picks=none | /home/*
+posix picks=none | /h*
+posix picks=none | /home/me/.conf*
+posix picks=none | /et?/ho*
+posix picks=none | /etc/host*
+posix picks=none | /usr/*/x
+# A path with no wildcard is for `place`.
+posix picks=none | /home/me/.ssh/id_rsa
+posix picks=none | /etc/shadow
+posix picks=none | /home/me/work
+posix picks=none | /tmp/*.log
+
+# A pattern in the workspace is the agent's, unless it holds the keys.
+posix picks=none | /home/me/work/repo/.s*/id_rsa
+posix picks=none | /home/me/work/repo/*/x
+posix picks=none | /home/me/work/repo/.*
+# The home directory as the workspace holds its keys.
+paths home cwd=/home/me home=/home/me workspace=/home/me
+posix@home picks="your SSH keys" | /home/me/.s*/id_rsa
+posix@home picks=none | /home/me/src/*
+
+# A wildcard that matches a leading dot picks what a dot picks: `dotglob`
+# (or `globdots`, or `GLOBIGNORE`) lets `*` match `.ssh`.
+posix hidden picks="your SSH keys" | /home/me/*
+posix hidden picks="your SSH keys" | /home/me/*/id_rsa
+posix hidden picks="your SSH keys" | /home/me/?ssh/*
+posix hidden picks="the system's password hashes" | /etc/*
+posix hidden picks=none | /home/me/*.txt
+posix hidden picks=none | /home/me/work/*.rs
+posix hidden picks=none | /home/me/x*
+
+# A Windows wildcard matches a leading dot as it is.
+windows picks="your SSH keys" | C:\\Users\\me\\.s*\\id_rsa
+windows picks="your SSH keys" | C:\\Users\\me\\.ssh\\*
+windows picks="your SSH keys" | C:\\Users\\me\\*
+windows picks="your SSH keys" | C:\\Users\\me\\*\\id_rsa
+windows picks="your SSH keys" | C:\\Users\\me\\.*
+windows picks="your SSH keys" | c:\\users\\me\\.SS?\\id_rsa
+windows picks="your SSH keys" | C:\\Users\\me\\SSH~*\\id_rsa
+windows picks="your saved Windows logins" | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Cred*\\x
+windows picks="your saved Windows logins" | C:\\Users\\me\\AppData\\*\\Microsoft\\Credentials\\x
+windows picks="your SSH keys" | C:\\Users\\*\\.ssh\\id_rsa
+windows picks="your AWS credentials" | C:\\Users\\*\\.aws\\*
+windows picks="the Windows account database" | C:\\Windows\\System32\\config\\S*
+windows picks="the Windows account database" | C:\\Windows\\Sys*\\config\\SAM
+windows picks="the Windows account database" | C:\\Win*\\repair\\sam
+windows picks="your SSH keys" | \\\\?\\C:\\Users\\me\\.s*\\id_rsa
+windows picks=none | C:\\Users\\me\\*.txt
+windows picks=none | C:\\Users\\me\\Documents\\*
+windows picks=none | C:\\Users\\me\\dev\\repo\\*
+windows picks=none | C:\\Users\\me\\.zsh*
+windows picks=none | C:\\Windows\\System32\\drivers\\*
+windows picks=none | C:\\Windows\\*.log
+windows picks=none | C:\\Users\\Public\\Documents\\*.txt
+
+# A path known only when it runs picks nothing: a drive's own working
+# directory on a drive the working directory is not on.
+windows picks=none | D:.s*\\id_rsa
+windows picks=none |
+
+# A part that can match `..` is read as `.` and `..` too: an old shell
+# (bash 3.2, dash) matches `.*` and `.?` against `..`.
+posix place="secret:your SSH keys" | /home/me/work/repo/.*/.*/.ssh/id_rsa
+posix place="secret:your AWS credentials" | /home/me/work/repo/.?/.?/.aws/credentials
+posix place="secret:your SSH keys" | /home/me/work/repo/.[.]/.[.]/.ssh
+posix place="secret:your SSH keys" | /home/me/work/repo/.[!a]/.[!a]/.ssh/id_rsa
+posix place="secret:your SSH keys" | /home/me/work/repo/.*/../.ssh/id_rsa
+# One climb is not two, and a name that cannot be `..` does not climb: what
+# such a pattern can pick is a hidden file of the workspace.
+posix place="history:a hidden file such as the repository's history" | /home/me/work/repo/.*/.ssh/id_rsa
+posix place="history:a hidden file such as the repository's history" | /home/me/work/repo/.*rc
+posix place="history:a hidden file such as the repository's history" | /home/me/work/repo/*/.*/.ssh/id_rsa
+posix place="history:a hidden file such as the repository's history" | /home/me/work/repo/.git*/.*/.ssh/id_rsa
+# A pattern still picks by name after a climb.
+posix picks="your SSH keys" | /home/me/work/repo/.*/.*/.s*/id_rsa
+# PowerShell and cmd wildcards do not climb.
+windows place="history:a hidden file such as the repository's history" | C:\\Users\\me\\dev\\repo\\.*\\.*\\.ssh\\id_rsa

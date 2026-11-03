@@ -1,0 +1,149 @@
+# zsh's precommand modifiers and `coproc` run the command after them, so that
+# command is judged like one that stands alone, and decides the line's
+# effect. A modifier turns zsh's own flags off, never bash's. The format is in
+# CONTRIBUTING.md.
+
+# A modifier or coproc does not hide the command it runs. The command after a
+# modifier or `coproc` is read where the shell runs it: past the name, the `{`
+# words, `NAME=value` words and `!`. The loop, conditional and function forms
+# are cut up by the grammar with the body behind a program named `do`, `then`
+# or `{`, zsh reads a `{` stuck to a word as a group where the grammar reads
+# `{rm` as a program, and the grammar takes the words after a redirect's
+# target for more targets: none of these can be read.
+posix safe | noglob ls *.txt
+posix safe | nocorrect ls -la
+posix safe | - ls
+posix safe | coproc cat
+posix safe | coproc { ls; }
+posix safe | coproc NAME { ls *.txt; }
+posix safe | noglob git status
+posix safe | coproc cat < notes.txt
+posix safe | coproc
+posix safe | noglob
+posix safe | coproc NAME cat
+# The program inside a group.
+posix safe | coproc { { ls; }; }
+posix safe | coproc NAME { { ls; }; }
+posix safe | coproc { FOO=1 ls; }
+posix safe | coproc { ! ls; }
+posix safe | coproc NAME { ! ls; }
+posix safe | coproc FOO=1 ls
+posix safe | coproc { > out; ls; }
+posix finds=delete | noglob rm -rf ~
+posix finds=delete | nocorrect rm -rf ~
+posix finds=delete | - rm -rf ~
+posix finds=delete | noglob nocorrect rm -rf ~
+posix finds=delete | noglob - rm -rf ~
+posix finds=delete | coproc rm -rf ~
+posix finds=delete | coproc { rm -rf ~; }
+posix finds=delete | coproc NAME { rm -rf ~; }
+posix finds=delete | coproc {\n rm -rf ~\n}
+posix finds=delete | coproc NAME { cd ~; rm -rf x; }
+posix finds=delete | coproc { rm -rf ~; } 2>&1
+posix finds=delete | coproc ( rm -rf ~ )
+posix finds=delete | sudo noglob rm -rf ~
+posix finds=elevated | coproc sudo rm -rf ~
+posix finds=delete | noglob rm -rf ~ && ls
+posix finds=delete | echo hi | coproc rm -rf ~
+posix finds=unknown | coproc { $CMD; }
+posix finds=unknown | noglob $CMD
+# A compound command after `coproc`.
+posix finds=unreadable | coproc while true; do rm -rf ~; done
+posix finds=unreadable | coproc NAME while true; do rm -rf ~; done
+posix finds=unreadable | coproc until false; do rm -rf ~; done
+posix finds=unreadable | coproc if true; then rm -rf ~; fi
+posix finds=unreadable | coproc for i in 1; do rm -rf ~; done
+posix finds=unreadable | coproc NAME for i in 1; do rm -rf ~; done
+posix finds=unreadable | coproc case x in x) rm -rf ~;; esac
+posix finds=unreadable | coproc function f { rm -rf ~; }
+# The program inside a group, and a compound command there.
+posix finds=unreadable | coproc NAME { while true; do rm -rf ~; done; }
+posix finds=unreadable | coproc NAME { if true; then rm -rf ~; fi; }
+posix finds=unreadable | coproc NAME { for i in 1; do rm -rf ~; done; }
+posix finds=unreadable | coproc { { while true; do rm -rf ~; done; }; }
+posix finds=unreadable | coproc { ! while true; do rm -rf ~; done; }
+posix finds=delete | coproc { { rm -rf ~; }; }
+posix finds=delete | coproc NAME { { rm -rf ~; }; }
+posix finds=delete | coproc { { { rm -rf ~; }; }; }
+# Braces stuck to a word.
+posix finds=unreadable | coproc {rm -rf ~;}
+posix finds=unreadable | coproc {{rm -rf ~;};}
+posix finds=unreadable | coproc NAME {rm -rf ~;}
+posix finds=delete | coproc { {rm -rf ~;}; }
+posix finds=unreadable | coproc {ls;}
+# Assignments and a bang before the command, as without `coproc`.
+posix finds=delete | coproc FOO=1 rm -rf ~
+posix finds=delete | coproc A=1 B=2 rm -rf ~
+posix finds=delete | coproc PATH=/x rm -rf ~
+posix finds=delete | coproc FOO+=1 rm -rf ~
+posix finds=delete | coproc FOO=1 { rm -rf ~; }
+posix finds=delete | coproc ! rm -rf ~
+posix finds=delete | coproc { FOO=1 rm -rf ~; }
+posix finds=delete | coproc { ! rm -rf ~; }
+posix finds=delete | coproc { FOO=1 BAR=2 ! rm -rf ~; }
+posix finds=delete | coproc { FOO=1 { rm -rf ~; }; }
+posix finds=delete | coproc NAME { ! rm -rf ~; }
+posix finds=delete | coproc NAME { FOO=1 rm -rf ~; }
+posix finds=elevated | coproc FOO=1 sudo rm -rf ~
+posix finds=unknown | coproc $X=1 rm -rf ~
+posix finds=delete | coproc GLOBIGNORE=x bash -c 'rm -rf *git'
+# A command after a redirect.
+posix finds=unreadable | coproc { 2>/dev/null rm -rf ~; }
+posix finds=unreadable | coproc { > out rm -rf ~; }
+posix finds=unreadable | coproc { < in rm -rf ~; }
+posix finds=unreadable | coproc { 2>&1 rm -rf ~; }
+posix finds=unreadable | coproc NAME { 2>/dev/null rm -rf ~; }
+posix finds=unreadable | coproc NAME { > out rm -rf ~; }
+posix finds=unreadable | coproc > out rm -rf ~
+posix finds=unreadable | coproc 2>/dev/null rm -rf ~
+
+# What they run decides the effect; an assignment in front of the command is
+# a variable set, as it is without `coproc`.
+posix effect=reads_workspace | noglob ls *.txt
+posix effect=reads_workspace | nocorrect ls
+posix effect=reads_workspace | - ls
+posix effect=reads_workspace | coproc cat
+posix effect=reads_workspace | coproc LANG=C ls
+posix effect=changes | noglob rm -rf ~
+posix effect=changes | - rm -rf ~
+posix effect=changes | coproc rm -rf ~
+posix effect=changes | coproc { rm -rf ~; }
+posix effect=changes | coproc LANG=C rm -rf ~
+posix effect=changes | coproc { { rm -rf ~; }; }
+posix effect=unknown | noglob $CMD
+posix effect=unknown | coproc PATH=/x ls
+posix effect=unknown | coproc FOO=1 ls
+posix effect=unknown | coproc NAME { PATH=/x ls; }
+
+# A zsh modifier turns zsh's flag off and never bash's. `noglob`, `nocorrect`
+# and `-` are zsh's modifiers: in bash and sh they are not found, so the
+# builtin after them never runs and bash's flag stays on. zsh's own flag does
+# go off.
+posix safe | setopt globdots; noglob unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; nocorrect unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; - unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; time noglob unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; builtin noglob unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; time nocorrect unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; nocorrect nocorrect unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; noglob - unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; - noglob unsetopt globdots; rm -rf *git
+posix safe | setopt globdots; builtin - unsetopt globdots; rm -rf *git
+# `nocorrect` is a reserved word: after any wrapper but a leading `time` or
+# `nocorrect` zsh does not find it and the flag stays on.
+posix finds=delete | setopt globdots; noglob nocorrect unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; - nocorrect unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; builtin nocorrect unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; builtin - nocorrect unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; time builtin nocorrect unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; noglob command unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; command unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; nocorrect command unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; command noglob unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; noglob time unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; nocorrect time unsetopt globdots; rm -rf *git
+posix finds=delete | setopt globdots; - time unsetopt globdots; rm -rf *git
+posix finds=delete | shopt -s dotglob; noglob shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; nocorrect shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; - shopt -u dotglob; rm -rf *git
+posix finds=delete | shopt -s dotglob; noglob command shopt -u dotglob; rm -rf *git

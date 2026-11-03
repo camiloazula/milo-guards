@@ -1,0 +1,616 @@
+# What the path model says about keys, credentials and the paths that reach
+# them by another spelling (`Resolver::place`, and `kernel`, `git` and
+# `spelling::network`): the kind of a sensitive place, names without case,
+# Windows short names, other users' homes, long paths and drive-relative
+# paths. Each case is a spelling a review could try.
+
+# A sensitive place says what touching it means.
+posix place="secret:your SSH keys" | /home/me/.ssh/id_ed25519
+posix place="secret:your AWS credentials" | /home/me/.aws/credentials
+posix place="secret:your saved logins" | /home/me/.netrc
+posix place="secret:your npm login" | /home/me/.npmrc
+posix place="secret:your GitHub login" | /home/me/.config/gh/hosts.yml
+posix place="startup:a shell startup file" | /home/me/.zshrc
+posix place="startup:a shell startup file" | /home/me/.bashrc
+posix place="startup:your git settings" | /home/me/.gitconfig
+posix place="startup:the programs your desktop starts at login" | /home/me/.config/autostart/x.desktop
+posix place="history:the repository's history" | .git/config
+posix place="history:the repository's history" | .git
+# Only what is listed: the name beside it is not.
+posix place=outside | /home/me/.sshx/id
+posix place=outside | /home/me/.configx/gh/x
+posix place=outside | /home/me/.config/other
+posix place=outside | /home/me/.zshrc.bak
+
+# Names compare without case on every host.
+posix place="secret:your SSH keys" | /home/me/.SSH/ID_RSA
+posix place="secret:your AWS credentials" | /home/me/.Aws/credentials
+posix place="startup:a shell startup file" | /home/me/.ZSHRC
+posix place="secret:your SSH keys" | /HOME/ME/.ssh/id_rsa
+posix place="secret:your GitHub login" | /home/me/.Config/GH/hosts.yml
+posix place="secret:the system's password hashes" | /ETC/SHADOW
+# The folders the home directory sits in, and the home itself, are the home
+# however they are cased.
+posix place=home | /HOME/ME
+posix place=holds_home | /HOME
+posix@macos place="secret:your SSH keys" | /users/me/.ssh/id_rsa
+posix@macos place="secret:your keychains" | /USERS/ME/Library/keychains/x
+# A file system that ignores case reads these characters as an `s` and a
+# `k`: the long s, and the Kelvin sign.
+posix place="secret:your SSH keys" | /home/me/.\u{17f}sh/id_rsa
+posix place="secret:your Kubernetes credentials" | /home/me/.\u{212a}ube/config
+# What is not the home or a sensitive place is not made one by case: a folder
+# the workspace lies in is compared as it is spelled.
+posix place=outside | /HOME/me/work/repo/x
+
+# A Windows short name is the name it shortens, here in a home directory
+# whose name is longer than a short name.
+paths camilo cwd="C:\\Users\\Camilo Azula\\dev\\repo" home="C:\\Users\\Camilo Azula" workspace="C:\\Users\\Camilo Azula\\dev\\repo"
+windows@camilo place="secret:your SSH keys" | C:\\Users\\Camilo Azula\\.ssh\\id_rsa
+# The home directory by its short name.
+windows@camilo place="secret:your SSH keys" | C:\\Users\\CAMILO~1\\.ssh\\id_rsa
+windows@camilo place="secret:your SSH keys" | C:\\Users\\camilo~1\\.SSH\\id_rsa
+# The folder by its short name too (`.ssh` has none of its own: Windows makes
+# `SSH~1`).
+windows@camilo place="secret:your SSH keys" | C:\\Users\\CAMILO~1\\SSH~1\\id_rsa
+windows@camilo place="secret:your AWS credentials" | C:\\Users\\Camilo Azula\\AWS~1\\credentials
+windows@camilo place="startup:a shell startup file" | C:\\Users\\Camilo Azula\\BASHRC~1
+windows@camilo place=home | C:\\Users\\CAMILO~1
+windows@camilo place=outside | C:\\Users\\CAMILO~1\\notes.txt
+windows@camilo place=outside | C:\\Users\\CAMILO~1\\.sshx\\id
+# A name that is no short name of the home is another user's.
+windows@camilo place="secret:your SSH keys" | C:\\Users\\CAMIL~1\\.ssh\\id_rsa
+windows@camilo place=outside | C:\\Users\\CAMIL~1\\notes.txt
+windows@camilo place=outside | C:\\Users\\CAMILO~1\\SSH~X\\id_rsa
+# A POSIX name has no short form.
+posix place=outside | /home/me/SSH~1/id_rsa
+
+# A workspace that holds a key does not make it the agent's. The home
+# directory is the workspace.
+paths home cwd=/home/me home=/home/me workspace=/home/me
+posix@home place="secret:your SSH keys" | .ssh/id_rsa
+posix@home place="secret:your AWS credentials" | /home/me/.aws/credentials
+posix@home place="startup:a shell startup file" | .zshrc
+posix@home place="history:the repository's history" | .git/config
+posix@home place=inside | src/main.rs
+posix@home place=inside | .sshx/id
+# A folder above the home directory is the workspace.
+paths above cwd=/home home=/home/me workspace=/home
+posix@above place="secret:your SSH keys" | me/.ssh/id_rsa
+posix@above place="secret:your SSH keys" | other/.ssh/id_rsa
+posix@above place=inside | other/notes.txt
+# The other user's home directory is the workspace.
+paths other cwd=/home/other home=/home/me workspace=/home/other
+posix@other place="secret:your SSH keys" | .ssh/id_rsa
+posix@other place=inside | src/x.rs
+# A workspace inside a sensitive folder keeps what is inside it.
+paths docker cwd=/home/me/.docker/proj home=/home/me workspace=/home/me/.docker/proj
+posix@docker place=inside | src/x.rs
+posix@docker place="secret:your Docker credentials" | /home/me/.docker/config.json
+# On Windows the same, by short names and with a different case.
+paths camilo_home cwd="C:\\Users\\Camilo Azula" home="C:\\Users\\Camilo Azula" workspace="C:\\Users\\Camilo Azula"
+windows@camilo_home place="secret:your SSH keys" | .ssh\\id_rsa
+windows@camilo_home place="secret:your SSH keys" | SSH~1\\id_rsa
+windows@camilo_home place="secret:your SSH keys" | C:\\USERS\\CAMILO~1\\.SSH\\id_rsa
+windows@camilo_home place=inside | src\\x.rs
+# A workspace spelled with another case than the home still holds it.
+paths cased cwd=/Users/ME home=/Users/me workspace=/Users/ME
+posix@cased place="secret:your SSH keys" | .ssh/id_rsa
+
+# Another user's home has the same keys.
+posix place="secret:your SSH keys" | /home/other/.ssh/id_rsa
+posix place="secret:your SSH keys" | /home/OTHER/.SSH/id_rsa
+posix place="secret:your AWS credentials" | ../../../other/.aws/credentials
+posix place="startup:a shell startup file" | /home/other/.zshrc
+posix place=outside | /home/other/notes.txt
+posix place="secret:your SSH keys" | /root/.ssh/id_rsa
+posix place="startup:a shell startup file" | /root/.bashrc
+posix place="secret:your SSH keys" | /var/root/.ssh/id_rsa
+posix place="secret:your SSH keys" | /private/var/root/.ssh/id_rsa
+posix place="top:a system folder" | /root/notes
+posix@macos place="secret:your SSH keys" | /Users/other/.ssh/id_rsa
+posix@macos place="secret:your SSH keys" | /Users/Shared/.ssh/id_rsa
+posix@macos place="secret:your keychains" | /Users/other/Library/Keychains/login.keychain-db
+posix@macos place=outside | /Users/other/Documents/x
+windows place="secret:your SSH keys" | C:\\Users\\other\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | C:\\Users\\OTHER\\.SSH\\ID_RSA
+windows place="secret:your SSH keys" | C:\\Users\\OTHER~1\\SSH~1\\id_rsa
+windows place=outside | C:\\Users\\other\\notes.txt
+
+# The system's own secrets are secrets.
+posix place="secret:the system's password hashes" | /etc/shadow
+posix place="secret:the system's password hashes" | /etc/gshadow
+posix place="secret:the system's SSH keys" | /etc/ssh/ssh_host_ed25519_key
+posix place="secret:the system's private keys" | /etc/ssl/private/key.pem
+posix place="secret:your WireGuard keys" | /etc/wireguard/wg0.conf
+posix place="secret:the system's password hashes" | /private/etc/master.passwd
+posix place="secret:the system's password hashes" | /private/var/db/dslocal/nodes/Default/users/me.plist
+posix place="top:a system folder" | /etc/hosts
+posix place="top:a system folder" | /etc/passwd
+posix place="top:a system folder" | /etc/shadowx
+posix place="top:a system folder" | /etc/ssl/certs/ca.pem
+windows place="secret:the Windows account database" | C:\\Windows\\System32\\config\\SAM
+windows place="secret:the Windows account database" | c:\\windows\\system32\\config\\sam
+windows place="secret:the system's SSH keys" | C:\\ProgramData\\ssh\\ssh_host_rsa_key
+windows place="top:a system folder" | C:\\Windows\\System32\\drivers\\etc\\hosts
+
+# The data volume is the root on a Mac.
+posix@macos place="secret:your SSH keys" | /System/Volumes/Data/Users/me/.ssh/id_rsa
+posix@macos place=inside | /system/volumes/data/Users/me/dev/repo/x
+posix@macos place="secret:the system's password hashes" | /System/Volumes/Data/private/etc/shadow
+posix@macos place=home | /System/Volumes/Data/Users/me
+
+# A long path is the drive or share it names.
+windows place="secret:your SSH keys" | \\\\?\\C:\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\?\\c:\\users\\me\\.SSH\\id_rsa
+windows place="secret:your SSH keys" | //?/C:/Users/me/.ssh/id_rsa
+windows place="secret:your SSH keys" | \\/?\\C:\\Users\\me\\.ssh\\id_rsa
+windows place=inside | \\\\?\\C:\\Users\\me\\dev\\repo\\src\\x.rs
+windows place="history:the repository's history" | \\\\?\\C:\\Users\\me\\dev\\repo\\.git\\config
+windows place=home | \\\\?\\C:\\Users\\me
+windows place="top:the root of the disk" | \\\\?\\C:\\
+windows place="top:the root of the disk" | \\\\?\\C:
+windows place=outside | \\\\?\\D:\\x\\y
+windows place=outside | \\\\?\\UNC\\srv\\share\\x\\y
+windows place=outside | \\\\?\\unc\\srv\\share\\x\\y
+# No drive and no share: a namespace of its own.
+windows place=disk | \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\.ssh\\id_rsa
+windows place=disk | \\\\?\\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\\Users\\me\\x
+windows place=disk | \\\\?\\C:x
+windows place=disk | \\\\?\\UNC
+windows place=disk | \\\\?\\UNC\\
+windows place=disk | \\\\?\\
+windows place=disk | \\\\.\\C:\\Users\\me\\.ssh\\id_rsa
+windows place=disk | //./C:/Users/me/.ssh/id_rsa
+windows place=disk | \\/.\\C:\\Users\\me\\.ssh\\id_rsa
+windows place=disk | \\\\.\\PhysicalDrive0
+# The folders the caller names may be spelled as a long path too: a canonical
+# path on Windows has the prefix.
+paths verbatim cwd=\\\\?\\C:\\Users\\me\\dev\\repo home=\\\\?\\C:\\Users\\me workspace=\\\\?\\C:\\Users\\me\\dev\\repo
+windows@verbatim place="secret:your SSH keys" | C:\\Users\\me\\.ssh\\id_rsa
+windows@verbatim place=inside | src\\x.rs
+windows@verbatim place=inside | C:\\Users\\me\\dev\\repo\\src\\x.rs
+windows@verbatim place=inside | \\\\?\\C:\\Users\\me\\dev\\repo\\src\\x.rs
+# A POSIX name may hold a backslash and a question mark: no long path.
+posix place=inside | \\\\?\\C:\\x
+# Wildcards in a long path are read as they are in any other.
+windows place=inside | \\\\?\\C:\\Users\\me\\dev\\repo\\src\\*.rs
+
+# A drive-relative path is from the drive's working directory. On the drive
+# the working directory is on: relative to it.
+windows place=inside | C:x
+windows place=inside | c:src\\x.rs
+windows place="history:the repository's history" | C:.git\\config
+windows place="secret:your SSH keys" | C:..\\..\\.ssh\\id_rsa
+windows place=home | C:..\\..
+windows place=workspace | C:
+windows place=holds_workspace | C:..
+# A drive's root keeps its separator.
+windows place="top:a top-level folder" | C:\\x
+windows place="top:the root of the disk" | C:\\
+windows place="top:the root of the disk" | C:/
+# On any other drive the folder is not known.
+windows place=unknown | D:x
+windows place=unknown | D:
+windows place=unknown | d:..\\..\\x
+windows place=outside | D:\\x\\y
+# A working directory on another drive.
+paths d cwd=D:\\work home=C:\\Users\\me workspace=D:\\work workspace=C:\\Users\\me\\dev\\repo
+windows@d place=inside | D:x
+windows@d place=unknown | C:x
+windows@d place="secret:your SSH keys" | C:\\Users\\me\\.ssh\\id_rsa
+# POSIX has no drives.
+posix place=inside | C:x
+
+# A share is told by its spelling.
+windows network=yes | \\\\server\\share\\x
+windows network=yes | //server/share/x
+windows network=yes | \\\\server
+windows network=yes | \\\\?\\UNC\\server\\share\\x
+windows network=yes | \\\\?\\unc\\server\\share
+windows network=yes | \\\\.\\UNC\\server\\share\\x
+windows network=yes | \\\\.\\\\UNC\\host\\share\\x
+windows network=yes | \\\\.\\.\\UNC\\host\\share\\x
+windows network=yes | //./UNC/server/share/x
+windows network=yes | \\\\?\\GLOBALROOT\\Device\\Mup\\host\\share\\x
+windows network=yes | \\\\.\\GLOBALROOT\\Device\\Mup\\host\\share\\x
+windows network=yes | \\\\*\\share
+windows network=yes | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+windows network=yes | \\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa
+windows network=yes | \\\\?\\..\\x
+windows network=yes | \\\\server\\..\\x
+windows network=no | C:\\x
+windows network=no | \\x
+windows network=no | x
+windows network=no |
+windows network=no | \\\\?\\C:\\x
+windows network=no | \\\\.\\PhysicalDrive0
+windows network=no | \\\\?\\Volume{1}\\x
+windows network=no | \\\\.\\C:\\x
+# On POSIX two separators are one.
+posix network=no | \\\\server\\share\\x
+posix network=no | //server/share/x
+posix network=no | \\\\?\\UNC\\a\\b
+
+# The data volume and the boot volume are the root however the path is
+# spelled: absolute, relative, and from `~`. Every path is made absolute
+# first, and then the links are read.
+posix@macos place="secret:your SSH keys" | /System/Volumes/Data/Users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | ../../../../System/Volumes/Data/Users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | ../../../../../../../../System/Volumes/Data/Users/me/.ssh/id
+posix@macos place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | /volumes/macintosh hd/users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | /VOLUMES/MACINTOSH HD/Users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | /Volumes/Macintosh HD - Data/Users/me/.ssh/id_ed25519
+posix@macos place="secret:your SSH keys" | ../../../../Volumes/Macintosh HD/Users/me/.ssh/id
+# Links to links.
+posix@macos place="secret:your SSH keys" | /Volumes/Macintosh HD/System/Volumes/Data/Users/me/.ssh/id
+posix@macos place="secret:your SSH keys" | /System/Volumes/Data/Volumes/Macintosh HD/Users/me/.ssh/id
+posix@macos place="secret:your SSH keys" | /System/Volumes/Data/System/Volumes/Data/Users/me/.ssh/id
+# The workspace, and the temporary folders, by the same links.
+posix@macos place=inside | /System/Volumes/Data/Users/me/dev/repo/x
+posix@macos place=inside | /Volumes/Macintosh HD/Users/me/dev/repo/x
+posix@macos place=in_temp | ../../../../Volumes/Macintosh HD/tmp/x
+# The links alone are the root, and another volume is not; nothing after the
+# three parts is no data volume path.
+posix@macos place="top:the root of the disk" | /System/Volumes/Data
+posix@macos place="top:the root of the disk" | /Volumes/Macintosh HD
+posix@macos place="top:the root of the disk" | /Volumes/Macintosh HD - Data
+posix@macos place=outside | /Volumes/Backup/Users/me/.ssh/id_rsa
+posix@macos place=outside | /Volumes/Macintosh HD2/Users/me/.ssh/id_rsa
+posix@macos place="top:a top-level folder" | /Volumes
+posix@macos place="top:a system folder" | /System/Volumes/Preboot/x
+# From `~`: the home directory, and `..` out of it to the links.
+posix@macos home place="secret:your SSH keys" | ../../System/Volumes/Data/Users/me/.ssh/id_ed25519
+posix@macos home place="secret:your SSH keys" | ../../system/volumes/data/Users/me/.ssh/id_ed25519
+posix@macos home place="secret:your SSH keys" | ../../Volumes/Macintosh HD/Users/me/.ssh/id_ed25519
+posix@macos home place="secret:your SSH keys" | ../../../../../../System/Volumes/Data/Users/me/.ssh/id_ed25519
+# A working directory at the root: a relative path starts there.
+paths mac_root cwd=/ home=/Users/me workspace=/Users/me/dev/repo
+posix@mac_root place="secret:your SSH keys" | System/Volumes/Data/Users/me/.ssh/id_rsa
+posix@mac_root place="secret:your SSH keys" | Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+posix@mac_root place="secret:your SSH keys" | Users/me/.ssh/id_rsa
+# A Mac's file system folds the long s to `s`: the same folders.
+posix@macos place="secret:your SSH keys" | /Sy\u{17f}tem/Volumes/Data/Users/me/.ssh/id_rsa
+posix@macos place="secret:your SSH keys" | /Volume\u{17f}/Macintosh HD/Users/me/.ssh/id_rsa
+posix@macos place=inside | /Sy\u{17f}tem/Volumes/Data/Users/me/dev/repo/x
+posix@macos place=inside | /Volume\u{17f}/Macinto\u{17f}h HD/Users/me/dev/repo/x
+
+# A Mac's links are the workspace only on a Mac, and a secret on every
+# system. On Linux the paths do not exist, and a write creates folders: they
+# are not the workspace's. Where matching too much fails closed (a key, the
+# home directory, a protected path) the links are dropped on every system,
+# which costs noise: `/Volumes/Macintosh HD/etc/shadow` is a secret on Linux
+# too.
+paths srv cwd=/srv/x home=/srv/x workspace=/srv/x
+posix place=outside | /Volumes/Macintosh HD/home/me/work/repo/x
+posix place="top:a system folder" | /System/Volumes/Data/tmp/x
+posix place="secret:your SSH keys" | /System/Volumes/Data/home/me/.ssh/id_rsa
+posix place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/shadow
+posix place="top:the root of the disk" | /System/Volumes/Data
+posix@srv place=outside | /Volumes/Macintosh HD/home/me/work/repo/x
+posix@srv place="top:a system folder" | /System/Volumes/Data/tmp/x
+posix@srv place="secret:your SSH keys" | /System/Volumes/Data/home/me/.ssh/id_rsa
+posix@srv place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/shadow
+posix@srv place="top:the root of the disk" | /System/Volumes/Data
+posix kernel="a device file" | /System/Volumes/Data/dev/mem
+posix kernel="a device file" | /Volumes/Macintosh HD/dev/mem
+posix@macos kernel="a device file" | /System/Volumes/Data/dev/mem
+posix@macos kernel="a device file" | /Volumes/Macintosh HD/dev/mem
+# A Mac spelled by its data volume is still a Mac.
+paths data cwd=/System/Volumes/Data/Users/me/dev/repo home=/System/Volumes/Data/Users/me workspace=/System/Volumes/Data/Users/me/dev/repo
+posix@data place=inside | /Users/me/dev/repo/x
+posix@data place=inside | x
+posix@data place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+
+# Where matching too much fails closed, the wide fold stays: the home
+# directory, a sensitive place, a protected path and the repository's
+# history (the folds NTFS does not make are held in `sensitive.rs`).
+paths kim cwd=C:\\Users\\Kim\\dev home=C:\\Users\\Kim workspace=C:\\Users\\Kim\\dev
+windows@kim place="secret:your SSH keys" | C:\\Users\\\u{212a}im\\.ssh\\id_rsa
+windows@kim place="secret:your Kubernetes credentials" | C:\\Users\\Kim\\.\u{212a}ube\\config
+windows@kim place=inside | C:\\Users\\Kim\\dev\\.G\u{130}T\\x
+
+# Another user's home is one, whatever this user's home is.
+paths root_repo cwd=/root/repo home=/root workspace=/root/repo
+paths ci cwd=/var/lib/ci/repo home=/var/lib/ci workspace=/var/lib/ci/repo
+paths ci_root cwd=/ci home=/ci workspace=/ci
+posix@root_repo place="secret:your SSH keys" | /home/alice/.ssh/id_rsa
+posix@root_repo place="secret:your SSH keys" | /HOME/Alice/.SSH/id_rsa
+posix@root_repo place="secret:your AWS credentials" | /Users/alice/.aws/credentials
+posix@root_repo place="startup:a shell startup file" | /home/alice/.zshrc
+posix@root_repo place=outside | /home/alice/notes.txt
+posix@ci place="secret:your SSH keys" | /home/alice/.ssh/id_rsa
+posix@ci place="secret:your SSH keys" | /HOME/Alice/.SSH/id_rsa
+posix@ci place="secret:your AWS credentials" | /Users/alice/.aws/credentials
+posix@ci place="startup:a shell startup file" | /home/alice/.zshrc
+posix@ci place=outside | /home/alice/notes.txt
+posix@srv place="secret:your SSH keys" | /home/alice/.ssh/id_rsa
+posix@srv place="secret:your SSH keys" | /HOME/Alice/.SSH/id_rsa
+posix@srv place="secret:your AWS credentials" | /Users/alice/.aws/credentials
+posix@srv place="startup:a shell startup file" | /home/alice/.zshrc
+posix@srv place=outside | /home/alice/notes.txt
+posix@ci_root place="secret:your SSH keys" | /home/alice/.ssh/id_rsa
+posix@ci_root place="secret:your SSH keys" | /HOME/Alice/.SSH/id_rsa
+posix@ci_root place="secret:your AWS credentials" | /Users/alice/.aws/credentials
+posix@ci_root place="startup:a shell startup file" | /home/alice/.zshrc
+posix@ci_root place=outside | /home/alice/notes.txt
+paths profiles cwd=D:\\profiles\\me\\repo home=D:\\profiles\\me workspace=D:\\profiles\\me\\repo
+windows@profiles place="secret:your SSH keys" | C:\\Users\\alice\\.ssh\\id_rsa
+windows@profiles place="secret:your SSH keys" | D:\\Users\\alice\\.ssh\\id_rsa
+windows@profiles place="secret:your SSH keys" | D:\\profiles\\alice\\.ssh\\id_rsa
+windows@profiles place=outside | C:\\Users\\alice\\notes.txt
+
+# The credential stores and startup places that have twins are listed.
+windows place="secret:your GitHub login" | C:\\Users\\me\\AppData\\Roaming\\GitHub CLI\\hosts.yml
+windows place="secret:your Google Cloud credentials" | C:\\Users\\me\\AppData\\Roaming\\gcloud\\credentials.db
+windows place="secret:your GPG keys" | C:\\Users\\me\\AppData\\Roaming\\gnupg\\private-keys-v1.d\\x.key
+windows place="secret:your saved Windows logins" | C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault\\x
+windows place="secret:your saved Windows logins" | C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Vault\\x
+windows place="secret:the system's saved logins" | C:\\ProgramData\\Microsoft\\Vault\\x
+windows place="secret:your GitHub login" | C:\\Users\\me\\APPDAT~1\\Roaming\\GITHUB~1\\hosts.yml
+windows place="startup:your git settings" | C:\\Users\\me\\.config\\git\\config
+windows place="startup:your PowerShell profile" | C:\\Users\\me\\.config\\powershell\\profile.ps1
+windows place="startup:your PowerShell profile" | C:\\Users\\me\\OneDrive\\Documents\\PowerShell\\profile.ps1
+windows place="startup:your PowerShell profile" | C:\\Users\\me\\OneDrive\\Documents\\WindowsPowerShell\\profile.ps1
+windows place="startup:the services your system starts at login" | C:\\Users\\me\\.config\\systemd\\user\\x.service
+posix place="startup:your git settings" | /home/me/.config/git/config
+posix place="startup:your PowerShell profile" | /home/me/.config/powershell/Microsoft.PowerShell_profile.ps1
+posix place="startup:the services your system starts at login" | /home/me/.config/systemd/user/x.service
+posix place="secret:your git credentials" | /home/me/.config/git/credentials
+posix place=outside | /home/me/.config/git/ignore
+posix place=outside | /home/me/.config/systemd/system/x
+
+# The kernel serves files that are not files, on a Mac as on Linux.
+posix kernel="a device file" | /dev/mem
+posix kernel="a device file" | /dev/kmem
+posix kernel="a device file" | /dev/port
+posix kernel="a device file" | /dev/sda
+posix kernel="a device file" | /dev/sda1
+posix kernel="a device file" | /dev/nvme0n1
+posix kernel="a device file" | /dev/disk0
+posix kernel="a device file" | /dev/rdisk0s1
+posix kernel="a device file" | /dev/loop0
+posix kernel="a device file" | /dev/root
+posix kernel="a device file" | /dev/nbd0
+posix kernel="a device file" | /dev/zd0
+posix kernel="a device file" | /dev/mapper/root
+posix kernel="a device file" | /dev/pts/0
+posix kernel="a device file" | /dev/ptmx
+posix kernel="a device file" | /dev/console
+posix kernel="a device file" | /dev/shm/x
+posix kernel="a device file" | /dev/fd/3
+posix kernel="a device file" | /dev/fd/10
+posix kernel="a device file" | /dev/fd/00
+posix kernel="a device file" | /dev/fd
+posix kernel="a device file" | /dev/fd/0/x
+posix kernel="a device file" | /dev/null/x
+posix kernel="a device file" | /dev
+posix kernel="a device file" | /DEV/MEM
+posix kernel="a device file" | /dev/../dev/mem
+posix kernel="a device file" | /dev/./mem
+posix kernel="the kernel's process files" | /proc/self/environ
+posix kernel="the kernel's process files" | /proc/1/environ
+posix kernel="the kernel's process files" | /proc/thread-self/environ
+posix kernel="the kernel's process files" | /proc/self/task/1/environ
+posix kernel="the kernel's process files" | /proc/self/mem
+posix kernel="the kernel's process files" | /proc/self/cmdline
+posix kernel="the kernel's process files" | /proc/self/maps
+posix kernel="the kernel's process files" | /proc/self/smaps
+posix kernel="the kernel's process files" | /proc/self/status
+posix kernel="the kernel's process files" | /proc/self/fd/3
+posix kernel="the kernel's process files" | /proc/self/root/home/me/.ssh/id_rsa
+posix kernel="the kernel's process files" | /proc/self/root
+posix kernel="the kernel's process files" | /proc/1234/root/etc/shadow
+posix kernel="the kernel's process files" | /proc/self/cwd/x
+posix kernel="the kernel's process files" | /proc/self/cwd/../../.ssh/id_rsa
+posix kernel="the kernel's process files" | /proc/kcore
+posix kernel="the kernel's process files" | /proc/kallsyms
+posix kernel="the kernel's process files" | /proc/sys/kernel/randomize_va_space
+posix kernel="the kernel's process files" | /proc
+posix kernel="the kernel's process files" | /PROC/self/environ
+posix kernel="the kernel's process files" | /proc/cpuinfo/x
+posix@macos kernel="a device file" | /dev/mem
+posix@macos kernel="a device file" | /dev/kmem
+posix@macos kernel="a device file" | /dev/port
+posix@macos kernel="a device file" | /dev/sda
+posix@macos kernel="a device file" | /dev/sda1
+posix@macos kernel="a device file" | /dev/nvme0n1
+posix@macos kernel="a device file" | /dev/disk0
+posix@macos kernel="a device file" | /dev/rdisk0s1
+posix@macos kernel="a device file" | /dev/loop0
+posix@macos kernel="a device file" | /dev/root
+posix@macos kernel="a device file" | /dev/nbd0
+posix@macos kernel="a device file" | /dev/zd0
+posix@macos kernel="a device file" | /dev/mapper/root
+posix@macos kernel="a device file" | /dev/pts/0
+posix@macos kernel="a device file" | /dev/ptmx
+posix@macos kernel="a device file" | /dev/console
+posix@macos kernel="a device file" | /dev/shm/x
+posix@macos kernel="a device file" | /dev/fd/3
+posix@macos kernel="a device file" | /dev/fd/10
+posix@macos kernel="a device file" | /dev/fd/00
+posix@macos kernel="a device file" | /dev/fd
+posix@macos kernel="a device file" | /dev/fd/0/x
+posix@macos kernel="a device file" | /dev/null/x
+posix@macos kernel="a device file" | /dev
+posix@macos kernel="a device file" | /DEV/MEM
+posix@macos kernel="a device file" | /dev/../dev/mem
+posix@macos kernel="a device file" | /dev/./mem
+posix@macos kernel="the kernel's process files" | /proc/self/environ
+posix@macos kernel="the kernel's process files" | /proc/1/environ
+posix@macos kernel="the kernel's process files" | /proc/thread-self/environ
+posix@macos kernel="the kernel's process files" | /proc/self/task/1/environ
+posix@macos kernel="the kernel's process files" | /proc/self/mem
+posix@macos kernel="the kernel's process files" | /proc/self/cmdline
+posix@macos kernel="the kernel's process files" | /proc/self/maps
+posix@macos kernel="the kernel's process files" | /proc/self/smaps
+posix@macos kernel="the kernel's process files" | /proc/self/status
+posix@macos kernel="the kernel's process files" | /proc/self/fd/3
+posix@macos kernel="the kernel's process files" | /proc/self/root/home/me/.ssh/id_rsa
+posix@macos kernel="the kernel's process files" | /proc/self/root
+posix@macos kernel="the kernel's process files" | /proc/1234/root/etc/shadow
+posix@macos kernel="the kernel's process files" | /proc/self/cwd/x
+posix@macos kernel="the kernel's process files" | /proc/self/cwd/../../.ssh/id_rsa
+posix@macos kernel="the kernel's process files" | /proc/kcore
+posix@macos kernel="the kernel's process files" | /proc/kallsyms
+posix@macos kernel="the kernel's process files" | /proc/sys/kernel/randomize_va_space
+posix@macos kernel="the kernel's process files" | /proc
+posix@macos kernel="the kernel's process files" | /PROC/self/environ
+posix@macos kernel="the kernel's process files" | /proc/cpuinfo/x
+posix@macos kernel=none | /dev/null
+posix@macos kernel=none | /dev/zero
+posix@macos kernel=none | /dev/random
+posix@macos kernel=none | /dev/urandom
+posix@macos kernel=none | /dev/tty
+posix@macos kernel=none | /dev/stdin
+posix@macos kernel=none | /dev/stdout
+posix@macos kernel=none | /dev/stderr
+posix@macos kernel=none | /dev/fd/0
+posix@macos kernel=none | /dev/fd/1
+posix@macos kernel=none | /dev/fd/2
+posix@macos kernel=none | /DEV/NULL
+posix@macos kernel=none | /dev/./null
+posix@macos kernel=none | /dev/x/../null
+posix@macos kernel=none | /proc/cpuinfo
+posix@macos kernel=none | /proc/meminfo
+posix@macos kernel=none | /proc/version
+posix@macos kernel=none | /proc/loadavg
+posix@macos kernel=none | /proc/uptime
+posix@macos kernel=none | /proc/filesystems
+posix@macos kernel=none | /etc/hosts
+posix@macos kernel=none | /devx/mem
+posix@macos kernel=none | /dev2/mem
+posix@macos kernel=none | /processes/x
+posix@macos kernel=none | /home/me/dev/mem
+posix@macos kernel=none | /home/me/proc/self/environ
+posix@macos kernel=none | src/dev/mem
+posix@macos kernel=none | /System/Volumes/Preboot/dev/mem
+# From the working directory, `~`, and by `..`.
+paths root cwd=/ home=/home/me workspace=/home/me/work/repo
+posix@root kernel="the kernel's process files" | proc/self/environ
+posix@root kernel="a device file" | dev/mem
+posix@root kernel=none | dev/null
+posix home kernel="the kernel's process files" | ../../../proc/self/environ
+posix kernel="a device file" | ../../../../../dev/mem
+posix kernel="the kernel's process files" | src/../../../../../../proc/kcore
+# Windows has no `/dev` of this kind: the device namespace is a disk.
+windows kernel=none | /dev/mem
+windows kernel=none | \\proc\\self\\environ
+
+# A `.git` folder at any depth is the repository's own.
+posix git="the repository's history" | .git/config
+posix git="the repository's history" | .git
+posix git="the repository's history" | .git/HEAD
+posix git="the repository's history" | .git/objects/ab/cd
+posix git="the repository's history" | .GIT/config
+posix git="the repository's history" | vendor/x/.git/config
+posix git="the repository's history" | vendor/x/.git/HEAD
+posix git="the repository's history" | a/b/c/d/.git
+posix git="the repository's history" | /tmp/clone/.git/config
+posix git="the repository's history" | ~/work/other/.git/config
+posix git="a git hook, which runs code" | .git/hooks/pre-commit
+posix git="a git hook, which runs code" | .git/hooks
+posix git="a git hook, which runs code" | .GIT/HOOKS/pre-commit
+posix git="a git hook, which runs code" | vendor/x/.git/hooks/pre-commit
+posix git="a git hook, which runs code" | vendor/x/.git/hooks/
+posix git="a git hook, which runs code" | ../other/.git/hooks/post-merge
+posix git="a git hook, which runs code" | vendor/x/.git/../.git/hooks/pre-commit
+# A repository inside a repository inside a repository.
+posix git="the repository's history" | .git/modules/m/hooks/pre-commit
+posix git="the repository's history" | sub/.git/modules/m/.git/hooks/x
+posix git=none | src/main.rs
+posix git=none | .gitignore
+posix git=none | .github/hooks/x
+posix git=none | hooks/pre-commit
+posix git=none | x.git/config
+posix git=none | src/.gitx/hooks/x
+posix git=none | git/hooks/x
+windows git="the repository's history" | src\\.git\\config
+windows git="the repository's history" | src\\GIT~1\\config
+windows git="a git hook, which runs code" | vendor\\x\\git~2\\hooks\\pre-commit
+windows git="a git hook, which runs code" | vendor\\x\\.git.\\hooks\\pre-commit
+windows git="a git hook, which runs code" | vendor\\x\\.git\\hooks.\\pre-commit
+windows git="a git hook, which runs code" | vendor\\x\\.git\\HOOKS\\pre-commit
+windows git="the repository's history" | vendor\\x\\.git\\HOOKS~1\\pre-commit
+windows git="a git hook, which runs code" | C:\\Users\\me\\dev\\repo\\vendor\\.git\\hooks\\x
+windows git=none | src\\GITHUB~1\\x
+windows git=none | src\\x.rs
+# Known only when it runs: no answer.
+windows git=none | vendor\\.git::$INDEX_ALLOCATION\\hooks\\x
+windows git=none | D:vendor/.git/x
+
+# A Mac whose home is root's reads every link spelling.
+paths var_root cwd=/tmp/w home=/var/root workspace=/tmp/w
+paths private_var_root cwd=/tmp/w home=/private/var/root workspace=/tmp/w
+paths data_var_root cwd=/tmp/w home=/System/Volumes/Data/var/root workspace=/tmp/w
+paths cased_var_root cwd=/tmp/w home=/VAR/ROOT workspace=/tmp/w
+posix@var_root place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@var_root place="secret:your SSH keys" | /Volume\u{17f}/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+posix@var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+posix@var_root place="secret:your SSH keys" | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+posix@var_root place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/master.passwd
+posix@var_root place="secret:the system's password hashes" | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+posix@var_root place="secret:the memory the system keeps on disk" | /Volumes/Macintosh HD/private/var/vm/sleepimage
+# The workspace and the temporary folders by the links, on such a Mac.
+posix@var_root place=inside | /System/Volumes/Data/tmp/w/x
+posix@var_root place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@var_root place=in_temp | /System/Volumes/Data/tmp/x
+posix@private_var_root place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@private_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@private_var_root place="secret:your SSH keys" | /Volume\u{17f}/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@private_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+posix@private_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+posix@private_var_root place="secret:your SSH keys" | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+posix@private_var_root place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/master.passwd
+posix@private_var_root place="secret:the system's password hashes" | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+posix@private_var_root place="secret:the memory the system keeps on disk" | /Volumes/Macintosh HD/private/var/vm/sleepimage
+posix@private_var_root place=inside | /System/Volumes/Data/tmp/w/x
+posix@private_var_root place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@private_var_root place=in_temp | /System/Volumes/Data/tmp/x
+posix@data_var_root place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@data_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@data_var_root place="secret:your SSH keys" | /Volume\u{17f}/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@data_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+posix@data_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+posix@data_var_root place="secret:your SSH keys" | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+posix@data_var_root place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/master.passwd
+posix@data_var_root place="secret:the system's password hashes" | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+posix@data_var_root place="secret:the memory the system keeps on disk" | /Volumes/Macintosh HD/private/var/vm/sleepimage
+posix@data_var_root place=inside | /System/Volumes/Data/tmp/w/x
+posix@data_var_root place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@data_var_root place=in_temp | /System/Volumes/Data/tmp/x
+posix@cased_var_root place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@cased_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@cased_var_root place="secret:your SSH keys" | /Volume\u{17f}/Macintosh HD/Users/alice/.ssh/id_rsa
+posix@cased_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/var/root/.ssh/id_rsa
+posix@cased_var_root place="secret:your SSH keys" | /Volumes/Macintosh HD/private/var/root/.ssh/id_rsa
+posix@cased_var_root place="secret:your SSH keys" | /System/Volumes/Data/private/var/root/.ssh/id_rsa
+posix@cased_var_root place="secret:the system's password hashes" | /Volumes/Macintosh HD/etc/master.passwd
+posix@cased_var_root place="secret:the system's password hashes" | /System/Volumes/Data/private/var/db/dslocal/nodes/Default/users/x.plist
+posix@cased_var_root place="secret:the memory the system keeps on disk" | /Volumes/Macintosh HD/private/var/vm/sleepimage
+posix@cased_var_root place=inside | /System/Volumes/Data/tmp/w/x
+posix@cased_var_root place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@cased_var_root place=in_temp | /System/Volumes/Data/tmp/x
+# The same on a Mac whose home is spelled by the links.
+paths data_users_me cwd=/tmp/w home=/System/Volumes/Data/Users/me workspace=/tmp/w
+paths users_me cwd=/tmp/w home=/users/me workspace=/tmp/w
+paths volume_users_me cwd=/tmp/w home="/Volumes/Macintosh HD/Users/me" workspace=/tmp/w
+posix@data_users_me place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@data_users_me place="secret:your SSH keys" | /Users/me/.ssh/id_rsa
+posix@data_users_me place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+posix@data_users_me place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@users_me place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@users_me place="secret:your SSH keys" | /Users/me/.ssh/id_rsa
+posix@users_me place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+posix@users_me place=inside | /Volumes/Macintosh HD/tmp/w/x
+posix@volume_users_me place="secret:your SSH keys" | /System/Volumes/Data/Users/alice/.ssh/id_rsa
+posix@volume_users_me place="secret:your SSH keys" | /Users/me/.ssh/id_rsa
+posix@volume_users_me place="secret:your SSH keys" | /Volumes/Macintosh HD/Users/me/.ssh/id_rsa
+posix@volume_users_me place=inside | /Volumes/Macintosh HD/tmp/w/x
+# A protected path is looked up with the links dropped on any system.
+paths agent cwd=/home/me/repo home=/home/me workspace=/home/me/repo folder=/home/me/.agent words="the agent's settings"
+posix@agent place="protected:the agent's settings" | /Volumes/Macintosh HD/home/me/.agent/x
+posix@agent place=outside | /Volumes/Macintosh HD/home/me/repo/x

@@ -1,0 +1,628 @@
+# Paths the caller protects, in every shell. A protected path is its own
+# whatever the line does to it: a delete, a write or a permission change of
+# it is a finding, a read is not. It wins over the workspace it is in, a
+# folder that holds one cannot go whole, a copy, move or link into its folder
+# by its name replaces it, names compare without case, and only a protected
+# folder has something below its name. One section for each set of protected
+# paths, with its cases for each shell. The format is in CONTRIBUTING.md.
+
+# A folder in the home directory.
+paths home_folder base=posix folder=/home/me/.agent words="the agent's settings"
+# The same folder, spelled with a trailing slash.
+paths home_folder_with_a_slash base=posix folder=/home/me/.agent/ words="the agent's settings"
+# A folder and a file in the workspace.
+paths workspace_folder_and_file base=posix folder=/home/me/work/repo/.agent words="the agent's settings" file=/home/me/work/repo/conf/app/x.yaml words="the agent's settings"
+# A folder and a file at the top of the workspace.
+paths workspace_folder_and_settings base=posix folder=/home/me/work/repo/.agent words="the agent's settings" file=/home/me/work/repo/settings.yaml words="the agent's settings"
+# A folder in the workspace.
+paths workspace_folder base=posix folder=/home/me/work/repo/.agent words="the agent's settings"
+# A file two folders down in the workspace.
+paths workspace_file base=posix file=/home/me/work/repo/conf/app/x.yaml words="the agent's settings"
+# A folder at the top of the workspace.
+paths workspace_cfg base=posix folder=/home/me/work/repo/cfg words="the agent's settings"
+# A file two folders down and a folder at the top of the workspace.
+paths workspace_file_and_cfg base=posix file=/home/me/work/repo/conf/app/x.yaml words="the agent's settings" folder=/home/me/work/repo/cfg words="the agent's settings"
+# The folder at the top of the workspace, marked as a file.
+paths cfg_marked_as_a_file base=posix file=/home/me/work/repo/cfg words="the agent's settings"
+# The file two folders down, marked as a folder.
+paths file_marked_as_a_folder base=posix folder=/home/me/work/repo/conf/app/x.yaml words="the agent's settings"
+# A file in a temporary folder.
+paths temporary_file base=posix file=/tmp/state/x words="the agent's settings"
+# A file and a folder in a temporary folder.
+paths temporary_file_and_folder base=posix file=/tmp/state/x words="the agent's settings" folder=/tmp/st words="the agent's settings"
+# A folder in the workspace on a Mac.
+paths mac_folder base=macos folder=/Users/me/dev/repo/.agent words="the agent's settings"
+# A file two folders down in the workspace on a Mac.
+paths mac_file base=macos file=/Users/me/dev/repo/conf/app/x.yaml words="the agent's settings"
+# A folder in the home directory and one in the workspace on Windows.
+paths windows_home_and_workspace_folders base=windows folder=C:\\Users\\me\\.agent words="the agent's settings" folder=C:\\Users\\me\\dev\\repo\\.agent words="the agent's settings"
+# A folder and a file in the workspace on Windows.
+paths windows_folder_and_file base=windows folder=C:\\Users\\me\\dev\\repo\\.agent words="the agent's settings" file=C:\\Users\\me\\dev\\repo\\conf\\app\\x.yaml words="the agent's settings"
+# A file two folders down in the workspace on Windows.
+paths windows_file base=windows file=C:\\Users\\me\\dev\\repo\\conf\\app\\x.yaml words="the agent's settings"
+# A folder on a share.
+paths share_folder base=windows folder=\\\\srv\\share\\.agent words="the agent's settings"
+
+# A delete, a write or a permission change of a protected folder in the home
+# directory is a finding, however the line spells it, and a read is not; the
+# finding says so in the caller's words, and a pattern that picks it says
+# so, not that it is the home directory.
+posix@home_folder safe | cat ~/.agent/config.yaml
+posix@home_folder safe | ls -la ~/.agent
+posix@home_folder safe | grep -rn model ~/.agent/rules
+posix@home_folder safe | cp ~/.agent/config.yaml backup.yaml
+posix@home_folder safe | cd ~/.agent && ls
+posix@home_folder safe | rm -rf target
+posix@home_folder safe | echo x > notes.md
+posix@home_folder safe | sed -n s/a/b/p ~/.agent/rules
+posix@home_folder finds=delete | rm -rf ~/.agent
+posix@home_folder finds=delete | rm ~/.agent/config.yaml
+posix@home_folder finds=delete | rm -rf $HOME/.agent
+posix@home_folder finds=delete | rm -rf /home/me/.agent/rules
+posix@home_folder finds=delete | rm ~/.agent/*.yaml
+posix@home_folder finds=delete | cd ~/.agent && rm config.yaml
+posix@home_folder finds=delete | mv ~/.agent/config.yaml /tmp/x
+posix@home_folder finds=delete | find ~/.agent -delete
+posix@home_folder finds=delete | ls ~/.agent/*.yaml | xargs rm
+posix@home_folder finds=overwrite | echo x > ~/.agent/config.yaml
+posix@home_folder finds=overwrite | echo x >> ~/.agent/rules
+posix@home_folder finds=overwrite | sed -i s/a/b/ ~/.agent/rules
+posix@home_folder finds=overwrite | cp notes.md ~/.agent/config.yaml
+posix@home_folder finds=overwrite | mv notes.md ~/.agent/rules
+posix@home_folder finds=overwrite | tee ~/.agent/rules < notes.md
+posix@home_folder finds=permissions | chmod 777 ~/.agent/config.yaml
+# Other spellings of the folder.
+posix@home_folder finds=delete | rm ~/.agent/
+posix@home_folder finds=delete | rm -rf ~/.agent/.
+posix@home_folder finds=delete | rm -rf ~//.agent
+posix@home_folder finds=delete | rm -rf ~/./.agent
+posix@home_folder finds=delete | rm -rf ~/x/../.agent
+posix@home_folder finds=delete | rm -rf ~/.a*
+posix@home_folder finds=delete | rm -rf ~/.agen?
+posix@home_folder finds=delete | rm -rf ~/.agent*
+posix@home_folder finds=delete | rm -rf /home/me/../me/.agent
+posix@home_folder finds=delete | rm -rf $HOME/.agent/
+posix@home_folder finds=delete | rm -rf ${HOME}/.agent
+posix@home_folder finds=delete | rm -rf ~me/.agent
+posix@home_folder finds=delete | rm -rf ~
+posix@home_folder finds=delete | rm -rf ~/*
+# A finding of each says so in the caller's words (a `chmod`, whose first
+# finding is the mode's own, is in protected.rs).
+posix@home_folder finds=delete reason="deletes the agent's settings" | rm ~/.agent/config.yaml
+posix@home_folder finds=delete reason="deletes the agent's settings" | rm -rf ~/.agent
+posix@home_folder finds=delete reason="moves the agent's settings" | mv ~/.agent/rules /tmp/x
+posix@home_folder finds=overwrite reason="writes to the agent's settings" | echo x > ~/.agent/config.yaml
+posix@home_folder finds=overwrite reason="edits the agent's settings" | sed -i s/a/b/ ~/.agent/rules
+# A sibling of the protected folder is not it.
+posix@home_folder first=delete reason="deletes a path outside the workspace" | rm ~/.agent-old/x
+# A pattern that picks it.
+posix@home_folder first=delete reason="deletes the agent's settings" | rm -rf ~/.agent*
+posix@home_folder first=delete reason="deletes the agent's settings" | rm -rf ~/.a*
+posix@home_folder first=delete reason="deletes the agent's settings" | rm -rf ~/.agent/
+posix@home_folder first=delete reason="deletes your home directory" | rm -rf ~
+
+# A protected folder spelled with a trailing slash.
+posix@home_folder_with_a_slash finds=delete | rm ~/.agent/x
+posix@home_folder_with_a_slash finds=delete | rm ~/.agentx
+
+# A protected path inside the workspace is protected, not inside it; the
+# rest of the workspace stays the agent's own.
+posix@workspace_folder_and_settings safe | rm src/main.rs
+posix@workspace_folder_and_settings safe | rm -rf target
+posix@workspace_folder_and_settings safe | rm -f *.log
+posix@workspace_folder_and_settings safe | rm src/set*
+posix@workspace_folder_and_settings safe | echo x > src/settings.yaml
+posix@workspace_folder_and_settings safe | sed -i s/a/b/ src/lib.rs
+posix@workspace_folder_and_settings safe | cat .agent/rules
+posix@workspace_folder_and_settings safe | cd src && rm -f ../target/x.o
+posix@workspace_folder_and_settings finds=delete | rm .agent/rules
+posix@workspace_folder_and_settings finds=delete | rm -rf .agent
+posix@workspace_folder_and_settings finds=delete | rm -rf ./src/../.agent
+posix@workspace_folder_and_settings finds=delete | rm settings.yaml
+posix@workspace_folder_and_settings finds=delete | rm set*
+posix@workspace_folder_and_settings finds=delete | rm *.yaml
+posix@workspace_folder_and_settings finds=delete | cd .agent && rm rules
+posix@workspace_folder_and_settings finds=delete | cd src && rm ../.agent/rules
+posix@workspace_folder_and_settings finds=overwrite | echo x > .agent/rules
+posix@workspace_folder_and_settings finds=overwrite | echo x > settings.yaml
+posix@workspace_folder_and_settings finds=overwrite | sed -i s/a/b/ .agent/rules
+posix@workspace_folder_and_settings finds=permissions | chmod 600 .agent/rules
+# The workspace itself is still a finding.
+posix@workspace_folder_and_settings finds=delete | rm -rf *
+
+# A folder and a file in the workspace, in every spelling, and the folders
+# that hold them.
+posix@workspace_folder_and_file safe | rm .agentx/rules
+posix@workspace_folder_and_file safe | rm *.rs
+posix@workspace_folder_and_file safe | rm src/*.rs
+posix@workspace_folder_and_file safe | rm -rf src/*
+posix@workspace_folder_and_file finds=delete | rm -rf .AGENT/rules
+posix@workspace_folder_and_file finds=delete | rm -rf .Agent
+posix@workspace_folder_and_file finds=delete | rm -rf ./.agent/
+posix@workspace_folder_and_file finds=delete | rm -rf .agent/.
+posix@workspace_folder_and_file finds=delete | rm -rf conf
+posix@workspace_folder_and_file finds=delete | rm -rf conf/app
+posix@workspace_folder_and_file finds=delete | mv conf /tmp/x
+posix@workspace_folder_and_file finds=delete | rm -rf **/x.yaml
+posix@workspace_folder_and_file finds=delete | rm conf/**/x.yaml
+posix@workspace_folder_and_file finds=delete | rm -rf c*
+posix@workspace_folder_and_file finds=delete | rm */*/x.yaml
+posix@workspace_folder_and_file finds=delete | rm conf/*/x.yaml
+posix@workspace_folder_and_file finds=delete | shopt -s dotglob; rm -rf .ag*
+posix@workspace_folder_and_file finds=delete | shopt -s dotglob; rm -rf *gent
+posix@workspace_folder_and_file finds=delete | cd conf && rm -rf app
+posix@workspace_folder_and_file finds=delete | cd conf/app && rm *
+posix@workspace_folder_and_file finds=delete | cd .agent && rm *
+posix@workspace_folder_and_file finds=delete | cd .agent && rm -rf ./*
+posix@workspace_folder_and_file finds=delete | rm .agent/*
+posix@workspace_folder_and_file finds=delete | rm -rf ./.agent/*
+posix@workspace_folder_and_file finds=overwrite | echo x > .agent/new
+posix@workspace_folder_and_file finds=delete | rm .agen[t]/rules
+posix@workspace_folder_and_file finds=delete | rm .agent/../.agent/rules
+posix@workspace_folder_and_file finds=delete | rm -rf .
+posix@workspace_folder_and_file finds=delete | rm -rf *
+
+# Case and near names of a protected folder in the workspace.
+posix@workspace_folder safe | rm -rf .Agents
+posix@workspace_folder safe | rm -rf .AGENTS/x
+posix@workspace_folder safe | rm -rf .agent2
+posix@workspace_folder safe | rm -rf src/.agent
+posix@workspace_folder safe | rm -rf **/rules
+posix@workspace_folder safe | rm -rf **/*.rs
+posix@workspace_folder finds=delete | rm -rf /HOME/ME/work/repo/.agent
+posix@workspace_folder finds=delete | rm -rf **/.agent
+
+# A folder that holds a protected file is protected when it would be
+# harmless, so the whole folder cannot go; a write into it, and work beside
+# the protected file, stay the agent's own. A copy, move or link into the
+# file's folder by its name replaces it, and so can a recursive copy or
+# mirror into a folder that holds it; a copy elsewhere, or under another
+# name, does not. Only a folder has something below its name.
+posix@workspace_file safe | touch conf/new.txt
+posix@workspace_file safe | rm conf/other.txt
+posix@workspace_file safe | rm -rf src
+posix@workspace_file safe | rm conf/app/y.yaml
+posix@workspace_file safe | cp a.txt conf/
+posix@workspace_file safe | cp a.txt conf/app
+posix@workspace_file safe | mkdir -p conf/app
+posix@workspace_file safe | echo x > conf/new.txt
+posix@workspace_file safe | cat conf/app/x.yaml
+posix@workspace_file safe | ls conf
+posix@workspace_file safe | cd conf && ls
+posix@workspace_file safe | cd conf && touch new.txt
+posix@workspace_file safe | rm -f *.log conf/*.log
+posix@workspace_file safe | rm -rf conf/o*
+posix@workspace_file safe | rm -rf **/y.yaml
+posix@workspace_file safe | rm -rf **/*.rs
+posix@workspace_file safe | rm **/*.pyc
+posix@workspace_file safe | rm -rf src/**/z
+# A copy elsewhere, or under another name.
+posix@workspace_file safe | cp a.txt conf/app/
+posix@workspace_file safe | cp a.txt conf
+posix@workspace_file safe | cp new/y.yaml conf/app
+posix@workspace_file safe | cp -t conf/app y.yaml
+posix@workspace_file safe | cp *.txt conf/app/
+posix@workspace_file safe | cp *.yaml conf/
+posix@workspace_file safe | install -m 644 a.txt conf/app/
+posix@workspace_file safe | mv a.txt conf/app/
+posix@workspace_file safe | ln -s other/y.yaml conf/app/
+posix@workspace_file safe | cp -r src/. dist/
+posix@workspace_file safe | cp -r src dist
+posix@workspace_file safe | cp -a src dist/
+posix@workspace_file safe | rsync -a src/ dist/
+posix@workspace_file safe | cp $f conf/
+posix@workspace_file safe | cp -r a.txt src/
+posix@workspace_file safe | cp -r src conf2
+posix@workspace_file safe | cp -r src conf/app/new
+posix@workspace_file safe | find . -name '*.o' -exec cp {} dist/ \\;
+# A recursive copy into a folder that holds no protected path.
+posix@workspace_file safe | cp -r other/. dist
+posix@workspace_file safe | cp -r a.txt conf/other
+posix@workspace_file safe | rsync -a src/ conf/other/
+posix@workspace_file safe | rsync src/ conf/
+posix@workspace_file safe | cp -r conf/other conf/new
+posix@workspace_file finds=delete | rm -rf conf
+posix@workspace_file finds=delete | rm -rf conf/
+posix@workspace_file finds=delete | rm -rf ./conf/app
+posix@workspace_file finds=delete | rm -rf conf/app
+posix@workspace_file finds=delete | rm conf/app/x.yaml
+posix@workspace_file finds=delete | cd conf && rm -rf app
+posix@workspace_file finds=delete | cd conf/app && rm x.yaml
+posix@workspace_file finds=delete | mv conf /tmp/x
+posix@workspace_file finds=delete | mv conf/app /tmp/x
+posix@workspace_file finds=delete | rm -rf c*
+posix@workspace_file finds=delete | rm -rf conf/a*
+posix@workspace_file finds=delete | rm -rf **/x.yaml
+posix@workspace_file finds=delete | rm conf/**/x.yaml
+posix@workspace_file finds=delete | rm -rf conf/**
+posix@workspace_file finds=delete | rm -rf */*/x.yaml
+posix@workspace_file finds=delete | find conf -delete
+posix@workspace_file finds=delete | ls conf | xargs rm -rf
+posix@workspace_file finds=overwrite | echo x > conf/app/x.yaml
+posix@workspace_file finds=overwrite | cp a.txt conf/app/x.yaml
+posix@workspace_file finds=overwrite | cp a.txt conf/app/x*
+posix@workspace_file finds=permissions | chmod -R 777 conf
+# A copy, move or link into its folder by its name.
+posix@workspace_file finds=overwrite | cp x.yaml conf/app/
+posix@workspace_file finds=overwrite | cp x.yaml conf/app
+posix@workspace_file finds=overwrite | cp new/x.yaml conf/app
+posix@workspace_file finds=overwrite | cp ./new/x.yaml conf/app/
+posix@workspace_file finds=overwrite | cp -t conf/app x.yaml
+posix@workspace_file finds=overwrite | cp --target-directory=conf/app x.yaml
+posix@workspace_file finds=overwrite | install x.yaml conf/app/
+posix@workspace_file finds=overwrite | install -m 600 x.yaml conf/app
+posix@workspace_file finds=overwrite | mv x.yaml conf/app/
+posix@workspace_file finds=overwrite | mv new/x.yaml conf/app
+posix@workspace_file finds=overwrite | cp *.yaml conf/app/
+posix@workspace_file finds=overwrite | cp x.* conf/app/
+posix@workspace_file finds=overwrite | cp * conf/app/
+posix@workspace_file finds=overwrite | cp $f conf/app/
+posix@workspace_file finds=overwrite | ln -sf other/x.yaml conf/app/
+posix@workspace_file finds=overwrite | ln -s other/x.yaml conf/app
+posix@workspace_file finds=overwrite | cd conf && cp ../x.yaml app/
+posix@workspace_file finds=overwrite | cp -f a.txt x.yaml conf/app
+posix@workspace_file finds=overwrite | cp -- x.yaml conf/app/
+posix@workspace_file finds=overwrite | cp --target-directory conf/app x.yaml
+posix@workspace_file finds=overwrite | cp -tconf/app x.yaml
+posix@workspace_file finds=overwrite | mv -t conf/app x.yaml
+posix@workspace_file finds=overwrite | mv --target-directory=conf/app x.yaml
+posix@workspace_file finds=overwrite | cp x.yaml y.yaml conf/app/
+posix@workspace_file finds=overwrite | cp y.yaml x.yaml conf/app/
+posix@workspace_file finds=overwrite | ln -s ../x.yaml conf/app/
+posix@workspace_file finds=overwrite | ln -s -t conf/app x.yaml
+posix@workspace_file finds=overwrite | install -D x.yaml conf/app/x.yaml
+posix@workspace_file finds=overwrite | install -t conf/app x.yaml
+posix@workspace_file finds=overwrite | install -m 644 x.yaml conf/app/
+posix@workspace_file finds=overwrite | cp ../x.yaml ./conf/app/
+posix@workspace_file finds=overwrite | cp x.yaml conf//app/
+posix@workspace_file finds=overwrite | cp x.yaml ./conf/./app
+posix@workspace_file finds=overwrite | cp X.YAML conf/app/
+posix@workspace_file finds=overwrite | cp x.yaml CONF/APP/
+posix@workspace_file finds=overwrite | cp x.yaml conf/app/.
+posix@workspace_file finds=overwrite | cp x.yaml conf/app/./
+posix@workspace_file finds=overwrite | cp x.yaml conf/app/../app
+posix@workspace_file finds=overwrite | cp -f x.yaml conf/app/
+posix@workspace_file finds=overwrite | cat x.yaml | tee conf/app/x.yaml
+posix@workspace_file finds=overwrite | ls *.yaml | xargs cp -t conf/app
+posix@workspace_file finds=overwrite | find . -name x.yaml -exec cp {} conf/app/ \\;
+posix@workspace_file finds=overwrite | find . -name x.yaml -execdir cp {} conf/app/ \\;
+posix@workspace_file finds=overwrite | find . -name x.yaml -ok cp {} conf/app/ \\;
+posix@workspace_file finds=overwrite | ls | xargs -I{} cp {} conf/app/
+posix@workspace_file finds=overwrite | cp $(ls *.yaml) conf/app/
+# A recursive copy or mirror into a folder that holds it.
+posix@workspace_file finds=overwrite | cp -r other/. conf
+posix@workspace_file finds=overwrite | cp -R app conf/
+posix@workspace_file finds=overwrite | cp -a app conf
+posix@workspace_file finds=overwrite | cp -R other/ conf/
+posix@workspace_file finds=overwrite | cp --recursive other conf
+posix@workspace_file finds=overwrite | cp -r other conf/app
+posix@workspace_file finds=overwrite | rsync -a src/ conf/
+posix@workspace_file finds=overwrite | rsync -r src conf
+posix@workspace_file finds=overwrite | rsync -avz src/ conf/app/
+posix@workspace_file finds=overwrite | rsync -r src/ conf
+posix@workspace_file finds=overwrite | rsync -av --progress src/ conf/
+posix@workspace_file finds=overwrite | cp --recursive app conf
+posix@workspace_file finds=overwrite | cp -rf app conf
+posix@workspace_file finds=overwrite | cp -fR app conf
+posix@workspace_file finds=overwrite | cp -dR app conf
+posix@workspace_file finds=overwrite | rsync -rlpt src/ conf/
+posix@workspace_file finds=overwrite | rsync --recursive src/ conf/
+posix@workspace_file finds=overwrite | rsync -a src conf/
+posix@workspace_file finds=overwrite | cp -r src/* conf/
+posix@workspace_file finds=overwrite | cp -R src/app conf
+# Mirroring is the delete rule's own: it keeps its words.
+posix@workspace_file finds=delete | rsync -a --delete src/ conf/
+# The reason of a folder that holds it is the caller's words.
+posix@workspace_file finds=delete reason="deletes the agent's settings" | rm -rf conf
+posix@workspace_file finds=delete reason="deletes the agent's settings" | rm -rf c*
+posix@workspace_file finds=delete reason="moves the agent's settings" | mv conf /tmp/x
+# A copy onto it is one finding, in the caller's words.
+posix@workspace_file rules=overwrite first=overwrite reason="writes to the agent's settings" | cp x.yaml conf/app/
+# A verdict that is already risky keeps its own words.
+posix@workspace_file first=delete reason="deletes the whole workspace" | rm -rf .
+posix@workspace_file first=delete reason="deletes the whole workspace" | rm -rf *
+posix@workspace_file first=delete reason="deletes your home directory" | rm -rf ~
+posix@workspace_file first=delete reason="deletes a folder holding the workspace" | rm -rf /home/me/work
+posix@workspace_file first=overwrite reason="writes to your home directory" | cp -r src ~
+
+# A protected folder lets a pattern go below its name.
+posix@workspace_cfg safe | rm -rf src/**/z
+posix@workspace_cfg safe | rm -rf src
+posix@workspace_cfg safe | rm -rf src/**
+posix@workspace_cfg safe | cp a cfgx/
+posix@workspace_cfg finds=delete | rm -rf **/rules
+posix@workspace_cfg finds=delete | rm **/*.yaml
+posix@workspace_cfg finds=delete | rm -rf **/*.rs
+posix@workspace_cfg finds=delete | rm -rf cfg
+posix@workspace_cfg finds=delete | rm cfg/rules
+posix@workspace_cfg finds=delete | rm -rf **/y.yaml
+posix@workspace_cfg finds=overwrite | cp rules cfg/
+posix@workspace_cfg finds=overwrite | cp -r src cfg
+
+# A file and a folder: copies, patterns and what stays safe beside them, and
+# a pattern part below each.
+posix@workspace_file_and_cfg safe | mv app conf/
+posix@workspace_file_and_cfg safe | cp a.txt conf/
+posix@workspace_file_and_cfg safe | touch conf/new.txt
+posix@workspace_file_and_cfg safe | mkdir -p conf/app
+posix@workspace_file_and_cfg safe | rm -rf src/**
+posix@workspace_file_and_cfg safe | rm -rf src
+posix@workspace_file_and_cfg safe | rm conf/other.txt
+posix@workspace_file_and_cfg safe | rm conf/*.txt
+posix@workspace_file_and_cfg safe | rm -rf cfgx
+posix@workspace_file_and_cfg safe | rm -rf .Agents
+posix@workspace_file_and_cfg finds=overwrite | cp -r other/ conf/
+posix@workspace_file_and_cfg finds=overwrite | cp -R app conf/
+posix@workspace_file_and_cfg finds=overwrite | cp -a app conf
+posix@workspace_file_and_cfg finds=overwrite | cp -r other/. conf
+posix@workspace_file_and_cfg finds=overwrite | cp -R other/ cfg
+posix@workspace_file_and_cfg finds=overwrite | cp -r x cfg
+posix@workspace_file_and_cfg finds=overwrite | rsync -a src/ conf/
+posix@workspace_file_and_cfg finds=delete | rsync -a --delete src/ conf/
+posix@workspace_file_and_cfg finds=overwrite | rsync -a --delete src/ conf/
+posix@workspace_file_and_cfg finds=permissions | chmod 755 conf
+posix@workspace_file_and_cfg finds=permissions | chmod -R 777 conf
+posix@workspace_file_and_cfg finds=delete | rm -rf **/rules
+posix@workspace_file_and_cfg finds=delete | rm -rf cfg/**/x
+posix@workspace_file_and_cfg finds=delete | rm **/x.yaml
+posix@workspace_file_and_cfg finds=delete | rm -rf **
+posix@workspace_file_and_cfg finds=delete | rm -rf conf/**
+posix@workspace_file_and_cfg finds=delete | rm **/*.yaml
+posix@workspace_file_and_cfg finds=delete | rm -rf **/app
+posix@workspace_file_and_cfg finds=delete | rm -rf **/*.rs
+posix@workspace_file_and_cfg finds=delete | rm -rf c**
+posix@workspace_file_and_cfg finds=delete | rm -rf .
+posix@workspace_file_and_cfg finds=delete | rm conf/*
+posix@workspace_file_and_cfg finds=delete | rm -rf CONF
+posix@workspace_file_and_cfg finds=delete | rm -rf Cfg
+# A pattern part below a protected file or folder.
+posix@workspace_file_and_cfg finds=delete | rm -rf **/y.yaml
+posix@workspace_file_and_cfg finds=delete | rm -rf **/x.yaml
+posix@workspace_file_and_cfg finds=delete | rm -rf conf
+posix@workspace_file_and_cfg finds=delete | rm conf/*/x.yaml
+posix@workspace_file_and_cfg finds=delete | rm conf/app/*
+posix@workspace_file_and_cfg finds=delete | rm */app/x.yaml
+posix@workspace_file_and_cfg finds=delete | rm -rf cfg/*
+posix@workspace_file_and_cfg finds=delete | rm -rf c*/rules
+posix@workspace_file_and_cfg finds=delete | rm -rf */rules
+posix@workspace_file_and_cfg finds=delete | rm cfg/**/x
+posix@workspace_file_and_cfg finds=delete | rm -rf ?fg
+
+# A folder marked as a file opens patterns below its name.
+posix@cfg_marked_as_a_file safe | rm -rf c*/rules
+posix@cfg_marked_as_a_file safe | rm -rf **/rules
+posix@cfg_marked_as_a_file safe | rm -rf */rules
+posix@cfg_marked_as_a_file finds=delete | rm -rf cfg/*
+posix@cfg_marked_as_a_file finds=delete | rm cfg/rules
+posix@cfg_marked_as_a_file finds=overwrite | cp rules cfg/
+posix@cfg_marked_as_a_file finds=overwrite | cp -r src/. cfg
+posix@cfg_marked_as_a_file finds=delete | rm -rf c*
+
+# A file marked as a folder only adds noise.
+posix@file_marked_as_a_folder safe | rm src/*.rs
+posix@file_marked_as_a_folder safe | rm -rf src
+posix@file_marked_as_a_folder finds=delete | rm -rf **/y.yaml
+
+# A protected path in a temporary folder is not a temporary file, and a
+# pattern that picks it is not either.
+posix@temporary_file safe | rm /tmp/other
+posix@temporary_file safe | rm /tmp/state/y
+posix@temporary_file safe | rm /tmp/state/y*
+posix@temporary_file safe | rm /tmp/*.log
+posix@temporary_file finds=delete | rm /tmp/state/x
+posix@temporary_file finds=delete | rm /tmp/state/*
+posix@temporary_file finds=delete | rm /tmp/state/x*
+posix@temporary_file finds=delete | rm -rf /tmp/state
+posix@temporary_file finds=delete | rm /tmp/*/x
+posix@temporary_file finds=overwrite | echo x > /tmp/state/x
+posix@temporary_file_and_folder finds=delete | rm /tmp/state/*
+posix@temporary_file_and_folder finds=delete | rm /tmp/state/x*
+posix@temporary_file_and_folder finds=delete | rm /tmp/*/x
+posix@temporary_file_and_folder finds=delete | rm /tmp/s*
+posix@temporary_file_and_folder finds=delete | rm /tmp/st/*
+posix@temporary_file_and_folder finds=delete | rm /tmp/st*
+posix@temporary_file_and_folder finds=delete | rm /tmp/*
+
+# Names compare without case on every host, a macOS file system included,
+# and so does the place a copy lands.
+posix@mac_folder safe | rm -rf .agents
+posix@mac_folder safe | cat .AGENT/rules
+posix@mac_folder safe | rm src/main.rs
+posix@mac_folder finds=delete | rm -rf .AGENT
+posix@mac_folder finds=delete | rm .Agent/rules
+posix@mac_folder finds=delete | rm -rf .agent
+posix@mac_folder finds=overwrite | echo x > .AGENT/rules
+posix@mac_folder finds=delete | rm -rf .AGE*
+posix@mac_file finds=overwrite | cp X.yaml conf/app/
+posix@mac_file finds=overwrite | cp x.YAML Conf/App
+
+# A Windows spelling of a protected path resolves the same way, in every
+# shell, and without regard to case.
+powershell@windows_home_and_workspace_folders safe | Get-Content C:\\Users\\me\\.agent\\config.yaml
+powershell@windows_home_and_workspace_folders safe | Get-ChildItem C:\\Users\\me\\.agent
+powershell@windows_home_and_workspace_folders safe | Remove-Item src\\main.rs
+powershell@windows_home_and_workspace_folders safe | Remove-Item -Recurse -Force target
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item C:\\Users\\me\\.agent\\config.yaml
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item -Recurse -Force C:\\Users\\me\\.agent
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item c:\\users\\ME\\.AGENT\\config.yaml
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item C:/Users/me/.agent/config.yaml
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item $HOME\\.agent\\config.yaml
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item .agent\\rules
+powershell@windows_home_and_workspace_folders finds=delete | Remove-Item C:\\Users\\me\\.agent\\*
+powershell@windows_home_and_workspace_folders finds=overwrite | 'x' > C:\\Users\\me\\.agent\\config.yaml
+powershell@windows_home_and_workspace_folders finds=overwrite | Set-Content .agent\\rules -Value x
+powershell@windows_home_and_workspace_folders first=delete reason="deletes the agent's settings" | Remove-Item C:\\Users\\me\\.agent\\config.yaml
+cmd@windows_home_and_workspace_folders safe | type C:\\Users\\me\\.agent\\config.yaml
+cmd@windows_home_and_workspace_folders safe | dir C:\\Users\\me\\.agent
+cmd@windows_home_and_workspace_folders safe | del src\\main.rs
+cmd@windows_home_and_workspace_folders finds=delete | del C:\\Users\\me\\.agent\\config.yaml
+cmd@windows_home_and_workspace_folders finds=delete | del C:\\USERS\\me\\.Agent\\config.yaml
+cmd@windows_home_and_workspace_folders finds=delete | rd /s /q C:\\Users\\me\\.agent
+cmd@windows_home_and_workspace_folders finds=delete | del .agent\\rules
+cmd@windows_home_and_workspace_folders finds=overwrite | echo x > C:\\Users\\me\\.agent\\config.yaml
+cmd@windows_home_and_workspace_folders finds=overwrite | copy x.txt C:\\Users\\me\\.agent\\config.yaml
+
+# The 8.3 short name of a protected name is the protected name, other
+# Windows spellings resolve to it, a folder holding a protected path cannot
+# be deleted whole, and a recursive copy or mirror into one can replace it.
+powershell@windows_folder_and_file safe | Remove-Item AGEN~1\\rules
+powershell@windows_folder_and_file safe | Remove-Item OTHER~1\\rules
+powershell@windows_folder_and_file safe | Remove-Item conf\\other.txt
+powershell@windows_folder_and_file safe | Remove-Item src -Recurse
+powershell@windows_folder_and_file safe | Copy-Item a.txt conf\\
+powershell@windows_folder_and_file safe | New-Item -ItemType Directory conf\\app
+powershell@windows_folder_and_file safe | Remove-Item *.rs
+powershell@windows_folder_and_file finds=delete | Remove-Item AGENT~1\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item -Recurse agent~1
+powershell@windows_folder_and_file finds=delete | Remove-Item -Recurse conf
+powershell@windows_folder_and_file finds=delete | Remove-Item -Recurse conf\\app
+powershell@windows_folder_and_file finds=delete | Remove-Item -Recurse c*
+powershell@windows_folder_and_file finds=delete | Remove-Item conf\\app\\x.yaml
+powershell@windows_folder_and_file finds=delete | Remove-Item -Recurse AGENT~*
+powershell@windows_folder_and_file finds=overwrite | 'x' > AGENT~1\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item .agent.\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item .agent\\\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item .\\.AGENT\\
+powershell@windows_folder_and_file finds=delete | Remove-Item \\Users\\me\\dev\\repo\\.agent\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item C:.agent\\rules
+powershell@windows_folder_and_file finds=delete | Remove-Item *
+powershell@windows_folder_and_file finds=delete | Remove-Item .a*
+powershell@windows_folder_and_file finds=delete | Remove-Item .agent\s
+powershell@windows_folder_and_file finds=unreadable | Remove-Item '.agent '\\x
+powershell@windows_folder_and_file finds=delete | Remove-Item '.agent '\\x
+# Recursive copies and mirrors.
+powershell@windows_folder_and_file finds=overwrite | Copy-Item -Recurse -Force src conf
+powershell@windows_folder_and_file finds=overwrite | Copy-Item -Recurse src\\* conf
+powershell@windows_folder_and_file finds=delete | robocopy src conf /MIR
+powershell@windows_folder_and_file finds=overwrite | robocopy src conf /MIR
+powershell@windows_folder_and_file finds=overwrite | robocopy src conf /E
+cmd@windows_folder_and_file safe | del AGEN~1\\rules
+cmd@windows_folder_and_file safe | del conf\\other.txt
+cmd@windows_folder_and_file safe | copy a.txt conf\\
+cmd@windows_folder_and_file safe | del *.rs
+cmd@windows_folder_and_file finds=delete | del AGENT~1\\rules
+cmd@windows_folder_and_file finds=delete | rd /s /q conf
+cmd@windows_folder_and_file finds=delete | rd /s /q AGENT~1
+cmd@windows_folder_and_file finds=overwrite | echo x > AGENT~1\\rules
+cmd@windows_folder_and_file finds=delete | del .agent\\rules
+cmd@windows_folder_and_file finds=overwrite | xcopy /s /y src conf
+
+# A copy or move into the folder of a protected file by its name replaces
+# it, in every shell and every spelling of the cmdlet and its parameters; a
+# recursive copy into a folder holding one can.
+powershell@windows_file safe | Copy-Item a.txt conf\\app
+powershell@windows_file safe | Copy-Item y.yaml conf\\app\\
+powershell@windows_file safe | Move-Item a.txt conf\\app
+powershell@windows_file safe | Copy-Item -Recurse src dist
+powershell@windows_file safe | Copy-Item -Recurse -Force src conf\\other
+powershell@windows_file safe | Copy-Item *.txt conf\\app
+powershell@windows_file safe | Copy-Item a.txt,b.txt conf\\app
+powershell@windows_file safe | Move-Item -Path a.txt,b.txt -Destination conf\\app
+powershell@windows_file safe | Copy-Item x.yaml SETTIN~1
+powershell@windows_file safe | Copy-Item a.txt b.txt
+powershell@windows_file safe | Copy-Item src -Destination dist -Recurse
+powershell@windows_file safe | Copy-Item a.txt conf\\app -ErrorAction Stop
+powershell@windows_file safe | Copy-Item a.txt conf\\app -ea 0
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app\\
+powershell@windows_file finds=overwrite | Copy-Item -Path new\\x.yaml -Destination conf\\app
+powershell@windows_file finds=overwrite | Move-Item x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item *.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Recurse -Force src conf
+powershell@windows_file finds=overwrite | Copy-Item -Recurse src conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Recurse app conf
+# A comma list of sources.
+powershell@windows_file finds=overwrite | Copy-Item y.yaml,x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml, y.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml,y.yaml conf\\app\\
+powershell@windows_file finds=overwrite | Move-Item y,x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Path y.yaml,x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Path a,x.yaml -Destination conf\\app
+# Every spelling of the parameters.
+powershell@windows_file finds=overwrite | Copy-Item x.yaml -Destination conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Path x.yaml -Destination conf\\app\\
+powershell@windows_file finds=overwrite | Copy-Item -LiteralPath x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Destination conf\\app -Path x.yaml
+powershell@windows_file finds=overwrite | Copy-Item -Destination conf\\app x.yaml
+powershell@windows_file finds=overwrite | Copy-Item X.YAML CONF\\APP
+powershell@windows_file finds=overwrite | Copy-Item -Recurse src conf
+powershell@windows_file finds=overwrite | Copy-Item -r src conf
+powershell@windows_file finds=overwrite | cp x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml,y.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Path x.yaml,y.yaml -Destination conf\\app
+powershell@windows_file finds=delete | Remove-Item y.txt,conf\\app\\x.yaml
+powershell@windows_file finds=delete | Move-Item y,x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -Path y.yaml x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item -LiteralPath y.yaml,x.yaml -Destination conf\\app
+powershell@windows_file finds=overwrite | 'x.yaml' | Copy-Item -Destination conf\\app
+powershell@windows_file finds=overwrite | Get-ChildItem *.yaml | Copy-Item -Destination conf\\app
+powershell@windows_file finds=overwrite | gci src | cpi -Destination conf\\app
+powershell@windows_file finds=overwrite | cp y.yaml,x.yaml conf\\app
+powershell@windows_file finds=overwrite | copy x.yaml conf\\app
+powershell@windows_file finds=overwrite | cpi x.yaml conf\\app
+powershell@windows_file finds=overwrite | mv x.yaml conf\\app
+powershell@windows_file finds=overwrite | move x.yaml conf\\app
+powershell@windows_file finds=overwrite | mi x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item @('y','x.yaml') conf\\app
+powershell@windows_file finds=overwrite | Copy-Item $files conf\\app
+powershell@windows_file finds=overwrite | Copy-Item (Get-ChildItem *.yaml) conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -ErrorAction SilentlyContinue
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -ea 0
+powershell@windows_file finds=overwrite | Copy-Item -Path x.yaml conf\\app -ErrorAction Stop
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -Force
+powershell@windows_file finds=overwrite | Copy-Item -Force x.yaml conf\\app
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -Recurse
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -WhatIf:$false
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -OutVariable o
+powershell@windows_file finds=overwrite | Copy-Item x.yaml conf\\app -wa 0 -ev e -iv i -pv p -ob 1 -infa 0 -proga 0
+powershell@windows_file finds=delete | Move-Item conf\\app\\x.yaml C:\\tmp -ErrorAction Stop
+powershell@windows_file finds=overwrite | Move-Item conf\\app\\x.yaml C:\\tmp -ErrorAction Stop
+powershell@windows_file finds=delete | Move-Item conf C:\\tmp -ea 0
+powershell@windows_file finds=overwrite | Move-Item conf C:\\tmp -ea 0
+powershell@windows_file finds=overwrite | Copy-Item -Destination:conf\\app x.yaml
+powershell@windows_file finds=overwrite | Copy-Item x.yaml -Destination conf\\app -Container
+powershell@windows_file finds=delete | Get-ChildItem conf | Remove-Item -Recurse
+powershell@windows_file finds=delete | 'conf' | Remove-Item -Recurse
+powershell@windows_file finds=delete | Get-ChildItem C:\\Windows | Remove-Item
+powershell@windows_file finds=delete | Remove-Item C:\\Windows\\x,y
+cmd@windows_file safe | copy a.txt conf\\app
+cmd@windows_file safe | copy a.txt,b.txt conf\\app
+cmd@windows_file safe | copy /b a.txt+b.txt conf\\app
+cmd@windows_file safe | move /y a.txt conf\\app
+cmd@windows_file safe | xcopy /y a.txt conf\\app
+cmd@windows_file safe | robocopy src dist /E
+cmd@windows_file safe | robocopy src conf\\other /E
+cmd@windows_file safe | xcopy /s /y src dist
+cmd@windows_file safe | robocopy src conf x.yaml
+cmd@windows_file safe | robocopy src conf
+cmd@windows_file safe | robocopy src dist
+cmd@windows_file safe | copy a.txt+b.txt conf\\app
+cmd@windows_file finds=overwrite | copy /y x.yaml conf\\app
+cmd@windows_file finds=overwrite | copy y.yaml,x.yaml conf\\app
+cmd@windows_file finds=overwrite | copy /b y.yaml+x.yaml conf\\app
+cmd@windows_file finds=overwrite | copy x.yaml+y.yaml conf\\app\\
+cmd@windows_file finds=overwrite | copy x.yaml conf\\app\\
+cmd@windows_file finds=overwrite | move /y x.yaml conf\\app
+cmd@windows_file finds=overwrite | xcopy /y x.yaml conf\\app
+cmd@windows_file finds=overwrite | xcopy /s /y src conf
+cmd@windows_file finds=overwrite | xcopy /e src conf\\app
+cmd@windows_file finds=overwrite | robocopy src conf /E
+cmd@windows_file finds=overwrite | robocopy src conf\\app /S
+cmd@windows_file finds=overwrite | robocopy src conf\\app x.yaml
+cmd@windows_file finds=overwrite | robocopy src conf\\app
+cmd@windows_file finds=overwrite | xcopy /s src conf
+cmd@windows_file finds=overwrite | xcopy x.yaml conf\\app
+cmd@windows_file finds=overwrite | copy y.yaml+x.yaml conf\\app
+cmd@windows_file finds=overwrite | copy /b y.yaml + x.yaml conf\\app
+
+# A protected folder on a share, in other spellings of the share.
+powershell@share_folder finds=delete | Remove-Item \\\\SRV\\Share\\.agent\\x
+powershell@share_folder finds=delete | Remove-Item //srv/share/.agent/x
+
+# Nothing changes without protected paths: the same lines are as they were,
+# with the guard's own words.
+posix safe | rm *.rs
+posix safe | rm -rf conf
+posix safe | cp x.yaml conf/app/
+posix safe | cp -r src conf
+posix first=delete reason="deletes a path outside the workspace" | rm ~/.agent/config.yaml

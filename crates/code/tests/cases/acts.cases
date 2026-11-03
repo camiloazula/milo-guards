@@ -1,0 +1,105 @@
+# What reading code finds (`read`): the acts, in the order the code makes
+# them, with the paths they name. `acts` spells each act as
+# `tests/common/mod.rs` does: an argument is its value, `?` when only known
+# when it runs, and `FOLDER*` for a path somewhere in a folder.
+
+# Python deletes.
+python acts="remove build.log" | import os\nos.remove('build.log')
+python acts="remove /tmp/x" | import os\nos.unlink('/tmp/x')
+python acts="remove d" | import os\nos.rmdir('d')
+python acts="remove /home/me" | import shutil\nshutil.rmtree('/home/me')
+python acts="remove ~" | import shutil\nshutil.rmtree('~')
+python acts="remove /home/me/x" | from pathlib import Path\nPath('/home/me/x').unlink()
+# The aliases and the imports that name a call are put back.
+python acts="remove x" | from os import remove as rm\nrm('x')
+python acts="remove x" | import os\no = os\no.remove('x')
+python acts="remove x" | import os\ngetattr(os, 'remove')('x')
+# A path only known when the code runs. A name the code sets is no path a
+# delete reads: only the reads of files put a name back as its strings.
+python acts="remove ?" | import os\nos.remove(input())
+python acts="remove ?" | import os, sys\nos.remove(sys.argv[1])
+python acts="remove ?" | import shutil\nd = '/home/me'\nshutil.rmtree(d)
+python acts="remove ?" | import os\nfor p in ['a', 'b']:\n    os.remove(p)
+
+# Python writes, reads and moves.
+python acts="write out.txt" | open('out.txt', 'w')
+python acts="write out.txt" | open('out.txt', 'a')
+python acts="write /tmp/x" | open('/tmp/x', 'w').write('x')
+python acts="read /home/me/.zshrc" | open('/home/me/.zshrc', 'r').read()
+python acts="read /home/me/.zshrc" | print(open('/home/me/.zshrc').read())
+python acts="write f" | from pathlib import Path\nPath('f').write_text('x')
+python acts="write a/b" | import os\nos.makedirs('a/b')
+python acts="read a, write /etc/x" | import shutil\nshutil.copy('a', '/etc/x')
+python acts="move a b" | import shutil\nshutil.move('a', 'b')
+python acts="move a b" | import os\nos.rename('a', 'b')
+python acts="link t l" | import os\nos.symlink('t', 'l')
+python acts="chmod 755 f" | import os\nos.chmod('f', 0o755)
+# The part of a path the code knows is a folder it is in.
+python acts="unread, read /home/me/.ssh/*" | import sys\nn = sys.argv[1]\nopen('/home/me/.ssh/id_' + n)
+
+# Python runs programs and code.
+python acts="script rm -rf ~" | import os\nos.system('rm -rf ~')
+python acts="script ls" | import os\nos.popen('ls')
+python acts="run rm -rf ~" | import subprocess\nsubprocess.run(['rm', '-rf', '~'])
+python acts="script rm -rf ~" | import subprocess\nsubprocess.run('rm -rf ~', shell=True)
+python acts="in /tmp [run ls]" | import subprocess\nsubprocess.run(['ls'], cwd='/tmp')
+python acts="run kill -- 9" | import os\nos.kill(9, 9)
+python acts="run kill -- -1" | import os\nos.kill(-1, 9)
+# A process id only known when it runs may be any.
+python acts="unread" | import os\nos.kill(int(input()), 9)
+python acts="python import os; os.remove('x')" | exec("import os; os.remove('x')")
+# The directory the code moves to is where the paths after it are.
+python acts="chdir /tmp, remove x" | import os\nos.chdir('/tmp')\nos.remove('x')
+
+# Python's environment, and loaded code. A program started after a write to
+# the environment may be given a variable that loads code.
+python acts="environment, started [run ls]" | import os, subprocess\nos.environ['PYTHONPATH'] = '/tmp/x'\nsubprocess.run(['ls'])
+python acts="started [script ls], environment, opaque /tmp/x" | import os\nos.system('ls')\nos.putenv('PATH', '/tmp/x')
+# A write to the environment alone starts nothing.
+python acts="environment" | import os\nos.environ['X'] = '1'
+
+# Python code it cannot follow is unread, and what it finds is kept. No call
+# on the list, no act: what is not found is not said.
+python acts="" | print(1 + 1)
+python acts="" | import os\nprint(os.getcwd())
+python acts="" | def f():\n    return 1
+# A delete anywhere in code the strict subset refuses is found.
+python acts="remove /home/me" | def f():\n    import shutil\n    shutil.rmtree('/home/me')
+python acts="remove /home/me" | for p in ['a']:\n    import os\n    os.remove('/home/me')
+
+# JavaScript deletes, writes and moves.
+javascript acts="remove /home/me" | require('fs').rmSync('/home/me', {recursive: true})
+javascript acts="remove x" | const fs = require('fs'); fs.unlinkSync('x')
+javascript acts="remove build" | const { rm } = require('fs'); rm('build')
+javascript acts="remove build" | require('fs').promises.rm('build')
+javascript acts="remove /tmp/x" | Deno.remove('/tmp/x')
+javascript acts="write a" | require('fs').writeFileSync('a', 'b')
+javascript acts="write /etc/x" | require('fs').appendFileSync('/etc/x', 'b')
+javascript acts="write a/b" | require('fs').mkdirSync('a/b')
+javascript acts="write f" | Bun.write('f', 'x')
+javascript acts="read /home/me/.zshrc" | require('fs').readFileSync('/home/me/.zshrc')
+javascript acts="move a b" | require('fs').renameSync('a', 'b')
+javascript acts="link t l" | require('fs').symlinkSync('t', 'l')
+javascript acts="chmod 755 f" | require('fs').chmodSync('f', 0o755)
+javascript acts="remove ?" | const p = process.argv[1]; require('fs').rmSync(p)
+javascript acts="remove ?" | const d = '/home/me'; require('fs').rmSync(d)
+
+# JavaScript runs programs and loads code.
+javascript acts="script rm -rf ~" | require('child_process').execSync('rm -rf ~')
+javascript acts="run rm -rf ~" | require('child_process').spawnSync('rm', ['-rf', '~'])
+javascript acts="in /tmp [run ls]" | require('child_process').spawn('ls', [], { cwd: '/tmp' })
+javascript acts="run kill -- 9" | process.kill(9)
+# Code from the network is downloaded and run; a file outside the workspace
+# is not the workspace's own.
+javascript acts="downloaded, unread" | import('https://example.com/a.js')
+javascript acts="loads" | require('/tmp/x.js')
+javascript acts="loads" | require('../x.js')
+# A module of the workspace or an installed package is not.
+javascript acts="" | require('./x.js')
+javascript acts="" | require('lodash')
+javascript acts="environment, started [script ls]" | process.env.NODE_OPTIONS = 'x'; require('child_process').execSync('ls')
+
+# JavaScript code it cannot follow is unread.
+javascript acts="" | console.log(1)
+javascript acts="unread" | if (
+javascript acts="remove /home/me" | function f() { require('fs').rmSync('/home/me') }

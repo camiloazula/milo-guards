@@ -1,0 +1,653 @@
+# The settings of the machine on macOS and Linux: security switches, the
+# firewall, the services the system runs, Time Machine backups and
+# machine-wide preferences are `system_settings`; reading a setting, a user's
+# own services and an application's own preferences are not. One section per
+# tool, then the reason a prompt can show. The format is in CONTRIBUTING.md.
+
+# Gatekeeper, System Integrity Protection, `SELinux` and the startup settings
+# in `NVRAM`: turning one off or changing it is risky, reading it or turning
+# it on is not.
+posix safe | spctl --master-enable
+posix safe | spctl --global-enable
+posix safe | spctl --status
+posix safe | spctl --assess --type execute x.app
+posix safe | spctl --add --label x /Applications/x.app
+posix safe | csrutil status
+posix safe | csrutil enable
+posix safe | csrutil authenticated-root status
+posix safe | setenforce 1
+posix safe | setenforce Enforcing
+posix safe | setenforce --help
+posix safe | getenforce
+posix safe | sestatus
+posix safe | cat /etc/selinux/config
+posix safe | grep SELINUX= /etc/selinux/config
+posix safe | cp /etc/selinux/config selinux.conf
+posix safe | echo x > selinux/config
+posix safe | nvram -p
+posix safe | nvram -x -p
+posix safe | nvram boot-args
+posix safe | nvram -p | grep boot-args
+posix finds=system_settings | spctl --master-disable
+posix finds=system_settings | spctl --global-disable
+posix finds=system_settings | spctl --disable --label x
+posix finds=system_settings | spctl --master-d
+posix finds=system_settings | spctl --global-d
+posix finds=system_settings | spctl --di --label x
+posix finds=system_settings | csrutil disable
+posix finds=system_settings | csrutil authenticated-root disable
+posix finds=system_settings | csrutil enable --without debug
+posix finds=system_settings | csrutil $mode
+posix finds=system_settings | setenforce 0
+posix finds=system_settings | setenforce Permissive
+posix finds=system_settings | setenforce permissive
+posix finds=system_settings | setenforce PERMISSIVE
+posix finds=system_settings | setenforce $mode
+posix finds=system_settings | echo SELINUX=disabled > /etc/selinux/config
+posix finds=system_settings | echo SELINUX=disabled >> /etc/selinux/config
+posix finds=system_settings | sed -i s/enforcing/disabled/ /etc/selinux/config
+posix finds=system_settings | sudo tee /etc/selinux/config
+posix finds=system_settings | cp selinux.conf /etc/selinux/config
+posix finds=system_settings | cd /etc/selinux && echo x > config
+posix finds=system_settings | echo x > /etc/../etc/selinux/config
+posix finds=system_settings | echo SELINUX=disabled > /etc/sysconfig/selinux
+posix finds=system_settings | sudo nvram boot-args=-v
+posix finds=system_settings | nvram boot-args=-v
+posix finds=system_settings | nvram -d boot-args
+posix finds=system_settings | nvram -c
+posix finds=system_settings | nvram -f vars.txt
+posix finds=system_settings | nvram $var
+
+# iptables: emptying the rules, deleting a chain or letting everything
+# through is risky; listing, adding and deleting one rule is not. A policy
+# may have its chain attached, and only `INPUT`, `FORWARD` and `PREROUTING`
+# let things in.
+posix safe | iptables -L
+posix safe | iptables -nvL
+posix safe | iptables -L -n --line-numbers
+posix safe | iptables -S
+posix safe | iptables -C INPUT -j DROP
+posix safe | iptables -Z
+posix safe | iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+posix safe | iptables -A INPUT -s $ip -j DROP
+posix safe | iptables -I INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
+posix safe | iptables -D INPUT 1
+posix safe | iptables -P INPUT DROP
+posix safe | iptables -P INPUT
+posix safe | iptables -P OUTPUT ACCEPT
+posix safe | iptables -t mangle -P OUTPUT ACCEPT
+posix safe | iptables -PINPUT DROP
+posix safe | iptables-save
+posix safe | ip6tables -L
+posix safe | iptables -nPINPUT DROP
+posix safe | iptables --policy=INPUT DROP
+posix safe | iptables -POUTPUT ACCEPT
+posix safe | iptables --policy=OUTPUT ACCEPT
+posix safe | iptables -P OUTPUT $policy
+posix safe | iptables -PINPUT
+posix safe | iptables -A INPUT -j ACCEPT
+posix safe | iptables -A INPUT -m policy --dir in --pol ipsec -j ACCEPT
+posix finds=system_settings | iptables -F
+posix finds=system_settings | iptables -t nat -F
+posix finds=system_settings | iptables -F INPUT
+posix finds=system_settings | iptables -nF
+posix finds=system_settings | iptables --flush
+posix finds=system_settings | iptables --fl
+posix finds=system_settings | iptables -X
+posix finds=system_settings | iptables -t nat -X
+posix finds=system_settings | iptables --delete-chain
+posix finds=system_settings | iptables --delete-c
+posix finds=system_settings | iptables -P INPUT ACCEPT
+posix finds=system_settings | iptables -P FORWARD accept
+posix finds=system_settings | iptables -t mangle -P FORWARD ACCEPT
+posix finds=system_settings | iptables --policy INPUT ACCEPT
+posix finds=system_settings | iptables --po INPUT ACCEPT
+posix finds=system_settings | iptables -P INPUT $policy
+posix finds=system_settings | ip6tables -F
+posix finds=system_settings | ip6tables -X
+posix finds=system_settings | ip6tables -P INPUT ACCEPT
+posix finds=system_settings | iptables-legacy -F
+posix finds=system_settings | iptables-nft -F
+posix finds=system_settings | ip6tables-legacy -P INPUT ACCEPT
+posix finds=system_settings | /usr/sbin/iptables -F
+posix finds=system_settings | sudo iptables -F
+posix finds=system_settings | bash -c 'iptables -F'
+posix finds=system_settings | iptables -PINPUT ACCEPT
+posix finds=system_settings | iptables -nPINPUT ACCEPT
+posix finds=system_settings | iptables --policy=INPUT ACCEPT
+posix finds=system_settings | iptables --policy=FORWARD accept
+posix finds=system_settings | iptables --pol=INPUT ACCEPT
+posix finds=system_settings | iptables -PINPUT $policy
+posix finds=system_settings | iptables -P $chain ACCEPT
+posix finds=system_settings | iptables -P PREROUTING ACCEPT
+posix finds=system_settings | iptables -t nat -P FORWARD ACCEPT
+
+# nft reads its arguments as one command line (`;` and a newline end a
+# command), after its options; flushing or deleting a ruleset, a table or a
+# chain is risky, a set, a map, a rule or an element is not. JSON commands
+# (`-j`) are not read.
+posix safe | nft list ruleset
+posix safe | nft add rule inet filter input tcp dport 22 accept
+posix safe | nft flush set inet filter blocked
+posix safe | nft 'list ruleset'
+posix safe | nft 'flush set inet filter blocked'
+posix safe | nft 'delete rule inet filter input handle 5'
+posix safe | nft delete element inet filter blocked '{ 1.2.3.4 }'
+posix safe | nft delete set inet filter blocked
+posix safe | nft flush map inet filter m
+posix safe | nft add rule inet filter input $rule
+posix safe | nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+posix safe | nft -d netlink list ruleset
+posix safe | nft --debug all list ruleset
+posix safe | nft -f rules.nft
+posix safe | nft
+posix safe | nft -j list ruleset
+posix safe | nft -j list table inet filter
+posix safe | nft --json list ruleset
+posix safe | nft -aj list tables
+posix safe | nft -f rules.json -j
+posix safe | nft -dj list ruleset
+posix finds=system_settings | nft flush ruleset
+posix finds=system_settings | nft flush table inet filter
+posix finds=system_settings | nft flush chain inet filter input
+posix finds=system_settings | nft delete table inet filter
+posix finds=system_settings | nft delete chain inet filter input
+posix finds=system_settings | nft destroy table inet filter
+posix finds=system_settings | nft $cmd
+posix finds=system_settings | nft 'flush ruleset'
+posix finds=system_settings | nft "delete table inet filter"
+posix finds=system_settings | nft "flush ruleset; add table x"
+posix finds=system_settings | nft 'add table x; flush ruleset'
+posix finds=system_settings | nft 'add table x\nflush ruleset'
+posix finds=system_settings | nft add table x \\; flush ruleset
+posix finds=system_settings | nft 'delete chain inet filter input'
+posix finds=system_settings | nft flush $what
+posix finds=system_settings | nft flush "$what"
+posix finds=system_settings | nft delete $kind inet filter
+posix finds=system_settings | nft flush everything
+posix finds=system_settings | nft delete everything x
+posix finds=system_settings | nft -d netlink flush ruleset
+posix finds=system_settings | nft --debug netlink flush ruleset
+posix finds=system_settings | nft --debug=all flush ruleset
+posix finds=system_settings | nft --deb all flush ruleset
+posix finds=system_settings | nft -nd netlink flush ruleset
+posix finds=system_settings | nft -a flush ruleset
+posix finds=system_settings | nft --json 'flush ruleset'
+posix finds=system_settings | nft -- flush ruleset
+posix finds=system_settings | nft add table x ';' $cmd
+posix finds=system_settings | nft -j '{"nftables": [{"flush": {"ruleset": null}}]}'
+posix finds=system_settings | nft --json '{"nftables":[{"flush":{"ruleset":null}}]}'
+posix finds=system_settings | nft -aj '{"nftables":[{"flush":{"ruleset":null}}]}'
+posix finds=system_settings | nft -ja '[{"flush":{"ruleset":null}}]'
+posix finds=system_settings | nft --js '{"nftables":[]}'
+posix finds=system_settings | nft --j '{"nftables":[]}'
+posix finds=system_settings | nft -j add table x '[1]'
+
+# Turning ufw off, resetting it, or letting everything in by default is
+# risky; letting everything out is ufw's stock default.
+posix safe | ufw status
+posix safe | ufw status verbose
+posix safe | ufw allow 22
+posix safe | ufw deny 23
+posix safe | ufw default deny incoming
+posix safe | ufw enable
+posix safe | ufw default allow outgoing
+posix safe | ufw default ALLOW Outgoing
+posix safe | ufw default deny outgoing
+posix safe | ufw default reject routed
+posix finds=system_settings | ufw disable
+posix finds=system_settings | ufw reset
+posix finds=system_settings | ufw --force reset
+posix finds=system_settings | ufw --force disable
+posix finds=system_settings | ufw default allow incoming
+posix finds=system_settings | ufw default allow
+posix finds=system_settings | ufw $cmd
+posix finds=system_settings | ufw default allow routed
+posix finds=system_settings | ufw default allow $direction
+posix finds=system_settings | ufw default allow forward
+posix finds=system_settings | ufw --force default allow incoming
+
+# firewalld's panic mode and a trusted default zone are risky, with a long
+# option given by any unique prefix.
+posix safe | firewall-cmd --list-all
+posix safe | firewall-cmd --add-port=80/tcp
+posix safe | firewall-cmd --panic-off
+posix safe | firewall-cmd --get-default-zone
+posix finds=system_settings | firewall-cmd --panic-on
+posix finds=system_settings | firewall-cmd --set-default-zone=trusted
+posix finds=system_settings | firewall-cmd --set-default-zone trusted
+posix finds=system_settings | firewall-cmd --set-def=trusted
+posix finds=system_settings | firewall-cmd --set-default=trusted
+
+# Turning pf off or flushing its rules (with the flush modifier abbreviated
+# or attached) is risky, flushing its states or tables is not; turning the
+# macOS application firewall off is risky.
+posix safe | pfctl -sr
+posix safe | pfctl -e
+posix safe | pfctl -s rules
+posix safe | pfctl -F states
+posix safe | pfctl -f /etc/pf.conf
+posix safe | pfctl -F s
+posix safe | pfctl -Fs
+posix safe | pfctl -Fq
+posix safe | pfctl -F Tables
+posix safe | pfctl -FT
+posix safe | pfctl -F info
+posix safe | pfctl -F Sources
+posix safe | pfctl -a anchor -sr
+posix safe | pfctl -s all
+posix safe | pfctl -sa
+posix safe | pfctl -f all
+posix safe | pfctl -k all
+posix safe | /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+posix safe | socketfilterfw --getglobalstate
+posix finds=system_settings | pfctl -d
+posix finds=system_settings | pfctl -dq
+posix finds=system_settings | pfctl -F all
+posix finds=system_settings | pfctl -F rules
+posix finds=system_settings | pfctl -F nat
+posix finds=system_settings | pfctl -F $what
+posix finds=system_settings | pfctl -F a
+posix finds=system_settings | pfctl -F r
+posix finds=system_settings | pfctl -F n
+posix finds=system_settings | pfctl -F al
+posix finds=system_settings | pfctl -F ru
+posix finds=system_settings | pfctl -Fa
+posix finds=system_settings | pfctl -Fr
+posix finds=system_settings | pfctl -Fn
+posix finds=system_settings | pfctl -Fall
+posix finds=system_settings | pfctl -Frules
+posix finds=system_settings | pfctl -Fnat
+posix finds=system_settings | pfctl -qFa
+posix finds=system_settings | pfctl -eFall
+posix finds=system_settings | pfctl -sr -F a
+posix finds=system_settings | pfctl -F ''
+posix finds=system_settings | /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+posix finds=system_settings | socketfilterfw --setglobalstate off
+posix finds=system_settings | socketfilterfw --setglobalstate 0
+posix finds=system_settings | socketfilterfw --setglobalstate $state
+
+# Masking or disabling a system service, and stopping or killing one that
+# protects the system (by name, by a pattern that may match one, or by an
+# action only known when it runs), is risky; a user's own services and
+# everyday service work are not. An option's value is not the verb or the
+# user switch, and an abbreviated scope switch after `--user` still ends it.
+# (`systemctl stop docker`, `systemctl stop nginx`, `systemctl stop
+# postgresql.service`, `systemctl kill docker` and `service nginx $action`,
+# safe, are in stop_processes.cases.)
+posix safe | systemctl --user restart web
+posix safe | systemctl --user stop web
+posix safe | systemctl --user disable web
+posix safe | systemctl --user mask web
+posix safe | systemctl disable --user web
+posix safe | systemctl --system --user mask web
+posix safe | systemctl --us mask web
+posix safe | systemctl restart nginx
+posix safe | systemctl reload nginx
+posix safe | systemctl start docker
+posix safe | systemctl enable nginx
+posix safe | systemctl unmask nginx
+posix safe | systemctl status nginx
+posix safe | systemctl is-active nginx
+posix safe | systemctl list-units
+posix safe | systemctl daemon-reload
+posix safe | systemctl -t service list-units
+posix safe | systemctl
+posix safe | service docker stop
+posix safe | service nginx restart
+posix safe | service nginx status
+posix safe | service --status-all
+posix safe | service nginx
+posix safe | service ufw
+posix safe | service ufw status
+posix safe | systemctl --message x status nginx
+posix safe | systemctl --message x restart nginx
+posix safe | systemctl --user --message x disable nginx
+posix safe | systemctl stop selinux-autorelabel
+posix safe | systemctl stop nginx.service
+posix safe | systemctl --user kill firewalld
+posix safe | systemctl kill -s HUP nginx
+posix safe | systemctl --legend false status nginx
+posix safe | systemctl --user -p x disable web
+posix finds=system_settings | systemctl mask systemd-resolved
+posix finds=system_settings | systemctl disable nginx
+posix finds=system_settings | systemctl disable --now nginx
+posix finds=system_settings | systemctl --now disable nginx
+posix finds=system_settings | systemctl -t service mask x
+posix finds=system_settings | systemctl --system mask x
+posix finds=system_settings | systemctl --user --system mask x
+posix finds=system_settings | systemctl --global disable x
+posix finds=system_settings | systemctl --root /mnt disable x
+posix finds=system_settings | systemctl $verb nginx
+posix finds=system_settings | sudo systemctl mask x
+posix finds=system_settings | systemctl stop firewalld
+posix finds=system_settings | systemctl stop firewalld.service
+posix finds=system_settings | systemctl stop ufw
+posix finds=system_settings | systemctl stop nftables
+posix finds=system_settings | systemctl stop apparmor
+posix finds=system_settings | systemctl stop auditd
+posix finds=system_settings | systemctl stop fail2ban
+posix finds=system_settings | systemctl stop docker ufw
+posix finds=system_settings | systemctl stop $unit
+posix finds=system_settings | service ufw stop
+posix finds=system_settings | service firewalld stop
+posix finds=system_settings | systemctl stop 'firewall*'
+posix finds=system_settings | systemctl stop fire?alld
+posix finds=system_settings | systemctl stop firewalld\\*
+posix finds=system_settings | systemctl stop 'fire[w]alld'
+posix finds=system_settings | systemctl stop "uf*"
+posix finds=system_settings | systemctl stop docker 'ufw*'
+posix finds=system_settings | service ufw $action
+posix finds=system_settings | service ufw "$a"
+posix finds=system_settings | service $name $action
+posix finds=system_settings | service $name stop
+posix finds=system_settings | systemctl --message x disable nginx
+posix finds=system_settings | systemctl -C cap disable nginx
+posix finds=system_settings | systemctl --capsule cap disable nginx
+posix finds=system_settings | systemctl --what=x disable nginx
+posix finds=system_settings | systemctl --what x disable nginx
+posix finds=system_settings | systemctl --timestamp us disable nginx
+posix finds=system_settings | systemctl --preset-mode full disable nginx
+posix finds=system_settings | systemctl --boot-loader-entry x disable nginx
+posix finds=system_settings | systemctl --reboot-argument x disable nginx
+posix finds=system_settings | systemctl --image img disable nginx
+posix finds=system_settings | systemctl --drop-in d disable nginx
+posix finds=system_settings | systemctl --when x disable nginx
+posix finds=system_settings | systemctl --mess x disable nginx
+posix finds=system_settings | systemctl -lt service disable nginx
+posix finds=system_settings | systemctl -tservice disable nginx
+posix finds=system_settings | systemctl --message x stop ufw
+posix finds=system_settings | systemctl kill firewalld
+posix finds=system_settings | systemctl kill -s KILL auditd
+posix finds=system_settings | systemctl kill --signal=KILL ufw
+posix finds=system_settings | systemctl kill 'fire*'
+posix finds=system_settings | systemctl kill $u
+posix finds=system_settings | systemctl kill docker ufw
+posix finds=system_settings | systemctl --legend false disable firewalld
+posix finds=system_settings | systemctl --leg false disable firewalld
+posix finds=system_settings | systemctl -p --user disable firewalld
+posix finds=system_settings | systemctl --message --user disable firewalld
+posix finds=system_settings | systemctl --user --sys disable x
+posix finds=system_settings | systemctl --user --sy disable x
+posix finds=system_settings | systemctl --user --g disable x
+posix finds=system_settings | systemctl --user --glob disable x
+
+# launchctl: removing or disabling a service the system runs (a system
+# domain, a system folder, a search path) is risky; listing, loading and
+# starting services, and a user's own services in the workspace or a
+# temporary folder, are not.
+posix safe | launchctl list
+posix safe | launchctl print gui/501
+posix safe | launchctl print system
+posix safe | launchctl list com.x
+posix safe | launchctl load ./x.plist
+posix safe | launchctl bootstrap gui/501 ./x.plist
+posix safe | launchctl enable gui/501/com.x
+posix safe | launchctl kickstart -k gui/501/com.x
+posix safe | launchctl start com.x
+posix safe | launchctl stop com.x
+posix safe | launchctl unload ./x.plist
+posix safe | launchctl unload -w ./x.plist
+posix safe | launchctl unload ./a.plist ./b.plist
+posix safe | launchctl bootout gui/501 ./x.plist
+posix safe | launchctl bootout gui/501 ~/work/repo/x.plist
+posix safe | launchctl bootout gui/501 /tmp/scratch/x.plist
+posix safe | launchctl
+posix safe | launchctl unload -S Aqua ./x.plist
+posix safe | launchctl unload -wF ./x.plist
+posix finds=system_settings | launchctl bootout gui/501/com.x
+posix finds=system_settings | launchctl bootout system/com.x
+posix finds=system_settings | launchctl bootout system ./x.plist
+posix finds=system_settings | launchctl bootout user/501
+posix finds=system_settings | launchctl bootout $domain ./x.plist
+posix finds=system_settings | launchctl bootout gui/501 /Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl bootout gui/501 ./x.plist /Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl unload /Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl unload -w /Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl unload /System/Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl unload ~/Library/LaunchAgents/x.plist
+posix finds=system_settings | launchctl unload $plist
+posix finds=system_settings | launchctl disable gui/501/com.x
+posix finds=system_settings | launchctl disable system/com.x
+posix finds=system_settings | launchctl remove com.x
+posix finds=system_settings | launchctl $verb gui/501/com.x
+posix finds=system_settings | sudo launchctl bootout system/com.x
+posix finds=system_settings | launchctl unload -D system
+posix finds=system_settings | launchctl unload -D local
+posix finds=system_settings | launchctl unload -D all
+posix finds=system_settings | launchctl unload -D user
+posix finds=system_settings | launchctl unload -S Aqua -D user
+posix finds=system_settings | launchctl unload -Dsystem
+posix finds=system_settings | launchctl unload -wD system
+posix finds=system_settings | launchctl unload -w -D system
+posix finds=system_settings | launchctl unload -D system ./x.plist
+posix finds=system_settings | launchctl unload ./x.plist -D system
+
+# Time Machine backups are risky to delete or turn off.
+posix safe | tmutil listbackups
+posix safe | tmutil latestbackup
+posix safe | tmutil status
+posix safe | tmutil startbackup
+posix safe | tmutil enable
+posix safe | tmutil localsnapshot
+posix safe | tmutil listlocalsnapshots /
+posix safe | tmutil destinationinfo
+posix safe | tmutil
+posix finds=system_settings | tmutil delete /Volumes/TM/Backups.backupdb/x
+posix finds=system_settings | tmutil deletelocalsnapshots 2024-01-01-000000
+posix finds=system_settings | tmutil deleteinprogress /Volumes/TM/x
+posix finds=system_settings | tmutil thinlocalsnapshots / 1000 1
+posix finds=system_settings | tmutil disable
+posix finds=system_settings | tmutil disablelocal
+posix finds=system_settings | tmutil removedestination 1234
+posix finds=system_settings | sudo tmutil delete -p /Volumes/TM/x
+posix finds=system_settings | tmutil $verb
+
+# defaults: deleting or replacing all of an application's preferences, or
+# changing machine-wide ones, is risky; reading them, or changing one key of
+# an application's own, is not.
+posix safe | defaults read com.apple.dock
+posix safe | defaults read
+posix safe | defaults read -g
+posix safe | defaults read NSGlobalDomain AppleLocale
+posix safe | defaults read-type com.apple.dock autohide
+posix safe | defaults export com.apple.dock -
+posix safe | defaults domains
+posix safe | defaults find dock
+posix safe | defaults write com.apple.dock autohide -bool true
+posix safe | defaults write com.example.app key value
+posix safe | defaults write -g ApplePressAndHoldEnabled -bool false
+posix safe | defaults write -app Safari key value
+posix safe | defaults -currentHost write com.apple.x k v
+posix safe | defaults write ~/Library/Preferences/com.example.app.plist k v
+posix safe | defaults write ./app.plist k v
+posix safe | defaults write app.plist k v
+posix safe | defaults delete com.apple.dock persistent-apps
+posix safe | defaults delete -g ApplePressAndHoldEnabled
+posix safe | defaults delete -app Safari key
+posix safe | defaults delete ./app.plist key
+posix safe | defaults rename com.example.app old new
+posix safe | defaults
+posix finds=system_settings | defaults delete com.apple.dock
+posix finds=system_settings | defaults delete -g
+posix finds=system_settings | defaults delete NSGlobalDomain
+posix finds=system_settings | defaults delete -globalDomain
+posix finds=system_settings | defaults delete -app Safari
+posix finds=system_settings | defaults -currentHost delete com.apple.dock
+posix finds=system_settings | defaults import com.x settings.plist
+posix finds=system_settings | defaults import -g settings.plist
+posix finds=system_settings | defaults write /Library/Preferences/com.apple.loginwindow x -bool true
+posix finds=system_settings | defaults write /Library/Preferences/com.apple.loginwindow
+posix finds=system_settings | defaults delete /Library/Preferences/com.apple.loginwindow x
+posix finds=system_settings | defaults write /Library/LaunchDaemons/x.plist Disabled -bool true
+posix finds=system_settings | defaults rename /Library/Preferences/x a b
+posix finds=system_settings | defaults write $domain x -bool true
+posix finds=system_settings | defaults $verb com.x
+posix finds=system_settings | sudo defaults write /Library/Preferences/x k v
+
+# Every pmset setting changes power settings, with or without a power source
+# flag; reading them, sleeping now and pmset's other actions do not.
+posix safe | pmset -g
+posix safe | pmset -g batt
+posix safe | pmset -g assertions
+posix safe | pmset -g log
+posix safe | pmset displaysleepnow
+posix safe | pmset sleepnow
+posix safe | pmset
+posix safe | pmset touch
+posix safe | pmset noidle
+posix safe | pmset boot
+posix safe | pmset -g custom
+posix safe | pmset --help
+posix finds=system_settings | pmset -a sleep 0
+posix finds=system_settings | pmset -b displaysleep 5
+posix finds=system_settings | pmset -c sleep 0
+posix finds=system_settings | pmset -u haltlevel 5
+posix finds=system_settings | pmset schedule wake '01/01/30 00:00:00'
+posix finds=system_settings | pmset repeat shutdown MTWRF 23:00:00
+posix finds=system_settings | pmset restoredefaults
+posix finds=system_settings | sudo pmset -a disablesleep 1
+posix finds=system_settings | pmset sleep 0
+posix finds=system_settings | pmset disablesleep 1
+posix finds=system_settings | pmset womp 1
+posix finds=system_settings | pmset hibernatemode 0
+posix finds=system_settings | pmset autorestart 1 sleep 0
+posix finds=system_settings | pmset displaysleep 10
+posix finds=system_settings | pmset $setting 0
+posix finds=system_settings | pmset -a
+posix finds=system_settings | sudo pmset sleep 0
+
+# The network settings, the computer's name and its clock: setting one is
+# risky, reading it is not. hostnamectl sets a value with a verb and an
+# operand, and its `--json` takes a value that does not hide the verb; an
+# option's value is not timedatectl's verb.
+posix safe | networksetup -getdnsservers Wi-Fi
+posix safe | networksetup -listallnetworkservices
+posix safe | networksetup -listallhardwareports
+posix safe | networksetup -getinfo Wi-Fi
+posix safe | systemsetup -getremotelogin
+posix safe | systemsetup -gettimezone
+posix safe | systemsetup -listtimezones
+posix safe | scutil --dns
+posix safe | scutil --proxy
+posix safe | scutil --get HostName
+posix safe | hostnamectl
+posix safe | hostnamectl status
+posix safe | hostnamectl --json=pretty status
+posix safe | hostnamectl hostname
+posix safe | hostnamectl icon-name
+posix safe | hostnamectl chassis
+posix safe | hostnamectl deployment
+posix safe | hostnamectl location
+posix safe | hostnamectl --json=short hostname
+posix safe | hostnamectl hostname --transient
+posix safe | hostnamectl -H me@host hostname
+posix safe | timedatectl
+posix safe | timedatectl status
+posix safe | timedatectl list-timezones
+posix safe | timedatectl -p NTP show
+posix safe | timedatectl --property NTP status
+posix safe | hostname
+posix safe | hostname -s
+posix safe | hostname -f
+posix safe | hostname -I
+posix finds=system_settings | networksetup -setdnsservers Wi-Fi 1.1.1.1
+posix finds=system_settings | networksetup -setwebproxy Wi-Fi 127.0.0.1 8080
+posix finds=system_settings | networksetup -setairportpower en0 off
+posix finds=system_settings | networksetup -addpreferredwirelessnetworkatindex en0 x 0 WPA2
+posix finds=system_settings | networksetup -removenetworkservice x
+posix finds=system_settings | networksetup -createnetworkservice x en1
+posix finds=system_settings | networksetup -SETDNSSERVERS Wi-Fi empty
+posix finds=system_settings | scutil --set HostName x
+posix finds=system_settings | scutil --set ComputerName x
+posix finds=system_settings | systemsetup -setremotelogin on
+posix finds=system_settings | systemsetup -settimezone UTC
+posix finds=system_settings | systemsetup -setcomputersleep Never
+posix finds=system_settings | hostnamectl set-hostname x
+posix finds=system_settings | hostnamectl --static set-hostname x
+posix finds=system_settings | hostnamectl -H me@host set-hostname x
+posix finds=system_settings | hostnamectl set-icon-name x
+posix finds=system_settings | hostnamectl hostname newname
+posix finds=system_settings | hostnamectl hostname $name
+posix finds=system_settings | hostnamectl icon-name computer-vm
+posix finds=system_settings | hostnamectl chassis vm
+posix finds=system_settings | hostnamectl deployment production
+posix finds=system_settings | hostnamectl location 'Room 1'
+posix finds=system_settings | hostnamectl --pretty hostname 'My Mac'
+posix finds=system_settings | hostnamectl hostname --pretty 'My Mac'
+posix finds=system_settings | hostnamectl -H me@host chassis vm
+posix finds=system_settings | sudo hostnamectl hostname newname
+posix finds=system_settings | hostnamectl --json short set-hostname x
+posix finds=system_settings | hostnamectl --json pretty set-hostname x
+posix finds=system_settings | hostnamectl --js short hostname x
+posix finds=system_settings | timedatectl set-timezone UTC
+posix finds=system_settings | timedatectl set-time '2030-01-01 00:00:00'
+posix finds=system_settings | timedatectl set-ntp false
+posix finds=system_settings | timedatectl set-local-rtc 1
+posix finds=system_settings | timedatectl -p NTP set-ntp false
+posix finds=system_settings | timedatectl --property NTP set-timezone UTC
+posix finds=system_settings | hostname newname
+posix finds=system_settings | hostname -F /etc/hostname
+posix finds=system_settings | hostname --file /etc/hostname
+posix finds=system_settings | hostname $name
+
+# The same names in PowerShell and cmd stay as they were.
+powershell safe | hostname
+powershell safe | hostname -s
+powershell safe | service stop
+powershell safe | hostname newname
+powershell safe | service ufw stop
+cmd safe | hostname
+cmd safe | hostname -s
+cmd safe | service stop
+cmd safe | hostname newname
+cmd safe | service ufw stop
+
+# The reason a prompt can show: what the setting is, and whether the line
+# turns it off, deletes or replaces it, or changes it. Each line has one
+# finding of `system_settings`, with this reason (a write to /etc is also an
+# overwrite).
+posix rules=system_settings first=system_settings reason="turns off Gatekeeper" | spctl --master-disable
+posix rules=system_settings first=system_settings reason="turns off System Integrity Protection" | csrutil disable
+posix rules=system_settings first=system_settings reason="turns off SELinux enforcement" | setenforce 0
+posix rules=system_settings,overwrite first=system_settings reason="changes SELinux settings" | echo x > /etc/selinux/config
+posix rules=system_settings first=system_settings reason="changes the computer's startup settings" | nvram boot-args=-v
+posix rules=system_settings first=system_settings reason="changes the firewall" | iptables -F
+posix rules=system_settings first=system_settings reason="changes the firewall" | ip6tables -P INPUT ACCEPT
+posix rules=system_settings first=system_settings reason="changes the firewall" | nft flush ruleset
+posix rules=system_settings first=system_settings reason="turns the firewall off" | ufw disable
+posix rules=system_settings first=system_settings reason="resets the firewall's rules" | ufw reset
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | ufw default allow incoming
+posix rules=system_settings first=system_settings reason="changes the firewall" | firewall-cmd --panic-on
+posix rules=system_settings first=system_settings reason="changes the firewall" | pfctl -d
+posix rules=system_settings first=system_settings reason="turns the firewall off" | socketfilterfw --setglobalstate off
+posix rules=system_settings first=system_settings reason="masks a system service" | systemctl mask x
+posix rules=system_settings first=system_settings reason="disables a system service" | systemctl disable x
+posix rules=system_settings first=system_settings reason="changes a system service only known when it runs" | systemctl $verb x
+posix rules=system_settings first=system_settings reason="stops a service that protects the system" | systemctl stop ufw
+posix rules=system_settings first=system_settings reason="stops a service that protects the system" | service ufw stop
+posix rules=system_settings first=system_settings reason="stops services that may protect the system" | systemctl stop 'firewall*'
+posix rules=system_settings first=system_settings reason="stops a service that protects the system" | service ufw $action
+posix rules=system_settings first=system_settings reason="kills a service that protects the system" | systemctl kill ufw
+posix rules=system_settings first=system_settings reason="kills services that may protect the system" | systemctl kill 'fire*'
+posix rules=system_settings first=system_settings reason="removes a service the system runs" | launchctl bootout gui/501/com.x
+posix rules=system_settings first=system_settings reason="removes a service the system runs" | launchctl unload /Library/LaunchDaemons/x.plist
+posix rules=system_settings first=system_settings reason="removes a service the system runs" | launchctl disable gui/501/com.x
+posix rules=system_settings first=system_settings reason="removes a service the system runs" | launchctl unload -D system
+posix rules=system_settings first=system_settings reason="deletes Time Machine backups" | tmutil delete x
+posix rules=system_settings first=system_settings reason="deletes Time Machine backups" | tmutil deletelocalsnapshots 1
+posix rules=system_settings first=system_settings reason="turns Time Machine off" | tmutil disable
+posix rules=system_settings first=system_settings reason="deletes all of an application's preferences" | defaults delete com.apple.dock
+posix rules=system_settings first=system_settings reason="deletes all of an application's preferences" | defaults delete -g
+posix rules=system_settings first=system_settings reason="replaces all of an application's preferences" | defaults import com.apple.dock x.plist
+posix rules=system_settings first=system_settings reason="replaces all of an application's preferences" | defaults import com.x settings.plist
+posix rules=system_settings first=system_settings reason="changes machine-wide preferences" | defaults write /Library/Preferences/x k v
+posix rules=system_settings first=system_settings reason="changes power settings" | pmset -a sleep 0
+posix rules=system_settings first=system_settings reason="changes power settings" | pmset sleep 0
+posix rules=system_settings first=system_settings reason="changes system or network settings" | networksetup -setdnsservers Wi-Fi 1.1.1.1
+posix rules=system_settings first=system_settings reason="changes the computer's name or network settings" | scutil --set HostName x
+posix rules=system_settings first=system_settings reason="changes system or network settings" | systemsetup -setremotelogin on
+posix rules=system_settings first=system_settings reason="changes the computer's name" | hostnamectl set-hostname x
+posix rules=system_settings first=system_settings reason="changes the computer's name" | hostnamectl hostname newname
+posix rules=system_settings first=system_settings reason="changes the computer's clock settings" | timedatectl set-timezone UTC
+posix rules=system_settings first=system_settings reason="changes the computer's name" | hostname newname

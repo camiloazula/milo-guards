@@ -1,0 +1,502 @@
+# How code reaches an interpreter: every code flag of node and bun, the
+# operands of `deno eval`, Python 2's `exec`, code an interpreter reads from
+# its input (a here-document, `-i`, `repl`, a debugger), flags that only
+# print a version or help, perl, ruby, php and lua options that take the
+# print flag as their value, runners and bun options in front of the code,
+# hashbang lines, Python coding declarations and carriage returns, `data:`
+# URLs and `NODE_OPTIONS`, and code handed to an interpreter under cmd and
+# PowerShell. The format is in CONTRIBUTING.md.
+
+# Code is read however it reaches the interpreter.
+# A program or a script file, and nothing read from the input.
+posix safe | deno run main.ts
+posix safe | deno run --allow-read main.ts
+posix safe | deno test
+posix safe | bun run build.ts
+posix safe | bun install
+posix safe | bun main.ts
+# Deno's options that print do not read the input.
+posix safe | deno --version
+posix safe | deno -V
+posix safe | deno --help
+posix safe | deno -h
+posix safe | php --version
+posix safe | ruby --help
+posix safe | php --help
+# A value joined to its option takes no word.
+posix safe | ruby --enable=gems --version
+# Modules that are not a `data:` URL are as they were.
+posix safe | node --import ./setup.js build.js
+posix safe | node --import ./setup.js <<'JS'\nconsole.log(1)\nJS
+posix safe | NODE_OPTIONS=--import=data:text/javascript,1 echo 1
+# A hashbang not at the start of the code is a syntax error, not a comment.
+posix safe | node -e "console.log(1)"
+# A coding line in code that is not bytes is ignored by Python.
+posix safe | python3 -c '# coding: utf-7\nprint(1)'
+# Every code flag of node and bun: the last one runs, and an earlier one is
+# read all the same.
+posix finds=delete | node -e "console.log(1)" -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "require('fs').rmSync('/home/me',{recursive:true})" -e "console.log(1)"
+posix finds=delete | node -p -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node --eval 1 --eval "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -p 1 -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -pe 1 -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node --print=1 --eval="require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -r ts-node/register -e 1 -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | bun -e 1 -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | bun --print 1 --eval "require('fs').rmSync('/home/me',{recursive:true})"
+# A piece only known when it runs, or an option that could be one.
+posix finds=unknown | node -e 1 -e "$CODE"
+posix finds=unknown | node -e 1 $OPTION -e 2
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | node -e 'console.log(1)' -e 'console.log(2)'
+posix finds=unknown | node -p -e 'console.log(1)'
+posix finds=unknown | node -p 1 -e 'console.log(2)'
+posix finds=unknown | node --eval 1 --eval 2
+posix finds=unknown | node --print=1 --eval=2
+posix finds=unknown | node -pe 1 -e 2
+posix finds=unknown | bun -e 1 -e 2
+posix finds=unknown | bun -p 1 -e 2
+posix finds=unknown | node -e 'console.log(process.argv)' script-arg
+# Every operand of `deno eval` is read.
+posix finds=delete | deno eval --reload "Deno.removeSync('/home/me',{recursive:true})" "console.log(1)"
+posix finds=delete | deno eval -L info "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | deno eval --log-level info "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | deno eval --v8-flags "Deno.removeSync('/home/me',{recursive:true})" 1
+posix finds=delete | deno eval --env-file "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | deno eval "console.log(1)" "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | deno eval -- "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | deno eval --ext ts "Deno.removeSync('/home/me',{recursive:true})"
+# An operand that is a path and not code does not parse: unread.
+posix finds=unknown | deno eval --config ./deno.json 'console.log(1)'
+posix finds=unknown | deno eval 'console.log(1)' "$ARG"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | deno eval --reload 'console.log(1)'
+posix finds=unknown | deno eval -L info 'console.log(1)'
+posix finds=unknown | deno eval --log-level debug 'console.log(1)'
+posix finds=unknown | deno eval --ext ts 'console.log(1)'
+posix finds=unknown | deno eval -c deno.json 'console.log(1)'
+posix finds=unknown | deno eval 'console.log(Deno.args)' a b
+posix finds=unknown | deno eval -- 'console.log(1)'
+posix finds=unknown | deno eval --v8-flags=--max-old-space-size=100 'console.log(1)'
+# The `exec` statement of Python 2.
+posix finds=delete | python2 -c 'exec "import os; os.remove(\\"/home/me/.zshrc\\")"'
+posix finds=delete | python2 -c "exec \\"import os; os.remove('/home/me/.zshrc')\\" in {}"
+posix finds=delete | python2 -c "exec 'import os; os.remove(\\"/home/me/.zshrc\\")'"
+posix finds=unknown | python2 -c 'exec x'
+posix finds=unknown | python2 -c 'exec x in {}'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python2 -c 'exec "print 1"'
+# Bun and deno reading code from their input.
+posix finds=delete | deno run - <<'JS'\nDeno.removeSync('/home/me', {recursive: true})\nJS
+posix finds=delete | bun - <<'JS'\nrequire('fs').rmSync('/home/me', {recursive: true})\nJS
+posix finds=delete | bun run - <<'JS'\nrequire('fs').rmSync('/home/me', {recursive: true})\nJS
+posix finds=delete | deno run --allow-all - <<'JS'\nDeno.removeSync('/home/me', {recursive: true})\nJS
+posix finds=unknown | echo "Deno.removeSync('/home/me', {recursive: true})" | deno run -
+posix finds=unknown | echo "require('fs').rmSync('/home/me')" | bun -
+posix finds=unknown | echo 'x' | bun run -
+posix finds=unknown | deno run - < script.js
+posix finds=unknown | bun - < script.js
+# The REPL reads its input under a POSIX shell.
+posix finds=unknown | deno repl
+posix finds=unknown | bun repl
+posix finds=unknown | echo 'x' | deno
+posix finds=unknown | echo 'x' | bun repl
+posix finds=unknown | deno run - <<'JS'\nDeno.removeSync(\nJS
+posix finds=unknown | deno run - <<JS\nDeno.removeSync('$X')\nJS
+# No subcommand and no option that prints reads its input (`deno` alone is in
+# package_runners.cases).
+posix finds=unknown | deno --unstable
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | bun - <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | bun run - <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | deno run - <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | bun - <<JS\nconsole.log(1)\nJS
+# An interactive interpreter reads the code it is handed on its input:
+# CPython's `-i`, alone, bundled and attached to the code.
+posix finds=unknown | python3 -ic "print(1)" <<'PY'\nimport shutil; shutil.rmtree('/home/me')\nPY
+posix finds=unknown | echo "import shutil; shutil.rmtree('/home/me')" | python3 -i -c "print(1)"
+posix finds=unknown | python3 -i -c 1 < /tmp/evil.py
+posix finds=unknown | python3 -i -c 1
+posix finds=unknown | python3 -bic 1
+posix finds=unknown | python3 -ibc 1
+posix finds=unknown | python3 -i -c1
+posix finds=unknown | python3 -W i -ic 1
+posix finds=unknown | python3 -b -i -c 1 <<'PY'\nprint(1)\nPY
+# What is in the code is read all the same.
+posix finds=delete | python3 -i -c "import shutil; shutil.rmtree('/home/me')"
+# Node's `-i` and `--interactive`, before or after the code.
+posix finds=unknown | node -i -e 1 <<'JS'\nrequire('fs').rmSync('/home/me',{recursive:true})\nJS
+posix finds=unknown | node --interactive -e 1
+posix finds=unknown | node --interactive -p 1
+posix finds=unknown | node -i -e 1
+posix finds=unknown | node -e 1 -i
+posix finds=unknown | node -e 1 --interactive
+posix finds=unknown | node -p 1 -i
+posix finds=delete | node -i -e "require('fs').rmSync('/home/me',{recursive:true})"
+# `repl` reads the code it is given from the input.
+posix finds=unknown | node -e "require('repl').start()" <<'JS'\nrequire('fs').rmSync('/home/me',{recursive:true})\nJS
+posix finds=unknown | node -e "require('node:repl').start()"
+posix finds=unknown | node -e "const r = require('repl'); r.start()"
+posix finds=unknown | node -e "const { start } = require('repl'); start()"
+posix finds=unknown | node -e "new (require('repl').REPLServer)()"
+posix finds=unknown | node --input-type=module -e "import repl from 'repl'; repl.start()"
+# A debugger reads its commands, and runs statements, from the input: every
+# `pdb` call that starts one.
+posix finds=unknown | python3 -c "breakpoint()" <<'PY'\nimport shutil; shutil.rmtree('/home/me')\nPY
+posix finds=unknown | python3 -c "import pdb; pdb.set_trace()" <<'PY'\nimport os; os.remove('/home/me/f')\nPY
+posix finds=unknown | python3 -c "from pdb import set_trace as t; t()"
+posix finds=unknown | python3 -c "import code; code.interact()"
+posix finds=unknown | python3 -c "import pdb; pdb.run('1')" <<'X'\n!__import__('shutil').rmtree('/home/me')\nc\nX
+posix finds=unknown | python3 -c "import pdb; pdb.runeval('1')"
+posix finds=unknown | python3 -c "import pdb; pdb.runeval('__import__(\\"os\\")').system('rm -rf ~')"
+posix finds=unknown | python3 -c "import pdb; pdb.main()"
+posix finds=unknown | python3 -c "import pdb; pdb.runcall(print, 1)"
+posix finds=unknown | python3 -c "import pdb; pdb.Pdb().set_trace()"
+posix finds=unknown | python3 -c "import pdb; pdb.set_trace()"
+posix finds=unknown | python3 -c "from pdb import run; run('1')"
+# Not read whole by the strict gate: unknown. (`-I` is isolated mode, which
+# does not read the input; after the code, an `-i` is an argument of the
+# code; bun's `-i` installs packages.)
+posix finds=unknown | python3 -I -c 'print(1)'
+posix finds=unknown | python3 -Ic 'print(1)'
+posix finds=unknown | python3 -c 'print(1)' -i
+posix finds=unknown | python3 -c 'print(1)' -i x
+posix finds=unknown | bun -i -e 1
+posix finds=unknown | node -e 'console.log(1)' script-arg -i
+posix finds=unknown | python3 -W i -c 'print(1)'
+# A flag that is not a print-and-exit one, or is another option's value, or
+# comes where the script's name does, reads the input; so does anything that
+# does more than print.
+posix finds=unknown | python3 -v
+posix finds=unknown | python3 -W --version
+posix finds=unknown | python3 -X --version
+posix finds=unknown | python3 -- --version
+posix finds=unknown | node -r --version
+posix finds=unknown | node --import --version
+posix finds=unknown | python3 -V -
+posix finds=unknown | python3 -i
+# The input is read as code, and is.
+posix finds=delete | python3 -W --version <<'PY'\nimport shutil\nshutil.rmtree('/home/me')\nPY
+# A print flag that is the value of perl's, ruby's or php's option before
+# it: the program comes from the input.
+posix finds=unknown | perl -I --version <<'PL'\nsystem("rm -rf /home/me");\nPL
+posix finds=unknown | ruby -I --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | ruby -E --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | php -d --version <<'PH'\n<?php system("rm -rf /home/me");\nPH
+posix finds=unknown | php -c --version <<'PH'\n<?php system("rm -rf /home/me");\nPH
+posix finds=unknown | php -z --help
+# Ruby's `--enable`, `--disable`, `--dump` and `--crash-report`, and php's
+# `--define`, `--php-ini` and `--zend-extension` take the next word as their
+# value, whatever it starts with, as `-d`, `-c` and `-z` do: the program
+# comes from the input.
+posix finds=unknown | ruby --enable --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | ruby --disable --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | ruby --dump --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | ruby --crash-report --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | ruby --encoding --version <<'RB'\nsystem("rm -rf /home/me")\nRB
+posix finds=unknown | php --define --version <<'PH'\n<?php system("rm -rf /home/me");\nPH
+posix finds=unknown | php --php-ini --version <<'PH'\n<?php system("rm -rf /home/me");\nPH
+posix finds=unknown | php --zend-extension --version <<'PH'\n<?php system("rm -rf /home/me");\nPH
+posix finds=unknown | perl --unknown --version <<'PL'\nsystem("rm -rf /home/me");\nPL
+# Code a runner or a bun option hands on is read too.
+posix finds=delete | npx node -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | bun x node -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | bun --import r.js -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | uvx python -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | sudo deno eval "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=delete | python3 - <<'PY'\nimport shutil; shutil.rmtree('/home/me')\nPY
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | bun --cwd app -e 'console.log(1)'
+# A JavaScript hashbang line ends at any line terminator.
+posix finds=delete | node -e "#!x\rrequire('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "#!x\u{2028}require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "#!x\u{2029}require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "#!x\r\nrequire('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "#!x\nrequire('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node <<'JS'\n#!x\rrequire('fs').rmSync('/home/me',{recursive:true})\nJS
+posix finds=delete | node <<'JS'\n#!x\u{2028}require('fs').rmSync('/home/me',{recursive:true})\nJS
+posix finds=delete | node --input-type=module <<'JS'\n#!x\u{2029}require('fs').rmSync('/home/me',{recursive:true})\nJS
+posix finds=delete | bun -e "#!x\rrequire('fs').rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "eval('#!x\\u2028require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})')"
+# Not read whole by the strict gate: unknown. (The whole line is the
+# comment.)
+posix finds=unknown | node -e "#!x require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "#!x\nconsole.log(1)"
+posix finds=unknown | node -e "#!x\rconsole.log(1)"
+posix finds=unknown | node -e "#!x\r\nconsole.log(1)"
+posix finds=unknown | node -e "#!x\u{2028}console.log(1)"
+posix finds=unknown | node -e "#!x\u{2029}console.log(1)"
+posix finds=unknown | node <<'JS'\n#!/usr/bin/env node\nconsole.log(1)\nJS
+# A Python coding declaration that decodes the input to other text is not
+# read. (UTF-8 is what the reader reads, in any spelling; an
+# ASCII-compatible encoding reads an ASCII text the same; only the first two
+# lines are a declaration.)
+posix finds=unknown | python3 <<'PY'\n# coding: utf-7\nprint(1)\nPY
+posix finds=unknown | python3 - <<'PY'\n# -*- coding: utf-7 -*-\nprint(1)\nPY
+posix finds=delete | python3 - <<'PY'\n# coding: utf-7\nimport shutil\nshutil.rmtree("/home/me")\nPY
+posix finds=unknown | python3 <<<'# coding: utf-7\nprint(1)'
+posix finds=unknown | python3 <<'PY'\n#!/usr/bin/python3\n# coding: utf-16\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# coding: cp037\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# coding: hz\nprint(1)\nPY
+# A latin-1 text with more than ASCII in it is not the same text.
+posix finds=unknown | python3 <<'PY'\n# coding: latin-1\nprint('é')\nPY
+# A bytes literal given to exec, eval or compile is decoded by it.
+posix finds=unknown | python3 -c 'exec(b"# coding: utf-7\\nprint(1)")'
+posix finds=unknown | python3 -c 'eval(rb"# coding: utf-7\\nprint(1)")'
+posix finds=unknown | python3 -c 'compile(b"# coding: utf-7\\nprint(1)", "x", "exec")'
+posix finds=unknown | python3 -c 'exec(b"\\n# coding: utf-7\\nprint(1)")'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 <<'PY'\n# coding: utf-8\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# -*- coding: utf-8 -*-\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# vim: set fileencoding=utf_8 :\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n#!/usr/bin/python3\n# coding: utf8\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# coding: latin-1\nprint(1)\nPY
+posix finds=unknown | python3 <<'PY'\n# coding: ascii\nprint(1)\nPY
+posix finds=unknown | python3 -c 'exec("# coding: utf-7\\nprint(1)")'
+posix finds=unknown | python3 -c 'exec(b"# coding: utf-8\\nprint(1)")'
+posix finds=unknown | python3 <<'PY'\nprint(1)\nprint(2)\n# coding: utf-7\nPY
+# Python reads a carriage return as a newline.
+posix finds=delete | python3 -c '# x\rimport shutil;shutil.rmtree("/home/me")'
+posix finds=delete | python3 <<'PY'\n# x\rimport shutil;shutil.rmtree("/home/me")\nPY
+posix finds=delete | python3 <<'PY'\n# x\r\nimport shutil;shutil.rmtree("/home/me")\nPY
+posix finds=delete | python3 -c 'exec("# x\\rimport shutil;shutil.rmtree(\\"/home/me\\")")'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c 'print(1)\r\nprint(2)\r'
+posix finds=unknown | python3 -c '# a comment\rprint(1)'
+posix finds=unknown | python3 <<'PY'\r\nprint(1)\r\nPY
+# Code in a `data:` URL is not read.
+posix finds=unknown | node -e "import 'data:text/javascript,import fs from \\"fs\\"; fs.rmSync(\\"/home/me\\",{recursive:true})'"
+posix finds=unknown | node -e "import {a} from 'data:text/javascript,export const a=1'"
+posix finds=unknown | node -e "export * from 'data:text/javascript,console.log(45)'"
+posix finds=unknown | node -e "export {a} from 'data:text/javascript,export const a=1'"
+posix finds=unknown | node -e "import 'data:text/javascript;base64,Y29uc29sZS5sb2coNDYp'"
+# The URL parser drops leading spaces and reads the scheme in any case.
+posix finds=unknown | node -e "import ' DATA:text/javascript,1'"
+posix finds=unknown | node -e "import('data:text/javascript,1')"
+posix finds=unknown | node -e "(async () => { await import('data:text/javascript,1') })()"
+posix finds=unknown | node --import data:text/javascript,1 -e 1
+posix finds=unknown | node --import=data:text/javascript,1 -e 1
+posix finds=unknown | node --loader data:text/javascript,1 -e 1
+posix finds=unknown | node --loader=data:text/javascript,1 -e 1
+posix finds=unknown | node --experimental-loader data:text/javascript,1 -e 1
+posix finds=unknown | node --experimental-loader=data:text/javascript,1 -e 1
+posix finds=unknown | node -e 1 --import data:text/javascript,1
+posix finds=unknown | node --import data:text/javascript,1 build.js
+# A module only known when it runs may be one.
+posix finds=unknown | node --import $LOADER -e 1
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | node -e "import fs from 'fs'; fs.readFileSync('package.json')"
+posix finds=unknown | node -e "import {a} from './a.js'"
+posix finds=unknown | node -e "export * from './a.js'"
+posix finds=unknown | node --import ./setup.js -e 1
+posix finds=unknown | node --import=./setup.js -e 1
+posix finds=unknown | node --loader ./hooks.js -e 1
+posix finds=unknown | node --experimental-loader=./hooks.js -e 1
+# A `data:` URL import keeps the line unknown whatever the input holds.
+posix finds=unknown | node '--import=data:text/javascript,import("fs").then(f=>f.rmSync("/home/me",{recursive:true}))' <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | node '--import=data:text/javascript,1' - <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | node --import 'data:text/javascript,1' <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | node --import 'data:text/javascript,1' - <<'JS'\nconsole.log(1)\nJS
+posix finds=unknown | node --loader=data:text/javascript,1 <<<'console.log(1)'
+posix finds=unknown | env node '--import=data:text/javascript,1' <<'JS'\nconsole.log(1)\nJS
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | node --import=./setup.js - <<'JS'\nconsole.log(1)\nJS
+# `NODE_OPTIONS` that load a `data:` URL make inline code unknown: a prefix
+# assignment.
+posix finds=unknown | NODE_OPTIONS="--import=data:text/javascript,import('fs').then(f=>f.rmSync('/home/me',{recursive:true}))" node -e "console.log(1)"
+posix finds=unknown | NODE_OPTIONS='--import data:text/javascript,1' node -e 1
+posix finds=unknown | NODE_OPTIONS='--max-old-space-size=4096 --import=data:text/javascript,1' node -e 1
+posix finds=unknown | NODE_OPTIONS='--require ./a.js --import=data:text/javascript,1' node -e 1
+posix finds=unknown | NODE_OPTIONS='--loader=data:text/javascript,1' node -e 1
+posix finds=unknown | NODE_OPTIONS='--experimental-loader data:text/javascript,1' node -e 1
+posix finds=unknown | NODE_OPTIONS='--import "data:text/javascript,1"' node -e 1
+posix finds=unknown | NODE_OPTIONS='--import=DATA:text/javascript,1' nodejs -p 1
+posix finds=unknown | NODE_OPTIONS='--import=data:text/javascript,1' node <<'JS'\nconsole.log(1)\nJS
+# `env`, also with a wrapper in front.
+posix finds=unknown | env NODE_OPTIONS="--import=data:text/javascript,import('fs').then(f=>f.rmSync('/home/me',{recursive:true}))" node -e 1
+posix finds=unknown | env -i NODE_OPTIONS=--import=data:text/javascript,1 node -e 1
+posix finds=unknown | env FOO=1 NODE_OPTIONS=--import=data:text/javascript,1 node -e 1
+# Set earlier in the line.
+posix finds=unknown | export NODE_OPTIONS=--import=data:text/javascript,1; node -e 1
+posix finds=unknown | export NODE_OPTIONS=--import=data:text/javascript,1 && node -e 1
+posix finds=unknown | export "NODE_OPTIONS=--import=data:text/javascript,1"; node -e 1
+posix finds=unknown | NODE_OPTIONS=--import=data:text/javascript,1; export NODE_OPTIONS; node -e 1
+posix finds=unknown | read -r NODE_OPTIONS <<< '--import=data:text/javascript,1'; export NODE_OPTIONS; node -e 1
+posix finds=unknown | export NODE_OPTIONS="--import=$URL"; node -e 1
+# In front of a shell that starts node.
+posix finds=unknown | NODE_OPTIONS='--import=data:text/javascript,1' bash -c "node -e 1"
+posix finds=unknown | env NODE_OPTIONS=--import=data:text/javascript,1 sh -c 'node -p 1'
+# A value only known when it runs.
+posix finds=unknown | NODE_OPTIONS="$OPTS" node -e 1
+posix finds=unknown | NODE_OPTIONS="--import=$URL" node -e 1
+posix finds=unknown | NODE_OPTIONS=$(cat opts) node -e 1
+# An underscore in an option's name is a hyphen to node.
+posix finds=unknown | node --experimental_loader=data:text/javascript,1 -e 1
+# The code is read all the same when it does not load one.
+posix finds=delete | NODE_OPTIONS=--max-old-space-size=4096 node -e "require('fs').rmSync('/home/me',{recursive:true})"
+# Not read whole by the strict gate: unknown. (Bun does not read
+# `NODE_OPTIONS`.)
+posix finds=unknown | NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'
+posix finds=unknown | NODE_OPTIONS='--max-old-space-size=4096 --no-warnings' node -e 'console.log(1)'
+posix finds=unknown | NODE_OPTIONS='--require ./setup.js' node -e 'console.log(1)'
+posix finds=unknown | NODE_OPTIONS='--import ./setup.mjs' node -e 'console.log(1)'
+posix finds=unknown | NODE_OPTIONS= node -e 'console.log(1)'
+posix finds=unknown | env NODE_OPTIONS=--max-old-space-size=4096 node -e 'console.log(1)'
+posix finds=unknown | export NODE_OPTIONS=--max-old-space-size=4096; node -e 'console.log(1)'
+posix finds=unknown | NODE_OPTIONS=--import=data:text/javascript,1 bun -e 1
+
+# An interpreter asked to print its version or help reads no input, under
+# any shell: PowerShell and cmd as POSIX. (`bun -v` under a POSIX shell is in
+# package_runners.cases.)
+posix safe | python --version
+posix safe | python -V
+posix safe | python -VV
+posix safe | python3 --version
+posix safe | python3.12 --version
+posix safe | python3 -h
+posix safe | python3 --help
+posix safe | node --version
+posix safe | node -v
+posix safe | node --help
+posix safe | nodejs --version
+posix safe | perl --version
+posix safe | ruby --version
+posix safe | php -h
+posix safe | lua --help
+powershell safe | python --version
+powershell safe | python -V
+powershell safe | python -VV
+powershell safe | python3 --version
+powershell safe | python3.12 --version
+powershell safe | python3 -h
+powershell safe | python3 --help
+powershell safe | node --version
+powershell safe | node -v
+powershell safe | node --help
+powershell safe | nodejs --version
+powershell safe | bun -v
+powershell safe | perl --version
+powershell safe | ruby --version
+powershell safe | php -h
+powershell safe | lua --help
+cmd safe | python --version
+cmd safe | python -V
+cmd safe | python -VV
+cmd safe | python3 --version
+cmd safe | python3.12 --version
+cmd safe | python3 -h
+cmd safe | python3 --help
+cmd safe | node --version
+cmd safe | node -v
+cmd safe | node --help
+cmd safe | nodejs --version
+cmd safe | bun -v
+cmd safe | perl --version
+cmd safe | ruby --version
+cmd safe | php -h
+cmd safe | lua --help
+
+# Code handed to an interpreter under cmd or PowerShell is unknown: its
+# paths and commands are not POSIX ones, so it is not read, under cmd as
+# under PowerShell.
+cmd safe | python build.py
+cmd safe | node build.js
+cmd safe | bun run build.ts
+cmd safe | deno test
+cmd safe | bun --version
+cmd safe | deno --version
+cmd finds=unknown | python -c "import shutil; shutil.rmtree('C:/Users/me')"
+cmd finds=unknown | python3 -c "print(1)"
+cmd finds=unknown | node -e "require('fs').rmSync('C:/Users/me', {recursive: true})"
+cmd finds=unknown | bun -e "console.log(1)"
+cmd finds=unknown | deno eval "console.log(1)"
+powershell safe | python build.py
+powershell safe | node build.js
+powershell safe | bun run build.ts
+powershell safe | deno test
+powershell safe | bun --version
+powershell safe | deno --version
+powershell finds=unknown | python -c "import shutil; shutil.rmtree('C:/Users/me')"
+powershell finds=unknown | python3 -c "print(1)"
+powershell finds=unknown | node -e "require('fs').rmSync('C:/Users/me', {recursive: true})"
+powershell finds=unknown | bun -e "console.log(1)"
+powershell finds=unknown | deno eval "console.log(1)"
+# Under cmd, a line with only a print flag, and a bare program or a script
+# file: nothing is handed to it to run. (`deno` alone is in
+# package_runners.cases.)
+cmd safe | python
+cmd safe | python3
+cmd safe | node
+cmd safe | bun
+cmd safe | python -v
+# Inline code, the input, and what is piped into it.
+cmd finds=unknown | python -c "print(1)"
+cmd finds=unknown | node -e "console.log(1)"
+cmd finds=unknown | python -
+cmd finds=unknown | node -
+cmd finds=unknown | type run.py | python
+cmd finds=unknown | type run.js | node
+cmd finds=unknown | echo print(1) | deno
+# PowerShell reads the input of a bare interpreter as the POSIX shell does;
+# `deno` and `bun` only when something is piped into them.
+powershell safe | deno
+powershell safe | bun
+powershell finds=unknown | python
+powershell finds=unknown | node
+powershell finds=unknown | python -
+powershell finds=unknown | 'print(1)' | python
+powershell finds=unknown | '1' | deno
+powershell finds=unknown | python -c "import os; os.remove('C:\\Users\\me\\x')"
+powershell finds=unknown | node -e "require('fs').rmSync('C:\\Users\\me')"
+powershell finds=unknown | deno eval "Deno.removeSync('C:\\Users\\me')"
+
+# A loader in front of bun's code flag is unknown in every shell: the code of
+# such a line may not be told (a module the options load runs first, or the
+# code is only known when it runs), so cmd says `unknown` for it as the other
+# shells do, not that bun is the whole story. On every machine.
+posix rules=unknown | bun --import r.js -e "$X"
+posix rules=unknown | bun --require r.js -e "$X"
+posix rules=unknown | bun --loader .js:jsx -p "$X"
+posix rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+posix rules=unknown | bun -F x run -e "console.log(1)"
+posix@macos rules=unknown | bun --import r.js -e "$X"
+posix@macos rules=unknown | bun --require r.js -e "$X"
+posix@macos rules=unknown | bun --loader .js:jsx -p "$X"
+posix@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+posix@macos rules=unknown | bun -F x run -e "console.log(1)"
+posix@windows rules=unknown | bun --import r.js -e "$X"
+posix@windows rules=unknown | bun --require r.js -e "$X"
+posix@windows rules=unknown | bun --loader .js:jsx -p "$X"
+posix@windows rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+posix@windows rules=unknown | bun -F x run -e "console.log(1)"
+powershell@posix rules=unknown | bun --import r.js -e "$X"
+powershell@posix rules=unknown | bun --require r.js -e "$X"
+powershell@posix rules=unknown | bun --loader .js:jsx -p "$X"
+powershell@posix rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+powershell@posix rules=unknown | bun -F x run -e "console.log(1)"
+powershell@macos rules=unknown | bun --import r.js -e "$X"
+powershell@macos rules=unknown | bun --require r.js -e "$X"
+powershell@macos rules=unknown | bun --loader .js:jsx -p "$X"
+powershell@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+powershell@macos rules=unknown | bun -F x run -e "console.log(1)"
+powershell rules=unknown | bun --import r.js -e "$X"
+powershell rules=unknown | bun --require r.js -e "$X"
+powershell rules=unknown | bun --loader .js:jsx -p "$X"
+powershell rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+powershell rules=unknown | bun -F x run -e "console.log(1)"
+cmd@posix rules=unknown | bun --import r.js -e "$X"
+cmd@posix rules=unknown | bun --require r.js -e "$X"
+cmd@posix rules=unknown | bun --loader .js:jsx -p "$X"
+cmd@posix rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+cmd@posix rules=unknown | bun -F x run -e "console.log(1)"
+cmd@macos rules=unknown | bun --import r.js -e "$X"
+cmd@macos rules=unknown | bun --require r.js -e "$X"
+cmd@macos rules=unknown | bun --loader .js:jsx -p "$X"
+cmd@macos rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+cmd@macos rules=unknown | bun -F x run -e "console.log(1)"
+cmd rules=unknown | bun --import r.js -e "$X"
+cmd rules=unknown | bun --require r.js -e "$X"
+cmd rules=unknown | bun --loader .js:jsx -p "$X"
+cmd rules=unknown | bun --import data:text/javascript -e "console.log(1)"
+cmd rules=unknown | bun -F x run -e "console.log(1)"

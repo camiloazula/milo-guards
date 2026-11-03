@@ -1,0 +1,21 @@
+# `effect` keeps judging by spelling: the `..` that `effect_paths` keeps
+# where the line wrote it (paths_links.rs) is applied by spelling here,
+# whatever the link before it is. The format is in CONTRIBUTING.md.
+
+# Inside by spelling.
+posix effect=reads_workspace | cat link/../etc/hosts
+posix effect=reads_workspace | cat src/../README.md
+posix effect=reads_workspace | cat src/../../repo/a
+posix effect=reads_workspace | cat ./a/../b
+posix effect=reads_workspace | rg TODO src/..
+posix effect=reads_workspace | cat link/../*.rs
+posix effect=reads_workspace | ls link/..
+posix effect=reads_workspace | cd link/.. && cat x
+posix effect=reads_workspace | cd src && cd .. && cat x
+powershell effect=reads_workspace | Get-Content link\\..\\x
+cmd effect=reads_workspace | type link\\..\\x
+# Beyond by spelling (`cat ../x` and `cat src/../../x` are in reach.cases).
+posix effect=reads_beyond | cat link/../../x
+posix effect=reads_beyond | cd .. && cat x
+posix effect=reads_beyond | cat /etc/../etc/hosts
+posix effect=reads_beyond | cat ~/link/../x
