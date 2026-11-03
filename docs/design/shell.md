@@ -1354,6 +1354,71 @@ Not read, so the caller has to account for them: an option set by `~/.zshenv`
 or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
 from the environment the guard's caller runs in.
 
+### Extended patterns
+
+With zsh's `extendedglob` on, `#`, `##`, `^` and `~` in an unquoted word are
+parts of a pattern: `x#` is any number of `x` and `x##` one or more, `^x` is
+any name but `x` (to the end of its part, so `^foo/bar` is `bar` in every
+folder but `foo`), and `x~y` is what `x` matches and `y` does not. So `rm -rf
+.gi#t` and `rm -rf .g^x` delete `.git`. Read as plain names they do not.
+zsh does not glob a word whose only operator is `~` (`.git~x` is that name),
+but the guard reads `x~y` as `x` all the same: `rm -rf .git~x` is judged as
+the delete of `.git`, which costs only a word that names nothing.
+
+- **On.** `setopt extendedglob` (any case, any underscores:
+  `EXTENDED_GLOB`), `unsetopt noextendedglob`, `set -o extendedglob`,
+  `setopt -m` with any pattern, an option name only known when it runs,
+  `emulate`'s `-o extendedglob` before its `-c` (`emulate -L zsh -o
+  extendedglob`: `-L` does not limit it outside a function), an assignment to
+  zsh's `options` table that names it or a key only known when it runs and is
+  not `off` (`options[extendedglob]=on`, `options+=(extendedglob on)`),
+  `source` and `.` (the file may set it), and a zsh started with `-o
+  extendedglob`, `--extendedglob` or `--extended-glob`. Off by the opposite
+  switches, where the line is sure to run them in this shell, as for zsh's
+  `globdots` (see Hidden names); it reaches as far, and a subshell or a script
+  in a process of its own gives it back as it was.
+- **Both readings.** bash has no such option and `setopt` fails there, so the
+  line may be run either way: a command with a word the option reads another
+  way is judged twice, with the word as written and with it as zsh reads it,
+  and the riskier counts (a fork, as for `bun`, counted against the same 32
+  per line, past which the line is unreadable). `curl -F f=@~/.aws/credentials`
+  is still the send of a key, though zsh reads that word as `f=@` but not
+  `/.aws/credentials`. A redirect target zsh reads another way is opened both
+  ways too (`echo x > .gi#t/config`), and a listing piped on hands on what
+  each reading lists (`ls -d .gi#t | xargs rm -rf` deletes `.git`): every
+  listing at the stage before the delete is read, not only the first. A
+  `cd`, `pushd` or `popd` is not read
+  twice, since the second would start where the first went: a word the option
+  changes in it is only known when it runs.
+- **zsh's reading** is a plain pattern that takes every name zsh's does:
+  `x#` and `x##` are `*` (`.gi#t` is `.g*t`), `^` and the rest of its part
+  are `*` (`.g^x` is `.g*`), and `x~y` is `x` (`*.o~*.c` is `*.o`, which still
+  cannot match a hidden name). The finding names that pattern. A single `#`
+  on plain characters that start a name may leave them out, so a dot after
+  them starts the name: `x#.git` matches `.git` and `x.git`, and is read as
+  two patterns, `.git` and `*.git`, each judged (a third reading, one more
+  fork). A wildcard or a bracket that starts a name never takes its dot,
+  even repeated (`[x]#.git` is not `.git`), so it reads as `*`. A leading dot
+  repeated (`.#git` is `git` and `.git`), a second such split in the word,
+  or a group (`(a|b)#`, `(#i)`) has no plain pattern that takes what it
+  does, so the word is a place only known when it runs. A quoted or escaped
+  operator (`'.gi#t'`, `.gi\#t`) is itself, a `~` that starts the word is
+  the home folder, and one in a bracket (`[~]`) is a member. What an
+  expansion gives is itself too (zsh reads its value as a pattern only with
+  `globsubst`), but the rest of the word is still read: `$PWD/.gi#t` is
+  `$PWD/.g*t`. When the value is only known when it runs and the rest of the
+  word holds an operator, the word is a place only known when it runs.
+  Where each bracket closes is found in one pass from the end of the word, so
+  a long run of `[` that never closes is read in linear time.
+- **Bodies.** A function body or a loop may run after the option is on, so
+  when the line turns it on anywhere, the line is read again with the words in
+  them read as zsh reads them: `f() { rm -rf .gi#t; }; setopt extendedglob;
+  f`.
+
+Not read: the option set by an rc file (a plain word is read as written
+then, so `rm -rf .gi#t` alone is safe), the script of `emulate -c`, a `for`
+list, and the program's own name.
+
 ## The rules
 
 A rule reads a unit's program, its flags, its operands and its redirects. It
@@ -1522,7 +1587,11 @@ moved no line between safe and risky. Each item below says which rule it is:
   `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
   kill` or `stop` whose target is only known when it runs is `stop_unknown`;
   the target of any other label (`gui/501/com.me.worker`) is the user's own.
-  `systemctl restart` is not a stop and stays safe.
+  `systemctl restart` is not a stop and stays safe. A name or pattern
+  that matches the process of a daemon that protects the machine
+  (`killall auditd`, `pkill firewalld`), and a `launchctl kill` or `stop`
+  of such a daemon's label (`com.apple.alf`), is `system_settings` (see
+  [Machine settings on macOS and Linux](#machine-settings-on-macos-and-linux)).
 - **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
   `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -2003,7 +2072,28 @@ of their strictest, so each family below was added on that test.
   are not read as `--user` or `--system` either: one walk of the arguments
   skips the values and finds those two (`systemctl -p --user disable x` is
   a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
-  `-p`/`--property` value the same way.
+  `-p`/`--property` value the same way. The other init systems are read the
+  same way: `rc-update del` (or `delete`, or a verb only known when it runs),
+  `update-rc.d name disable` or `remove`, and `chkconfig name off` or
+  `chkconfig --del name` (`-d` on SUSE, with `--level` skipped) take a service out of what
+  starts at boot, as `systemctl disable` does, whatever the service;
+  `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
+  name on` are safe. Some `systemctl` verbs change many units at once:
+  `isolate` starts a target and stops every unit it does not want, so it is
+  risky whatever the target (and also `stop_system` for `poweroff`,
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue`, `emergency`,
+  `shutdown`, `exit`, `final` and the runlevels that are their aliases,
+  `runlevel0`, `runlevel1` and `runlevel6`, as `systemctl poweroff` and
+  `rescue` are), and without a target it is an error and safe;
+  `set-default` to a target other than `graphical`, `multi-user` or the
+  runlevels that alias them (`runlevel2` to `runlevel5`), with or without
+  `.target`, or to one only known when it runs, changes what the computer boots into;
+  `preset-all` enables and disables units by the preset files. `edit`,
+  `revert` and `preset` of a unit that protects the machine (below), a
+  pattern or a unit only known when it runs change how that protection
+  runs; of any other unit (`systemctl edit nginx`) they are safe, as is
+  `get-default`. These follow `--user` as `disable` does: `systemctl --user
+  isolate x.target` changes only the user's own session and is safe.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
@@ -2012,18 +2102,80 @@ of their strictest, so each family below was added on that test.
   `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
   as stopping the process is (see
   [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
-  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
-  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  that protects the machine (the firewalls, `apparmor`, `auditd`,
+  `fail2ban` and the antivirus and endpoint daemons listed below), whose
+  stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
   SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
   refuses `stop`, so `kill` is how it is stopped), so it is read through the
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
+  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
+  down *`), which the shell expands against the files. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  An action stops the service when it is `stop`, a BSD spelling of it
+  (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
+  or one of the actions the firewall and `AppArmor` scripts take their
+  protection down with, `flush` (`service netfilter-persistent flush`) and
+  `teardown` (`service apparmor teardown`). Every other service manager
+  is read as `service`: a program run from an init script folder
+  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
+  as `/etc/init.d/ufw stop`, is the service of its name with its first
+  operand as the action. So is the script a shell runs (`sh
+  /etc/init.d/ufw stop`, `bash -x …`, and `cd /etc/init.d && sh ufw stop`,
+  since a shell reads a script named without a folder from the working
+  folder) or the line sources (`. /etc/init.d/ufw stop`, `source …`), the
+  operands after it being the script's; a shell given `-c` runs a line,
+  which is read as one. `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same, except that
+  `invoke-rc.d --query` only asks whether the action would be allowed and
+  `rc-service -U` (`--user`) runs the user's own services, as `systemctl
+  --user` does; runit's `sv
+  command service...` stops each service when the command is `stop`,
+  `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
+  `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
+  is only known when it runs, and a service given as a folder
+  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
+  stop` and `sv down sshd` are `stop_system`. The protecting units are the
+  firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
+  `netfilter-persistent`, and the BSDs' `pf` and `ipfw`), `apparmor`,
+  `auditd`, `fail2ban`, and the common antivirus and endpoint daemons
+  (`clamav-daemon`, `clamav-freshclam`, `clamav-clamd`, `clamd`,
+  `freshclam`, `mdatp`, `falcon-sensor`, `sentinelone`, `osqueryd`,
+  `wazuh-agent`, `ossec`); a unit is compared without `.service` and
+  without its instance (`clamd@scan`). Stopping the daemon's process is the
+  same: `killall` and `pkill` of a name that is, or a pattern that matches,
+  `auditd`, `firewalld`, `clamd`, `freshclam`, `mdatp`, `wdavdaemon`,
+  `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`, `sentineld`,
+  `ossec-agentd`, or on a Mac `socketfilterfw`, `syspolicyd`, `XProtect`,
+  `XprotectService`, `endpointsecurityd`, `com.crowdstrike.falcon.Agent`
+  and Little Snitch's daemon and network extension, is `system_settings`
+  (`pkill firewalld`, `killall auditd`, `pkill audit`, and `pkill agent`,
+  which matches `wazuh-agentd`). `pkill -f` also searches the command
+  lines these daemons usually run with (`/usr/sbin/firewalld --nofork
+  --nopid`), so a pattern that runs past a name into its arguments
+  (`pkill -f 'auditd '`) is risky too. `ufw` and `apparmor` are left out,
+  since neither runs as a process (`ufw` loads the rules and exits,
+  AppArmor lives in the kernel), and so is `fail2ban-server`: `pkill`
+  searches each name for its pattern, and `pkill app` and `pkill server`
+  are everyday work. Each pattern is read once for the processes the
+  system needs and the ones that protect it, as a line may give thousands.
+  `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
+  (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.xprotectframework`,
+  `com.apple.endpointsecurity`,
+  `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
+  `at.obdev.littlesnitchd`, without case (`launchctl kill 9
+  system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
+  A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
+  `stop_unknown`, as every such `kill` is.
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -2046,8 +2198,11 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
-they are Windows programs and are left alone.
+`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
+and cmd they are Windows programs or aliases (`sv` is PowerShell's
+`Set-Variable`) and are left alone. An init script is read in PowerShell too
+(`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
+on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
 ### The rule enum is exhaustive on purpose
 
