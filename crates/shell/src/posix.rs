@@ -6,6 +6,7 @@ use std::rc::Rc;
 use tree_sitter::Node;
 
 use crate::dotglob;
+use crate::extended::{self, Reading};
 use crate::launch;
 use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
@@ -1826,6 +1827,9 @@ impl Walker<'_> {
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
         let mut qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
+        // The words zsh reads another way with `extendedglob` on, by where
+        // they stand in `args`, and what each reads as.
+        let mut readings = Vec::new();
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
             // `exec {fd}>out`: a `{NAME}` stuck to a redirect is where bash
@@ -1871,6 +1875,9 @@ impl Walker<'_> {
                     ),
                 });
             } else {
+                if let Some(reading) = self.zsh_reading(arg) {
+                    readings.push((args.len(), reading));
+                }
                 args.push(self.arg(arg));
             }
         }
@@ -1976,6 +1983,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
+        let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1991,12 +1999,141 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.stdin = stdin;
         unit.startup = startup;
-        launch::add(self.split, unit, self.depth);
+        // Kept out of `add_readings` when there are none: its frame is not
+        // added to the deepest walk of a nested line.
+        if readings.is_empty() {
+            launch::add(self.split, unit, self.depth);
+        } else {
+            self.add_readings(unit, readings);
+        }
         self.split.environment -= environed;
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
+        self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
+    }
+
+    /// Add `unit`, and, when zsh reads some of its words another way with
+    /// `extendedglob` on (`readings`), the unit with those words as a second
+    /// reading, and a third when a word reads as two patterns: a line run by
+    /// bash, where `setopt` fails, reads them as written, so each is judged. A `cd` is not read twice, since the
+    /// second would start where the first went: its words are only known
+    /// when it runs.
+    fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Vec<Arg>)>) {
+        let moves = std::iter::once(&unit.program)
+            .chain(&unit.args)
+            .filter_map(Arg::known)
+            .any(|word| {
+                matches!(
+                    unit::key(word, Shell::Posix).as_str(),
+                    "cd" | "chdir" | "pushd" | "popd"
+                )
+            });
+        if moves {
+            for (at, _) in readings {
+                if let Some(arg) = unit.args.get_mut(at) {
+                    *arg = Arg::Unknown(arg.text().to_string());
+                }
+            }
+            launch::add(self.split, unit, self.depth);
+            return;
+        }
+        // One unit with the first reading of each word, and one more with the
+        // second where a word has two (`x#.git`).
+        let mut others = vec![unit.clone()];
+        for (at, reading) in readings {
+            for (one, arg) in reading.into_iter().enumerate() {
+                if one == others.len() {
+                    others.push(others[0].clone());
+                }
+                if let Some(slot) = others.get_mut(one).and_then(|other| other.args.get_mut(at)) {
+                    *slot = arg;
+                }
+            }
+        }
+        launch::add_either(self.split, unit, others, self.depth);
+    }
+
+    /// What the word at `node` reads as when zsh reads it with
+    /// `extendedglob` on and that differs from the word as written (see
+    /// [`extended::reading`]): a plain pattern, two that take its names
+    /// between them, or a place only known when it runs. `None` while the
+    /// option is off, and for a word with nothing the option changes.
+    fn zsh_reading(&self, node: Node<'_>) -> Option<Vec<Arg>> {
+        if !self.split.extended_glob() {
+            return None;
+        }
+        let mut chars = Vec::new();
+        let mut unknown_value = false;
+        self.word_chars(node, &mut chars, &mut unknown_value)?;
+        let reading = extended::reading(&chars)?;
+        let unknown = || vec![Arg::Unknown(unit::text(&node, self.source).to_string())];
+        if unknown_value {
+            return Some(unknown());
+        }
+        let known = |text: &String| !(text.starts_with('~') && self.split.reassigned("HOME"));
+        Some(match reading {
+            Reading::Pattern(text) if known(&text) => vec![Arg::Known(text)],
+            Reading::Either(hidden, rest) if known(&hidden) && known(&rest) => {
+                vec![Arg::Known(hidden), Arg::Known(rest)]
+            }
+            _ => unknown(),
+        })
+    }
+
+    /// The characters of the word at `node`, each with whether the shell
+    /// reads it as written: an escaped or quoted one is itself, and so is
+    /// what an expansion gives (`$PWD/.gi#t`: zsh does not read the value
+    /// as a pattern, but the rest of the word still is one). An expansion
+    /// whose value is only known when it runs stands as one character that is
+    /// itself, and sets `unknown`. `None` for a word of another kind.
+    fn word_chars(
+        &self,
+        node: Node<'_>,
+        chars: &mut Vec<(char, bool)>,
+        unknown: &mut bool,
+    ) -> Option<()> {
+        let source = unit::text(&node, self.source);
+        match node.kind() {
+            "word" | "number" => {
+                let mut escaped = false;
+                for c in source.chars() {
+                    if escaped {
+                        chars.push((c, false));
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else {
+                        chars.push((c, true));
+                    }
+                }
+            }
+            "raw_string"
+            | "string"
+            | "simple_expansion"
+            | "expansion"
+            | "command_substitution"
+            | "arithmetic_expansion" => {
+                if let Arg::Known(text) = self.arg(node) {
+                    chars.extend(text.chars().map(|c| (c, false)));
+                } else {
+                    chars.push(('\0', false));
+                    *unknown = true;
+                }
+            }
+            "concatenation" => {
+                let mut cursor = node.walk();
+                for part in node.children(&mut cursor) {
+                    if !part.is_named() {
+                        return None;
+                    }
+                    self.word_chars(part, chars, unknown)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
     }
 
     /// What redirects the input of the command at `node`: a here-document or
@@ -2205,12 +2342,71 @@ impl Walker<'_> {
         })
     }
 
+    /// Whether `assignment` turns zsh's `extendedglob` on through its
+    /// `options` table: `options[extendedglob]=on`, `options+=(extendedglob
+    /// on)` (see [`extended::assigns`]).
+    fn extends_glob(&self, assignment: Node<'_>) -> bool {
+        let Some(name) = assignment.child_by_field_name("name") else {
+            return false;
+        };
+        let name = unit::text(&name, self.source);
+        if !name.starts_with("options") {
+            return false;
+        }
+        let values: Vec<Arg> = match assignment.child_by_field_name("value") {
+            Some(value) if value.kind() == "array" => {
+                let mut cursor = value.walk();
+                value
+                    .named_children(&mut cursor)
+                    .map(|word| self.arg(word))
+                    .collect()
+            }
+            Some(value) => vec![self.arg(value)],
+            None => Vec::new(),
+        };
+        extended::assigns(name, &values)
+    }
+
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
+    /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
+    /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
+    /// so what terraform gets is only known when it runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        // The grammar reads a bare name as a variable, not a word.
+        if let Some(name) = Some(word.known().unwrap_or(source))
+            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+        {
+            let noted = self
+                .split
+                .tf_cli_args
+                .iter()
+                .any(|(noted, _)| noted == name);
+            if !noted {
+                self.split
+                    .tf_cli_args
+                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+            }
+            return;
+        }
+        if let Some((name, _)) = source
+            .split_once('=')
+            .filter(|(name, _)| unit::tf_cli_args(name))
+        {
+            let value = match word.known() {
+                Some(text) => Arg::Known(
+                    text.split_once('=')
+                        .map_or("", |(_, value)| value)
+                        .to_string(),
+                ),
+                None => Arg::Unknown(source.to_string()),
+            };
+            self.split.tf_cli_args.push((name.to_string(), value));
+            return;
+        }
         match word.known() {
             Some(text) => {
                 if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
@@ -2247,6 +2443,9 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
+        if self.extends_glob(node) {
+            self.split.extend_glob();
+        }
         // Set on a line of its own, or after `export`: the programs after it
         // have it, so it stays for the rest of the line.
         self.node_options(node);
@@ -2257,20 +2456,24 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
-    /// when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
+    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
+    /// variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+        let terraform = unit::tf_cli_args(name);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        if name == "PYTHONPATH" {
+        if terraform {
+            self.split.tf_cli_args.push((name.to_string(), value));
+        } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {
             self.split.node_options.push(value);
@@ -2830,8 +3033,14 @@ impl Walker<'_> {
         let before = self.split.qualify(self.qualified(destination));
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
+        // zsh with `extendedglob` on opens what its reading of the word
+        // matches; bash, the word as written: both are judged.
+        let reading = self.zsh_reading(destination).unwrap_or_default();
         if operator == Some("<") {
             self.split.read(Shell::Posix, target.clone());
+            for reading in &reading {
+                self.split.read(Shell::Posix, reading.clone());
+            }
         }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
@@ -2842,6 +3051,9 @@ impl Walker<'_> {
         };
         if writes {
             self.split.write(Shell::Posix, target);
+            for reading in reading {
+                self.split.write(Shell::Posix, reading);
+            }
         }
         self.split.restore_qualified(before);
     }

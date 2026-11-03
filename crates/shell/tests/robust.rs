@@ -385,6 +385,111 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
+    // With `extendedglob` on, a command with a word zsh reads another way is
+    // judged both ways: each is a fork, counted against the line's, and a
+    // loop body makes the line be read again, once. A line past the forks is
+    // unreadable, and never slow.
+    for count in [16, 33, 800] {
+        // The option on before, or after in a loop that may come round.
+        for (head, tail) in [
+            ("setopt extendedglob; ", ""),
+            ("while x; do ", "setopt extendedglob; done"),
+        ] {
+            let line = format!("{head}{}rm -rf .gi#t; {tail}", "ls a#b; ".repeat(count));
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let took = took(&line, Shell::Posix, &posix());
+            assert!(
+                took < Duration::from_millis(200),
+                "{count} {head:?} took {took:?}"
+            );
+            let assessment = classify(&line, Shell::Posix, &posix());
+            assert!(!assessment.is_safe(), "{count} {head:?}");
+            if count > 32 {
+                assert!(
+                    assessment
+                        .findings()
+                        .iter()
+                        .any(|finding| finding.rule == Rule::Unreadable),
+                    "{count} {head:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_safe() {
+    // `env -S` reads its string again as env's own arguments, each time as a
+    // wrapper of its own, so a string of `-S` takes off one at a time until
+    // the wrappers a line may have run out. The other shapes repeat an
+    // option the guard reads once each, or a wrapper given its folder that
+    // starts the next.
+    let long = "x".repeat(20_000);
+    for count in [16, 2_000] {
+        let posix_lines = [
+            format!("env {}'rm -rf ~'", "-S ".repeat(count)),
+            format!("env {}rm -rf etc", "-C / ".repeat(count)),
+            format!("env {}rm -rf etc", "--ch=/ ".repeat(count)),
+            format!("sudo {}rm -rf etc", "-nD / ".repeat(count)),
+            format!("pnpm {}exec rimraf etc", "-C / ".repeat(count)),
+            format!("env -S '{}rm -rf etc'", "-C / ".repeat(count)),
+            format!("env -S '-C / rm -rf etc {long}'"),
+        ];
+        let pwsh = [
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd:x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh --wd x ".repeat(count)
+            ),
+        ];
+        let lines = posix_lines
+            .into_iter()
+            .map(|line| (Shell::Posix, line, posix()))
+            .chain(pwsh.iter().flat_map(|line| {
+                [Shell::PowerShell, Shell::Cmd].map(|shell| (shell, line.clone(), windows()))
+            }))
+            .chain([(
+                Shell::Cmd,
+                format!(
+                    "{}rd /s /q C:\\Windows",
+                    "start /d C:\\x cmd /c ".repeat(count)
+                ),
+                windows(),
+            )]);
+        for (shell, line, paths) in lines {
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let took = took(&line, shell, &paths);
+            assert!(
+                took < Duration::from_millis(200),
+                "took {took:?} for {count} x {} in {shell:?}",
+                &line[..20]
+            );
+            assert!(
+                !classify(&line, shell, &paths).is_safe(),
+                "{count} x {} in {shell:?}",
+                &line[..20]
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
     // Each variable is set from the one set after it on the line, the worst
     // order for finding which of them hold the secret.
