@@ -11,6 +11,7 @@ use crate::{Rule, Shell};
 use milo_guards_core::spelling::{glob, verbatim};
 use milo_guards_core::Flavour;
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 impl Checker<'_> {
     /// Deleting, moving, copying and writing files.
@@ -206,77 +207,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            "copy-item" | "move-item" => {
-                let params = Params::read(args);
-                let paths = params.values(&["path", "literalpath"]);
-                let recursive = key == "copy-item"
-                    && params
-                        .named
-                        .iter()
-                        .any(|(name, _)| "recurse".starts_with(name.as_str()));
-                // `-Path` is position 0 and `-Destination` position 1. A
-                // comma list of sources is flattened into the arguments, so
-                // an operand after the first destination may be one more
-                // source: each is read as the destination in turn, with the
-                // rest as sources, and a risky reading wins.
-                let mut readings: Vec<(Vec<&Arg>, &Arg)> = Vec::new();
-                let mut operands = paths.clone();
-                operands.extend(params.positional.iter().copied());
-                if let Some(destination) = params.values(&["destination"]).first().copied() {
-                    // What the pipeline hands it is a source too.
-                    if operands.is_empty() && from_pipe(unit) {
-                        operands.push(&Arg::Input);
-                    }
-                    readings.push((operands.clone(), destination));
-                } else {
-                    let first = paths.len().max(1);
-                    for at in first..operands.len() {
-                        let sources = (0..operands.len())
-                            .filter(|other| *other != at)
-                            .map(|other| operands[other])
-                            .collect();
-                        readings.push((sources, operands[at]));
-                    }
-                }
-                // A splat (`@p`) with no `-Destination` named may bind it:
-                // it is judged as a place too, beside a destination that is
-                // known (`Copy-Item @p src\a`, where `@p` may be the
-                // `-Destination` and `src\a` the `-Path`).
-                if params.values(&["destination"]).is_empty() && splatted(args) {
-                    for splat in params
-                        .positional
-                        .iter()
-                        .copied()
-                        .filter(|arg| is_splat(arg))
-                    {
-                        self.write_as(shell, unit.scope(), splat, "writes to", Access::Item);
-                    }
-                }
-                if key == "move-item" {
-                    let mut moved: Vec<&Arg> = Vec::new();
-                    for source in readings.iter().flat_map(|(sources, _)| sources) {
-                        if !moved.iter().any(|seen| std::ptr::eq(*seen, *source)) {
-                            moved.push(source);
-                        }
-                    }
-                    moved.retain(|source| **source != Arg::Input);
-                    // With no path, what the stage before lists is moved.
-                    let piped = if moved.is_empty() {
-                        self.items(unit, &params)
-                    } else {
-                        Vec::new()
-                    };
-                    moved.extend(piped.iter());
-                    self.move_away(unit, &moved, "moves");
-                }
-                for (sources, destination) in readings {
-                    let leaves = leaves(unit, &sources);
-                    // A `$null` destination is no destination: the item goes
-                    // to the folder the line is in.
-                    let destination = or_here(destination);
-                    self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
-                }
-            }
+            "copy-item" | "move-item" => self.copy_item(unit, key),
 
             // Renaming: the new name is a name in the source's folder, and
             // that is where the file lands.
@@ -701,7 +632,7 @@ impl Checker<'_> {
             sources.to_vec()
         };
         // Many items of one folder land on the same name: each is judged once.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for source in sources {
             let (found, _) = self.expand(unit, source);
             for from in found {
@@ -1051,3 +982,145 @@ pub(super) fn rsync_operands(args: &[Arg]) -> Vec<&Arg> {
         ],
     )
 }
+
+impl Checker<'_> {
+    /// `Copy-Item` and `Move-Item`. `-Path` is position 0 and `-Destination`
+    /// position 1. A comma list of sources is flattened into the arguments,
+    /// so an operand after the first destination may be one more source:
+    /// each is read as the destination in turn, with the rest as sources,
+    /// and a risky reading wins.
+    ///
+    /// The work is linear in the operands, not in the readings: readings
+    /// whose destinations are spelt the same have the same sources, so each
+    /// is read once; the names of the sources are taken once each; and the
+    /// files moved are every operand. What is left is each destination with
+    /// each name: a line that gives more than [`MAX_ITEM_PAIRS`] of those is
+    /// unreadable.
+    fn copy_item(&mut self, unit: &Unit, key: &str) {
+        let args = unit.args.as_slice();
+        let shell = unit.shell;
+        let params = Params::read(args);
+        let paths = params.values(&["path", "literalpath"]);
+        let recursive = key == "copy-item"
+            && params
+                .named
+                .iter()
+                .any(|(name, _)| "recurse".starts_with(name.as_str()));
+        let mut operands = paths.clone();
+        operands.extend(params.positional.iter().copied());
+        let destination = params.values(&["destination"]).first().copied();
+        // A splat (`@p`) with no `-Destination` named may bind it: it is
+        // judged as a place too, beside a destination that is known
+        // (`Copy-Item @p src\a`, where `@p` may be the `-Destination` and
+        // `src\a` the `-Path`).
+        if destination.is_none() && splatted(args) {
+            for splat in params
+                .positional
+                .iter()
+                .copied()
+                .filter(|arg| is_splat(arg))
+            {
+                self.write_as(shell, unit.scope(), splat, "writes to", Access::Item);
+            }
+        }
+        if let Some(destination) = destination {
+            // What the pipeline hands it is a source too.
+            if operands.is_empty() && from_pipe(unit) {
+                operands.push(&Arg::Input);
+            }
+            if key == "move-item" {
+                let moved: Vec<&Arg> = operands
+                    .iter()
+                    .copied()
+                    .filter(|source| **source != Arg::Input)
+                    .collect();
+                self.moved_items(unit, &params, &moved);
+            }
+            let leaves = leaves(unit, &operands);
+            // A `$null` destination is no destination: the item goes to the
+            // folder the line is in.
+            let destination = or_here(destination);
+            self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
+            return;
+        }
+        let first = paths.len().max(1);
+        if key == "move-item" {
+            // Each operand is a source of some reading when there are two
+            // readings or more, and with one, all but its destination are.
+            let moved: Vec<&Arg> = match operands.len().saturating_sub(first) {
+                0 => Vec::new(),
+                1 => operands[..operands.len() - 1].to_vec(),
+                _ => operands.clone(),
+            };
+            let moved: Vec<&Arg> = moved
+                .into_iter()
+                .filter(|source| **source != Arg::Input)
+                .collect();
+            self.moved_items(unit, &params, &moved);
+        }
+        // The names each operand lands at, and how many operands give each.
+        let own: Vec<Vec<String>> = operands
+            .iter()
+            .map(|operand| leaves(unit, &[operand]))
+            .collect();
+        let mut given: HashMap<&str, usize> = HashMap::new();
+        let mut order: Vec<&str> = Vec::new();
+        for leaf in own.iter().flatten() {
+            let count = given.entry(leaf.as_str()).or_insert(0);
+            if *count == 0 {
+                order.push(leaf.as_str());
+            }
+            *count += 1;
+        }
+        let total: usize = own.iter().map(Vec::len).sum();
+        let mut read: HashSet<&Arg> = HashSet::new();
+        let destinations = (first..operands.len()).filter(|at| read.insert(operands[*at]));
+        let destinations: Vec<usize> = destinations.collect();
+        if destinations.len().saturating_mul(order.len()) > MAX_ITEM_PAIRS {
+            self.add(Rule::Unreadable, "names too many paths to read", None);
+            return;
+        }
+        for at in destinations {
+            // The sources are every operand but this one: its own names
+            // count only where another operand gives them too.
+            let mine = &own[at];
+            let leaves: Vec<&str> = order
+                .iter()
+                .copied()
+                .filter(|leaf| {
+                    let theirs = mine.iter().filter(|own| own.as_str() == *leaf).count();
+                    given.get(leaf).copied().unwrap_or(0) > theirs
+                })
+                .collect();
+            let several = total - mine.len() > 1;
+            let destination = or_here(operands[at]);
+            self.copy_into(
+                shell,
+                unit.scope(),
+                (&leaves, several),
+                &destination,
+                recursive,
+            );
+        }
+    }
+
+    /// What `Move-Item` moves away: `moved`, or with none, what the stage
+    /// before lists.
+    fn moved_items(&mut self, unit: &Unit, params: &Params<'_>, moved: &[&Arg]) {
+        let piped = if moved.is_empty() {
+            self.items(unit, params)
+        } else {
+            Vec::new()
+        };
+        let mut moved = moved.to_vec();
+        moved.extend(piped.iter());
+        self.move_away(unit, &moved, "moves");
+    }
+}
+
+/// The most pairs of a destination and a name that a `Copy-Item` or
+/// `Move-Item` is read for (see [`Checker::copy_item`]): 64 different paths,
+/// each the destination of the 63 others. A real comma list of sources gives
+/// a few; a line that names thousands of different ones is noise, and
+/// reading each with each would take seconds.
+const MAX_ITEM_PAIRS: usize = 64 * 64;
