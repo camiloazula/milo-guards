@@ -1207,7 +1207,20 @@ the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
 ../../.ssh/id_rsa` does (`read_secret`), `cd ../.. < .ssh/id_rsa` reads
 `<cwd>/.ssh/id_rsa`, and `cd sub > ../x` writes `<cwd>/../x`. The same holds in
 cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
-The redirect of the next command is placed from where the line now is. In a
+The redirect of the next command is placed from where the line now is. What
+the shell expands for the `cd` itself is expanded before it runs too, so what
+a substitution in its words, its assignments, its redirects, its
+here-document or its here-string runs starts where the `cd` starts, not where
+it goes: `cd sub <<< "$(cat ../../.ssh/id_rsa)"`, `cd sub < <(cat
+../../.ssh/id_rsa)`, `cd sub <<EOF` with `$(cat ../../.ssh/id_rsa)` in its
+body, `cd "$(cat ../../.ssh/id_rsa)"` and `X=$(cat ../../.ssh/id_rsa) cd sub`
+read the key (`read_secret`), while `cd sub <<< "$(cat ../../../.ssh/id_rsa)"`
+reads `<cwd>/../../../.ssh`, which holds none, and `cd ~ <<< "$(rm -rf .ssh)"`
+deletes the workspace's `.ssh`. What runs after the `cd` is placed where it
+went (`cd sub $(true) && cat ../../.ssh/id_rsa` is safe), and when the folder
+the `cd` starts in is not certain (below), what it expands is read from every
+folder that may be it (`for i in 1 2; do cd .. <<< "$(cat ../.ssh/id_rsa)";
+done` reads the key on the second pass). In a
 POSIX shell only a redirect on the command itself is read this way, and that
 includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
@@ -1302,12 +1315,18 @@ is in where the function is defined, not from where the body ends; a name
 relative to the folder (not `/dev/null`, `~/x` or `2>&1`) that a call reaches
 after a `cd`, a second call of a function that moves the line, a call in a loop
 that later moves the line, or from a definition the line may not have reached,
-is `unknown` too. In PowerShell only the
-redirects of the command itself are placed so: a redirect inside a `$()` in its
-arguments is placed from where the line is there, and so is a redirect that
-follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
-x.txt` writes two folders up, as the session ran the argument before it opened
-the file).
+is `unknown` too. In PowerShell a `$()` in a command's arguments runs in the
+session before the command, so what it runs is read from where the command
+starts (`Set-Location $(Get-Content ..\..\.ssh\id_rsa)` reads the key), and a
+redirect inside it from where the line is there. Once such an argument has
+moved the session itself (`cd $(cd ..\..; 'x' > y.txt; 'sub')`), the arguments
+that follow run where it left the session, before the command too (`cd ~
+$(cd sub) $(Remove-Item -Recurse .ssh)` removes the `.ssh` in `sub`); a redirect
+that follows that argument is read from both folders (`Set-Location $(cd
+..\..; 'sub') > x.txt` writes two folders up, or where `sub` is from there, as
+the session ran the argument before it opened the file). Once all are read, the
+command moves the session on from where the argument left it, and may fail and
+leave it there, so what follows the command is read from both folders.
 
 The folder a `cd` starts in is not always certain, and the redirect is then
 placed from both places, the one the `cd` starts in and the one it goes to, so
