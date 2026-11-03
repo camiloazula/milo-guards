@@ -798,6 +798,10 @@ pub(crate) struct Split {
     /// How deep the line is inside a loop or a function body, whose
     /// commands run again with other values.
     pub(crate) repeats: usize,
+    /// How deep the line is inside a script handed to a shell whose input
+    /// is a file or what a pipe gives (`type x.py | cmd /c python`, `cmd
+    /// /c python < x.py`): what the script runs is handed that input.
+    pub(crate) inherits_input: usize,
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,

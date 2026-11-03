@@ -233,7 +233,7 @@ fn a_line_too_deep_to_read_says_so() {
 #[test]
 fn nesting_and_shell_follow_the_script_across_grammars() {
     let explanation = explain(
-        r#"cmd /c "powershell -Command Remove-Item -Recurse C:\Windows""#,
+        r#"cmd /s /c "powershell -Command Remove-Item -Recurse C:\Windows""#,
         Shell::Cmd,
         &windows(),
     );

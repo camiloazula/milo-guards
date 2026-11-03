@@ -213,7 +213,8 @@ fn add_launched(
             split.push(unit);
             return;
         };
-        let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
+        let input = fed(&unit) || split.inherits_input > 0;
+        let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
         // `env X=1 cmd` and `env -u X cmd` change the program's environment,
         // as `coproc X=1 cmd` and `time X=1 cmd` do.
         if split.kept.on && unit.shell != Shell::Cmd {
@@ -329,6 +330,9 @@ fn add_launched(
                     && shell == Shell::Posix
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
+                // A shell handed a file or a pipe on its input hands it on
+                // to what its script runs (`cmd /c python < x.py`).
+                let hands_input = key != "trap" && fed(&unit);
                 let inherited = key == "trap" && trap_inherited(&unit.args);
                 let shell_at = split.units.len();
                 split.push(unit);
@@ -381,6 +385,7 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
+                        split.inherits_input += usize::from(hands_input);
                         if key == "alias" {
                             // Each `NAME=VALUE` is a body of its own.
                             let definitions: Vec<(String, String)> = split
@@ -401,6 +406,7 @@ fn add_launched(
                         } else {
                             unit::script_in(split, &text, shell, depth + 1, here);
                         }
+                        split.inherits_input -= usize::from(hands_input);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -581,7 +587,9 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
     }
 }
 
-fn launch(key: &str, unit: &Unit) -> Launch {
+/// `input` is whether the program is handed an input of its own: a pipe, a
+/// file, or what the shell whose script runs it was handed (see [`fed`]).
+fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
     match key {
@@ -851,16 +859,18 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             runner(key, unit)
         }
         "dx" => runner(key, unit),
-        "bun" => bun(unit),
-        "deno" => deno(unit),
-        key if SHELLS.contains(&key) && posix => shell(args),
+        "bun" => bun(unit, input),
+        "deno" => deno(unit, input),
+        // In every shell: a cmd line starts bash and its kin as the others
+        // do (`bash -c "rm -rf /"`).
+        key if SHELLS.contains(&key) => shell(args),
         // Also under cmd and PowerShell: the code they are given is not
         // read there, which comes back as `unknown`. A line with nothing to
         // run (`python --version`, a bare `python`) reads its input only
         // where it did before: under any but cmd, and anywhere when
-        // something is piped into it.
+        // something is piped into it or a file is redirected onto it.
         key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
-            interpreter(key, args, posix || piped(unit))
+            interpreter(key, args, posix || input)
         }
         "cmd" => cmd(args),
         "powershell" | "pwsh" => powershell(args),
@@ -891,6 +901,13 @@ fn launch(key: &str, unit: &Unit) -> Launch {
 /// Whether another program's output is piped into the unit.
 fn piped(unit: &Unit) -> bool {
     unit.stage.is_some_and(|stage| stage.index > 0)
+}
+
+/// Whether the unit is handed an input of its own: another program's output
+/// piped into it, or a file, a here-document or a here-string redirected
+/// onto it (`python < x.py`).
+fn fed(unit: &Unit) -> bool {
+    piped(unit) || unit.stdin.is_some()
 }
 
 /// What `coproc` runs: the first word past an optional name, the `{` words

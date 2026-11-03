@@ -440,9 +440,13 @@ fn bun_inline(text: &str) -> bool {
 /// `-e'code'`), as does `bun repl` and a script read from its input
 /// (`bun run -`); `bun x` is a package runner; `bun exec` runs its
 /// arguments as a shell script; a file or a subcommand is its own business.
-pub(super) fn bun(unit: &Unit) -> Launch {
+pub(super) fn bun(unit: &Unit, input: bool) -> Launch {
     let evals = unit.args.iter().filter_map(Arg::known).any(bun_evals);
-    only_runs(unit, evals, with_code("bun", unit, bun_launch(unit)))
+    only_runs(
+        unit,
+        evals || input,
+        with_code("bun", unit, bun_launch(unit, input)),
+    )
 }
 
 /// A `bun` or `deno` line that reads inline code (`bun -e CODE`, `deno eval
@@ -459,33 +463,34 @@ fn with_code(key: &str, unit: &Unit, launch: Launch) -> Launch {
 }
 
 /// The REPL of `bun repl`, `deno repl` and a bare `deno`: it reads its input
-/// under a POSIX shell, and under cmd and PowerShell only when something is
-/// piped into it.
-fn repl(unit: &Unit) -> Launch {
-    if unit.shell == Shell::Posix || super::piped(unit) {
+/// under a POSIX shell, and under cmd and PowerShell only when it is handed
+/// one (`input`): something piped into it or a file redirected onto it.
+fn repl(unit: &Unit, input: bool) -> Launch {
+    if unit.shell == Shell::Posix || input {
         Launch::Reads(Reads::Interpreter)
     } else {
         Launch::Itself
     }
 }
 
-/// A line for cmd reads the parts of `bun` and `deno` that start a program
-/// (a package runner, a delete tool, an npm specifier, `bun run name`), and
-/// not what it reads of a POSIX shell, which cmd lines do not get. Inline
-/// code and what is piped into the program are not read there either, which
-/// comes back as `unknown`. `evals` is whether the line carries a flag that
-/// runs inline code: when the code itself cannot be told (a module the
-/// options load, a subcommand in between), the line still runs code the
-/// guard does not read, and stays `unknown` in cmd as it is in the others.
-fn only_runs(unit: &Unit, evals: bool, launch: Launch) -> Launch {
+/// A line for cmd reads what `bun` and `deno` start (a package runner, a
+/// delete tool, an npm specifier, `bun run name`, the shell script of `bun
+/// exec`) as the other shells do. A script read from the input is read only
+/// when the program is handed one, as for any interpreter in cmd: `reads` is
+/// whether it is (something piped into it, a file redirected onto it), or
+/// whether the line carries a flag that runs inline code: when the code
+/// itself cannot be told (a module the options load, a subcommand in
+/// between), the line still runs code the guard does not read, and stays
+/// `unknown` in cmd as it is in the others. Inline code is not read in cmd.
+fn only_runs(unit: &Unit, reads: bool, launch: Launch) -> Launch {
     match launch {
-        Launch::Replace(_) | Launch::Inline(..) => launch,
+        Launch::Replace(_) | Launch::Inline(..) | Launch::Script(..) => launch,
         Launch::Either(first, second) => Launch::Either(
-            Box::new(only_runs(unit, evals, *first)),
-            Box::new(only_runs(unit, evals, *second)),
+            Box::new(only_runs(unit, reads, *first)),
+            Box::new(only_runs(unit, reads, *second)),
         ),
         _ if unit.shell != Shell::Cmd => launch,
-        Launch::Reads(_) if evals || super::piped(unit) => launch,
+        Launch::Reads(_) if reads => launch,
         _ => Launch::Itself,
     }
 }
@@ -500,14 +505,14 @@ fn bun_evals(text: &str) -> bool {
 
 /// `bun` read by the guard's options and by bun's own subcommand, the first
 /// word that does not start with a dash.
-fn bun_launch(unit: &Unit) -> Launch {
+fn bun_launch(unit: &Unit, input: bool) -> Launch {
     let args = unit.args.as_slice();
     let first = after_options(args, &BUN_VALUES);
     let before = args.get(..first.unwrap_or(args.len())).unwrap_or_default();
     if before.iter().filter_map(Arg::known).any(bun_evals) {
         return Launch::Reads(Reads::Interpreter);
     }
-    let by_value = first.map_or(Launch::Itself, |at| bun_subcommand(unit, at));
+    let by_value = first.map_or(Launch::Itself, |at| bun_subcommand(unit, at, input));
     // Bun itself takes the first word that does not start with a dash as the
     // subcommand, before any option reads its value (`bun -F x echo` runs
     // `bunx echo`, `bun --title repl` opens the REPL). The options that take
@@ -522,7 +527,7 @@ fn bun_launch(unit: &Unit) -> Launch {
     if !starts_one {
         return by_value;
     }
-    let by_bun = bun_subcommand(unit, plain);
+    let by_bun = bun_subcommand(unit, plain, input);
     match (by_value, by_bun) {
         (Launch::Itself, other) | (other, Launch::Itself) => other,
         // Two readings that come to the same are judged once.
@@ -532,14 +537,14 @@ fn bun_launch(unit: &Unit) -> Launch {
 }
 
 /// What the subcommand of `bun` at `first` does.
-fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
+fn bun_subcommand(unit: &Unit, first: usize, input: bool) -> Launch {
     let args = unit.args.as_slice();
     let Some(word) = args[first].known() else {
         return Launch::Itself;
     };
     match word {
         "x" => runner("bun", unit),
-        "repl" => repl(unit),
+        "repl" => repl(unit, input),
         // `bun exec 'script'` runs a shell script (bun's own shell, which
         // reads POSIX), its options standing before the script too.
         "exec" => {
@@ -592,25 +597,33 @@ fn is_file(arg: &Arg) -> bool {
 /// `deno watch` (which is `run --hmr`) and `deno` with no subcommand (its
 /// default is `run`: `deno npm:pkg`); `deno x` is a package runner; a file or
 /// another subcommand is its own business.
-pub(super) fn deno(unit: &Unit) -> Launch {
-    only_runs(unit, false, with_code("deno", unit, deno_launch(unit)))
+pub(super) fn deno(unit: &Unit, input: bool) -> Launch {
+    only_runs(
+        unit,
+        input,
+        with_code("deno", unit, deno_launch(unit, input)),
+    )
 }
 
-fn deno_launch(unit: &Unit) -> Launch {
+fn deno_launch(unit: &Unit, input: bool) -> Launch {
     let args = unit.args.as_slice();
     let Some(first) = after_options(args, &DENO_VALUES) else {
         let prints = args.iter().filter_map(Arg::known).any(|text| {
             matches!(text, "--version" | "-V" | "-v" | "--help" | "-h")
                 || text.starts_with("--help=")
         });
-        return if prints { Launch::Itself } else { repl(unit) };
+        return if prints {
+            Launch::Itself
+        } else {
+            repl(unit, input)
+        };
     };
     let Some(word) = args[first].known() else {
         return Launch::Reads(Reads::Interpreter);
     };
     match word {
         "eval" => Launch::Reads(Reads::Interpreter),
-        "repl" => repl(unit),
+        "repl" => repl(unit, input),
         "x" => runner("deno", unit),
         "run" | "watch" => args
             .get(first + 1..)

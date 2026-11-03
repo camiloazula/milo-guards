@@ -125,7 +125,7 @@ fn cmd_quotes(rest: &str, strip: bool) -> String {
 }
 
 /// The C runtime's split of a command line.
-fn argv(text: &str) -> Vec<String> {
+pub(crate) fn argv(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut words = Vec::new();
     let mut word = String::new();
