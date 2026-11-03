@@ -7,7 +7,7 @@ use std::rc::Rc;
 use super::interpreters::{reads_input, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
-use crate::powershell::Params;
+use crate::powershell::{native, Params};
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
 
@@ -363,34 +363,52 @@ fn file_arg(file: &str, moved: bool) -> Arg {
     }
 }
 
-/// `Start-Process`: the program in `-FilePath` (`-Path` and `-PSPath` are its
-/// aliases, which `Params` reads as `-LiteralPath`; or first), its arguments in
-/// `-ArgumentList` (or after it), and `-Verb RunAs` to run it elevated.
+/// `Start-Process`: the program in `-FilePath` (or its aliases `-Path` and
+/// `-PSPath`; or first), its arguments in `-ArgumentList` (or after it), split
+/// again by the program (see [`native::words`]), and `-Verb RunAs` to run it
+/// elevated. Every other parameter that takes a value takes it
+/// (`-WindowStyle Hidden`).
 pub(super) fn start_process(unit: &Unit) -> Launch {
-    let params = Params::read(&unit.args);
+    let params = Params::start_process(&unit.args);
     let mut positional = params.positional.iter();
     let program = params
-        .values(&["filepath", "path", "literalpath"])
+        .values(&["filepath"])
         .first()
         .copied()
         .or_else(|| positional.next().copied());
     let Some(program) = program else {
         return Launch::Itself;
     };
+    // The arguments are joined into one command line, which the program
+    // splits by its own rules: a run of strings known now is split as one.
+    let key = program
+        .known()
+        .map(|program| unit::key(program, Shell::PowerShell))
+        .unwrap_or_default();
     let mut args = Vec::new();
+    let mut line: Vec<&str> = Vec::new();
     for arg in params
         .values(&["argumentlist"])
         .into_iter()
         .chain(positional.copied())
     {
-        match arg {
-            Arg::Known(text) => args.extend(
-                text.split_whitespace()
-                    .map(|word| Arg::Known(word.to_string())),
-            ),
-            other => args.push(other.clone()),
+        if let Arg::Known(text) = arg {
+            line.push(text);
+            continue;
         }
+        args.extend(
+            native::words(&key, &line.join(" "))
+                .into_iter()
+                .map(Arg::Known),
+        );
+        line.clear();
+        args.push(arg.clone());
     }
+    args.extend(
+        native::words(&key, &line.join(" "))
+            .into_iter()
+            .map(Arg::Known),
+    );
     let mut wrappers = unit.wrappers.clone();
     wrappers.push("start-process".to_string());
     if params.values(&["verb"]).iter().any(|verb| {

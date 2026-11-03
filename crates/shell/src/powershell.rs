@@ -8,6 +8,8 @@ use std::ops::Range;
 use tree_sitter::Node;
 
 mod blocks;
+pub(crate) mod native;
+mod spelling;
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
@@ -16,6 +18,10 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
+    // A space, quote or dash PowerShell reads as an ASCII one is written as
+    // that one, which is all the grammar knows.
+    let ascii = spelling::ascii(text);
+    let text = ascii.as_ref();
     let Some(first) = unit::parse(split, text, &language) else {
         return;
     };
@@ -600,6 +606,7 @@ impl Walker<'_> {
             .map(|program| unit::key(program, Shell::PowerShell));
         // Whether the last word was a redirect operator alone (`1>`).
         let mut file_next = false;
+        let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
@@ -607,10 +614,33 @@ impl Walker<'_> {
                 // grammar runs it to the end of the line, so what follows the
                 // pipe is read again as the next command.
                 let source = unit::text(&element, self.source);
-                if source.starts_with("--%") {
-                    if let Some((_, rest)) = source.split_once('|') {
+                if let Some(verbatim) = source.strip_prefix("--%") {
+                    let (own, rest) = verbatim
+                        .split_once('|')
+                        .map_or((verbatim, None), |(own, rest)| (own, Some(rest)));
+                    // The words are handed on as written but for `%NAME%`,
+                    // which PowerShell puts the environment variable in, and
+                    // the program splits them by its own rules. `cmd` puts
+                    // the variables in itself, and is read so.
+                    let key = program_key.as_deref().unwrap_or_default();
+                    for word in native::words(key, own) {
+                        args.push(if key == "cmd" {
+                            Arg::Known(word)
+                        } else {
+                            self.environment(&word)
+                        });
+                        shapes.push(blocks::Shape::default());
+                    }
+                    if let Some(rest) = rest {
                         unit::script(self.split, rest, Shell::PowerShell, self.depth + 1);
                     }
+                    continue;
+                }
+                // A native program is not handed `$null` at all: the
+                // arguments after it move up (`git $null push` is `git
+                // push`). A cmdlet binds it, and a string that holds it is a
+                // value.
+                if native && self.is_null(element) {
                     continue;
                 }
                 // A `1>` word and the file after it are a redirect, not
@@ -703,6 +733,19 @@ impl Walker<'_> {
                     "runs an event action only known when it runs",
                     Some(unit::text(&node, self.source)),
                 );
+            }
+        }
+        // `Start-Process -RedirectStandardOutput f` writes the program's
+        // output to `f`, as a redirect does.
+        if key.as_deref() == Some("start-process") {
+            let params = Params::start_process(&unit.args);
+            let files: Vec<Arg> = params
+                .values(&["redirectstandardoutput", "redirectstandarderror"])
+                .into_iter()
+                .cloned()
+                .collect();
+            for file in files {
+                self.split.write(Shell::PowerShell, file);
             }
         }
         let at = unit.stage;
@@ -1449,6 +1492,48 @@ impl Walker<'_> {
         }
     }
 
+    /// A word after `--%` with each `%NAME%` in it put in: a variable that
+    /// names a known place is that place, and any other (or one the line
+    /// sets) is only known when it runs. A `%` with no name after it is
+    /// text.
+    fn environment(&self, word: &str) -> Arg {
+        let mut value = String::with_capacity(word.len());
+        let mut rest = word;
+        while let Some(at) = rest.find('%') {
+            value.push_str(&rest[..at]);
+            let after = &rest[at + 1..];
+            let Some(end) = after.find('%').filter(|&end| end > 0) else {
+                value.push('%');
+                rest = after;
+                continue;
+            };
+            let name = &after[..end];
+            match crate::cmd::place(name) {
+                Some(place) if !self.split.reassigned(&format!("env:{name}")) => {
+                    value.push_str(place);
+                }
+                _ => return Arg::Unknown(word.to_string()),
+            }
+            rest = &after[end + 1..];
+        }
+        value.push_str(rest);
+        Arg::Known(value)
+    }
+
+    /// Whether `node` is the variable `$null` (in any case, or as
+    /// `${null}`), not in a string.
+    fn is_null(&self, node: Node<'_>) -> bool {
+        let mut node = node;
+        while matches!(node.kind(), "array_literal_expression" | "unary_expression") {
+            match only_child(node) {
+                Some(only) => node = only,
+                None => return false,
+            }
+        }
+        node.kind() == "variable"
+            && matches!(self.variable(unit::text(&node, self.source)), Arg::Null)
+    }
+
     fn is_item(&self, source: &str) -> bool {
         self.item.is_some()
             && matches!(
@@ -1628,6 +1713,118 @@ fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'s
         _ => return None,
     })
 }
+
+/// Whether the program `key` names (lower case, an alias read as its
+/// cmdlet) is a cmdlet: a name of an approved verb, a dash and a noun. Any
+/// other is taken for a native program.
+fn is_cmdlet(key: &str) -> bool {
+    key.split_once('-')
+        .is_some_and(|(verb, noun)| !noun.is_empty() && VERBS.contains(&verb))
+}
+
+/// PowerShell's approved verbs (`Get-Verb`), in lower case.
+const VERBS: [&str; 100] = [
+    "add",
+    "approve",
+    "assert",
+    "backup",
+    "block",
+    "build",
+    "checkpoint",
+    "clear",
+    "close",
+    "compare",
+    "complete",
+    "compress",
+    "confirm",
+    "connect",
+    "convert",
+    "convertfrom",
+    "convertto",
+    "copy",
+    "debug",
+    "deny",
+    "deploy",
+    "disable",
+    "disconnect",
+    "dismount",
+    "edit",
+    "enable",
+    "enter",
+    "exit",
+    "expand",
+    "export",
+    "find",
+    "format",
+    "get",
+    "grant",
+    "group",
+    "hide",
+    "import",
+    "initialize",
+    "install",
+    "invoke",
+    "join",
+    "limit",
+    "lock",
+    "measure",
+    "merge",
+    "mount",
+    "move",
+    "new",
+    "open",
+    "optimize",
+    "out",
+    "ping",
+    "pop",
+    "protect",
+    "publish",
+    "push",
+    "read",
+    "receive",
+    "redo",
+    "register",
+    "remove",
+    "rename",
+    "repair",
+    "request",
+    "reset",
+    "resize",
+    "resolve",
+    "restart",
+    "restore",
+    "resume",
+    "revoke",
+    "save",
+    "search",
+    "select",
+    "send",
+    "set",
+    "show",
+    "skip",
+    "split",
+    "start",
+    "step",
+    "stop",
+    "submit",
+    "suspend",
+    "switch",
+    "sync",
+    "test",
+    "trace",
+    "unblock",
+    "undo",
+    "uninstall",
+    "unlock",
+    "unprotect",
+    "unpublish",
+    "unregister",
+    "update",
+    "use",
+    "wait",
+    "watch",
+    "write",
+];
 
 /// The one named child of `node`, when it has just one.
 fn only_child(node: Node<'_>) -> Option<Node<'_>> {
@@ -1925,6 +2122,19 @@ impl<'a> Params<'a> {
     /// and what the cmdlet might take as a value is not left for a rule to
     /// see as something else. A name that fits none takes no value.
     pub(crate) fn cmdlet(args: &'a [Arg], own: &[Param]) -> Self {
+        Self::bind(args, own, false)
+    }
+
+    /// `Start-Process`'s arguments (see [`START_PROCESS`]), read as
+    /// [`Params::cmdlet`] reads them, but a parameter that takes a value
+    /// takes the next argument whatever it is: a quoted string that starts
+    /// with a dash (`-ArgumentList '-c x'`) is its value, and a parameter
+    /// there is an error that stops the command.
+    pub(crate) fn start_process(args: &'a [Arg]) -> Self {
+        Self::bind(args, &START_PROCESS, true)
+    }
+
+    fn bind(args: &'a [Arg], own: &[Param], strict: bool) -> Self {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
@@ -1939,7 +2149,7 @@ impl<'a> Params<'a> {
             let value = if takes_value
                 && iter
                     .peek()
-                    .is_some_and(|next| parameter(next).is_none() || colon)
+                    .is_some_and(|next| parameter(next).is_none() || colon || strict)
             {
                 iter.next()
             } else {
@@ -2013,6 +2223,28 @@ impl Param {
             .or_else(|| all().find(|param| param.starts_with(typed)))
     }
 }
+
+/// `Start-Process`'s parameters: every one that takes a value takes it, so
+/// none is left where the program is read from (`-WindowStyle Hidden cmd`).
+pub(crate) const START_PROCESS: [Param; 17] = [
+    Param::value("filepath", &["pspath", "path"]),
+    Param::value("argumentlist", &["args"]),
+    Param::value("credential", &["runas"]),
+    Param::value("workingdirectory", &[]),
+    Param::value("verb", &[]),
+    Param::value("windowstyle", &[]),
+    Param::value("redirectstandardoutput", &["rso"]),
+    Param::value("redirectstandarderror", &["rse"]),
+    Param::value("redirectstandardinput", &["rsi"]),
+    Param::value("environment", &[]),
+    Param::switch("loaduserprofile", &["lup"]),
+    Param::switch("nonewwindow", &["nnw"]),
+    Param::switch("passthru", &[]),
+    Param::switch("wait", &[]),
+    Param::switch("usenewenvironment", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
 
 /// The parameters every cmdlet takes.
 const COMMON: [Param; 12] = [

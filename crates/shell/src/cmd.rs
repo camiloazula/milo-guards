@@ -472,7 +472,7 @@ fn expand(text: &str, split: &Split) -> Option<String> {
 }
 
 /// The variables that name a known place, as paths the resolver reads.
-fn place(name: &str) -> Option<&'static str> {
+pub(crate) fn place(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_lowercase().as_str() {
         "userprofile" => "~",
         "cd" => ".",
