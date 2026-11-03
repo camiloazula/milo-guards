@@ -1,6 +1,7 @@
 //! The rules about the system: disks, permissions, stopping it, and its
 //! settings (Windows, services, scheduled jobs, accounts, the firewall).
 
+use super::settings::firewall;
 use super::Checker;
 use crate::powershell::Params;
 use crate::unit::{has_flag, has_switch, operands, plain, Arg, Unit};
@@ -210,13 +211,18 @@ impl Checker<'_> {
             }
             "netsh" => {
                 let words = lower_words(args);
-                let firewall = words.iter().any(|word| word.contains("firewall"));
-                if firewall
+                let about_firewall = words.iter().any(|word| word.contains("firewall"));
+                // `advfirewall import` replaces the whole policy with a file's.
+                if about_firewall && words.iter().any(|word| word == "import") {
+                    self.add(Rule::SystemSettings, firewall::REPLACES, None);
+                } else if about_firewall
                     && words
                         .iter()
                         .any(|word| matches!(word.as_str(), "off" | "disable" | "reset" | "delete"))
                 {
                     self.add(Rule::SystemSettings, "changes the firewall", None);
+                } else if about_firewall && firewall::netsh_opens(args) {
+                    self.add(Rule::SystemSettings, firewall::OPENS, None);
                 }
             }
             "sc" if shell != Shell::PowerShell => {

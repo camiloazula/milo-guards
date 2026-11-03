@@ -135,7 +135,12 @@ is `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError`
 write their file, as a redirect does. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
-`noglob -- rm` runs a program named `--`), and `coproc`.
+`noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
+multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
+`xtables-multi` run the program they name (`xtables-nft-multi iptables -F`
+is `iptables -F`), and their own names for it too: `main4` is `iptables`,
+`main6` is `ip6tables`, `restore4` and `restore6` are `iptables-restore`
+and `ip6tables-restore`, `save4` and `save6` their `-save`.
 
 `Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
 words after the program) with spaces into one command line, which the program
@@ -1426,6 +1431,22 @@ bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
 `unknown`. A script held in a variable (`$s = iwr url; iex $s`) is still
 `unknown`.
 
+### The Windows firewall
+
+`netsh advfirewall` with `off`, `disable`, `reset` or `delete` among its
+words changes the firewall, and the `NetSecurity` cmdlets that set, disable,
+remove or add a rule or set a profile do (`Set-NetFirewallProfile`,
+`New-NetFirewallRule`). `netsh advfirewall import` replaces the whole
+policy with a file's (`replaces the firewall's rules`); `export` is safe.
+`netsh advfirewall firewall add rule` with `dir=in` and `action=allow` lets
+everything in (`lets everything through the firewall`) when nothing narrows
+it: no `program=`, no `service=`, `localport=`, `remoteport=` or
+`interfacetype=` but `any`, no `localip=` or `remoteip=` but anywhere (as
+for `iptables`), no `rmtcomputergrp=` or `rmtusrgrp=`, no `security=` but
+`notrequired`, a `protocol=` that reaches every service, and not
+`enable=no`. An operand only known when it runs may narrow it, as for
+`iptables`. The same line is judged the same in cmd and in PowerShell.
+
 ### Machine settings on macOS and Linux
 
 `system_settings` also covers the changes to the machine that `sudo` does not
@@ -1442,8 +1463,10 @@ of their strictest, so each family below was added on that test.
   value only known when it runs is risky. `spctl --master-enable`, `csrutil
   status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
   safe.
-- **The firewall.** `iptables` and `ip6tables` (and their `-legacy` and
-  `-nft` builds) with `-F`/`--flush`, `-X`/`--delete-chain` or a default
+- **The firewall.** `iptables` and `ip6tables`, and `ebtables` and
+  `arptables`, which take the same commands (and their `-legacy` and
+  `-nft` builds), with `-F`/`--flush` (`ebtables --init-table` too),
+  `-X`/`--delete-chain` or a default
   policy of ACCEPT (`-P chain ACCEPT`, `--policy`) for `INPUT`, `FORWARD` or
   a chain only known when it runs; the chain may be attached (`-PINPUT`,
   `-nPINPUT`, `--policy=INPUT`), and then the policy is the next argument.
@@ -1465,11 +1488,86 @@ of their strictest, so each family below was added on that test.
   which may be abbreviated (`-F a`) and attached (`-Fa`, `-qFrules`), or
   with a modifier only known when it runs; `socketfilterfw --setglobalstate
   off`. Adding or deleting one rule, `-P chain DROP`, listing, `ufw allow`,
-  `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
-  from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
-  file's content is not in the line. Long options may be abbreviated as
-  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
-  takes any unique prefix too (`--set-default=trusted`).
+  `ufw enable` and `firewall-cmd --panic-off` are safe. Long options may be
+  abbreviated as `getopt_long` programs take them (`iptables --fl`), and
+  `firewall-cmd` takes any unique prefix too (`--set-default=trusted`).
+- **A ruleset loaded whole** replaces the firewall's rules (`replaces the
+  firewall's rules`): `nft -f FILE` and `nft -i`, `iptables-restore`,
+  `ip6tables-restore`, `ebtables-restore` and `arptables-restore` (and their
+  `-legacy` and `-nft` builds) given a file operand or reading their input,
+  and `pfctl -f` (`netsh advfirewall import` is in [The Windows
+  firewall](#the-windows-firewall)). A file is not read, its content
+  is not in the line, so a load of one is risky. A load from the input is
+  read when the line shows all of it: a here-string or here-document of
+  plain text, or a stage before it whose programs are all `echo`, `printf`
+  or a `cat` that passes on plain text fed to it, read as the database
+  clients read theirs (`drop_data`). It stays safe only when the text adds
+  nothing: for `nft`, commands that all `list` (a `#` that starts a word
+  comments out the rest of a line that has no quote in it); for a restore,
+  blank and comment lines only, since a table named in it, even with no
+  rule, is flushed. A file redirected onto it (`iptables-restore <
+  rules.v4`), a text only known when it runs, any other program before it
+  (`cat rules.nft | nft -f -`, `curl … | iptables-restore`), and an input
+  the line does not show at all (`iptables-restore` alone, whose input
+  comes from outside the line) are risky. pf replaces its rules with
+  whatever it loads, an empty file included, so every `pfctl -f` is
+  risky. A load that only checks is safe: `pfctl -n`, `nft -c`/`--check`
+  and `iptables-restore -t`/`--test`. `iptables-restore -h`/`--help` and
+  `-V`/`--version`, `iptables-restore-translate` and `iptables-save` load
+  nothing.
+- **A rule that lets everything in** opens the firewall as an ACCEPT
+  policy does (`lets everything through the firewall`). For `iptables` (and
+  `ebtables`, `arptables`): a rule added with `-A`, `-I` or `-R` to `INPUT`,
+  `FORWARD` or a chain only known when it runs, whose target (`-j`) is
+  `ACCEPT` (in any case) or only known when it runs, and that matches
+  everything: no match at all, or only a source or destination of anywhere
+  (`-s`, `--src`, `-d`, `--dst`), an interface of `+`, which names every
+  one (`-i +`, `-o +`), a protocol that reaches every service (`all`, `0`,
+  `tcp`, `udp`) or `-m comment`; counters to start from (`-c PKTS BYTES`,
+  `--set-counters`) are not a match. An address is anywhere when its mask
+  keeps none of it, whatever the address before the mask: a prefix length
+  of 0 (`0.0.0.0/0`, `0/0`, `::/0`, `1.2.3.4/0`, `0.0.0.0/00`) or a mask of
+  zeros (`10.0.0.0/0.0.0.0`); `any` and `anywhere` are too. Any other
+  match (`-i lo`, `-i eth+`, `--dport 22`, `-m conntrack`, `-p icmp`, `!`)
+  narrows the rule, and so does an argument only known when it runs (`-s
+  $ip`), as for the other values of a rule; `-D`, `-C`, `-g` and `OUTPUT`
+  are not read. For
+  `firewall-cmd`: a zone or policy whose target is set to `ACCEPT` or a
+  target only known when it runs (`--set-target`), and a source of anywhere
+  or one only known when it runs (`--add-source`) added to the `trusted`
+  zone or a zone only known when it runs; a source added to another zone,
+  or to the default zone (no `--zone`), only moves it between zones. For
+  `nft`: `policy accept` (or a policy only known when it runs) in a chain
+  whose hook is not `output` or `postrouting` and whose type is not `nat`
+  or `route`, which do not filter (`nft add chain ip nat prerouting '{ type
+  nat hook prerouting priority -100; policy accept; }'` is safe). The hook
+  and type are the chain's own: what a chain says ends with the command it
+  is in (a `;` inside its braces does not end it) or at the next `chain`
+  word, so a hook named for one chain does not carry over to another on the
+  line. And a rule added with `add`, `insert` or `replace rule [FAMILY]
+  TABLE CHAIN` to a chain named `input` or `forward` (in any case) or only
+  known when it runs, whose statements are `accept` and only `counter`,
+  `log`, a `comment`, an address match of anywhere (`ip saddr 0.0.0.0/0`)
+  and where it goes (`handle N`, `position N`, `index N`): `nft insert rule
+  inet filter input accept` is risky, `nft add rule inet filter input tcp
+  dport 22 accept` safe. Any other statement narrows it, and so does a word
+  only known when it runs. A rule written inside a chain's braces in a
+  table's definition is not read. For `ufw`: `allow` (also after `insert N`, `prepend` or
+  `route`) with `from` or `to` and nothing but `in`, a `from` and `to` of
+  anywhere (`any`, or a mask that keeps none of the address, as for
+  `iptables`) or only known when it runs, `proto`
+  of every service or only known when it runs, `log` and `comment`; a port,
+  an interface, an application or `out` narrows it (`ufw allow 22`, `ufw
+  allow from any to any port 22`). `iptables -A INPUT -j ACCEPT` was safe
+  before, read as a rule after others that may drop; with a policy of DROP
+  and no rule after it that drops, it opens the machine, so it is risky.
+- **firewalld's direct interface** hands iptables its arguments:
+  `firewall-cmd --direct --passthrough FAMILY ARGS` (and
+  `--add-passthrough`) is read as `iptables ARGS` whatever the family
+  (`ipv4`, `ipv6`, `eb`), and `--direct --add-rule FAMILY TABLE CHAIN
+  PRIORITY ARGS` as `iptables -t TABLE -I CHAIN ARGS`: `firewall-cmd
+  --direct --passthrough ipv4 -F` is risky, `--passthrough ipv4 -L` is
+  safe.
 - **Services the system runs.** `systemctl disable` and `mask`, unless
   `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
   `unload`, `remove` and `disable`. The one thing read as the workspace's own
