@@ -1,7 +1,7 @@
 # Everyday commands stay safe through the front door: what an agent runs all
 # day in a POSIX shell, in PowerShell and in cmd needs no one to ask. The
 # format is the shell guard's (CONTRIBUTING.md); each line is also judged by
-# `milo_local_guards::shell::classify`.
+# `milo_guards::shell::classify`.
 
 # A POSIX shell.
 posix safe |

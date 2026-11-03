@@ -1,4 +1,4 @@
-# Contributing to milo-local-guards
+# Contributing to milo-guards
 
 Thanks for your interest in contributing. This page is how to build, test and
 submit a change. How the code is organised, and the rules it follows, are in
@@ -81,7 +81,7 @@ guard's cases hold no value shaped like a real key, which its tests build in
 Rust so that none sits in the repository. The front door's
 `crates/guards/tests/everyday.rs` reads its `tests/cases/everyday.cases` with
 the shell guard's runner, and judges each line through
-`milo_local_guards::shell` too.
+`milo_guards::shell` too.
 
 One case to a line, and nothing else on it:
 
@@ -234,7 +234,7 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
 
 ## How a change reaches a caller
 
-A caller depends on `milo-local-guards` by git at a fixed `rev`, and its own
+A caller depends on `milo-guards` by git at a fixed `rev`, and its own
 policy decides what to do with each rule. So a change here reaches a caller by
 a pull request in that caller that bumps the `rev`, after the change has merged
 to `main` here. A new rule is new to the caller too: it decides what to do with
@@ -245,7 +245,7 @@ repository without editing its `Cargo.toml`. From the caller's checkout, with
 this one beside it:
 
 ```sh
-cargo test --config 'patch."https://github.com/camiloazula/milo-local-guards".milo-local-guards.path="../milo-local-guards/crates/guards"'
+cargo test --config 'patch."https://github.com/camiloazula/milo-guards".milo-guards.path="../milo-guards/crates/guards"'
 ```
 
 The same `--config` works with `cargo build` and `cargo clippy`. It lasts one

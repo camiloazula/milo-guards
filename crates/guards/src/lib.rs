@@ -41,8 +41,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
-//! use milo_local_guards::shell::{classify, effect, Effect, Reach, Rule, Shell};
-//! use milo_local_guards::Paths;
+//! use milo_guards::shell::{classify, effect, Effect, Reach, Rule, Shell};
+//! use milo_guards::Paths;
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
 //!
@@ -77,7 +77,7 @@
 //!
 //! ```
 //! # #[cfg(feature = "code")] {
-//! use milo_local_guards::code::{read, understand, Act, Language, Understanding};
+//! use milo_guards::code::{read, understand, Act, Language, Understanding};
 //!
 //! // A snippet that only computes does nothing to a file, and is understood.
 //! assert!(read(Language::Python, "print(1 + 1)").acts.is_empty());
@@ -95,8 +95,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "file")] {
-//! use milo_local_guards::file::{judge, Access, Rule};
-//! use milo_local_guards::Paths;
+//! use milo_guards::file::{judge, Access, Rule};
+//! use milo_guards::Paths;
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
 //!
@@ -116,8 +116,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "url")] {
-//! use milo_local_guards::url::{judge, Rule};
-//! use milo_local_guards::Paths;
+//! use milo_guards::url::{judge, Rule};
+//! use milo_guards::Paths;
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
 //!
@@ -140,7 +140,7 @@
 //!
 //! ```
 //! # #[cfg(feature = "secrets")] {
-//! use milo_local_guards::secrets::{find, find_spans, Rule};
+//! use milo_guards::secrets::{find, find_spans, Rule};
 //!
 //! assert!(find("let sha = \"3f786850e387550fdab836ed7e6dc881de23001b\";").is_safe());
 //!
@@ -162,8 +162,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "shell")] {
-//! use milo_local_guards::shell::{classify, Rule, Shell};
-//! use milo_local_guards::{Paths, Protected};
+//! use milo_guards::shell::{classify, Rule, Shell};
+//! use milo_guards::{Paths, Protected};
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
 //!     .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);
@@ -181,8 +181,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "file")] {
-//! use milo_local_guards::file::{judge, Access, Rule};
-//! use milo_local_guards::{Paths, Protected};
+//! use milo_guards::file::{judge, Access, Rule};
+//! use milo_guards::{Paths, Protected};
 //!
 //! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
 //!     .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")]);

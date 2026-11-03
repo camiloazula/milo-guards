@@ -9,7 +9,7 @@
 #[path = "../../shell/tests/common/mod.rs"]
 mod common;
 
-use milo_local_guards::shell;
+use milo_guards::shell;
 
 #[test]
 fn everyday_lines_are_safe() {

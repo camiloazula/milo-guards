@@ -16,7 +16,7 @@ on, and the front door.
 | `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/url` | `milo-guards-url` | The URL guard. [URL](url.md). |
 | `crates/secrets` | `milo-guards-secrets` | The secrets guard: a text in, what it holds out, masked. [Secrets](secrets.md). |
-| `crates/guards` | `milo-local-guards` | The front door. The one crate a caller depends on. |
+| `crates/guards` | `milo-guards` | The front door. The one crate a caller depends on. |
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
 
@@ -25,9 +25,9 @@ shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
-`shell` is `milo_local_guards::shell`, `file` is `milo_local_guards::file`, `url`
-is `milo_local_guards::url`, `code` is `milo_local_guards::code` and `secrets` is
-`milo_local_guards::secrets`; the first four are on by default and `secrets` is
+`shell` is `milo_guards::shell`, `file` is `milo_guards::file`, `url`
+is `milo_guards::url`, `code` is `milo_guards::code` and `secrets` is
+`milo_guards::secrets`; the first four are on by default and `secrets` is
 not, because most callers want the others and not a table of patterns in their
 binary. A caller who wants one guard switches the rest off. The shell guard
 reads inline Python and JavaScript with the code reader whether or not the
@@ -44,7 +44,7 @@ nothing.
 ## Which way they point
 
 ```text
-milo-local-guards  ──►  milo-guards-shell  ──►  milo-guards-core
+milo-guards        ──►  milo-guards-shell  ──►  milo-guards-core
         │                      │                        ▲
         │                      └──►  milo-guards-code   │   (the shell's `inline` feature)
         ├──►  milo-guards-code                          │
