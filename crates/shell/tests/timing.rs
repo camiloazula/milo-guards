@@ -227,6 +227,50 @@ fn a_line_at_the_length_limit_is_read_in_time() {
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn cmd_commands_read_again_are_read_in_time() {
+    let _serial = serial();
+    // cmd's `ver && if …`, `i^f`, `f^or`, `ca^ll` and `call call` are each
+    // read again as a statement of their own, and each holds the rest of the
+    // line: repeated, the line would be read once for each. `just timing`
+    // runs it in an optimized build; the bound holds in a debug build too.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let fit = |unit: &str| {
+        let tail = "rd /s /q C:\\";
+        let count = (64 * 1024 - tail.len()) / unit.len();
+        format!("{}{tail}", unit.repeat(count))
+    };
+    let nested = |open: &str| {
+        let count = 390;
+        format!("{}rd /s /q C:\\{}", open.repeat(count), ")".repeat(count))
+    };
+    let lines = [
+        fit("ver && if a "),
+        fit("i^f a "),
+        fit("f^or %%i in (a) do "),
+        fit("ca^ll "),
+        fit("call "),
+        nested("ver && if a ("),
+        nested("i^f a ("),
+    ];
+    let paths = paths_for(Shell::Cmd);
+    for line in &lines {
+        let started = std::time::Instant::now();
+        let assessment = classify(line, Shell::Cmd, &paths);
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+        assert!(!assessment.is_safe(), "{:?}", &line[..40]);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     let _serial = serial();
     // Each took from half a second to over a minute in a release build: the
