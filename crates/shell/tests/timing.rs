@@ -167,7 +167,11 @@ fn a_line_at_the_length_limit_is_read_in_time() {
     let _serial = serial();
     // Longest line there is, in the shapes a real or a broken line takes.
     // The bound is for the debug build `just verify` runs; a release build
-    // takes a tenth of it or less.
+    // takes a tenth of it or less. A POSIX line that turns zsh's
+    // `extendedglob` on costs up to about twice as much: a word or redirect
+    // the option reads another way is judged both ways, and a line with a
+    // loop or a function body is read a second time. A bound for such a line
+    // allows for that.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
@@ -199,6 +203,12 @@ fn a_line_at_the_length_limit_is_read_in_time() {
             ("blocks left open", fit("if x; then ", "", "")),
             ("loops left open", fit("for i in a b; do ", "", "")),
             ("here-documents left open", fit("cat <<EOF; ", "", "")),
+            // Each name a stop is given is matched against the processes the
+            // system needs and the ones that protect it.
+            ("pkill operands", fit(" x", "pkill", "")),
+            ("pkill -f operands", fit(" x", "pkill -f", "")),
+            ("killall operands", fit(" x", "killall", "")),
+            ("Stop-Process names", fit(",x", "Stop-Process -Name x", "")),
         ]
     };
     let mut slowest = (std::time::Duration::ZERO, String::new());
@@ -216,6 +226,94 @@ fn a_line_at_the_length_limit_is_read_in_time() {
         }
     }
     assert!(slowest.0 < LIMIT, "{:?} for {}", slowest.0, slowest.1);
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch an explosion"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn wrappers_that_build_their_command_are_read_in_time() {
+    let _serial = serial();
+    // `parallel` builds a line for each job from its command and its values,
+    // and `wsl`, `env -S`, `nix run` and the other runners read their words
+    // as a command. The bound is for the debug build `just test` runs.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let values = |count: usize, each: usize| {
+        (0..count)
+            .map(|at| format!("{at:0each$}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let rows = [
+        // Every value put in at each of many replacement strings.
+        format!(
+            "parallel echo {} ::: {}",
+            "{}".repeat(8_000),
+            values(255, 120)
+        ),
+        format!(
+            "parallel echo {} ::: {}",
+            "{1}".repeat(5_000),
+            values(255, 120)
+        ),
+        // A long command run with many values.
+        format!(
+            "parallel echo {} ::: {}",
+            "a".repeat(60_000),
+            values(255, 4)
+        ),
+        format!(
+            "parallel -q echo {} ::: {}",
+            "a b ".repeat(15_000),
+            values(255, 4)
+        ),
+        // Replacement strings that never close.
+        format!("parallel echo {} ::: a b", "{".repeat(64_000)),
+        format!("parallel echo {} ::: a b", "{1".repeat(32_000)),
+        // A long replacement string, looked for at each byte.
+        format!(
+            "parallel -I {}b echo {} ::: x y",
+            "a".repeat(20_000),
+            "a".repeat(40_000)
+        ),
+        format!("parallel -I '' echo {} ::: x y", "a".repeat(60_000)),
+        // Many sources.
+        format!("parallel echo{}", " ::: a".repeat(10_000)),
+        format!("parallel echo{}", " :::".repeat(15_000)),
+        format!("parallel echo{}", " ::: a b".repeat(7_000)),
+        format!("parallel{}", " ::: a".repeat(10_000)),
+        format!("parallel ::: {} ::: {}", "a".repeat(30_000), values(255, 4)),
+        // Many options.
+        format!("parallel{} echo ::: a", " --jo x".repeat(9_000)),
+        format!("parallel{} echo ::: a", " -j 1".repeat(12_000)),
+        // Nested wrappers.
+        format!("{}echo ::: a b", "parallel ".repeat(6_000)),
+        format!("{}rm -rf ~", "strace -f chronic ".repeat(3_000)),
+        format!("wsl {}", "a b ".repeat(16_000)),
+        format!("wsl -e {}", "'a b' ".repeat(10_000)),
+        format!("{}rm -rf ~", "wsl ".repeat(16_000)),
+        format!("{}rm -rf ~", "env -S".repeat(10_000)),
+        format!("env -S'{}'", "a ".repeat(32_000)),
+        format!("nix run{} nixpkgs#hello -- rm", " --arg a b".repeat(6_000)),
+        format!("launchctl submit{} -- rm -rf ~", " -l x".repeat(12_000)),
+        format!("script{} /dev/null rm", " -t 1".repeat(12_000)),
+        format!("script{} -c ls /dev/null", " -t 1".repeat(12_000)),
+        format!("doppler run{} -- rm", " -p x".repeat(12_000)),
+        format!("aws-vault exec{} prod -- rm", " -d 1h".repeat(10_000)),
+        format!("ls | xargs sh -c '{}' _", "rm -rf \"$1\"; ".repeat(4_000)),
+    ];
+    for line in &rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let started = std::time::Instant::now();
+        let _ = classify(line, Shell::Posix, &posix());
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+    }
 }
 
 #[test]
@@ -288,7 +386,10 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each `${`), took a tenth of a second to a second at the length limit,
     // and 3.4 s on a slow machine for `${` repeated, inside the budget of
     // what a lexer reads: they are counted before parsing (`Openers` in
-    // `tangled.rs`). A release build reads each in
+    // `tangled.rs`). A chain of PowerShell assignments (`$a = $a = … gc
+    // .env`), whose value was read again for its variables at each level,
+    // took over two seconds in a debug build: each level now reads only its
+    // own nodes (`variables` in `powershell.rs`). A release build reads each in
     // tens of milliseconds; the bounds leave room for a machine busy with
     // other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
@@ -349,6 +450,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        (Shell::PowerShell, fit("$a = ", "", "gc .env")),
+        (Shell::PowerShell, distinct_assignments()),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -358,4 +461,74 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         let took = started.elapsed();
         assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
     }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
+    let _serial = serial();
+    // Every command may run any of the targets the line sets its name to, so
+    // the readings are bounded, and past the bound the line is unreadable.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let paths = paths_for(Shell::PowerShell);
+    let fill = |head: String, unit: &str| {
+        let count = (64 * 1024 - head.len()) / unit.len();
+        format!("{head}{}", unit.repeat(count))
+    };
+    let mut many = String::new();
+    for at in 0..100 {
+        let at = at.to_string();
+        many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
+    }
+    // Targets of the name's own key add no reading, so they never run the
+    // bound out: each command must still cost one lookup, not a walk of
+    // every target.
+    let mut same = String::new();
+    for at in 0..64 {
+        same.push_str(&["Set-Alias x C:\\a", &at.to_string(), "\\x.exe; "].concat());
+    }
+    for (line, risky) in [
+        (fill(many, "x ~; "), true),
+        (fill("Set-Alias x Remove-Item; ".to_string(), "x b; "), true),
+        (fill(same.clone(), "x; "), false),
+        (fill(same, "x | x | x | x; "), false),
+    ] {
+        assert!(line.len() <= 64 * 1024);
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::PowerShell, &paths);
+        let _ = effect(&line, Shell::PowerShell, &paths);
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{took:?}");
+        if risky {
+            assert!(
+                assessment
+                    .findings()
+                    .iter()
+                    .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
+                "{assessment:?}"
+            );
+        }
+    }
+}
+
+/// A chain of PowerShell assignments, each to a variable of its own
+/// (`$a0 = $a1 = … gc .env`), as long as a line may be.
+fn distinct_assignments() -> String {
+    let tail = "gc .env";
+    let mut line = String::new();
+    for at in 0.. {
+        let next = format!("$a{at} = ");
+        if line.len() + next.len() + tail.len() > 64 * 1024 {
+            break;
+        }
+        line += &next;
+    }
+    line + tail
 }

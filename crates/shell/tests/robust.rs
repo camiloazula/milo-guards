@@ -1,17 +1,58 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
 //! a line it could not read safe; and the same for `effect`, which never
-//! calls such a line reads-only. The counts that guard the grammars' time
+//! calls such a line reads-only, and for `explain` and the tree it draws,
+//! which do more work than `classify` and are held to the same limits and
+//! the same time bounds. The counts that guard the grammars' time
 //! stop a line too long, too nested or too tangled to read, and do not take
 //! everyday lines that hold a lot of `<<` or `&` for tangled ones.
 
 mod common;
 mod noise;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use common::{check, disagreements, posix, took, windows};
-use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
+use common::{check, disagreements, posix, windows};
+use milo_guards_shell::{classify, effect, explain, Effect, Paths, Rule, Shell};
 use noise::Lcg;
+
+/// How long the slowest of `classify`, `explain` and the tree `explain`
+/// draws takes on `line`, each the quickest of three runs: a bound holds for
+/// each. The tree is timed apart from the reading it draws, as a caller pays
+/// for it apart: it holds every argument of every unit, megabytes for a line
+/// read many ways.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only a test times it, to catch a quadratic read"
+)]
+fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
+    let quickest = |run: &mut dyn FnMut() -> Duration| (0..3).map(|_| run()).min();
+    let explained = quickest(&mut || {
+        let started = Instant::now();
+        let _ = explain(line, shell, paths);
+        started.elapsed()
+    });
+    let explanation = explain(line, shell, paths);
+    let drawn = quickest(&mut || {
+        let started = Instant::now();
+        let _ = explanation.to_string();
+        started.elapsed()
+    });
+    [explained, drawn]
+        .into_iter()
+        .flatten()
+        .fold(common::took(line, shell, paths), Duration::max)
+}
+
+/// Whether `explain` finds `line` unreadable, its tree drawn and saying so.
+fn explained_unreadable(line: &str, shell: Shell, paths: &Paths) -> bool {
+    let explanation = explain(line, shell, paths);
+    let tree = explanation.to_string();
+    explanation
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable)
+        && tree.contains(Rule::Unreadable.name())
+}
 
 /// Pieces of shell syntax, joined at random into lines no grammar expects.
 const PIECES: [&str; 40] = [
@@ -99,6 +140,7 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
+    assert!(explained_unreadable(&long, Shell::Posix, &posix()));
     // Every `(` row is stopped before it is parsed, by the count of open
     // `(`; the walk's own depth limit is tested on lines without one, in
     // `nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk`.
@@ -119,6 +161,10 @@ fn a_line_too_long_or_too_nested_is_not_read() {
                 .findings()
                 .iter()
                 .any(|finding| finding.rule == Rule::Unreadable),
+            "{shell:?} {open}"
+        );
+        assert!(
+            explained_unreadable(&nested, shell, &paths),
             "{shell:?} {open}"
         );
         // `effect` reads the same tree. Past the depth limit (400) is
@@ -150,6 +196,7 @@ fn nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk() {
         };
         check(shell, &paths, &[], &[(line, Rule::Unreadable)]);
         assert_eq!(effect(line, shell, &paths), Effect::Unknown, "{shell:?}");
+        assert!(explained_unreadable(line, shell, &paths), "{shell:?}");
     }
 }
 
@@ -183,6 +230,9 @@ fn here_documents_are_read_in_any_number_unless_too_many_wait_on_one_line() {
     // the line, closed or not.
     let waiting = "cat <<EOF; ".repeat(300) + "\nEOF\n";
     let continued = "cat <<EOF; \\\n".repeat(300) + "\nEOF\n";
+    for line in [&waiting, &continued] {
+        assert!(explained_unreadable(line, Shell::Posix, &posix()));
+    }
     check(
         Shell::Posix,
         &posix(),
@@ -208,6 +258,9 @@ fn a_long_chain_in_cmd_is_not_read_and_one_that_reads_is() {
     let short = "echo x & ".repeat(300) + "echo y";
     let shorter_pipeline = "echo x | ".repeat(300) + "cat";
     let both = "echo x & echo y | ".repeat(150) + "echo z";
+    for line in [&long, &longer_pipeline] {
+        assert!(explained_unreadable(line, Shell::Cmd, &windows()));
+    }
     check(
         Shell::Cmd,
         &windows(),
@@ -230,6 +283,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
+    assert!(explained_unreadable(&line, Shell::Posix, &posix()));
     // A few reads of a short script are fine (in robust.cases).
 }
 
@@ -378,6 +432,111 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
         .findings()
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
+    // With `extendedglob` on, a command with a word zsh reads another way is
+    // judged both ways: each is a fork, counted against the line's, and a
+    // loop body makes the line be read again, once. A line past the forks is
+    // unreadable, and never slow.
+    for count in [16, 33, 800] {
+        // The option on before, or after in a loop that may come round.
+        for (head, tail) in [
+            ("setopt extendedglob; ", ""),
+            ("while x; do ", "setopt extendedglob; done"),
+        ] {
+            let line = format!("{head}{}rm -rf .gi#t; {tail}", "ls a#b; ".repeat(count));
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let took = took(&line, Shell::Posix, &posix());
+            assert!(
+                took < Duration::from_millis(200),
+                "{count} {head:?} took {took:?}"
+            );
+            let assessment = classify(&line, Shell::Posix, &posix());
+            assert!(!assessment.is_safe(), "{count} {head:?}");
+            if count > 32 {
+                assert!(
+                    assessment
+                        .findings()
+                        .iter()
+                        .any(|finding| finding.rule == Rule::Unreadable),
+                    "{count} {head:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_safe() {
+    // `env -S` reads its string again as env's own arguments, each time as a
+    // wrapper of its own, so a string of `-S` takes off one at a time until
+    // the wrappers a line may have run out. The other shapes repeat an
+    // option the guard reads once each, or a wrapper given its folder that
+    // starts the next.
+    let long = "x".repeat(20_000);
+    for count in [16, 2_000] {
+        let posix_lines = [
+            format!("env {}'rm -rf ~'", "-S ".repeat(count)),
+            format!("env {}rm -rf etc", "-C / ".repeat(count)),
+            format!("env {}rm -rf etc", "--ch=/ ".repeat(count)),
+            format!("sudo {}rm -rf etc", "-nD / ".repeat(count)),
+            format!("pnpm {}exec rimraf etc", "-C / ".repeat(count)),
+            format!("env -S '{}rm -rf etc'", "-C / ".repeat(count)),
+            format!("env -S '-C / rm -rf etc {long}'"),
+        ];
+        let pwsh = [
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd:x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh --wd x ".repeat(count)
+            ),
+        ];
+        let lines = posix_lines
+            .into_iter()
+            .map(|line| (Shell::Posix, line, posix()))
+            .chain(pwsh.iter().flat_map(|line| {
+                [Shell::PowerShell, Shell::Cmd].map(|shell| (shell, line.clone(), windows()))
+            }))
+            .chain([(
+                Shell::Cmd,
+                format!(
+                    "{}rd /s /q C:\\Windows",
+                    "start /d C:\\x cmd /c ".repeat(count)
+                ),
+                windows(),
+            )]);
+        for (shell, line, paths) in lines {
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let took = took(&line, shell, &paths);
+            assert!(
+                took < Duration::from_millis(200),
+                "took {took:?} for {count} x {} in {shell:?}",
+                &line[..20]
+            );
+            assert!(
+                !classify(&line, shell, &paths).is_safe(),
+                "{count} x {} in {shell:?}",
+                &line[..20]
+            );
+        }
+    }
 }
 
 #[test]

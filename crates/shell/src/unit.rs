@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::dotglob;
 use crate::effect::Kind;
+use crate::extended;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -162,6 +163,12 @@ pub(crate) struct Unit {
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+    /// For a PowerShell unit the walk reads from the grammar, the variables
+    /// its arguments read, by the grammar's variable nodes (`$k`, `"x$k"`, a
+    /// splat `@p`; see [`crate::powershell::variables`]). `None` for a unit
+    /// of another shell, or one the guard makes up for a .NET call, whose
+    /// variables are read from its arguments' text (see [`Unit::variables`]).
+    pub(crate) names: Option<Vec<String>>,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -244,6 +251,22 @@ impl Unit {
             listed: Vec::new(),
             tf_cli_args: Vec::new(),
             depth: 0,
+            names: None,
+        }
+    }
+
+    /// The variables the unit's arguments read: [`Unit::names`] when the
+    /// grammar gave them, and otherwise the ones its arguments that are only
+    /// known when it runs name.
+    pub(crate) fn variables(&self) -> Vec<String> {
+        match &self.names {
+            Some(names) => names.clone(),
+            None => self
+                .args
+                .iter()
+                .filter(|arg| arg.is_unknown())
+                .flat_map(|arg| referenced_in(arg.text(), self.shell))
+                .collect(),
         }
     }
 
@@ -434,16 +457,22 @@ pub(crate) enum Flag {
 /// -s dotglob`, `GLOBIGNORE`) and zsh's (`setopt globdots`). Each has its own
 /// off switch, which is an error in the other shell and so clears only its
 /// own; hidden names match when either is on.
+///
+/// zsh's `extendedglob` (see [`crate::extended`]) is kept with them: it
+/// does not make a wildcard match a leading dot, but reaches as far and is
+/// given back the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Hidden {
     bash: bool,
     zsh: bool,
+    extended: bool,
 }
 
 impl Hidden {
     const ON: Self = Self {
         bash: true,
         zsh: true,
+        extended: false,
     };
 
     fn any(self) -> bool {
@@ -455,6 +484,7 @@ impl Hidden {
         Self {
             bash: self.bash || other.bash,
             zsh: self.zsh || other.zsh,
+            extended: self.extended || other.extended,
         }
     }
 }
@@ -528,6 +558,41 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
         })
         .map(str::to_string)
         .collect()
+}
+
+/// The variables PowerShell `text` names, in lower case as PowerShell
+/// matches them, without a scope: `$k`, `${K}` and `$script:k` all name `k`
+/// (`$env:k` names the environment, `env`).
+pub(crate) fn referenced_powershell(text: &str) -> Vec<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let name = |piece: &str| {
+                let end = piece
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(piece.len());
+                piece.get(..end).unwrap_or_default().to_ascii_lowercase()
+            };
+            let first = name(piece);
+            let scoped = piece
+                .get(first.len()..)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .filter(|_| SCOPES.contains(&first.as_str()))
+                .map(name);
+            Some(scoped.unwrap_or(first)).filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// The variables `text` names in `shell`: see [`referenced`] and
+/// [`referenced_powershell`].
+pub(crate) fn referenced_in(text: &str, shell: Shell) -> Vec<String> {
+    match shell {
+        Shell::PowerShell => referenced_powershell(text),
+        Shell::Posix | Shell::Cmd => referenced(text),
+    }
 }
 
 /// A function definition, noted where it begins (see [`Split::defining`]).
@@ -744,6 +809,13 @@ pub(crate) struct Split {
     /// one is not. Noted while a string is read, which only borrows the
     /// walker.
     splitting: RefCell<Vec<char>>,
+    /// The PowerShell double-quoted strings whose expansions are only known
+    /// when they run, by their source, with the text each holds where every
+    /// expansion stands as `${}` (see [`Split::template`]). `None` for a
+    /// string that holds a `$` or a backtick that is no expansion, which a
+    /// reader of the text would take for one. Noted while a string is read,
+    /// as `splitting` is.
+    templates: RefCell<HashMap<String, Option<(String, bool)>>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -828,6 +900,13 @@ pub(crate) struct Split {
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
+    /// Whether the line ever turned zsh's `extendedglob` on, in this shell or
+    /// in a script it ran, even if it turned it off again.
+    ever_extended: bool,
+    /// Whether the line is read a second time because it turns
+    /// `extendedglob` on and has a function body or a loop, which may run
+    /// after that: what they hold is read with it on (see [`split`]).
+    extended_bodies: bool,
     /// Each function the line defines, by name, with the units of its body:
     /// a call runs them, handed the call's input.
     pub(crate) function_bodies: Vec<(String, Range<usize>)>,
@@ -870,6 +949,10 @@ pub(crate) struct Split {
     moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// Where the line was before each folder a wrapper started its program
+    /// in (see [`Self::start_in`]), to put it back once that program is
+    /// read.
+    folders: Vec<Place>,
     /// How much nested script text has been read, in bytes (and one for
     /// each script), and how much of the line has been read again (see
     /// [`read_again`]): a line that makes the same script be read again and
@@ -890,9 +973,18 @@ pub(crate) struct Split {
     /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
     /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
+    /// How many groups a `coproc` opened that the grammar did not see
+    /// (`coproc { ls; }`, `coproc NAME { { ls; }; }`): it has no `coproc`,
+    /// so it reads each `{` as a word and each `}` that closes one as a
+    /// command of its own. The walk takes such a `}` off as it closes one,
+    /// and runs nothing for it.
+    pub(crate) coproc_groups: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
+    /// The aliases and functions a PowerShell line sets, which a command of
+    /// that name may run (see [`crate::powershell::Aliases`]).
+    pub(crate) powershell_aliases: crate::powershell::Aliases,
 }
 
 /// What the line does to `PWD`, read from the whole line.
@@ -1238,6 +1330,20 @@ impl Split {
                     Some(false) => self.show(flag, certain),
                     None => {}
                 }
+            }
+        }
+        if let Some(on) = unit
+            .key()
+            .filter(|_| unit.shell == Shell::Posix)
+            .and_then(|key| extended::change(&key, &unit.args))
+        {
+            if on {
+                self.extend_glob();
+            } else if dotglob::in_shell(&unit.wrappers, Flag::Zsh)
+                && unit.stage.is_none()
+                && self.branches == 0
+            {
+                self.dotglob.extended = false;
             }
         }
         if self.bodies > 0 {
@@ -1719,7 +1825,13 @@ impl Split {
     /// Note that the variable `name` is set from what runs in `inside` and
     /// from the variables `value` names.
     pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
-        let uses = referenced(value);
+        self.assign_uses(name, inside, referenced(value));
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `uses`, as [`Self::assign`] does, the names already
+    /// read from the value (as PowerShell reads them, say).
+    pub(crate) fn assign_uses(&mut self, name: &str, inside: Range<usize>, uses: Vec<String>) {
         if !inside.is_empty() || !uses.is_empty() {
             self.assigned.push(Assigned {
                 name: name.to_string(),
@@ -2387,8 +2499,22 @@ impl Split {
     /// shell's own. The shell is not known, and a function body the line
     /// exports may run in it, so both flags go on.
     pub(crate) fn hide_for_script(&mut self) {
-        self.dotglob = Hidden::ON;
+        self.dotglob = self.dotglob.or(Hidden::ON);
         self.ever_dotglob = true;
+    }
+
+    /// Turn zsh's `extendedglob` on for the rest of the shell, or for a
+    /// script started with it (`zsh -o extendedglob -c '…'`).
+    pub(crate) fn extend_glob(&mut self) {
+        self.dotglob.extended = true;
+        self.ever_extended = true;
+    }
+
+    /// Whether the words of what comes next are read as zsh reads them
+    /// with `extendedglob` on: it is on, or the line turns it on somewhere
+    /// and this is a function body or a loop, which may run after.
+    pub(crate) fn extended_glob(&self) -> bool {
+        self.dotglob.extended || (self.extended_bodies && self.bodies > 0)
     }
 
     /// Note that the line defines the function `name`.
@@ -2615,6 +2741,87 @@ impl Split {
         }
     }
 
+    /// Start what a wrapper runs in `target`, the folder its own option
+    /// names (`env -C DIR`, `pnpm --dir DIR`, `Start-Process
+    /// -WorkingDirectory DIR`, `start /d DIR`), read as a `shell` path: every
+    /// folder the line may be in moves there, as for a `cd` that ran. The
+    /// wrapper fails rather than run its program anywhere else. The move is
+    /// that program's alone: [`Self::leave_folders`] puts the line back.
+    pub(crate) fn start_in(&mut self, target: &Arg, shell: Shell) {
+        self.folders.push(self.dir_snapshot());
+        if shell == Shell::Cmd {
+            // `start /d` names the whole folder: its drive too, and a network
+            // path is on a drive the line does not name.
+            match target.known() {
+                Some(text) if text.starts_with(r"\\") || text.starts_with("//") => {
+                    self.change_drive(None);
+                }
+                Some(text) => {
+                    if let Some(letter) = crate::path::drive_of(text) {
+                        self.change_drive(Some(letter));
+                    }
+                }
+                None => self.change_drive(None),
+            }
+        }
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        let elsewhere: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let stayed: Vec<Option<Arg>> = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        // As for a `cd`: the folder holds code when the target does, or when
+        // the folder did and the target was put after it.
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.pwd.unplain |= self.dir_code;
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+    }
+
+    /// How many folders wrappers have started their programs in and the
+    /// line is still in, to give to [`Self::leave_folders`].
+    pub(crate) fn folders_mark(&self) -> usize {
+        self.folders.len()
+    }
+
+    /// Put the line back where it was before the folders wrappers started
+    /// their programs in since `mark` (see [`Self::start_in`]).
+    pub(crate) fn leave_folders(&mut self, mark: usize) {
+        if mark < self.folders.len() {
+            let mut left = self.folders.split_off(mark);
+            let place = left.swap_remove(0);
+            self.restore_dir(place);
+        }
+    }
+
+    /// Run what comes next from a folder only known when it runs, `why`, as
+    /// a `cd` there would: the script a program runs in a folder of its own
+    /// choosing (`git submodule foreach`). Put back with
+    /// [`Self::restore_dir`] from a [`Self::dir_snapshot`] taken before.
+    pub(crate) fn move_unknown(&mut self, why: &str) {
+        self.moves += 1;
+        self.moved += 1;
+        self.dir = Some(Arg::Unknown(why.to_string()));
+        self.dir_code = true;
+        self.pwd.unplain = true;
+        self.elsewhere.clear();
+        self.stayed.clear();
+        self.last_stayed.clear();
+    }
+
     /// Where the line has moved to, to put back after a subshell or a nested
     /// script whose `cd` must not reach the rest of the line.
     pub(crate) fn dir_snapshot(&self) -> Place {
@@ -2725,6 +2932,31 @@ impl Split {
                 splitting.push(*c);
             }
         }
+    }
+
+    /// Note the text the PowerShell double-quoted string `source` holds, its
+    /// expansions standing as `${}`, and whether one of them runs a command
+    /// (`$(…)`), or `None` when it cannot be read so.
+    pub(crate) fn note_template(&self, source: &str, text: Option<(String, bool)>) {
+        self.templates
+            .borrow_mut()
+            .entry(source.to_string())
+            .or_insert(text);
+    }
+
+    /// The PowerShell double-quoted string `source`, whose expansions are only
+    /// known when it runs, as a template: the text it holds with each
+    /// expansion standing as `${}`, which a reader of a database statement
+    /// reads as it reads a POSIX shell's (an expansion is a value, and where
+    /// a statement starts, a statement only known when it runs). `None` when
+    /// `source` is no such string.
+    pub(crate) fn template(&self, source: &str) -> Option<Arg> {
+        let (text, runs) = self.templates.borrow().get(source).cloned().flatten()?;
+        Some(Arg::Template {
+            text,
+            source: source.into(),
+            runs,
+        })
     }
 
     /// Whether `script` holds a character noted by [`Split::note_splitting`]:
@@ -3231,22 +3463,25 @@ pub(crate) fn split(
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
 ) -> Split {
-    let mut split = Split {
-        drive,
-        home_drive,
-        ..Split::default()
-    };
+    let mut split = Split::default();
+    start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        split = Split {
-            psdrive: true,
-            drive,
-            home_drive,
-            ..Split::default()
-        };
+        start(&mut split, true, (drive, home_drive));
+        script(&mut split, command, shell, 0);
+    }
+    // A function body or a loop may run after the line turns `extendedglob`
+    // on, wherever it is written: read the line again, reading their words
+    // with it on.
+    if split.ever_extended
+        && !(split.in_body.is_empty()
+            && split.write_in_body.is_empty()
+            && split.read_in_body.is_empty())
+    {
+        start_again_extended(&mut split);
         script(&mut split, command, shell, 0);
     }
     split.hide_bodies();
@@ -3254,6 +3489,40 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// Start `split` afresh for a read of the line from the drive `drive` with
+/// home on `home_drive`; `psdrive` says the read knows the drives the line
+/// makes. A function of its own, as [`start_again_extended`] is, so that the
+/// `Split` it builds is not held on the stack while [`split`] reads the line:
+/// the walk of a deeply nested line needs all of it.
+#[inline(never)]
+fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, Option<char>)) {
+    *split = Split {
+        drive,
+        home_drive,
+        psdrive,
+        ..Split::default()
+    };
+}
+
+/// Clear `split` for a second read of the line that reads the words of its
+/// function bodies and loops with `extendedglob` on, keeping what it was
+/// started with. A function of its own, so that the `Split` it builds is
+/// not held on the stack while [`split`] reads the line: the walk of a
+/// deeply nested line needs all of it.
+#[inline(never)]
+fn start_again_extended(split: &mut Split) {
+    let fresh = Split {
+        psdrive: split.psdrive,
+        extended_bodies: true,
+        drive: split.drive,
+        home_drive: split.home_drive,
+        ..Split::default()
+    };
+    let effect = split.kept.on;
+    *split = fresh;
+    split.kept.on = effect;
 }
 
 /// Whether `text`, a script or inline code `depth` levels deep, may be read:
@@ -3324,10 +3593,21 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
+    // A group a `coproc` opens closes in the same script.
+    let groups = std::mem::take(&mut split.coproc_groups);
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
+    }
+    // One it never closes (`coproc {`) is a line the shell does not run
+    // as written.
+    if std::mem::replace(&mut split.coproc_groups, groups) > 0 {
+        split.problem(
+            Rule::Unreadable,
+            "opens a group that never closes",
+            Some("{"),
+        );
     }
     split.apart -= usize::from(apart);
     if !here {
@@ -3403,6 +3683,28 @@ pub(crate) fn for_each_node<'tree>(
     loop {
         visit(cursor.node());
         if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// Visit the nodes under `root`, without recursion, going into the children
+/// of a node only when `visit` says so.
+pub(crate) fn for_each_node_until<'tree>(
+    root: tree_sitter::Node<'tree>,
+    mut visit: impl FnMut(tree_sitter::Node<'tree>) -> bool,
+) {
+    let mut cursor = root.walk();
+    loop {
+        if visit(cursor.node()) && cursor.goto_first_child() {
             continue;
         }
         loop {
