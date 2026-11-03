@@ -1599,6 +1599,12 @@ pub(super) struct Cache {
     inherited: Option<Rc<Input>>,
 }
 
+/// The stage whose output is the input of `unit`.
+pub(super) fn feeding(unit: &Unit) -> Option<StageKey> {
+    let stage = unit.stage.filter(|stage| stage.index > 0)?;
+    Some((stage.pipeline, stage.index - 1))
+}
+
 /// The function whose body holds each unit, and the calls of each function
 /// (see [`Cache::bodies`]).
 type Bodies = (Vec<Option<usize>>, Vec<Vec<usize>>);
@@ -1893,7 +1899,7 @@ impl Checker<'_> {
     }
 
     /// What the stage `key` says, worked out once.
-    fn stage_said(&mut self, key: StageKey) -> Rc<Vec<Arg>> {
+    pub(super) fn stage_said(&mut self, key: StageKey) -> Rc<Vec<Arg>> {
         if let Some(said) = self.data.said.get(&key) {
             return Rc::clone(said);
         }

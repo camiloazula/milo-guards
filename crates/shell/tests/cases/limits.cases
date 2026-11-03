@@ -95,3 +95,12 @@ posix finds=delete lacks=unreadable | rm -rf /
 posix lacks=unreadable | find . -name '*.o' -exec rm {} \\;
 posix lacks=unreadable | find src tests docs -type f -name '*.rs' -exec grep -l foo {} +
 posix lacks=unreadable | find . -exec find . -exec echo {} \\; \\;
+
+# The counts before parsing skip what the shell reads as a literal, and
+# count the rest (`limits.rs` holds the long lines).
+posix safe | printf '%s\n' 'a<<b' 'c<<d'
+posix safe | cat > x.h <<'EOF'\n#define X(a) ((a) << 1) | \\\n  (a)\nEOF
+posix finds=delete | echo ')(' ; rm -rf /
+posix finds=delete | cat <<'EOF'\n(\nEOF\nrm -rf /
+cmd safe | echo "a & b | (c"
+cmd finds=delete | echo "a & b" & rd /s /q C:\\
