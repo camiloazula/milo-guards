@@ -14,6 +14,7 @@ use crate::{Rule, Shell};
 mod find;
 mod interpreters;
 mod npm;
+mod packages;
 mod parallel;
 mod tools;
 mod wrappers;
@@ -217,6 +218,9 @@ fn add_launched(
             split.push(unit);
             return;
         };
+        // What the line sets for the program where it runs, which a runner
+        // reads (`npm_config_call='…' npx`).
+        unit.tf_cli_args.clone_from(&split.tf_cli_args);
         let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
         // `env X=1 cmd` and `env -u X cmd` change the program's environment,
         // as `coproc X=1 cmd` and `time X=1 cmd` do.
@@ -894,6 +898,20 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // Package runners start the program they name.
         "npx" | "npm" | "pnpm" | "pnpx" | "pnx" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => {
             runner(key, unit)
+        }
+        // Runners of a project's environment start the command they name,
+        // as `uv run` does.
+        "poetry" | "pdm" | "hatch" | "conda" | "mamba" | "micromamba" | "pixi" | "rye"
+        | "volta" | "mise" => runner(key, unit),
+        // `corepack pnpm@9 dlx …` starts the package manager it names.
+        "corepack" if packages::corepack_runs(args) => {
+            Launch::Replace(Box::new(wrappers::running(unit, key, 0)))
+        }
+        // Packages that run a command: `shx rm`, `cross-env A=1 cmd`.
+        "shx" | "cross-env" => packages::command_runner(key, args).unwrap_or(Launch::Itself),
+        // Packages that run shell lines: `concurrently 'cmd' 'cmd'`.
+        "cross-env-shell" | "concurrently" | "npm-run-all" | "run-s" | "run-p" => {
+            packages::line_runner(key, unit).unwrap_or(Launch::Itself)
         }
         "dx" => runner(key, unit),
         "bun" => bun(unit),

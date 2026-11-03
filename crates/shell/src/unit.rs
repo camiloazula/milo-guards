@@ -154,7 +154,7 @@ pub(crate) struct Unit {
     pub(crate) listed: Vec<bool>,
     /// The values the line gives `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`
     /// where it runs, by name (see [`Split::tf_cli_args`]): terraform reads
-    /// them as arguments of its command.
+    /// them as arguments of its command. `npm_config_call` is among them.
     pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
@@ -379,7 +379,13 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         }
     }
     let lower = base.to_ascii_lowercase();
-    let stem = [".exe", ".com", ".bat", ".cmd"]
+    // PowerShell runs a program's `.ps1` shim by its name (`npx.ps1`).
+    let extensions: &[&str] = if shell == Shell::PowerShell {
+        &[".exe", ".com", ".bat", ".cmd", ".ps1"]
+    } else {
+        &[".exe", ".com", ".bat", ".cmd"]
+    };
+    let stem = extensions
         .iter()
         .find_map(|extension| lower.strip_suffix(extension));
     match (shell, stem) {
@@ -587,10 +593,28 @@ pub(crate) fn tf_cli_args(name: &str) -> bool {
     name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
 }
 
-/// The name terraform reads, when `name` is one of [`tf_cli_args`]'s written
-/// in any case, as Windows reads the names of variables
-/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`).
-pub(crate) fn tf_cli_args_folded(name: &str) -> Option<String> {
+/// Whether npm reads the variable `name` as its `call` setting, the command
+/// `npx` and `npm exec` run in place of a program. npm reads the names of
+/// its `npm_config_` variables in any case (`NPM_CONFIG_CALL`).
+pub(crate) fn npm_call(name: &str) -> bool {
+    name.eq_ignore_ascii_case("npm_config_call")
+}
+
+/// Whether a program reads the variable `name` as arguments of its own:
+/// terraform's [`tf_cli_args`], and npm's [`npm_call`]. The line's values
+/// of these are noted where it sets them (see [`Split::tf_cli_args`]).
+pub(crate) fn read_as_arguments(name: &str) -> bool {
+    tf_cli_args(name) || npm_call(name)
+}
+
+/// The name a program reads, when `name` is one of [`read_as_arguments`]'s
+/// written in any case, as Windows reads the names of variables
+/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
+/// is `npm_config_call`).
+pub(crate) fn argument_variable(name: &str) -> Option<String> {
+    if npm_call(name) {
+        return Some("npm_config_call".to_string());
+    }
     let upper = name.to_ascii_uppercase();
     if upper == "TF_CLI_ARGS" {
         return Some(upper);
@@ -764,7 +788,9 @@ pub(crate) struct Split {
     pub(crate) python_path: Vec<Arg>,
     /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
     /// the program being added, by name, noted as `node_options` is:
-    /// terraform reads them as arguments of its command.
+    /// terraform reads them as arguments of its command. The values of
+    /// `npm_config_call` are noted here too: npm reads it as the command
+    /// `npx` and `npm exec` run (see [`read_as_arguments`]).
     pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the

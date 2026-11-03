@@ -1,5 +1,7 @@
 # A package runner (`npx`, `npm exec`, `pnpm`, `pnpx`, `yarn`, `bunx`, `bun`,
-# `deno`, `dx`, `uv`, `uvx`, `pipx`) runs the program it names, so that
+# `deno`, `dx`, `uv`, `uvx`, `pipx`, `corepack`, and the runners of a
+# project's environment: `poetry`, `pdm`, `hatch`, `conda`, `pixi`, `rye`,
+# `volta`, `mise`) runs the program it names, so that
 # program is judged, past every option of the runner that takes a value;
 # `bun` and `deno` run code given inline or read from their input; a script a
 # runner runs may be one the same line writes; and on Windows the script
@@ -819,3 +821,172 @@ cmd finds=unknown | deno eval x
 cmd finds=delete | bun -F x rimraf C:\\
 cmd finds=delete | bun -F x run rimraf C:\\
 cmd finds=delete | bun --title x rd /s /q C:\\Users\\me
+
+# Project and environment runners run the command after their options, as
+# `uv run` does: poetry, pdm, hatch (past an `ENV:` in front of the
+# command), conda, mamba and micromamba (with `-n`/`-p`), pixi, rye, volta,
+# and mise past its `--`.
+posix finds=delete | poetry run rm -rf ~
+posix finds=delete | pdm run rm -rf ~
+posix finds=delete | hatch run rm -rf ~
+posix finds=delete | conda run rm -rf ~
+posix finds=delete | pixi run rm -rf ~
+posix finds=delete | rye run rm -rf ~
+posix finds=delete | volta run rm -rf ~
+posix finds=delete | mise exec -- rm -rf ~
+posix finds=delete | poetry -C app run rm -rf ~
+posix finds=delete | poetry run -P app rm -rf ~
+posix finds=delete | pdm -p app run rm -rf ~
+posix finds=delete | hatch -e test run rm -rf ~
+posix finds=delete | hatch run test:rm -rf ~
+posix finds=delete | conda run -n base rm -rf ~
+posix finds=delete | conda run -p /opt/env rm -rf ~
+posix finds=delete | conda run --name base --no-capture-output rm -rf ~
+posix finds=delete | mamba run -n base rm -rf ~
+posix finds=delete | micromamba run -n base rm -rf ~
+posix finds=delete | pixi run -e dev rm -rf ~
+posix finds=delete | pixi run --manifest-path x/pixi.toml rm -rf ~
+posix finds=delete | rye run --pyproject x/pyproject.toml rm -rf ~
+posix finds=delete | volta run --node 20 rm -rf ~
+posix finds=delete | volta run --env A=1 rimraf ~
+posix finds=delete | mise exec node@20 -- rm -rf ~
+posix finds=delete | mise x node@20 python@3.12 -- rm -rf ~
+posix finds=delete | mise exec -c 'rm -rf ~'
+posix finds=delete | mise exec --command 'rm -rf ~'
+posix finds=delete | poetry run sh -c 'rm -rf ~'
+posix safe | poetry run pytest
+posix safe | poetry install
+posix safe | pdm run pytest -x
+posix safe | hatch run test:cov
+posix safe | hatch run cov
+posix safe | conda run -n base python --version
+posix safe | pixi run build
+posix safe | rye run lint
+posix safe | volta run --node 20 node --version
+posix safe | mise exec node@20 -- node --version
+posix safe | mise exec node@20
+posix safe | mise install
+# corepack starts the package manager it names, with a version or not.
+posix finds=delete | corepack pnpm dlx rimraf ~
+posix finds=delete | corepack npx rimraf ~
+posix finds=delete | corepack pnpm@9.1.0 dlx rimraf ~
+posix finds=delete | corepack yarn exec 'rm -rf ~'
+posix safe | corepack enable
+posix safe | corepack pnpm install
+posix safe | corepack use pnpm@9
+# yarn's workspace commands run a command of yarn in a workspace.
+posix finds=delete | yarn workspace web exec rm -rf ~
+posix finds=delete | yarn workspace web rimraf ~
+posix finds=delete | yarn workspaces foreach -A exec rm -rf ~
+posix finds=delete | yarn workspaces foreach --all --parallel --jobs 4 exec rm -rf ~
+posix finds=delete | yarn workspaces foreach --include web --from '@app/*' exec rm -rf ~
+posix finds=delete | yarn workspace web dlx rimraf ~
+posix safe | yarn workspace web build
+posix safe | yarn workspace web add lodash
+posix safe | yarn workspaces foreach -A run build
+posix safe | yarn workspaces list
+posix safe | yarn workspaces focus web
+# npm explore and deno task --eval run a shell line.
+posix finds=delete | npm explore lodash -- rm -rf ~
+posix finds=delete | npm explore lodash rm -rf ~
+posix finds=delete | npm explore lodash -- 'rm -rf ~'
+posix finds=delete | deno task --eval 'rm -rf ~'
+posix finds=delete | deno task --eval rm -rf ~
+posix safe | npm explore lodash -- ls
+posix safe | npm explain lodash
+posix safe | deno task --eval 'echo hi'
+cmd finds=delete | npm explore lodash -- rd /s /q C:\\Users\\me
+# Packages that run a command: shx runs a ShellJS command by its name,
+# cross-env the command after its assignments, cross-env-shell and
+# concurrently a shell line, dotenv the command after its options, and
+# npm-run-all (also run-s and run-p) each argument.
+posix finds=delete | npx shx rm -rf ~
+posix finds=delete | shx rm -rf ~
+posix finds=delete | shx --silent rm -rf ~
+posix finds=delete | npx cross-env A=1 rm -rf ~
+posix finds=delete | cross-env A=1 B=2 rm -rf ~
+posix finds=delete | npx cross-env-shell A=1 'rm -rf ~'
+posix finds=delete | npx concurrently 'rm -rf ~'
+posix finds=delete | npx concurrently 'npm run dev' 'rm -rf ~'
+posix finds=delete | concurrently -n a,b 'npm run dev' 'rm -rf ~'
+posix finds=delete | concurrently --kill-others 'rm -rf ~'
+posix finds=delete | concurrently --teardown 'rm -rf ~' 'npm run dev'
+posix finds=delete | npx dotenv -- rm -rf ~
+posix finds=delete | npx dotenv -e .env -- rm -rf ~
+posix finds=delete | npx npm-run-all 'rimraf ~'
+posix finds=delete | npx npm-run-all build 'rimraf ~'
+posix finds=delete | npx run-s 'rimraf ~'
+posix finds=delete | npx run-p --max-parallel 2 'rimraf ~'
+posix safe | npx shx rm -rf dist
+posix safe | npx shx cp -r src dist
+posix safe | npx cross-env NODE_ENV=production webpack
+posix safe | npx concurrently 'npm run dev' 'npm run watch'
+posix safe | npx concurrently -n api,web 'npm:dev:*'
+posix safe | npx npm-run-all build test
+posix safe | npx npm-run-all --parallel 'watch:*'
+posix safe | npx run-s lint test
+posix safe | npx dotenv -- node server.js
+# A package that installs a program of another name is judged as that
+# program, with a version after an `@` or an `==` taken off.
+posix finds=destroy_resources | npx aws-cdk destroy --force
+posix finds=destroy_resources | npx -y aws-cdk@2 destroy --all
+posix finds=destroy_resources | npx cdktf-cli destroy
+posix finds=destroy_resources | npx -y firebase-tools@latest firestore:delete --all-collections
+posix finds=destroy_resources | pipx run awscli s3 rb s3://b
+posix finds=destroy_resources | uvx awscli==1.33.0 s3 rb s3://b
+posix finds=destroy_resources | yarn cdk destroy
+posix finds=destroy_resources | yarn run cdk destroy
+posix finds=delete | pipx run rimraf==1.0 ~
+posix finds=delete | uvx rimraf==1.0 ~
+posix finds=delete | uvx 'rimraf>=1.0' ~
+posix safe | npx aws-cdk synth
+posix safe | npx -y firebase-tools@latest deploy --only hosting
+posix safe | pipx run awscli s3 ls
+posix safe | uvx ruff==0.5.0 check .
+posix safe | pipx run 'black[jupyter]' --check .
+posix finds=delete | pipx run 'rimraf[x]' ~
+posix safe | yarn cdk synth
+posix safe | yarn build
+posix safe | yarn test
+# An option of a runner its table does not list may take the word after it
+# or not: the program is either word, and each is judged.
+posix finds=delete | pipx run --index x rimraf ~
+posix finds=delete | uvx --unknown-option x rimraf ~
+posix finds=delete | uv run --unknown-option x rm -rf ~
+posix finds=delete | bunx --unknown-option x rimraf ~
+posix finds=delete | yarn dlx --unknown-option x rimraf ~
+posix safe | uvx --isolated ruff check .
+# Past the forks a line may make, it is unreadable.
+posix finds=unreadable | uvx --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x --a x ruff check .
+posix finds=unreadable | npx concurrently 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a' 'npm run a'
+posix safe | uv run --frozen pytest -x
+posix safe | pipx run --index x black --check .
+# The command npm runs for npx and npm exec may be set in the environment.
+posix finds=delete | npm_config_call='rm -rf ~' npx
+posix finds=delete | NPM_CONFIG_CALL='rm -rf ~' npm exec
+posix finds=delete | env npm_config_call='rm -rf ~' npx
+posix finds=delete | export npm_config_call='rm -rf ~'; npx
+posix finds=delete | npm_config_call='rm -rf ~'; export npm_config_call; npx
+posix finds=unknown | npm_config_call="$X" npx
+posix finds=delete | npm_config_call='rm -rf ~' npx prettier
+posix safe | npm_config_call='echo hi' npx
+posix safe | npx -c 'echo hi'
+posix safe | npm_config_call='rm -rf ~' npm install
+powershell finds=delete | $env:npm_config_call = 'rd /s /q C:\\Users\\me'; npx
+powershell finds=delete | $env:NPM_CONFIG_CALL = 'rd /s /q C:\\Users\\me'; npm exec
+cmd finds=delete | set npm_config_call=rd /s /q C:\\Users\\me&& npx
+# Inline code given through a runner is read as the interpreter's.
+posix finds=delete | yarn node -e 'require("fs").rmSync("/home/me",{recursive:true})'
+posix finds=delete | bun run -e "require('fs').rmSync('/home/me', {recursive:true})"
+posix finds=delete | bun run --eval "require('fs').rmSync('/home/me', {recursive:true})"
+posix finds=delete | bun run -p "require('fs').rmSync('/home/me', {recursive:true})"
+posix finds=delete | bun run --print "require('fs').rmSync('/home/me', {recursive:true})"
+posix finds=unknown | yarn node -e 'console.log(1)'
+posix safe | yarn node server.js
+# In PowerShell a program run by its `.ps1` shim is judged as the program.
+powershell finds=delete | npx.ps1 rimraf C:\\
+powershell finds=delete | rm.ps1 -r C:\\
+powershell finds=destroy_resources | cdk.ps1 destroy
+powershell finds=destroy_resources | gcloud.ps1 projects delete prod
+powershell finds=delete | C:\\nodejs\\npx.ps1 rimraf C:\\
+powershell safe | npx.ps1 prettier --check .

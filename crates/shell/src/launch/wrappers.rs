@@ -6,7 +6,8 @@ use std::rc::Rc;
 
 use super::interpreters::{reads_input, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
-use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
+use super::packages::{self, MISE_VALUES};
+use super::{after_options, after_options_by, is_stdin, join, Launch, Word, MAX_FORKS};
 use crate::powershell::{native, Params};
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
@@ -218,7 +219,7 @@ pub(super) fn tf_cli_args(args: &[Arg], start: usize) -> Vec<(String, Arg)> {
                 }
                 Arg::Input | Arg::Null => return None,
             };
-            unit::tf_cli_args(name).then(|| (name.to_string(), value))
+            unit::read_as_arguments(name).then(|| (name.to_string(), value))
         })
         .collect()
 }
@@ -581,8 +582,33 @@ pub(super) fn start(args: &[Arg]) -> Launch {
 
 /// The package runners, by the name they stand under in a unit's wrappers.
 /// What a runner starts is a program, never a builtin of the shell.
-pub(crate) const RUNNERS: [&str; 13] = [
-    "npx", "npm", "pnpm", "pnpx", "pnx", "yarn", "bunx", "bun", "uvx", "uv", "pipx", "deno", "dx",
+pub(crate) const RUNNERS: [&str; 26] = [
+    "npx",
+    "npm",
+    "pnpm",
+    "pnpx",
+    "pnx",
+    "yarn",
+    "bunx",
+    "bun",
+    "uvx",
+    "uv",
+    "pipx",
+    "deno",
+    "dx",
+    "poetry",
+    "pdm",
+    "hatch",
+    "conda",
+    "mamba",
+    "micromamba",
+    "pixi",
+    "rye",
+    "volta",
+    "mise",
+    "corepack",
+    "shx",
+    "cross-env",
 ];
 
 /// The commands of `pnpm` and their aliases (`pnpm --help`, pnpm.io/cli),
@@ -915,7 +941,35 @@ fn locate(args: &[Arg], steps: &[(Opts, &[&str])], own: Opts) -> Option<(usize, 
 /// instead. `pnpm` and `yarn` also start a delete tool of the project by its
 /// name (`pnpm rimraf dist`).
 pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
+    // `yarn workspace NAME CMD` and `yarn workspaces foreach … CMD` run
+    // `yarn CMD`.
+    if key == "yarn" {
+        if let Some(args) = packages::yarn_workspace(&unit.args, YARN_VALUES) {
+            let mut inner = unit.clone();
+            inner.args = args;
+            return package_runner(key, &inner);
+        }
+    }
+    package_runner(key, unit)
+}
+
+/// [`runner`], once yarn's workspace words are off.
+fn package_runner(key: &str, unit: &Unit) -> Launch {
     let args = unit.args.as_slice();
+    // A script handed to npm or pnpm runs in the system shell: cmd on
+    // Windows, whichever shell the line is for.
+    let shell = if unit.shell == Shell::Posix {
+        Shell::Posix
+    } else {
+        Shell::Cmd
+    };
+    // `npm explore PKG -- CMD` runs CMD in the system shell, in the
+    // package's folder.
+    if key == "npm" {
+        if let Some(line) = npm_explore(args) {
+            return Launch::Script(shell, line);
+        }
+    }
     let found = match key {
         "npx" => Some((0, Opts::Npx.after(args))),
         "bunx" => Some((0, Opts::List(&BUN_X_VALUES).after(args))),
@@ -943,7 +997,8 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             Opts::List(YARN_VALUES),
         )
         .or_else(|| direct(args, Opts::List(YARN_VALUES)))
-        // `yarn rimraf` is short for `yarn run rimraf`.
+        // `yarn cdk` is short for `yarn run cdk`, which runs the script or
+        // the program of the project by that name.
         .or_else(|| {
             locate(
                 args,
@@ -953,7 +1008,7 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             .filter(|(_, program)| {
                 program
                     .and_then(|at| args[at].known())
-                    .is_some_and(|name| DELETERS.contains(&name))
+                    .is_some_and(|name| !packages::yarn_command(name))
             })
         }),
         "bun" => locate(
@@ -980,7 +1035,22 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             &[(Opts::List(&[]), &["run"])],
             Opts::List(PIPX_VALUES),
         ),
-        _ => None,
+        // `mise exec TOOLS -- CMD`: the command is the one after `--`.
+        "mise" => locate(
+            args,
+            &[(Opts::List(MISE_VALUES), &["exec", "x"])],
+            Opts::List(&[]),
+        )
+        .map(|(from, _)| {
+            let program = args[from..]
+                .iter()
+                .position(|arg| arg.known() == Some("--"))
+                .map(|at| from + at + 1)
+                .filter(|at| *at < args.len());
+            (from, program)
+        }),
+        key => packages::run_values(key)
+            .and_then(|values| locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))),
     };
     let Some((from, program)) = found else {
         return Launch::Itself;
@@ -988,13 +1058,6 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let own = args
         .get(from..program.unwrap_or(args.len()))
         .unwrap_or_default();
-    // A script handed to npm or pnpm runs in the system shell: cmd on
-    // Windows, whichever shell the line is for.
-    let shell = if unit.shell == Shell::Posix {
-        Shell::Posix
-    } else {
-        Shell::Cmd
-    };
     match key {
         // `-c` (`--call`) runs a script in place of a program, wherever the
         // option stands among npm's: in a bundle (`-yc`), spelt `--c`, with
@@ -1006,6 +1069,21 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
                 own
             };
             if let Some(script) = call_script(options, key == "npx") {
+                return Launch::Script(shell, script);
+            }
+            // The `npm_config_call` the line sets is the same setting.
+            if let Some((_, script)) = unit
+                .tf_cli_args
+                .iter()
+                .rev()
+                .find(|(name, _)| unit::npm_call(name))
+            {
+                return Launch::Script(shell, script.clone());
+            }
+        }
+        // `mise exec -c 'cmd'` runs a shell line.
+        "mise" => {
+            if let Some(script) = super::option_value(own, "-c", "--command") {
                 return Launch::Script(shell, script);
             }
         }
@@ -1048,7 +1126,92 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             run.args.remove(at);
         }
     }
-    Launch::Replace(Box::new(run))
+    // An option the runner's table does not list may take the word after
+    // it or not, so the program is one of the words it may be, and each is
+    // judged.
+    let others = list_values(key)
+        .map(|values| programs(args, from, values))
+        .unwrap_or_default();
+    let others: Vec<usize> = others.into_iter().filter(|at| *at != program).collect();
+    // Past the forks a line may make it is unreadable whatever the readings
+    // hold, so they are not built.
+    if others.len() > MAX_FORKS {
+        return Launch::Opaque("reads in too many ways to judge each");
+    }
+    others
+        .into_iter()
+        .rev()
+        .fold(Launch::Replace(Box::new(run)), |rest, at| {
+            Launch::Either(
+                Box::new(rest),
+                Box::new(Launch::Replace(Box::new(running_package(unit, key, at)))),
+            )
+        })
+}
+
+/// The table of options a runner whose own options are listed reads in
+/// front of its program: `None` for npm and pnpm, whose option parsers are
+/// read as they are, and for `mise exec`, whose command follows `--`.
+fn list_values(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "bunx" | "bun" => Some(&BUN_X_VALUES),
+        "uvx" | "uv" => Some(UV_VALUES),
+        "dx" | "deno" => Some(&DENO_X_VALUES),
+        "yarn" => Some(YARN_VALUES),
+        "pipx" => Some(PIPX_VALUES),
+        key => packages::run_values(key),
+    }
+}
+
+/// Every word from `from` on that may be the program after the options:
+/// an option `values` lists takes the next word, and one it does not may
+/// take it or not (a word that looks like an option is never taken).
+fn programs(args: &[Arg], from: usize, values: &[&str]) -> Vec<usize> {
+    let mut found = Vec::new();
+    // Where the reading may go on: each word is reached once.
+    let mut reached = vec![false; args.len() + 1];
+    let mut stack = vec![from];
+    while let Some(at) = stack.pop() {
+        if at >= args.len() || std::mem::replace(&mut reached[at], true) {
+            continue;
+        }
+        match args[at].known() {
+            Some("--") => found.push(at + 1),
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                if values.contains(&text) {
+                    stack.push(at + 2);
+                } else {
+                    stack.push(at + 1);
+                    let taken = args
+                        .get(at + 1)
+                        .is_some_and(|next| !next.text().starts_with('-'));
+                    if !text.contains('=') && taken {
+                        stack.push(at + 2);
+                    }
+                }
+            }
+            _ => found.push(at),
+        }
+    }
+    found.retain(|at| *at < args.len());
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// `npm explore PKG [--] CMD`: the shell line it runs in the package's
+/// folder (npm's own abbreviations of `explore` too). `None` without one.
+fn npm_explore(args: &[Arg]) -> Option<Arg> {
+    let (_, package) = locate(
+        args,
+        &[(Opts::Npm, &["explore", "explo", "explor"])],
+        Opts::Npm,
+    )?;
+    let mut rest = args.get(package? + 1..)?;
+    if rest.first().and_then(Arg::known) == Some("--") {
+        rest = &rest[1..];
+    }
+    (!rest.is_empty()).then(|| join(rest))
 }
 
 /// `uv run`: its options, then the command (also after `uv`'s own options).
@@ -1108,11 +1271,13 @@ fn pnpm_direct(args: &[Arg]) -> Option<(usize, Option<usize>)> {
     (!PNPM_COMMANDS.contains(&name)).then_some((at, Some(at)))
 }
 
-/// `yarn rimraf dist`: the project's own delete tool.
+/// `yarn NAME args` where NAME is no command of yarn: it runs the script
+/// NAME of the project or the program of that name the project has (`yarn
+/// rimraf dist`, `yarn cdk destroy`), read as that program.
 fn direct(args: &[Arg], opts: Opts) -> Option<(usize, Option<usize>)> {
     let at = opts.after(args)?;
     let name = args.get(at)?.known()?;
-    DELETERS.contains(&name).then_some((at, Some(at)))
+    (!packages::yarn_command(name)).then_some((at, Some(at)))
 }
 
 /// The unit a runner runs: the program at `program`, as a package without
@@ -1154,6 +1319,10 @@ pub(super) fn running_package(unit: &Unit, key: &str, program: usize) -> Unit {
             run.program = without_version(&Arg::Known(name.to_string()));
         }
     }
+    if key == "hatch" {
+        run.program = packages::hatch_command(&run.program);
+    }
+    run.program = packages::package_program(key, run.program);
     run
 }
 

@@ -123,7 +123,9 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   `C:shutdown` from that drive's current folder, which for an elevated cmd
   is `C:\Windows\System32`, so it is `shutdown`. Windows drops the dots and
   spaces that end a file's name, and the guard does too
-  (`shutdown.exe. /s` is `shutdown /s`).
+  (`shutdown.exe. /s` is `shutdown /s`). PowerShell runs a program's
+  `.ps1` shim (npm installs `npx.ps1`) by its name, so a program named
+  `X.ps1` there is judged as `X` (`rm.ps1 -r C:\`, `cdk.ps1 destroy`).
   A `/` outside the quotes ends the name (`cmd/c`) unless it follows a
   drive (`C:/Windows/System32/shutdown.exe` is `shutdown`); one after a
   folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
@@ -261,6 +263,66 @@ are `Delete`, `npx rimraf dist` is safe. Only `del` and `del-cli` have a dry
 run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
 guard knows. What a runner starts is a program, never a builtin of the shell,
 so `npx cd src` does not move the rest of the line to `src`.
+
+A runner's table lists the options that take a value; any other option may be
+a flag or take the word after it (a table can miss one, and a runner may
+read an option it does not document), so the program is any word the options
+may leave first, and each is judged: `pipx run --index x rimraf ~` is
+`Delete` whether `--index` takes `x` or not, and `uvx --isolated ruff check .`
+is safe both ways. A word that starts with a dash is never such a value.
+This holds for the runners whose options are a list (`bunx`, `bun x`, `uvx`,
+`uv`, `pipx`, `yarn`, `deno x`, `dx` and the environment runners below);
+npm's and pnpm's options are read by their own parsers. The readings share the
+32 forks a line may make, past which it is unreadable.
+
+The runners of a project's environment start the command after `run` as `uv
+run` does, past their own options before and after `run`: `poetry run` (`-C`,
+`-P`), `pdm run` (`-p`, `-c`, `-L`, `--venv`), `hatch run` (`-e`, `-p`,
+`--data-dir`, …; an environment in front of the command is taken off, so
+`hatch run test:rm -rf ~` runs `rm`), `conda run`, `mamba run` and
+`micromamba run` (`-n`, `-p`, `--cwd`, `-r`, …), `pixi run` (`-e`,
+`--manifest-path`, …), `rye run` (`--pyproject`) and `volta run` (`--node`,
+`--npm`, `--pnpm`, `--yarn`, `--env`). `mise exec` (also `mise x`) runs the
+command after its `--` (the words before it are tools: `mise exec node@20 --
+rm -rf ~`), and `-c` (`--command`) runs a shell line. `corepack` in front of a
+package manager (`corepack pnpm@9 dlx rimraf ~`, `corepack npx …`) starts it,
+read as the manager is; `corepack enable` and its other commands are its own
+business. `yarn workspace NAME CMD…` runs `yarn CMD…` and `yarn workspaces
+foreach [options] CMD…` runs it in each workspace, so both are read as `yarn
+CMD…` (`yarn workspace web exec rm -rf ~`). `yarn NAME` and `yarn run NAME`,
+where NAME is no command of yarn, run the project's script or program of that
+name, read as that program, as `pnpm NAME` is (`yarn cdk destroy`, `yarn rimraf
+dist`; `yarn build` is safe as an unknown name); `node` is no command of yarn,
+so `yarn node -e 'code'` is `node -e 'code'`. `npm explore PKG -- CMD` (also
+without `--`) runs CMD as a line of the system shell, and `deno task --eval
+'cmd'` its words as a line of deno's own shell, read as POSIX.
+
+Packages that run a command are read the same way, whether a runner starts
+them or not: `shx` runs a command of the `shelljs` package by its name (`shx
+rm -rf ~` is `rm -rf ~`), `cross-env` the command after its `NAME=value`
+words (each of which it sets, as `env` does), `dotenv` the command after its
+options or `--`.
+`cross-env-shell` runs its words after the assignments as a shell line,
+`concurrently` each of its arguments and its `--teardown`, with its shortcuts
+spelt out (`npm:dev` is `npm run dev`), and `npm-run-all`, `run-s` and `run-p`
+each of theirs: each line is read, the riskiest counts, and a word after an
+option they do not list is read as a line too. A line of `npm-run-all` whose
+first word has a wildcard (`watch:*`) names the project's scripts, so it is
+read as `npm run watch:*`.
+
+A package that installs its program under another name is judged as that
+program: `aws-cdk` is `cdk`, `cdktf-cli` is `cdktf`, `firebase-tools` is
+`firebase`, `awscli` is `aws` and `azure-cli` is `az` (`npx -y aws-cdk@2
+destroy --all` is `destroy_resources`). A Python runner (`uvx`, `uv`, `pipx`)
+takes a version specifier or extras off the package as `@version` is taken
+off for npm (`uvx rimraf==1.0 ~`, `pipx run 'black[jupyter]'`). The command
+`npx` and `npm exec` run in place of a program is also the `npm_config_call`
+the line sets where they run (npm reads the name in any case, so
+`NPM_CONFIG_CALL` too), read as `-c` is: a prefix assignment, `env`, an
+assignment or `export` earlier in the line, PowerShell's `$env:` and cmd's
+`set`; a value only known when it runs is `unknown`. `bun run -e`, `--eval`,
+`-p` and `--print` are `bun -e` and the rest, their code read as such but not
+read whole, since `bun run` loads `.env` first.
 
 `bun` and `deno` are interpreters. The code given to `bun -e`, `--eval`, `-p`,
 `--print` (also in a bundle, `bun -pe 'code'`, or with the code attached, `bun

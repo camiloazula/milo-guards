@@ -2212,13 +2212,14 @@ impl Walker<'_> {
     /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
     /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
     /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
-    /// so what terraform gets is only known when it runs.
+    /// so what terraform gets is only known when it runs. The same for
+    /// `npm_config_call`, the command `npx` runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
         // The grammar reads a bare name as a variable, not a word.
         if let Some(name) = Some(word.known().unwrap_or(source))
-            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+            .filter(|name| !name.contains('=') && unit::read_as_arguments(name))
         {
             let noted = self
                 .split
@@ -2234,7 +2235,7 @@ impl Walker<'_> {
         }
         if let Some((name, _)) = source
             .split_once('=')
-            .filter(|(name, _)| unit::tf_cli_args(name))
+            .filter(|(name, _)| unit::read_as_arguments(name))
         {
             let value = match word.known() {
                 Some(text) => Arg::Known(
@@ -2294,14 +2295,14 @@ impl Walker<'_> {
     }
 
     /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
-    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
-    /// variables'.
+    /// `TF_CLI_ARGS`, `TF_CLI_ARGS_<command>` or `npm_config_call`, when it
+    /// is one of those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        let terraform = unit::tf_cli_args(name);
+        let terraform = unit::read_as_arguments(name);
         if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }

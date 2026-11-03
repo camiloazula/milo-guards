@@ -442,15 +442,37 @@ fn bun_inline(text: &str) -> bool {
 /// arguments as a shell script; a file or a subcommand is its own business.
 pub(super) fn bun(unit: &Unit) -> Launch {
     let evals = unit.args.iter().filter_map(Arg::known).any(bun_evals);
-    only_runs(unit, evals, with_code("bun", unit, bun_launch(unit)))
+    // `bun run -e CODE` is `bun -e CODE`: the code is read without the
+    // subcommand in front of it. `bun run` loads `.env` first, so the code
+    // is not all bun is given.
+    let mut args = unit.args.clone();
+    let mut run = false;
+    if let Some(first) = after_options(&args, &BUN_VALUES) {
+        if args[first].known() == Some("run") {
+            args.remove(first);
+            run = true;
+        }
+    }
+    let launch = match with_code("bun", &args, bun_launch(unit)) {
+        Launch::Inline(language, code) if run => Launch::Inline(
+            language,
+            inline::Code {
+                plain: false,
+                ..code
+            },
+        ),
+        launch => launch,
+    };
+    only_runs(unit, evals, launch)
 }
 
 /// A `bun` or `deno` line that reads inline code (`bun -e CODE`, `deno eval
 /// CODE`) runs the code the guard reads, as it does for node and python;
 /// when the arguments do not say where the code is, the line reads its
-/// input as it did.
-fn with_code(key: &str, unit: &Unit, launch: Launch) -> Launch {
-    match (&launch, inline::code(key, &unit.args)) {
+/// input as it did. `args` are the line's, with the code where `key` reads
+/// it.
+fn with_code(key: &str, args: &[Arg], launch: Launch) -> Launch {
+    match (&launch, inline::code(key, args)) {
         (Launch::Reads(Reads::Interpreter), Some(code)) => {
             Launch::Inline(inline::Language::JavaScript, code)
         }
@@ -593,7 +615,11 @@ fn is_file(arg: &Arg) -> bool {
 /// default is `run`: `deno npm:pkg`); `deno x` is a package runner; a file or
 /// another subcommand is its own business.
 pub(super) fn deno(unit: &Unit) -> Launch {
-    only_runs(unit, false, with_code("deno", unit, deno_launch(unit)))
+    only_runs(
+        unit,
+        false,
+        with_code("deno", &unit.args, deno_launch(unit)),
+    )
 }
 
 fn deno_launch(unit: &Unit) -> Launch {
@@ -612,6 +638,22 @@ fn deno_launch(unit: &Unit) -> Launch {
         "eval" => Launch::Reads(Reads::Interpreter),
         "repl" => repl(unit),
         "x" => runner("deno", unit),
+        // `deno task --eval 'cmd'` runs its words as a line of deno's own
+        // shell, which reads POSIX.
+        "task" => {
+            let rest = &args[first + 1..];
+            match after_options(rest, &DENO_TASK_VALUES) {
+                Some(at)
+                    if rest[..at]
+                        .iter()
+                        .filter_map(Arg::known)
+                        .any(|text| text == "--eval") =>
+                {
+                    Launch::Script(Shell::Posix, join(&rest[at..]))
+                }
+                _ => Launch::Itself,
+            }
+        }
         "run" | "watch" => args
             .get(first + 1..)
             .and_then(|rest| after_options(rest, &DENO_VALUES))
@@ -619,6 +661,9 @@ fn deno_launch(unit: &Unit) -> Launch {
         _ => deno_target(unit, first),
     }
 }
+
+/// The options of `deno task` that take the next word.
+const DENO_TASK_VALUES: [&str; 5] = ["--cwd", "-c", "--config", "-f", "--filter"];
 
 /// What `deno run` does with the script at `at`: its input is read as code,
 /// an npm specifier is a package whose program runs, a file is its own

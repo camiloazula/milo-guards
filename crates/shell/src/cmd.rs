@@ -770,7 +770,7 @@ impl Walker<'_> {
         let Some(name) = children
             .iter()
             .find(|child| child.kind() == "variable_name")
-            .and_then(|name| unit::tf_cli_args_folded(unit::text(name, self.source).trim()))
+            .and_then(|name| unit::argument_variable(unit::text(name, self.source).trim()))
         else {
             return;
         };
