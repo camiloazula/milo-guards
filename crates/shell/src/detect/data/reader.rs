@@ -3,6 +3,8 @@
 //! literals and splits SQL on `;`. There is no grammar: it finds the few
 //! words that destroy data and says what it could not read.
 
+use std::collections::HashMap;
+
 /// The SQL a client reads, with only the quoting that client has: where the
 /// dialects differ in a way that would hide or show a statement, each one is
 /// read as itself. A construct a dialect is not known to have is not read, so
@@ -887,6 +889,67 @@ fn literal_args(tokens: &[Token], from: usize, every: bool) -> Option<(Vec<&Quot
     Some((found, i))
 }
 
+/// The words that may stand between `REPLACE` and `TABLE` in a statement
+/// that replaces a table: `CREATE OR REPLACE TEMPORARY TABLE`.
+const TABLE_KINDS: [&str; 7] = [
+    "TEMPORARY",
+    "TEMP",
+    "TRANSIENT",
+    "GLOBAL",
+    "LOCAL",
+    "UNLOGGED",
+    "VOLATILE",
+];
+
+/// Whether the `REPLACE` at `at` replaces a table, and with it the rows the
+/// table held: `CREATE OR REPLACE TABLE` (`MariaDB`, `DuckDB`, `ClickHouse`)
+/// and `ClickHouse`'s `REPLACE TABLE`. `REPLACE INTO` adds rows, and
+/// `replace(…)` is a function.
+fn replaces_table(tokens: &[Token], at: usize) -> bool {
+    tokens
+        .get(at + 1..)
+        .unwrap_or_default()
+        .iter()
+        .find(|token| !matches!(token, Token::Word(w) if TABLE_KINDS.contains(&w.as_str())))
+        .is_some_and(|token| is_word(Some(token), "TABLE"))
+}
+
+/// Whether a `CREATE` statement makes a function or a procedure, whose body
+/// runs when it is called: `FUNCTION` or `PROCEDURE` before its first `(`.
+fn creates_routine(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .take_while(|token| **token != Token::Symbol('('))
+        .any(|token| is_word(Some(token), "FUNCTION") || is_word(Some(token), "PROCEDURE"))
+}
+
+/// The arguments of a `dblink` call from `from` (after its `(`): the strings
+/// it is given, which are its connection and its SQL, and the index after
+/// them. A `TRUE` or `FALSE` (whether an error fails the call) is skipped.
+/// `None` when an argument is anything else: SQL only known when it runs.
+fn dblink_args(tokens: &[Token], from: usize) -> Option<(Vec<&Quote>, usize)> {
+    let mut found = Vec::new();
+    let mut i = from;
+    loop {
+        match tokens.get(i)? {
+            Token::Quoted(quote) if quote.string => found.push(quote),
+            Token::Word(word) if matches!(word.as_str(), "TRUE" | "FALSE") => {}
+            _ => return None,
+        }
+        i += 1;
+        match tokens.get(i)? {
+            Token::Symbol(',') => i += 1,
+            Token::Symbol(')') => break,
+            _ => return None,
+        }
+    }
+    // Two strings are a connection and the SQL; the connection is not SQL.
+    if found.len() > 1 {
+        found.remove(0);
+    }
+    Some((found, i))
+}
+
 /// The name of the T-SQL procedures that run the text they are given.
 fn runs_text(name: &str) -> Option<bool> {
     match name {
@@ -910,6 +973,19 @@ fn dynamic_sql(tokens: &[Token], at: usize, scope: Scope) -> Option<Reading> {
         }
         Token::Word(word) if word == "PREPARE" && is_word(tokens.get(at + 2), "FROM") => {
             literal_args(tokens, at + 3, false)
+        }
+        // PostgreSQL's `dblink`, which runs the SQL it is given in a
+        // database it connects to: `dblink_exec('dbname=x', 'DROP TABLE t')`.
+        Token::Word(word)
+            if matches!(
+                word.as_str(),
+                "DBLINK" | "DBLINK_EXEC" | "DBLINK_SEND_QUERY"
+            ) =>
+        {
+            if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
+                return None;
+            }
+            dblink_args(tokens, at + 2)
         }
         Token::Word(word) => literal_args(tokens, at + 1, runs_text(word)?),
         Token::Quoted(quote) if !quote.string => {
@@ -970,6 +1046,13 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                     reading.destroys = true;
                 }
             }
+            "REPLACE" if replaces_table(tokens, at) => reading.destroys = true,
+            // SQL Server's `RESTORE DATABASE` and `RESTORE LOG` write a backup
+            // over the database they name (`WITH REPLACE` over any one).
+            "RESTORE" if matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "DATABASE" | "LOG")) =>
+            {
+                reading.destroys = true;
+            }
             "ATTACH" if at == 0 => reading.moves = true,
             "XP_CMDSHELL" => reading.program = true,
             "PROGRAM" if is_word(tokens.first(), "COPY") => reading.program = true,
@@ -983,6 +1066,31 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                 reading.unreadable = true;
             }
             _ => {}
+        }
+    }
+    // The body of a function or procedure is run by every call of it:
+    // `CREATE FUNCTION f() … AS $$ DELETE FROM t $$`, and `AS '…'`.
+    if is_word(Some(first), "CREATE") && creates_routine(tokens) {
+        for (at, token) in tokens.iter().enumerate() {
+            match token {
+                Token::Dollar(body) => reading.merge(read_sql(
+                    body,
+                    Scope {
+                        dialect: Dialect::Postgres,
+                        holes: false,
+                        ..scope.within(true)
+                    },
+                )),
+                Token::Quoted(quote)
+                    if quote.string
+                        && at
+                            .checked_sub(1)
+                            .is_some_and(|before| is_word(tokens.get(before), "AS")) =>
+                {
+                    reading.merge(read_string(quote, scope.within(true)));
+                }
+                _ => {}
+            }
         }
     }
     // `DO $$ … $$` and `DO '…'` run the statements in the string.
@@ -1266,13 +1374,6 @@ fn read_tokens(tokens: &[Token], scope: Scope) -> Reading {
 /// What the `MongoDB` shell script in `text` does: drops a database or a
 /// collection, or deletes every document of one.
 pub(super) fn mongo(text: &str, holes: bool) -> Reading {
-    #[derive(PartialEq)]
-    enum Js {
-        Name(String),
-        Quoted,
-        Hole,
-        Symbol(char),
-    }
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
     let mut at = 0;
@@ -1302,19 +1403,26 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
             }
             '\'' | '"' | '`' => {
                 let quote = c;
+                let mut body = String::new();
                 at += 1;
                 loop {
                     match chars.get(at) {
                         None => return Reading::UNREADABLE,
-                        Some('\\') => at += 2,
+                        Some('\\') => {
+                            body.extend(chars.get(at + 1));
+                            at += 2;
+                        }
                         Some(c) if *c == quote => {
                             at += 1;
                             break;
                         }
-                        Some(_) => at += 1,
+                        Some(c) => {
+                            body.push(*c);
+                            at += 1;
+                        }
                     }
                 }
-                tokens.push(Js::Quoted);
+                tokens.push(Js::Quoted(body));
             }
             '$' | '%' if holes && hole_end(&chars, at).is_some() => {
                 at = hole_end(&chars, at).unwrap_or(at + 1);
@@ -1348,27 +1456,184 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
     if tokens.first() == Some(&Js::Hole) {
         return Reading::UNREADABLE;
     }
+    let script = Script::new(tokens);
+    let tokens = &script.tokens;
     let mut reading = Reading::default();
+    // What each `delete` command's object deletes, worked out once.
+    let mut commands: HashMap<usize, bool> = HashMap::new();
     for (at, token) in tokens.iter().enumerate() {
-        let Js::Name(name) = token else { continue };
         let after = tokens.get(at + 1);
         let called = after == Some(&Js::Symbol('('));
         let key = after == Some(&Js::Symbol(':'));
+        // A key may be quoted (`{"drop": "users"}`); a call is a name.
+        let name = match token {
+            Js::Name(name) => name,
+            Js::Quoted(name) if key => name,
+            _ => continue,
+        };
         match name.as_str() {
-            "dropDatabase" | "dropCollection" | "drop" if called || key => {
+            "dropDatabase" | "dropCollection" | "drop" | "dropAllUsers" | "dropAllRoles"
+                if called || key =>
+            {
+                reading.destroys = true;
+            }
+            "dropAllUsersFromDatabase" | "dropAllRolesFromDatabase" if key => {
                 reading.destroys = true;
             }
             "deleteMany" | "remove" if called => {
-                // No filter, or an empty one.
-                let empty = tokens.get(at + 2) == Some(&Js::Symbol(')'))
-                    || (tokens.get(at + 2) == Some(&Js::Symbol('{'))
-                        && tokens.get(at + 3) == Some(&Js::Symbol('}')));
-                reading.destroys |= empty;
+                reading.destroys |= !script.picks(at + 2);
+            }
+            // A `deleteMany` of a `bulkWrite`: `{deleteMany: {filter: {}}}`.
+            "deleteMany" if key => {
+                let filter = match tokens.get(at + 2) {
+                    Some(Js::Symbol('{')) => script.value_of(at + 2, "filter"),
+                    _ => None,
+                };
+                reading.destroys |= !filter.is_some_and(|filter| script.picks(filter));
+            }
+            // The `delete` command: `{delete: "users", deletes: [{q: {},
+            // limit: 0}]}`.
+            "delete" if key => {
+                reading.destroys |= match script.parent.get(at).copied().flatten() {
+                    Some(open) if tokens.get(open) == Some(&Js::Symbol('{')) => *commands
+                        .entry(open)
+                        .or_insert_with(|| script.deletes_all(open)),
+                    _ => true,
+                };
             }
             _ => {}
         }
     }
     reading
+}
+
+/// A token of a `MongoDB` shell script.
+#[derive(PartialEq)]
+enum Js {
+    Name(String),
+    /// A string, with what it holds.
+    Quoted(String),
+    Hole,
+    Symbol(char),
+}
+
+/// The tokens of a `MongoDB` shell script, with where each bracket closes
+/// and which bracket holds each token, found in one pass so that each
+/// question about the script is answered without reading it again.
+struct Script {
+    tokens: Vec<Js>,
+    /// For a `{`, `[` or `(`, the index just past the bracket that closes it
+    /// (or the end); for any other token, the index after it.
+    close: Vec<usize>,
+    /// The bracket each token is directly inside.
+    parent: Vec<Option<usize>>,
+}
+
+impl Script {
+    fn new(tokens: Vec<Js>) -> Self {
+        let mut close: Vec<usize> = (1..=tokens.len()).collect();
+        let mut parent = vec![None; tokens.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for (at, token) in tokens.iter().enumerate() {
+            if let Some(slot) = parent.get_mut(at) {
+                *slot = open.last().copied();
+            }
+            match token {
+                Js::Symbol('{' | '[' | '(') => open.push(at),
+                Js::Symbol('}' | ']' | ')') => {
+                    if let Some(start) = open.pop() {
+                        if let Some(slot) = close.get_mut(start) {
+                            *slot = at + 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A bracket never closed runs to the end.
+        for start in open {
+            if let Some(slot) = close.get_mut(start) {
+                *slot = tokens.len();
+            }
+        }
+        Self {
+            tokens,
+            close,
+            parent,
+        }
+    }
+
+    /// The index just past the token at `at`, or past all the bracket there
+    /// holds.
+    fn past(&self, at: usize) -> usize {
+        self.close
+            .get(at)
+            .copied()
+            .unwrap_or(self.tokens.len())
+            .max(at + 1)
+    }
+
+    /// Whether the filter that starts at `at` picks documents: an object
+    /// written out with a field in it (`{a: 1}`, `{"a.b": 1}`, `{$or: […]}`).
+    /// No filter (`)`), an empty one (`{}`), one spread from a value
+    /// (`{...f}`) and one only known when it runs (`f`, `$F`) pick every
+    /// document there may be.
+    fn picks(&self, at: usize) -> bool {
+        self.tokens.get(at) == Some(&Js::Symbol('{'))
+            && matches!(self.tokens.get(at + 1), Some(Js::Name(_) | Js::Quoted(_)))
+            && self.tokens.get(at + 2) == Some(&Js::Symbol(':'))
+    }
+
+    /// Where the value of the key `name` starts in the object written from
+    /// `open` (its `{`), when the object has the key itself.
+    fn value_of(&self, open: usize, name: &str) -> Option<usize> {
+        let end = self.past(open);
+        let mut at = open + 1;
+        while at < end {
+            match self.tokens.get(at) {
+                Some(Js::Name(key) | Js::Quoted(key))
+                    if key == name && self.tokens.get(at + 1) == Some(&Js::Symbol(':')) =>
+                {
+                    return Some(at + 2);
+                }
+                _ => at = self.past(at),
+            }
+        }
+        None
+    }
+
+    /// Whether the `delete` command written as the object from `open`
+    /// deletes every document there may be: one of its `deletes` has a
+    /// filter that picks none ([`Script::picks`]) and no `limit` of 1, or
+    /// the deletes are not written out.
+    fn deletes_all(&self, open: usize) -> bool {
+        let Some(list) = self.value_of(open, "deletes") else {
+            return true;
+        };
+        if self.tokens.get(list) != Some(&Js::Symbol('[')) {
+            return true;
+        }
+        let end = self.past(list).saturating_sub(1);
+        let mut each = list + 1;
+        while each < end {
+            match self.tokens.get(each) {
+                Some(Js::Symbol(',')) => each += 1,
+                Some(Js::Symbol('{')) => {
+                    let one = self.value_of(each, "limit").is_some_and(
+                        |limit| matches!(self.tokens.get(limit), Some(Js::Name(n)) if n == "1"),
+                    );
+                    let filter = self.value_of(each, "q");
+                    if !one && !filter.is_some_and(|filter| self.picks(filter)) {
+                        return true;
+                    }
+                    each = self.past(each);
+                }
+                // A delete only known when it runs.
+                _ => return true,
+            }
+        }
+        false
+    }
 }
 
 /// Whether the Redis command `command` runs a script: its second word is the
@@ -1450,14 +1715,21 @@ fn lua_strings(script: &str) -> Vec<String> {
     found
 }
 
-/// What one Redis command, as its words, does: empties a database. A script
-/// (`EVAL`) that calls such a command does too.
+/// What one Redis command, as its words, does: empties a database
+/// (`FLUSHALL`, `FLUSHDB`), deletes every function (`FUNCTION FLUSH`), or
+/// stops the server without saving what it holds in memory (`SHUTDOWN
+/// NOSAVE`). A script (`EVAL`) that calls such a command does too.
 pub(super) fn redis(words: &[&str]) -> Reading {
     let Some(command) = words.first() else {
         return Reading::default();
     };
+    let rest = || words.iter().skip(1);
     let destroys = match command.to_ascii_lowercase().as_str() {
         "flushall" | "flushdb" => true,
+        "function" => words
+            .get(1)
+            .is_some_and(|word| word.eq_ignore_ascii_case("flush")),
+        "shutdown" => rest().any(|word| word.eq_ignore_ascii_case("nosave")),
         _ if runs_script(command) => words.iter().any(|word| script_destroys(word)),
         _ => false,
     };
@@ -1564,6 +1836,13 @@ mod tests {
             "DELETE FROM a DELETE FROM b WHERE x = 1",
             "DO $$ BEGIN DROP TABLE t; END $$",
             "DO LANGUAGE plpgsql $body$ BEGIN DELETE FROM t; END $body$",
+            // A body runs wherever the function is called, which the line
+            // need not show.
+            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t; END $$ LANGUAGE plpgsql",
+            "CREATE OR REPLACE TABLE t (id int)",
+            "REPLACE TABLE t AS SELECT 1",
+            "RESTORE DATABASE x FROM DISK = 'x.bak' WITH REPLACE",
+            "SELECT dblink_exec('dbname=x', 'DROP TABLE t')",
         ] {
             assert!(destroys(text), "{text}");
         }
@@ -1591,7 +1870,11 @@ mod tests {
             "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1 WHEN NOT MATCHED BY SOURCE THEN DELETE",
             "SELECT TRUNCATE(1.234, 2)",
             "SELECT \"drop\" FROM t",
-            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t; END $$ LANGUAGE plpgsql",
+            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t WHERE id = 3; END $$ LANGUAGE plpgsql",
+            "CREATE OR REPLACE VIEW v AS SELECT 1",
+            "REPLACE INTO t VALUES (1)",
+            "RESTORE HEADERONLY FROM DISK = 'x.bak'",
+            "SELECT dblink_exec('dbname=x', 'INSERT INTO t VALUES (1)')",
             "",
             "   ",
         ] {
@@ -1704,6 +1987,12 @@ mod tests {
             "db.runCommand({dropDatabase: 1})",
             "db.runCommand({drop: 'users'})",
             "use('x'); db.dropDatabase();",
+            "db.users.deleteMany(f)",
+            "db.dropAllUsers()",
+            "db.users.bulkWrite([{deleteMany: {filter: {}}}])",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 0}]})",
+            "db.runCommand({delete: 'users', deletes: [{q: {a: 1}}, {q: {}}]})",
+            "db.runCommand({delete: 'users'})",
         ] {
             assert!(mongo(text, false).destroys, "{text}");
         }
@@ -1714,6 +2003,8 @@ mod tests {
             "db.users.remove({a: 1})",
             "// db.dropDatabase()\ndb.users.find()",
             "print('db.dropDatabase()')",
+            "db.users.bulkWrite([{deleteMany: {hint: {a: 1}, filter: {a: 1}}}])",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 1}, {q: {a: 1}}]})",
         ] {
             let reading = mongo(text, false);
             assert!(!reading.destroys && !reading.unreadable, "{text}");
@@ -1730,6 +2021,10 @@ mod tests {
         assert!(redis(&["eval", "redis.call('FLUSHALL')", "0"]).destroys);
         assert!(!redis(&["get", "k"]).destroys);
         assert!(!redis(&["del", "k"]).destroys);
+        assert!(redis(&["FUNCTION", "FLUSH"]).destroys);
+        assert!(redis(&["shutdown", "now", "nosave"]).destroys);
+        assert!(!redis(&["SHUTDOWN", "SAVE"]).destroys);
+        assert!(!redis(&["FUNCTION", "LIST"]).destroys);
         assert!(redis_lines("SET a 1\nFLUSHDB\n", false).destroys);
         assert!(!redis_lines("SET a \"FLUSHALL\"\n", false).destroys);
         assert!(redis_lines("$CMD", true).unreadable);

@@ -43,6 +43,9 @@ struct Client {
     bundles: bool,
     /// Whether a short option may also start with `/` (Windows `sqlcmd`).
     slash: bool,
+    /// Whether a word that is no option is a statement too
+    /// (`clickhouse-client 'SELECT 1'`, and after `-n`, which takes no value).
+    operands: bool,
     /// What the statement is written in.
     language: Language,
 }
@@ -116,6 +119,7 @@ const PSQL: Client = Client {
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: false,
     language: Language::Sql(Dialect::Postgres),
 };
 
@@ -195,6 +199,7 @@ const MYSQL: Client = Client {
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: false,
     language: Language::Sql(Dialect::MySql),
 };
 
@@ -236,6 +241,7 @@ const CLICKHOUSE: Client = Client {
     loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
+    operands: true,
     language: Language::Sql(Dialect::ClickHouse),
 };
 
@@ -249,6 +255,7 @@ const SQLCMD: Client = Client {
     loose: Loose::No,
     bundles: false,
     slash: true,
+    operands: false,
     language: Language::Sql(Dialect::SqlServer),
 };
 
@@ -285,6 +292,7 @@ const CQLSH: Client = Client {
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: false,
     language: Language::Sql(Dialect::Cql),
 };
 
@@ -336,6 +344,7 @@ const MONGO: Client = Client {
     loose: Loose::Every,
     bundles: true,
     slash: false,
+    operands: false,
     language: Language::Mongo,
 };
 
@@ -470,10 +479,17 @@ impl Client {
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let Some((text, holes)) = view(arg) else {
+                // What `xargs` hands on is an operand only known when it runs.
+                if self.operands && matches!(arg, Arg::Input) {
+                    found.push(arg.clone());
+                }
                 continue;
             };
             let unknown = matches!(arg, Arg::Unknown(_));
             if text == "--" {
+                if self.operands {
+                    found.extend(iter.cloned());
+                }
                 break;
             }
             if let Some(name) = text.strip_prefix("--") {
@@ -488,9 +504,12 @@ impl Client {
                     }
                 } else if long == Long::Statement {
                     self.statement_value(&mut iter, &mut found);
-                } else if long != Long::Flag {
+                } else if long == Long::Value || (long == Long::Loose && !self.operands) {
                     Self::value(&mut iter, long == Long::Loose);
                 }
+                // An optional value is left where it is read as an operand
+                // too: `clickhouse-client --password 'DROP TABLE t'` may run
+                // the statement.
                 continue;
             }
             let rest = match text.strip_prefix('-') {
@@ -499,6 +518,10 @@ impl Client {
                     Some(rest) if rest.len() == 1 => rest,
                     _ => continue,
                 },
+                None if self.operands => {
+                    found.push(arg.clone());
+                    continue;
+                }
                 None => continue,
             };
             for (at, letter) in rest.char_indices() {
@@ -789,6 +812,159 @@ fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
         operands.drain(..operands.len().min(2));
     }
     operands
+}
+
+/// Options of the `heroku` CLI that take a value, before or after its
+/// command.
+const HEROKU_VALUES: &[&str] = &["-a", "--app", "-r", "--remote", "-t", "--team", "--confirm"];
+
+/// Options of the `supabase` CLI that take a value.
+const SUPABASE_VALUES: &[&str] = &[
+    "--workdir",
+    "--profile",
+    "-o",
+    "--output",
+    "--network-id",
+    "--dns-resolver",
+    "--db-url",
+];
+
+/// Whether the line asks a tool for its help, and runs nothing else.
+fn asks_help(args: &[Arg]) -> bool {
+    args.iter()
+        .filter_map(Arg::known)
+        .any(|text| matches!(text, "--help" | "-h"))
+}
+
+/// The words of a tool's line that are no option, the values of the options
+/// in `values` (`--app x`) left out. An option written with its value
+/// (`--app=x`) is one word, and an option not in `values` takes none.
+fn operands_of<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
+    let mut found = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some(text) if text.starts_with('-') && text.len() > 1 => {
+                if values.contains(&text) {
+                    iter.next();
+                }
+            }
+            _ => found.push(arg),
+        }
+    }
+    found
+}
+
+/// The parameters of `Invoke-Sqlcmd` (the `SqlServer` module's), with
+/// whether each takes a value, and the common parameters: a switch read as
+/// taking one would hide the query after it.
+const INVOKE_SQLCMD: &[(&str, bool)] = &[
+    ("query", true),
+    ("inputfile", true),
+    ("serverinstance", true),
+    ("database", true),
+    ("username", true),
+    ("password", true),
+    ("credential", true),
+    ("accesstoken", true),
+    ("connectionstring", true),
+    ("connectiontimeout", true),
+    ("querytimeout", true),
+    ("variable", true),
+    ("applicationintent", true),
+    ("applicationname", true),
+    ("encrypt", true),
+    ("errorlevel", true),
+    ("severitylevel", true),
+    ("failoverpartner", true),
+    ("hostnameincertificate", true),
+    ("maxbinarylength", true),
+    ("maxcharlength", true),
+    ("newpassword", true),
+    ("outputas", true),
+    ("as", true),
+    ("outputsqlerrors", true),
+    ("statisticsvariable", true),
+    ("abortonerror", false),
+    ("dedicatedadministratorconnection", false),
+    ("disablecommands", false),
+    ("disablevariables", false),
+    ("encryptconnection", false),
+    ("ignoreprovidercontext", false),
+    ("includesqlusererrors", false),
+    ("keepnullcharsinresults", false),
+    ("multisubnetfailover", false),
+    ("suppressprovidercontextwarning", false),
+    ("trustservercertificate", false),
+    ("verbose", false),
+    ("vb", false),
+    ("debug", false),
+    ("db", false),
+    ("erroraction", true),
+    ("ea", true),
+    ("warningaction", true),
+    ("wa", true),
+    ("informationaction", true),
+    ("infa", true),
+    ("ia", true),
+    ("progressaction", true),
+    ("proga", true),
+    ("errorvariable", true),
+    ("ev", true),
+    ("warningvariable", true),
+    ("wv", true),
+    ("informationvariable", true),
+    ("iv", true),
+    ("outvariable", true),
+    ("ov", true),
+    ("outbuffer", true),
+    ("ob", true),
+    ("pipelinevariable", true),
+    ("pv", true),
+];
+
+/// The queries an `Invoke-Sqlcmd` line gives: the value of `-Query`, and
+/// every argument no parameter takes, since the query is its first
+/// positional parameter. A parameter is any start of one name, in any case;
+/// one that starts several names is refused by PowerShell, and one that names
+/// none takes no value, so the argument after either is read as a query too.
+fn invoke_sqlcmd_queries(args: &[Arg]) -> Vec<Arg> {
+    let mut found = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let name = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic()));
+        let Some(name) = name else {
+            if !matches!(arg, Arg::Null) {
+                found.push(arg.clone());
+            }
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let typed = name.trim_end_matches(':').to_ascii_lowercase();
+        let exact = INVOKE_SQLCMD.iter().find(|(full, _)| *full == typed);
+        let mut starts = INVOKE_SQLCMD
+            .iter()
+            .filter(|(full, _)| full.starts_with(&typed));
+        let named = exact.or_else(|| match (starts.next(), starts.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        });
+        match named {
+            Some(("query", _)) => found.extend(iter.next().cloned()),
+            Some((_, true)) => {
+                iter.next();
+            }
+            // `-Name:value` takes the value whatever the name is.
+            _ if colon => {
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 /// How many readings of what a program says are kept: as written, and as
@@ -1390,7 +1566,36 @@ impl Checker<'_> {
                 let found = embedded(args, &DUCKDB);
                 self.embedded_client(at, unit, &found, Dialect::DuckDb);
             }
-            "redis-cli" => self.redis(at, unit, args),
+            "redis-cli" | "valkey-cli" | "keydb-cli" => self.redis(at, unit, args),
+            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => {
+                self.invoke_sqlcmd(at, unit, args);
+            }
+            "pg_dropcluster" if !asks_help(args) => {
+                let cluster = operands_of(args, &[]).get(1).copied();
+                self.add(Rule::DropData, "deletes a database cluster", cluster);
+            }
+            "heroku" if !asks_help(args) => {
+                let words = operands_of(args, HEROKU_VALUES);
+                if let Some(reset) = words
+                    .first()
+                    .filter(|word| word.known() == Some("pg:reset"))
+                {
+                    let database = words.get(1).copied().or(Some(*reset));
+                    self.add(Rule::DropData, "deletes data in a database", database);
+                }
+            }
+            "supabase" if !asks_help(args) => {
+                let words = operands_of(args, SUPABASE_VALUES);
+                let command: Vec<Option<&str>> =
+                    words.iter().take(2).map(|word| word.known()).collect();
+                if command == [Some("db"), Some("reset")] {
+                    self.add(
+                        Rule::DropData,
+                        "deletes data in a database",
+                        words.get(1).copied(),
+                    );
+                }
+            }
             "dropdb" | "dropuser" => {
                 let help = args
                     .iter()
@@ -1419,6 +1624,19 @@ impl Checker<'_> {
         }
     }
 
+    /// A statement as a reader of its text takes it: a PowerShell
+    /// double-quoted string whose expansions are only known when it runs is
+    /// read as a template, as a POSIX one is (`psql -c "… WHERE id = $id"`).
+    fn template(&self, unit: &Unit, statement: &Arg) -> Arg {
+        match statement {
+            Arg::Unknown(source) if unit.shell == Shell::PowerShell => self
+                .split
+                .template(source)
+                .unwrap_or_else(|| statement.clone()),
+            _ => statement.clone(),
+        }
+    }
+
     /// Say what a client's statements do.
     fn judge(&mut self, reading: Reading, target: Option<&Arg>, own: bool) {
         if reading.unreadable {
@@ -1443,7 +1661,11 @@ impl Checker<'_> {
     /// A client of a database server: every database on a server is risky,
     /// since the line cannot tell a scratch one from production.
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        let mut statements = client.statements(args);
+        let mut statements: Vec<Arg> = client
+            .statements(args)
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         statements.extend(self.split.fed_to(at).cloned());
         for statement in &statements {
             let reading = client.read(statement);
@@ -1510,10 +1732,28 @@ impl Checker<'_> {
         }
     }
 
+    /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query`.
+    fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+        let mut statements: Vec<Arg> = invoke_sqlcmd_queries(args)
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
+        statements.extend(self.split.fed_to(at).cloned());
+        let language = Language::Sql(Dialect::SqlServer);
+        for statement in &statements {
+            let reading = read_text(language, statement);
+            self.judge(reading, Some(statement), false);
+        }
+    }
+
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
-        let mut statements = found.statements.clone();
+        let mut statements: Vec<Arg> = found
+            .statements
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         statements.extend(self.split.fed_to(at).cloned());
         let own_file = match found.file {
             None => true,
@@ -1621,7 +1861,10 @@ impl Checker<'_> {
     /// `scan`.
     fn scans_keys(&self) -> bool {
         self.split.units.iter().any(|unit| {
-            unit.key().as_deref() == Some("redis-cli") && {
+            matches!(
+                unit.key().as_deref(),
+                Some("redis-cli" | "valkey-cli" | "keydb-cli")
+            ) && {
                 let operands = redis_operands(&unit.args);
                 unit.args.iter().any(|arg| arg.known() == Some("--scan"))
                     || operands

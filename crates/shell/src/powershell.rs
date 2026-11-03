@@ -1348,7 +1348,14 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" | "command_parameter" => Arg::Known(unescape(source)),
+            "generic_token" => Arg::Known(unescape(source)),
+            "command_parameter" => match quoted_parameter(source) {
+                Some((value, splits)) => {
+                    self.split.note_splitting(&splits);
+                    Arg::Known(value)
+                }
+                None => Arg::Unknown(source.to_string()),
+            },
             "integer_literal"
             | "decimal_integer_literal"
             | "hexadecimal_integer_literal"
@@ -1407,7 +1414,7 @@ impl Walker<'_> {
                     splits.extend(made);
                     value.push_str(&before);
                     if child.kind() != "variable" {
-                        return Arg::Unknown(source.to_string());
+                        return self.unknown_string(literal, source);
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         // Inside a string `$null` is the empty string, so
@@ -1415,7 +1422,7 @@ impl Walker<'_> {
                         Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
-                            return Arg::Unknown(source.to_string())
+                            return self.unknown_string(literal, source);
                         }
                     }
                     at = child.end_byte();
@@ -1447,6 +1454,58 @@ impl Walker<'_> {
             ),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+
+    /// A double-quoted string or here-string whose value is only known when
+    /// it runs, its text noted as a template (see [`Split::template`]).
+    fn unknown_string(&self, literal: Node<'_>, source: &str) -> Arg {
+        self.split.note_template(source, self.template(literal));
+        Arg::Unknown(source.to_string())
+    }
+
+    /// The text the expandable string or here-string `literal` holds, with
+    /// each variable and subexpression in it standing as `${}`: `None` when
+    /// it holds anything else, or a `$` or backtick of its own (an escaped
+    /// `` `$ ``, a lone `$`), which a reader of the text would take for an
+    /// expansion.
+    fn template(&self, literal: Node<'_>) -> Option<String> {
+        let here = literal.kind() == "expandable_here_string_literal";
+        let quotes = if here { 2 } else { 1 };
+        let start = literal.start_byte() + quotes;
+        let end = literal.end_byte().saturating_sub(quotes).max(start);
+        let mut text = String::new();
+        let mut at = start;
+        let mut cursor = literal.walk();
+        let plain = |part: &str, text: &mut String| {
+            let (part, _) = unescape_expandable(part);
+            let part = if here {
+                part
+            } else {
+                part.replace("\"\"", "\"")
+            };
+            if part.contains(['$', '`']) {
+                return false;
+            }
+            text.push_str(&part);
+            true
+        };
+        for child in literal.named_children(&mut cursor) {
+            if !matches!(child.kind(), "variable" | "sub_expression")
+                || !plain(self.source.get(at..child.start_byte())?, &mut text)
+            {
+                return None;
+            }
+            text.push_str("${}");
+            at = child.end_byte();
+        }
+        if !plain(self.source.get(at..end)?, &mut text) {
+            return None;
+        }
+        Some(if here {
+            text.trim_matches(['\r', '\n']).to_string()
+        } else {
+            text
+        })
     }
 
     fn is_item(&self, source: &str) -> bool {
@@ -1660,6 +1719,63 @@ fn unescape(text: &str) -> String {
         }
     }
     value
+}
+
+/// The argument a parameter word with quotes in it is
+/// (`--execute='DROP TABLE t'`): PowerShell hands a native program the word
+/// with its quotes taken off, `--execute=DROP TABLE t`, a single-quoted part
+/// as it is written and a double-quoted one as an expandable string. The
+/// grammar keeps the word whole, so its quotes are read here. `None` when a
+/// quote is never closed or a double-quoted part holds a `$`, whose value is
+/// only known when it runs. The second value is what a `` `u{…} `` made, as
+/// for [`unescape_expandable`].
+fn quoted_parameter(source: &str) -> Option<(String, Vec<char>)> {
+    if !source.contains(['\'', '"']) {
+        return Some((unescape(source), Vec::new()));
+    }
+    let mut value = String::new();
+    let mut made = Vec::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => value.extend(chars.next()),
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' if chars.peek() == Some(&'\'') => {
+                        chars.next();
+                        value.push('\'');
+                    }
+                    '\'' => break,
+                    c => value.push(c),
+                }
+            },
+            '"' => {
+                let mut inner = String::new();
+                loop {
+                    match chars.next()? {
+                        '`' => {
+                            inner.push('`');
+                            inner.push(chars.next()?);
+                        }
+                        '"' if chars.peek() == Some(&'"') => {
+                            chars.next();
+                            inner.push('"');
+                        }
+                        '"' => break,
+                        c => inner.push(c),
+                    }
+                }
+                if inner.contains('$') {
+                    return None;
+                }
+                let (text, splits) = unescape_expandable(&inner);
+                value.push_str(&text);
+                made.extend(splits);
+            }
+            c => value.push(c),
+        }
+    }
+    Some((value, made))
 }
 
 /// What a backtick makes of the text in an expandable string or here-string:

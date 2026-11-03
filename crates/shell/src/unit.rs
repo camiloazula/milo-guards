@@ -671,6 +671,13 @@ pub(crate) struct Split {
     /// one is not. Noted while a string is read, which only borrows the
     /// walker.
     splitting: RefCell<Vec<char>>,
+    /// The PowerShell double-quoted strings whose expansions are only known
+    /// when they run, by their source, with the text each holds where every
+    /// expansion stands as `${}` (see [`Split::template`]). `None` for a
+    /// string that holds a `$` or a backtick that is no expansion, which a
+    /// reader of the text would take for one. Noted while a string is read,
+    /// as `splitting` is.
+    templates: RefCell<HashMap<String, Option<String>>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -2268,6 +2275,29 @@ impl Split {
                 splitting.push(*c);
             }
         }
+    }
+
+    /// Note the text the PowerShell double-quoted string `source` holds, its
+    /// expansions standing as `${}`, or `None` when it cannot be read so.
+    pub(crate) fn note_template(&self, source: &str, text: Option<String>) {
+        self.templates
+            .borrow_mut()
+            .entry(source.to_string())
+            .or_insert(text);
+    }
+
+    /// The PowerShell double-quoted string `source`, whose expansions are only
+    /// known when it runs, as a template: the text it holds with each
+    /// expansion standing as `${}`, which a reader of a database statement
+    /// reads as it reads a POSIX shell's (an expansion is a value, and where
+    /// a statement starts, a statement only known when it runs). `None` when
+    /// `source` is no such string.
+    pub(crate) fn template(&self, source: &str) -> Option<Arg> {
+        let text = self.templates.borrow().get(source).cloned().flatten()?;
+        Some(Arg::Template {
+            text,
+            source: source.to_string(),
+        })
     }
 
     /// Whether `script` holds a character noted by [`Split::note_splitting`]:

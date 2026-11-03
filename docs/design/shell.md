@@ -2431,9 +2431,10 @@ up.
 | `sqlite3` | the operands after the file, `-cmd` |
 | `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
 | `mongosh`, `mongo` | `--eval` |
-| `redis-cli` | the command and its arguments |
-| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `redis-cli`, `valkey-cli`, `keydb-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query`, and every operand (also after `-n`, `--multiquery`) |
 | `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `Invoke-Sqlcmd` (PowerShell) | `-Query`, and every argument no parameter takes |
 | `cqlsh` | `-e`, `--execute` |
 
 Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
@@ -2448,6 +2449,20 @@ yargs does) a word that starts with `-` is never the value of any option, and
 --eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
 TABLE t'` read the statement option after the password. A statement option
 followed by such a word reads the word as the statement too.
+A client that takes statements as operands (`clickhouse-client 'DROP TABLE
+t'`, and `-n 'DROP TABLE t'`, since `-n` takes no value) reads every word that
+is no option and no option's value as one, and an optional value as an operand
+too: `clickhouse-client --password 'DROP TABLE t'` runs the `DROP`.
+
+`Invoke-Sqlcmd` reads its parameters as PowerShell does: any start of a name
+or alias in any case (`-que`), `-Query:'…'`, and the query as its first
+positional parameter (`Invoke-Sqlcmd 'DROP TABLE t'`). A start of several
+names is refused by PowerShell and one of no name takes no value, so the word
+after either is read as a query too; `-InputFile` is a file of statements, the
+workspace's own, as `psql -f` is. In PowerShell a parameter word with quotes in
+it (`mysql --execute='DROP TABLE t'`, `psql --command="DROP TABLE t"`) is the
+word with its quotes taken off, as PowerShell hands it to a native program; a
+double-quoted part that holds a `$` is only known when it runs.
 
 **What destroys.**
 
@@ -2498,17 +2513,45 @@ followed by such a word reads the word as the statement too.
   shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
   not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
   refuse a file that exists and are safe.
-- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+- **Replacing a table.** `CREATE OR REPLACE TABLE` (with `TEMPORARY` or the
+  like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
+  `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
+  data, and `replace(…)` is a function. `RESTORE DATABASE` and `RESTORE LOG`
+  write a backup over the database they name (`WITH REPLACE` over any one);
+  `RESTORE HEADERONLY`, `FILELISTONLY` and `VERIFYONLY` read the backup.
+- **SQL run elsewhere.** PostgreSQL's `dblink_exec`, `dblink` and
+  `dblink_send_query` run the SQL they are given in a database they connect
+  to: the string after the connection (or the one string) is read as SQL, and
+  an argument that is not a literal or `true`/`false` is `unknown`. The body of
+  a function or procedure (`CREATE [OR REPLACE] FUNCTION … AS $$ … $$`, or a
+  string after `AS`) is read as the statements it holds, as a `DO` body is:
+  what calls it (a `SELECT f()`, a trigger) need not be on the line.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, `FUNCTION FLUSH` (every function of the
+  server), `SHUTDOWN NOSAVE` (what the server holds and has not saved), an
+  `EVAL` whose script calls one or calls
   `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
   calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
   deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
   runs the command on every node, and is read as the command.
-- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
-  command key), `deleteMany` and `remove` with no filter or `{}`.
-- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
-  drop`, MariaDB's name for it. `mysqladmin` runs a
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop`, `dropAllUsers` and
+  `dropAllRoles` (as a call or a command key, quoted or not), and the
+  `dropAllUsersFromDatabase` and `dropAllRolesFromDatabase` commands;
+  `deleteMany` and `remove` with a filter that picks every document there may
+  be: none, `{}`, one spread from a value (`{...f}`) or one only known when it
+  runs (`deleteMany(f)`), while an object written out with a field in it
+  (`{a: 1}`) picks. A `deleteMany` of a `bulkWrite` (`{deleteMany: {filter:
+  {}}}`) is read by its `filter`, and the `delete` command
+  (`runCommand({delete: "users", deletes: [{q: {}, limit: 0}]})`) by each of its
+  `deletes`: a `q` that picks every document, without a `limit` of 1, deletes
+  them, and deletes not written out may. `deleteOne` deletes one document, as
+  `redis-cli del k` deletes one key, and is safe.
+- **The tools.** `dropdb`, `dropuser`, `pg_dropcluster` (a whole cluster, its
+  data folder with it), `heroku pg:reset` and `supabase db reset` (which
+  empty a hosted or local database and run its migrations again),
+  `mysqladmin drop` and `mariadb-admin drop`, MariaDB's name for it. A line
+  that asks for the help (`--help`, `-h`) runs nothing. `mysqladmin` runs a
   command from any unique start of its name (`mysqladmin proc stat` works),
   so a command word of two letters or more that starts `drop`, in any case,
   is `drop`: `dro`, `dr`.
@@ -2582,12 +2625,16 @@ with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
 unquoted here-document with both is: the shell passes the escaped text to the
 client as it is, and the reader would take `\$(`, `\${` and a pair of
 backticks for one expansion that hides the text between them; this covers
-`echo`, `printf` and `Write-Output` too. On PowerShell and
-cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
-`%id%`) is not read as a word, so any statement with one is `unknown`
-(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
-(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
-PowerShell word has none. A client command that runs a
+`echo`, `printf` and `Write-Output` too. A PowerShell double-quoted string or
+here-string given to a client as its statement is read the same way, from the
+grammar's reading of it: each variable and `$(…)` in it stands as an expansion,
+so `psql -c "DELETE FROM t WHERE id = $id"` is safe, `psql -c "DROP TABLE
+$t"` is `drop_data` and `psql -c "$verb FROM t"` is `unknown`. A string that
+holds a `$` or a backtick as text (`` `$ ``, a lone `$`) is `unknown`, since
+the reader would take it for an expansion that hides what follows. On cmd an
+expansion in a double-quoted word (`%id%`) is not read as a word, so any
+statement with one is `unknown` (`psql -c "DROP TABLE t; %x%"` is `unknown`,
+not `drop_data`); a single-quoted PowerShell word has none. A client command that runs a
 program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
 `.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
 and `system` in `mysql` (it is no command of another client: ClickHouse's
@@ -2618,7 +2665,7 @@ the guard does not read as local (`ssh host "psql -c …"`, `docker exec db psql
 -c …`); a statement handed over by a file, a process substitution
 (`psql -f <(…)`) or a stage that is not `echo`, `printf`, `Write-Output` or
 `cat` (`echo … | sed … | psql`); stored procedures (`CALL p()`, `EXEC p`),
-whatever they run; the
+whatever they run (a body written on the line is read); the
 text of a prepared statement that is not on the line (`EXECUTE s` after a
 `PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
