@@ -2,6 +2,7 @@
 //! commands and config, awk, expect, `AppleScript`, compiled .NET.
 
 use super::Checker;
+use crate::launch::{git_global, git_long, Global};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -91,26 +92,11 @@ impl Checker<'_> {
     }
 
     fn git(&mut self, args: &[Arg]) {
-        let mut at = 0;
-        let mut repository = None;
-        let mut configs = Vec::new();
-        while let Some(text) = args.get(at).and_then(Arg::known) {
-            match text {
-                "-C" => {
-                    repository = args.get(at + 1);
-                    at += 2;
-                }
-                "-c" => {
-                    configs.extend(args.get(at + 1).and_then(Arg::known));
-                    at += 2;
-                }
-                "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env" => {
-                    at += 2;
-                }
-                text if text.starts_with('-') => at += 1,
-                _ => break,
-            }
-        }
+        let Global {
+            at,
+            repository,
+            configs,
+        } = git_global(args);
         // A `-c` config value that makes git run a command of its own: an
         // alias body starting `!`, or a program git calls (pager, editor,
         // ssh, hooks).
@@ -199,9 +185,11 @@ impl Checker<'_> {
             "reflog" if matches!(first, Some("expire" | "delete")) => {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
-            "gc" if rest
-                .iter()
-                .any(|arg| matches!(arg.known(), Some("--prune=now" | "--prune=all"))) =>
+            "gc" if rest.iter().filter_map(Arg::known).any(|text| {
+                text.split_once('=').is_some_and(|(name, value)| {
+                    matches!(value, "now" | "all") && git_long(name, "prune")
+                })
+            }) =>
             {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
@@ -220,6 +208,18 @@ impl Checker<'_> {
             "update-ref" if flag(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
             // A tag has no reflog to bring it back from.
             "tag" if flag(Some('d'), Some("delete")) => (Rule::GitDiscard, "deletes a tag"),
+            // A tag given again by force moves; where it pointed is gone.
+            "tag"
+                if flag(Some('f'), Some("force"))
+                    && !operands.is_empty()
+                    && !flag(Some('l'), Some("list"))
+                    && !flag(Some('v'), Some("verify")) =>
+            {
+                (Rule::GitDiscard, "moves a tag, losing where it pointed")
+            }
+            "submodule" if first == Some("update") && flag(Some('f'), Some("force")) => {
+                (Rule::GitDiscard, "throws away changes in submodules")
+            }
             "submodule" if first == Some("deinit") && flag(Some('f'), Some("force")) => {
                 (Rule::GitDiscard, "throws away a submodule's changes")
             }
@@ -325,16 +325,14 @@ const EXEC_CONFIG_KEYS: [&str; 11] = [
     "uploadpack.packobjectshook",
 ];
 
-/// A git option: as [`has_flag`], and also a long option abbreviated, as
-/// git accepts (`--ha` is `--hard`); at least two letters.
+/// A git option: as [`has_flag`], and also a long option given as a prefix
+/// of it, as git takes one (`--h` is `--hard`, see [`git_long`]).
 fn git_flag(args: &[Arg], short: Option<char>, long: Option<&str>) -> bool {
     has_flag(args, short, long)
         || long.is_some_and(|long| {
             args.iter()
                 .filter_map(Arg::known)
                 .take_while(|text| *text != "--")
-                .filter_map(|text| text.strip_prefix("--"))
-                .map(|name| name.split('=').next().unwrap_or(name))
-                .any(|name| name.len() >= 2 && long.starts_with(name))
+                .any(|text| git_long(text, long))
         })
 }

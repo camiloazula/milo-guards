@@ -12,12 +12,14 @@ use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
 mod find;
+mod git;
 mod interpreters;
 mod npm;
 mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
+pub(crate) use git::{global as git_global, is_long as git_long, Global};
 pub(crate) use interpreters::{
     after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
@@ -51,6 +53,9 @@ pub(super) enum Launch {
     Replace(Box<Unit>),
     /// It runs `script` in `shell`.
     Script(Shell, Arg),
+    /// It runs `script` in `shell`, in a folder of its own choosing that
+    /// the line does not say (`git submodule foreach`).
+    Elsewhere(Shell, Arg),
     /// It runs a script given encoded.
     Encoded,
     /// It reads its commands from its input.
@@ -165,7 +170,9 @@ fn add_launched(
                 split.set(&name);
             }
         }
-        match given.take().unwrap_or_else(|| launch(&key, &unit)) {
+        let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
+        let elsewhere = matches!(launched, Launch::Elsewhere(..));
+        match launched {
             Launch::Either(first, second) => {
                 if !split.fork(MAX_FORKS) {
                     split.problem(
@@ -235,7 +242,7 @@ fn add_launched(
                 split.environment += 1;
                 unit = *replacement;
             }
-            Launch::Script(shell, script) => {
+            Launch::Script(shell, script) | Launch::Elsewhere(shell, script) => {
                 // A shell started with the option on (`bash -O dotglob -c`,
                 // `zsh -o globdots -c`) runs its script with it on.
                 let starts_hidden = SHELLS.contains(&key.as_str())
@@ -291,7 +298,14 @@ fn add_launched(
                         // of the line. In a pipeline only zsh's last stage
                         // does, but as for a `cd` the guard counts any stage.
                         let here = key == "eval";
+                        let outer_dir = elsewhere.then(|| split.dir_snapshot());
+                        if elsewhere {
+                            split.move_unknown("the folder it runs in");
+                        }
                         unit::script_in(split, &text, shell, depth + 1, here);
+                        if let Some(place) = outer_dir {
+                            split.restore_dir(place);
+                        }
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -678,6 +692,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             runner(key, unit)
         }
         "dx" => runner(key, unit),
+        "git" => git::launch(args),
         "bun" => bun(unit),
         "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),

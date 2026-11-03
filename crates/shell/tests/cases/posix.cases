@@ -171,6 +171,76 @@ posix finds=git_discard | git submodule --quiet deinit -f sub
 posix finds=git_discard | git submodule deinit --all --force
 posix finds=git_remote | git push --delete origin v1
 posix finds=git_remote | git push origin :refs/tags/v1
+# git takes any prefix of a long option that names one option, so a prefix
+# of one that throws work away is that option; one that names several makes
+# git refuse the line, which then runs nothing.
+posix finds=git_discard | git clean --f
+posix finds=git_discard | git clean -d --fo
+posix finds=git_discard | git reset --h
+posix finds=git_discard | git reset --h HEAD~1
+posix finds=git_discard | git tag --d v1
+posix finds=git_discard | git branch --d --forc x
+posix finds=git_discard | git branch --de -f x
+posix finds=git_discard | git checkout --f main
+posix finds=git_discard | git restore --w x
+posix finds=git_discard | git restore --st --wo x
+posix finds=git_discard | git switch --disc main
+posix finds=git_discard | git submodule deinit --f sub
+posix finds=git_remote | git push --m origin
+posix finds=git_history | git gc --pr=now
+posix finds=git_history | git gc --p=all
+# `git branch --d` is `--delete`, as `-d`: it refuses a branch not merged.
+posix safe | git branch --d merged
+posix safe | git branch -d merged
+posix safe | git clean -n
+posix safe | git clean -f --d
+posix safe | git clean -f --dry
+posix safe | git restore --st x
+posix safe | git gc --pr=1.week.ago
+# A submodule updated by force throws away the changes in its checkout.
+posix finds=git_discard reason="throws away changes in submodules" | git submodule update --force
+posix finds=git_discard | git submodule update -f
+posix finds=git_discard | git submodule update --init --recursive --force
+posix finds=git_discard | git submodule --quiet update --fo
+posix finds=git_discard | git submodule update --checkout -f sub
+# A tag given again by force is moved, and a tag has no reflog to bring back
+# where it was.
+posix finds=git_discard reason="moves a tag, losing where it pointed" | git tag -f v1
+posix finds=git_discard | git tag -f v1 HEAD~3
+posix finds=git_discard | git tag --force v1 HEAD~1
+posix finds=git_discard | git tag -fa v1 -m 'release'
+posix finds=git_discard | git tag --forc v1
+posix safe | git tag -a v1 -m 'force'
+posix safe | git tag -l -f
+# What a submodule foreach runs is read, as a nested shell's script: one
+# argument is a shell line, several a command whose first word is a shell
+# line too. It runs in each submodule's folder, which the line does not say.
+posix finds=delete reason="deletes your home directory" | git submodule foreach 'rm -rf ~'
+posix finds=git_discard | git submodule foreach git reset --hard
+posix finds=git_discard | git submodule foreach git clean -fdx
+posix finds=git_discard | git submodule foreach --recursive 'git clean -fdx'
+posix finds=git_discard | git submodule foreach --quiet --recursive git reset --hard
+posix finds=git_discard | git submodule --quiet foreach -q git reset --hard
+posix finds=git_discard | git -C sub submodule foreach 'git stash drop'
+posix finds=delete | git submodule foreach 'cd .. && rm -rf ~'
+posix finds=delete | git submodule foreach rm -rf ~
+posix finds=delete | git submodule foreach 'rm -rf' ~
+posix finds=delete | git submodule foreach 'rm -rf *'
+posix finds=delete | git submodule foreach 'rm -rf $sm_path'
+posix finds=unknown | git submodule foreach "$cmd"
+posix finds=unknown | git submodule foreach 'git -c alias.x=!x x'
+posix finds=unknown | git submodule foreach "rm -rf $x"
+posix finds=overwrite reason="writes to a file only known when it runs" | git submodule foreach 'git log > log.txt'
+posix finds=delete | git submodule foreach 'cd "$toplevel" && rm -rf src'
+powershell finds=delete | git submodule foreach 'rm -rf ~'
+cmd finds=delete | git submodule foreach "rm -rf ~"
+powershell finds=git_discard | git reset --h
+posix safe | git submodule foreach 'cat README.md'
+posix safe | git submodule foreach git status
+posix safe | git submodule foreach 'git status'
+posix safe | git submodule foreach --recursive 'git fetch && git status'
+posix safe | git submodule foreach
+posix safe | git submodule summary
 
 # Permissions, root and the system are risky.
 posix finds=permissions | chmod -R 777 /
