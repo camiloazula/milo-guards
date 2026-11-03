@@ -1422,6 +1422,9 @@ impl Walker<'_> {
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
+        if shapes.len() == unit.args.len() {
+            unit.joined = shapes.iter().map(|shape| shape.joined).collect();
+        }
         let key = unit.key();
         unit.names = Some(self.command_variables(node, key.as_deref(), &unit.args));
         if let Some(key) = key.as_deref() {
@@ -3994,8 +3997,15 @@ const PROPERTY_VALUES: [&str; 2] = ["type", "propertytype"];
 pub(crate) struct Params<'a> {
     /// Each parameter given (lower case, without `-`), with its value.
     pub(crate) named: Vec<(String, Option<&'a Arg>)>,
-    /// The arguments no parameter takes.
+    /// The arguments no parameter takes. A `--` ends the parameters: it is
+    /// not one of them, and every argument after it is one.
     pub(crate) positional: Vec<&'a Arg>,
+    /// Whether a `--` ended the parameters.
+    pub(crate) ended: bool,
+    /// Whether [`Params::cmdlet`] was given a name that is none of the
+    /// cmdlet's parameters, which takes no value: the argument after it
+    /// may be that parameter's value, or the next positional.
+    pub(crate) unbound: bool,
 }
 
 impl<'a> Params<'a> {
@@ -4041,6 +4051,9 @@ impl<'a> Params<'a> {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
+            if params.end(arg, &mut iter) {
+                continue;
+            }
             let Some(name) = parameter(arg) else {
                 params.positional.push(arg);
                 continue;
@@ -4085,6 +4098,21 @@ impl<'a> Params<'a> {
         params
     }
 
+    /// Whether `arg` is the `--` that ends the parameters: if so, it and
+    /// every argument after it are taken, the rest as positionals.
+    fn end(
+        &mut self,
+        arg: &'a Arg,
+        rest: &mut std::iter::Peekable<std::slice::Iter<'a, Arg>>,
+    ) -> bool {
+        if arg.known() != Some("--") {
+            return false;
+        }
+        self.ended = true;
+        self.positional.extend(rest);
+        true
+    }
+
     /// Whether a parameter was given with no value that may be a value
     /// parameter: a bare `-n` (`-Name`, read as a switch as it also starts
     /// `-NoNewline`) leaves its value among the positionals.
@@ -4120,6 +4148,9 @@ impl<'a> Params<'a> {
         let mut params = Self::default();
         let mut iter = args.iter().peekable();
         while let Some(arg) = iter.next() {
+            if params.end(arg, &mut iter) {
+                continue;
+            }
             let Some(name) = parameter(arg) else {
                 params.positional.push(arg);
                 continue;
@@ -4127,6 +4158,7 @@ impl<'a> Params<'a> {
             let colon = name.ends_with(':');
             let typed = name.trim_end_matches(':').to_ascii_lowercase();
             let found = Param::resolve(&typed, own);
+            params.unbound |= found.is_none();
             let takes_value = colon || found.is_some_and(|param| param.value);
             let value = if takes_value
                 && iter
@@ -4234,6 +4266,99 @@ const SET_ITEM: [Param; 11] = [
     Param::switch("passthru", &[]),
     Param::switch("whatif", &["wi"]),
     Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Set-Content` and `Add-Content`, whose path and value
+/// are also taken by position, in that order. `-Fil` and `-Fi` are
+/// `-Filter`: neither has a `-FilePath`.
+pub(crate) const SET_CONTENT: [Param; 15] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("value", &[]),
+    Param::value("filter", &[]),
+    Param::value("include", &[]),
+    Param::value("exclude", &[]),
+    Param::value("credential", &[]),
+    Param::value("encoding", &[]),
+    Param::value("stream", &[]),
+    Param::switch("passthru", &[]),
+    Param::switch("force", &[]),
+    Param::switch("nonewline", &[]),
+    Param::switch("asbytestream", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Clear-Content`, whose path is also taken by position.
+pub(crate) const CLEAR_CONTENT: [Param; 10] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("filter", &[]),
+    Param::value("include", &[]),
+    Param::value("exclude", &[]),
+    Param::value("credential", &[]),
+    Param::value("stream", &[]),
+    Param::switch("force", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Out-File`, whose file and encoding are also taken by
+/// position, in that order.
+pub(crate) const OUT_FILE: [Param; 11] = [
+    Param::value("filepath", &["path"]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("encoding", &[]),
+    Param::value("width", &[]),
+    Param::value("inputobject", &[]),
+    Param::switch("append", &[]),
+    Param::switch("force", &[]),
+    Param::switch("noclobber", &["nooverwrite"]),
+    Param::switch("nonewline", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Tee-Object`, whose file is also taken by position.
+pub(crate) const TEE_OBJECT: [Param; 6] = [
+    Param::value("filepath", &["path"]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("encoding", &[]),
+    Param::value("variable", &[]),
+    Param::value("inputobject", &[]),
+    Param::switch("append", &[]),
+];
+
+/// The parameters of `New-Item`, whose path is also taken by position.
+/// `-Target` is `-Value`, what a link points at.
+pub(crate) const NEW_ITEM: [Param; 8] = [
+    Param::value("path", &[]),
+    Param::value("name", &[]),
+    Param::value("itemtype", &["type"]),
+    Param::value("value", &["target"]),
+    Param::value("credential", &[]),
+    Param::switch("force", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Set-Acl`, whose path and ACL are also taken by
+/// position, in that order.
+pub(crate) const SET_ACL: [Param; 14] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("inputobject", &[]),
+    Param::value("aclobject", &[]),
+    Param::value("securitydescriptor", &["sddl"]),
+    Param::value("centralaccesspolicy", &[]),
+    Param::value("filter", &[]),
+    Param::value("include", &[]),
+    Param::value("exclude", &[]),
+    Param::switch("clearcentralaccesspolicy", &[]),
+    Param::switch("passthru", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+    Param::switch("usetransaction", &["usetx"]),
 ];
 
 /// The two parameters a cmdlet takes first and second by position (`Set-Alias

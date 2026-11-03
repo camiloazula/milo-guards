@@ -567,8 +567,9 @@ powershell finds=unknown | Copy-Item src\\* dest\\; .\\dest\\x.ps1
 
 # A name only known when it runs, after the first in a list or as the value,
 # is a file that cannot be placed: the line writes any file.
-# Nothing is run, or the name is not of a write cmdlet's file.
-powershell safe | Set-Content notes.txt,$x y
+# Nothing is run, or the name is not of a write cmdlet's file. A name only
+# known when it runs in the list of paths is a write the guard cannot place.
+powershell finds=overwrite lacks=unknown | Set-Content notes.txt,$x y
 powershell safe | Set-Content notes.txt $x
 powershell safe | Set-Content -Path notes.txt -Value $x
 powershell safe | Set-Content -Path notes.txt -Value $x; Get-Content notes.txt

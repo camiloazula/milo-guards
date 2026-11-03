@@ -13,7 +13,8 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::unit::{
-    may_split, operands, plain, unknown_start, Arg, Flagged, Importing, Reads, Scope, Split, Unit,
+    may_split, operands, plain, unknown_start, Arg, Between, Flagged, Importing, Reads, Scope,
+    Split, Unit,
 };
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
@@ -282,6 +283,10 @@ struct Checker<'a> {
     /// Every unit at each pipeline stage, by its index in the split: a stage
     /// can be a group of several.
     stages: HashMap<(usize, usize), Vec<usize>>,
+    /// For each pipeline stage after the first, the index of the stage whose
+    /// output it is handed (see [`Checker::source_stage`]), worked out once
+    /// for the line.
+    sources: HashMap<(usize, usize), usize>,
     /// Whether the line lists keys in Redis, once worked out: every
     /// `redis-cli del` that is given keys asks, and the answer is the line's.
     scans_keys: Option<bool>,
@@ -314,6 +319,7 @@ impl<'a> Checker<'a> {
             downloaders: HashMap::new(),
             producers: HashMap::new(),
             stages: HashMap::new(),
+            sources: HashMap::new(),
             scans_keys: None,
             data: data::Cache::default(),
             lengths: HashMap::new(),
@@ -345,6 +351,23 @@ impl<'a> Checker<'a> {
                 .push(at);
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
+        }
+        // Each stage is handed the output of the one before, or of the one
+        // that stage is handed, when it only passes on some of it.
+        for (&pipeline, &length) in &checker.lengths {
+            for index in 1..length {
+                let before = index - 1;
+                let source = if before > 0 && passes_on(split, &checker.stages, pipeline, before) {
+                    checker
+                        .sources
+                        .get(&(pipeline, before))
+                        .copied()
+                        .unwrap_or(before)
+                } else {
+                    before
+                };
+                checker.sources.insert((pipeline, index), source);
+            }
         }
         checker
     }
@@ -620,10 +643,7 @@ impl Checker<'_> {
         if *arg != Arg::Input {
             return (vec![arg.clone()], false);
         }
-        let stage = unit
-            .stage
-            .filter(|stage| stage.index > 0)
-            .map(|stage| (stage.pipeline, stage.index - 1));
+        let stage = self.source_stage(unit);
         let producer = stage
             .and_then(|stage| self.producers.get(&stage))
             .and_then(|&at| self.split.units.get(at));
@@ -644,6 +664,23 @@ impl Checker<'_> {
             }
         }
         (found, hidden)
+    }
+
+    /// The stage whose output `unit` is handed, as its pipeline and index:
+    /// the one before it, or before the stages between that only hand on
+    /// some of what they are handed, the same objects (`Where-Object`,
+    /// `Sort-Object`, a `Select-Object` that only picks, `Get-Unique`), so
+    /// `Get-ChildItem src | Where-Object { … } | Remove-Item` deletes some of
+    /// what `Get-ChildItem src` lists. `None` for a unit at no stage, or at
+    /// the first.
+    fn source_stage(&self, unit: &Unit) -> Option<(usize, usize)> {
+        let stage = unit.stage.filter(|stage| stage.index > 0)?;
+        let index = self
+            .sources
+            .get(&(stage.pipeline, stage.index))
+            .copied()
+            .unwrap_or(stage.index - 1);
+        Some((stage.pipeline, index))
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
@@ -752,10 +789,9 @@ impl Checker<'_> {
             hidden: unit.hidden || hidden,
             ..unit.scope()
         };
-        let item = unit
-            .stage
-            .filter(|stage| stage.index > 0)
-            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
+        let item = self
+            .source_stage(unit)
+            .and_then(|stage| self.producers.get(&stage))
             .and_then(|&at| self.split.units.get(at))
             .and_then(Unit::key)
             .is_some_and(|key| key.as_str() == "get-item");
@@ -1474,6 +1510,32 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     Some(found)
 }
 
+/// Whether the stage at `index` of `pipeline` is one PowerShell command that
+/// hands on only some of the objects it is handed, unchanged:
+/// `Where-Object`, `Sort-Object`, a `Select-Object` that only picks (see
+/// [`Between::select`]) and `Get-Unique` (see [`Checker::source_stage`]).
+fn passes_on(
+    split: &Split,
+    stages: &HashMap<(usize, usize), Vec<usize>>,
+    pipeline: usize,
+    index: usize,
+) -> bool {
+    let Some([only]) = stages.get(&(pipeline, index)).map(Vec::as_slice) else {
+        return false;
+    };
+    let Some(unit) = split.units.get(*only) else {
+        return false;
+    };
+    if unit.shell != Shell::PowerShell {
+        return false;
+    }
+    match unit.key().as_deref() {
+        Some("where-object" | "sort-object" | "sort" | "get-unique" | "gu") => true,
+        Some("select-object" | "select") => Between::select(&unit.args) == Between::Narrows,
+        _ => false,
+    }
+}
+
 /// What a listing of `places` finds, as paths the resolver reads.
 fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
     places
@@ -1669,11 +1731,14 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
             if sources.is_empty() {
                 sources.extend(positional.next());
             }
+            // With no destination the item goes to the folder the line is in.
+            let here = Arg::Known(".".to_string());
             let destination = params
                 .values(&["destination"])
                 .first()
                 .copied()
-                .or_else(|| positional.next());
+                .or_else(|| positional.next())
+                .or_else(|| (!sources.is_empty()).then_some(&here));
             destination.map_or_else(Vec::new, |destination| {
                 into_folder(&or_here(destination), &sources)
             })
