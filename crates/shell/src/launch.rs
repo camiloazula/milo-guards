@@ -272,7 +272,11 @@ fn add_launched(
                 } else {
                     Vec::new()
                 };
+                let multi_call = MULTI_CALL.contains(&key.as_str());
                 unit = inner(unit, key, start, &Hands::Nothing);
+                if multi_call {
+                    applet(&mut unit);
+                }
                 for file in files {
                     if !startup::push(&mut unit.startup, file) {
                         split.startup_overflow();
@@ -308,6 +312,14 @@ fn add_launched(
                 // and loads `--env-file`; `bun run` loads `.env`. What it
                 // starts has an environment the line does not show.
                 split.environment += 1;
+                // `Start-Process -RedirectStandardInput f` feeds the program
+                // it starts the file, which is the next unit.
+                if key == "start-process" {
+                    if let Some(file) = wrappers::standard_input(&unit) {
+                        let at = split.units.len();
+                        split.redirect(at..at + 1, file, true);
+                    }
+                }
                 unit = *replacement;
             }
             Launch::Script(shell, script) => {
@@ -329,6 +341,7 @@ fn add_launched(
                     Arg::Template {
                         text,
                         source: written,
+                        ..
                     } if key == "trap" => {
                         split.problem(
                             Rule::Unknown,
@@ -710,6 +723,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         }
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
+        // `xtables-nft-multi iptables -F` runs the firewall program it names,
+        // as busybox runs its applet.
+        key if posix && MULTI_CALL.contains(&key) => runs(args, Some(0)),
         // fish chains commands with `; and cmd`, `; or cmd` and `not cmd`;
         // read with the POSIX grammar, the word is the program and the
         // command its arguments. A POSIX program with one of these names is
@@ -883,7 +899,7 @@ fn piped(unit: &Unit) -> bool {
 /// after it (`coproc while …; do …; done`, also inside a group) is cut into
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
-fn coproc(args: &[Arg]) -> Launch {
+pub(super) fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
@@ -977,6 +993,26 @@ fn assigned_before(args: &[Arg], launched: &Launch) -> Vec<String> {
 /// A script path that is the program's own input: what is piped into it.
 pub(super) fn is_stdin(path: &str) -> bool {
     matches!(path, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+}
+
+/// The multi-call firewall programs, which run the program they name.
+const MULTI_CALL: [&str; 3] = ["xtables-nft-multi", "xtables-legacy-multi", "xtables-multi"];
+
+/// The program a multi-call firewall program runs: it also takes its own
+/// short names, `main4` for `iptables`, `main6` for `ip6tables` and
+/// `restore4`, `restore6`, `save4` and `save6` for their `-restore` and
+/// `-save`.
+fn applet(unit: &mut Unit) {
+    let program = match unit.key().as_deref() {
+        Some("main4") => "iptables",
+        Some("main6") => "ip6tables",
+        Some("restore4") => "iptables-restore",
+        Some("restore6") => "ip6tables-restore",
+        Some("save4") => "iptables-save",
+        Some("save6") => "ip6tables-save",
+        _ => return,
+    };
+    unit.program = Arg::Known(program.to_string());
 }
 
 pub(super) fn runs(args: &[Arg], start: Option<usize>) -> Launch {

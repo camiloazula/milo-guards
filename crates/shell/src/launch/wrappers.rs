@@ -453,6 +453,16 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
     }))
 }
 
+/// The file `Start-Process -RedirectStandardInput` (or `-RSI`, or a start
+/// of it no other parameter has) feeds the program it starts, as
+/// `program < file` does.
+pub(super) fn standard_input(unit: &Unit) -> Option<Arg> {
+    Params::start_process(&unit.args)
+        .values(&["redirectstandardinput"])
+        .first()
+        .map(|file| (*file).clone())
+}
+
 /// cmd's `start`: a quoted title first, its `/` options, then the program.
 pub(super) fn start(args: &[Arg]) -> Launch {
     let mut at = 0;
