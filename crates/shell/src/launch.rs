@@ -74,12 +74,47 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // What a wrapper in front of the program sets is the program's only.
     let options = split.node_options.len();
     let paths = split.python_path.len();
+    let terraform = split.tf_cli_args.len();
     let environment = split.environment;
     add_unit(split, unit, depth);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
+    split.tf_cli_args.truncate(terraform);
     split.environment = environment;
     split.unscope_hidden(outer);
+}
+
+/// Add `units`, the readings of one command (cmd's `echo\x.exe` may run
+/// `echo` or the file): each is judged, so the riskier one counts. Each of
+/// two or more may be the one that does not run, so each is read as a
+/// branch: a `cd` among them may not have moved the line (`cd.\a\b.bat`
+/// moves it or runs the file).
+pub(crate) fn add_readings(split: &mut Split, units: Vec<Unit>, depth: usize) {
+    let mut units = units.into_iter();
+    let Some(mut first) = units.next() else {
+        return;
+    };
+    let rest: Vec<Unit> = units.collect();
+    if rest.is_empty() {
+        add(split, first, depth);
+        return;
+    }
+    if !rest.iter().all(|_| split.fork(MAX_FORKS)) {
+        first.depth = depth;
+        split.problem(
+            Rule::Unreadable,
+            "reads in too many ways to judge each",
+            Some(first.program.text()),
+        );
+        split.push(first);
+        return;
+    }
+    split.branches += 1;
+    add(split, first, depth);
+    for unit in rest {
+        add(split, unit, depth);
+    }
+    split.branches -= 1;
 }
 
 /// Whether the wrapper `key` may hand the program it runs an environment of
@@ -235,13 +270,20 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .tf_cli_args
+                    .extend(wrappers::tf_cli_args(&unit.args, start));
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
                 } else {
                     Vec::new()
                 };
+                let multi_call = MULTI_CALL.contains(&key.as_str());
                 unit = inner(unit, key, start, &Hands::Nothing);
+                if multi_call {
+                    applet(&mut unit);
+                }
                 for file in files {
                     if !startup::push(&mut unit.startup, file) {
                         split.startup_overflow();
@@ -268,6 +310,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .tf_cli_args
+                    .extend(wrappers::tf_cli_args(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -553,6 +598,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth,
     }
 }
@@ -588,7 +634,14 @@ fn launch(key: &str, unit: &Unit) -> Launch {
                     "--close-from",
                     "--command-timeout",
                 ],
-            ),
+            )
+            .map(|start| {
+                if key == "sudo" {
+                    after_assignments(args, start)
+                } else {
+                    start
+                }
+            }),
         ),
         // systemd's own `sudo`, and a command started as a transient unit.
         "run0" if posix => runs(
@@ -715,6 +768,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         }
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
+        // `xtables-nft-multi iptables -F` runs the firewall program it names,
+        // as busybox runs its applet.
+        key if posix && MULTI_CALL.contains(&key) => runs(args, Some(0)),
         // fish chains commands with `; and cmd`, `; or cmd` and `not cmd`;
         // read with the POSIX grammar, the word is the program and the
         // command its arguments. A POSIX program with one of these names is
@@ -888,7 +944,7 @@ fn piped(unit: &Unit) -> bool {
 /// after it (`coproc while …; do …; done`, also inside a group) is cut into
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
-fn coproc(args: &[Arg]) -> Launch {
+pub(super) fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
@@ -984,10 +1040,49 @@ pub(super) fn is_stdin(path: &str) -> bool {
     matches!(path, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
 }
 
+/// The multi-call firewall programs, which run the program they name.
+const MULTI_CALL: [&str; 3] = ["xtables-nft-multi", "xtables-legacy-multi", "xtables-multi"];
+
+/// The program a multi-call firewall program runs: it also takes its own
+/// short names, `main4` for `iptables`, `main6` for `ip6tables` and
+/// `restore4`, `restore6`, `save4` and `save6` for their `-restore` and
+/// `-save`.
+fn applet(unit: &mut Unit) {
+    let program = match unit.key().as_deref() {
+        Some("main4") => "iptables",
+        Some("main6") => "ip6tables",
+        Some("restore4") => "iptables-restore",
+        Some("restore6") => "ip6tables-restore",
+        Some("save4") => "iptables-save",
+        Some("save6") => "ip6tables-save",
+        _ => return,
+    };
+    unit.program = Arg::Known(program.to_string());
+}
+
 pub(super) fn runs(args: &[Arg], start: Option<usize>) -> Launch {
     start
         .filter(|start| *start < args.len())
         .map_or(Launch::Itself, Launch::Runs)
+}
+
+/// The index of the first argument at or after `start` that is not a
+/// `NAME=value` word: sudo sets those in the environment of the program
+/// after them (`sudo TF_CLI_ARGS=-destroy terraform apply`).
+fn after_assignments(args: &[Arg], start: usize) -> usize {
+    let mut at = start;
+    while args.get(at).is_some_and(|arg| {
+        arg.text()
+            .trim_start_matches(['"', '\''])
+            .split_once('=')
+            .is_some_and(|(name, _)| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+    }) {
+        at += 1;
+    }
+    at
 }
 
 /// The index of the first argument after a wrapper's options; `values`

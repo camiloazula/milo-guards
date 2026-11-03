@@ -199,6 +199,30 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .collect()
 }
 
+/// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given by the
+/// wrapper's own arguments, by name, as [`node_options`] reads
+/// `NODE_OPTIONS` (`env TF_CLI_ARGS=-destroy terraform apply`). One only
+/// known when it runs is kept as it is.
+pub(super) fn tf_cli_args(args: &[Arg], start: usize) -> Vec<(String, Arg)> {
+    args.iter()
+        .take(start)
+        .filter_map(|arg| {
+            let (name, value) = match arg {
+                Arg::Known(text) => {
+                    let (name, value) = text.split_once('=')?;
+                    (name, Arg::Known(value.to_string()))
+                }
+                Arg::Unknown(_) | Arg::Template { .. } => {
+                    let (name, _) = arg.text().trim_start_matches(['"', '\'']).split_once('=')?;
+                    (name, arg.clone())
+                }
+                Arg::Input | Arg::Null => return None,
+            };
+            unit::tf_cli_args(name).then(|| (name.to_string(), value))
+        })
+        .collect()
+}
+
 /// `xargs`: its options, then the program its input is handed to.
 pub(super) fn xargs(args: &[Arg]) -> Launch {
     let mut replace = None;
@@ -520,6 +544,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }))
 }
@@ -1114,6 +1139,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }
 }
