@@ -1015,14 +1015,31 @@ moved no line between safe and risky. Each item below says which rule it is:
   name="explorer.exe" delete`. The CIM or WMI method is also `stop_unknown` (the instances come from a
   listing the guard does not follow). The array's `.ForEach('Kill')` is a
   line the grammar does not read, so it is `unreadable`.
-- **A fork bomb.** A function that calls itself in the background or as one
-  side of a pipeline (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`) is
-  `stop_system` however it is called, even when the line only defines it, and
-  however the call is written: `\f`, `"f"` and `'f'` call the function `f`, as
-  `\rm` is read as `rm`. A
-  function defined inside another is judged on its own, by its own name, and
-  its commands are not also read as the outer one's. A bomb split over two
-  functions that call each other is not read.
+- **A fork bomb.** A set of functions the line defines that start copies of
+  themselves without end is `stop_system` however it is called, even when the
+  line only defines it (`:(){ :|:& };:`, `f() { f & }`, `f() { f | f; }`).
+  Each body is read for its calls to the functions the line defines, however
+  the call is written (`\f`, `"f"` and `'f'` call the function `f`, as `\rm`
+  is read as `rm`), and for where each call stands. A call starts a process of
+  its own in the background (`&`), as a stage of a pipeline, in a subshell, a
+  command or process substitution (`cat <(f) <(f)`), or through `coproc`
+  (`coproc f`, `coproc { f; }`); `eval f` calls `f` as `f` does. Functions
+  that call each other in a cycle are one set (`f() { g & }; g() { f & }`),
+  and a function defined inside another is judged by its own name, its
+  commands not also read as the outer one's. A set is a bomb when one of its
+  calls starts a process and either one of its functions makes two or more
+  calls into the set (`f(){ g & g; }; g(){ f & f; }`), or a call in a loop
+  that may run it more than once (over two or more words or a brace list,
+  `while true`, `for ((;;))`), or none of its calls is guarded. A call is
+  guarded when it runs only on a condition that reads a value known when the
+  line runs (the left of `&&` or `||`, an `if`, `elif`, `while` or `case`
+  whose condition holds an expansion, a substitution or a wildcard), or in a
+  loop over one such word (`for d in "$1"/*`) or over the arguments: a single
+  self-call there is a recursion that ends with its data, so `walk(){ for d
+  in "$1"/*; do [ -d "$d" ] && walk "$d" | sort; done; }; walk .` is safe,
+  while `if true; then f & fi` and `[ -d x ] && f &`, whose conditions read
+  nothing that changes, are bombs. Calls that never start a process (`f() {
+  f; }`) recurse in one shell and are not bombs.
 
 `killall`'s and `pkill`'s options are read as they read them: bundled letters,
 `-u me` or `-ume`, `--user me` or `--user=me`, a signal (`-9`, `-HUP`,

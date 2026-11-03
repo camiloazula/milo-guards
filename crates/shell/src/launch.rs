@@ -726,7 +726,7 @@ fn piped(unit: &Unit) -> bool {
 /// after it (`coproc while …; do …; done`, also inside a group) is cut into
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
-fn coproc(args: &[Arg]) -> Launch {
+pub(super) fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
