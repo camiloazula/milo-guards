@@ -784,7 +784,8 @@ pub(crate) struct Split {
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
     /// How much nested script text has been read, in bytes (and one for
-    /// each script): a line that makes the same script be read again and
+    /// each script), and how much of the line has been read again (see
+    /// [`read_again`]): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
     /// How many times the line has forked into two readings, each judged
@@ -2583,9 +2584,10 @@ pub(crate) const MAX_TREE_DEPTH: usize = 400;
 /// The longest line read: past it, the line is not read at all.
 pub(crate) const MAX_LEN: usize = 64 * 1024;
 
-/// The most nested script text read for one line, in bytes: past it, the
-/// line is unreadable. A nested script is read once for each time the line
-/// starts it, so this bounds the work whatever the nesting does. It is a
+/// The most nested script text read for one line, in bytes, with the parts
+/// of the line read again (see [`read_again`]): past it, the line is
+/// unreadable. A nested script is read once for each time the line starts
+/// it, so this bounds the work whatever the nesting does. It is a
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
@@ -2743,12 +2745,19 @@ pub(crate) fn within_limits(split: &mut Split, text: &str, depth: usize) -> bool
         split.problem(Rule::Unreadable, "is too long to read", None);
         return false;
     }
-    if depth > 0 {
-        split.nested_read += text.len() + 1;
-        if split.nested_read > MAX_NESTED_READ {
-            split.problem(Rule::Unreadable, "starts too many scripts to read", None);
-            return false;
-        }
+    depth == 0 || read_again(split, text, "starts too many scripts to read")
+}
+
+/// Whether `text`, a part of the line read again as a script of its own
+/// (cmd's `ver && if …`, see [`crate::cmd`]), may be read: it is counted
+/// against the budget of nested text, so a part that holds another such
+/// part, and so on, cannot make the line be read again and again. A
+/// finding gives `why` when it may not.
+pub(crate) fn read_again(split: &mut Split, text: &str, why: &str) -> bool {
+    split.nested_read += text.len() + 1;
+    if split.nested_read > MAX_NESTED_READ {
+        split.problem(Rule::Unreadable, why, None);
+        return false;
     }
     true
 }

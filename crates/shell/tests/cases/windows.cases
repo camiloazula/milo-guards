@@ -271,6 +271,13 @@ cmd rules=delete | ver && ca^ll rd /s /q C:\\Windows
 cmd rules=stop_system | ver && c^all C:\\Windows\\System32\\shutdown.exe /s
 cmd rules=delete | ver && i^f exist q rd /s /q C:\\Windows
 cmd rules=delete | ver && f^or %%i in (a) do rd /s /q C:\\Windows
+# A `call` of `call` runs the command after it.
+cmd rules=delete | call call rd /s /q C:\\Windows
+cmd rules=delete | call call call rd /s /q C:\\Windows
+cmd rules=delete | call ca^ll rd /s /q C:\\Windows
+cmd rules=delete | ver && call call rd /s /q C:\\Windows
+cmd rules=stop_system | CALL Call C:\\Windows\\System32\\shutdown.exe /s
+cmd safe | call call dir
 # cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
 # `cmd/c`. A word that may name a program in a folder is read both ways.
 cmd rules=drop_data | echo.DROP TABLE t| psql

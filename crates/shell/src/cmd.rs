@@ -165,16 +165,18 @@ impl Walker<'_> {
     /// after `&&`, `||` or `|` (`ver && if exist q rd /s /q C:\x`) it is a
     /// command named `if` whose condition and body are its arguments. Nor
     /// does it read a `call`, `if` or `for` spelled with carets (`ca^ll`,
-    /// `i^f`), which cmd takes off first. cmd reads each as the statement it
-    /// is, so the command's text is split again on its own, the carets of
-    /// its first word taken off, where the grammar reads it as one. Returns
-    /// whether it was. An `if` or a `for` with no carets that already starts
-    /// the text it was split from is not split again: the grammar would read
-    /// it the same way.
+    /// `i^f`), which cmd takes off first, or a `call` that a `call` runs
+    /// (`call call rd …`, a `call` of the program `call`). cmd reads each as
+    /// the statement it is, so the command's text (from the second `call`,
+    /// in the last case) is split again on its own, the carets of its first
+    /// word taken off, where the grammar reads it as one. Returns whether it
+    /// was. An `if` or a `for` with no carets that already starts the text
+    /// it was split from is not split again: the grammar would read it the
+    /// same way. The text split again counts against the line's budget of
+    /// nested text, so a command that holds another such command, and so
+    /// on, cannot make the line be read again and again.
     fn statement(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) -> bool {
-        if node.kind() != "cmd" {
-            return false;
-        }
+        let call = node.kind() == "call_stmt";
         let Some((word, _)) = parts(node) else {
             return false;
         };
@@ -185,33 +187,36 @@ impl Walker<'_> {
         let bare = unescape(raw);
         let is =
             |text: &str, names: &[&str]| names.iter().any(|name| name.eq_ignore_ascii_case(text));
-        let spelled = raw.contains('^') && !raw.contains('"') && is(&bare, &["call", "if", "for"]);
+        let spelled = !raw.contains('"')
+            && if call {
+                is(&bare, &["call"])
+            } else {
+                raw.contains('^') && is(&bare, &["call", "if", "for"])
+            };
         let name = word
             .first()
             .filter(|name| name.kind() == "command_name")
             .map(|name| unit::text(name, self.source))
             .unwrap_or_default();
-        let later = node.start_byte() != 0 && is(name, &["if", "for"]);
+        let later = !call && node.start_byte() != 0 && is(name, &["if", "for"]);
         if !spelled && !later {
             return false;
         }
-        let command = self
-            .source
-            .get(node.start_byte()..node.end_byte())
-            .unwrap_or_default();
+        let from = if call { range.start } else { node.start_byte() };
         let text = if spelled {
-            let before = self
-                .source
-                .get(node.start_byte()..range.start)
-                .unwrap_or_default();
+            let before = self.source.get(from..range.start).unwrap_or_default();
             let after = self
                 .source
                 .get(range.end..node.end_byte())
                 .unwrap_or_default();
             format!("{before}{bare}{after}\n")
         } else {
+            let command = self.source.get(from..node.end_byte()).unwrap_or_default();
             format!("{command}\n")
         };
+        if !unit::read_again(self.split, &text, "reads too many of its commands again to judge") {
+            return true;
+        }
         let language = tree_sitter_batch::LANGUAGE.into();
         if let Some(tree) = unit::parse(self.split, &text, &language) {
             assigned(self.split, tree.root_node(), &text);
