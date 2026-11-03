@@ -275,6 +275,14 @@ fn add_launched(
                 // and loads `--env-file`; `bun run` loads `.env`. What it
                 // starts has an environment the line does not show.
                 split.environment += 1;
+                // `Start-Process -RedirectStandardInput f` feeds the program
+                // it starts the file, which is the next unit.
+                if key == "start-process" {
+                    if let Some(file) = wrappers::standard_input(&unit) {
+                        let at = split.units.len();
+                        split.redirect(at..at + 1, file, true);
+                    }
+                }
                 unit = *replacement;
             }
             Launch::Script(shell, script) => {
@@ -296,6 +304,7 @@ fn add_launched(
                     Arg::Template {
                         text,
                         source: written,
+                        ..
                     } if key == "trap" => {
                         split.problem(
                             Rule::Unknown,

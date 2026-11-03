@@ -158,8 +158,8 @@ pub enum Rule {
     SendSecret,
     /// Deletes data in a database.
     DropData,
-    /// Deletes containers, cluster objects, cloud resources or an
-    /// infrastructure stack.
+    /// Deletes containers, cluster objects, cloud resources, a hosted
+    /// repository or an infrastructure stack.
     DestroyResources,
     /// Runs a program or a script known only when it runs.
     Unknown,
