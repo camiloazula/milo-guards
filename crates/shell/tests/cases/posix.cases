@@ -921,3 +921,122 @@ posix finds=delete | find ~ -type f -exec cat {} + "$A"
 posix safe | find ~ -name "$p"
 posix safe | find . -name "$p" -exec cat {} +
 posix safe | find "$d" -name x
+
+# A search by name from a folder that holds `.git` searches `.git` too: a
+# name that can be one of its entries (`HEAD`, `config`, a pack, a loose
+# object's folder, a branch) takes the repository's history when what finds
+# it deletes. A `-prune` of `.git`, or a `-path` that leaves it out, keeps it
+# safe, unless the search goes depth first (`-depth`, or `-delete`, which
+# turns it on and with which BSD and macOS find descend into a pruned
+# folder; GNU find refuses the line).
+posix finds=delete | find . -name HEAD -delete
+posix rules=delete first=delete reason="deletes the repository's history" | find . -name config -exec rm {} +
+posix finds=delete | cd src && find .. -name HEAD -delete
+posix finds=delete | find . -name "$p" -delete
+posix finds=delete | find . -name HEAD -exec rm {} + -o -name .git -print
+posix finds=delete | find . -maxdepth 3 -name HEAD -delete
+posix finds=delete | find . -name .git -prune -o -name HEAD -delete
+posix finds=delete | find . -d -name .git -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find . -regex '.*HEAD' -delete
+posix finds=delete | find . -name HEAD $X -delete
+posix finds=delete | find . -name '*.o' -mtime $N -delete
+posix finds=delete | find . -name $P -delete
+posix finds=delete | find . -name '*.o' -exec rm $X {} +
+posix safe | find . -name '*.o' -mtime "$N" -delete
+posix finds=delete | find . \\( -name .git -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find . -name config -delete
+posix finds=delete | find . -name index -delete
+posix finds=delete | find . -iname head -delete
+posix finds=delete | find . -name '*.pack' -delete
+posix finds=delete | find . -type f -name 'H*' -delete
+posix finds=delete | find . -name HEAD -exec rm {} +
+posix finds=delete | find . -name objects -exec rm -rf {} +
+posix finds=delete | find . -name '??' -type d -exec rm -rf {} +
+posix finds=delete | find . -name HEAD | xargs rm
+posix finds=delete | find . -name HEAD -execdir rm {} \\;
+posix finds=delete | find . -name main -delete
+posix finds=delete | find . -name packed-refs -delete
+posix finds=delete | find . -name refs -exec rm -rf {} +
+posix finds=delete | find . -name '*.idx' -delete
+posix finds=delete | find . -iname 'CONFIG' -delete
+posix finds=delete | find . -name '\\HEAD' -delete
+posix finds=delete | find ./ -name HEAD -delete
+posix finds=delete | find src . -name HEAD -delete
+posix finds=delete | find . -path '*/HEAD' -delete
+posix finds=delete | find . -path '*/refs/*' -delete
+posix finds=delete | find . -ipath '*/OBJECTS/*' -delete
+posix finds=delete | find . -path ./.git -prune -o -name HEAD -delete
+posix finds=delete | find . -depth -path ./.git -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find . -path ./.gi -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find ./ -path ./.git -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find . -name .git -o -name HEAD -exec rm {} +
+posix finds=delete | find . \\( -name HEAD -o -name x \\) -exec rm {} +
+posix finds=delete | find . -name HEAD -not -path '*/.git' -delete
+posix finds=delete | find . -name .git -type f -prune -o -name HEAD -exec rm {} +
+posix finds=delete | find . \\( \\( -name HEAD \\) \\) -delete
+posix safe | find . -name '*.pyc' -delete
+posix safe | find . -name '*.tmp' -delete
+posix safe | find . -name node_modules -prune -exec rm -rf {} +
+posix safe | find src -name '*.o' -delete
+posix safe | find . -name '*.log' -delete
+posix safe | find . -name __pycache__ -exec rm -rf {} +
+posix safe | find . -path '*/__pycache__/*' -delete
+posix safe | find . -path '*/node_modules/*' -exec rm {} +
+posix safe | find . -path ./.git -prune -o -name HEAD -exec rm {} +
+posix safe | find . -path ./.git -prune -o -name HEAD -print | xargs rm
+posix safe | find . -name .git -prune -o -name '*.pack' -exec rm {} +
+posix safe | find . -type d -name .git -prune -o -name HEAD -exec rm {} +
+posix safe | find . -name HEAD -not -path '*/.git/*' -delete
+posix safe | find . -name HEAD -not -path './.git/*' -delete
+posix safe | find . ! -path '*.git*' -name '*.pack' -delete
+posix safe | find . -name '*.pack' -not -path './.git/*' -delete
+posix safe | find . -name .git -prune , -name HEAD -exec rm {} +
+posix safe | find . -name HEAD
+posix safe | find . -name HEAD -print
+posix safe | find . -name HEAD -exec rm {} + -o -name .git -prune
+posix safe | find . -maxdepth 2 -name .git -prune -o -name '*.pack' -exec rm {} +
+posix safe | find . -path ./.git -prune -o -type f -name config -print0 | xargs -0 rm
+
+# What keeps only `.git` out deletes every other entry of the folder
+# searched: an ordinary entry, one no name or path pattern picks out, is
+# reached, and the folder is taken whole.
+posix finds=delete reason="deletes the whole workspace" | find . -path ./.git -prune -o -exec rm -rf {} +
+posix finds=delete reason="deletes the whole workspace" | find . -name .git -prune -o -exec rm -rf {} +
+posix finds=delete reason="deletes the whole workspace" | find . -path ./.git -prune -o -type f -exec rm {} +
+posix finds=delete reason="deletes the whole workspace" | find . -path ./.git -prune -o -print | xargs rm -rf
+posix finds=delete reason="deletes the whole workspace" | find . -not -path '*/.git*' -delete
+posix finds=delete reason="deletes the whole workspace" | find . -type f -not -path '*/.git/*' -delete
+posix finds=delete reason="deletes the whole workspace" | find . ! -path './.git/*' ! -name .git -delete
+posix finds=delete reason="deletes the whole workspace" | find . -name node_modules -prune -o -delete
+posix finds=delete reason="deletes the whole workspace" | find . -path './*' -not -path './.git*' -delete
+posix finds=delete reason="deletes the whole workspace" | find . -name '?*' -not -path './.git*' -delete
+posix safe | find . -name HEAD -not -path '*/.git/*' -not -name '*.keep' -delete
+posix safe | find . -path ./node_modules -prune -o -name '*.log' -print | xargs rm
+posix safe | find . -not -path './node_modules/*' -name '*.tmp' -delete
+
+# `.git` is a file in a linked worktree and in a submodule's checkout, and
+# it may be a link: a `-type f` or `-type l` does not keep it out.
+posix finds=delete reason="deletes the repository's history" | find . -type f -name .git -delete
+posix finds=delete | find . -name .git -type f -exec rm {} +
+posix finds=delete | find . -name .git ! -type d -delete
+posix finds=delete | find . -name .git -type f -print | xargs rm
+posix finds=delete | find . -maxdepth 1 -type f -name .git -exec rm {} \\;
+posix finds=delete | find . -type l -name .git -delete
+posix safe | find . -type p -name .git -delete
+posix safe | find . -type d -name .git -prune -o -name '*.pack' -exec rm {} +
+
+# A `-path` that spells `.git` itself names a path inside it, whatever
+# follows; one that reaches `.git` by a wildcard is held to git's own names.
+posix finds=delete reason="deletes the repository's history" | find . -path './.git/x' -delete
+posix finds=delete | find . -path './.git/refs/heads/my-branch' -delete
+posix finds=delete | find . -path '*/.git/refs/heads/feature/x' -delete
+posix finds=delete | find . -path './.git/modules/sub/HEAD' -delete
+posix finds=delete | find . -path './.git/worktrees/w/HEAD' -delete
+posix safe | find . -path '*/x' -delete
+posix safe | find . -path '*/src/*' -delete
+posix safe | find . -path './.git' -prune -o -path '*/x' -delete
+
+# A primary the guard does not know may be an action that hands on what it
+# is run on, as NetBSD's `-printx` does.
+posix finds=delete | find . -name '*.pyc' -delete -o -name HEAD -printx | xargs rm
+posix safe | find . -name '*.pyc' -empty -delete

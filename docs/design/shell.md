@@ -2227,6 +2227,21 @@ the operands that are certain are only the command and the archive. With
 start with `-` or be `@`, which end the list, so the names after it are
 operands again.
 
+A member matched in every folder below the one it names finds `.git`'s own
+entries there: `zip -R` (`--recurse-patterns`) matches each name it is given
+so, and the guard takes a pattern under `zip -r` (`--recurse-paths`) to be
+matched so too; `7z` does so for every name with `-r` and the pattern of
+`-ir!`, and for a wildcard with `-r0` and `-ir0!` (`-r-` turns it off), and an
+argument only known when it runs that may be the option counts. When the member's name (its last part) can be
+one of the names `.git` holds (as for `find -name`, see [Reading more than
+one unit at a time](#reading-more-than-one-unit-at-a-time): `HEAD`,
+`config`, `*.pack`, `??`), the `.git` of the
+folder the member names is among the members: `zip -mR x.zip HEAD`, `zip -mr
+x.zip '*.pack'` and `7z a -r x.7z '*.pack' -sdel` delete the repository's
+history, while `zip -mR x.zip '*.o'`, `zip -R x.zip HEAD` (no `-m`) and `7z a
+-r- x.7z '*.pack' -sdel` stay safe. `zip` on Unix compares with case, and `7z`
+without, as on Windows, where every name does.
+
 `7z` matches a wildcard itself, quoted or not, and a name that starts with a
 dot is among the matches. `zip` does so on Windows; on Unix it matches
 wildcards only for `-x`, `-i`, `-R` (the patterns of a recursive add) and the
@@ -4178,8 +4193,75 @@ Some risks only show when units are read together.
   workspace. A whole folder listed (`ls | xargs rm -rf`) is as much as the
   folder. A listed pattern is judged as the delete of that pattern is, `..`
   and all: `ls -d src/*/../../.g* | xargs rm -rf` is risky.
-- **`find`.** It acts on the folder it searches when its name filter can match
-  `.git`, or when it negates or alternates its filters (`!`, `-not`, `-o`).
+- **`find`.** Its expression is read as `find` reads it: tests and actions
+  joined side by side or by `-a`, `-o` and `,`, under `!`/`-not` and inside
+  brackets. Each test is asked of four places below each folder searched, and
+  answers true, false or not known: `.git` as a folder; `.git` as the file or
+  link it is in a linked worktree (`git worktree add`) or a submodule's
+  checkout, with nothing below it; an entry `.git` holds; and an ordinary
+  entry, a name and a path that no name or path pattern of the expression
+  matches, unless the pattern matches every one (`-name '*'`, `-path '*'`,
+  and `-path './*'` below `.`). `find` acts on the whole folder it searches
+  when an action (`-delete`, `-exec` and its kin, `-print` and its kin, or the
+  `-print` `find` adds to an expression with none) may run on `.git` as a
+  folder (`-name '*'`, `! -name '*.keep'`; `-name '*.log' -o -type f` reaches
+  only `.git`'s files) or on an ordinary entry, or when it has no test of a
+  name or a path at all. So what keeps only `.git` out deletes everything
+  else: `find . -path ./.git -prune -o -exec rm -rf {} +`, `find . -type f
+  -not -path '*/.git/*' -delete` and `find . -path ./.git -prune -o -print |
+  xargs rm -rf` delete the whole workspace, as `rm -rf *` does. Otherwise it
+  acts on files inside the folder, and on `.git` too when an action may run
+  on `.git` as a file (`find . -type f -name .git -delete`) or on one of
+  `.git`'s entries, which a name search finds at any depth: a `-name` that
+  can match one of the names `.git` holds (as for a recursive listing in
+  [Paths](#paths): `HEAD`, `config`, `index`, `objects`, `refs`,
+  `packed-refs`, `main`, `*.pack`, `*.idx`, `??`, `H*`), compared without case
+  for `-iname` (`-iname head`), and a `-path` that can match a path below
+  `.git` made of those names (`*/HEAD`, `./.git/*`, `*/refs/*`, but not
+  `*/__pycache__/*` or `*/x`), or that spells the `.git` part of the path with
+  plain characters and goes on past it, which names a path inside `.git`
+  whatever follows (`./.git/x`, `*/.git/refs/heads/my-branch`). So `find .
+  -name HEAD -delete`, `find . -name objects -exec rm -rf {} +` and `find .
+  -name HEAD | xargs rm` delete the repository's history, and `find . -name
+  '*.pyc' -delete`, `find . -name node_modules -prune -exec rm -rf {} +` and
+  `find src -name '*.o' -delete` stay safe (`src` holds no `.git` of the
+  workspace's). `find`'s matching reads a backslash as making the next
+  character itself (`\HEAD` is `HEAD`). A branch is reached by name only
+  through the names core lists (`main`, `master`, `origin`): the guard cannot
+  know a repository's branches, so `find . -name my-branch -delete`, which
+  deletes `.git/refs/heads/my-branch` and its reflog, is not seen.
+  - **What keeps `.git` out.** A `-path` sure to be true of every path below
+    `.git` (`-not -path '*/.git/*'`, `! -path './.git/*'`, `! -path '*.git*'`)
+    keeps the actions after it off `.git`'s entries, and a `-prune` sure to
+    run on `.git` as a folder (`-path ./.git -prune -o`, `-name .git -prune
+    -o`, `-type d -name .git -prune ,`) keeps the search out of it. A test is
+    sure only when it is read exactly: a pattern with a bracket or a
+    backslash is never sure, and a `-path` is asked of each way the search
+    may spell the path of `.git` (`find ./` gives `./.git` in GNU find and
+    `.//.git` in BSD and macOS find), so `find ./ -path ./.git -prune` is not
+    sure to prune. A `-prune` keeps nothing out of a search that goes depth
+    first: `-depth`, `-d`, or `-delete`, which turns it on. With `-delete` GNU
+    find refuses a `-prune`, and BSD and macOS find descend into the pruned
+    folder all the same, so `find . -path ./.git -prune -o -name HEAD
+    -delete` is a `delete` while `find . -path ./.git -prune -o -name HEAD
+    -exec rm {} +` is safe.
+  - **What is not read.** An expression with an argument only known when it
+    runs where a test or an action stands, a word that may split into more
+    when it runs (`-mtime $N`, which may hold `-o` or a `;` that ends an
+    `-exec`), a word that is no test, action, option or operator, a missing
+    value, a bracket left open, brackets nested more than 64 deep, more than
+    4 KiB of name patterns or of path patterns, or more work than 8 Mi steps
+    for its path tests (for each distinct folder searched, each way it spells
+    `.git` and each path pattern, the pattern's length times the names it is
+    asked of, core's `path_reach_work`, and the size of the expression, which
+    is walked again for each folder) is taken to act on every folder it
+    searches whole. A test the guard does not read (`-regex`, `-size`,
+    `-newer`, `-empty`, `-quit`) is not known for any place, and a primary it
+    does not know may be an action that hands on what it is run on (NetBSD's
+    `-printx`). `-type d` is true of `.git` as a folder and false of it as a
+    file; `-type f` and `-type l` are false of it as a folder and may be true
+    of it as a file (`-type b`, `c`, `p`, `s` and `D` are false of both);
+    options (`-maxdepth`, `-xdev`) are true. `-lname` is read as `-name`.
 - **Git config that makes git run a command.** `-c alias.x=!...`,
   `core.pager`, `core.sshCommand`, and `git config` setting them. Reading
   them is fine.
