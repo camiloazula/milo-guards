@@ -3,9 +3,12 @@
 
 use std::rc::Rc;
 
+mod search;
+
 use super::{add, MAX_WRAPPERS};
 use crate::unit::{option_start, Arg, Split, Unit};
 use crate::{Rule, Shell};
+use search::{git_inside, Reach, Search};
 
 /// The most work `find -exec` may be read to do for one line, in all the
 /// `find`s inside `find`s, counted in bytes of the program and arguments
@@ -136,15 +139,7 @@ pub(crate) fn find_unread_primary(args: &[Arg]) -> bool {
         "-printf", "-fprint", "-fprint0", "-fls", "-inum", "-uid", "-gid", "-fstype", "-used",
         "-context",
     ];
-    let mut at = 0;
-    while let Some(text) = args.get(at).and_then(Arg::known) {
-        match text {
-            "-H" | "-L" | "-P" => at += 1,
-            "-D" | "-O" => at += 2,
-            text if text.starts_with("-O") && text.len() > 2 => at += 1,
-            _ => break,
-        }
-    }
+    let at = options_end(args);
     let after_starts = args
         .get(at..)
         .unwrap_or_default()
@@ -190,126 +185,37 @@ fn starts_expression(arg: &Arg) -> bool {
     }
 }
 
-/// The paths a `find` acts on: the folders it searches themselves when its
-/// filter can match `.git` or every name, else an entry inside each.
+/// The paths a `find` acts on, for each folder it searches: the folder
+/// itself when its expression may act on `.git` there as a folder, or on an
+/// entry no name or path pattern picks out, else an entry inside it, and
+/// `.git` too when the expression may act on `.git` as a file or on one of
+/// the entries it holds (`-name HEAD`, `-name '*.pack'`), which a name search
+/// finds at any depth (see [`search`]).
 pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
     let starts = find_starts(args);
-    if find_can_match_git(args) {
-        starts
-    } else {
-        starts
-            .into_iter()
-            .map(|start| match start {
-                Arg::Known(text) => Arg::Known(format!("{text}/x")),
-                other => other,
-            })
-            .collect()
-    }
-}
-
-/// Whether a `find`'s name filter can match `.git` (or there is none, so
-/// every name including `.git` is matched).
-fn find_can_match_git(args: &[Arg]) -> bool {
-    let mut names = Vec::new();
-    let mut paths = Vec::new();
-    // A negation (`!`, `-not`) or an alternative (`-o`, `-or`, `,`) can turn
-    // any name filter into "everything else": then every name counts.
-    let mut open = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.known() {
-            Some("-name" | "-iname" | "-lname" | "-ilname") => {
-                names.extend(iter.next().and_then(Arg::known));
-            }
-            Some("-path" | "-ipath" | "-wholename" | "-iwholename") => {
-                paths.extend(iter.next().and_then(Arg::known));
-            }
-            Some("-regex" | "-iregex" | "!" | "-not" | "-o" | "-or" | ",") => open = true,
-            Some(_) => {}
-            None => open = true,
-        }
-    }
-    // `-path` matches the whole path from where find starts (`./.git/x`).
-    let starts: Vec<String> = find_starts(args)
-        .iter()
-        .map(|start| {
-            start
-                .known()
-                .unwrap_or(".")
-                .trim_end_matches('/')
-                .to_string()
-        })
-        .collect();
-    let path_hits_git = paths.iter().any(|pattern| {
-        starts.iter().any(|start| {
-            glob_can_match(pattern, &format!("{start}/.git"))
-                || glob_can_match(pattern, &format!("{start}/.git/x"))
-        })
-    });
-    open || path_hits_git
-        || (names.is_empty() && paths.is_empty())
-        || names.iter().any(|name| glob_can_match(name, ".git"))
-}
-
-/// Whether the shell pattern `pattern` can match `name`. A `[…]` class is
-/// read as `?` (one character), which can only widen the match, so the
-/// answer is never wrongly `false`.
-fn glob_can_match(pattern: &str, name: &str) -> bool {
-    let pattern: Vec<char> = {
-        let mut out = Vec::new();
-        let mut chars = pattern.chars();
-        while let Some(c) = chars.next() {
-            if c == '[' {
-                out.push('?');
-                for inner in chars.by_ref() {
-                    if inner == ']' {
-                        break;
-                    }
+    let search = Search::read(expression(args));
+    let reach = search.reach_all(&starts);
+    let mut targets = Vec::new();
+    for (start, reach) in starts.into_iter().zip(reach) {
+        match (start, reach) {
+            (start, Reach::Whole) => targets.push(start),
+            (Arg::Known(text), Reach::Inside { git }) => {
+                targets.push(Arg::Known(format!("{text}/x")));
+                if git {
+                    targets.push(Arg::Known(git_inside(&text)));
                 }
-            } else {
-                out.push(c);
             }
-        }
-        out
-    };
-    let name: Vec<char> = name.chars().collect();
-    let (mut p, mut n) = (0, 0);
-    let (mut star, mut mark) = (None, 0);
-    while n < name.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
-            p += 1;
-            n += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
-            star = Some(p);
-            mark = n;
-            p += 1;
-        } else if let Some(at) = star {
-            p = at + 1;
-            mark += 1;
-            n = mark;
-        } else {
-            return false;
+            (other, Reach::Inside { .. }) => targets.push(other),
         }
     }
-    while p < pattern.len() && pattern[p] == '*' {
-        p += 1;
-    }
-    p == pattern.len()
+    targets
 }
 
 /// The places `find` searches: its arguments before the first test or
 /// action, after its own options (`-H`, `-L`, `-P`, `-D …`, `-O…`); `.` when
 /// none.
 pub(crate) fn find_starts(args: &[Arg]) -> Vec<Arg> {
-    let mut at = 0;
-    while let Some(text) = args.get(at).and_then(Arg::known) {
-        match text {
-            "-H" | "-L" | "-P" => at += 1,
-            "-D" | "-O" => at += 2,
-            text if text.starts_with("-O") && text.len() > 2 => at += 1,
-            _ => break,
-        }
-    }
+    let at = options_end(args);
     let starts: Vec<Arg> = args
         .get(at..)
         .unwrap_or_default()
@@ -322,4 +228,29 @@ pub(crate) fn find_starts(args: &[Arg]) -> Vec<Arg> {
     } else {
         starts
     }
+}
+
+/// Where `find`'s own options (`-H`, `-L`, `-P`, `-D …`, `-O…`) end.
+fn options_end(args: &[Arg]) -> usize {
+    let mut at = 0;
+    while let Some(text) = args.get(at).and_then(Arg::known) {
+        match text {
+            "-H" | "-L" | "-P" => at += 1,
+            "-D" | "-O" => at += 2,
+            text if text.starts_with("-O") && text.len() > 2 => at += 1,
+            _ => break,
+        }
+    }
+    at
+}
+
+/// `find`'s expression: its arguments after the places it searches.
+fn expression(args: &[Arg]) -> &[Arg] {
+    let at = options_end(args).min(args.len());
+    let rest = &args[at..];
+    let first = rest
+        .iter()
+        .position(starts_expression)
+        .unwrap_or(rest.len());
+    &rest[first..]
 }
