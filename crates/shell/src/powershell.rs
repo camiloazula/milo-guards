@@ -743,9 +743,10 @@ impl Walker<'_> {
     }
 
     /// `$env:TF_CLI_ARGS = '-destroy'`: terraform reads the value as
-    /// arguments of its command, in any later line that runs it. A value
-    /// that is not a plain `=` of a string written out (`+=`, a variable) is
-    /// only known when it runs.
+    /// arguments of its command, in any later line that runs it, as `zip`
+    /// reads `$env:ZIPOPT` (and `$env:ZIP`) as options. A value that is not
+    /// a plain `=` of a string written out (`+=`, a variable) is only known
+    /// when it runs.
     fn env_assignment(&mut self, node: Node<'_>) {
         let Some(left) = node.named_child(0) else {
             return;
@@ -760,10 +761,15 @@ impl Walker<'_> {
             .get(..4)
             .filter(|head| head.eq_ignore_ascii_case("env:"))
             .and_then(|_| name.get(4..))
-            .and_then(unit::argument_variable)
         else {
             return;
         };
+        let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let terraform = unit::argument_variable(name);
+        if !zip && terraform.is_none() {
+            return;
+        }
+        let name = name.to_string();
         let right = node.child_by_field_name("value");
         let plain = right.is_some_and(|right| {
             self.source
@@ -785,13 +791,19 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
-        self.split.note_argument_variable(name, value);
+        match terraform {
+            Some(name) => self.split.note_argument_variable(name, value),
+            None => {
+                self.split.zip_env.set(&name, &value, true);
+            }
+        }
     }
 
     /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
     /// …`: a variable terraform reads as arguments, set to a value the guard
     /// does not read, so a later `terraform apply` is only known when it
-    /// runs. A wildcard in the name may match one.
+    /// runs (also `env:ZIPOPT` and `env:ZIP` for `zip`). A wildcard in the
+    /// name may match one.
     fn env_item(&mut self, key: &str, args: &[Arg]) {
         if !matches!(key, "set-item" | "new-item" | "set-content" | "add-content") {
             return;
@@ -814,6 +826,9 @@ impl Walker<'_> {
                 self.split
                     .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
+            self.split
+                .zip_env
+                .set(rest, &Arg::Unknown(text.to_string()), true);
         }
     }
 
@@ -2991,7 +3006,12 @@ impl Walker<'_> {
         // terraform reads as arguments, or one only known when it runs, set
         // to a value the guard does not read.
         if method == "setenvironmentvariable" {
-            let name = match blocks::first_string(&children).map(|name| self.string(name)) {
+            let named = blocks::first_string(&children).map(|name| self.string(name));
+            if let Some(Arg::Known(name)) = &named {
+                let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                self.split.zip_env.set(name, &value, true);
+            }
+            let name = match named {
                 Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };

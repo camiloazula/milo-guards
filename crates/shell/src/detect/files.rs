@@ -207,6 +207,28 @@ impl Checker<'_> {
             }
             "rsync" => {
                 let operands = rsync_operands(args);
+                // `--remove-source-files` deletes each file it has sent, on
+                // this machine or on the one a source is on.
+                if operands.len() >= 2
+                    && args.iter().any(|arg| {
+                        matches!(
+                            arg.known(),
+                            Some("--remove-source-files" | "--remove-sent-files")
+                        )
+                    })
+                {
+                    let sources = &operands[..operands.len() - 1];
+                    let (away, here): (Vec<&Arg>, Vec<&Arg>) =
+                        sources.iter().copied().partition(|source| remote(source));
+                    for source in away {
+                        self.add(
+                            Rule::Delete,
+                            "deletes files on another machine",
+                            Some(source),
+                        );
+                    }
+                    self.delete(unit, &here, "deletes");
+                }
                 if operands.len() >= 2 {
                     if let Some(destination) =
                         operands.last().filter(|destination| !remote(destination))
@@ -340,13 +362,13 @@ impl Checker<'_> {
 
             // Unpacking an archive writes into the folder it unpacks to;
             // packing one with `--remove-files`, `-m` or `-sdel` deletes
-            // what it packs.
+            // what it packs, as `rar m` does.
             "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
                 self.unpack(unit, key);
                 self.pack_and_remove(unit, key);
             }
             "unzip" | "expand-archive" => self.unpack(unit, key),
-            "zip" => self.pack_and_remove(unit, key),
+            "zip" | "rar" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {

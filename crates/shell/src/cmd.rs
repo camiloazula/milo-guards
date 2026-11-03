@@ -860,7 +860,7 @@ impl Walker<'_> {
 impl Walker<'_> {
     /// `set TF_CLI_ARGS=-destroy`, `set "TF_CLI_ARGS_apply=-destroy"`:
     /// terraform reads the value as arguments of its command, in any later
-    /// command that runs it. cmd reads the names of variables in any case.
+    /// command that runs it, as `zip` reads `ZIPOPT` (and `ZIP`) as options. cmd reads the names of variables in any case.
     /// The value ends at an unquoted `&` or `|`; one with a switch (`set /p`
     /// reads it from the input) or a variable cmd expands later (`!X!`) is
     /// only known when it runs. `set /a` gives a number, which holds no
@@ -877,13 +877,19 @@ impl Walker<'_> {
             let mut cursor = prompt.walk();
             children.extend(prompt.named_children(&mut cursor));
         }
-        let Some(name) = children
+        let Some(written_name) = children
             .iter()
             .find(|child| child.kind() == "variable_name")
-            .and_then(|name| unit::argument_variable(unit::text(name, self.source).trim()))
+            .map(|name| unit::text(name, self.source).trim())
         else {
             return;
         };
+        let zip =
+            written_name.eq_ignore_ascii_case("ZIPOPT") || written_name.eq_ignore_ascii_case("ZIP");
+        let terraform = unit::argument_variable(written_name);
+        if !zip && terraform.is_none() {
+            return;
+        }
         let source = unit::text(&node, self.source);
         let plain = children.iter().all(|child| {
             matches!(
@@ -908,7 +914,12 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
-        self.split.note_argument_variable(name, value);
+        match terraform {
+            Some(name) => self.split.note_argument_variable(name, value),
+            None => {
+                self.split.zip_env.set(written_name, &value, true);
+            }
+        }
     }
 }
 

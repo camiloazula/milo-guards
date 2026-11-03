@@ -19,6 +19,9 @@ use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
 mod archives;
+
+pub(crate) use archives::commands as archive_commands;
+
 mod code;
 mod data;
 mod files;
