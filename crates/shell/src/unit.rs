@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::dotglob;
 use crate::effect::Kind;
+use crate::extended;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -388,16 +389,22 @@ pub(crate) enum Flag {
 /// -s dotglob`, `GLOBIGNORE`) and zsh's (`setopt globdots`). Each has its own
 /// off switch, which is an error in the other shell and so clears only its
 /// own; hidden names match when either is on.
+///
+/// zsh's `extendedglob` (see [`crate::extended`]) is kept with them: it
+/// does not make a wildcard match a leading dot, but reaches as far and is
+/// given back the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Hidden {
     bash: bool,
     zsh: bool,
+    extended: bool,
 }
 
 impl Hidden {
     const ON: Self = Self {
         bash: true,
         zsh: true,
+        extended: false,
     };
 
     fn any(self) -> bool {
@@ -409,6 +416,7 @@ impl Hidden {
         Self {
             bash: self.bash || other.bash,
             zsh: self.zsh || other.zsh,
+            extended: self.extended || other.extended,
         }
     }
 }
@@ -751,6 +759,13 @@ pub(crate) struct Split {
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
+    /// Whether the line ever turned zsh's `extendedglob` on, in this shell or
+    /// in a script it ran, even if it turned it off again.
+    ever_extended: bool,
+    /// Whether the line is read a second time because it turns
+    /// `extendedglob` on and has a function body or a loop, which may run
+    /// after that: what they hold is read with it on (see [`split`]).
+    extended_bodies: bool,
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
@@ -1074,6 +1089,20 @@ impl Split {
                     Some(false) => self.show(flag, certain),
                     None => {}
                 }
+            }
+        }
+        if let Some(on) = unit
+            .key()
+            .filter(|_| unit.shell == Shell::Posix)
+            .and_then(|key| extended::change(&key, &unit.args))
+        {
+            if on {
+                self.extend_glob();
+            } else if dotglob::in_shell(&unit.wrappers, Flag::Zsh)
+                && unit.stage.is_none()
+                && self.branches == 0
+            {
+                self.dotglob.extended = false;
             }
         }
         if self.bodies > 0 {
@@ -1980,8 +2009,22 @@ impl Split {
     /// shell's own. The shell is not known, and a function body the line
     /// exports may run in it, so both flags go on.
     pub(crate) fn hide_for_script(&mut self) {
-        self.dotglob = Hidden::ON;
+        self.dotglob = self.dotglob.or(Hidden::ON);
         self.ever_dotglob = true;
+    }
+
+    /// Turn zsh's `extendedglob` on for the rest of the shell, or for a
+    /// script started with it (`zsh -o extendedglob -c '…'`).
+    pub(crate) fn extend_glob(&mut self) {
+        self.dotglob.extended = true;
+        self.ever_extended = true;
+    }
+
+    /// Whether the words of what comes next are read as zsh reads them
+    /// with `extendedglob` on: it is on, or the line turns it on somewhere
+    /// and this is a function body or a loop, which may run after.
+    pub(crate) fn extended_glob(&self) -> bool {
+        self.dotglob.extended || (self.extended_bodies && self.bodies > 0)
     }
 
     /// Note that the line defines the function `name`.
@@ -2714,6 +2757,25 @@ pub(crate) fn split(
             home_drive,
             ..Split::default()
         };
+        script(&mut split, command, shell, 0);
+    }
+    // A function body or a loop may run after the line turns `extendedglob`
+    // on, wherever it is written: read the line again, reading their words
+    // with it on.
+    if split.ever_extended
+        && !(split.in_body.is_empty()
+            && split.write_in_body.is_empty()
+            && split.read_in_body.is_empty())
+    {
+        let psdrive = split.psdrive;
+        split = Split {
+            psdrive,
+            extended_bodies: true,
+            drive,
+            home_drive,
+            ..Split::default()
+        };
+        split.kept.on = effect;
         script(&mut split, command, shell, 0);
     }
     split.hide_bodies();

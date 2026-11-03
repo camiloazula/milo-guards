@@ -5,6 +5,7 @@
 //! runner (`npx`, `uvx`, `bunx`) is a wrapper for the program it names.
 
 use crate::dotglob;
+use crate::extended;
 use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
 use crate::startup;
@@ -120,6 +121,24 @@ fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
         Some(Language::Python) => inline::path_loads_foreign_code(&split.python_path),
         _ => false,
     }
+}
+
+/// Add `unit`, and `other` as a second reading of it: the same command with
+/// its words read as zsh reads them with `extendedglob` on. Each is judged,
+/// so the riskier counts; a fork, as [`Launch::Either`] makes, so a line past
+/// [`MAX_FORKS`] of them is unreadable.
+pub(crate) fn add_either(split: &mut Split, unit: Unit, other: Unit, depth: usize) {
+    if !split.fork(MAX_FORKS) {
+        split.problem(
+            Rule::Unreadable,
+            "reads in too many ways to judge each",
+            Some(unit.program.text()),
+        );
+        add(split, unit, depth);
+        return;
+    }
+    add(split, unit, depth);
+    add(split, other, depth);
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
@@ -241,6 +260,10 @@ fn add_launched(
                 let starts_hidden = SHELLS.contains(&key.as_str())
                     && shell == Shell::Posix
                     && dotglob::starts_with(&unit.args);
+                // And `zsh -o extendedglob -c` with zsh's extended patterns.
+                let starts_extended = SHELLS.contains(&key.as_str())
+                    && shell == Shell::Posix
+                    && extended::starts_with(&unit.args);
                 let stage = unit.stage;
                 let inherited = key == "trap" && trap_inherited(&unit.args);
                 let shell_at = split.units.len();
@@ -276,6 +299,9 @@ fn add_launched(
                         let outer = split.hidden_snapshot();
                         if starts_hidden || split.scoped_hidden() {
                             split.hide_for_script();
+                        }
+                        if starts_extended {
+                            split.extend_glob();
                         }
                         // A `trap`'s script runs later: when the line ends,
                         // or between its commands. It is a body, judged with

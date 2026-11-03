@@ -385,6 +385,44 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
+    // With `extendedglob` on, a command with a word zsh reads another way is
+    // judged both ways: each is a fork, counted against the line's, and a
+    // loop body makes the line be read again, once. A line past the forks is
+    // unreadable, and never slow.
+    for count in [16, 33, 2_000] {
+        // The option on before, or after in a loop that may come round.
+        for (head, tail) in [
+            ("setopt extendedglob; ", ""),
+            ("while x; do ", "setopt extendedglob; done"),
+        ] {
+            let line = format!("{head}{}rm -rf .gi#t; {tail}", "ls a#b; ".repeat(count));
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            let took = took(&line, Shell::Posix, &posix());
+            assert!(
+                took < Duration::from_millis(200),
+                "{count} {head:?} took {took:?}"
+            );
+            let assessment = classify(&line, Shell::Posix, &posix());
+            assert!(!assessment.is_safe(), "{count} {head:?}");
+            if count > 32 {
+                assert!(
+                    assessment
+                        .findings()
+                        .iter()
+                        .any(|finding| finding.rule == Rule::Unreadable),
+                    "{count} {head:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
     // Each variable is set from the one set after it on the line, the worst
     // order for finding which of them hold the secret.

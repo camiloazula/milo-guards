@@ -6,6 +6,7 @@ use std::rc::Rc;
 use tree_sitter::{Node, TreeCursor};
 
 use crate::dotglob;
+use crate::extended::{self, Reading};
 use crate::launch;
 use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
@@ -1537,6 +1538,9 @@ impl Walker<'_> {
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
         let qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
+        // The words zsh reads another way with `extendedglob` on, by where
+        // they stand in `args`, and what each reads as.
+        let mut readings = Vec::new();
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
             // `$"text"` is a locale-translated string: its `$` comes apart
@@ -1554,6 +1558,9 @@ impl Walker<'_> {
                     .unwrap_or_default();
                 args.push(Arg::Unknown(word.to_string()));
             } else {
+                if let Some(reading) = self.zsh_reading(arg) {
+                    readings.push((args.len(), reading));
+                }
                 args.push(self.arg(arg));
             }
         }
@@ -1675,12 +1682,110 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.stdin = stdin;
         unit.startup = startup;
-        launch::add(self.split, unit, self.depth);
+        self.add_readings(unit, readings);
         self.split.environment -= environed;
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
         self.split.unscope_hidden(outer);
+    }
+
+    /// Add `unit`, and, when zsh reads some of its words another way with
+    /// `extendedglob` on (`readings`), the unit with those words as a second
+    /// reading: a line run by bash, where `setopt` fails, reads them as
+    /// written, so each is judged. A `cd` is not read twice, since the
+    /// second would start where the first went: its words are only known
+    /// when it runs.
+    fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Arg)>) {
+        if readings.is_empty() {
+            launch::add(self.split, unit, self.depth);
+            return;
+        }
+        let moves = std::iter::once(&unit.program)
+            .chain(&unit.args)
+            .filter_map(Arg::known)
+            .any(|word| {
+                matches!(
+                    unit::key(word, Shell::Posix).as_str(),
+                    "cd" | "chdir" | "pushd" | "popd"
+                )
+            });
+        if moves {
+            for (at, _) in readings {
+                if let Some(arg) = unit.args.get_mut(at) {
+                    *arg = Arg::Unknown(arg.text().to_string());
+                }
+            }
+            launch::add(self.split, unit, self.depth);
+            return;
+        }
+        let mut other = unit.clone();
+        for (at, reading) in readings {
+            if let Some(arg) = other.args.get_mut(at) {
+                *arg = reading;
+            }
+        }
+        launch::add_either(self.split, unit, other, self.depth);
+    }
+
+    /// What the word at `node` reads as when zsh reads it with
+    /// `extendedglob` on and that differs from the word as written (see
+    /// [`extended::reading`]): a plain pattern, or a place only known when it
+    /// runs. `None` while the option is off, and for a word with nothing the
+    /// option changes or an expansion in it.
+    fn zsh_reading(&self, node: Node<'_>) -> Option<Arg> {
+        if !self.split.extended_glob() {
+            return None;
+        }
+        let mut chars = Vec::new();
+        self.word_chars(node, &mut chars)?;
+        Some(match extended::reading(&chars)? {
+            Reading::Pattern(text) if !(text.starts_with('~') && self.split.reassigned("HOME")) => {
+                Arg::Known(text)
+            }
+            Reading::Pattern(_) | Reading::Unknown => {
+                Arg::Unknown(unit::text(&node, self.source).to_string())
+            }
+        })
+    }
+
+    /// The characters of the word at `node`, each with whether the shell
+    /// reads it as written: an escaped or quoted one is itself. `None` for a
+    /// word with an expansion in it, whose value is only known when it runs.
+    fn word_chars(&self, node: Node<'_>, chars: &mut Vec<(char, bool)>) -> Option<()> {
+        let source = unit::text(&node, self.source);
+        match node.kind() {
+            "word" | "number" => {
+                let mut escaped = false;
+                for c in source.chars() {
+                    if escaped {
+                        chars.push((c, false));
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else {
+                        chars.push((c, true));
+                    }
+                }
+            }
+            "raw_string" | "string" => {
+                let Arg::Known(text) = self.arg(node) else {
+                    return None;
+                };
+                chars.extend(text.chars().map(|c| (c, false)));
+            }
+            "concatenation" => {
+                let mut cursor = node.walk();
+                for part in node.children(&mut cursor) {
+                    if !part.is_named() {
+                        return None;
+                    }
+                    self.word_chars(part, chars)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
     }
 
     /// What redirects the input of the command at `node`: a here-document or
@@ -2444,8 +2549,14 @@ impl Walker<'_> {
         let before = self.split.qualify(self.qualified(destination));
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
+        // zsh with `extendedglob` on opens what its reading of the word
+        // matches; bash, the word as written: both are judged.
+        let reading = self.zsh_reading(destination);
         if operator == Some("<") {
             self.split.read(Shell::Posix, target.clone());
+            if let Some(reading) = &reading {
+                self.split.read(Shell::Posix, reading.clone());
+            }
         }
         let writes = match operator {
             Some(">" | ">>" | "&>" | "&>>" | ">|" | "<>") => true,
@@ -2456,6 +2567,9 @@ impl Walker<'_> {
         };
         if writes {
             self.split.write(Shell::Posix, target);
+            if let Some(reading) = reading {
+                self.split.write(Shell::Posix, reading);
+            }
         }
         self.split.restore_qualified(before);
     }
