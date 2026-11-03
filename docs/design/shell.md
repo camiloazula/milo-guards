@@ -202,9 +202,9 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Opening `(` with none closed | 400 | counted before parsing, outside the literals below; only `(` is counted, not `{` or `[`: cmd's grammar takes time that grows with the square of the depth |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
 | Here-documents started on one line (POSIX) | 256 | counted before parsing, outside the literals below: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more) |
-| Pipes, `|` and not `||`, in POSIX | 400 | counted before parsing, outside the literals below and outside double quotes: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s); a `|` in a double-quoted string is text (a table in a pull request's body), and a real pipeline of 401 commands is unreadable |
+| Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
-| The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. Past either, the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
+| The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -213,11 +213,16 @@ so no command hides there: in a POSIX shell a single-quoted string (`'…'`,
 (`<<'EOF'`, `<<"EOF"`, `<<\EOF`), or is a plain name (`<<EOF`) with no `$(`,
 backquote or backslash in the body; in cmd a string closed on its line
 (`"a & b"`, not `^"…"`). The walk that finds them keeps track of double
-quotes, escapes and comments, and where it cannot be sure it stops skipping
-for the rest of the text, so it can only count more: a `$(` or a backquote
-inside double quotes (they hold quotes of their own), a quote or a here-
-document that is not closed, a here-document delimiter with an expansion
-(`<<$x`), and a quote in a comment, which starts nothing. A POSIX
+quotes, escapes, comments and brackets: a command substitution (`$( … )`),
+in double quotes or not, is walked as code up to the `)` that closes it, so a
+quoted here-document in it is skipped too (`git commit -m "$(cat <<'EOF'
+… EOF )"`), and a `<<` in arithmetic (`(( … ))`, `$(( … ))`, `$[ … ]`) is a
+shift, which starts no here-document. Where it cannot be sure it stops
+skipping for the rest of the text, so it can only count more: a backquote
+inside double quotes (it holds quotes and backslashes of its own), a `case`
+inside brackets (a pattern closes with a `)` that opened nothing), a quote or
+a here-document that is not closed, a here-document delimiter with an
+expansion (`<<$x`), and a quote in a comment, which starts nothing. A POSIX
 double-quoted string is counted for `(` and here-documents, as before, and
 not for pipes. So `printf '%s\n' 'a<<b' …` with 300 quoted `a<<b`, `echo ':( :(
 …'` with 500 `:(`, and a C header written through `<<'EOF'` whose long macro

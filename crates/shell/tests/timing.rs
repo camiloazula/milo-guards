@@ -232,12 +232,14 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // Each took from half a second to over a minute in a release build: the
     // grammar went back over the rest of the line at every token (stopped
     // by the budget of what its lexer reads, `MAX_LEXED` in `unit.rs`), a
-    // pipeline ending in an error (counted, `MAX_PIPES` in `tangled.rs`),
+    // pipeline ending in an error (counted, `MAX_PIPES` in `tangled.rs`,
+    // also behind a shift in arithmetic and through compound commands),
     // the readings of `Copy-Item` and `Move-Item` taken pair by pair (now
     // once for each spelling), a folder one deeper at each `cd` read again
-    // for every path (`MAX_DIR_LEN` in `unit.rs`), PowerShell's children
-    // asked one by one for the next, and a long word read back to its start
-    // at each `(` (`qualifier` in `posix.rs`). A release build reads each in
+    // for every path (`MAX_DIR_LEN` in `unit.rs`, which folds a round trip
+    // down and back up), PowerShell's children asked one by one for the
+    // next, and a long word read back to its start at each `(` (`qualifier`
+    // in `posix.rs`). A release build reads each in
     // tens of milliseconds; the bounds leave room for a machine busy with
     // other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
@@ -264,6 +266,16 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit(")", "", "")),
         (Shell::Posix, fit(")a", "", "")),
         (Shell::Posix, fit("a|", "", "")),
+        (Shell::Posix, fit("a|", "((x=1<<y))\n", ";\ny\n")),
+        (Shell::Posix, fit("a|", "echo $((1<<y))\n", ";\ny\n")),
+        (Shell::Posix, fit("a|", "echo $[1<<y]\n", ";\ny\n")),
+        (Shell::Posix, fit("a|if :;then :;fi|", "", "")),
+        (Shell::Posix, fit("a|while :;do :;done|", "", "")),
+        (Shell::Posix, fit("a|for a in a;do a;done|", "", "")),
+        (Shell::Posix, fit("a|a\n|", "", "")),
+        (Shell::Posix, fit("cd a; cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("cd a; cat b; cd ..; ", "", "rm x")),
+        (Shell::PowerShell, fit("cd a; cd ..; ", "", "Remove-Item x")),
         (Shell::Posix, fit("echo x | ", "", "|")),
         (Shell::Posix, fit("|", "", "")),
         (Shell::Posix, fit(">", "", "")),

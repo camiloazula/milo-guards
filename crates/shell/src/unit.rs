@@ -817,6 +817,11 @@ struct Pwd {
     /// Whether the line makes `PWD` the physical path, which resolves the
     /// links on the way: `cd -P`, `set -P`, `set -o physical`.
     physical: bool,
+    /// Whether a POSIX `cd` of the line went to a target with a name after a
+    /// `..` (`link/../etc`, `../x`): bash and zsh follow it physically when
+    /// the folded folder does not exist, so the `..` the line's folder holds
+    /// are not folded by spelling.
+    climbed: bool,
     /// The first `PS4` or `BASH_ENV` value the line wrote with `$PWD` in it,
     /// to judge against every `cd` of the line once it is all read.
     used: Option<String>,
@@ -1132,6 +1137,9 @@ impl Split {
         if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
+            if unit.shell == Shell::Posix && target.known().is_some_and(names_after_dots) {
+                self.pwd.climbed = true;
+            }
             let dir = self.moved_to(self.dir.as_ref(), &target, unit.shell);
             // Every other folder the line may be in moves too; a `cd` that
             // may not have run also leaves the line where it was.
@@ -1196,13 +1204,20 @@ impl Split {
                 Arg::Unknown(text)
             }
             // A folder spelt longer, or deeper, than any a system opens:
-            // every path read from it would cost its length, so it is not
-            // followed.
-            Arg::Known(text)
-                if text.len() > MAX_DIR_LEN
-                    || text.matches(['/', '\\']).count() > MAX_DIR_PARTS =>
-            {
-                Arg::Unknown(target.text().to_string())
+            // every path read from it would cost its length. A `cd` folds
+            // the `..` it applies, so such a spelling is folded (going down
+            // and back up is no longer than staying), unless a `cd` may
+            // have followed a link physically; still too long, the folder is
+            // not followed.
+            Arg::Known(text) if too_long(&text) => {
+                let folded = (shell != Shell::Posix || !(self.pwd.physical || self.pwd.climbed))
+                    .then(|| fold_dots(&text, shell))
+                    .flatten()
+                    .filter(|folded| !too_long(folded));
+                match folded {
+                    Some(folded) => Arg::Known(folded),
+                    None => Arg::Unknown(target.text().to_string()),
+                }
             }
             dir => dir,
         }
@@ -2449,6 +2464,72 @@ fn steps_up(target: &Arg, shell: Shell) -> bool {
     })
 }
 
+/// Whether a name follows a `..` in the POSIX path `text`.
+fn names_after_dots(text: &str) -> bool {
+    text.split('/')
+        .skip_while(|part| *part != "..")
+        .any(|part| !matches!(part, "" | "." | ".."))
+}
+
+/// Whether the folder `text`, the `cd`s joined, is spelt longer than
+/// [`MAX_DIR_LEN`] or deeper than [`MAX_DIR_PARTS`].
+fn too_long(text: &str) -> bool {
+    text.len() > MAX_DIR_LEN || text.matches(['/', '\\']).count() > MAX_DIR_PARTS
+}
+
+/// `text`, a folder the `cd`s joined, with each `..` after a name folded
+/// into it (`a/b/../..` is `.`), as a `cd` folds it, and each empty part
+/// past the first dropped. The part after a root (`/`, `C:`, `~`) is not
+/// folded, so the folder stays one below it. `None` for a text the walk does
+/// not fold: one that starts with two separators (`\\server\share`, `//x`)
+/// or names a provider path (`a::b`).
+fn fold_dots(text: &str, shell: Shell) -> Option<String> {
+    let separator = |c: char| c == '/' || (shell != Shell::Posix && c == '\\');
+    let mut chars = text.chars();
+    if text.contains("::")
+        || (chars.next().is_some_and(separator) && chars.next().is_some_and(separator))
+    {
+        return None;
+    }
+    // Each part, with the separator written before it.
+    let mut parts: Vec<(Option<char>, &str)> = Vec::new();
+    let (mut start, mut before) = (0, None);
+    for (at, c) in text.char_indices().filter(|(_, c)| separator(*c)) {
+        parts.push((before, &text[start..at]));
+        (start, before) = (at + c.len_utf8(), Some(c));
+    }
+    parts.push((before, &text[start..]));
+    let root = parts
+        .first()
+        .is_some_and(|(_, part)| part.is_empty() || part.contains([':', '~']));
+    let folds = |part: &str| {
+        !matches!(part, "" | "." | "..") && !part.contains(['~', ':', '$', '*', '?', '[', '{', '`'])
+    };
+    let mut kept: Vec<(Option<char>, &str)> = Vec::with_capacity(parts.len());
+    for (at, (before, part)) in parts.into_iter().enumerate() {
+        if at > 0 && part.is_empty() {
+            continue;
+        }
+        let after_root = root && kept.len() == 1;
+        if part == ".." && !after_root && kept.last().is_some_and(|(_, last)| folds(last)) {
+            kept.pop();
+        } else {
+            kept.push((before, part));
+        }
+    }
+    let mut folded = String::with_capacity(text.len());
+    for (at, (before, part)) in kept.into_iter().enumerate() {
+        if at > 0 {
+            folded.push(before.unwrap_or('/'));
+        }
+        folded.push_str(part);
+    }
+    if folded.is_empty() {
+        folded.push('.');
+    }
+    Some(folded)
+}
+
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     // What a package runner starts is a program (`npx cd src`), not the
@@ -2634,12 +2715,15 @@ const MAX_CALL_STARTS: usize = 32;
 const MAX_ELSEWHERE: usize = 8;
 
 /// The longest spelling of the folder the line is in that is followed (the
-/// `cd`s joined, `a/b/../c`), in bytes and in separators: past either, the
-/// folder is only known when it runs. Every path the rules read after a `cd`
-/// is read from that folder, so its length is paid once for each, and a line
-/// that went one folder down at every `cd` would pay for all its `cd`s again
-/// at every path. 1,024 bytes is the longest path macOS opens (`PATH_MAX`),
-/// and no real folder is 128 deep.
+/// `cd`s joined, `a/b/../c`), in bytes and in separators. Every path the rules
+/// read after a `cd` is read from that folder, so its length is paid once for
+/// each, and a line that went one folder down at every `cd` would pay for all
+/// its `cd`s again at every path. A spelling past either is folded as a `cd`
+/// folds it, each `..` after a name taken off with the name (`a/../a/..` is
+/// `.`), so going down and back up costs nothing; past either still, or when
+/// a `cd` may have followed a link physically (`cd -P`, `cd link/../etc`), the
+/// folder is only known when it runs. 1,024 bytes is the longest path macOS
+/// opens (`PATH_MAX`), and no real folder is 128 deep.
 const MAX_DIR_LEN: usize = 1024;
 
 /// See [`MAX_DIR_LEN`].
