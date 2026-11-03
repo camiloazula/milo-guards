@@ -222,6 +222,28 @@ powershell finds=delete | pwsh -Command "trap { Remove-Item -Recurse -Force ~ }"
 # Where the line is when the action is registered holds until it moves.
 powershell safe | Set-Location build; trap { Remove-Item out }
 powershell safe | trap { Remove-Item out }; Get-ChildItem
+# A function body runs where it is called, and each pass of a loop after the
+# first where the last left the line: a `cd` in the loop, or one after the
+# start of the function body, makes their relative paths known only when they
+# run, as for an action that runs later.
+powershell finds=delete reason="deletes a path only known when it runs" | function f { Remove-Item -Recurse build }; cd C:\\; f
+powershell finds=delete | foreach ($i in 1..2) { Remove-Item -Recurse build; cd C:\\ }
+powershell finds=delete | 1..2 | ForEach-Object { Remove-Item -Recurse build; cd C:\\ }
+powershell finds=delete | while ($true) { Remove-Item -Recurse build; cd .. }
+powershell finds=delete | switch (1, 2) { default { Remove-Item -Recurse build; cd C:\\ } }
+powershell safe | function f { Remove-Item -Recurse build }; f
+powershell safe | foreach ($i in 1..2) { Remove-Item -Recurse build }
+cmd finds=delete | for %%i in (1 2) do (rd /s /q build & cd C:\\)
+cmd safe | for %%i in (1 2) do (rd /s /q build)
+# cmd reads the rest of the statement after `do` as the loop's command, past
+# `&`, `&&` and `||`, where the grammar ends it at the first.
+cmd finds=delete reason="deletes a path only known when it runs" | for %%i in (1 2) do rd /s /q build & cd ..
+cmd finds=delete reason="deletes a path only known when it runs" | for %%i in (1 2) do rd /s /q build && cd ..
+cmd finds=overwrite reason="writes to a file only known when it runs" | for %%i in (1 2) do echo x > out.txt & cd ..
+cmd finds=delete | for %%i in (1 2) do (rd /s /q build) & cd ..
+cmd finds=delete | ver && for %%i in (1 2) do rd /s /q build & cd ..
+cmd finds=delete | echo a & for %%i in (1 2) do rd /s /q build & cd .. & echo b
+cmd safe | for %%i in (1 2) do rd /s /q build & echo done
 
 # An alias the line sets (`Set-Alias`, `New-Alias`, `sal`, `nal`, `Set-Item
 # Alias:NAME`, `$alias:NAME = …`) stands for its target: a later command of

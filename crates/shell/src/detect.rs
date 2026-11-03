@@ -149,10 +149,18 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
         // there too. A run of a file the line wrote is judged from each of
         // them already.
         let own = checker.found.len();
-        for dir in unit.others() {
+        for dir in unit.moved_off() {
             checker.unit(at, &unit.in_folder(dir), false);
         }
         checker.moved_off(before, own);
+        // A loop or a function body may run it again from another folder,
+        // one the walk knows or one only known when it runs: what that finds
+        // is said as it is.
+        for dir in unit.again() {
+            let mine = checker.found.len();
+            checker.unit(at, &unit.in_folder(dir), false);
+            checker.once(before, mine);
+        }
         checker.loose(at, before);
         units.push(checker.found[before..].to_vec());
     }
@@ -560,6 +568,17 @@ impl Checker<'_> {
     fn moved_off(&mut self, before: usize, own: usize) {
         let mine = self.found[before..own].to_vec();
         self.moved_off_from(&mine, own);
+    }
+
+    /// Keep each finding from `mine` on once: drop the ones already found
+    /// from `before` on.
+    fn once(&mut self, before: usize, mine: usize) {
+        let found = self.found.split_off(mine);
+        for finding in found {
+            if !self.found[before..].contains(&finding) {
+                self.found.push(finding);
+            }
+        }
     }
 
     /// As [`Self::moved_off`], with what was found from where the walk has
