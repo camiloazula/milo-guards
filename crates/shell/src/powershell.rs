@@ -451,11 +451,14 @@ impl Walker<'_> {
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        // Taken once: asking each child for the one after it walks the
+        // children from the first again.
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        for (at, &child) in children.iter().enumerate() {
             // A pipeline followed by `&` runs as a job of its own: a `cd` in
             // it does not move the session.
-            let job = child
-                .next_named_sibling()
+            let job = children
+                .get(at + 1)
                 .is_some_and(|next| next.kind() == "background_operator");
             self.split.branches += usize::from(job);
             self.walk(child, stage, level + 1);

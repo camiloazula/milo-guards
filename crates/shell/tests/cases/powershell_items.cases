@@ -405,3 +405,17 @@ powershell finds=delete | Start-Process -WindowStyle Hidden -File cmd.exe '/c rd
 powershell finds=delete | Start-Process -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
 powershell finds=delete | Start-Process -RedirectStandardOutput o.txt -File cmd.exe -ArgumentList '/c rd /s /q C:\\'
 powershell finds=permissions | Set-Acl -Fil x ~\\.ssh $a
+
+# Copy-Item and Move-Item read each operand after the first as the
+# destination of the others (a comma list is flattened), once for each
+# spelling: the readings of one destination given twice are the same.
+powershell rules=overwrite,overwrite | Copy-Item a.txt lefthook.yml sub
+powershell rules=overwrite,overwrite | Copy-Item lefthook.yml, a.txt sub
+powershell rules=overwrite | Copy-Item lefthook.yml sub sub
+powershell rules=overwrite,overwrite | Copy-Item .envrc .envrc sub
+powershell safe | Copy-Item lefthook.yml sub
+powershell rules=overwrite | Copy-Item lefthook.yml sub\\
+powershell rules=delete,overwrite | Move-Item a ~\\x b
+powershell rules=delete | Move-Item ~\\x a b
+powershell safe | Move-Item -Path a b c
+powershell finds=overwrite reason="writes to your SSH keys" | Copy-Item id_rsa x ~\\.ssh

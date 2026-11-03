@@ -81,19 +81,58 @@ fn qualifier_char(c: char) -> bool {
 /// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
 /// `.#git(D)` match `.git`, which a guard that reads them as plain text
 /// would not see.
-fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
-    word.chars()
-        .last()
-        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
-    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
-        return None;
-    }
-    let end = rest.iter().position(|c| *c == ')')?;
+///
+/// `word` gives the last character of the word and whether it holds one of
+/// those operators; it is asked only once `rest` is a qualifier, and kept as
+/// the text grows (see [`Word`]), so a line of many `(` in one long word is
+/// not read back to its start at each.
+fn qualifier(word: impl FnOnce() -> (Option<char>, bool), rest: &[char]) -> Option<usize> {
+    // The body is qualifier characters only, so the scan for its `)` stops
+    // at the first other one.
+    let end = rest.iter().position(|c| !qualifier_char(*c))?;
     let body = &rest[..end];
     let ends = rest
         .get(end + 1)
         .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
-    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
+    if rest[end] != ')' || !ends || !body.contains(&'D') {
+        return None;
+    }
+    let (last, operators) = word();
+    last.filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    (!operators).then_some(end + 1)
+}
+
+/// The last word of a text that only grows, the part after its last space,
+/// as [`qualifier`] reads it: each part added is looked through once.
+#[derive(Default)]
+struct Word {
+    /// How much of the text has been looked through.
+    seen: usize,
+    /// Whether the word has started (a character after the last space).
+    started: bool,
+    /// Its last character.
+    last: Option<char>,
+    /// Whether it holds `^` or `#`, or a `~` that does not start it.
+    operators: bool,
+}
+
+impl Word {
+    fn of(&mut self, text: &str) -> (Option<char>, bool) {
+        for c in text.get(self.seen..).unwrap_or_default().chars() {
+            if c.is_whitespace() {
+                *self = Self {
+                    last: Some(c),
+                    ..Self::default()
+                };
+            } else {
+                self.operators |= c == '^' || c == '#' || (c == '~' && self.started);
+                self.started = true;
+                self.last = Some(c);
+            }
+        }
+        self.seen = text.len();
+        (self.last.filter(|_| self.started), self.operators)
+    }
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -134,6 +173,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // each delimiter, whether `<<-` lets it be indented with tabs, and
     // whether the word had a quote or a backslash (a body fed as it is).
     let mut bodies: Vec<(String, bool, bool)> = Vec::new();
+    // The last word of `joined` (see [`qualifier`]).
+    let mut word = Word::default();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
@@ -153,8 +194,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
-            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
-            if let Some(length) = qualifier(word, rest) {
+            if let Some(length) = qualifier(|| word.of(&joined), rest) {
                 at += length;
                 marks.push(joined.len());
                 continue;
