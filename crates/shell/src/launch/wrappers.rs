@@ -42,16 +42,32 @@ pub(super) fn rsh(args: &[Arg]) -> Option<Arg> {
 }
 
 /// `env`: assignments and options, then the program; `-S` splits a string
-/// into the command.
+/// into words read as `env`'s own arguments, the arguments after it added
+/// to them.
 pub(super) fn env(args: &[Arg]) -> Launch {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
-        match arg.known() {
-            Some("-S" | "--split-string") => {
-                return args.get(at + 1).map_or(Launch::Itself, |script| {
-                    Launch::Script(Shell::Posix, script.clone())
-                });
+        if let Some(split) = arg.known().and_then(split_string) {
+            let (script, rest) = match split {
+                SplitString::Attached(attached) => {
+                    (Arg::Known(attached.to_string()), &args[at + 1..])
+                }
+                SplitString::Next => match args.get(at + 1) {
+                    Some(script) => (script.clone(), &args[at + 2..]),
+                    None => return Launch::Itself,
+                },
+            };
+            // Its own escapes, `\_` a space or a separator, `\c` an end and
+            // `${NAME}` a variable, are not read.
+            if ["\\_", "\\c", "${"]
+                .iter()
+                .any(|escape| script.text().contains(escape))
+            {
+                return Launch::Opaque("runs a command split by escapes that are not read");
             }
+            return Launch::Script(Shell::Posix, with_words(script, rest));
+        }
+        match arg.known() {
             Some("-u" | "--unset" | "-C" | "--chdir") => at += 2,
             Some(text)
                 if text.starts_with('-') || (text.contains('=') && !text.starts_with('=')) =>
@@ -64,14 +80,69 @@ pub(super) fn env(args: &[Arg]) -> Launch {
     Launch::Itself
 }
 
+/// Where the string of `env -S` is.
+enum SplitString<'a> {
+    /// Attached to the option: `-S'cmd'`, `-iS'cmd'`, `--split-string=cmd`.
+    Attached(&'a str),
+    /// The next word.
+    Next,
+}
+
+/// Whether the option `text` is `env -S` (`--split-string`, or a shorter
+/// start of the long name, `--split=cmd`), and where its string is.
+fn split_string(text: &str) -> Option<SplitString<'_>> {
+    if let Some(long) = text.strip_prefix("--") {
+        let (name, value) = long
+            .split_once('=')
+            .map_or((long, None), |(name, value)| (name, Some(value)));
+        return (!name.is_empty() && "split-string".starts_with(name))
+            .then(|| value.map_or(SplitString::Next, SplitString::Attached));
+    }
+    let bundle = text.strip_prefix('-')?;
+    for (at, letter) in bundle.char_indices() {
+        match letter {
+            'S' => {
+                let rest = &bundle[at + 1..];
+                return Some(if rest.is_empty() {
+                    SplitString::Next
+                } else {
+                    SplitString::Attached(rest)
+                });
+            }
+            'i' | '0' | 'v' => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The script `env -S` runs: `env` again, with the string's words and then
+/// the arguments after it, each one word. GNU env puts the words back among
+/// its own arguments, so they may be its options and assignments
+/// (`env -S'-i X=1 cmd'`) as much as the command.
+fn with_words(script: Arg, rest: &[Arg]) -> Arg {
+    let words = super::shell_words(rest);
+    let line = if rest.is_empty() {
+        format!("env {}", script.text())
+    } else {
+        format!("env {} {}", script.text(), words.text())
+    };
+    match (script, words) {
+        (Arg::Known(_), Arg::Known(_)) => Arg::Known(line),
+        _ => Arg::Unknown(line),
+    }
+}
+
 /// The variables `env` sets (`X=1`) or unsets (`-u X`) for the program it
 /// runs, read as [`env`] reads its arguments.
 pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
     let mut names = Vec::new();
     let mut at = 0;
     while let Some(arg) = args.get(at) {
+        if arg.known().and_then(split_string).is_some() {
+            break;
+        }
         match arg.known() {
-            Some("-S" | "--split-string") => break,
             Some("-u" | "--unset") => {
                 names.extend(args.get(at + 1).map(|name| name.text().to_string()));
                 at += 2;
@@ -125,6 +196,30 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .filter_map(Arg::known)
         .filter_map(|text| text.strip_prefix("PYTHONPATH="))
         .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
+/// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given by the
+/// wrapper's own arguments, by name, as [`node_options`] reads
+/// `NODE_OPTIONS` (`env TF_CLI_ARGS=-destroy terraform apply`). One only
+/// known when it runs is kept as it is.
+pub(super) fn tf_cli_args(args: &[Arg], start: usize) -> Vec<(String, Arg)> {
+    args.iter()
+        .take(start)
+        .filter_map(|arg| {
+            let (name, value) = match arg {
+                Arg::Known(text) => {
+                    let (name, value) = text.split_once('=')?;
+                    (name, Arg::Known(value.to_string()))
+                }
+                Arg::Unknown(_) | Arg::Template { .. } => {
+                    let (name, _) = arg.text().trim_start_matches(['"', '\'']).split_once('=')?;
+                    (name, arg.clone())
+                }
+                Arg::Input | Arg::Null => return None,
+            };
+            unit::tf_cli_args(name).then(|| (name.to_string(), value))
+        })
         .collect()
 }
 
@@ -449,6 +544,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }))
 }
@@ -1043,6 +1139,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }
 }
