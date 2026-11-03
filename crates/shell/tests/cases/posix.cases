@@ -1,8 +1,8 @@
 # POSIX shell lines and what each rule finds in them: deletes and writes
 # beyond the workspace, disks, git work that cannot come back, permissions,
 # root and the system, what runs unseen, nested shells, traps, what a finding
-# says, device paths, macOS paths, and what cannot be read. The format is in
-# CONTRIBUTING.md.
+# says, device paths, macOS paths, the words after a redirect, and what
+# cannot be read. The format is in CONTRIBUTING.md.
 
 # A workspace that is the home directory.
 paths home cwd=/home/me home=/home/me workspace=/home/me
@@ -465,6 +465,48 @@ posix@macos safe | rm -rf /System/Volumes/Data/tmp/x
 posix@macos finds=delete | rm -rf /System/Volumes/Data/Users/me/.ssh
 posix@macos finds=delete | rm -rf ../../../../System/Volumes/Data/Users/me
 posix@macos finds=delete | rm -rf /Volumes/Macintosh\\ HD/Users/me/.ssh
+
+# A redirect does not hide the command after it. The grammar takes every
+# word after the file of a redirect for one more file; the shell takes the
+# first, and the rest are arguments of the command, wherever the redirect
+# stands among them.
+posix finds=delete | command 2>/dev/null rm -rf ~
+posix finds=delete | env 2>/dev/null rm -rf ~
+posix finds=delete | nice 2>/dev/null rm -rf ~
+posix finds=delete | exec 2>/dev/null rm -rf ~
+posix finds=delete | xargs 2>/dev/null rm -rf ~
+posix finds=delete | noglob 2>/dev/null rm -rf ~
+posix finds=delete | time 2>/dev/null rm -rf ~
+posix finds=delete | eval 2>/dev/null 'rm -rf ~'
+posix finds=delete | rm 2>/dev/null -rf ~
+posix finds=delete | rm >/dev/null -rf ~
+posix finds=git_discard | git 2>/dev/null reset --hard
+posix finds=delete | rm -rf 2>/dev/null ~
+posix finds=delete | rm 2>&1 -rf ~
+posix finds=delete | rm >/dev/null -rf x >/dev/null ~
+posix finds=delete | true && rm 2>/dev/null -rf ~
+posix finds=delete | ! rm 2>/dev/null -rf ~
+posix finds=delete | ls | rm 2>/dev/null -rf ~
+posix safe | ls 2>/dev/null
+posix safe | grep foo file 2>/dev/null
+posix safe | ls 2>/dev/null -la
+posix safe | grep 2>/dev/null -r foo .
+# Words after the file of a redirect on a group, a loop, a subshell or a
+# function, which takes no arguments: the shell refuses the line.
+posix finds=unreadable | { ls; } >out rm -rf ~
+posix finds=unreadable | (ls) >out rm -rf ~
+posix finds=unreadable | for i in 1; do ls; done >out rm -rf ~
+posix finds=unreadable | f() { ls; } >out rm -rf ~
+# A declaration or an `unset` is no plain command to the grammar, and the
+# words after the file of its redirect are not given back to it.
+posix finds=unreadable | export 2>/dev/null FOO=1
+posix finds=unreadable | unset 2>/dev/null x
+# A `{NAME}` stuck to a redirect is where bash puts the descriptor it opens,
+# not an argument or a program.
+posix safe | exec {fd}>out
+posix safe | exec {fd}>&-
+posix safe | exec {fd}<in
+posix finds=delete | exec {fd}>out rm -rf ~
 
 # What cannot be read is risky.
 posix finds=unreadable | rm -rf 'unterminated

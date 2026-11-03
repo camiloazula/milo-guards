@@ -5,8 +5,9 @@
 # zsh's `(D)` glob qualifier does it for one pattern. A qualifier or an
 # extended glob the guard does not read stays unreadable; POSIX classes and
 # collating elements in a bracket are read as each shell reads them. A listing
-# piped into a delete is judged as the delete of its pattern, and a pattern in
-# a temporary folder picks temporary files. The format is in CONTRIBUTING.md.
+# piped into a delete is judged as the delete of its pattern, a pattern in a
+# temporary folder picks temporary files, and a program a pattern names is
+# only known when it runs. The format is in CONTRIBUTING.md.
 
 # A POSIX wildcard skips dot names unless it starts with a dot.
 posix safe | rm -rf *git
@@ -661,3 +662,20 @@ posix safe | ls -d /tmp/build-* | xargs rm -rf
 posix safe | ls /var/tmp/*.log | xargs rm
 posix finds=delete | rm -rf /tmp/*
 posix finds=delete | ls /tmp | xargs rm -rf
+
+# A program named by an unquoted wildcard is the first name it matches, only
+# known when it runs; behind a wrapper the word is judged as written, quoted
+# or not.
+posix finds=unknown | ./* -rf /
+posix finds=unknown | ?? -rf /
+posix finds=unknown | ./r? -rf /
+posix finds=unknown | ./[r]m -rf /
+posix finds=unknown | "$HOME"/* -rf /
+posix finds=unknown | env ./* -rf /
+posix finds=unknown | sudo ?? -rf /
+posix finds=unknown | command './*' -rf /
+posix safe | '*' -h
+posix safe | \\* -h
+posix safe | "./*" -h
+posix safe | [ -f x ]
+posix safe | env [ -f x ]
