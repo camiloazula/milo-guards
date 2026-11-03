@@ -387,7 +387,14 @@ code no line shows: `deno run https://…`, `deno https://…`, `deno watch
 https://…` and `deno run -A jsr:@x/y` are `run_downloaded`, in every shell.
 An npm package is judged by the program it runs, as `npx` judges one. A
 script or a subcommand only known when it runs (`deno run $F`, `bun $F`) is
-`unknown`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+`unknown`. `deno serve` runs its module as `deno run` does, and `deno test`
+and `deno bench` every module they are given; a module deno loads before
+the script (`--preload`, `--import`, `--require`, the files of `deno repl
+--eval-file`) is judged the same, and so is an import map it fetches
+(`--import-map https://…`), which may point any import anywhere. Code in a
+`data:` URL (`deno run 'data:application/javascript,…'`, `--preload
+data:…`) is on the line and not read: `unknown`, `runs an encoded script
+that cannot be read`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
 `bun`, `deno` and `dx` are read as in the other shells (`bun x rimraf C:\`,
 `bun run rimraf C:\`, `deno run npm:rimraf C:\`, `dx rimraf C:\`, and the
 POSIX script of `bun exec "rm -rf ~"`), but a script from the input that
@@ -2027,7 +2034,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
-| `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | the second operand after `-e`/`--extract` (or a prefix of it): `-e a.zip DIR`; `tarfile` with none unpacks into the working directory | no `-e` (`-l`, `-t`) |
+| `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | the second operand after `-e`/`--extract` (or a prefix of it, or with the archive after `=`): `-e a.zip DIR`; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` and `-ea.tar` names the archive; `tarfile` with none unpacks into the working directory | no `-e` (`-l`, `-t`) |
 
 `tar` takes a long option written as a unique prefix, which the guard reads
 for the modes and `--to-stdout` as well as `--directory`. A mode is read from
@@ -2967,10 +2974,13 @@ questions are answered apart:
 **Read whole.** A line with inline code is safe only when all four hold:
 
 1. **The code is written whole on the line**, as the one word after its flag:
-   `python -c CODE` (`python3`, `python3.12`, `python2`, `pypy`, `pypy3`, and
-   the launcher `py`, also past the word that picks its Python: `py -3 -c
-   CODE`), `node -e CODE` (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the
-   same, `deno eval CODE`. `ipython`, `tsx` and `ts-node` are never read whole:
+   `python -c CODE` (`python3`, `python3.12`, `python2`, `pypy`, `pypy3`,
+   `pypy3.10`, `graalpy`, `micropython`, and the launcher `py`, also past the
+   word that picks its Python: `py -3 -c CODE`, where PowerShell's number
+   `-3` is the same word), `node -e CODE` (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the
+   same, `deno eval CODE`. `ipython` (`ipython3`), `tsx` and `ts-node` (and
+   its other programs: `ts-node-esm`, `ts-node-script`, `ts-node-cwd`,
+   `ts-node-transpile-only`, `ts-script`) are never read whole:
    IPython runs the startup files of its profile first, and the TypeScript
    runners read a `tsconfig.json`, which can name modules to load.
    Code handed by a here-document, a here-string, a pipe or a redirect
@@ -3134,7 +3144,9 @@ that name). A script only known when it runs (`python3 $F`, `python3 "$F"`,
 is `unknown`, `runs a script only known when it runs`, in every shell, and a
 process substitution whose commands download (`python3 <(curl -s …)`, also
 through a pipeline, `<(curl … | gunzip)`, and for a shell: `bash <(curl …)`,
-`source <(wget -qO- …)`) is `run_downloaded`. What `xargs` hands on is the
+`source <(wget -qO- …)`) is `run_downloaded`, and so is one an
+interpreter or a shell reads from its input (`python3 < <(curl -s …)`,
+`bash < <(curl …)`). What `xargs` hands on is the
 files a listing names, and stays a script of the workspace's
 (`… | xargs python3`). The words after the script are its own arguments.
 
@@ -3142,8 +3154,14 @@ files a listing names, and stays a script of the workspace's
 in place of a script, judged as a script is (`python3 -m pytest` is safe),
 but `timeit` runs the code it is given, `cProfile`, `profile` and `trace` run
 a script under them, and `pdb` and `code` read what to run from the input:
-these are `unknown`, `runs code the guard does not read`, also attached
-(`-mtimeit`) and after other options. A module only known when it runs is
+the REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read it from the
+input as `code` does: these are `unknown`, `runs code the guard does not
+read`, also attached (`-mtimeit`) and after other options. IPython's own
+options are its own table: it reads any `--Class.trait=value` as a setting,
+and some of those run code before the script
+(`--InteractiveShellApp.code_to_run`, `exec_lines`, `exec_files`, the
+extensions `--ext` loads), so a long option it has that the guard does not know as harmless (`--no-banner`,
+`--profile NAME` and the rest) makes `ipython x.py` `unknown` too. A module only known when it runs is
 `unknown`. `-m zipfile -e` and `-m tarfile -e` unpack (see
 [Unpacking archives](#unpacking-archives)).
 
@@ -3154,8 +3172,17 @@ code the line does not show (a `data:` URL included): in front of any program
 but a builtin that starts nothing (`echo`, `cd`, `export` and the others of
 `STARTS_NOTHING`) the line is `unknown`, `loads code through NODE_OPTIONS
 that the guard does not read`, wherever the value is set: a prefix
-assignment, `env`, an `export` or an assignment earlier in the line. A value
-only known when it runs may load one. `NODE_OPTIONS=--max-old-space-size=4096
+assignment, `env`, an `export` or an assignment earlier in the line
+(`NODE_OPTIONS+=` adds to the value the line gave it), PowerShell's
+`$env:NODE_OPTIONS = …` (`Set-Item env:NODE_OPTIONS`,
+`[Environment]::SetEnvironmentVariable`) and cmd's `set NODE_OPTIONS=…`. The
+value is split as node's `ParseNodeOptionsEnvVar` splits it: at a space
+outside double quotes, a `"` turning quoting on and off, and inside quotes a
+backslash taking the next character as it is (`"--requ\ire"` is
+`--require`); a value node cannot split (a backslash at its end inside
+quotes, a quote left open) may hold anything. A value only known when it
+runs may load one. An `unset NODE_OPTIONS` is not read: it may not run, and
+the line stays `unknown`. `NODE_OPTIONS=--max-old-space-size=4096
 npm test` loads nothing and stays safe. A module node is told to load on its
 own line (`node -r ./setup.js main.js`) is the workspace's code as the script
 is, unless the line writes it (see
@@ -3683,7 +3710,11 @@ Some risks only show when units are read together.
   `--require`, `--import`, `--loader`, `--experimental-loader`, before the
   script) and one bun or deno loads (`--preload`, `-r`, `--require`,
   `--import`) runs as the script does: `echo x > s.js && node -r ./s.js
-  main.js` is `unknown` as `node s.js` is.
+  main.js` is `unknown` as `node s.js` is. So does a library ruby's `-r` or
+  perl's `-M` (`-m`) loads, looked up in each `-I` folder with its extension
+  (`ruby -I . -r s` loads `./s.rb`, `perl -Ilib -MA::B` loads
+  `lib/A/B.pm`; ruby also takes a path, `-r ./s`), and a file php's `-d
+  auto_prepend_file=` or `auto_append_file=` names.
   A run is judged from every folder the line may be in when it runs: a `cd`
   that may not have run (in a branch, after `&&` or `||` or on the left of
   `||`, in a loop or a function body, in a pipeline stage of a POSIX shell or

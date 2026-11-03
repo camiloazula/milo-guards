@@ -2,7 +2,7 @@
 //! which is which, and the perl in-place edits read like `sed -i`.
 
 use super::wrappers::{runner, runner_in, running, running_package, DELETERS};
-use super::{after_options, is_stdin, join, Launch};
+use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
 use crate::inline;
 use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
@@ -14,32 +14,78 @@ pub(crate) const SHELLS: [&str; 11] = [
 ];
 
 /// Language interpreters that read code from their input when given no
-/// script: besides python (and `python3.12`, by [`is_python`]) and node, the
-/// Python launcher `py`, `pypy`, `ipython`, and the TypeScript runners `tsx`
-/// and `ts-node`, which take node's options.
+/// script: besides python (and the other names of a Python, by
+/// [`is_interpreter`]) and node, the Python launcher `py`, `pypy`, `ipython`,
+/// and the TypeScript runners `tsx` and `ts-node`, which take node's options.
 pub(crate) const INTERPRETERS: [&str; 17] = [
     "python", "python2", "python3", "py", "pypy", "pypy3", "ipython", "perl", "ruby", "node",
     "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno",
 ];
 
+/// Whether `key` is the interpreter named in [`INTERPRETERS`] or one of its
+/// other names: a Python of a version (`python3.12`, `pypy3.10`,
+/// `ipython3`), `graalpy` and `micropython`, and the other programs of ts-node
+/// (`ts-node-esm`, `ts-node-script`).
+pub(crate) fn is_interpreter(key: &str) -> bool {
+    INTERPRETERS.contains(&key)
+        || ["python", "pypy", "ipython", "graalpy", "micropython"]
+            .iter()
+            .any(|name| versioned(key, name))
+        || is_ts_node(key)
+}
+
+/// Whether `key` is `name`, or `name` and a version (`python3.12`,
+/// `pypy3.10`, `ipython3`).
+fn versioned(key: &str, name: &str) -> bool {
+    key.strip_prefix(name).is_some_and(|version| {
+        version.is_empty()
+            || (version.starts_with(|c: char| c.is_ascii_digit())
+                && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    })
+}
+
 /// Whether the interpreter `key` runs Python, and reads python's options.
 pub(crate) fn is_python(key: &str) -> bool {
-    key.starts_with("python") || matches!(key, "py" | "pypy" | "pypy3" | "ipython")
+    key.starts_with("python")
+        || key == "py"
+        || ["pypy", "ipython", "graalpy", "micropython"]
+            .iter()
+            .any(|name| versioned(key, name))
+}
+
+/// Whether the interpreter `key` is `ipython` (also `ipython3`), whose
+/// own options are not python's.
+pub(crate) fn is_ipython(key: &str) -> bool {
+    versioned(key, "ipython")
+}
+
+/// Whether `key` is ts-node, by any of the names of its programs.
+pub(crate) fn is_ts_node(key: &str) -> bool {
+    matches!(
+        key,
+        "ts-node"
+            | "ts-node-esm"
+            | "ts-node-script"
+            | "ts-node-cwd"
+            | "ts-node-transpile-only"
+            | "ts-script"
+    )
 }
 
 /// Whether the interpreter `key` is node, or a runner of TypeScript built on
 /// it that reads node's options (`tsx`, `ts-node`).
 pub(crate) fn is_node(key: &str) -> bool {
-    matches!(key, "node" | "nodejs" | "tsx" | "ts-node")
+    matches!(key, "node" | "nodejs" | "tsx") || is_ts_node(key)
 }
 
 /// The arguments the interpreter `key` reads as its own options: all of
 /// them, but for the Python launcher `py`, whose first word may pick the
 /// Python it starts (`-3`, `-3.12`, `-3.12-64`, `-V:3.12`), which reads the
-/// rest.
+/// rest. PowerShell reads `-3` as a number, a word it computes: as written,
+/// it is the same word.
 pub(crate) fn own_args<'a>(key: &str, args: &'a [Arg]) -> &'a [Arg] {
     match args.split_first() {
-        Some((first, rest)) if key == "py" && first.known().is_some_and(picks_python) => rest,
+        Some((first, rest)) if key == "py" && picks_python(first.text()) => rest,
         _ => args,
     }
 }
@@ -61,7 +107,7 @@ fn picks_python(text: &str) -> bool {
 /// `-3.12`, `-V:3.12`); otherwise it is the default its own settings name.
 pub(crate) fn py_picks_three(args: &[Arg]) -> bool {
     args.first()
-        .and_then(Arg::known)
+        .map(Arg::text)
         .filter(|text| picks_python(text))
         .is_some_and(|text| {
             text.trim_start_matches('-')
@@ -226,9 +272,9 @@ pub(crate) fn valued_options(key: &str) -> &'static [char] {
     match key {
         "perl" => &['I', 'M', 'm'],
         "ruby" => &['I', 'r', 'C', 'E', 'K'],
-        "node" | "nodejs" | "tsx" => &['r', 'C'],
         // `-P tsconfig.json`, `-O '{…}'`, `-C ttypescript`, `-I`, `-D`.
-        "ts-node" => &['r', 'C', 'P', 'O', 'I', 'D'],
+        key if is_ts_node(key) => &['r', 'C', 'P', 'O', 'I', 'D'],
+        "node" | "nodejs" | "tsx" => &['r', 'C'],
         "php" => &['c', 'd', 'z', 't', 'B', 'E', 'S', 'f'],
         "lua" => &['l'],
         _ => &[],
@@ -255,7 +301,80 @@ struct Table {
     /// The short option that names the module to run in place of a script
     /// (`python3 -m pytest`), or the script itself (php's `-f x.php`).
     names_script: Option<char>,
+    /// The long options known to run nothing, when every other may run code:
+    /// `ipython` reads any `--Class.trait=value` as a setting, and
+    /// `--InteractiveShellApp.code_to_run`, `exec_lines`, `exec_files` and
+    /// `--ext` run code before the script.
+    harmless_long: Option<&'static [&'static str]>,
 }
+
+/// `ipython`'s long options that take the next word as their value.
+const IPYTHON_VALUES: [&str; 13] = [
+    "profile",
+    "profile-dir",
+    "ipython-dir",
+    "config",
+    "logfile",
+    "logappend",
+    "log-level",
+    "colors",
+    "gui",
+    "pylab",
+    "matplotlib",
+    "autocall",
+    "cache-size",
+];
+
+/// `ipython`'s long options that run nothing: its flags, and the ones that
+/// take a value ([`IPYTHON_VALUES`]).
+const IPYTHON_HARMLESS: [&str; 46] = [
+    "help",
+    "help-all",
+    "version",
+    "banner",
+    "no-banner",
+    "quick",
+    "classic",
+    "simple-prompt",
+    "no-simple-prompt",
+    "nosep",
+    "pprint",
+    "no-pprint",
+    "color-info",
+    "no-color-info",
+    "autoindent",
+    "no-autoindent",
+    "automagic",
+    "no-automagic",
+    "confirm-exit",
+    "no-confirm-exit",
+    "term-title",
+    "no-term-title",
+    "quiet",
+    "debug",
+    "init",
+    "pdb",
+    "no-pdb",
+    "autoedit-syntax",
+    "no-autoedit-syntax",
+    "tip",
+    "no-tip",
+    "show-config",
+    "show-config-json",
+    "profile",
+    "profile-dir",
+    "ipython-dir",
+    "config",
+    "logfile",
+    "logappend",
+    "log-level",
+    "colors",
+    "gui",
+    "pylab",
+    "matplotlib",
+    "autocall",
+    "cache-size",
+];
 
 /// Node's long options that take the next word as their value, from its
 /// documentation (`node --help`), with those of the TypeScript runners on
@@ -330,7 +449,17 @@ fn table(key: &str) -> Table {
         strict: true,
         interactive: None,
         names_script: None,
+        harmless_long: None,
     };
+    if is_ipython(key) {
+        return Table {
+            long_values: &IPYTHON_VALUES,
+            interactive: Some('i'),
+            names_script: Some('m'),
+            harmless_long: Some(&IPYTHON_HARMLESS),
+            ..plain
+        };
+    }
     if is_python(key) {
         return Table {
             long_values: &["check-hash-based-pycs"],
@@ -412,10 +541,51 @@ pub(crate) struct Options {
     /// script, with no `=` (`node --stack-size 100 x.js`): it may have taken
     /// the script as its value.
     pub(crate) unsure: bool,
-    /// The modules node and the runners built on it load before the script
-    /// (`-r`, `--require`, `--import`, `--loader`, `--experimental-loader`):
-    /// code that runs as the script does.
+    /// Whether a long option the interpreter may run code by stands before
+    /// the script (`ipython`'s `--InteractiveShellApp.exec_lines=…`, `--ext`).
+    pub(crate) runs_code: bool,
+    /// The files loaded before the script, code that runs as the script
+    /// does: the modules node and the runners built on it load (`-r`,
+    /// `--require`, `--import`, `--loader`, `--experimental-loader`), and the
+    /// files php's `-d auto_prepend_file=` and `auto_append_file=` name.
     pub(crate) preloads: Vec<Arg>,
+    /// The libraries ruby's `-r` and perl's `-M` and `-m` load by name
+    /// before the script, looked up in [`Options::includes`] (and as a path
+    /// by ruby, when one starts with `./`): `-r s` is `s.rb`, `-MFoo::Bar`
+    /// is `Foo/Bar.pm`.
+    pub(crate) requires: Vec<Arg>,
+    /// The folders ruby's and perl's `-I` put first where a library is
+    /// looked up.
+    pub(crate) includes: Vec<Arg>,
+}
+
+impl Options {
+    /// Note the value of the short option `letter` of `key` (one that takes
+    /// a value, [`valued_options`]) when it loads code before the script or
+    /// names where a library is looked up.
+    fn short_value(&mut self, key: &str, letter: char, value: Arg) {
+        match (key, letter) {
+            (key, 'r') if is_node(key) => self.preloads.push(value),
+            ("ruby", 'r') | ("perl", 'M' | 'm') => self.requires.push(value),
+            ("ruby" | "perl", 'I') => self.includes.push(value),
+            ("php", 'd') => self.php_setting(&value),
+            _ => {}
+        }
+    }
+
+    /// php's `-d NAME=VALUE`: `auto_prepend_file` and `auto_append_file`
+    /// name a file php runs before and after the script.
+    fn php_setting(&mut self, value: &Arg) {
+        let Some((name, file)) = value.known().and_then(|text| text.split_once('=')) else {
+            return;
+        };
+        if matches!(name.trim(), "auto_prepend_file" | "auto_append_file") {
+            let file = file.trim().trim_matches(['"', '\'']);
+            if !file.is_empty() {
+                self.preloads.push(Arg::Known(file.to_string()));
+            }
+        }
+    }
 }
 
 /// Read the options of the interpreter `key`, its own arguments (see
@@ -458,11 +628,23 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 break;
             }
             unknown_before = false;
+            if table
+                .harmless_long
+                .is_some_and(|harmless| !harmless.contains(&name.as_str()))
+            {
+                found.runs_code = true;
+                return found;
+            }
             if node && name == "interactive" {
                 found.interactive = true;
             } else if value.is_none() && table.long_values.contains(&name.as_str()) {
                 if node && preloads(&name) {
                     found.preloads.extend(args.get(at + 1).cloned());
+                }
+                if key == "php" && name == "define" {
+                    if let Some(next) = args.get(at + 1) {
+                        found.php_setting(next);
+                    }
                 }
                 if key == "php" && name == "file" {
                     found.script = (at + 1 < args.len()).then_some(at + 1);
@@ -471,6 +653,8 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 at += 1;
             } else if let (true, Some(value)) = (node && preloads(&name), value) {
                 found.preloads.push(Arg::Known(value.to_string()));
+            } else if let (true, Some(value)) = (key == "php" && name == "define", value) {
+                found.php_setting(&Arg::Known(value.to_string()));
             } else {
                 unknown_before = value.is_none() && !table.strict;
             }
@@ -508,13 +692,14 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 return found;
             }
             if valued.contains(&letter) {
-                if rest.is_empty() {
+                let value = if rest.is_empty() {
                     skip = 1;
-                    if node && letter == 'r' {
-                        found.preloads.extend(args.get(at + 1).cloned());
-                    }
-                } else if node && letter == 'r' {
-                    found.preloads.push(Arg::Known(rest.to_string()));
+                    args.get(at + 1).cloned()
+                } else {
+                    Some(Arg::Known(rest.to_string()))
+                };
+                if let Some(value) = value {
+                    found.short_value(key, letter, value);
                 }
                 break;
             }
@@ -538,7 +723,12 @@ fn preloads(name: &str) -> bool {
 /// The modules python's `-m` runs that run what they are given: the code
 /// `timeit` times, the script `cProfile`, `profile` and `trace` run under
 /// them, and the input `pdb` and `code` read.
-const RUNS_GIVEN: [&str; 6] = ["timeit", "cProfile", "profile", "pdb", "trace", "code"];
+/// The REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read code from
+/// the input as `code` does.
+const RUNS_GIVEN: [&str; 10] = [
+    "timeit", "cProfile", "profile", "pdb", "trace", "code", "asyncio", "IPython", "bpython",
+    "ptpython",
+];
 
 /// An interpreter runs code the guard does not read when it is given code inline
 /// or reads it from its input; a script file or a module is its own
@@ -572,6 +762,8 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     // Code in a `data:` URL that node loads first runs, and is not read.
     let code = code || (is_node(key) && inline::loads_foreign_code(args));
     let read = options(key, args);
+    // `ipython --InteractiveShellApp.exec_lines=… x.py` runs code first.
+    let code = code || read.runs_code;
     let file = read.script.is_some() || read.module.is_some();
     let stdin = args.iter().any(|arg| arg.known().is_some_and(is_stdin));
     // Inline Python and JavaScript are read, not left to the caller.
@@ -915,6 +1107,7 @@ fn only_runs(unit: &Unit, reads: bool, launch: Launch) -> Launch {
         | Launch::Inline(..)
         | Launch::Script(..)
         | Launch::Unread(_)
+        | Launch::Encoded
         | Launch::Downloaded => launch,
         Launch::Either(first, second) => Launch::Either(
             Box::new(only_runs(unit, reads, *first)),
@@ -1056,6 +1249,9 @@ pub(super) fn deno(unit: &Unit, input: bool) -> Launch {
 fn deno_launch(unit: &Unit, input: bool) -> Launch {
     let args = unit.args.as_slice();
     let Some(first) = after_options(args, &DENO_VALUES) else {
+        if let Some(launch) = deno_loads(args) {
+            return launch;
+        }
         let prints = args.iter().filter_map(Arg::known).any(|text| {
             matches!(text, "--version" | "-V" | "-v" | "--help" | "-h")
                 || text.starts_with("--help=")
@@ -1066,12 +1262,17 @@ fn deno_launch(unit: &Unit, input: bool) -> Launch {
             repl(unit, input)
         };
     };
+    // `deno --preload https://… main.ts`: what deno loads first runs.
+    if let Some(launch) = deno_loads(&args[..first]) {
+        return launch;
+    }
     let Some(word) = args[first].known() else {
         return Launch::Reads(Reads::Interpreter);
     };
+    let rest = &args[first + 1..];
     match word {
         "eval" => Launch::Reads(Reads::Interpreter),
-        "repl" => repl(unit, input),
+        "repl" => deno_loads(rest).unwrap_or_else(|| repl(unit, input)),
         "x" => runner("deno", unit),
         // `deno task --eval 'cmd'` runs its words as a line of deno's own
         // shell, which reads POSIX.
@@ -1089,12 +1290,114 @@ fn deno_launch(unit: &Unit, input: bool) -> Launch {
                 _ => Launch::Itself,
             }
         }
-        "run" | "watch" => args
-            .get(first + 1..)
-            .and_then(|rest| after_options(rest, &DENO_VALUES))
-            .map_or(Launch::Itself, |at| deno_target(unit, first + 1 + at)),
+        "run" | "watch" | "serve" => {
+            let at = after_options_by(rest, |text, _| deno_word(text));
+            if let Some(launch) = deno_loads(&rest[..at.unwrap_or(rest.len())]) {
+                return launch;
+            }
+            at.map_or(Launch::Itself, |at| deno_target(unit, first + 1 + at))
+        }
+        // `deno test https://…`: every module it is given runs.
+        "test" | "bench" => deno_loads(rest).unwrap_or_else(|| deno_modules(rest)),
         _ => deno_target(unit, first),
     }
+}
+
+/// The options of `deno serve`, `deno test` and `deno bench` that take the
+/// next word, besides [`DENO_VALUES`].
+const DENO_SUBCOMMAND_VALUES: [&str; 5] =
+    ["--port", "--host", "--filter", "--reporter", "--junit-path"];
+
+/// What a word that starts with a dash is among the options of deno's
+/// subcommands that run modules.
+fn deno_word(text: &str) -> Word {
+    if DENO_VALUES.contains(&text) || DENO_SUBCOMMAND_VALUES.contains(&text) {
+        Word::Value
+    } else {
+        Word::Flag
+    }
+}
+
+/// Whether the module `spec` is code given in a `data:` URL, which deno runs
+/// as it does a file: code on the line the guard does not read.
+fn data_url(spec: &str) -> bool {
+    spec.get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
+}
+
+/// What the modules `deno test` and `deno bench` are given (the words that
+/// are not options, before a `--`) do: one deno fetches is a download, one
+/// in a `data:` URL is not read; files are their own business.
+fn deno_modules(args: &[Arg]) -> Launch {
+    let mut words = args.iter();
+    while let Some(arg) = words.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if text.starts_with('-') {
+            if matches!(deno_word(text), Word::Value) {
+                words.next();
+            }
+            continue;
+        }
+        if fetched(text) {
+            return Launch::Downloaded;
+        }
+        if data_url(text) {
+            return Launch::Encoded;
+        }
+    }
+    Launch::Itself
+}
+
+/// What deno's options in `args` load before the script, when that is code
+/// the line does not show: a module `--preload` (`--import`, `--require`)
+/// or `--eval-file` names that deno fetches (`https:`, `jsr:`), or an import
+/// map it fetches, which may point any import anywhere, is a download; a
+/// `data:` URL is code the guard does not read; a module only known when it
+/// runs is not read. Read up to a `--`.
+fn deno_loads(args: &[Arg]) -> Option<Launch> {
+    const LOADS: [&str; 5] = [
+        "--preload",
+        "--import",
+        "--require",
+        "--eval-file",
+        "--import-map",
+    ];
+    let mut words = args.iter();
+    while let Some(arg) = words.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        let (name, value) = match text.split_once('=') {
+            Some((name, value)) => (name, Some(Arg::Known(value.to_string()))),
+            None => (text, None),
+        };
+        if !LOADS.contains(&name) {
+            continue;
+        }
+        let Some(value) = value.or_else(|| words.next().cloned()) else {
+            continue;
+        };
+        let map = name == "--import-map";
+        let Some(value) = value.known() else {
+            if map {
+                continue;
+            }
+            return Some(Launch::Unread(value));
+        };
+        for spec in value.split(',') {
+            if fetched(spec) {
+                return Some(Launch::Downloaded);
+            }
+            if !map && data_url(spec) {
+                return Some(Launch::Encoded);
+            }
+        }
+    }
+    None
 }
 
 /// The options of `deno task` that take the next word.
@@ -1112,6 +1415,9 @@ fn deno_target(unit: &Unit, at: usize) -> Launch {
             Launch::Replace(Box::new(running_package(unit, "deno", at)))
         }
         Some(spec) if fetched(spec) => Launch::Downloaded,
+        // `deno run 'data:application/javascript,…'`: code on the line,
+        // not read.
+        Some(spec) if data_url(spec) => Launch::Encoded,
         Some(_) => Launch::Itself,
         None => Launch::Unread(arg.clone()),
     }

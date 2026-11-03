@@ -646,3 +646,20 @@ posix finds=unknown | echo x > s.js && node -r ./s.js -e 'console.log(1)'
 # Another file.
 posix safe | echo x > s.js && node -r ./t.js main.js
 posix safe | node -r ./s.js main.js
+# Ruby's `-r` and perl's `-M` load a library by name from a `-I` folder (or
+# ruby's by path), and php's `auto_prepend_file` runs a file first.
+posix finds=unknown | echo x > s.rb && ruby -r./s.rb main.rb
+posix finds=unknown | echo x > s.rb && ruby -r ./s main.rb
+posix finds=unknown | echo x > s.rb && ruby -I . -r s main.rb
+posix finds=unknown | echo x > s.rb && ruby -I. -rs main.rb
+posix finds=unknown | echo x > lib/s.rb && ruby -Ilib -r s main.rb
+posix finds=unknown | echo x > s.pm && perl -I. -Ms main.pl
+posix finds=unknown | echo x > lib/A/B.pm && perl -Ilib -MA::B=x main.pl
+posix finds=unknown | echo x > s.php && php -d auto_prepend_file=s.php x.php
+posix finds=unknown | echo x > s.php && php -dauto_append_file=./s.php x.php
+# Not looked up where the line wrote it: ruby does not look in the working
+# folder for a name.
+posix safe | echo x > s.rb && ruby -r s main.rb
+posix safe | echo x > s.rb && ruby -r json main.rb
+posix safe | echo x > s.pm && perl -Ms main.pl
+posix safe | echo x > s.php && php -d memory_limit=1G x.php

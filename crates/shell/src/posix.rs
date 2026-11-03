@@ -1095,6 +1095,11 @@ fn closes_group(name: Node<'_>, source: &str) -> bool {
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
 
+/// What stands for a program's input when it is a process substitution
+/// that downloads (`python3 < <(curl -s https://x)`): an interpreter that
+/// reads it as code runs what it downloads.
+pub(crate) const DOWNLOADED_INPUT: &str = "<downloaded input>";
+
 struct Walker<'a> {
     source: &'a str,
     /// Where `source` had a `(D)` glob qualifier taken out (see
@@ -2444,7 +2449,11 @@ impl Walker<'_> {
                     .find(|child| !child.is_named())
                     .map(|child| unit::text(&child, self.source));
                 if operator.is_some_and(|operator| operator.starts_with('<')) {
-                    inputs.push(None);
+                    let downloads = redirect
+                        .child_by_field_name("destination")
+                        .filter(|to| to.kind() == "process_substitution")
+                        .is_some_and(|to| self.downloads(to));
+                    inputs.push(downloads.then(|| Arg::Unknown(DOWNLOADED_INPUT.to_string())));
                 }
             }
             _ => {}
@@ -2645,6 +2654,22 @@ impl Walker<'_> {
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else if name == "NODE_OPTIONS" {
+            // `NODE_OPTIONS+=…` adds to the value the line gave it, which
+            // may make an option of the two (`--req` and `uire`).
+            let appends = unit::text(&assignment, self.source)
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with("+="));
+            let value = if appends {
+                match (self.split.node_options.values().last(), &value) {
+                    (Some(Arg::Known(before)), Arg::Known(after)) => {
+                        Arg::Known(format!("{before}{after}"))
+                    }
+                    (None, _) => value,
+                    _ => Arg::Unknown(unit::text(&assignment, self.source).to_string()),
+                }
+            } else {
+                value
+            };
             self.split.node_options.push(value);
         } else {
             // `ZIPOPT+=…` adds to the value the line gave it.

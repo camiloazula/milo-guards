@@ -886,8 +886,9 @@ impl Walker<'_> {
         };
         let zip =
             written_name.eq_ignore_ascii_case("ZIPOPT") || written_name.eq_ignore_ascii_case("ZIP");
+        let node_options = written_name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(written_name);
-        if !zip && terraform.is_none() {
+        if !zip && !node_options && terraform.is_none() {
             return;
         }
         let source = unit::text(&node, self.source);
@@ -916,6 +917,9 @@ impl Walker<'_> {
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
+            // `set NODE_OPTIONS=--require ./x.js`: every node a later
+            // command starts loads it first.
+            None if node_options => self.split.node_options.push(value),
             None => {
                 self.split.zip_env.set(written_name, &value, true);
             }

@@ -33,30 +33,32 @@ pub(crate) use off::{apply_all, apply_input, is_data_url, is_foreign_module, Lan
 /// with the JavaScript grammar: what it does not parse is not read whole.
 pub(crate) fn language(key: &str) -> Option<Language> {
     match key {
-        "python" | "python2" | "python3" | "py" | "pypy" | "pypy3" | "ipython" => {
-            Some(Language::Python)
-        }
-        "node" | "nodejs" | "tsx" | "ts-node" | "bun" | "deno" => Some(Language::JavaScript),
-        key if key.starts_with("python3.") => Some(Language::Python),
+        "bun" | "deno" => Some(Language::JavaScript),
+        key if launch::is_node(key) => Some(Language::JavaScript),
+        key if launch::is_python(key) && launch::is_interpreter(key) => Some(Language::Python),
         _ => None,
     }
 }
 
-/// The interpreters whose code is never read whole: `ipython` runs the
-/// startup files of its profile first, and `tsx` and `ts-node` read a
-/// `tsconfig.json`, which can name modules to load: code the line does not
+/// Whether the code of the interpreter `key` is never read whole: `ipython`
+/// runs the startup files of its profile first, and `tsx` and `ts-node` read
+/// a `tsconfig.json`, which can name modules to load: code the line does not
 /// show.
-const NEVER_WHOLE: [&str; 3] = ["ipython", "tsx", "ts-node"];
+fn never_whole(key: &str) -> bool {
+    key == "tsx" || launch::is_ts_node(key) || launch::is_ipython(key)
+}
 
 /// Whether the Python `key` names may be Python 2, or one whose built-in
-/// modules are not known to be the ones of `python3`: `python2`, `python`
-/// (Python 2 on some systems), `pypy` and `pypy3`, and `py` unless its first
-/// word picks Python 3.
+/// modules are not known to be the ones of `python3`: `python2` (and
+/// `python2.7`), `python` (Python 2 on some systems), every `pypy`,
+/// `micropython`, and `py` unless its first word picks Python 3.
 fn maybe_python2(key: &str, args: &[Arg]) -> bool {
     match key {
-        "python" | "python2" | "pypy" | "pypy3" => true,
+        "python" => true,
         "py" => !launch::py_picks_three(args),
-        _ => false,
+        key => {
+            key.starts_with("python2") || key.starts_with("pypy") || key.starts_with("micropython")
+        }
     }
 }
 
@@ -108,7 +110,7 @@ pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
         Language::JavaScript => script_code(args, launch::is_node(key)),
     }?;
     Some(Code {
-        plain: !NEVER_WHOLE.contains(&key) && is_plain(key, args),
+        plain: !never_whole(key) && is_plain(key, args),
         python2,
         ..found
     })
@@ -336,38 +338,64 @@ pub(crate) fn loads_foreign_code(args: &[Arg]) -> bool {
 /// a `data:` URL: node reads the variable's words as it does its own
 /// options. A value only known when it runs may.
 pub(crate) fn options_load_foreign_code(values: &[Arg]) -> bool {
-    values.iter().any(|value| match value.known() {
-        Some(text) => {
-            // Node splits on spaces and drops the double quotes; every kind of
-            // white space splits here, which finds at least what it does.
-            let words: Vec<Arg> = text
-                .split(char::is_whitespace)
-                .map(|word| word.replace('"', ""))
-                .filter(|word| !word.is_empty())
-                .map(Arg::Known)
-                .collect();
-            loads_foreign_code(&words)
+    values
+        .iter()
+        .any(|value| match value.known().and_then(node_options_words) {
+            Some(words) => {
+                let words: Vec<Arg> = words.into_iter().map(Arg::Known).collect();
+                loads_foreign_code(&words)
+            }
+            None => true,
+        })
+}
+
+/// The words node reads a `NODE_OPTIONS` value as, split as its
+/// `ParseNodeOptionsEnvVar` does: at a space outside double quotes; a `"`
+/// turns quoting on and off and is dropped; inside quotes a backslash takes
+/// the next character as it is. `None` when the value ends in a backslash
+/// inside quotes or a quote is left open: node does not start then, and
+/// what it would have read cannot be told.
+pub(crate) fn node_options_words(text: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut quoted = false;
+    let mut new_word = true;
+    let mut chars = text.chars();
+    while let Some(mut c) = chars.next() {
+        if c == '\\' && quoted {
+            c = chars.next()?;
+        } else if c == ' ' && !quoted {
+            new_word = true;
+            continue;
+        } else if c == '"' {
+            quoted = !quoted;
+            continue;
         }
-        None => true,
-    })
+        if new_word {
+            words.push(String::new());
+            new_word = false;
+        }
+        if let Some(word) = words.last_mut() {
+            word.push(c);
+        }
+    }
+    (!quoted).then_some(words)
 }
 
 /// Whether a value `NODE_OPTIONS` is given loads a module (`--require`,
 /// `-r`, `--import`, `--loader`, `--experimental-loader`): node loads it
-/// before any script, in every node the program it is set for starts. Node
-/// splits the value on spaces and drops its double quotes; a value only known
-/// when it runs may load one.
+/// before any script, in every node the program it is set for starts. The
+/// value is split as node splits it ([`node_options_words`]); a value only
+/// known when it runs, or one node cannot split, may load one.
 pub(crate) fn preloads(value: &Arg) -> bool {
-    let Some(text) = value.known() else {
+    let Some(words) = value.known().and_then(node_options_words) else {
         return true;
     };
-    text.split(char::is_whitespace).any(|word| {
-        let word = word.replace('"', "");
+    words.iter().any(|word| {
         let name = word
             .strip_prefix("--")
             .map(|long| long.split_once('=').map_or(long, |(name, _)| name))
             .map(|name| name.replace('_', "-"));
-        word == "-r"
+        (word.starts_with("-r") && !word.starts_with("--"))
             || matches!(
                 name.as_deref(),
                 Some("require" | "import" | "loader" | "experimental-loader")

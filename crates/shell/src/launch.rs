@@ -28,8 +28,8 @@ use find::find_exec;
 pub(crate) use find::{find_targets, find_unread_primary, FIND_VALUED};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
-    after_run, code_options, is_node, is_python, options, own_args, perl_edits, py_picks_three,
-    valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
+    after_run, code_options, is_interpreter, is_ipython, is_node, is_python, is_ts_node, options,
+    own_args, perl_edits, py_picks_three, valued_options, Options, BUN_VALUES, DENO_VALUES, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 use wrappers::{
@@ -638,6 +638,18 @@ fn add_launched(
                 split.push(unit);
                 return;
             }
+            // `python3 < <(curl -s https://x)`: the code it reads is a
+            // download, as `python3 <(curl -s https://x)` runs one.
+            Launch::Reads(_)
+                if unit
+                    .stdin
+                    .as_ref()
+                    .is_some_and(|input| input.text() == crate::posix::DOWNLOADED_INPUT) =>
+            {
+                split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.push(unit);
+                return;
+            }
             Launch::Reads(reads) => {
                 // An interpreter given a here-document or here-string of plain
                 // text reads that as its code, unless node is also told to load
@@ -1139,9 +1151,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // run (`python --version`, a bare `python`) reads its input only
         // where it did before: under any but cmd, and anywhere when
         // something is piped into it or a file is redirected onto it.
-        key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
-            interpreter(key, args, posix, input)
-        }
+        key if is_interpreter(key) => interpreter(key, args, posix, input),
         "cmd" => cmd(args, unit.shell),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {

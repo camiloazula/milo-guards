@@ -827,6 +827,16 @@ posix safe | python3 -m tarfile -e a.tar
 posix safe | python3 -m tarfile -e a.tar out
 posix safe | python3 -m zipfile -l a.zip
 posix safe | python3 -m tarfile -l a.tar
+# `argparse` reads a single-dash word as a bundle of letters (`-ve` is `-v
+# -e`), and the rest of the word after `-e` as the archive.
+posix finds=overwrite | python3 -m tarfile -ve a.tar ~
+posix finds=overwrite | py -3 -m tarfile -ve a.tar ~
+posix finds=overwrite | python3 -m tarfile -vea.tar ~
+posix finds=overwrite | python3 -m zipfile --extract=a.zip ~
+posix finds=overwrite | python3 -m zipfile --ext a.zip ~
+powershell finds=overwrite | py -3 -m tarfile -ve a.tar C:\\Users\\me
+posix safe | python3 -m tarfile -ve a.tar out
+posix safe | python3 -m tarfile -vl a.tar
 
 # A value only known when it runs may hide a member or the option that
 # removes what is packed: an expansion outside quotes may split into words,
