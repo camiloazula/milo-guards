@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use tree_sitter::{Node, TreeCursor};
+use tree_sitter::Node;
 
 use crate::dotglob;
 use crate::launch;
@@ -11,6 +11,7 @@ use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
+mod fork_bomb;
 mod values;
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -67,6 +68,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         environment(walker.split, tree.root_node(), text);
     }
     walker.walk(tree.root_node(), None, 0);
+    walker.fork_bombs(tree.root_node());
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -1542,7 +1544,6 @@ impl Walker<'_> {
             .filter(|_| node.kind() == "function_definition")?;
         let name = unit::text(&name, self.source);
         self.split.define_function(name);
-        self.fork_bomb(node, name);
         let opens = node
             .child_by_field_name("redirect")
             .is_some_and(|redirect| self.opens_by_folder(redirect));
@@ -1636,54 +1637,6 @@ impl Walker<'_> {
                     self.walk_in(*child, stage, level + 1, background);
                 }
             }
-        }
-    }
-
-    /// A function that starts itself in the background, or as one side of a
-    /// pipeline, starts copies of itself without end: `:(){ :|:& };:`.
-    fn fork_bomb(&mut self, function: Node<'_>, name: &str) {
-        let Some(body) = function.child_by_field_name("body") else {
-            return;
-        };
-        // A function defined inside is judged when the walk reaches it, so
-        // its commands are not read again here: each node is read once. Each
-        // level of the walk says whether what it holds runs apart, so the
-        // scan never climbs back up: it is linear in the nodes.
-        let mut cursor = body.walk();
-        let mut stack = vec![Level::of(body, false, &mut cursor)];
-        let mut bomb = false;
-        while let Some(level) = stack.last_mut() {
-            let Some(&inner) = level.children.get(level.at) else {
-                stack.pop();
-                continue;
-            };
-            let apart = level.apart
-                || level.staged
-                || level
-                    .children
-                    .get(level.at + 1)
-                    .is_some_and(|next| next.kind() == "&");
-            level.at += 1;
-            if inner.kind() == "function_definition" {
-                continue;
-            }
-            if apart
-                && inner.kind() == "command"
-                && inner
-                    .child_by_field_name("name")
-                    .is_some_and(|called| self.arg(called).known() == Some(name))
-            {
-                bomb = true;
-                break;
-            }
-            stack.push(Level::of(inner, apart, &mut cursor));
-        }
-        if bomb {
-            self.split.problem(
-                Rule::StopSystem,
-                "starts copies of itself without end",
-                Some(name),
-            );
         }
     }
 
@@ -3085,30 +3038,6 @@ fn runs_command(node: Node<'_>) -> bool {
     let mut runs = false;
     unit::for_each_node(node, |inner| runs |= inner.kind() == "command_substitution");
     runs
-}
-
-/// One node of the fork-bomb scan, with its children still to read.
-struct Level<'t> {
-    children: Vec<Node<'t>>,
-    /// The next child to read.
-    at: usize,
-    /// Whether the node, or one it is inside (up to the function's body), is
-    /// followed by `&` or is a stage of a pipeline: what it holds runs as a
-    /// process of its own.
-    apart: bool,
-    /// Whether the children are the stages of a pipeline of more than one.
-    staged: bool,
-}
-
-impl<'t> Level<'t> {
-    fn of(node: Node<'t>, apart: bool, cursor: &mut TreeCursor<'t>) -> Self {
-        Self {
-            children: node.children(cursor).collect(),
-            at: 0,
-            apart,
-            staged: node.kind() == "pipeline" && node.named_child_count() > 1,
-        }
-    }
 }
 
 /// A bare word as the program receives it: a backslash keeps the next
