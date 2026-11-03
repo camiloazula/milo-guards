@@ -108,9 +108,7 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
     let text = match arg {
         Arg::Known(text) => text.as_str(),
         // The source text, quotes and all.
-        Arg::Unknown(text) | Arg::Template { source: text, .. } => {
-            text.trim_start_matches(['"', '\''])
-        }
+        Arg::Unknown(_) | Arg::Template { .. } => arg.text().trim_start_matches(['"', '\'']),
         Arg::Input | Arg::Null => return false,
     };
     let Some((name, value)) = text.split_once('=') else {
@@ -138,7 +136,7 @@ pub(crate) fn assigns_hiding(arg: &Arg) -> bool {
 pub(crate) fn arithmetic_hides(arg: &Arg) -> bool {
     let text = match arg {
         Arg::Known(text) => text.as_str(),
-        Arg::Unknown(text) | Arg::Template { source: text, .. } => text.trim_matches(['"', '\'']),
+        Arg::Unknown(_) | Arg::Template { .. } => arg.text().trim_matches(['"', '\'']),
         Arg::Input | Arg::Null => return false,
     };
     let chars: Vec<char> = text.chars().collect();

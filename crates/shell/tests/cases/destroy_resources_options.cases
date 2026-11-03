@@ -84,6 +84,10 @@ posix finds=destroy_resources | hcloud --config f --context prod server delete w
 posix finds=destroy_resources | hcloud --poll-interval 1s --context prod server delete web
 posix finds=destroy_resources | hcloud --endpoint http://x --debug-file log --config f server delete web
 posix finds=destroy_resources | hcloud --context prod volume delete data
+posix finds=destroy_resources | kubectl --log-file f delete ns prod
+posix finds=destroy_resources | podman --registries-conf x system prune -af
+posix finds=destroy_resources | cdk --telemetry-file f destroy
+posix finds=destroy_resources | docker-compose --log-level debug down -v
 
 # terragrunt reads the command after `--` and every option before.
 posix safe | terragrunt run --all --queue-include-dir a --queue-exclude-dir b -- plan
@@ -118,6 +122,9 @@ posix safe | pulumi destroy --yes --preview-only
 posix safe | pulumi destroy --yes --preview-only=true
 posix safe | pulumi destroy --yes --preview-only=1
 posix safe | helm uninstall api --dry-run
+posix safe | terraform state rm -dry-run aws_instance.web
+posix safe | oc adm prune images --confirm=false
+posix finds=destroy_resources | oc adm prune images --confirm=$C
 posix safe | helm uninstall api --dry-run=true
 posix safe | helm uninstall api --dry-run=server
 posix safe | helm uninstall api --dry-run=client
@@ -277,6 +284,13 @@ cmd safe | docker rm -f "%IDS%"
 cmd finds=destroy_resources | docker rm -f %IDS%
 cmd finds=destroy_resources | docker rm %IDS%
 cmd finds=destroy_resources | docker rm -f !IDS!
+# A wildcard is every name it matches, where the shell expands it: not in
+# cmd, which hands it to the program as it is.
+posix finds=destroy_resources | docker rm -f web-?
+posix finds=destroy_resources | docker container rm -f web-[12]
+posix finds=destroy_resources | docker image rm -f app:*
+powershell finds=destroy_resources | docker rm -f *
+cmd safe | docker rm -f *
 # These break this rule and no other.
 posix rules=destroy_resources | docker rm -f $names
 posix rules=destroy_resources | docker rm -f "$(docker ps -aq)"

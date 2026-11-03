@@ -4,6 +4,8 @@
 //! a setting, an application's own preferences, a user's own services) is
 //! left alone.
 
+pub(super) mod firewall;
+
 use super::processes::{is_system_label, is_system_unit};
 use super::Checker;
 use crate::path::{Access, Place};
@@ -296,6 +298,16 @@ fn base_name(key: &str) -> &str {
         .unwrap_or(key)
 }
 
+/// The programs that read the rules of a firewall as `iptables` does.
+const TABLES: [&str; 4] = ["iptables", "ip6tables", "ebtables", "arptables"];
+
+/// Whether `key` is the `-restore` of one of [`TABLES`], which loads a
+/// whole ruleset (`iptables-restore`, `iptables-legacy-restore`).
+fn is_restore(key: &str) -> bool {
+    key.strip_suffix("-restore")
+        .is_some_and(|name| TABLES.contains(&base_name(name)))
+}
+
 /// A unit's name without its `.service` suffix.
 fn unit_name(name: &str) -> &str {
     name.strip_suffix(".service").unwrap_or(name)
@@ -308,21 +320,22 @@ fn protects(name: &str) -> bool {
 
 impl Checker<'_> {
     /// Machine settings of macOS and Linux.
-    pub(super) fn settings(&mut self, unit: &Unit, key: &str) {
+    pub(super) fn settings(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
         match base_name(key) {
             "spctl" => self.spctl(args),
             "csrutil" => self.csrutil(args),
             "setenforce" => self.setenforce(args),
             "nvram" => self.nvram(args),
-            "iptables" | "ip6tables" => self.iptables(args),
-            "nft" => self.nft(args),
-            "ufw" => self.ufw(args),
-            "firewall-cmd" => {
-                if has_long(args, "panic-on", 8) || has_long(args, "set-default-zone", 7) {
-                    self.add(Rule::SystemSettings, "changes the firewall", None);
+            name if TABLES.contains(&name) => self.iptables(args),
+            name if is_restore(name) => {
+                if self.restore_loads(at, unit) {
+                    self.add(Rule::SystemSettings, firewall::REPLACES, None);
                 }
             }
+            "nft" => self.nft(at, unit),
+            "ufw" => self.ufw(args),
+            "firewall-cmd" => self.firewall_cmd(args),
             "pfctl" => self.pfctl(args),
             "socketfilterfw" => self.socketfilterfw(args),
             "systemctl" => self.systemctl(args),
@@ -418,12 +431,36 @@ impl Checker<'_> {
         }
     }
 
+    /// `iptables`, and `ebtables` and `arptables`, which take the same
+    /// commands: emptying the rules (`ebtables --init-table` too), deleting
+    /// a chain, an ACCEPT policy, and a rule that lets everything in.
     fn iptables(&mut self, args: &[Arg]) {
-        let flushes = has_flag(args, Some('F'), None) || has_long(args, "flush", 2);
+        let flushes = has_flag(args, Some('F'), None)
+            || has_long(args, "flush", 2)
+            || has_long(args, "init-table", 2);
         let deletes = has_flag(args, Some('X'), None) || has_long(args, "delete-chain", 8);
-        let opens = self.accepts_by_default(args);
-        if flushes || deletes || opens {
+        let accepts = self.accepts_by_default(args);
+        if flushes || deletes || accepts {
             self.add(Rule::SystemSettings, "changes the firewall", None);
+        } else if firewall::opens_everything(args) {
+            self.add(Rule::SystemSettings, firewall::OPENS, None);
+        }
+    }
+
+    /// `firewall-cmd`: panic mode, the default zone, a zone that accepts
+    /// everything, and the direct interface, whose pass-through and rules
+    /// are iptables arguments.
+    fn firewall_cmd(&mut self, args: &[Arg]) {
+        if has_long(args, "panic-on", 8) || has_long(args, "set-default-zone", 7) {
+            self.add(Rule::SystemSettings, "changes the firewall", None);
+            return;
+        }
+        if let Some(rule) = firewall::direct_rule(args) {
+            self.iptables(&rule);
+            return;
+        }
+        if firewall::zone_opens(args) {
+            self.add(Rule::SystemSettings, firewall::OPENS, None);
         }
     }
 
@@ -477,7 +514,10 @@ impl Checker<'_> {
     /// `nft 'flush ruleset'` and `nft flush ruleset` are the same, and
     /// `;` starts another command. A command that empties the ruleset,
     /// removes a table or chain, or names something not read, is risky.
-    fn nft(&mut self, args: &[Arg]) {
+    /// So is a chain whose policy lets everything in, and a ruleset loaded
+    /// with `-f` or `-i` that may add anything.
+    fn nft(&mut self, at: usize, unit: &Unit) {
+        let args = unit.args.as_slice();
         let words = getopt_operands(args, "fIDd", &["file", "includepath", "define", "debug"]);
         // Under `-j` the operands are JSON, which is not read: any object or
         // array in them could hold a flush.
@@ -490,12 +530,13 @@ impl Checker<'_> {
                 Arg::Known(text) | Arg::Template { text, .. } => text.contains(['{', '[']),
                 Arg::Unknown(_) | Arg::Input | Arg::Null => false,
             });
-        if holds_json
-            || nft_commands(&words)
-                .iter()
-                .any(|command| nft_empties(command))
-        {
+        let commands = nft_commands(&words);
+        if holds_json || commands.iter().any(|command| nft_empties(command)) {
             self.add(Rule::SystemSettings, "changes the firewall", None);
+        } else if firewall::nft_opens(&commands) {
+            self.add(Rule::SystemSettings, firewall::OPENS, None);
+        } else if self.nft_loads(at, unit) {
+            self.add(Rule::SystemSettings, firewall::REPLACES, None);
         }
     }
 
@@ -518,9 +559,9 @@ impl Checker<'_> {
                         arg.known()
                             .is_some_and(|text| text.eq_ignore_ascii_case("outgoing"))
                     });
-                    (allows && !outgoing).then_some("lets everything through the firewall")
+                    (allows && !outgoing).then_some(firewall::OPENS)
                 }
-                _ => None,
+                _ => firewall::ufw_opens(&words).then_some(firewall::OPENS),
             },
         };
         if let Some(reason) = reason {
@@ -530,9 +571,12 @@ impl Checker<'_> {
 
     /// `pfctl -d` turns the firewall off, and `-F` flushes what its
     /// modifier names: all, the rules or the translation rules. The
-    /// modifier may be abbreviated and attached (`-Fa`, `-qFrules`).
+    /// modifier may be abbreviated and attached (`-Fa`, `-qFrules`). `-f`
+    /// replaces the rules with what it loads, unless `-n` only parses it.
     fn pfctl(&mut self, args: &[Arg]) {
         let mut risky = false;
+        let mut loads = false;
+        let mut parses = false;
         for (letter, given) in short_options(args, "aDfFikKopsTtxX") {
             risky |= match (letter, given) {
                 ('d', _) => true,
@@ -540,9 +584,13 @@ impl Checker<'_> {
                 ('F', Given::Next(modifier)) => modifier.known().is_none_or(flushes),
                 _ => false,
             };
+            loads |= letter == 'f';
+            parses |= letter == 'n';
         }
         if risky {
             self.add(Rule::SystemSettings, "changes the firewall", None);
+        } else if loads && !parses {
+            self.add(Rule::SystemSettings, firewall::REPLACES, None);
         }
     }
 
