@@ -180,8 +180,10 @@ Hidden`, `-Credential`, `-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`,
 of `-ArgumentList` are joined into one command line that the program splits as
 it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'` is
 `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError` write
-their file, as a redirect does. So do the words that
-run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+their file, as a redirect does. A wrapper's option that starts the program in
+another folder (`env -C`, `start /d`, `Start-Process -WorkingDirectory`) is
+followed (see [Where a line is](#where-a-line-is)). The words that run the
+command after them in a POSIX shell come off too: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
 multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
@@ -378,8 +380,10 @@ each with the options it reads and those of them that take a value, as
   whether the line it is started from quotes an argument with a space is not
   on the line, so both are read and the riskier counts: `wsl pwsh -c
   "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
-  `wsl 'rm -rf ~'` may run `rm -rf ~`. The folder `--cd` names is not
-  followed.
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The shell starts in the folder
+  `--cd` names, read as a Linux path: `~` is the home directory, and an
+  absolute Windows path is where WSL mounts it (`C:\Windows` is
+  `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),
@@ -413,11 +417,12 @@ does not know (a long one may be shortened to an unambiguous start, as
 `env -S` splits its string into words that are `env`'s own arguments again,
 with the arguments after it (`env -S 'rm -rf' ~`): GNU env puts them back
 among its arguments, so they may hold its options and assignments as well
-as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` with them
-as a POSIX line. The string may be attached (`env -S'rm -rf ~'`, `env
--iS'…'`), and `--split-string=` and a shorter start of the long name
-(`--split=…`, `--s`) are the same. A string with one of its own escapes
-(`\_` for a space, `\c`, `${NAME}`) is not read: `Unreadable`.
+as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` again with
+them in the string's place. The string may be attached (`env -S'rm -rf ~'`,
+`env -iS'…'`), and `--split-string=` and a shorter start of the long name
+(`--split=…`, `--s`) are the same. The string is split as `env` splits it,
+its own escapes too (`\_` for a space, `\c` to end it); how a `${NAME}` in it
+and a string `env` refuses are read is under [Where a line is](#where-a-line-is).
 
 A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
 rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
@@ -824,6 +829,49 @@ overwrite of a file only known when it runs. `$null` is the device only in
 PowerShell, and only as the null value itself. In a POSIX shell it is the variable
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
+
+A wrapper or a runner that starts its command in a folder of its own option
+moves that command, and only it: its relative paths, the script it runs and
+the code it is given are judged from that folder, as after a `cd` that ran,
+and the rest of the line from where it was (`env -C / true; rm -rf etc` is
+safe). The options read so are `env -C DIR` (`--chdir`), `sudo -D` and `run0
+-D` (`--chdir`), pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's
+`--directory`, PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or
+`powershell -WorkingDirectory` for the script given with `-Command`, and cmd's
+`start /d DIR` (`/dDIR`), which names the drive too, and `wsl --cd DIR`, a
+Linux path (see [Wrappers and scripts](#wrappers-and-scripts)): `env -C ~ rm -rf .ssh`,
+`pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s /q
+System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
+x.obj` are safe. When one is given more than once, the last counts. A folder
+only known when it runs makes the command's relative paths known only when
+they run.
+
+Each is read the way its program reads its options. `env` and `sudo` read
+theirs as `getopt_long` does: in a bundle (`env -iC DIR`, `sudo -nD DIR`),
+with the value joined (`-CDIR`), and a long option by any prefix that names it
+alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
+also `-S'…'`) splits the string into words, as `env` does, and reads them again
+as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`. A
+`${NAME}` in it, outside single quotes, is filled in from `env`'s environment,
+so the word it stands in is only known when it runs (`env -S 'rm -rf ${HOME}'`
+deletes a path only known when it runs). A string `env` refuses (any other
+`$`, an escape it does not know, a quote left open) runs nothing, since GNU's
+and BSD's `env` both stop there; it is still read as the shell line it looks
+like, so `env -S 'rm -rf $HOME'` stays `delete`. BSD's `env -P altpath` and
+FreeBSD's `-L` and `-U user[/class]` take a value, so `env -P /bin -C / rm -rf
+etc` is `delete`. `pwsh` takes any prefix of `-WorkingDirectory` from `-wo`
+on, and `-wd`, also joined with a colon (`-wo:DIR`), and drops a second
+leading dash before it matches a parameter, as pwsh does (`--wd DIR`, `--c`).
+npm's and npx's `--prefix` (`-C`) is read as npm reads its options, so
+`--prefi` too. A cmd line reads what `bun --cwd DIR` starts as it reads what
+`bun` starts without it.
+
+Two of them name a project rather than the folder the command runs in, and
+whether the runner also starts the command there has changed between
+versions, so the command is judged from both folders: `uv run --project DIR`,
+and npm's and npx's `--prefix` for what `npm exec` runs (npm 11 runs it where
+the line is). So `npm --prefix a/b/c exec rimraf ../..` is `delete`, as is
+`npm --prefix ~ exec rimraf .ssh`.
 
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not

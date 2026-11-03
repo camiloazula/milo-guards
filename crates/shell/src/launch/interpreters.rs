@@ -1,7 +1,7 @@
 //! Shells and interpreters given a script, inline code, or their input:
 //! which is which, and the perl in-place edits read like `sed -i`.
 
-use super::wrappers::{runner, running, running_package, DELETERS};
+use super::wrappers::{runner, runner_in, running, running_package, DELETERS};
 use super::{after_options, is_stdin, join, Launch};
 use crate::inline;
 use crate::unit::{Arg, Reads, Unit};
@@ -484,6 +484,11 @@ fn only_runs(unit: &Unit, evals: bool, launch: Launch) -> Launch {
             Box::new(only_runs(unit, evals, *first)),
             Box::new(only_runs(unit, evals, *second)),
         ),
+        // `bun --cwd DIR rimraf x`: what it starts in its folder is read the
+        // same way.
+        Launch::In(folder, shell, inner) => {
+            Launch::In(folder, shell, Box::new(only_runs(unit, evals, *inner)))
+        }
         _ if unit.shell != Shell::Cmd => launch,
         Launch::Reads(_) if evals || super::piped(unit) => launch,
         _ => Launch::Itself,
@@ -545,11 +550,17 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
         "exec" => {
             let rest = &args[first + 1..];
             after_options(rest, &BUN_VALUES).map_or(Launch::Itself, |at| {
-                Launch::Script(Shell::Posix, join(&rest[at..]))
+                let script = Launch::Script(Shell::Posix, join(&rest[at..]));
+                runner_in("bun", args, first + 1 + at, script)
             })
         }
         // `bun rimraf dir` runs the project's own delete tool by its name.
-        name if DELETERS.contains(&name) => Launch::Replace(Box::new(running(unit, "bun", first))),
+        name if DELETERS.contains(&name) => runner_in(
+            "bun",
+            args,
+            first,
+            Launch::Replace(Box::new(running(unit, "bun", first))),
+        ),
         // `bun run name` runs a script of the project, a bin of it, or else
         // any program on the path (`bun run rm -rf x` deletes): a word that
         // is no file is judged as the program.
@@ -569,7 +580,12 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
                 Launch::Reads(Reads::Interpreter)
             }
             Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
-            Some(at) if !is_file(&args[at]) => Launch::Replace(Box::new(running(unit, "bun", at))),
+            Some(at) if !is_file(&args[at]) => runner_in(
+                "bun",
+                args,
+                at,
+                Launch::Replace(Box::new(running(unit, "bun", at))),
+            ),
             _ => Launch::Itself,
         },
         _ if is_stdin(word) => Launch::Reads(Reads::Interpreter),

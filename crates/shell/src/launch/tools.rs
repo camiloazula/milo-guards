@@ -162,25 +162,70 @@ const WSL_VALUES: [&str; 7] = [
 /// line, an argument with a space quoted or not, is not on the line, so both
 /// are read and the riskier counts: `wsl pwsh -c "Remove-Item …"` runs
 /// `Remove-Item …` as one script, `wsl 'rm -rf ~'` may run `rm -rf ~`.
+///
+/// `--cd DIR` starts the shell in `DIR` (see [`in_linux`]): `wsl --cd
+/// C:\Windows rm -rf System32` deletes `/mnt/c/Windows/System32`, which is
+/// `C:\Windows\System32`.
 pub(super) fn wsl(args: &[Arg]) -> Launch {
+    let mut folder = None;
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.known() {
-            Some("--") => return linux_line(&args[at + 1..]),
+            Some("--") => return in_linux(folder.as_ref(), linux_line(&args[at + 1..])),
             Some("-e" | "--exec") => {
                 return match &args[at + 1..] {
                     [] => Launch::Itself,
-                    words => Launch::Script(Shell::Posix, shell_words(words)),
+                    words => in_linux(
+                        folder.as_ref(),
+                        Launch::Script(Shell::Posix, shell_words(words)),
+                    ),
                 };
+            }
+            Some("--cd") => {
+                folder = args.get(at + 1).cloned();
+                at += 2;
             }
             Some(text) if WSL_VALUES.contains(&text) => at += 2,
             // `wsl ~` starts in the home directory, as `--cd ~` does.
             Some("--system" | "~") => at += 1,
             Some(text) if text.starts_with('-') => return Launch::Itself,
-            _ => return linux_line(&args[at..]),
+            _ => return in_linux(folder.as_ref(), linux_line(&args[at..])),
         }
     }
     Launch::Itself
+}
+
+/// `launch`, started by `wsl --cd` in `folder` when there is one: a Linux
+/// path, `~` the Linux home, and an absolute Windows path the folder WSL
+/// mounts it at (`C:\Windows` is `/mnt/c/Windows`). WSL refuses any other
+/// path; it is read as a Linux path all the same.
+fn in_linux(folder: Option<&Arg>, launch: Launch) -> Launch {
+    let Some(folder) = folder else {
+        return launch;
+    };
+    let folder = match folder.known() {
+        Some(text) => Arg::Known(linux_path(text)),
+        None => folder.clone(),
+    };
+    Launch::In(folder, Some(Shell::Posix), Box::new(launch))
+}
+
+/// The Linux path WSL reads a `--cd` folder as: an absolute Windows path
+/// (`C:\Windows`, `C:/Windows`, `C:`) under `/mnt/` and its drive letter,
+/// with its backslashes as slashes.
+fn linux_path(text: &str) -> String {
+    let mut chars = text.chars();
+    if let (Some(letter), Some(':')) = (chars.next(), chars.next()) {
+        let rest = chars.as_str();
+        if letter.is_ascii_alphabetic() && (rest.is_empty() || rest.starts_with(['\\', '/'])) {
+            return format!(
+                "/mnt/{}{}",
+                letter.to_ascii_lowercase(),
+                rest.replace('\\', "/")
+            );
+        }
+    }
+    text.to_string()
 }
 
 /// The line `wsl` hands its Linux shell, read the two ways [`wsl`] says.
