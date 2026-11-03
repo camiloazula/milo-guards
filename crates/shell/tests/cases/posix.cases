@@ -814,3 +814,62 @@ posix@home finds=delete | rm -rf .ssh
 posix@home finds=delete | rm -rf .SSH
 posix@home finds=delete | rm -rf ~/.zshrc
 posix@home finds=overwrite | echo x >> .bashrc
+
+# A value only known when it runs may hide an operand or an option. An
+# output of `dd` only known then may be a disk. An expansion outside quotes
+# may split into several words: more operands for a delete, a move or an
+# archive that removes what it packs, and an option that destroys or that
+# changes a machine setting. A quoted one is one word, a value.
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=/dev/zero of=$DISK
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=/dev/zero of="$DISK"
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=a of=$(echo ~/.bashrc)
+posix finds=wipe_disk reason="writes over a disk" | dd if=/dev/zero of=/dev/disk2
+posix finds=wipe_disk | dd if=a "$OUT"
+posix finds=wipe_disk | dd bs=$B if=a of=out.bin
+posix finds=wipe_disk | cd $D && dd if=a of=out.bin
+posix safe | dd bs="$B" if=a of=out.bin
+posix safe | dd if=a of=out.bin
+posix safe | dd if=a of=/dev/null
+posix finds=delete reason="deletes a path only known when it runs" | tar -cf $A src --remove-files
+posix finds=delete reason="deletes a path only known when it runs" | A='x.tar /etc'; tar -cf $A --remove-files
+posix finds=delete | tar --exclude $E -cf x.tar src --remove-files
+posix finds=delete | tar -czf x.tar src $OPTS
+posix finds=delete | zip $OPTS x.zip src
+posix finds=delete | 7z a x.7z src $OPTS
+posix finds=delete | shred -n $N notes.txt
+posix finds=delete | mv -S $X a b
+posix finds=delete | mv -t $T a
+posix safe | tar -cf "$A" src
+posix safe | tar -cf "$A" src --remove-files
+posix finds=git_remote reason="rewrites or deletes branches on the remote" | git push $F origin main
+posix finds=git_remote | git push origin $BRANCH
+posix finds=git_discard | git checkout $BRANCH
+posix finds=git_discard | git reset $MODE
+posix finds=git_discard | git clean $FLAGS
+posix finds=git_discard | git switch $BRANCH
+posix finds=git_discard | git branch $NAME
+posix finds=git_discard reason="deletes a tag" | git tag $TAG
+posix finds=git_history | git gc $FLAGS
+posix safe | git tag -l $PATTERN
+posix safe | git branch --list $PATTERN
+posix safe | git push origin "$BRANCH"
+posix finds=destroy_resources reason="deletes every unused image" | docker image prune $FLAGS
+posix finds=destroy_resources reason="removes unused containers, images and volumes" | docker system prune $FLAGS
+posix finds=destroy_resources | docker compose down $FLAGS
+posix finds=destroy_resources reason="destroys the infrastructure a configuration manages" | terraform apply $TF_ARGS
+posix finds=destroy_resources | aws s3 sync . s3://b $FLAGS
+posix finds=destroy_resources | kubectl apply -f x.yaml $FLAGS
+posix finds=destroy_resources | kubectl replace -f x.yaml $FLAGS
+posix finds=destroy_resources | oc adm prune images $FLAGS
+posix finds=destroy_resources | docker swarm leave $FLAGS
+posix finds=destroy_resources | podman kube play x.yaml $FLAGS
+posix finds=destroy_resources | gsutil rsync $FLAGS a gs://b
+posix finds=destroy_resources | nomad job stop $FLAGS web
+posix finds=destroy_resources | terragrunt apply $FLAGS
+posix finds=delete | rsync -a $FLAGS build/ ../deploy/
+posix finds=overwrite | sed $FLAGS 's/a/b/' ~/.bashrc
+posix finds=delete | find ~ -name x $ACTION
+posix finds=system_settings reason="changes a machine setting only known when it runs" | iptables $flag
+posix finds=system_settings reason="changes a machine setting only known when it runs" | spctl $x
+posix finds=system_settings | ufw $c
+posix finds=system_settings | csrutil $x

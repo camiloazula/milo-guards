@@ -189,12 +189,13 @@ posix finds=overwrite | tar -xf x.tar --mod -C /etc
 posix finds=overwrite | bsdtar -xf x.tar --mod -C /etc
 posix finds=overwrite | tar -xpf x.tar --mod -C ~
 
-# tar with a mode only known when it runs may unpack.
+# tar with a mode only known when it runs may unpack. One outside quotes
+# may split into words, `--remove-files` among them.
 posix safe | tar -czf "$out" -C ~ .
 posix safe | tar -cf "$out" -C ~ "$file"
 posix safe | tar -tf "$a" -C ~
 posix safe | tar "$mode" -f x.tar -C build
-posix safe | tar $mode -f x.tar -C .
+posix finds=delete | tar $mode -f x.tar -C .
 posix safe | tar "$mode" -f x.tar -O -C ~
 posix safe | tar --create -f "$out" -C ~ .
 posix safe | tar -xf x.tar "$file"

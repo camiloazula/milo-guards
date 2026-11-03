@@ -12,7 +12,7 @@ use milo_guards_core::spelling::glob;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use crate::unit::{operands, plain, Arg, Importing, Reads, Scope, Split, Unit};
+use crate::unit::{may_split, operands, plain, Arg, Importing, Reads, Scope, Split, Unit};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
@@ -1391,10 +1391,13 @@ const COPY_VALUED: [&str; 8] = [
 
 /// `mv`/`cp`-style operands: the sources and the destination, with `-t
 /// DIR` (`-tDIR`, `--target-directory[=]DIR`) naming the destination when
-/// given.
+/// given. The value of an option that may split into words when it runs
+/// (`-S $X`, see [`may_split`]) is an operand too, since a word after the
+/// first is one.
 fn sources_and_destination<'a>(
     args: &'a [Arg],
     takes_value: &[&str],
+    shell: Shell,
 ) -> (Vec<&'a Arg>, Option<Arg>) {
     let mut operands = Vec::new();
     let mut target = None;
@@ -1405,14 +1408,18 @@ fn sources_and_destination<'a>(
             operands.push(arg);
             continue;
         };
+        let mut value = |value: Option<&'a Arg>| {
+            operands.extend(value.filter(|value| may_split(value, shell)));
+            value
+        };
         if text == "--" {
             options = false;
         } else if text == "-t" || text == "--target-directory" {
-            target = iter.next().map(folder);
+            target = value(iter.next()).map(folder);
         } else if let Some(dir) = text.strip_prefix("--target-directory=") {
             target = Some(folder(&Arg::Known(dir.to_string())));
         } else if takes_value.contains(&text) {
-            iter.next();
+            value(iter.next());
         } else if text.starts_with("--") {
         } else if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
             // `-t` in a bundle (`cp -rt DIR`) takes the rest of the bundle,
@@ -1420,7 +1427,7 @@ fn sources_and_destination<'a>(
             if let Some(at) = bundle.find('t') {
                 let rest = &bundle[at + 1..];
                 target = if rest.is_empty() {
-                    iter.next().map(folder)
+                    value(iter.next()).map(folder)
                 } else {
                     Some(folder(&Arg::Known(rest.to_string())))
                 };
@@ -1454,7 +1461,7 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
             .cloned()
             .collect(),
         "cp" | "install" | "mv" | "ln" if unit.shell != Shell::PowerShell => {
-            let (sources, destination) = sources_and_destination(args, &COPY_VALUED);
+            let (sources, destination) = sources_and_destination(args, &COPY_VALUED, unit.shell);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
         "copy-item" | "move-item" => {
@@ -1481,13 +1488,43 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
         }
         "set-content" | "add-content" | "out-file" | "tee-object" => content_files(args),
         "new-item" => new_item_files(args),
-        "dd" => args
-            .iter()
-            .filter_map(|arg| arg.known()?.strip_prefix("of="))
-            .map(|file| Arg::Known(file.to_string()))
-            .collect(),
+        "dd" => dd_outputs(args, unit.shell),
         _ => Vec::new(),
     }
+}
+
+/// The files `dd` writes: the value of each `of=` operand, and a file only
+/// known when it runs for each operand that may be one: an `of=` whose value
+/// is only known then (`of=$DISK`, `of="$(…)"`), an operand wholly only known
+/// then (`"$OUT"`), and one that may split into words when it runs
+/// (`bs=$B`, see [`may_split`]), any of which may be an `of=`.
+pub(crate) fn dd_outputs(args: &[Arg], shell: Shell) -> Vec<Arg> {
+    args.iter()
+        .filter_map(|arg| {
+            let readable = match arg {
+                Arg::Known(text) => {
+                    return text
+                        .strip_prefix("of=")
+                        .map(|file| Arg::Known(file.to_string()));
+                }
+                Arg::Null => return None,
+                Arg::Unknown(text) | Arg::Template { text, .. } => text.as_str(),
+                Arg::Input => "",
+            };
+            let key = readable
+                .split_once('=')
+                .map(|(key, _)| key)
+                .filter(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphabetic()));
+            let written = arg.text();
+            match key {
+                Some("of") => Some(Arg::Unknown(
+                    written.strip_prefix("of=").unwrap_or(written).to_string(),
+                )),
+                Some(_) if !may_split(arg, shell) => None,
+                _ => Some(Arg::Unknown(written.to_string())),
+            }
+        })
+        .collect()
 }
 
 /// The files `Set-Content`, `Add-Content`, `Out-File` and `Tee-Object`

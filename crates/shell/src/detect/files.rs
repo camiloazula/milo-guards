@@ -1,11 +1,12 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, or_here, sources_and_destination, Checker, COPY_VALUED};
+use super::{dd_outputs, downloads_to, or_here, sources_and_destination, Checker, COPY_VALUED};
 use crate::launch::{find_targets, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{
-    has_flag, has_switch, operands, plain, switch_names, switch_value, Arg, Scope, Unit,
+    has_flag, has_switch, may_flag, operands, operands_split, plain, switch_names, switch_value,
+    unread_option, Arg, Scope, Unit,
 };
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::{glob, verbatim};
@@ -23,7 +24,7 @@ impl Checker<'_> {
             "rm" | "unlink" | "srm" => self.delete(unit, &operands(args, &[]), "deletes"),
             "shred" => self.delete(
                 unit,
-                &operands(args, &["-n", "-s", "--iterations", "--size"]),
+                &operands_split(args, &["-n", "-s", "--iterations", "--size"], shell),
                 "shreds",
             ),
             // Delete tools that come as packages (`npx rimraf dist`): the
@@ -36,8 +37,13 @@ impl Checker<'_> {
                     self.delete(unit, &operands(args, &[]), "deletes");
                 }
             }
+            // An argument that may split into words when it runs may be the
+            // option that deletes (`-delete`, `--delete`, `/MIR`) or edits
+            // in place (`-i`): it is taken as given.
             "find" if shell == Shell::Posix => {
-                if args.iter().any(|arg| arg.known() == Some("-delete")) {
+                if args.iter().any(|arg| arg.known() == Some("-delete"))
+                    || unread_option(args, shell)
+                {
                     let found = find_targets(args);
                     self.delete(unit, &found.iter().collect::<Vec<_>>(), "deletes");
                 }
@@ -67,7 +73,8 @@ impl Checker<'_> {
 
             // Moving and copying: what is moved away, and where it lands.
             "mv" if shell != Shell::PowerShell => {
-                let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
+                let (sources, destination) =
+                    sources_and_destination(args, &["-S", "--suffix"], shell);
                 self.move_away(unit, &sources, "moves");
                 if let Some(destination) = destination {
                     self.copy_to(
@@ -84,7 +91,9 @@ impl Checker<'_> {
                     && (has_flag(args, Some('r'), Some("recursive"))
                         || has_flag(args, Some('R'), None)
                         || has_flag(args, Some('a'), Some("archive")));
-                if let (sources, Some(destination)) = sources_and_destination(args, &COPY_VALUED) {
+                if let (sources, Some(destination)) =
+                    sources_and_destination(args, &COPY_VALUED, shell)
+                {
                     let leaves = leaves(unit, &sources);
                     self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
@@ -93,7 +102,8 @@ impl Checker<'_> {
                 // A link reaches its target through a name inside the
                 // workspace, so a later write or delete of the link lands on
                 // whatever it points at.
-                let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
+                let (sources, destination) =
+                    sources_and_destination(args, &["-S", "--suffix"], shell);
                 for source in &sources {
                     self.links_to(shell, unit.scope(), source);
                 }
@@ -171,7 +181,10 @@ impl Checker<'_> {
                     .filter(|arg| !valued(arg, &ROBOCOPY_LOGS) && !valued(arg, &["save", "job"]))
                     .collect();
                 if let Some(destination) = operands.get(1) {
-                    if has_switch(args, "mir") || has_switch(args, "purge") {
+                    if has_switch(args, "mir")
+                        || has_switch(args, "purge")
+                        || unread_option(args, shell)
+                    {
                         self.delete(unit, &[destination], "deletes files in");
                     }
                     // What it names after the two folders is what it copies;
@@ -193,9 +206,10 @@ impl Checker<'_> {
                     if let Some(destination) =
                         operands.last().filter(|destination| !remote(destination))
                     {
-                        if args
-                            .iter()
-                            .any(|arg| arg.known().is_some_and(|text| text.starts_with("--delete")))
+                        if unread_option(args, shell)
+                            || args.iter().any(|arg| {
+                                arg.known().is_some_and(|text| text.starts_with("--delete"))
+                            })
                         {
                             self.delete(unit, &[destination], "deletes files in");
                         }
@@ -349,7 +363,7 @@ impl Checker<'_> {
                     self.make_folder(shell, unit.scope(), target, Access::Content);
                 }
             }
-            "sed" if has_flag(args, Some('i'), Some("in-place")) => {
+            "sed" if may_flag(args, shell, Some('i'), Some("in-place")) => {
                 for file in sed_files(args) {
                     self.write(shell, unit.scope(), file, "edits");
                 }
@@ -492,14 +506,18 @@ impl Checker<'_> {
                     self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
             }
+            // An output only known when it runs may be a disk: an unknown
+            // output of `cp` is a write, and one of `dd` writes over a disk.
             "dd" => {
-                for arg in args {
-                    if let Some(file) = arg.known().and_then(|text| text.strip_prefix("of=")) {
-                        self.write(
-                            shell,
-                            unit.scope(),
-                            &Arg::Known(file.to_string()),
-                            "writes to",
+                for file in dd_outputs(args, shell) {
+                    let place = self.place_into(shell, unit.scope(), &file, Access::Content);
+                    if file.known().is_some() && place != Place::Unknown {
+                        self.write(shell, unit.scope(), &file, "writes to");
+                    } else {
+                        self.add(
+                            Rule::WipeDisk,
+                            "writes over a disk or file only known when it runs",
+                            Some(&file),
                         );
                     }
                 }

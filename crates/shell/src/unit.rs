@@ -3610,10 +3610,112 @@ pub(crate) fn has_flag(args: &[Arg], short: Option<char>, long: Option<&str>) ->
     false
 }
 
+/// Whether `arg`, a value only known when it runs, may be several words when
+/// it does, any of which may be an option or another operand: in a POSIX
+/// shell an expansion outside quotes (`$f`, `x$f`, `$(…)`, a backtick), which
+/// the shell splits, and a quoted one that is a list (`"$@"`, `"${a[@]}"`,
+/// `"${!p@}"`); in PowerShell a variable (not `$env:`), a splat (`@a`) or a
+/// subexpression, which hand a program each item of an array as its own
+/// argument; in cmd a `%X%` or `!X!` outside quotes, which is put in as
+/// text; and what a pipeline hands a program (`xargs`). A quoted expansion
+/// is one word (`"$f"`, `"$(…)"`), and so is a known value.
+pub(crate) fn may_split(arg: &Arg, shell: Shell) -> bool {
+    let text = match arg {
+        Arg::Known(_) | Arg::Null => return false,
+        Arg::Input => return true,
+        Arg::Unknown(text) => text.as_str(),
+        Arg::Template { source, .. } => source,
+    };
+    match shell {
+        Shell::Posix => {
+            text.contains("$@")
+                || text.contains("${@")
+                || text.contains("[@]")
+                || (text.contains("${!") && text.contains("@}"))
+                || unquoted_expansion(text)
+        }
+        Shell::PowerShell => {
+            text.starts_with('(')
+                || text.starts_with("@(")
+                || (text.starts_with('$')
+                    && !text
+                        .get(..5)
+                        .is_some_and(|head| head.eq_ignore_ascii_case("$env:")))
+                || (text.starts_with('@') && text.len() > 1)
+        }
+        Shell::Cmd => !text.starts_with('"') && text.contains(['%', '!']),
+    }
+}
+
+/// Whether a POSIX word holds a `$` or a backtick outside quotes: an
+/// expansion the shell splits into words. `$'…'` and `$"…"` are quotes.
+fn unquoted_expansion(text: &str) -> bool {
+    let mut quote = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            // A backslash keeps the next character, outside quotes and
+            // inside double ones.
+            (Some('"') | None, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '$') if !matches!(chars.peek(), Some('\'' | '"') | None) => return true,
+            (None, '`') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether an argument before `--` may split into words when it runs (see
+/// [`may_split`]), any of which may be an option: a rule that looks for an
+/// option that destroys takes it as given.
+pub(crate) fn unread_option(args: &[Arg], shell: Shell) -> bool {
+    args.iter()
+        .take_while(|arg| arg.known() != Some("--"))
+        .any(|arg| may_split(arg, shell))
+}
+
+/// Whether an option that destroys may be given: as [`has_flag`], or an
+/// argument before `--` that may split into words when it runs, one of which
+/// may be it (see [`unread_option`]).
+pub(crate) fn may_flag(
+    args: &[Arg],
+    shell: Shell,
+    short: Option<char>,
+    long: Option<&str>,
+) -> bool {
+    has_flag(args, short, long) || unread_option(args, shell)
+}
+
 /// The arguments that are not POSIX-style options: everything after `--`,
 /// and what does not start with `-` before it. `takes_value` names the
 /// options whose next argument is their value, not an operand.
 pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |_| false)
+}
+
+/// As [`operands`], with the value of an option in `takes_value` among them
+/// when it may split into words when it runs (`shred -n $N f`, see
+/// [`may_split`]): a word after the first is an operand.
+pub(crate) fn operands_split<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    shell: Shell,
+) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |value| may_split(value, shell))
+}
+
+/// The operands as [`operands`] reads them, and each value of an option in
+/// `takes_value` that `counts` takes as one.
+fn operands_where<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    counts: impl Fn(&Arg) -> bool,
+) -> Vec<&'a Arg> {
     let mut operands = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -3624,7 +3726,7 @@ pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg
             }
             Some(text) if text.len() > 1 && text.starts_with('-') => {
                 if takes_value.contains(&text) {
-                    iter.next();
+                    operands.extend(iter.next().filter(|value| counts(value)));
                 }
             }
             _ => operands.push(arg),

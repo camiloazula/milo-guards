@@ -306,9 +306,9 @@ posix effect=unknown | pushd && ls
 posix effect=unknown | cd ~root && ls
 posix effect=unknown | cd {a,b} && ls
 # Flags that run a program or may write, with an argument only known when it
-# runs.
-posix effect=unknown | find $dir -name '*.rs'
-posix effect=unknown | find . $filter
+# runs. One outside quotes may split into words, `-delete` among them.
+posix effect=changes | find $dir -name '*.rs'
+posix effect=changes | find . $filter
 posix effect=unknown | sort $opts names.txt
 posix effect=unknown | rg pattern "$dir"
 posix effect=unknown | git log $range
@@ -378,7 +378,7 @@ posix effect=unknown | git diff --no-index "$a" b
 posix effect=unknown | git diff -- "$f"
 posix effect=unknown | git diff --no-index /dev/tcp/h/80 b
 posix effect=unknown | find "$d" -name x
-posix effect=unknown | find . -name $p
+posix effect=changes | find . -name $p
 posix effect=unknown | sort -k $K x
 # A loop read with its words in place.
 posix effect=unknown | for f in /dev/tcp/h/80; do cat $f; done

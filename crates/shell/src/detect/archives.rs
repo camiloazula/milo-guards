@@ -8,7 +8,7 @@
 use super::Checker;
 use crate::path::within;
 use crate::powershell::Params;
-use crate::unit::{Arg, Unit};
+use crate::unit::{may_split, unread_option, Arg, Unit};
 use crate::Shell;
 
 impl Checker<'_> {
@@ -33,8 +33,8 @@ impl Checker<'_> {
         let args = unit.args.as_slice();
         let (members, matched) = match key {
             "tar" | "gtar" | "bsdtar" => (tar(args, unit.shell).removed(), false),
-            "zip" => (zip(args), true),
-            "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args), true),
+            "zip" => (zip(args, unit.shell), true),
+            "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args, unit.shell), true),
             _ => return,
         };
         // `7z` matches a wildcard itself, quoted or not, and so does `zip` on
@@ -66,12 +66,15 @@ struct Tar {
     unpacks: bool,
     /// Whether `--remove-files` is given to a mode that makes or adds to an
     /// archive (`-c`, `-r`, `-u`), or to one only known when it runs that
-    /// no mode letter rules out.
+    /// no mode letter rules out. An argument that may split into words when
+    /// it runs (`$OPTS`) may be `--remove-files`.
     removes: bool,
     /// The folders `-C`, `--directory` and `--one-top-level` name, in order.
     folders: Vec<Arg>,
     /// The files and folders it is asked to pack, each as seen from where
-    /// the line runs (a member after `-C dir` is under `dir`).
+    /// the line runs (a member after `-C dir` is under `dir`). The value of
+    /// an option that may split into words when it runs (`-f $A`) is one
+    /// too: a word after the first is a member.
     members: Vec<Arg>,
 }
 
@@ -189,6 +192,17 @@ fn moved(under: Option<&Arg>, folder: &Arg, shell: Shell) -> Arg {
     }
 }
 
+/// The value of an option, taken as a member when it may split into words
+/// when it runs (see [`may_split`]): `-f $A`, with `A='x.tar /etc'`, packs
+/// `/etc`. Whether it was.
+fn split_member(value: &Arg, under: Option<&Arg>, shell: Shell, members: &mut Vec<Arg>) -> bool {
+    let splits = may_split(value, shell);
+    if splits {
+        members.push(within(under, value, shell));
+    }
+    splits
+}
+
 /// What `tar` is asked to do. A mode that only the line's run shows (`tar
 /// "$mode" -f x.tar`) counts as extracting, and as packing.
 fn tar(args: &[Arg], shell: Shell) -> Tar {
@@ -250,6 +264,7 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
                     None => iter.next().map(|(_, folder)| folder.clone()),
                 };
                 if let Some(folder) = folder {
+                    unknown |= split_member(&folder, under.as_ref(), shell, &mut members);
                     under = Some(moved(under.as_ref(), &folder, shell));
                     folders.push(folder);
                 }
@@ -263,14 +278,18 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
             } else if long_option(name, "files-from", 5) {
                 // The members are in a file the line does not show.
                 if attached.is_none() {
-                    iter.next();
+                    if let Some((_, value)) = iter.next() {
+                        unknown |= split_member(value, under.as_ref(), shell, &mut members);
+                    }
                 }
                 members.push(Arg::Unknown("<files from a list>".to_string()));
             } else if attached.is_none()
                 && !TAR_LONG_FLAGS.iter().any(|flag| is(flag))
                 && TAR_LONG_VALUES.iter().any(|full| is(full))
             {
-                iter.next();
+                if let Some((_, value)) = iter.next() {
+                    unknown |= split_member(value, under.as_ref(), shell, &mut members);
+                }
             }
             continue;
         }
@@ -293,6 +312,9 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
                 } else {
                     iter.next().map(|(_, value)| value.clone())
                 };
+                if let Some(value) = &value {
+                    unknown |= split_member(value, under.as_ref(), shell, &mut members);
+                }
                 match (letter, value) {
                     ('C', Some(folder)) => {
                         under = Some(moved(under.as_ref(), &folder, shell));
@@ -322,6 +344,7 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
     // With no mode read, an argument that is only known when it runs may be
     // `-x`, or `-c`.
     let mode_unknown = unknown && !other_mode && !extract;
+    let removes_files = removes_files || unread_option(args, shell);
     Tar {
         unpacks: (extract || mode_unknown) && !other_mode && !to_stdout,
         removes: removes_files && (pack || mode_unknown),
@@ -465,9 +488,12 @@ const ZIP_LONG_VALUES: &[&str] = &[
 /// stand in for them when none is given. `-xpat` and `--exclude=pat` are one
 /// value and open no list. An argument that only a run can show, inside a
 /// list, may end it (it may start with `-` or be `@`), so the list is
-/// closed after it.
-fn zip(args: &[Arg]) -> Vec<Arg> {
-    let mut moves = false;
+/// closed after it. An argument that may split into words when it runs may
+/// be `-m`, and the value of an option that may is an operand too (see
+/// [`may_split`]).
+fn zip(args: &[Arg], shell: Shell) -> Vec<Arg> {
+    let mut moves = unread_option(args, shell);
+    let mut split = Vec::new();
     let mut from_input = false;
     let mut positional = Vec::new();
     let mut included = Vec::new();
@@ -519,7 +545,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
             } else if is("include") {
                 list = attached.is_none().then_some(ZipList::Include);
             } else if attached.is_none() && ZIP_LONG_VALUES.iter().any(|full| is(full)) {
-                iter.next();
+                split.extend(iter.next().filter(|value| may_split(value, shell)).cloned());
             }
             continue;
         }
@@ -593,7 +619,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
                 _ => {}
             }
             if separate {
-                iter.next();
+                split.extend(iter.next().filter(|value| may_split(value, shell)).cloned());
             }
             if separate || inside || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
                 break;
@@ -616,6 +642,7 @@ fn zip(args: &[Arg]) -> Vec<Arg> {
     if from_input {
         members.push(Arg::Unknown("<names read from input>".to_string()));
     }
+    members.extend(split);
     members
 }
 
@@ -644,10 +671,11 @@ fn may_be_switch(arg: &Arg) -> bool {
 /// readable start is `-` is a switch whatever follows (`-p"$PASS"`); one
 /// that may be `-i` adds a member only known when it runs. An argument
 /// wholly unknown (`$OPTS`) may be a switch too, so the default `*` stays
-/// among the members when the operands that are known leave none.
-fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
+/// among the members when the operands that are known leave none. One that
+/// may split into words when it runs may be `-sdel` (see [`may_split`]).
+fn seven_zip_removes(args: &[Arg], shell: Shell) -> Vec<Arg> {
     let list = || Arg::Unknown("<files from a list>".to_string());
-    let mut deletes = false;
+    let mut deletes = unread_option(args, shell);
     let mut adds = false;
     let mut included = false;
     let mut positional = 0;

@@ -680,7 +680,9 @@ posix safe | gcloud projects add-iam-policy-binding $P --member $M --role r
 posix safe | gcloud compute instances add-metadata $VM
 posix safe | gcloud storage cp $F gs://b/
 posix safe | gcloud storage cp "$F" gs://b/
-posix safe | gcloud storage rsync $SRC gs://b
+posix safe | gcloud storage rsync "$SRC" gs://b
+# Outside quotes it may split into words, an option that deletes among them.
+posix finds=destroy_resources reason="deletes the objects the source does not have" | gcloud storage rsync $SRC gs://b
 posix safe | gcloud storage mv $A gs://b/
 posix safe | gcloud pubsub topics publish $T --message x
 posix safe | gcloud container images list-tags $IMG

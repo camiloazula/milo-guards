@@ -69,7 +69,9 @@ posix safe | iptables -S
 posix safe | iptables -C INPUT -j DROP
 posix safe | iptables -Z
 posix safe | iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-posix safe | iptables -A INPUT -s $ip -j DROP
+posix safe | iptables -A INPUT -s "$ip" -j DROP
+# Outside quotes a value may split into words, an option among them.
+posix finds=system_settings | iptables -A INPUT -s $ip -j DROP
 posix safe | iptables -I INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
 posix safe | iptables -D INPUT 1
 posix safe | iptables -P INPUT DROP
@@ -83,7 +85,8 @@ posix safe | iptables -nPINPUT DROP
 posix safe | iptables --policy=INPUT DROP
 posix safe | iptables -POUTPUT ACCEPT
 posix safe | iptables --policy=OUTPUT ACCEPT
-posix safe | iptables -P OUTPUT $policy
+posix safe | iptables -P OUTPUT "$policy"
+posix finds=system_settings | iptables -P OUTPUT $policy
 posix safe | iptables -PINPUT
 posix safe | iptables -A INPUT -m policy --dir in --pol ipsec -j ACCEPT
 posix finds=system_settings | iptables -F
@@ -134,8 +137,8 @@ posix safe | nft 'delete rule inet filter input handle 5'
 posix safe | nft delete element inet filter blocked '{ 1.2.3.4 }'
 posix safe | nft delete set inet filter blocked
 posix safe | nft flush map inet filter m
-posix safe | nft add rule inet filter input $rule
 posix safe | nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+posix finds=system_settings | nft add rule inet filter input $rule
 posix safe | nft -d netlink list ruleset
 posix safe | nft --debug all list ruleset
 posix safe | nft

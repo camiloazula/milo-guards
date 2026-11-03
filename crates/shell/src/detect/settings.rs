@@ -9,7 +9,7 @@ pub(super) mod firewall;
 use super::processes::{is_system_label, is_system_unit};
 use super::Checker;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, Arg, Unit};
+use crate::unit::{has_flag, operands, unread_option, Arg, Unit};
 use crate::{Rule, Shell};
 
 /// Units that protect the machine: stopping one turns protection off, as
@@ -319,10 +319,17 @@ fn protects(name: &str) -> bool {
 }
 
 impl Checker<'_> {
-    /// Machine settings of macOS and Linux.
+    /// Machine settings of macOS and Linux. An argument of one of these
+    /// programs that may split into words when it runs (`iptables $flag`)
+    /// may be the option that changes a setting, so a line the program's
+    /// own reading finds nothing in is a change all the same. `service` and
+    /// `launchctl` take no option after their words, which their own
+    /// reading judges one by one, an unknown one included.
     pub(super) fn settings(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        match base_name(key) {
+        let before = self.found.len();
+        let name = base_name(key);
+        match name {
             "spctl" => self.spctl(args),
             "csrutil" => self.csrutil(args),
             "setenforce" => self.setenforce(args),
@@ -356,7 +363,17 @@ impl Checker<'_> {
             }
             "hostnamectl" | "timedatectl" => self.set_commands(args, key),
             "hostname" if unit.shell == Shell::Posix => self.hostname(args),
-            _ => {}
+            _ => return,
+        }
+        if self.found.len() == before
+            && !matches!(name, "service" | "launchctl")
+            && unread_option(args, unit.shell)
+        {
+            self.add(
+                Rule::SystemSettings,
+                "changes a machine setting only known when it runs",
+                None,
+            );
         }
     }
 

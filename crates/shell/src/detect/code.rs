@@ -3,7 +3,7 @@
 
 use super::Checker;
 use crate::launch::{git_global, git_long, is_submodule, Global};
-use crate::unit::{has_flag, operands, Arg, Unit};
+use crate::unit::{has_flag, operands, unread_option, Arg, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -13,7 +13,7 @@ impl Checker<'_> {
         let shell = unit.shell;
         match key {
             // Git.
-            "git" => self.git(args),
+            "git" => self.git(args, shell),
 
             // Code the guard does not read.
             "add-type" => self.add(Rule::Unknown, "compiles and loads code", None),
@@ -91,7 +91,12 @@ impl Checker<'_> {
         }
     }
 
-    fn git(&mut self, args: &[Arg]) {
+    /// git's commands that throw work away. An argument that may split
+    /// into words when it runs (`git push $F origin main`) may be the
+    /// option that makes one do so, and is taken as given (see
+    /// [`unread_option`]); an option that keeps work is taken only as
+    /// written.
+    fn git(&mut self, args: &[Arg], shell: Shell) {
         let Global {
             at,
             repository,
@@ -112,6 +117,15 @@ impl Checker<'_> {
         };
         let rest = &args[at + 1..];
         let flag = |short: Option<char>, long: Option<&str>| git_flag(rest, short, long);
+        let unread = unread_option(rest, shell);
+        let may = |short: Option<char>, long: Option<&str>| unread || flag(short, long);
+        // `git branch` and `git tag` refuse a delete beside a listing (`-l`,
+        // and `-v` for a tag), so with one written, an argument only known
+        // when it runs is no delete.
+        let lists = flag(Some('l'), Some("list"));
+        let deletes = |short: Option<char>, long: Option<&str>, listing: bool| {
+            flag(short, long) || (unread && !listing)
+        };
         // `-c clean.requireForce=false` lets `clean` delete without `-f`.
         let force_needless = configs.iter().any(|config| {
             config.split_once('=').is_some_and(|(key, value)| {
@@ -125,14 +139,14 @@ impl Checker<'_> {
         let operands = operands(rest, &[]);
         let first = operands.first().and_then(|arg| arg.known());
         let (rule, reason) = match sub {
-            "reset" if flag(None, Some("hard")) => {
+            "reset" if may(None, Some("hard")) => {
                 (Rule::GitDiscard, "throws away uncommitted changes")
             }
-            "clean" if (force_needless || flag(Some('f'), Some("force"))) && !git_dry_run(rest) => {
+            "clean" if (force_needless || may(Some('f'), Some("force"))) && !git_dry_run(rest) => {
                 (Rule::GitDiscard, "deletes untracked files")
             }
             "checkout"
-                if flag(Some('f'), Some("force"))
+                if may(Some('f'), Some("force"))
                     || rest
                         .iter()
                         .position(|arg| arg.known() == Some("--"))
@@ -141,17 +155,17 @@ impl Checker<'_> {
             {
                 (Rule::GitDiscard, "throws away changes to files")
             }
-            "restore" if !flag(Some('S'), Some("staged")) || flag(Some('W'), Some("worktree")) => {
+            "restore" if !flag(Some('S'), Some("staged")) || may(Some('W'), Some("worktree")) => {
                 (Rule::GitDiscard, "throws away changes to files")
             }
-            "switch" if flag(None, Some("discard-changes")) || flag(Some('f'), Some("force")) => {
+            "switch" if may(None, Some("discard-changes")) || may(Some('f'), Some("force")) => {
                 (Rule::GitDiscard, "throws away changes to files")
             }
             "stash" if matches!(first, Some("drop" | "clear")) => {
                 (Rule::GitDiscard, "deletes stashed changes")
             }
             "branch"
-                if flag(Some('D'), None)
+                if deletes(Some('D'), None, lists)
                     || (flag(Some('d'), Some("delete")) && flag(Some('f'), Some("force"))) =>
             {
                 (
@@ -160,7 +174,7 @@ impl Checker<'_> {
                 )
             }
             "push"
-                if flag(Some('f'), Some("force"))
+                if may(Some('f'), Some("force"))
                     || flag(None, Some("force-with-lease"))
                     || flag(None, Some("force-if-includes"))
                     || flag(None, Some("mirror"))
@@ -182,11 +196,12 @@ impl Checker<'_> {
             "reflog" if matches!(first, Some("expire" | "delete")) => {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
-            "gc" if rest.iter().filter_map(Arg::known).any(|text| {
-                text.split_once('=').is_some_and(|(name, value)| {
-                    matches!(value, "now" | "all") && git_long(name, "prune")
-                })
-            }) =>
+            "gc" if unread
+                || rest.iter().filter_map(Arg::known).any(|text| {
+                    text.split_once('=').is_some_and(|(name, value)| {
+                        matches!(value, "now" | "all") && git_long(name, "prune")
+                    })
+                }) =>
             {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
@@ -202,9 +217,17 @@ impl Checker<'_> {
                     (Rule::SystemSettings, "sets git config that runs a program")
                 }
             }
-            "update-ref" if flag(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
+            "update-ref" if may(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
             // A tag has no reflog to bring it back from.
-            "tag" if flag(Some('d'), Some("delete")) => (Rule::GitDiscard, "deletes a tag"),
+            "tag"
+                if deletes(
+                    Some('d'),
+                    Some("delete"),
+                    lists || flag(Some('v'), Some("verify")),
+                ) =>
+            {
+                (Rule::GitDiscard, "deletes a tag")
+            }
             // A tag given again by force moves; where it pointed is gone.
             "tag"
                 if flag(Some('f'), Some("force"))
@@ -216,17 +239,17 @@ impl Checker<'_> {
             }
             sub if is_submodule(sub)
                 && first == Some("update")
-                && flag(Some('f'), Some("force")) =>
+                && may(Some('f'), Some("force")) =>
             {
                 (Rule::GitDiscard, "throws away changes in submodules")
             }
             sub if is_submodule(sub)
                 && first == Some("deinit")
-                && flag(Some('f'), Some("force")) =>
+                && may(Some('f'), Some("force")) =>
             {
                 (Rule::GitDiscard, "throws away a submodule's changes")
             }
-            "worktree" if first == Some("remove") && flag(Some('f'), Some("force")) => {
+            "worktree" if first == Some("remove") && may(Some('f'), Some("force")) => {
                 (Rule::GitDiscard, "deletes a worktree with its changes")
             }
             _ => return,
