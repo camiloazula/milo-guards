@@ -425,7 +425,9 @@ is judged as one: its `$1` and `$@` name a different value each time, only
 known when it runs.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
-`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. So is the value
+`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command
+`git submodule foreach` runs in each submodule (see Git tags and submodules).
+So is the value
 of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
 read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
@@ -810,6 +812,10 @@ PowerShell's `Invoke-Expression` runs (`iex 'cd C:\Windows'`), since the session
 has one location; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
+A script a program runs in a folder of its own choosing, which the line does
+not say (`git submodule foreach` runs its command in each submodule), is read
+as after a `cd` to an unknown place, and the rest of the line is read from
+where it was.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
@@ -1197,7 +1203,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
-| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags, a submodule's changes. |
+| `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
@@ -1621,10 +1627,55 @@ not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
 ### Git tags and submodules
 
 `git tag -d` and `git tag --delete` are `git_discard` ("deletes a tag"): a tag
-has no reflog to bring it back from. `git submodule deinit -f` (or `--force`)
-is `git_discard` too: it throws away the submodule's changes; without `-f`
-git refuses when there are some. Deleting a tag on a remote (`git push
+has no reflog to bring it back from. For the same reason a tag given again by
+force (`git tag -f v1`, `git tag --force v1 HEAD~1`) is `git_discard` ("moves
+a tag, losing where it pointed"): the tag moves and where it pointed is gone.
+A tag listed or verified (`-l`, `-v`) moves nothing, and nor does a `-f` with
+no tag named. `git submodule deinit -f` (or `--force`) is `git_discard` too:
+it throws away the submodule's changes; without `-f` git refuses when there
+are some. So is `git submodule update -f` ("throws away changes in
+submodules"): it checks the recorded commit out over what each submodule
+holds. `git submodule--helper`, the helper `git submodule` calls, runs the
+same commands when called directly, so it is read as `git submodule`
+everywhere here (`git submodule--helper update --force`, `git
+submodule--helper foreach 'rm -rf ~'`). Deleting a tag on a remote (`git push
 --delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
+
+`git submodule foreach` runs its command in each submodule with a shell, and
+the guard reads that command as a nested script, as `bash -c`'s: one argument
+is a shell line (`git submodule foreach 'rm -rf ~'` is `delete`); with
+several, git puts the first in a shell line as written and hands the others
+to it as words, so the line read is the first as it is and each other quoted
+(`git submodule foreach git clean -fdx` is `git_discard`). Its options
+(`--recursive`, `--quiet`) come before the command, and any other word with a
+dash there is taken as one, so the command is read past it. The command runs
+in each submodule's folder, which the line does not say, so it is read as
+after a `cd` to an unknown place: `rm -rf *` there is a delete of what is only
+known when it runs, and so is a write (`git submodule foreach 'git log >
+log.txt'`). A command only known when it runs (`"$cmd"`) is `unknown`, and one
+that only reads (`git submodule foreach git status`) is safe. It is read
+under PowerShell and cmd too, as a POSIX line: git runs it with `sh` there as
+well.
+
+### Git's abbreviated long options
+
+git takes any prefix of a long option that names only one of its options
+(`git clean --f` is `--force`, `git reset --h` is `--hard`, `git tag --d` is
+`--delete`) and refuses a prefix that names several. So a git rule takes a
+long option written as any prefix of one it reads as that option: when the
+prefix names more than that one, git runs nothing. This holds for the options
+that keep a line safe too: `git clean -f --d` is a dry run (`--dry-run` is
+the one long option of `clean` that starts with `d`), and `git branch --d x`
+is `git branch -d x`, which refuses a branch that is not merged. A value
+given with `=` is read the same way: `git gc --pr=now` is `--prune=now`.
+git reads its options in order, so an option that keeps a line safe is read
+in order with its `--no-` form: the last of `-n`, `--dry-run` and
+`--no-dry-run` (or a prefix of it, `--no-d`) wins, and `git clean -f -n
+--no-d` deletes. The value of `-e`/`--exclude` is a pattern, not an option,
+so the `n` in `git clean -f -enx` or `-e -n` is no dry run. git's own options
+before the subcommand (`-C`, `-c`, `--git-dir`) take no prefix, and those that
+take a value take the next word as it (`--attr-source HEAD`), so that word is
+not the subcommand.
 
 ### Running a download through `Invoke-Expression`
 

@@ -12,6 +12,7 @@ use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
 mod find;
+mod git;
 mod interpreters;
 mod npm;
 mod parallel;
@@ -20,6 +21,7 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
+pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,
     SHELLS,
@@ -54,6 +56,9 @@ pub(super) enum Launch {
     Replace(Box<Unit>),
     /// It runs `script` in `shell`.
     Script(Shell, Arg),
+    /// It runs `script` in `shell`, in a folder of its own choosing that
+    /// the line does not say (`git submodule foreach`).
+    Elsewhere(Shell, Arg),
     /// It runs a script given encoded.
     Encoded,
     /// It reads its commands from its input.
@@ -232,6 +237,7 @@ fn add_launched(
                 split.set(&name);
             }
         }
+        let elsewhere = matches!(launched, Launch::Elsewhere(..));
         match launched {
             Launch::Either(first, second) => {
                 if !split.fork(MAX_FORKS) {
@@ -332,7 +338,7 @@ fn add_launched(
                 }
                 unit = *replacement;
             }
-            Launch::Script(shell, script) => {
+            Launch::Script(shell, script) | Launch::Elsewhere(shell, script) => {
                 // A shell started with the option on (`bash -O dotglob -c`,
                 // `zsh -o globdots -c`) runs its script with it on.
                 let starts_hidden = SHELLS.contains(&key.as_str())
@@ -401,6 +407,13 @@ fn add_launched(
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
                         split.repeats += usize::from(per_item);
+                        // `git submodule foreach` runs its command in a folder
+                        // the line does not name; the rest of the line is
+                        // where it was.
+                        let outer_dir = elsewhere.then(|| split.dir_snapshot());
+                        if elsewhere {
+                            split.move_unknown("the folder it runs in");
+                        }
                         if key == "alias" {
                             // Each `NAME=VALUE` is a body of its own.
                             let definitions: Vec<(String, String)> = split
@@ -420,6 +433,9 @@ fn add_launched(
                             }
                         } else {
                             unit::script_in(split, &text, shell, depth + 1, here);
+                        }
+                        if let Some(place) = outer_dir {
+                            split.restore_dir(place);
                         }
                         split.repeats -= usize::from(per_item);
                         // What the script runs, it runs for the shell that started it.
@@ -896,6 +912,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             runner(key, unit)
         }
         "dx" => runner(key, unit),
+        "git" => git::launch(args),
         "bun" => bun(unit),
         "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),

@@ -2615,6 +2615,21 @@ impl Split {
         }
     }
 
+    /// Run what comes next from a folder only known when it runs, `why`, as
+    /// a `cd` there would: the script a program runs in a folder of its own
+    /// choosing (`git submodule foreach`). Put back with
+    /// [`Self::restore_dir`] from a [`Self::dir_snapshot`] taken before.
+    pub(crate) fn move_unknown(&mut self, why: &str) {
+        self.moves += 1;
+        self.moved += 1;
+        self.dir = Some(Arg::Unknown(why.to_string()));
+        self.dir_code = true;
+        self.pwd.unplain = true;
+        self.elsewhere.clear();
+        self.stayed.clear();
+        self.last_stayed.clear();
+    }
+
     /// Where the line has moved to, to put back after a subshell or a nested
     /// script whose `cd` must not reach the rest of the line.
     pub(crate) fn dir_snapshot(&self) -> Place {
