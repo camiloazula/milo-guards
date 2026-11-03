@@ -489,9 +489,11 @@ posix effect=reads_beyond | for f in /etc/passwd; do cat "$f"; done
 posix effect=reads_beyond | for f in a ~/b; do cat "$f"; done
 posix effect=reads_beyond | for f in /etc/*; do echo $f; done
 posix effect=reads_beyond | for f in a b; do cat ~/x; done
-# A pass after the first starts where the last left the line, so a loop with
-# a `cd` reads from a place only known when it runs too.
-posix effect=unknown | for f in a b; do cd ~; ls; done
+# A pass after the first starts where the last left the line: in the home
+# directory again, when each `cd` goes to a whole path; one that goes on from
+# where it is reads from a place only known when it runs too.
+posix effect=reads_beyond | for f in a b; do cd ~; ls; done
+posix effect=unknown | for f in a b; do cd ..; ls; done
 posix effect=reads_beyond | for d in a; do cd ~; done; ls
 # Substitutions read as units.
 posix effect=reads_beyond | echo $(cat ~/.ssh/id_ed25519)

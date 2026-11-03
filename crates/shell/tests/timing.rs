@@ -759,8 +759,35 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
     let _serial = serial();
     // Each unit and redirect of a loop with a `cd`, or of a function body a
     // `cd` comes after, is judged once more from a folder only known when it
-    // runs, however many loops and bodies it is nested in.
+    // runs, and from the few folders the walk knows it runs from (where each
+    // call is made, where a loop's body ends), however many loops and bodies
+    // it is nested in and however many calls there are.
     let (shell, paths) = (Shell::Posix, posix());
+    for (what, head, part) in [
+        (
+            "f() { … }; cd …; f; cd …; f…",
+            "f() { rm -rf b > o < i; }; ",
+            "cd d; f; cd /e; f; ",
+        ),
+        (
+            "for … f … cd …",
+            "f() { rm -rf b > o; }; for i in 1 2; do ",
+            "f; cd /a; f; cd b; ",
+        ),
+        (
+            "TRAPEXIT() { … }; cd …",
+            "TRAPEXIT() { rm -rf b > o; }; ",
+            "cd /a || cd b; ",
+        ),
+    ] {
+        assert_linear(what, shell, &paths, |size| {
+            let tail = if head.contains(" do ") { "done" } else { "" };
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
+    }
     for (what, part, tail) in [
         (
             "for … cd …; done…",

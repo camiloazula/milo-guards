@@ -153,11 +153,12 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
             checker.unit(at, &unit.in_folder(dir), false);
         }
         checker.moved_off(before, own);
-        // A loop or a function body may run it again from a folder only
-        // known when it runs: what that finds is said as it is.
-        if let Some(dir) = unit.again() {
+        // A loop or a function body may run it again from another folder,
+        // one the walk knows or one only known when it runs: what that finds
+        // is said as it is.
+        for dir in unit.again() {
             let mine = checker.found.len();
-            checker.unit(at, &unit.in_folder(Some(dir)), false);
+            checker.unit(at, &unit.in_folder(dir), false);
             checker.once(before, mine);
         }
         checker.loose(at, before);

@@ -1501,7 +1501,8 @@ impl Walker<'_> {
                     self.bind_loop(node, start);
                 }
                 if body {
-                    self.split.end_body(function.is_some());
+                    self.split
+                        .end_body(function.as_ref().map(|function| function.name.as_str()));
                 }
                 self.function_end(function);
                 // A function defined here may stand for a program of the same

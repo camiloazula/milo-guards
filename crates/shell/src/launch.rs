@@ -858,7 +858,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         elsewhere: Vec::new(),
         stayed: Vec::new(),
         adrift: false,
-        rerun: false,
+        rerun: Rc::default(),
         hidden: false,
         startup,
         repeated: false,
