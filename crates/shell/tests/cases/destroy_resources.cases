@@ -631,6 +631,53 @@ posix finds=unknown | TF_CLI_ARGS=$ARGS terraform apply
 posix finds=unknown | TF_CLI_ARGS_apply="$ARGS" terraform apply
 posix finds=unknown | env TF_CLI_ARGS=$ARGS terraform apply
 posix finds=unknown | heroku ps:scale web-1
+# A count is read from what is the count: the value of another option is
+# not one, and a flag that is known to be off is off.
+posix safe | fly scale count 3 --max-per-region 0
+posix safe | fly scale count 3 --max-per-region=0
+posix safe | kubectl apply --force=false -f x
+posix safe | oc apply --force=false -f x
+posix finds=destroy_resources | fly scale count 0 --region iad
+posix finds=destroy_resources | kubectl apply --force=true -f x
+posix finds=destroy_resources | az aks scale -g rg -n c -c 0
+# TF_CLI_ARGS set by sudo, by a value the line cannot read and then exported,
+# and beside a value only known when it runs: a known one that destroys
+# still does.
+posix safe | TF_CLI_ARGS=-no-color; export TF_CLI_ARGS; terraform apply
+posix safe | export TF_CLI_ARGS; terraform plan
+posix finds=destroy_resources | sudo TF_CLI_ARGS=-destroy terraform apply
+posix finds=destroy_resources | sudo -u root TF_CLI_ARGS=-destroy terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy TF_CLI_ARGS_apply=$X terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=$X terraform apply -destroy
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy; export TF_CLI_ARGS; terraform apply
+posix finds=unknown | read -r TF_CLI_ARGS <<< -destroy; export TF_CLI_ARGS; terraform apply
+posix finds=unknown | printf -v TF_CLI_ARGS %s -destroy; export TF_CLI_ARGS; terraform apply
+posix finds=unknown | mapfile TF_CLI_ARGS < f; export TF_CLI_ARGS; terraform apply
+posix finds=unknown | declare -x TF_CLI_ARGS; terraform apply
+posix finds=unknown | typeset -x TF_CLI_ARGS_apply; terraform apply
+# TF_CLI_ARGS set by PowerShell and cmd, whose names are read in any case.
+# A value the guard does not read (`Set-Item env:`, .NET, `+=`, `set /p`)
+# makes a later apply `unknown`.
+powershell safe | $env:TF_CLI_ARGS = '-no-color'; terraform apply
+powershell safe | $env:TF_CLI_ARGS_plan = '-destroy'; terraform apply
+powershell safe | terraform apply; $env:TF_CLI_ARGS = '-destroy'
+powershell finds=destroy_resources | $env:TF_CLI_ARGS='-destroy'; terraform apply -auto-approve
+powershell finds=destroy_resources | $env:TF_CLI_ARGS_apply = '-destroy'; terraform apply
+powershell finds=destroy_resources | $ENV:tf_cli_args = "-destroy"; tofu apply
+powershell finds=unknown | $env:TF_CLI_ARGS = $x; terraform apply
+powershell finds=unknown | $env:TF_CLI_ARGS += '-destroy'; terraform apply
+powershell finds=unknown | Set-Item env:TF_CLI_ARGS -Value '-destroy'; terraform apply
+powershell finds=unknown | Set-Item -Path Env:\\TF_CLI_ARGS_apply -Value '-destroy'; terraform apply
+powershell finds=unknown | New-Item -Path env:TF_CLI_ARGS -Value x; terraform apply
+powershell finds=unknown | si env:TF_CLI_* x; terragrunt apply
+powershell finds=system_settings,unknown | [Environment]::SetEnvironmentVariable('TF_CLI_ARGS', '-destroy'); terraform apply
+cmd safe | set TF_CLI_ARGS=-no-color && terraform apply
+cmd safe | set TF_CLI_ARGS_plan=-destroy & terraform apply
+cmd finds=destroy_resources | set TF_CLI_ARGS=-destroy && terraform apply
+cmd finds=destroy_resources | set "TF_CLI_ARGS=-destroy" & terraform apply
+cmd finds=destroy_resources | set tf_cli_args_apply=-destroy & terraform apply
+cmd finds=unknown | set TF_CLI_ARGS=%X% & terraform apply
+cmd finds=unknown | set /p TF_CLI_ARGS=prompt & terraform apply
 # Lines that destroy nothing, though a word looks like a verb that does: a
 # rehearsal, one container named with a quoted variable, and a resource whose
 # name starts with a delete verb.
@@ -642,11 +689,17 @@ posix safe | docker rm -f app-"$ENV"
 posix safe | docker rm -f "app-$ENV"
 posix safe | gcloud functions deploy delete-user --runtime nodejs20
 posix safe | doctl compute droplet create delete-me
+posix safe | docker rm -f app-"${!p*}"
+posix safe | gcloud functions call delete-user
+posix safe | gcloud sql instances patch delete-db
+posix safe | gcloud sql operations cancel delete-op
 posix finds=destroy_resources | docker compose --dry-run=false down -v
 posix finds=destroy_resources | docker compose down -v -- --dry-run
 posix finds=destroy_resources | docker rm -f app-"$ENV" db
 posix finds=destroy_resources | docker rm -f app-$ENV
 posix finds=destroy_resources | docker rm -f app-"$@"
+posix finds=destroy_resources | docker rm -f "${!p@}"
+posix finds=destroy_resources | docker rm -f app-"${!p@}"
 posix finds=destroy_resources | gcloud logging logs delete x
 posix finds=destroy_resources | gcloud deploy targets delete t
 posix finds=destroy_resources | doctl compute droplet delete delete-me

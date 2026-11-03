@@ -496,7 +496,14 @@ fn launch(key: &str, unit: &Unit) -> Launch {
                     "--close-from",
                     "--command-timeout",
                 ],
-            ),
+            )
+            .map(|start| {
+                if key == "sudo" {
+                    after_assignments(args, start)
+                } else {
+                    start
+                }
+            }),
         ),
         // systemd's own `sudo`, and a command started as a transient unit.
         "run0" if posix => runs(
@@ -806,6 +813,25 @@ pub(super) fn runs(args: &[Arg], start: Option<usize>) -> Launch {
     start
         .filter(|start| *start < args.len())
         .map_or(Launch::Itself, Launch::Runs)
+}
+
+/// The index of the first argument at or after `start` that is not a
+/// `NAME=value` word: sudo sets those in the environment of the program
+/// after them (`sudo TF_CLI_ARGS=-destroy terraform apply`).
+fn after_assignments(args: &[Arg], start: usize) -> usize {
+    let mut at = start;
+    while args.get(at).is_some_and(|arg| {
+        arg.text()
+            .trim_start_matches(['"', '\''])
+            .split_once('=')
+            .is_some_and(|(name, _)| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+    }) {
+        at += 1;
+    }
+    at
 }
 
 /// The index of the first argument after a wrapper's options; `values`

@@ -546,6 +546,18 @@ pub(crate) fn tf_cli_args(name: &str) -> bool {
     name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
 }
 
+/// The name terraform reads, when `name` is one of [`tf_cli_args`]'s written
+/// in any case, as Windows reads the names of variables
+/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`).
+pub(crate) fn tf_cli_args_folded(name: &str) -> Option<String> {
+    let upper = name.to_ascii_uppercase();
+    if upper == "TF_CLI_ARGS" {
+        return Some(upper);
+    }
+    let command = upper.strip_prefix("TF_CLI_ARGS_")?;
+    Some(format!("TF_CLI_ARGS_{}", command.to_ascii_lowercase()))
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 #[allow(

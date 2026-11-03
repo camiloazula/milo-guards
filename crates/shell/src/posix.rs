@@ -1827,11 +1827,29 @@ impl Walker<'_> {
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too; an
-    /// `export TF_CLI_ARGS` alone adds nothing to what the line set.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
+    /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
+    /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
+    /// so what terraform gets is only known when it runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        // The grammar reads a bare name as a variable, not a word.
+        if let Some(name) = Some(word.known().unwrap_or(source))
+            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+        {
+            let noted = self
+                .split
+                .tf_cli_args
+                .iter()
+                .any(|(noted, _)| noted == name);
+            if !noted {
+                self.split
+                    .tf_cli_args
+                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+            }
+            return;
+        }
         if let Some((name, _)) = source
             .split_once('=')
             .filter(|(name, _)| unit::tf_cli_args(name))

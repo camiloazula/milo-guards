@@ -54,3 +54,17 @@ fn a_filter_is_not_a_target() {
     );
     assert_eq!(assessment.findings()[0].target, None);
 }
+
+/// The thing a scale command takes down is named by an option of its own,
+/// not by the first word after the command: no target is shown.
+#[test]
+fn a_scale_count_is_not_a_target() {
+    for line in [
+        "az vmss scale -g rg -n s --new-capacity 0",
+        "aws ecs update-service --cluster c --service s --desired-count 0",
+        "eksctl scale nodegroup -N 0 --cluster c --name n",
+    ] {
+        let assessment = classify(line, Shell::Posix, &posix());
+        assert_eq!(assessment.findings()[0].target, None, "{line}");
+    }
+}

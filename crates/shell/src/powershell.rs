@@ -409,9 +409,86 @@ impl Walker<'_> {
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                self.env_assignment(node);
                 self.children(node, stage, level);
             }
             _ => self.children(node, stage, level),
+        }
+    }
+
+    /// `$env:TF_CLI_ARGS = '-destroy'`: terraform reads the value as
+    /// arguments of its command, in any later line that runs it. A value
+    /// that is not a plain `=` of a string written out (`+=`, a variable) is
+    /// only known when it runs.
+    fn env_assignment(&mut self, node: Node<'_>) {
+        let Some(left) = node.named_child(0) else {
+            return;
+        };
+        let text = unit::text(&left, self.source).trim();
+        let name = text
+            .strip_prefix("${")
+            .and_then(|rest| rest.strip_suffix('}'))
+            .or_else(|| text.strip_prefix('$'))
+            .unwrap_or(text);
+        let Some(name) = name
+            .get(..4)
+            .filter(|head| head.eq_ignore_ascii_case("env:"))
+            .and_then(|_| name.get(4..))
+            .and_then(unit::tf_cli_args_folded)
+        else {
+            return;
+        };
+        let right = node.child_by_field_name("value");
+        let plain = right.is_some_and(|right| {
+            self.source
+                .get(left.end_byte()..right.start_byte())
+                .is_some_and(|between| between.trim() == "=")
+        });
+        let value = match right {
+            Some(mut right) if plain => {
+                while right.kind() != "string_literal" && right.named_child_count() == 1 {
+                    match right.named_child(0) {
+                        Some(only) => right = only,
+                        None => break,
+                    }
+                }
+                match self.expr(right) {
+                    known @ Arg::Known(_) if right.kind() == "string_literal" => known,
+                    _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
+                }
+            }
+            _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
+        };
+        self.split.tf_cli_args.push((name, value));
+    }
+
+    /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
+    /// …`: a variable terraform reads as arguments, set to a value the guard
+    /// does not read, so a later `terraform apply` is only known when it
+    /// runs. A wildcard in the name may match one.
+    fn env_item(&mut self, key: &str, args: &[Arg]) {
+        if !matches!(key, "set-item" | "new-item" | "set-content" | "add-content") {
+            return;
+        }
+        for arg in args {
+            let Some(text) = arg.known() else { continue };
+            let lower = text.trim_matches(['"', '\'']).to_ascii_lowercase();
+            let Some(rest) = lower
+                .strip_prefix("env:")
+                .or_else(|| lower.split_once(":env:").map(|(_, rest)| rest))
+            else {
+                continue;
+            };
+            let rest = rest.trim_start_matches(['\\', '/']);
+            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+                rest.contains(['*', '?', '['])
+                    .then(|| "TF_CLI_ARGS".to_string())
+            });
+            if let Some(name) = name {
+                self.split
+                    .tf_cli_args
+                    .push((name, Arg::Unknown(text.to_string())));
+            }
         }
     }
 
@@ -683,6 +760,9 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        if let Some(key) = key.as_deref() {
+            self.env_item(key, &unit.args);
+        }
         unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
         // The processes a `Stop-Process` is handed by a listing in its own
         // arguments: `-InputObject (Get-Process)`.
@@ -1544,6 +1624,21 @@ impl Walker<'_> {
                 unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
             }
             return;
+        }
+        // `[Environment]::SetEnvironmentVariable('TF_CLI_ARGS', …)`: a name
+        // terraform reads as arguments, or one only known when it runs, set
+        // to a value the guard does not read.
+        if method == "setenvironmentvariable" {
+            let name = match blocks::first_string(&children).map(|name| self.string(name)) {
+                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+                _ => Some("TF_CLI_ARGS".to_string()),
+            };
+            if let Some(name) = name {
+                self.split.tf_cli_args.push((
+                    name,
+                    Arg::Unknown(unit::text(&node, self.source).to_string()),
+                ));
+            }
         }
         let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
             return;

@@ -894,6 +894,7 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
                         text.contains("$@")
                             || text.contains("${@")
                             || text.contains("[@]")
+                            || prefix_names(text)
                             || splits(text)
                             || names_variable(text, |name| split.looped(name))
                     }
@@ -918,6 +919,19 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
                 }
         }
     }
+}
+
+/// Whether `text` holds `${!prefix@}`, the names of the variables that start
+/// with `prefix`: quoted, it expands to one word per name, as `"$@"` does
+/// (`"${!prefix*}"` is one word).
+fn prefix_names(text: &str) -> bool {
+    text.match_indices("${!").any(|(at, _)| {
+        let rest = &text[at + 3..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        end > 0 && rest[end..].starts_with("@}")
+    })
 }
 
 /// Whether `text` reads a variable (`$name`, `${name}`, `${name:-x}`) that
@@ -1140,6 +1154,11 @@ const LEAF_VERBS: &[&str] = &[
     "execute",
     "authenticate",
     "invoke",
+    "call",
+    "patch",
+    "cancel",
+    "pause",
+    "resume",
 ];
 
 /// Whether a known word is a verb that reads, creates or changes one thing:
@@ -1449,7 +1468,13 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
             Destroys("deletes cluster objects the files do not list", target)
         }
         // `--force` deletes an object it cannot patch and creates it again.
-        "apply" if has_flag(rest, None, Some("force")) => {
+        "apply"
+            if flags(rest, KUBECTL_VALUES)
+                .into_iter()
+                .filter_map(|arg| given(arg, "force"))
+                .next_back()
+                .is_some_and(|given| given != Given::Off) =>
+        {
             Destroys("deletes and recreates cluster objects", target)
         }
         _ => Safe,
@@ -1570,16 +1595,16 @@ fn terraform<'a>(args: &'a [Arg], unit: &Unit) -> Say<'a> {
 /// destroys what it names to create it again. A value of those variables
 /// only known when it runs may be either.
 fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
-    let Some(mut args) = tf_cli_args(unit, "apply") else {
-        return Unread(Some(
-            "runs terraform apply with arguments only known when it runs",
-        ));
-    };
+    let (mut args, unread) = tf_cli_args(unit, "apply");
     args.extend_from_slice(rest);
     if turned_on(&args, "destroy") {
         Destroys(TERRAFORM_DESTROYS, None)
     } else if replaces(&args) {
         Destroys("destroys resources to create them again", None)
+    } else if unread {
+        Unread(Some(
+            "runs terraform apply with arguments only known when it runs",
+        ))
     } else {
         Safe
     }
@@ -1587,22 +1612,27 @@ fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
 
 /// The arguments terraform's `command` reads from `TF_CLI_ARGS` and
 /// `TF_CLI_ARGS_<command>` as the line sets them where the unit runs, split
-/// at spaces as terraform splits them (quotes taken off), or `None` when one
-/// of those values is only known when it runs.
-fn tf_cli_args(unit: &Unit, command: &str) -> Option<Vec<Arg>> {
+/// at spaces as terraform splits them (quotes taken off), and whether one of
+/// those values is only known when it runs. The known ones are read all the
+/// same: one that destroys does so whatever the other holds.
+fn tf_cli_args(unit: &Unit, command: &str) -> (Vec<Arg>, bool) {
     let mut found = Vec::new();
+    let mut unread = false;
     for (name, value) in &unit.tf_cli_args {
         let applies = name == "TF_CLI_ARGS" || name.strip_prefix("TF_CLI_ARGS_") == Some(command);
         if !applies {
             continue;
         }
-        let text = value.known()?;
+        let Some(text) = value.known() else {
+            unread = true;
+            continue;
+        };
         found.extend(
             text.split_whitespace()
                 .map(|word| Arg::Known(word.replace(['"', '\''], ""))),
         );
     }
-    Some(found)
+    (found, unread)
 }
 
 /// Whether `-replace` (a Go flag that takes an address: `-replace=ADDRESS`,
@@ -1851,7 +1881,6 @@ fn scaled<'a>(key: &str, args: &'a [Arg], values: &[&str]) -> Say<'a> {
         usize::from(key == "gcloud" && is_one_of(words.first().copied(), &["alpha", "beta"]));
     let words = words.get(skip..).unwrap_or_default();
     let mut found = Replicas::Other;
-    let mut target = None;
     for (cli, path, options) in SCALES {
         let named = *cli == key
             && words.len() >= path.len()
@@ -1860,19 +1889,22 @@ fn scaled<'a>(key: &str, args: &'a [Arg], values: &[&str]) -> Say<'a> {
                 .zip(words)
                 .all(|(name, word)| word.known() == Some(*name));
         if named {
-            target = words.get(path.len()).copied();
             for option in *options {
                 found = found.or(count_of(args, option, values));
             }
         }
     }
-    said_of(found, target)
+    // The thing scaled is named by an option of each command's own
+    // (`--service`, `-n`), or by an operand among option values the line
+    // does not tell apart: no target is shown.
+    said_of(found, None)
 }
 
 /// `fly scale count 0`, `fly scale count web=0 worker=2`: the count of
 /// machines, for the app or for a process group, as an operand.
 fn fly_scale<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
-    let words = words(args, values);
+    let values: Vec<&str> = values.iter().chain(FLY_SCALE_VALUES).copied().collect();
+    let words = words(args, &values);
     let scale = is_one_of(words.first().copied(), &["scale"])
         && is_one_of(words.get(1).copied(), &["count"]);
     if !scale {
@@ -1884,8 +1916,8 @@ fn fly_scale<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
             found = found.or(Replicas::Unread);
             continue;
         };
-        // A process group's count, or the app's; any other word is an
-        // option's value (`--region iad`).
+        // A process group's count, or the app's; the values of its own
+        // options (`--max-per-region 0`) are not operands.
         let value = text.split_once('=').map_or(text, |(_, value)| value);
         if text.contains('=') || value.starts_with(|c: char| c.is_ascii_digit()) {
             found = found.or(number(value));
@@ -1893,6 +1925,23 @@ fn fly_scale<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
     }
     said_of(found, None)
 }
+
+/// The options of `fly scale count` that take a value.
+const FLY_SCALE_VALUES: &[&str] = &[
+    "--max-per-region",
+    "-r",
+    "--region",
+    "-g",
+    "--process-group",
+    "--from-snapshot",
+    "--vm-size",
+    "--vm-cpus",
+    "--vm-cpu-kind",
+    "--vm-memory",
+    "--vm-gpus",
+    "--vm-gpu-kind",
+    "--wait-timeout",
+];
 
 /// `heroku ps:scale web=0` (also `scale` and `dyno:scale`): a count for each
 /// process type, `type=COUNT[:SIZE]`, or a change of it, `type+N` and

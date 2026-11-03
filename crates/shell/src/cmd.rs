@@ -414,6 +414,7 @@ impl Walker<'_> {
     /// is everything after `=`; cmd ends the value at an unquoted `&` or
     /// `|`. What follows is split again, so nothing hides in a value.
     fn assignment(&mut self, node: Node<'_>) {
+        self.tf_cli_args(node);
         let text = unit::text(&node, self.source);
         if let Some(at) = unquoted_operator(text) {
             let rest = text[at..].trim_start_matches(['&', '|', ' ', '\t']);
@@ -421,6 +422,61 @@ impl Walker<'_> {
                 unit::script(self.split, rest, Shell::Cmd, self.depth + 1);
             }
         }
+    }
+}
+
+impl Walker<'_> {
+    /// `set TF_CLI_ARGS=-destroy`, `set "TF_CLI_ARGS_apply=-destroy"`:
+    /// terraform reads the value as arguments of its command, in any later
+    /// command that runs it. cmd reads the names of variables in any case.
+    /// The value ends at an unquoted `&` or `|`; one with a switch (`set /p`
+    /// reads it from the input) or a variable cmd expands later (`!X!`) is
+    /// only known when it runs. `set /a` gives a number, which holds no
+    /// flag.
+    fn tf_cli_args(&mut self, node: Node<'_>) {
+        let mut cursor = node.walk();
+        let mut children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // `set /p NAME=prompt`: the grammar holds the name a level down.
+        if let Some(prompt) = children
+            .iter()
+            .find(|child| child.kind() == "prompt_assignment")
+            .copied()
+        {
+            let mut cursor = prompt.walk();
+            children.extend(prompt.named_children(&mut cursor));
+        }
+        let Some(name) = children
+            .iter()
+            .find(|child| child.kind() == "variable_name")
+            .and_then(|name| unit::tf_cli_args_folded(unit::text(name, self.source).trim()))
+        else {
+            return;
+        };
+        let source = unit::text(&node, self.source);
+        let plain = children.iter().all(|child| {
+            matches!(
+                child.kind(),
+                "set_keyword" | "variable_name" | "assignment_value" | "quoted_assignment_value"
+            )
+        });
+        let written = children
+            .iter()
+            .find(|child| matches!(child.kind(), "assignment_value" | "quoted_assignment_value"))
+            .map_or("", |value| {
+                let text = unit::text(value, self.source);
+                if value.kind() == "quoted_assignment_value" {
+                    text
+                } else {
+                    unquoted_operator(text).map_or(text, |at| &text[..at])
+                }
+            });
+        let value = if plain && !written.contains('!') {
+            expand(written.trim_matches('"').trim(), self.split)
+        } else {
+            None
+        };
+        let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
+        self.split.tf_cli_args.push((name, value));
     }
 }
 
