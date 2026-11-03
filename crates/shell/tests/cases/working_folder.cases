@@ -1,0 +1,170 @@
+# The folder a wrapper or a runner starts its command in, by an option of its
+# own: the command's relative paths are judged from there, and the rest of the
+# line from where it was. The format is in CONTRIBUTING.md.
+
+# `env -C` and `--chdir`.
+posix finds=delete | env -C / rm -rf etc
+posix finds=delete | env --chdir=/ rm -rf etc
+posix finds=delete | env -C ~ rm -rf .ssh
+posix finds=delete | env --chdir ~ rm -rf .ssh
+posix finds=delete | env -iC / rm -rf etc
+posix finds=delete | env -C/ rm -rf etc
+posix finds=delete | env -C / -S 'rm -rf etc'
+# A long option by any prefix that names it alone, as getopt_long reads it.
+posix finds=delete | env --ch / rm -rf etc
+posix finds=delete | env --chd=/ rm -rf etc
+posix finds=delete | env --c ~ rm -rf .ssh
+posix finds=delete | env --un X -C / rm -rf etc
+# `-S` splits its string into words that env reads again as its own
+# arguments, options and all; also joined to the flag.
+posix finds=delete | env -S '-C / rm -rf etc'
+posix finds=delete | env -S'-C / rm -rf etc'
+posix finds=delete | env --split-string='-C / rm -rf etc'
+posix finds=delete | env --sp '-C / rm -rf etc'
+posix finds=delete | env -iS '-C ~ rm -rf .ssh'
+posix finds=delete | env -S '-C /' rm -rf etc
+posix finds=delete | env -S '--chdir=/ -S "rm -rf etc"'
+posix finds=delete | env -C sub -S '-C / rm -rf etc'
+posix safe | env -S '-C sub make'
+# env's own splitting: `\_` between words, `#` starting a comment, `\c`
+# ending the string, quotes and escapes.
+posix finds=delete | env -S '-C\\_/\\_rm -rf etc'
+posix finds=delete | env -S '-C / rm -rf etc # a comment'
+posix finds=delete | env -S '-C "/" rm -rf "e\\tc" etc\\c ignored'
+posix safe | env -S "echo 'it\\'s' 'a\\\\nb'"
+posix safe | env -S 'echo "a\\_b\\nc" x'
+# A `${NAME}` env fills in from its environment makes its word only known
+# when it runs, but not in single quotes or after a backslash.
+posix finds=delete reason="deletes a path only known when it runs" | env -S '-C ${D} rm -rf build'
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf ${HOME}'
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf "${HOME}/x y"'
+posix finds=unknown | env -S '${P} -rf x'
+posix finds=unknown | env -S '${O} -C / rm -rf etc'
+posix safe | env -S 'echo ${HOME}'
+posix safe | env -S 'echo \\${HOME} "\\${HOME}"'
+# A string env refuses (another `$`, an escape it does not know, a quote
+# left open) runs nothing; it is still read as the shell line it looks like.
+posix finds=unreadable | env -S '-C / rm -rf "etc'
+posix finds=delete | env -S 'rm -rf $HOME'
+posix finds=delete | env -S 'rm -rf ~ \\q'
+# What the wrapper runs reads its code from there too.
+posix finds=delete | env -C ~ python3 -c "import shutil; shutil.rmtree('.ssh')"
+posix safe | env -C sub make
+posix safe | env -C sub rm -rf build
+# BSD's `-P altpath` and FreeBSD's `-L` and `-U` take a value, which is not
+# the program.
+posix finds=delete | env -P /bin -C / rm -rf etc
+posix finds=delete | env -iP /bin -C ~ rm -rf .ssh
+posix finds=delete | env -P /usr/bin rm -rf ~
+posix finds=delete | env -vP /bin rm -rf ~
+posix finds=delete | env -P/bin rm -rf ~
+posix finds=delete | env -S '-P /bin rm -rf ~'
+posix finds=delete | env -L 0 rm -rf ~
+posix finds=delete | env -U me/default -C / rm -rf etc
+posix safe | env -P /bin -C sub make
+
+# `sudo -D` and `run0 -D` (`--chdir`).
+posix finds=delete | sudo -D / rm -rf etc
+posix finds=delete | sudo --chdir=/ rm -rf etc
+posix finds=delete | run0 --chdir / rm -rf etc
+posix finds=delete | sudo -nD / rm -rf etc
+posix finds=delete | sudo -nD/ rm -rf etc
+posix finds=delete | sudo --chd / rm -rf etc
+posix finds=delete | sudo -u root --chdir=/ rm -rf etc
+posix rules=elevated | sudo -D sub make
+
+# pnpm's `-C` and `--dir`.
+posix finds=delete | pnpm -C / exec rimraf etc
+posix finds=delete | pnpm --dir ~ exec rimraf .ssh
+posix finds=delete | pnpm --dir=/ exec rimraf etc
+posix safe | pnpm -C packages/web exec vitest
+posix safe | pnpm -C packages/web exec rimraf dist
+
+# uv's `--directory`, and `--project` for `uv run`.
+posix finds=delete | uv --directory ~ run rm -rf .ssh
+posix finds=delete | uv run --project / rm -rf etc
+posix finds=delete | uv run --directory=/ rm -rf etc
+# `--project` finds the project there; whether the command runs there too
+# depends on the uv in use, so it is judged from both folders.
+posix finds=delete | uv run --project /tmp/p rm -rf ~/work/repo/.git
+posix finds=delete | uv run --project /tmp/p rm -rf .git
+posix finds=delete | uv --directory / run --project home/me rm -rf .ssh
+posix safe | uv --directory sub run pytest
+posix safe | uv run --project sub pytest
+
+# bun's and yarn's `--cwd`.
+posix finds=delete | bun --cwd=~ run rm -rf .config
+posix finds=delete | bun --cwd ~ x rimraf .config
+posix finds=delete | bun --cwd ~ x rimraf /
+# cmd reads what bun starts there too.
+cmd finds=delete | bun --cwd build rimraf C:\\Windows\\System32
+cmd finds=delete | bun --cwd C:\\Windows rimraf System32
+cmd finds=delete | bun --cwd . rimraf %USERPROFILE%
+cmd finds=delete | bun --cwd=build run rd /s /q C:\\Windows
+cmd finds=delete | bun --cwd=build x rimraf C:\\Windows
+cmd safe | bun --cwd web run build
+posix finds=delete | yarn --cwd ~ exec rm -rf .config
+posix finds=delete | yarn --cwd=/ dlx rimraf etc
+posix safe | yarn --cwd web build
+posix safe | yarn --cwd web exec rm -rf dist
+
+# npm's and npx's `--prefix` (`-C`) names the project; npm 11 runs the
+# command where the line is, so it is judged from both folders.
+posix finds=delete | npm --prefix ~ exec rimraf .ssh
+posix finds=delete | npm exec --prefix=/ -- rimraf etc
+posix finds=delete | npm -C ~ exec rimraf .ssh
+posix finds=delete | npm --prefi ~ exec rimraf .ssh
+posix finds=delete | npx --prefix ~ rimraf .ssh
+posix finds=delete | npx --prefix=/ rimraf etc
+posix finds=delete | npm --prefix ~ exec -c 'rm -rf .ssh'
+posix finds=delete | npm --prefix a/b/c exec rimraf ../..
+posix finds=delete | npm --prefix sub exec rimraf .git
+posix finds=delete | npx -C a/b/c rimraf ../..
+posix finds=delete | npm --prefix a/b/c exec -c 'rm -rf ../..'
+posix finds=delete | npm exec --prefix=a/b/c -- rimraf ../..
+posix safe | npm --prefix web exec vitest
+
+# PowerShell: `Start-Process -WorkingDirectory`, and the folder `pwsh` and
+# `powershell` start in.
+powershell finds=delete | Start-Process cmd -WorkingDirectory C:\\Windows -ArgumentList '/c rd /s /q System32'
+powershell finds=delete | pwsh -WorkingDirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | powershell -wd C:\\Windows -Command "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+# pwsh takes any prefix of `-WorkingDirectory` from `-wo` on.
+powershell finds=delete | pwsh -wo C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -workingdir C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -wo:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -WORKINGDIRECTORY:C:\\Windows -c "Remove-Item System32 -Recurse"
+# pwsh drops a second leading dash: `--wd` is `-wd`. An en dash is a dash.
+powershell finds=delete | pwsh --wd C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --workingdirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --wd C:\\Windows --c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh –wd C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --wd C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --workingdirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell safe | pwsh --wd build -c "Remove-Item obj -Recurse"
+cmd safe | pwsh --wd build -c "Remove-Item obj -Recurse"
+powershell finds=delete | Start-Process -FilePath pwsh -WorkingDirectory C:\\Windows -ArgumentList '-c','Remove-Item System32 -Recurse'
+powershell finds=delete | Start-Process cmd -wo C:\\Windows -ArgumentList '/c rd /s /q System32'
+powershell safe | Start-Process cmd -WorkingDirectory build -ArgumentList '/c del x.obj'
+powershell safe | pwsh -WorkingDirectory build -c "Remove-Item obj -Recurse"
+
+# cmd's `start /d`.
+cmd finds=delete | start /d C:\\Windows cmd /c rd /s /q System32
+cmd finds=delete | start /dC:\\Windows cmd /c rd /s /q System32
+cmd finds=delete | start "" /d C:\\Windows cmd /c rd /s /q System32
+cmd safe | start /d build cmd /c del x.obj
+
+# The move holds for that command only: the rest of the line is judged from
+# where it was.
+posix safe | env -C / true; rm -rf etc
+posix safe | pnpm -C ~ exec ls && rimraf .ssh
+cmd safe | start /d C:\\Windows cmd /c dir & rd /s /q build
+
+# A folder only known when it runs makes the command's relative paths known
+# only when they run.
+posix finds=delete reason="deletes a path only known when it runs" | env -C "$D" rm -rf build
+posix finds=delete reason="deletes a path only known when it runs" | pnpm --dir "$D" exec rimraf build
+powershell finds=delete reason="deletes a path only known when it runs" | Start-Process cmd -WorkingDirectory $d -ArgumentList '/c rd /s /q build'

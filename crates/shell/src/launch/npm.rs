@@ -375,7 +375,7 @@ fn takes_word(key: &str, word: &str) -> bool {
 /// How `npm` (and `npm exec`) read one word that starts with a dash, given
 /// the word after it.
 pub(super) fn npm_word(text: &str, next: Option<&Arg>) -> Word {
-    read_npm(text, next, false).word
+    read_npm(text, next, false, "call").word
 }
 
 /// How `npm exec` reads one word `npx` hands it: the same, after the words
@@ -384,14 +384,14 @@ pub(super) fn npm_word(text: &str, next: Option<&Arg>) -> Word {
 /// `--node-arg x`, `--always-spawn`, `--ignore-existing` and
 /// `--shell-auto-fallback`).
 fn npx_lead_word(text: &str, next: Option<&Arg>) -> Word {
-    read_npm(text, next, true).word
+    read_npm(text, next, true, "call").word
 }
 
 /// What reading one word that starts with a dash came to.
 struct Read {
     word: Word,
-    /// The script, when the word is (or stands for) `--call`: `-c`, `-yc`,
-    /// `--c`, `--call=x`, `-c=x`.
+    /// The value of the setting asked for, when the word is (or stands for)
+    /// it: for `--call`, `-c`, `-yc`, `--c`, `--call=x`, `-c=x`.
     call: Option<Arg>,
 }
 
@@ -400,30 +400,45 @@ struct Read {
 /// option may be anywhere in them, also before `exec` (`npm -c 'x' exec`),
 /// at the end of a bundle (`-yc`), spelt `--c`, or given its value after `=`.
 pub(super) fn call_script(words: &[Arg], npx: bool) -> Option<Arg> {
+    setting_values(words, npx, "call").into_iter().next()
+}
+
+/// The folder `npm exec` and `npx` run the program in when `--prefix` (`-C`)
+/// is among `words`, the options before the program, read as
+/// [`call_script`] reads `--call`: the last one given.
+pub(super) fn prefix_folder(words: &[Arg], npx: bool) -> Option<Arg> {
+    setting_values(words, npx, "prefix").pop()
+}
+
+/// The values the setting `wanted` is given among `words`, in order, each
+/// word read as [`read_npm`] reads it.
+fn setting_values(words: &[Arg], npx: bool, wanted: &str) -> Vec<Arg> {
+    let mut values = Vec::new();
     let mut at = 0;
     while let Some(arg) = words.get(at) {
         let text = arg.known().unwrap_or_default();
         if text == "--" {
-            return None;
+            break;
         }
         if text.len() < 2 || !text.starts_with('-') {
             at += 1;
             continue;
         }
-        let read = read_npm(text, words.get(at + 1), npx);
-        if read.call.is_some() {
-            return read.call;
-        }
+        let read = read_npm(text, words.get(at + 1), npx, wanted);
+        values.extend(read.call);
         at += if matches!(read.word, Word::Value) {
             2
         } else {
             1
         };
     }
-    None
+    values
 }
 
-fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Read {
+/// Read one word `text` that starts with a dash, given the word `next`
+/// after it, as npm does (as `npx` hands it when `npx`), keeping the value
+/// of the setting `wanted` when the word gives it one.
+fn read_npm(text: &str, next: Option<&Arg>, npx: bool, wanted: &str) -> Read {
     let mut queue: VecDeque<String> = VecDeque::from([text.to_string()]);
     let mut used = false;
     let mut call = None;
@@ -504,7 +519,7 @@ fn read_npm(text: &str, next: Option<&Arg>, npx: bool) -> Read {
         };
         if takes {
             let value = queue.pop_front();
-            if calls {
+            if key == Some(wanted) && !boolean {
                 call = Some(value.as_ref().map_or_else(
                     || next.cloned().unwrap_or(Arg::Known(String::new())),
                     |value| Arg::Known(value.clone()),

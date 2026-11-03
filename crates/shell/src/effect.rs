@@ -473,8 +473,9 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Kind {
             ..none
         },
         // Assignments are bare words, and are recorded as variables set.
-        // `-C` and `--chdir` move the program to another folder, which the
-        // guard does not follow: they are not read, so the line is `Unknown`.
+        // `-C` and `--chdir` move the program to another folder, which
+        // `classify` follows and this does not: they are not read, so the
+        // line is `Unknown`.
         "env" => Options {
             flags: "i0",
             valued: "u",
