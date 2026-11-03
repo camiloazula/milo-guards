@@ -1545,7 +1545,7 @@ fn substitute(arg: &Arg, pairs: &[(&str, &str)]) -> Option<Arg> {
                 .filter(|_| alone)
                 .map(|word| Arg::Known(word.to_string()))
         }
-        Arg::Template { text, source } => {
+        Arg::Template { text, source, .. } => {
             let found = expansions(source);
             let pieces: Vec<&str> = text.split(crate::posix::OPAQUE).collect();
             if found.is_empty() || pieces.len() != found.len() + 1 {

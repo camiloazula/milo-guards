@@ -86,7 +86,11 @@ quote is a quote, and backslashes count only before a `"`. So
 `DROP TABLE t`. The words no longer show that a value was quoted, so the word
 after `-ArgumentList` is its value whatever it starts with, and a word that
 starts with `-` and holds a space is the list given by position (`Start-Process
-psql '-c …'`), not a parameter.
+psql '-c …'`), not a parameter. A literal array of strings
+(`-ArgumentList @('-c', 'DROP TABLE t')`) is its items, as a comma list is;
+`-RedirectStandardInput FILE` (`-RSI`) is a redirect of the file onto the
+program's input, as `psql < FILE` is, and the file of each redirect is not an
+argument of the program.
 
 **Package runners** come off too, with each runner's own options skipped:
 `npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
@@ -2338,9 +2342,14 @@ a teardown. That is a client given a file of statements, by its option (`psql
 `-f`; `redis-cli --eval`), by a redirect (`psql < drop.sql`, `psql < <(…)`),
 or by a client command in its text (`psql`'s `\i`, `\ir`, `\include` and
 `\include_relative`, `mysql`'s `source` and `\.`, `cqlsh`'s `SOURCE`, `.read`
-of a file in `sqlite3` and `duckdb`). `-f -` and `/dev/stdin` are its input,
-read as such, and the null device holds nothing (`psql -f /dev/null`, `psql
-… < /dev/null`). A process substitution is a file too (`psql -f <(echo …)`). A
+of a file in `sqlite3` and `duckdb`, `load(…)` in `mongosh`). `-f -` and
+`/dev/stdin` are its input, read as such, and the null device holds nothing
+(`psql -f /dev/null`, `psql … < /dev/null`; `nul` and `$null` on Windows
+only, since on POSIX `nul` is a file like any other). A client given a
+statement that it runs and then exits does not read its input: `psql -c`,
+`mysql -e`, `clickhouse-client -q`, `sqlcmd -Q` and `cqlsh -e`, unless `-f -`
+makes its input a file of statements (`sqlcmd -q` and `mysql --init-command`
+go on to read it). A process substitution is a file too (`psql -f <(echo …)`). A
 file the line writes before it runs it (`echo 'DROP TABLE t' > q.sql && psql
 -f q.sql`) is such a file: the guard does not follow what a file holds. A
 database file in the workspace is still the agent's own, so `sqlite3 data.db
@@ -2351,8 +2360,11 @@ to the stage before it; from the first stage of a pipeline that runs in a
 stage of another (`echo … | (cat | psql)`) to the stage before that one; and
 from a command a client runs for (`sh -c psql`, a substitution) to that
 command's input, with the text fed to it and the files redirected onto it
-(`echo … | sh -c psql`, `sh -c psql < dump.sql`). The programs of a stage are
-read for what they hand on:
+(`echo … | sh -c psql`, `sh -c psql < dump.sql`); from the body of a function
+the line defines to every call of it (`f() { psql; }; f < drop.sql`, `echo …
+| f`); and from the line itself to an `exec` with no program before it that
+redirects the shell's input (`exec < drop.sql; psql`, `exec <<EOF`). The
+programs of a stage are read for what they hand on:
 
 - `echo`, `printf` and `Write-Output` with words say their text, as above.
 - A stage that hands on its input as it is passes on what it is given, read
@@ -2631,9 +2643,12 @@ WHERE id = $id"` is read and is safe, `psql -c "DROP TABLE $t"` is
 `drop_data`, and `psql -c "$verb FROM users"` is `unknown`. A variable stands
 for a value, but a command substitution prints what it likes, a whole
 statement too: a statement with a `$(…)` (not arithmetic, `$((…))`) or a
-backtick outside single quotes is `unknown` as well as read
-(`psql -c "SELECT 1 $(echo '; DROP TABLE t')"`, the same in a here-string and
-in what `echo`, `printf` or `Write-Output` say). A `$` that starts
+backtick is `unknown` as well as read (`psql -c "SELECT 1 $(echo '; DROP
+TABLE t')"`, `"${x:-$(cat q)}"`, the same in a here-string, a here-document
+and in what `echo`, `printf` or `Write-Output` say). Which expansion runs a
+command is taken from the parse, not from the text: in an unquoted
+here-document a quote is a character like any other, so `SELECT '$(cat q)'`
+there still runs `cat`. A `$` that starts
 an expansion ends the word before it, since the expansion may be empty:
 `psql -c "DROP$x TABLE t"`, `"TRUNCATE$x t"` and `"DELETE$opts FROM t"` are
 `drop_data`, and so is `mongosh --eval "db.dropDatabase$x()"`. A template
@@ -2673,29 +2688,33 @@ tell a scratch database from production.
 **A client in a container or on another machine** is read as the client
 itself: `docker exec`, `docker container exec`, `podman exec` and `nerdctl
 exec` (their options end at the container, and `-e`, `-u`, `-w`,
-`--env-file`, `--detach-keys` and `--preserve-fds` take a value), `docker
-compose exec` and `docker-compose exec` (the service), `kubectl exec` and `oc
-exec` (the command after `--`, or after the pod in the old form), and `ssh
-HOST` (the words after the host, with `ssh`'s options before or after it).
-The client keeps the input of the line, so `cat dump.sql | docker exec -i db
-psql` runs statements the line does not show. A database file there is never
-the agent's own: `docker exec db sqlite3 data.db 'DROP TABLE t'` is
-`drop_data`. `ssh` joins its words with spaces into a line the remote shell
-reads, and a shell's `-c` line in a container (`docker exec db sh -c "psql
--c …"`) is such a line too: one command of plain words is read as that
-command, as the shell splits it; a line that is more (an operator, a
-redirect, an expansion, a pattern, an assignment) is read only for whether a
-word of it names a client, and then is `unknown` with the reason `runs a
-database client behind a command the guard does not read` (`ssh db 'cd /srv
-&& psql -c …'`, `ssh db sudo -u postgres psql -c …`). So is a command in a
-container that is not a client or a shell and names one. Up to eight such
-layers are read (`ssh a ssh b psql …`).
+`--env-file`, `--detach-keys` and `--preserve-fds` take a value; with
+`podman`'s `-l` or `--latest` there is no container, and the command comes
+first), `docker compose exec` and `docker-compose exec` (the service),
+`kubectl exec` and `oc exec` (the command after `--`, or after the pod in the
+old form), and `ssh HOST` (the words after the host, with `ssh`'s options
+before or after it). The command there is read as the line would read it
+here, with the POSIX grammar: wrappers come off (`ssh db sudo -u postgres
+psql …`, `docker exec db timeout 5 psql …`), a shell's `-c` line is split as
+`sh -c`'s is, its options and their values skipped (`bash -o pipefail -c
+…`), and `ssh` joins its words with spaces into a line the remote shell
+splits (`ssh db 'cd /srv && psql -c …'`). Each database client of it is
+judged as running there; nothing else of it is judged, since its files are
+not this machine's. What the grammar cannot read there, or a program only
+known when it runs (`ssh db 'ps${x}ql …'`, `docker exec db $CLIENT …`), is
+`unknown` there as it is here, and so is an `ssh` command with a word only
+known when it runs, which the remote shell reads as code (`ssh db "psql -c
+\"$Q\""`). The client keeps the input of the command that runs it, so `cat
+dump.sql | docker exec -i db psql` runs statements the line does not show. A
+database file there is never the agent's own: `docker exec db sqlite3 data.db
+'DROP TABLE t'` is `drop_data`. Up to eight such layers are read (`ssh a ssh
+b psql …`); more is `unknown`.
 
 Migrations run by the project's own tool (`sqlx migrate run`, `rails
 db:migrate`) are safe: the guard reads no program that is not on its list.
 
 Not read, so the caller has to account for them: a client started by `docker
-run`, `kubectl run` or `kubectl debug`; what a file of statements holds, even
+run`, `docker compose run`, `kubectl run`, `kubectl debug` or `oc rsh`; what a file of statements holds, even
 one the line writes; stored procedures (`CALL p()`, `EXEC p`),
 whatever they run; the
 text of a prepared statement that is not on the line (`EXECUTE s` after a

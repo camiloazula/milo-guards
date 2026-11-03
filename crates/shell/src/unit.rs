@@ -27,6 +27,9 @@ pub(crate) enum Arg {
         text: String,
         /// The argument as written, quotes and all.
         source: String,
+        /// Whether an expansion in it runs a command (`$(…)`, a backtick):
+        /// it prints what it likes, where a variable stands for a value.
+        runs: bool,
     },
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
@@ -751,6 +754,9 @@ pub(crate) struct Split {
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
+    /// Each function the line defines, by name, with the units of its body:
+    /// a call runs them, handed the call's input.
+    pub(crate) function_bodies: Vec<(String, Range<usize>)>,
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
@@ -1746,6 +1752,8 @@ impl Split {
     /// does, or whose definition is redirected, starts in a folder the walk
     /// has to work out from where the function was defined.
     pub(crate) fn defined(&mut self, defining: Defining) {
+        self.function_bodies
+            .push((defining.name.clone(), defining.first..self.units.len()));
         let Defining {
             name,
             dir,

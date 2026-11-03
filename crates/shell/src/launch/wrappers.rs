@@ -378,6 +378,9 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
     while let Some(arg) = words.next() {
         if names_argument_list(arg) {
             listed.extend(words.next().cloned());
+        } else if redirects_standard(arg).is_some() {
+            // The file of a redirect is not an argument of the program.
+            words.next();
         } else if arg
             .known()
             .is_some_and(|text| text.starts_with('-') && text.contains(char::is_whitespace))
@@ -448,6 +451,45 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listed: Vec::new(),
         depth: unit.depth,
     }))
+}
+
+/// Which of `Start-Process`'s redirects `arg` names, by its name, a start of
+/// it no other parameter has, or its alias (`-RSI`): `Some(true)` for
+/// `-RedirectStandardInput`, `Some(false)` for the output and the errors.
+fn redirects_standard(arg: &Arg) -> Option<bool> {
+    let name = arg.known()?.strip_prefix('-')?;
+    let name = name.trim_end_matches(':').to_ascii_lowercase();
+    let stem = "redirectstandard";
+    match name.as_str() {
+        "rsi" => Some(true),
+        "rso" | "rse" => Some(false),
+        _ if name.len() > stem.len() && "redirectstandardinput".starts_with(&name) => Some(true),
+        _ if name.len() > stem.len()
+            && ["redirectstandardoutput", "redirectstandarderror"]
+                .iter()
+                .any(|full| full.starts_with(&name)) =>
+        {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+/// The file `Start-Process -RedirectStandardInput` feeds the program it
+/// starts, as `program < file` does.
+pub(super) fn standard_input(unit: &Unit) -> Option<Arg> {
+    let mut words = unit.args.iter();
+    while let Some(arg) = words.next() {
+        if names_argument_list(arg) {
+            words.next();
+        } else if let Some(input) = redirects_standard(arg) {
+            let file = words.next();
+            if input {
+                return file.cloned();
+            }
+        }
+    }
+    None
 }
 
 /// Whether `arg` is `Start-Process`'s `-ArgumentList` parameter, by its name,

@@ -20,6 +20,7 @@ fn arg(value: reader::Arg) -> Arg {
         reader::Arg::Below { folder, source } => Arg::Template {
             text: format!("{folder}{}", crate::posix::OPAQUE),
             source,
+            runs: false,
         },
     }
 }

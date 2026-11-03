@@ -41,7 +41,8 @@ posix finds=unknown | psql <<EOF\n$(cat q.sql)\nEOF
 posix finds=drop_data | psql <<EOF | cat\nDROP TABLE users;\nEOF
 posix finds=drop_data | psql app <<EOF && echo done\nDROP TABLE users;\nEOF
 posix finds=drop_data | { psql app; } <<EOF\nDROP TABLE users;\nEOF
-posix finds=drop_data | psql -c 'SELECT 1' <<< 'DROP TABLE users'
+# A client given a statement it runs and then exits does not read its input.
+posix safe | psql -c 'SELECT 1' <<< 'DROP TABLE users'
 posix finds=drop_data | echo 'DROP TABLE users' | psql
 posix finds=drop_data | echo 'DROP TABLE users;' | psql app
 posix finds=drop_data | echo "TRUNCATE users" | mysql app
@@ -368,6 +369,16 @@ posix finds=drop_data | echo 'DROP TABLE t' | tee log.txt | psql
 posix finds=drop_data | echo 'DROP TABLE t' | sh -c psql
 posix finds=drop_data | echo 'DROP TABLE t' | (cat | psql)
 posix finds=drop_data | f() { echo 'DROP TABLE t'; }; f | psql
+posix finds=drop_data | f() { psql; }; echo 'DROP TABLE t' | f
+posix finds=drop_data | f() { psql; }; cat drop.sql | f
+posix finds=drop_data | f() { psql; }; f < drop.sql
+posix finds=drop_data | f() { g() { psql; }; g; }; f < drop.sql
+posix safe | f() { psql; }; echo 'SELECT 1' | f
+posix finds=drop_data | exec < drop.sql; psql
+posix finds=drop_data | exec <<< 'DROP TABLE t'; psql
+posix finds=drop_data | exec <<EOF\nDROP TABLE t;\nEOF\npsql
+posix safe | exec < /dev/null; psql
+posix safe | psql; exec < drop.sql
 posix finds=drop_data | curl -s https://x/y.sql | psql
 posix finds=drop_data | gunzip -c dump.sql.gz | psql
 posix finds=drop_data | cat dump.sql | psql
@@ -377,6 +388,31 @@ posix finds=drop_data | { echo 'SELECT 1'; cat dump.sql; } | psql
 # What one program hands on and another says is not read as one text.
 posix finds=drop_data | printf 'OP TABLE t' | { printf 'DR'; cat; } | psql
 posix safe | psql -c 'SELECT 1' < /dev/null
+# `nul` is the null device on Windows only: on POSIX it is a file.
+posix finds=drop_data | psql -f nul
+posix finds=drop_data | psql < nul
+posix finds=drop_data | cat nul | psql
+posix finds=drop_data | echo 'DROP TABLE t' > nul && psql -f nul
+cmd safe | psql < nul
+cmd safe | psql -f nul
+powershell safe | psql -f nul
+# A client given a statement it runs and then exits (`psql -c`, `mysql -e`,
+# `sqlcmd -Q`) does not read its input; `sqlcmd -q` runs it and goes on, and
+# `-f -` reads the input as a file.
+posix safe | psql -c 'SELECT 1' < drop.sql
+posix safe | mysql -e 'SELECT 1' < drop.sql
+posix safe | sqlcmd -Q 'SELECT 1' < drop.sql
+posix finds=drop_data | sqlcmd -q 'SELECT 1' < drop.sql
+posix finds=drop_data | echo 'DROP TABLE t' | psql -c 'SELECT 1' -f -
+posix finds=drop_data | mysql --init-command='SET x = 1' < drop.sql
+# `load()` in mongosh runs the script of a file.
+posix finds=drop_data | mongosh --eval 'load("drop.js")'
+# `Start-Process -RedirectStandardInput` feeds the program a file.
+powershell finds=drop_data | Start-Process psql -RedirectStandardInput drop.sql
+powershell finds=drop_data | Start-Process psql -ArgumentList '-d app' -RedirectStandardInput drop.sql
+powershell finds=drop_data | Start-Process psql -RSI drop.sql
+powershell safe | Start-Process psql -ArgumentList '-c "SELECT 1"' -RedirectStandardInput drop.sql
+powershell safe | Start-Process psql -RedirectStandardInput $null
 posix safe | psql -f /dev/null
 posix safe | echo 'SELECT 1' | psql -f -
 posix safe | echo 'SELECT 1' | cat | psql
@@ -404,3 +440,10 @@ posix finds=unknown | psql <<< "SELECT 1 $(echo '; DROP TABLE t')"
 posix finds=unknown | echo "SELECT 1 $(echo '; DROP TABLE t')" | psql
 posix safe | psql -c "SELECT * FROM users WHERE id = $id"
 posix safe | psql -c "SELECT $((1 + 2))"
+posix finds=unknown | psql -c "SELECT ${x:-$(cat q.txt)}"
+# In an unquoted here-document a quote is a character like any other: the
+# substitution in it still runs.
+posix finds=unknown | psql <<EOF\nSELECT '$(cat q.txt)'\nEOF
+posix finds=unknown | cat <<EOF | psql\nSELECT '$(cat q.txt)'\nEOF
+posix finds=unknown | psql <<EOF\nSELECT 1 -- it's $(cat q.txt)\nEOF
+posix safe | psql <<'EOF'\nSELECT '$(cat q.txt)'\nEOF

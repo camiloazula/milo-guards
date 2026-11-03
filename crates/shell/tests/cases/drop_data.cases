@@ -876,9 +876,10 @@ cmd finds=drop_data | redis-cli FLUSHALL
 cmd finds=drop_data | echo DROP TABLE users | sqlcmd -S db
 cmd finds=unknown | sqlcmd -S db -Q "%Q%"
 
-# A client run in a container or on another machine is read as the client.
-# A shell line there that is more than one command is read only for whether
-# it runs a client.
+# A client run in a container or on another machine is read as the client:
+# the command is read as the line would read it here (wrappers come off, a
+# shell's `-c` line is split by the same grammar), and a program or a line
+# only known when it runs is `unknown` there as it is here.
 posix finds=drop_data | docker exec -i db psql -c 'DROP DATABASE x'
 posix finds=drop_data | docker compose exec db psql -U postgres -c 'DROP DATABASE app'
 posix finds=drop_data | docker-compose exec -T db psql -c 'DROP TABLE t'
@@ -889,13 +890,13 @@ posix finds=drop_data | kubectl exec -n prod db-0 -c pg -- psql -c 'DROP TABLE t
 posix finds=drop_data | oc exec db -- redis-cli FLUSHALL
 posix finds=drop_data | ssh db psql -c 'DROP DATABASE app'
 posix finds=drop_data | ssh -p 2222 db 'psql -c "DROP TABLE t"'
-posix finds=unknown | ssh db sudo -u postgres psql -c 'DROP TABLE t'
+posix finds=drop_data | ssh db sudo -u postgres psql -c 'DROP TABLE t'
 posix finds=drop_data | docker exec db sh -c "psql -c 'DROP TABLE t'"
 posix finds=drop_data | docker exec db sqlite3 data.db 'DROP TABLE t'
 posix finds=drop_data | cat dump.sql | docker exec -i db psql
 posix finds=drop_data | docker exec -i db psql < dump.sql
 posix finds=drop_data | echo 'DROP TABLE t' | ssh db psql
-posix finds=unknown | ssh db 'cd /srv && psql -c "DROP TABLE t"'
+posix finds=drop_data | ssh db 'cd /srv && psql -c "DROP TABLE t"'
 posix finds=unknown | ssh db "psql -c \\"$Q\\""
 posix safe | docker exec db psql -c 'SELECT 1'
 posix safe | echo 'SELECT 1' | docker exec -i db psql
@@ -903,8 +904,32 @@ posix safe | kubectl exec db-0 -- psql -c 'SELECT 1'
 posix safe | ssh -p 22 db psql -c 'SELECT 1'
 posix safe | ssh db ls
 posix safe | docker exec db ls /var/lib/postgresql
+posix safe | ssh host 'ls -la ~/backups/mysql'
+posix finds=drop_data | ssh db 'docker exec db psql -c "DROP TABLE t"'
+posix finds=drop_data | echo 'DROP TABLE t' | docker exec -i db sh -c psql
+posix finds=drop_data | docker exec db timeout 5 psql -c 'DROP TABLE t'
+posix finds=unknown | ssh db 'ps${x}ql -c "DROP TABLE t"'
+posix finds=unknown | ssh db 'ps$@ql -c "DROP TABLE t"'
+posix finds=unknown | docker exec db sh -c 'ps${x}ql -c "DROP TABLE t"'
+posix finds=unknown | docker exec db $CLIENT -c 'DROP TABLE t'
+posix finds=unknown | ssh db "ls $dir"
+# A shell's options that take a value come before its `-c` line.
+posix finds=drop_data | docker exec db bash -o pipefail -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash -O extglob -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash --rcfile x -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash --init-file x -c "psql -c 'DROP TABLE t'"
+# `podman exec --latest` names no container: the command comes first.
+posix finds=drop_data | podman exec -l psql -c 'DROP DATABASE app'
+posix finds=drop_data | podman exec --latest psql -c 'DROP DATABASE app'
+posix finds=drop_data | podman exec -it -l psql -c 'DROP DATABASE app'
+posix safe | podman exec -l psql -c 'SELECT 1'
 powershell finds=drop_data | Start-Process psql -ArgumentList '-c "DROP TABLE t"'
 powershell safe | Start-Process psql -ArgumentList '-c "SELECT 1"'
 powershell finds=drop_data | Start-Process psql '-c "DROP TABLE t"'
 powershell finds=drop_data | Start-Process -FilePath psql -ArgumentList '-c "DROP TABLE t"' -Wait
 powershell finds=drop_data | Start-Process psql -Args '-c "DROP TABLE t"'
+powershell finds=drop_data | Start-Process psql -ArgumentList '-c', '"DROP TABLE t"'
+powershell finds=drop_data | Start-Process psql -ArgumentList @('-c', '"DROP TABLE t"')
+powershell safe | Start-Process psql -ArgumentList @('-c', '"SELECT 1"')
+powershell finds=unknown | Start-Process psql -ArgumentList @('-c', $q)
+powershell finds=unknown | Start-Process psql -ArgumentList $a

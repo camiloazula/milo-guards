@@ -1395,6 +1395,9 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
                         && tokens.get(at + 3) == Some(&Js::Symbol('}')));
                 reading.destroys |= empty;
             }
+            // `load("drop.js")` runs the script of a file, which the line
+            // does not show.
+            "load" if called => reading.unseen = true,
             _ => {}
         }
     }

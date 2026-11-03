@@ -310,13 +310,14 @@ pub(crate) fn word(arg: &Arg) -> Option<(String, Arg)> {
     match arg {
         Arg::Known(text) => assignment(text)
             .map(|(name, value)| (variable(name).to_string(), Arg::Known(value.to_string()))),
-        Arg::Template { text, source } => assignment(text).map(|(name, value)| {
+        Arg::Template { text, source, runs } => assignment(text).map(|(name, value)| {
             let written = assignment(source).map_or(source.as_str(), |(_, value)| value);
             (
                 variable(name).to_string(),
                 Arg::Template {
                     text: value.to_string(),
                     source: written.to_string(),
+                    runs: *runs,
                 },
             )
         }),

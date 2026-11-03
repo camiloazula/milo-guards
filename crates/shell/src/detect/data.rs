@@ -37,6 +37,11 @@ struct Client {
     long_flags: &'static [&'static str],
     /// Long options whose value is a statement.
     long_statement: &'static [&'static str],
+    /// Short options whose statement the client runs and then exits,
+    /// without reading its input (`psql -c`).
+    short_exits: &'static str,
+    /// Long options whose statement the client runs and then exits.
+    long_exits: &'static [&'static str],
     /// Short options whose value is a file of statements (`psql -f`).
     short_file: &'static str,
     /// Long options whose value is a file of statements (`--file`).
@@ -122,6 +127,8 @@ const PSQL: Client = Client {
         "record-separator-zero",
     ],
     long_statement: &["command"],
+    short_exits: "c",
+    long_exits: &["command"],
     short_file: "f",
     long_file: &["file"],
     scripts: false,
@@ -204,6 +211,8 @@ const MYSQL: Client = Client {
         "xml",
     ],
     long_statement: &["execute", "init-command"],
+    short_exits: "e",
+    long_exits: &["execute"],
     short_file: "",
     long_file: &[],
     scripts: false,
@@ -248,6 +257,8 @@ const CLICKHOUSE: Client = Client {
         "highlight",
     ],
     long_statement: &["query"],
+    short_exits: "q",
+    long_exits: &["query"],
     short_file: "",
     long_file: &["queries-file"],
     scripts: false,
@@ -271,6 +282,8 @@ const SQLCMD: Client = Client {
     ],
     long_flags: &["help", "version", "trust-server-certificate"],
     long_statement: &["query", "initial-query"],
+    short_exits: "Q",
+    long_exits: &["query"],
     short_file: "i",
     long_file: &["input-file"],
     scripts: false,
@@ -310,6 +323,8 @@ const CQLSH: Client = Client {
         "secure-connect-bundle",
     ],
     long_statement: &["execute"],
+    short_exits: "e",
+    long_exits: &["execute"],
     short_file: "f",
     long_file: &["file"],
     scripts: false,
@@ -364,6 +379,8 @@ const MONGO: Client = Client {
         "redactInfo",
     ],
     long_statement: &["eval"],
+    short_exits: "",
+    long_exits: &[],
     short_file: "f",
     long_file: &["file"],
     scripts: true,
@@ -402,25 +419,32 @@ fn view(arg: &Arg) -> Option<(&str, bool)> {
     }
 }
 
-/// `text` as the value of an option attached to it, as an argument.
-fn attached(rest: &str, holes: bool) -> Arg {
+/// Whether an expansion in `arg` runs a command, as the parse found it.
+fn runs(arg: &Arg) -> bool {
+    matches!(arg, Arg::Template { runs: true, .. })
+}
+
+/// `text` as the value of an option attached to it, as an argument: a
+/// template when it has expansions in it, which run a command when `runs`.
+fn attached(rest: &str, holes: bool, runs: bool) -> Arg {
     if holes {
         Arg::Template {
             text: rest.to_string(),
             source: rest.to_string(),
+            runs,
         }
     } else {
         Arg::Known(rest.to_string())
     }
 }
 
-/// The value of an option written attached to it (`-cSQL`), from an argument
-/// that may only be known when it runs.
-fn carry(rest: &str, holes: bool, unknown: bool) -> Arg {
-    if unknown {
+/// The value of an option written attached to it (`-cSQL`), from the
+/// argument `arg` it is part of, which may only be known when it runs.
+fn carry(rest: &str, holes: bool, arg: &Arg) -> Arg {
+    if matches!(arg, Arg::Unknown(_)) {
         Arg::Unknown(rest.to_string())
     } else {
-        attached(rest, holes)
+        attached(rest, holes, runs(arg))
     }
 }
 
@@ -431,6 +455,9 @@ struct Given {
     statements: Vec<Arg>,
     /// The files of statements it names (`psql -f`, `mongosh x.js`).
     files: Vec<Arg>,
+    /// Whether it is given a statement that it runs and then exits, without
+    /// reading its input.
+    exits: bool,
 }
 
 /// What a long option of a client does with what follows it.
@@ -454,39 +481,47 @@ impl Client {
     /// read any unique abbreviation: `psql --co` is `--command`, `--c` is
     /// ambiguous with `--csv` and runs nothing), with `_` read as `-` where
     /// no option has the name as it is written.
-    fn long_option(&self, name: &str) -> Long {
-        let long = self.long_option_spelled(name);
+    fn resolve(&self, name: &str) -> Option<&'static str> {
         // `mysql --init_command` is `--init-command`.
-        if long == Long::Flag && name.contains('_') {
-            return self.long_option_spelled(&name.replace('_', "-"));
-        }
-        long
+        self.resolve_spelled(name).or_else(|| {
+            name.contains('_')
+                .then(|| self.resolve_spelled(&name.replace('_', "-")))
+                .flatten()
+        })
     }
 
-    fn long_option_spelled(&self, name: &str) -> Long {
-        let all = || self.long_values.iter().chain(self.long_flags);
-        let kind = |option: &str| {
-            if self.long_statement.contains(&option) {
-                Long::Statement
-            } else if self.long_file.contains(&option) {
-                Long::File
-            } else if self.long_values.contains(&option) {
-                match self.loose {
-                    Loose::Every => Long::Loose,
-                    Loose::Only(names) if names.contains(&option) => Long::Loose,
-                    Loose::No | Loose::Only(_) => Long::Value,
-                }
-            } else {
-                Long::Flag
-            }
-        };
-        if all().any(|option| *option == name) {
-            return kind(name);
+    fn resolve_spelled(&self, name: &str) -> Option<&'static str> {
+        let all = || self.long_values.iter().chain(self.long_flags).copied();
+        if let Some(option) = all().find(|option| *option == name) {
+            return Some(option);
+        }
+        if name.is_empty() {
+            return None;
         }
         let mut starts = all().filter(|option| option.starts_with(name));
         match (starts.next(), starts.next()) {
-            (Some(option), None) if !name.is_empty() => kind(option),
-            _ => Long::Flag,
+            (Some(option), None) => Some(option),
+            _ => None,
+        }
+    }
+
+    /// What the long option `name` (see [`Self::resolve`]) does.
+    fn long_option(&self, name: &str) -> Long {
+        let Some(option) = self.resolve(name) else {
+            return Long::Flag;
+        };
+        if self.long_statement.contains(&option) {
+            Long::Statement
+        } else if self.long_file.contains(&option) {
+            Long::File
+        } else if self.long_values.contains(&option) {
+            match self.loose {
+                Loose::Every => Long::Loose,
+                Loose::Only(names) if names.contains(&option) => Long::Loose,
+                Loose::No | Loose::Only(_) => Long::Value,
+            }
+        } else {
+            Long::Flag
         }
     }
 
@@ -523,7 +558,6 @@ impl Client {
             let Some((text, holes)) = view(arg) else {
                 continue;
             };
-            let unknown = matches!(arg, Arg::Unknown(_));
             // An operand that is a script the client runs.
             let script = |text: &str| {
                 let lower = text.to_ascii_lowercase();
@@ -545,10 +579,14 @@ impl Client {
                     None => (name, None),
                 };
                 let long = self.long_option(name);
+                given.exits |= long == Long::Statement
+                    && self
+                        .resolve(name)
+                        .is_some_and(|option| self.long_exits.contains(&option));
                 if let Some(value) = value {
                     match long {
-                        Long::Statement => found.push(carry(value, holes, unknown)),
-                        Long::File => files.push(carry(value, holes, unknown)),
+                        Long::Statement => found.push(carry(value, holes, arg)),
+                        Long::File => files.push(carry(value, holes, arg)),
                         Long::Value | Long::Loose | Long::Flag => {}
                     }
                 } else if long == Long::Statement {
@@ -587,16 +625,17 @@ impl Client {
                     if after.is_empty() {
                         files.extend(Self::value(&mut iter, loose).cloned());
                     } else {
-                        files.push(carry(after, holes, unknown));
+                        files.push(carry(after, holes, arg));
                     }
                     break;
                 }
                 if self.short_values.contains(letter) || self.short_statement.contains(letter) {
                     if self.short_statement.contains(letter) {
+                        given.exits |= self.short_exits.contains(letter);
                         if after.is_empty() {
                             self.statement_value(&mut iter, found);
                         } else {
-                            found.push(carry(after, holes, unknown));
+                            found.push(carry(after, holes, arg));
                         }
                     } else if after.is_empty() {
                         Self::value(&mut iter, loose);
@@ -629,41 +668,10 @@ fn read_text(language: Language, arg: &Arg) -> Reading {
     };
     // A command substitution prints what it likes, a whole statement too,
     // where a variable stands for a value.
-    if holes && runs_command(arg) {
+    if runs(arg) {
         reading.merge(Reading::UNREADABLE);
     }
     reading
-}
-
-/// Whether a template runs a command substitution: its source, as written,
-/// has a `$(…)` that is not arithmetic, or a backtick, outside single quotes
-/// and not escaped. The template's text stands for every expansion alike.
-fn runs_command(arg: &Arg) -> bool {
-    let Arg::Template { source, .. } = arg else {
-        return false;
-    };
-    let mut chars = source.chars().peekable();
-    let mut single = false;
-    let mut double = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' if !double => single = !single,
-            _ if single => {}
-            '"' => double = !double,
-            '\\' => {
-                chars.next();
-            }
-            '`' => return true,
-            '$' if chars.peek() == Some(&'(') => {
-                chars.next();
-                if chars.peek() != Some(&'(') {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 /// The files that the `.backup` and `.save` commands in the statement `arg`
@@ -1231,9 +1239,12 @@ fn echo_said(unit: &Unit) -> Said {
             runs: false,
         };
     };
-    let written = attached(&text, holes);
+    let runs_any = rest.iter().any(runs);
+    let written = attached(&text, holes, runs_any);
     let decoded = |shell: Option<&Quirks>| match shell {
-        Some(shell) if unit.shell == Shell::Posix => attached(&echoed(&text, *shell).0, holes),
+        Some(shell) if unit.shell == Shell::Posix => {
+            attached(&echoed(&text, *shell).0, holes, runs_any)
+        }
         _ => written.clone(),
     };
     Said {
@@ -1245,7 +1256,7 @@ fn echo_said(unit: &Unit) -> Said {
         ],
         newline,
         over: false,
-        runs: unit.args.iter().any(runs_command),
+        runs: unit.args.iter().any(runs),
     }
 }
 
@@ -1285,7 +1296,7 @@ fn printf_said(unit: &Unit, left: usize) -> Said {
         let mut texts = Vec::new();
         for shell in &SHELLS {
             match printed(format, &args, *shell, left) {
-                Printed::Text(text) => texts.push(attached(&text, holey)),
+                Printed::Text(text) => texts.push(attached(&text, holey, false)),
                 Printed::Unknown => return None,
                 Printed::Over => {
                     over = true;
@@ -1297,7 +1308,7 @@ fn printf_said(unit: &Unit, left: usize) -> Said {
     });
     let said = match (said, format) {
         (None, Some(_)) => vec![NOTHING_KNOWN; SHELLS.len()],
-        (None, None) => vec![attached("", false); SHELLS.len()],
+        (None, None) => vec![attached("", false, false); SHELLS.len()],
         (Some(said), _) => said,
     };
     let text = |at: usize| said.get(at).cloned().unwrap_or(NOTHING_KNOWN);
@@ -1305,7 +1316,7 @@ fn printf_said(unit: &Unit, left: usize) -> Said {
         texts: [text(0), text(0), text(1), text(2)],
         newline: false,
         over,
-        runs: unit.args.iter().any(runs_command),
+        runs: unit.args.iter().any(runs),
     }
 }
 
@@ -1319,13 +1330,13 @@ fn output_said(unit: &Unit) -> Said {
     } else {
         ' '
     };
-    let said =
-        joined(&words, separator).map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes));
+    let said = joined(&words, separator)
+        .map_or(NOTHING_KNOWN, |(text, holes)| attached(&text, holes, false));
     Said {
         texts: [said.clone(), said.clone(), said.clone(), said],
         newline: true,
         over: false,
-        runs: unit.args.iter().any(runs_command),
+        runs: unit.args.iter().any(runs),
     }
 }
 
@@ -1344,7 +1355,7 @@ fn together<'a>(said: impl Iterator<Item = (&'a Arg, bool)>) -> Arg {
             text.push('\n');
         }
     }
-    attached(&text, holes)
+    attached(&text, holes, false)
 }
 
 /// `texts` without one that is the same as an earlier one.
@@ -1395,16 +1406,42 @@ pub(super) struct Cache {
     files_in: Option<Vec<bool>>,
     /// How many stages deep the text being worked out was handed on.
     depth: usize,
+    /// For each unit, the function whose body holds it, the innermost one,
+    /// by its index in [`crate::unit::Split::function_bodies`], once worked
+    /// out; and for each function, the units that call it.
+    bodies: Option<Bodies>,
+    /// The `exec`s with no program that redirect the input of the shell,
+    /// once worked out: every unit after them reads it.
+    execs: Option<Vec<usize>>,
     /// How many commands deep the client being read runs behind a container
     /// or a remote shell.
     behind: usize,
+    /// For a line run in a container or on another machine, the input the
+    /// command that runs it is given: what its units read when nothing else
+    /// on that line feeds them.
+    inherited: Option<Rc<Input>>,
+}
+
+/// The function whose body holds each unit, and the calls of each function
+/// (see [`Cache::bodies`]).
+type Bodies = (Vec<Option<usize>>, Vec<Vec<usize>>);
+
+/// What a stage says, and what each of its texts does.
+type StageReading = (Rc<Vec<Arg>>, Rc<Vec<Reading>>);
+
+/// The input a command is given: the texts the line shows, and whether it
+/// is also given what the line does not show.
+#[derive(Default)]
+struct Input {
+    texts: Vec<Arg>,
+    unseen: bool,
 }
 
 /// Where the input of a unit comes from.
 #[derive(Default)]
 struct Upstream {
-    /// The stage whose output it reads.
-    stage: Option<StageKey>,
+    /// The stages whose output it reads.
+    stages: Vec<StageKey>,
     /// The text fed to a command it runs for (`sh -c psql <<EOF`).
     texts: Vec<Arg>,
     /// Whether a file is redirected onto it, or onto a command it runs for,
@@ -1415,33 +1452,43 @@ struct Upstream {
 /// The reason for a client that runs statements the line does not show.
 const UNSEEN: &str = "runs statements the line does not show";
 
-/// The reason for a client the guard cannot read because of what it runs
-/// behind: a shell line in a container or on another machine that is more
-/// than a command.
-const BEHIND: &str = "runs a database client behind a command the guard does not read";
+/// The reason for a command in a container or on another machine run
+/// behind more of them than are read.
+const BEHIND: &str = "runs a command behind more containers and hosts than the guard reads";
+
+/// The reason for a command on another machine that is only known when it
+/// runs: the remote shell reads it as code.
+const REMOTE_UNKNOWN: &str = "runs a command on another machine only known when it runs";
 
 /// The most stages and commands the walk out from a client to its input
 /// follows; further is not read.
 const MAX_UPSTREAM: usize = 64;
 
+/// The most steps the walk out from a client to its input takes in all,
+/// through every call of the functions it runs in; more is not read.
+const MAX_WALK: usize = 256;
+
 /// The most containers and remote shells a client is read behind.
 const MAX_BEHIND: usize = 8;
 
-/// Whether `target`, the file of a redirect or an option, is the null
-/// device, which holds nothing.
-fn null_device(target: &Arg) -> bool {
+/// Whether `target`, the file of a redirect or an option given in `shell`,
+/// is the null device, which holds nothing. `nul` is the null device on
+/// Windows only: on POSIX it is a file like any other.
+fn null_device(target: &Arg, shell: Shell) -> bool {
     match target {
         Arg::Null => true,
-        Arg::Known(text) => text == "/dev/null" || text.eq_ignore_ascii_case("nul"),
+        Arg::Known(text) => {
+            text == "/dev/null" || (shell != Shell::Posix && text.eq_ignore_ascii_case("nul"))
+        }
         _ => false,
     }
 }
 
-/// Whether a file a client is told to run statements from is a file: not
-/// its own input (`-f -`), which is read as its input, and not the null
-/// device.
-fn runs_file(file: &Arg) -> bool {
-    !(null_device(file) || is_stdin(file))
+/// Whether a file a client is told to run statements from in `shell` is a
+/// file: not its own input (`-f -`), which is read as its input, and not the
+/// null device.
+fn runs_file(file: &Arg, shell: Shell) -> bool {
+    !(null_device(file, shell) || is_stdin(file))
 }
 
 /// Whether `arg` names the standard input.
@@ -1549,7 +1596,7 @@ fn cat_reads(unit: &Unit) -> (bool, bool) {
             input = true;
         } else if !(options && text.starts_with('-')) {
             operands = true;
-            files |= !null_device(arg);
+            files |= !null_device(arg, unit.shell);
         }
     }
     (input || !operands, files)
@@ -1654,7 +1701,7 @@ impl Checker<'_> {
         let up = self.upstream(producer);
         texts.extend(up.texts);
         let mut unseen = up.unseen;
-        if let Some(key) = up.stage {
+        for key in up.stages {
             if self.data.depth >= MAX_UPSTREAM {
                 unseen = true;
             } else {
@@ -1719,7 +1766,11 @@ impl Checker<'_> {
         let fed = self.data.files_in.get_or_insert_with(|| {
             let mut fed = vec![false; split.units.len()];
             for redirect in &split.redirects {
-                if redirect.input && !redirect.text && !null_device(&redirect.target) {
+                let shell = split
+                    .units
+                    .get(redirect.units.start)
+                    .map_or(Shell::Posix, |unit| unit.shell);
+                if redirect.input && !redirect.text && !null_device(&redirect.target, shell) {
                     for unit in redirect.units.clone() {
                         if let Some(slot) = fed.get_mut(unit) {
                             *slot = true;
@@ -1732,41 +1783,153 @@ impl Checker<'_> {
         fed.get(at).copied().unwrap_or_default()
     }
 
+    /// For the unit at `at`, the units that call the function whose body
+    /// holds it (the innermost one): a call hands the body its input.
+    fn callers(&mut self, at: usize) -> Vec<usize> {
+        let split = self.split;
+        let (inside, calls) = self.data.bodies.get_or_insert_with(|| {
+            let mut inside: Vec<Option<(usize, usize)>> = vec![None; split.units.len()];
+            let mut names: HashMap<String, usize> = HashMap::new();
+            for (index, (name, body)) in split.function_bodies.iter().enumerate() {
+                names.insert(crate::unit::key(name, Shell::Posix), index);
+                for unit in body.clone() {
+                    if let Some(slot) = inside.get_mut(unit) {
+                        if slot.is_none_or(|(_, size)| body.len() < size) {
+                            *slot = Some((index, body.len()));
+                        }
+                    }
+                }
+            }
+            let mut calls = vec![Vec::new(); split.function_bodies.len()];
+            for (at, unit) in split.units.iter().enumerate() {
+                let called = unit
+                    .key()
+                    .filter(|_| unit.shell == Shell::Posix)
+                    .and_then(|key| names.get(&key));
+                if let Some(calls) = called.and_then(|&index| calls.get_mut(index)) {
+                    calls.push(at);
+                }
+            }
+            let inside = inside
+                .into_iter()
+                .map(|slot| slot.map(|(index, _)| index))
+                .collect();
+            (inside, calls)
+        });
+        inside
+            .get(at)
+            .copied()
+            .flatten()
+            .and_then(|index| calls.get(index))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The `exec`s with no program that redirect the shell's own input
+    /// (`exec < f`, `exec <<EOF`): what runs after one reads that input.
+    fn execs(&mut self) -> &[usize] {
+        let split = self.split;
+        self.data.execs.get_or_insert_with(|| {
+            let mut fed: HashSet<usize> = HashSet::new();
+            for redirect in split.redirects.iter().filter(|redirect| redirect.input) {
+                fed.extend(redirect.units.clone());
+            }
+            split
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(at, unit)| {
+                    unit.shell == Shell::Posix
+                        && unit.args.is_empty()
+                        && unit.key().as_deref() == Some("exec")
+                        && (fed.contains(at) || split.fed_to(*at).next().is_some())
+                })
+                .map(|(at, _)| at)
+                .collect()
+        })
+    }
+
+    /// The input of the line at the unit at `at`, which reads it: what an
+    /// `exec` before it redirected, or what the command that runs this line
+    /// in a container or on another machine is given.
+    fn line_input(&mut self, at: usize, up: &mut Upstream) {
+        let execs: Vec<usize> = self
+            .execs()
+            .iter()
+            .copied()
+            .take_while(|exec| *exec < at)
+            .collect();
+        for exec in execs {
+            up.unseen |= self.file_fed(exec);
+            up.texts.extend(self.split.fed_to(exec).cloned());
+        }
+        if let Some(inherited) = &self.data.inherited {
+            up.texts.extend(inherited.texts.iter().cloned());
+            up.unseen |= inherited.unseen;
+        }
+    }
+
     /// Where the input of the unit at `at` comes from: the stage before it,
     /// or, for the first stage of a pipeline, the stage the pipeline runs
-    /// in, or the input of the command it runs for (`echo … | sh -c psql`).
-    /// A file redirected onto it, or onto a command it runs for, is not
-    /// shown by the line.
+    /// in, or the input of the command it runs for (`echo … | sh -c psql`),
+    /// or of each call of the function it runs in (`echo … | f`), or else
+    /// the line's own input. A file redirected onto it, or onto a command it
+    /// runs for, is not shown by the line.
     fn upstream(&mut self, at: usize) -> Upstream {
         let mut up = Upstream::default();
-        let mut current = at;
-        for _ in 0..MAX_UPSTREAM {
-            if self.file_fed(current) {
-                up.unseen = true;
-            }
-            if current != at {
-                up.texts.extend(self.split.fed_to(current).cloned());
-            }
-            let mut stage = self.split.units.get(current).and_then(|unit| unit.stage);
-            let mut hops = 0;
-            while let Some(here) = stage {
-                if here.index > 0 {
-                    up.stage = Some((here.pipeline, here.index - 1));
-                    return up;
-                }
-                hops += 1;
-                if hops > MAX_UPSTREAM {
+        let mut todo = vec![at];
+        let mut seen = HashSet::from([at]);
+        let mut steps = 0;
+        while let Some(mut current) = todo.pop() {
+            loop {
+                steps += 1;
+                if steps > MAX_WALK {
                     up.unseen = true;
                     return up;
                 }
-                stage = self.split.parents.get(&here.pipeline).copied();
-            }
-            match self.outer(current) {
-                Some(command) if command != current => current = command,
-                _ => return up,
+                if self.file_fed(current) {
+                    up.unseen = true;
+                }
+                if current != at {
+                    up.texts.extend(self.split.fed_to(current).cloned());
+                }
+                let mut stage = self.split.units.get(current).and_then(|unit| unit.stage);
+                let mut hops = 0;
+                let mut before = None;
+                while let Some(here) = stage {
+                    if here.index > 0 {
+                        before = Some((here.pipeline, here.index - 1));
+                        break;
+                    }
+                    hops += 1;
+                    if hops > MAX_UPSTREAM {
+                        up.unseen = true;
+                        return up;
+                    }
+                    stage = self.split.parents.get(&here.pipeline).copied();
+                }
+                if let Some(key) = before {
+                    if !up.stages.contains(&key) {
+                        up.stages.push(key);
+                    }
+                    break;
+                }
+                if let Some(command) = self.outer(current).filter(|command| *command != current) {
+                    current = command;
+                    continue;
+                }
+                let callers = self.callers(current);
+                if callers.is_empty() {
+                    self.line_input(current, &mut up);
+                }
+                for caller in callers {
+                    if seen.insert(caller) {
+                        todo.push(caller);
+                    }
+                }
+                break;
             }
         }
-        up.unseen = true;
         up
     }
 
@@ -1789,6 +1952,22 @@ impl Checker<'_> {
     /// Database clients and the tools that drop a database.
     pub(super) fn data(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
+        // `Start-Process` joins its arguments into one command line, which
+        // the client splits: a part only known when it runs may be any
+        // options, a statement among them.
+        if CLIENTS.contains(&key)
+            && unit
+                .wrappers
+                .iter()
+                .any(|wrapper| wrapper == "start-process")
+            && args.iter().any(|arg| !matches!(arg, Arg::Known(_)))
+        {
+            self.add(
+                Rule::Unknown,
+                "starts a database client with arguments only known when it runs",
+                Some(&unit.program),
+            );
+        }
         match key {
             "psql" => self.sql_client(at, unit, &PSQL, args),
             "mysql" | "mariadb" => self.sql_client(at, unit, &MYSQL, args),
@@ -1807,7 +1986,7 @@ impl Checker<'_> {
                 let found = embedded(args, &DUCKDB);
                 self.embedded_client(at, unit, &found, Dialect::DuckDb);
             }
-            "redis-cli" => self.redis(at, args),
+            "redis-cli" => self.redis(at, unit.shell, args),
             "dropdb" | "dropuser" => {
                 let help = args
                     .iter()
@@ -1834,9 +2013,9 @@ impl Checker<'_> {
             "mysqladmin" | "mariadb-admin" => self.mysqladmin(args),
             // A client run in a container or on another machine.
             "docker" | "podman" | "nerdctl" => self.engine_exec(at, unit, args),
-            "docker-compose" | "podman-compose" => self.compose_exec(at, unit, args),
-            "kubectl" | "oc" => self.kube_exec(at, unit, args),
-            "ssh" => self.ssh(at, unit, args),
+            "docker-compose" | "podman-compose" => self.compose_exec(at, args),
+            "kubectl" | "oc" => self.kube_exec(at, args),
+            "ssh" => self.ssh(at, args),
             _ => {}
         }
     }
@@ -1870,6 +2049,23 @@ impl Checker<'_> {
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
         let given = client.statements(args);
         let mut statements = given.statements;
+        for file in given
+            .files
+            .iter()
+            .filter(|file| runs_file(file, unit.shell))
+        {
+            self.judge(Reading::UNSEEN, Some(file), false);
+        }
+        // A client given a statement that it runs and then exits (`psql -c`,
+        // `mysql -e`) does not read its input, unless a file of statements
+        // it is given is its input (`-f -`).
+        if given.exits && !given.files.iter().any(is_stdin) {
+            for statement in &statements {
+                let reading = client.read(statement);
+                self.judge(reading, Some(statement), false);
+            }
+            return;
+        }
         statements.extend(self.split.fed_to(at).cloned());
         let up = self.upstream(at);
         statements.extend(up.texts);
@@ -1877,18 +2073,15 @@ impl Checker<'_> {
             let reading = client.read(statement);
             self.judge(reading, Some(statement), false);
         }
-        for file in given.files.iter().filter(|file| runs_file(file)) {
-            self.judge(Reading::UNSEEN, Some(file), false);
-        }
         if up.unseen {
             self.judge(Reading::UNSEEN, Some(&unit.program), false);
         }
         // What the stage before it says is judged once: every client of the
         // same language finds the same.
-        let Some(key) = up.stage else {
-            return;
-        };
-        if self.data.judged.insert((key, client.language)) {
+        for key in up.stages {
+            if !self.data.judged.insert((key, client.language)) {
+                continue;
+            }
             let said = self.stage_said(key);
             let readings = self.stage_readings(key, client.language);
             for (statement, reading) in said.iter().zip(readings.iter()) {
@@ -1973,15 +2166,16 @@ impl Checker<'_> {
             .iter()
             .map(|statement| read_text(language, statement))
             .collect();
-        let (said, said_readings) = match up.stage {
-            Some(key) => (self.stage_said(key), self.stage_readings(key, language)),
-            None => (Rc::default(), Rc::default()),
-        };
+        let stages: Vec<StageReading> = up
+            .stages
+            .iter()
+            .map(|&key| (self.stage_said(key), self.stage_readings(key, language)))
+            .collect();
         // `ATTACH` and `.open` reach another file than the one given, and
         // `-readonly` does not hold for it.
         let moves = readings
             .iter()
-            .chain(said_readings.iter())
+            .chain(stages.iter().flat_map(|(_, readings)| readings.iter()))
             .any(|reading| reading.moves);
         let own = !moves && (found.read_only || own_file);
         // `.backup` and `.save` replace the file they are given, even for a
@@ -1990,15 +2184,19 @@ impl Checker<'_> {
             self.judge_files(unit, &replaced_files(statement, dialect));
         }
         // Statements from a file, or from what the line does not show.
-        let unseen = up.unseen || up.stage.is_some_and(|key| self.stage_unseen(key));
+        let unseen = up.unseen || up.stages.iter().any(|&key| self.stage_unseen(key));
         let target = found.file.unwrap_or(&unit.program);
-        for file in found.files.iter().filter(|file| runs_file(file)) {
+        for file in found
+            .files
+            .iter()
+            .filter(|file| runs_file(file, unit.shell))
+        {
             self.judge(Reading::UNSEEN, Some(file), own);
         }
         if unseen {
             self.judge(Reading::UNSEEN, Some(target), own);
         }
-        if let Some(key) = up.stage {
+        for &key in &up.stages {
             // What the stage says is worked out once, and judged once for
             // each place its clients run in.
             let place = (unit.dir.clone(), unit.hidden);
@@ -2009,10 +2207,11 @@ impl Checker<'_> {
                 self.judge_files(unit, &files);
             }
         }
-        let all = statements
-            .iter()
-            .zip(readings)
-            .chain(said.iter().zip(said_readings.iter().copied()));
+        let all = statements.iter().zip(readings).chain(
+            stages
+                .iter()
+                .flat_map(|(said, readings)| said.iter().zip(readings.iter().copied())),
+        );
         for (statement, reading) in all {
             self.judge(reading, found.file.or(Some(statement)), own);
         }
@@ -2020,7 +2219,7 @@ impl Checker<'_> {
 
     /// `redis-cli`: `FLUSHALL`, `FLUSHDB`, and a `DEL` or `UNLINK` of what a
     /// `KEYS` or `SCAN` on the same line finds.
-    fn redis(&mut self, at: usize, args: &[Arg]) {
+    fn redis(&mut self, at: usize, shell: Shell, args: &[Arg]) {
         let operands = redis_operands(args);
         let mut reading = Reading::default();
         let target = operands.first().copied();
@@ -2058,7 +2257,7 @@ impl Checker<'_> {
         }
         // With no command on the line it runs the commands of its input.
         let mut unseen = operands.is_empty() && up.unseen;
-        if let Some(key) = up.stage {
+        for key in up.stages {
             for said in self.stage_readings(key, Language::Redis).iter() {
                 reading.merge(*said);
             }
@@ -2067,7 +2266,9 @@ impl Checker<'_> {
         // `--eval FILE` runs the script of a file.
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
-            if arg.known() == Some("--eval") && iter.next().is_some_and(runs_file) {
+            if arg.known() == Some("--eval")
+                && iter.next().is_some_and(|file| runs_file(file, shell))
+            {
                 unseen = true;
             }
         }
@@ -2158,40 +2359,47 @@ impl Checker<'_> {
         let Some((command, rest)) = resources::command(args, resources::ENGINE_VALUES) else {
             return;
         };
+        // `podman exec --latest` runs in the container made last, and names
+        // none.
+        let podman = unit.key().as_deref() == Some("podman");
         match command.known() {
-            Some("exec") => self.container_exec(at, unit, rest, EXEC_VALUES),
+            Some("exec") => self.container_exec(at, rest, EXEC_VALUES, podman),
             Some("container") => {
                 if let Some((sub, rest)) = resources::command(rest, &[]) {
                     if sub.known() == Some("exec") {
-                        self.container_exec(at, unit, rest, EXEC_VALUES);
+                        self.container_exec(at, rest, EXEC_VALUES, podman);
                     }
                 }
             }
-            Some("compose") => self.compose_exec(at, unit, rest),
+            Some("compose") => self.compose_exec(at, rest),
             _ => {}
         }
     }
 
     /// `docker-compose exec SERVICE COMMAND…`.
-    fn compose_exec(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+    fn compose_exec(&mut self, at: usize, args: &[Arg]) {
         let Some((command, rest)) = resources::command(args, resources::COMPOSE_VALUES) else {
             return;
         };
         if command.known() == Some("exec") {
-            self.container_exec(at, unit, rest, COMPOSE_EXEC_VALUES);
+            self.container_exec(at, rest, COMPOSE_EXEC_VALUES, false);
         }
     }
 
     /// The command after the container of an `exec`, whose options end at
-    /// the container.
-    fn container_exec(&mut self, at: usize, unit: &Unit, args: &[Arg], values: &[&str]) {
-        if let Some((_, command)) = resources::command(args, values) {
-            self.behind(at, unit, command);
+    /// the container; with `podman`'s `-l` (`--latest`) there is no
+    /// container, and the command starts after the options.
+    fn container_exec(&mut self, at: usize, args: &[Arg], values: &[&str], podman: bool) {
+        if podman && takes_latest(args, values) {
+            let start = after_options(args, values);
+            self.behind(at, args.get(start..).unwrap_or_default());
+        } else if let Some((_, command)) = resources::command(args, values) {
+            self.behind(at, command);
         }
     }
 
     /// `kubectl exec POD -- COMMAND…` and `oc exec`.
-    fn kube_exec(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+    fn kube_exec(&mut self, at: usize, args: &[Arg]) {
         let Some((command, rest)) = resources::command(args, resources::KUBECTL_VALUES) else {
             return;
         };
@@ -2199,7 +2407,7 @@ impl Checker<'_> {
             return;
         }
         if let Some(dash) = rest.iter().position(|arg| arg.known() == Some("--")) {
-            self.behind(at, unit, rest.get(dash + 1..).unwrap_or_default());
+            self.behind(at, rest.get(dash + 1..).unwrap_or_default());
             return;
         }
         // The old form, with no `--`: the pod, then the command.
@@ -2209,13 +2417,13 @@ impl Checker<'_> {
         };
         let start = after.iter().position(|arg| !is_option(arg));
         if let Some(start) = start {
-            self.behind(at, unit, after.get(start..).unwrap_or_default());
+            self.behind(at, after.get(start..).unwrap_or_default());
         }
     }
 
     /// `ssh [OPTIONS] HOST COMMAND…`: the words of the command, joined with
     /// spaces, are a line the remote shell runs.
-    fn ssh(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+    fn ssh(&mut self, at: usize, args: &[Arg]) {
         let mut host = false;
         let mut at_command = None;
         let mut index = 0;
@@ -2258,72 +2466,115 @@ impl Checker<'_> {
         };
         let words = args.get(start..).unwrap_or_default();
         let known: Option<Vec<&str>> = words.iter().map(Arg::known).collect();
-        if let Some(known) = known {
-            self.remote(at, unit, &known.join(" "));
-            return;
-        }
-        let text: Vec<&str> = words.iter().map(Arg::text).collect();
-        if mentions_client(&text.join(" ")) {
-            self.add(Rule::Unknown, BEHIND, words.first());
+        match known {
+            Some(known) => {
+                let line = known.join(" ");
+                if self.data.behind >= MAX_BEHIND {
+                    self.add(Rule::Unknown, BEHIND, words.first());
+                    return;
+                }
+                let split = crate::unit::split(&line, Shell::Posix, (None, None), false);
+                self.judge_behind(at, &split);
+            }
+            // A word only known when it runs is part of the code the remote
+            // shell reads.
+            None => self.add(Rule::Unknown, REMOTE_UNKNOWN, words.first()),
         }
     }
 
-    /// A line a shell in a container or on another machine runs. One command
-    /// of plain words is read as that command; anything more is read only
-    /// for whether it runs a client.
-    fn remote(&mut self, at: usize, unit: &Unit, line: &str) {
-        match plain_words(line) {
-            Some(words) => {
-                let words: Vec<Arg> = words.into_iter().map(Arg::Known).collect();
-                self.behind(at, unit, &words);
-            }
-            None if mentions_client(line) => {
-                self.add(Rule::Unknown, BEHIND, Some(&Arg::Known(line.to_string())));
-            }
-            None => {}
-        }
-    }
-
-    /// A command run in a container or on another machine, as its words: a
-    /// client is read as the client itself, a shell's `-c` line as a line
-    /// of that machine, and any other command that names a client is not
-    /// read.
-    fn behind(&mut self, at: usize, unit: &Unit, words: &[Arg]) {
+    /// A command run in a container or on another machine, as its words:
+    /// read as the line would read it here (wrappers come off, a shell's
+    /// `-c` line is split), each database client in it judged as running
+    /// there.
+    fn behind(&mut self, at: usize, words: &[Arg]) {
         let Some((program, args)) = words.split_first() else {
-            return;
-        };
-        let Some(name) = program.known() else {
             return;
         };
         if self.data.behind >= MAX_BEHIND {
             self.add(Rule::Unknown, BEHIND, Some(program));
             return;
         }
-        let key = crate::unit::key(name, unit.shell);
-        self.data.behind += 1;
-        if CLIENTS.contains(&key.as_str()) || CARRIERS.contains(&key.as_str()) {
-            let inner = Unit {
-                program: program.clone(),
-                args: args.to_vec(),
-                ..unit.clone()
-            };
-            self.data(at, &inner, &key);
-        } else if LINE_SHELLS.contains(&key.as_str()) {
-            match shell_line(args) {
-                Some(Arg::Known(line)) => {
-                    let line = line.clone();
-                    self.remote(at, unit, &line);
-                }
-                Some(line) if mentions_client(line.text()) => {
-                    self.add(Rule::Unknown, BEHIND, Some(line));
-                }
-                _ => {}
-            }
-        } else if words.iter().any(|word| mentions_client(word.text())) {
-            self.add(Rule::Unknown, BEHIND, Some(program));
-        }
-        self.data.behind -= 1;
+        let mut split = crate::unit::Split::default();
+        let unit = Unit::new(Shell::Posix, program.clone(), args.to_vec(), None);
+        crate::launch::add(&mut split, unit, 0);
+        self.judge_behind(at, &split);
     }
+
+    /// Judge the database clients of `split`, a line run in a container or
+    /// on another machine by the unit at `at`, which hands it its input.
+    /// What its grammar cannot read, or a program only known when it runs,
+    /// is `unknown` there as it is here.
+    fn judge_behind(&mut self, at: usize, split: &crate::unit::Split) {
+        let (texts, unseen) = self.passed_on(at);
+        let mut inner = Checker::new(split, self.resolver);
+        inner.data.behind = self.data.behind + 1;
+        inner.data.inherited = Some(Rc::new(Input { texts, unseen }));
+        inner.found.extend(
+            split
+                .findings
+                .iter()
+                .filter(|finding| matches!(finding.rule, Rule::Unknown | Rule::Unreadable))
+                .cloned(),
+        );
+        for (index, unit) in split.units.iter().enumerate() {
+            if let Some(key) = unit.key() {
+                inner.data(index, unit, &key);
+            }
+        }
+        self.found.extend(inner.found);
+    }
+}
+
+/// Whether the options of a `podman exec`, before the first word that is
+/// not one, take `-l` (`--latest`), alone or bundled.
+fn takes_latest(args: &[Arg], values: &[&str]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known().filter(|_| is_option(arg)) else {
+            return false;
+        };
+        if text == "--" {
+            return false;
+        }
+        if text == "--latest" {
+            return true;
+        }
+        if values.contains(&text) {
+            iter.next();
+            continue;
+        }
+        if let Some(letters) = text.strip_prefix('-').filter(|rest| !rest.starts_with('-')) {
+            // The letters up to the first that takes a value.
+            for letter in letters.chars() {
+                if letter == 'l' {
+                    return true;
+                }
+                if values.contains(&format!("-{letter}").as_str()) {
+                    break;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Where the first word that is not an option is, past the values of the
+/// options in `values`.
+fn after_options(args: &[Arg], values: &[&str]) -> usize {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let Some(text) = arg.known().filter(|_| is_option(arg)) else {
+            return at;
+        };
+        at += 1;
+        if text == "--" {
+            return at;
+        }
+        if values.contains(&text) {
+            at += 1;
+        }
+    }
+    at
 }
 
 /// Options of `docker exec` and `podman exec` that take a value.
@@ -2346,7 +2597,7 @@ const COMPOSE_EXEC_VALUES: &[&str] = &["-e", "--env", "-u", "--user", "-w", "--w
 /// `ssh`'s options that take a value.
 const SSH_VALUES: &str = "BbcDEeFIiJLlmOoPpQRSWw";
 
-/// The database clients and tools this rule reads.
+/// The database clients this rule reads.
 const CLIENTS: &[&str] = &[
     "psql",
     "mysql",
@@ -2360,121 +2611,10 @@ const CLIENTS: &[&str] = &[
     "sqlite3",
     "duckdb",
     "redis-cli",
-    "dropdb",
-    "dropuser",
-    "mysqladmin",
-    "mariadb-admin",
 ];
-
-/// The programs that run a command in a container or on another machine.
-const CARRIERS: &[&str] = &[
-    "docker",
-    "podman",
-    "nerdctl",
-    "docker-compose",
-    "podman-compose",
-    "kubectl",
-    "oc",
-    "ssh",
-];
-
-/// The shells whose `-c` line a container or a remote machine runs.
-const LINE_SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "ash", "mksh"];
 
 /// Whether `arg` is a word that starts with `-`.
 fn is_option(arg: &Arg) -> bool {
     arg.known()
         .is_some_and(|text| text.starts_with('-') && text.len() > 1)
-}
-
-/// The line a shell is given with `-c` (also bundled, `-lc`).
-fn shell_line(args: &[Arg]) -> Option<&Arg> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let text = arg.known()?;
-        if !text.starts_with('-') || text == "--" {
-            return None;
-        }
-        if !text.starts_with("--") && text.contains('c') {
-            return iter.next();
-        }
-    }
-    None
-}
-
-/// Whether `text` names a database client as a word.
-fn mentions_client(text: &str) -> bool {
-    text.split(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\')))
-        .any(|word| CLIENTS.contains(&crate::unit::key(word, Shell::Posix).as_str()))
-}
-
-/// The words of `line` as a POSIX shell reads them, when it is one simple
-/// command of plain words: quotes and backslashes, and nothing the shell
-/// would expand, redirect, run or join. `None` for anything more.
-fn plain_words(line: &str) -> Option<Vec<String>> {
-    #[derive(PartialEq)]
-    enum Quote {
-        None,
-        Single,
-        Double,
-    }
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut started = false;
-    let mut quote = Quote::None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match quote {
-            Quote::Single if c == '\'' => quote = Quote::None,
-            Quote::Single => word.push(c),
-            Quote::Double => match c {
-                '"' => quote = Quote::None,
-                '$' | '`' => return None,
-                '\\' => match chars.next()? {
-                    next @ ('$' | '`' | '"' | '\\') => word.push(next),
-                    '\n' => {}
-                    next => {
-                        word.push('\\');
-                        word.push(next);
-                    }
-                },
-                c => word.push(c),
-            },
-            Quote::None => match c {
-                '\'' => {
-                    quote = Quote::Single;
-                    started = true;
-                }
-                '"' => {
-                    quote = Quote::Double;
-                    started = true;
-                }
-                '\\' => {
-                    word.push(chars.next()?);
-                    started = true;
-                }
-                ' ' | '\t' => {
-                    if started {
-                        words.push(std::mem::take(&mut word));
-                        started = false;
-                    }
-                }
-                ';' | '&' | '|' | '<' | '>' | '(' | ')' | '`' | '$' | '\n' | '*' | '?' | '['
-                | '{' | '}' | '~' | '!' => return None,
-                '#' if !started => return None,
-                '=' if !started || words.is_empty() => return None,
-                c => {
-                    word.push(c);
-                    started = true;
-                }
-            },
-        }
-    }
-    if quote != Quote::None {
-        return None;
-    }
-    if started {
-        words.push(word);
-    }
-    Some(words)
 }

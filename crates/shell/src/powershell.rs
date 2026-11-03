@@ -814,7 +814,54 @@ impl Walker<'_> {
                 return filter.to_vec();
             }
         }
+        // `Start-Process psql -ArgumentList @('-c', '…')`: an array of
+        // strings is its items, as a comma list is.
+        if program == Some("start-process") {
+            let mut array = element;
+            while array.kind() == "unary_expression" && array.named_child_count() == 1 {
+                match array.named_child(0) {
+                    Some(inner) => array = inner,
+                    None => break,
+                }
+            }
+            if array.kind() == "array_expression" {
+                if let Some(items) = self.literal_array(array) {
+                    return items;
+                }
+            }
+        }
         vec![self.expr(element)]
+    }
+
+    /// The items of `@( … )` when each is a string whose value is known
+    /// (`@('-c', 'SELECT 1')`); `None` for anything else in it.
+    fn literal_array(&self, array: Node<'_>) -> Option<Vec<Arg>> {
+        let mut items = Vec::new();
+        let mut plain = true;
+        unit::for_each_node(array, |node| {
+            if !node.is_named() || node.id() == array.id() {
+                return;
+            }
+            match node.kind() {
+                "string_literal" => items.push(self.expr(node)),
+                "statement_list"
+                | "pipeline"
+                | "pipeline_chain"
+                | "logical_expression"
+                | "bitwise_expression"
+                | "comparison_expression"
+                | "additive_expression"
+                | "multiplicative_expression"
+                | "format_expression"
+                | "range_expression"
+                | "array_literal_expression"
+                | "unary_expression"
+                | "verbatim_string_characters"
+                | "expandable_string_literal" => {}
+                _ => plain = false,
+            }
+        });
+        (plain && items.iter().all(|item| matches!(item, Arg::Known(_)))).then_some(items)
     }
 
     /// How a value uses `$_`, the item of a `ForEach-Object` block: not at
