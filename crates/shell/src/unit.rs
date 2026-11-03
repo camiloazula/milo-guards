@@ -163,6 +163,12 @@ pub(crate) struct Unit {
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+    /// For a PowerShell unit the walk reads from the grammar, the variables
+    /// its arguments read, by the grammar's variable nodes (`$k`, `"x$k"`, a
+    /// splat `@p`; see [`crate::powershell::variables`]). `None` for a unit
+    /// of another shell, or one the guard makes up for a .NET call, whose
+    /// variables are read from its arguments' text (see [`Unit::variables`]).
+    pub(crate) names: Option<Vec<String>>,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -245,6 +251,22 @@ impl Unit {
             listed: Vec::new(),
             tf_cli_args: Vec::new(),
             depth: 0,
+            names: None,
+        }
+    }
+
+    /// The variables the unit's arguments read: [`Unit::names`] when the
+    /// grammar gave them, and otherwise the ones its arguments that are only
+    /// known when it runs name.
+    pub(crate) fn variables(&self) -> Vec<String> {
+        match &self.names {
+            Some(names) => names.clone(),
+            None => self
+                .args
+                .iter()
+                .filter(|arg| arg.is_unknown())
+                .flat_map(|arg| referenced_in(arg.text(), self.shell))
+                .collect(),
         }
     }
 
@@ -536,6 +558,41 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
         })
         .map(str::to_string)
         .collect()
+}
+
+/// The variables PowerShell `text` names, in lower case as PowerShell
+/// matches them, without a scope: `$k`, `${K}` and `$script:k` all name `k`
+/// (`$env:k` names the environment, `env`).
+pub(crate) fn referenced_powershell(text: &str) -> Vec<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let name = |piece: &str| {
+                let end = piece
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(piece.len());
+                piece.get(..end).unwrap_or_default().to_ascii_lowercase()
+            };
+            let first = name(piece);
+            let scoped = piece
+                .get(first.len()..)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .filter(|_| SCOPES.contains(&first.as_str()))
+                .map(name);
+            Some(scoped.unwrap_or(first)).filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// The variables `text` names in `shell`: see [`referenced`] and
+/// [`referenced_powershell`].
+pub(crate) fn referenced_in(text: &str, shell: Shell) -> Vec<String> {
+    match shell {
+        Shell::PowerShell => referenced_powershell(text),
+        Shell::Posix | Shell::Cmd => referenced(text),
+    }
 }
 
 /// A function definition, noted where it begins (see [`Split::defining`]).
@@ -916,6 +973,12 @@ pub(crate) struct Split {
     /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
     /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
+    /// How many groups a `coproc` opened that the grammar did not see
+    /// (`coproc { ls; }`, `coproc NAME { { ls; }; }`): it has no `coproc`,
+    /// so it reads each `{` as a word and each `}` that closes one as a
+    /// command of its own. The walk takes such a `}` off as it closes one,
+    /// and runs nothing for it.
+    pub(crate) coproc_groups: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -1762,7 +1825,13 @@ impl Split {
     /// Note that the variable `name` is set from what runs in `inside` and
     /// from the variables `value` names.
     pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
-        let uses = referenced(value);
+        self.assign_uses(name, inside, referenced(value));
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `uses`, as [`Self::assign`] does, the names already
+    /// read from the value (as PowerShell reads them, say).
+    pub(crate) fn assign_uses(&mut self, name: &str, inside: Range<usize>, uses: Vec<String>) {
         if !inside.is_empty() || !uses.is_empty() {
             self.assigned.push(Assigned {
                 name: name.to_string(),
@@ -3524,10 +3593,21 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
+    // A group a `coproc` opens closes in the same script.
+    let groups = std::mem::take(&mut split.coproc_groups);
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
+    }
+    // One it never closes (`coproc {`) is a line the shell does not run
+    // as written.
+    if std::mem::replace(&mut split.coproc_groups, groups) > 0 {
+        split.problem(
+            Rule::Unreadable,
+            "opens a group that never closes",
+            Some("{"),
+        );
     }
     split.apart -= usize::from(apart);
     if !here {
@@ -3603,6 +3683,28 @@ pub(crate) fn for_each_node<'tree>(
     loop {
         visit(cursor.node());
         if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// Visit the nodes under `root`, without recursion, going into the children
+/// of a node only when `visit` says so.
+pub(crate) fn for_each_node_until<'tree>(
+    root: tree_sitter::Node<'tree>,
+    mut visit: impl FnMut(tree_sitter::Node<'tree>) -> bool,
+) {
+    let mut cursor = root.walk();
+    loop {
+        if visit(cursor.node()) && cursor.goto_first_child() {
             continue;
         }
         loop {
