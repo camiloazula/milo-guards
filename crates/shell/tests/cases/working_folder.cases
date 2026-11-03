@@ -34,10 +34,14 @@ posix finds=delete | env -S '-C / rm -rf etc # a comment'
 posix finds=delete | env -S '-C "/" rm -rf "e\\tc" etc\\c ignored'
 posix safe | env -S "echo 'it\\'s' 'a\\\\nb'"
 posix safe | env -S 'echo "a\\_b\\nc" x'
-# A `${NAME}` env fills in from its environment runs a command only known
+# A `${NAME}` env fills in from its environment makes its word only known
 # when it runs, but not in single quotes or after a backslash.
-posix finds=unknown | env -S '-C ${D} rm -rf build'
-posix finds=unknown | env -S 'rm -rf ${HOME}'
+posix finds=delete reason="deletes a path only known when it runs" | env -S '-C ${D} rm -rf build'
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf ${HOME}'
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf "${HOME}/x y"'
+posix finds=unknown | env -S '${P} -rf x'
+posix finds=unknown | env -S '${O} -C / rm -rf etc'
+posix safe | env -S 'echo ${HOME}'
 posix safe | env -S 'echo \\${HOME} "\\${HOME}"'
 # A string env refuses (another `$`, an escape it does not know, a quote
 # left open) runs nothing; it is still read as the shell line it looks like.
@@ -48,6 +52,17 @@ posix finds=delete | env -S 'rm -rf ~ \\q'
 posix finds=delete | env -C ~ python3 -c "import shutil; shutil.rmtree('.ssh')"
 posix safe | env -C sub make
 posix safe | env -C sub rm -rf build
+# BSD's `-P altpath` and FreeBSD's `-L` and `-U` take a value, which is not
+# the program.
+posix finds=delete | env -P /bin -C / rm -rf etc
+posix finds=delete | env -iP /bin -C ~ rm -rf .ssh
+posix finds=delete | env -P /usr/bin rm -rf ~
+posix finds=delete | env -vP /bin rm -rf ~
+posix finds=delete | env -P/bin rm -rf ~
+posix finds=delete | env -S '-P /bin rm -rf ~'
+posix finds=delete | env -L 0 rm -rf ~
+posix finds=delete | env -U me/default -C / rm -rf etc
+posix safe | env -P /bin -C sub make
 
 # `sudo -D` and `run0 -D` (`--chdir`).
 posix finds=delete | sudo -D / rm -rf etc
@@ -82,6 +97,13 @@ posix safe | uv run --project sub pytest
 posix finds=delete | bun --cwd=~ run rm -rf .config
 posix finds=delete | bun --cwd ~ x rimraf .config
 posix finds=delete | bun --cwd ~ x rimraf /
+# cmd reads what bun starts there too.
+cmd finds=delete | bun --cwd build rimraf C:\\Windows\\System32
+cmd finds=delete | bun --cwd C:\\Windows rimraf System32
+cmd finds=delete | bun --cwd . rimraf %USERPROFILE%
+cmd finds=delete | bun --cwd=build run rd /s /q C:\\Windows
+cmd finds=delete | bun --cwd=build x rimraf C:\\Windows
+cmd safe | bun --cwd web run build
 posix finds=delete | yarn --cwd ~ exec rm -rf .config
 posix finds=delete | yarn --cwd=/ dlx rimraf etc
 posix safe | yarn --cwd web build
@@ -114,6 +136,17 @@ powershell finds=delete | pwsh -wo C:\\Windows -c "Remove-Item System32 -Recurse
 powershell finds=delete | pwsh -workingdir C:\\Windows -c "Remove-Item System32 -Recurse"
 powershell finds=delete | pwsh -wo:C:\\Windows -c "Remove-Item System32 -Recurse"
 powershell finds=delete | pwsh -WORKINGDIRECTORY:C:\\Windows -c "Remove-Item System32 -Recurse"
+# pwsh drops a second leading dash: `--wd` is `-wd`. An en dash is a dash.
+powershell finds=delete | pwsh --wd C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --workingdirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh --wd C:\\Windows --c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh –wd C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --wd C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --workingdirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+cmd finds=delete | pwsh --wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell safe | pwsh --wd build -c "Remove-Item obj -Recurse"
+cmd safe | pwsh --wd build -c "Remove-Item obj -Recurse"
 powershell finds=delete | Start-Process -FilePath pwsh -WorkingDirectory C:\\Windows -ArgumentList '-c','Remove-Item System32 -Recurse'
 powershell finds=delete | Start-Process cmd -wo C:\\Windows -ArgumentList '/c rd /s /q System32'
 powershell safe | Start-Process cmd -WorkingDirectory build -ArgumentList '/c del x.obj'

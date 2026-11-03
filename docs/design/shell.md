@@ -669,13 +669,18 @@ alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
 also `-S'…'`) splits the string into words, as `env` does, and reads them again
 as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`. A
 `${NAME}` in it, outside single quotes, is filled in from `env`'s environment,
-so the string runs a command only known when it runs. A string `env` refuses
-(any other `$`, an escape it does not know, a quote left open) runs nothing,
-since GNU's and BSD's `env` both stop there; it is still read as the shell line
-it looks like, so `env -S 'rm -rf $HOME'` stays `delete`. `pwsh` takes
-any prefix of `-WorkingDirectory` from `-wo` on, and `-wd`, also joined with a
-colon (`-wo:DIR`). npm's and npx's `--prefix` (`-C`) is read as npm reads its
-options, so `--prefi` too.
+so the word it stands in is only known when it runs (`env -S 'rm -rf ${HOME}'`
+deletes a path only known when it runs). A string `env` refuses (any other
+`$`, an escape it does not know, a quote left open) runs nothing, since GNU's
+and BSD's `env` both stop there; it is still read as the shell line it looks
+like, so `env -S 'rm -rf $HOME'` stays `delete`. BSD's `env -P altpath` and
+FreeBSD's `-L` and `-U user[/class]` take a value, so `env -P /bin -C / rm -rf
+etc` is `delete`. `pwsh` takes any prefix of `-WorkingDirectory` from `-wo`
+on, and `-wd`, also joined with a colon (`-wo:DIR`), and drops a second
+leading dash before it matches a parameter, as pwsh does (`--wd DIR`, `--c`).
+npm's and npx's `--prefix` (`-C`) is read as npm reads its options, so
+`--prefi` too. A cmd line reads what `bun --cwd DIR` starts as it reads what
+`bun` starts without it.
 
 Two of them name a project rather than the folder the command runs in, and
 whether the runner also starts the command there has changed between

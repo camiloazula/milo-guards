@@ -484,6 +484,9 @@ fn only_runs(unit: &Unit, evals: bool, launch: Launch) -> Launch {
             Box::new(only_runs(unit, evals, *first)),
             Box::new(only_runs(unit, evals, *second)),
         ),
+        // `bun --cwd DIR rimraf x`: what it starts in its folder is read the
+        // same way.
+        Launch::In(folder, inner) => Launch::In(folder, Box::new(only_runs(unit, evals, *inner))),
         _ if unit.shell != Shell::Cmd => launch,
         Launch::Reads(_) if evals || super::piped(unit) => launch,
         _ => Launch::Itself,

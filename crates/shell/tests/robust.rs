@@ -389,10 +389,11 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
     // `env -S` reads its string again as env's own arguments, each time as a
     // wrapper of its own, so a string of `-S` takes off one at a time until
     // the wrappers a line may have run out. The other shapes repeat an
-    // option the guard reads once each.
+    // option the guard reads once each, or a wrapper given its folder that
+    // starts the next.
     let long = "x".repeat(20_000);
     for count in [16, 2_000] {
-        for line in [
+        let posix_lines = [
             format!("env {}'rm -rf ~'", "-S ".repeat(count)),
             format!("env {}rm -rf etc", "-C / ".repeat(count)),
             format!("env {}rm -rf etc", "--ch=/ ".repeat(count)),
@@ -400,17 +401,46 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
             format!("pnpm {}exec rimraf etc", "-C / ".repeat(count)),
             format!("env -S '{}rm -rf etc'", "-C / ".repeat(count)),
             format!("env -S '-C / rm -rf etc {long}'"),
-        ] {
+        ];
+        let pwsh = [
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd:x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh -wd x ".repeat(count)
+            ),
+            format!(
+                "{}Remove-Item C:\\Windows -Recurse",
+                "pwsh --wd x ".repeat(count)
+            ),
+        ];
+        let lines = posix_lines
+            .into_iter()
+            .map(|line| (Shell::Posix, line, posix()))
+            .chain(pwsh.iter().flat_map(|line| {
+                [Shell::PowerShell, Shell::Cmd].map(|shell| (shell, line.clone(), windows()))
+            }))
+            .chain([(
+                Shell::Cmd,
+                format!(
+                    "{}rd /s /q C:\\Windows",
+                    "start /d C:\\x cmd /c ".repeat(count)
+                ),
+                windows(),
+            )]);
+        for (shell, line, paths) in lines {
             assert!(line.len() <= 64 * 1024, "{}", line.len());
-            let took = took(&line, Shell::Posix, &posix());
+            let took = took(&line, shell, &paths);
             assert!(
                 took < Duration::from_millis(200),
-                "took {took:?} for {count} x {}",
+                "took {took:?} for {count} x {} in {shell:?}",
                 &line[..20]
             );
             assert!(
-                !classify(&line, Shell::Posix, &posix()).is_safe(),
-                "{count} x {}",
+                !classify(&line, shell, &paths).is_safe(),
+                "{count} x {} in {shell:?}",
                 &line[..20]
             );
         }

@@ -82,9 +82,10 @@ pub(super) fn env(unit: &Unit) -> Launch {
 
 /// `env -S STRING` at `at`, the option and its value taking `used` words:
 /// `env` again, with the words of the string in their place. A string only
-/// known when it runs, or one with a `${NAME}` that `env` fills in from its
-/// environment, runs a command only known when it runs. A string `env`
-/// refuses to split (another `$`, an escape it does not know, a quote left
+/// known when it runs runs a command only known when it runs, and a word
+/// with a `${NAME}` that `env` fills in from its environment is a word only
+/// known when it runs (`rm -rf ${HOME}` deletes a path only known when it
+/// runs). A string `env` refuses to split (another `$`, an escape it does not know, a quote left
 /// open) runs nothing, as `env` stops there; it is still read as the shell
 /// line it looks like, so a line that only differs from a working one by a
 /// typo is not taken as safe.
@@ -101,21 +102,14 @@ fn split_string(
     let Some(text) = value.known() else {
         return in_folder(folder, Launch::Script(Shell::Posix, value));
     };
-    let words = match env_split(text) {
-        Ok(words) => words,
-        Err(Unsplit::Expands) => {
-            return in_folder(
-                folder,
-                Launch::Script(Shell::Posix, Arg::Unknown(text.to_string())),
-            );
-        }
-        Err(Unsplit::Refused) => return in_folder(folder, Launch::Script(Shell::Posix, value)),
+    let Ok(words) = env_split(text) else {
+        return in_folder(folder, Launch::Script(Shell::Posix, value));
     };
     let mut again = unit.clone();
     again.args = unit.args[..at]
         .iter()
         .cloned()
-        .chain(words.into_iter().map(Arg::Known))
+        .chain(words)
         .chain(
             unit.args
                 .get(at + used..)
@@ -127,34 +121,37 @@ fn split_string(
     Launch::Replace(Box::new(again))
 }
 
-/// Why `env -S` gives no words known before the line runs.
-enum Unsplit {
-    /// The string fills in a variable, `${NAME}`, from `env`'s environment.
-    Expands,
-    /// `env` refuses the string and runs nothing: a `$` not followed by
-    /// `{NAME}`, an escape it does not know, a quote left open.
-    Refused,
-}
+/// `env` refuses an `env -S` string and runs nothing: a `$` not followed by
+/// `{NAME}`, an escape it does not know, a quote left open.
+struct Refused;
 
 /// The words `env -S` splits `text` into: at blanks, with `'…'` and `"…"`
 /// quoting, the escapes of `\`, a `#` that starts a word ending the string,
 /// and `\c` ending it too. GNU's and BSD's `env` both refuse a string they
-/// cannot split so, and both fill in `${NAME}` outside single quotes.
-fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
+/// cannot split so, and both fill in `${NAME}` outside single quotes, in
+/// the word it stands in: such a word is only known when it runs.
+fn env_split(text: &str) -> Result<Vec<Arg>, Refused> {
     let mut words = Vec::new();
     let mut word = String::new();
     // Whether a word has started, though it may be empty (`''`).
     let mut started = false;
-    // Whether a `${NAME}` is filled in, read on to the end all the same:
-    // `env` refuses the whole string for a fault after it too.
+    // Whether the word fills in a `${NAME}`.
     let mut expands = false;
+    let mut end = |word: &mut String, expands: &mut bool| {
+        let word = std::mem::take(word);
+        words.push(if std::mem::take(expands) {
+            Arg::Unknown(word)
+        } else {
+            Arg::Known(word)
+        });
+    };
     let mut quote = None;
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
         match (quote, c) {
             (None, c) if c.is_whitespace() => {
                 if started {
-                    words.push(std::mem::take(&mut word));
+                    end(&mut word, &mut expands);
                     started = false;
                 }
             }
@@ -164,7 +161,7 @@ fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
                 started = true;
             }
             (Some(open), c) if c == open => quote = None,
-            (Some('\''), '\\') => match chars.next().ok_or(Unsplit::Refused)? {
+            (Some('\''), '\\') => match chars.next().ok_or(Refused)? {
                 c @ ('\\' | '\'') => word.push(c),
                 c => {
                     word.push('\\');
@@ -173,16 +170,16 @@ fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
             },
             (Some('\''), c) => word.push(c),
             (_, '$') => {
-                variable(&mut chars)?;
+                word.push_str(&variable(&mut chars)?);
                 expands = true;
                 started = true;
             }
             (_, '\\') => {
-                let escaped = match chars.next().ok_or(Unsplit::Refused)? {
+                let escaped = match chars.next().ok_or(Refused)? {
                     c @ ('\\' | '\'' | '"' | '#' | '$') => c,
                     '_' if quote.is_none() => {
                         if started {
-                            words.push(std::mem::take(&mut word));
+                            end(&mut word, &mut expands);
                             started = false;
                         }
                         continue;
@@ -194,7 +191,7 @@ fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
                     'r' => '\r',
                     't' => '\t',
                     'v' => '\u{b}',
-                    _ => return Err(Unsplit::Refused),
+                    _ => return Err(Refused),
                 };
                 word.push(escaped);
                 started = true;
@@ -206,32 +203,37 @@ fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
         }
     }
     if quote.is_some() {
-        return Err(Unsplit::Refused);
-    }
-    if expands {
-        return Err(Unsplit::Expands);
+        return Err(Refused);
     }
     if started {
-        words.push(word);
+        end(&mut word, &mut expands);
     }
     Ok(words)
 }
 
 /// Reads the `{NAME}` after a `$` in an `env -S` string from `chars`: a
 /// name that starts with a letter or `_` and goes on with letters, digits
-/// and `_`, closed by `}`. Anything else `env` refuses.
-fn variable(chars: &mut std::str::Chars<'_>) -> Result<(), Unsplit> {
+/// and `_`, closed by `}`. Anything else `env` refuses. It gives `${NAME}`
+/// back, as written.
+fn variable(chars: &mut std::str::Chars<'_>) -> Result<String, Refused> {
     if chars.next() != Some('{') {
-        return Err(Unsplit::Refused);
+        return Err(Refused);
     }
-    let mut first = true;
+    let mut name = String::from("${");
     loop {
         match chars.next() {
-            Some('}') if !first => return Ok(()),
-            Some(c) if c == '_' || c.is_ascii_alphabetic() || (!first && c.is_ascii_digit()) => {
-                first = false;
+            Some('}') if name.len() > 2 => {
+                name.push('}');
+                return Ok(name);
             }
-            _ => return Err(Unsplit::Refused),
+            Some(c)
+                if c == '_'
+                    || c.is_ascii_alphabetic()
+                    || (name.len() > 2 && c.is_ascii_digit()) =>
+            {
+                name.push(c);
+            }
+            _ => return Err(Refused),
         }
     }
 }
@@ -245,12 +247,17 @@ pub(super) struct Getopt {
     pub(super) long: &'static [(&'static str, bool)],
 }
 
-/// `env`'s options (GNU coreutils, and BSD's `-C` and `-S`).
+/// `env`'s options (GNU coreutils, and BSD's `-C` and `-S`). BSD's `-P
+/// altpath` and FreeBSD's `-L` and `-U user[/class]` also take a value; they
+/// have no long form, so they stand under names no long option has.
 const ENV_OPTIONS: Getopt = Getopt {
     short: &[
         ('a', "argv0"),
         ('C', "chdir"),
+        ('L', "bsd-login-class"),
+        ('P', "bsd-altpath"),
         ('S', "split-string"),
+        ('U', "bsd-user-class"),
         ('u', "unset"),
     ],
     long: &[
@@ -619,7 +626,13 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
         let Some(text) = arg.known() else {
             return Entry::Rest(&args[at..], moved);
         };
-        let Some(name) = text.strip_prefix('-').or_else(|| text.strip_prefix('/')) else {
+        // pwsh takes `--wd` as `-wd`: a second dash after the first is
+        // dropped before the name is matched.
+        let Some(name) = text
+            .strip_prefix('-')
+            .map(|name| name.strip_prefix('-').unwrap_or(name))
+            .or_else(|| text.strip_prefix('/'))
+        else {
             return Entry::Rest(&args[at..], moved);
         };
         // `-File:name`: the value joined to the parameter.
