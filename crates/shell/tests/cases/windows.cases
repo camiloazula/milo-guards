@@ -549,6 +549,90 @@ cmd rules=delete | if exist q rd /s /q C:\\Windows
 cmd rules=unreadable | for %i in (a) do rd /s /q C:\\Windows
 cmd rules=unreadable | ver && for %i in (a) do rd /s /q C:\\Windows
 cmd safe | ver && if exist q dir
+# A cmd line starts the POSIX shells and the interpreters as the other shells
+# do: the script of `-c` is split in the POSIX grammar, inline code is
+# unknown, and a file redirected onto an interpreter's input is code it runs.
+cmd rules=delete first=delete reason="deletes the root of the disk" | bash -c "rm -rf /"
+cmd rules=delete first=delete reason="deletes your home directory" | sh -c "rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | bun exec "rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | C:\\msys64\\usr\\bin\\bash.exe -c "rm -rf ~"
+cmd rules=delete | zsh -c "rm -rf /"
+cmd rules=delete | cmd /c bash -c "rm -rf ~"
+cmd rules=unknown | python -c "import shutil; shutil.rmtree('C:/Users/me')"
+cmd rules=unknown | node -e "x"
+cmd rules=unknown | bun -e "x"
+cmd rules=unknown | deno eval "x"
+cmd rules=unknown | python < x.py
+cmd rules=unknown | node < x.js
+cmd rules=unknown | python 0< x.py
+cmd rules=unknown | < x.py python
+cmd rules=unknown | (python) < x.py
+cmd rules=unknown | python < x.py | more
+cmd rules=unknown | bun run - < x.js
+cmd rules=unknown | deno < x.js
+cmd rules=unknown | deno repl < x.js
+cmd rules=run_input | bash < x.sh
+cmd rules=run_input | bash
+cmd rules=run_input | type x.sh | bash
+# A shell handed a file or a pipe on its input hands it on to what its script
+# runs.
+cmd rules=unknown | cmd /c python < x.py
+cmd rules=unknown | type x.py | cmd /c python
+cmd rules=unknown | type x.js | cmd /c bun run -
+powershell rules=unknown | type x.py | cmd /c python
+posix rules=unknown | cmd /c python < x.py
+# cmd hands the program its arguments as written, and the program splits them
+# by the C runtime's rules, where `\"` is a quote and a quote does not end a
+# word; `cmd /c` runs the text as it is, quotes and all.
+cmd rules=delete first=delete reason="deletes your home directory" | bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | bash -c ^"rm -rf ~^"
+cmd rules=unreadable | bash -c "echo ^"; rm -rf ~"
+cmd rules=unknown | python -c "print(\\"x\\")"
+cmd safe | bash -c "echo \\"hi\\""
+cmd safe | git commit -m "say \\"hi\\""
+cmd rules=delete | cmd /c bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | cmd /c "bash -c "rm -rf ~""
+cmd safe | cmd /c bash -c "echo hi"
+# Every program cmd starts but its own built-ins splits its arguments so,
+# and a runner or a wrapper hands on the words it made of them.
+cmd rules=delete | uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | uvx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npx -y bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | pnpm dlx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npm exec bash -- -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | cmd /c uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl -e bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | git submodule foreach "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | start "" bash -c "echo \\"hi\\"; rm -rf ~"
+cmd safe | npx eslint "src/**/*.js"
+cmd safe | uv run pytest -k "not slow"
+cmd safe | docker run --rm -e "A=\\"b\\"" alpine echo hi
+# A PowerShell or POSIX line hands cmd its words as one command line, a word
+# with white space in quotes.
+powershell rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c bash -c 'rm -rf ~'
+powershell rules=delete | cmd.exe /c bash -c "rm -rf /"
+powershell rules=delete | cmd /c sh -c "rm -rf ~"
+posix rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c --% bash -c "rm -rf ~"
+powershell safe | cmd /c "npm test && npm run build"
+powershell safe | cmd /c bash -c "echo hi"
+posix safe | cmd /c bash -c 'echo "a b"'
+# What prints only or reads nothing runs nothing: a shell's `--version`, and
+# an input from the null device.
+cmd safe | bash --version
+cmd safe | bash --help
+cmd safe | python < NUL
+cmd safe | node 0<nul
+# A file, a module or a script name given to them is their own business.
+cmd safe | python manage.py migrate
+cmd safe | bash build.sh
+cmd safe | bash -c "echo hi"
+cmd safe | sh -c "git status"
+cmd safe | python -m pytest
+cmd safe | python script.py < input.txt
+cmd safe | node build.js < input.txt
 
 # Windows paths compare without case.
 cmd safe | rd /s /q c:\\users\\ME\\DEV\\REPO\\target

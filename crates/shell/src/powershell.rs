@@ -480,6 +480,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
+                self.split.statement();
                 let list = self.split.list_start();
                 let mut cursor = node.walk();
                 let mut at = 0;
@@ -505,9 +506,14 @@ impl Walker<'_> {
                 self.split.list_end(list);
             }
             "pipeline_chain" => {
+                self.split.statement();
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // The right side of an `&&` after a chain that is not one
+                // command runs when the chain succeeded, not when a `cd` in
+                // it did (`-not (Set-Location s) && …`).
+                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
                 for (index, child) in stages.iter().enumerate() {
                     // A value that is piped on (`'DROP TABLE t' | psql`) is
                     // a stage that says it, as `Write-Output` would.
@@ -521,6 +527,9 @@ impl Walker<'_> {
                         _ => Stage { pipeline, index },
                     };
                     self.walk(*child, Some(stage), level + 1);
+                }
+                if !command {
+                    self.split.statement();
                 }
             }
             "command" => {
@@ -751,7 +760,7 @@ impl Walker<'_> {
             .get(..4)
             .filter(|head| head.eq_ignore_ascii_case("env:"))
             .and_then(|_| name.get(4..))
-            .and_then(unit::tf_cli_args_folded)
+            .and_then(unit::argument_variable)
         else {
             return;
         };
@@ -776,7 +785,7 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
-        self.split.tf_cli_args.push((name, value));
+        self.split.note_argument_variable(name, value);
     }
 
     /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
@@ -797,14 +806,13 @@ impl Walker<'_> {
                 continue;
             };
             let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+            let name = unit::argument_variable(rest).or_else(|| {
                 rest.contains(['*', '?', '['])
                     .then(|| "TF_CLI_ARGS".to_string())
             });
             if let Some(name) = name {
                 self.split
-                    .tf_cli_args
-                    .push((name, Arg::Unknown(text.to_string())));
+                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
         }
     }
@@ -2984,14 +2992,14 @@ impl Walker<'_> {
         // to a value the guard does not read.
         if method == "setenvironmentvariable" {
             let name = match blocks::first_string(&children).map(|name| self.string(name)) {
-                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+                Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };
             if let Some(name) = name {
-                self.split.tf_cli_args.push((
+                self.split.note_argument_variable(
                     name,
                     Arg::Unknown(unit::text(&node, self.source).to_string()),
-                ));
+                );
             }
         }
         if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {

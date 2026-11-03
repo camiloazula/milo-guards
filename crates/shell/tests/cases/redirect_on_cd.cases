@@ -10,11 +10,13 @@ posix safe | cd sub < ../x
 posix safe | cd src/sub < ../x.rs
 # After the `cd`, the folder is the one it went to.
 posix safe | cd sub && cat < ../../.ssh/id_rsa
-posix safe | cd sub; cat < ../../.ssh/id_rsa
+# Without `&&` the `cd` may have failed, and the line opens the key from
+# where it was.
+posix finds=read_secret | cd sub; cat < ../../.ssh/id_rsa
 posix safe | ls && cd sub && cat < ../../.ssh/id_rsa
 # The redirect of the `cd` ends with it: the next one is placed where the line
 # now is.
-posix safe | cd sub < ../x; cat < ../../.ssh/id_rsa
+posix safe | cd sub < ../x && cat < ../../.ssh/id_rsa
 # The key is not at `a/b/../../../../.ssh`: `b` is opened from `a`, which gives
 # `/home/.ssh/id_rsa`.
 posix safe | cd a && cd b < ../../../../.ssh/id_rsa

