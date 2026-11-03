@@ -10,6 +10,7 @@ use std::rc::Rc;
 use crate::dotglob;
 use crate::effect::Kind;
 use crate::extended;
+use crate::inline;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -807,6 +808,58 @@ pub(crate) fn argument_variable(name: &str) -> Option<String> {
 }
 
 /// Everything a line was split into.
+/// The values `NODE_OPTIONS` is given for the program being added, in the
+/// order the line gives them, with where the first that loads a module is
+/// (see [`inline::preloads`]) as each was added: asked for every program the
+/// line starts, that is a lookup, not a read of every value.
+#[derive(Debug, Default)]
+pub(crate) struct NodeOptions {
+    values: Vec<Arg>,
+    /// For each value, the first of the values up to it that loads a module.
+    preloads: Vec<Option<usize>>,
+}
+
+impl NodeOptions {
+    pub(crate) fn push(&mut self, value: Arg) {
+        let first = self
+            .preloads
+            .last()
+            .copied()
+            .flatten()
+            .or_else(|| inline::preloads(&value).then_some(self.values.len()));
+        self.values.push(value);
+        self.preloads.push(first);
+    }
+
+    pub(crate) fn extend(&mut self, values: impl IntoIterator<Item = Arg>) {
+        for value in values {
+            self.push(value);
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.values.truncate(len);
+        self.preloads.truncate(len);
+    }
+
+    pub(crate) fn values(&self) -> &[Arg] {
+        &self.values
+    }
+
+    /// The first value that loads a module before any script node runs.
+    pub(crate) fn preload(&self) -> Option<&Arg> {
+        self.preloads
+            .last()
+            .copied()
+            .flatten()
+            .and_then(|at| self.values.get(at))
+    }
+}
+
 #[derive(Debug, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -989,7 +1042,10 @@ pub(crate) struct Split {
     /// prefix assignment, `env NODE_OPTIONS=…`, an `export` earlier in the
     /// line. Node reads them as its own options, and a script it starts gets
     /// them too.
-    pub(crate) node_options: Vec<Arg>,
+    pub(crate) node_options: NodeOptions,
+    /// The process substitutions of the line whose commands download, as
+    /// written (`<(curl -s https://x)`): run as a script, each is a download.
+    pub(crate) downloads: HashSet<String>,
     /// The values `PYTHONPATH` is given for the program being added, noted
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
@@ -3511,7 +3567,7 @@ impl Split {
         Finding {
             rule: Rule::Unknown,
             reason: "runs code the guard does not read fully".to_string(),
-            target: Some(crate::inline::shorten(code)),
+            target: Some(inline::shorten(code)),
         }
     }
 

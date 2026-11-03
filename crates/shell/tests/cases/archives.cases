@@ -812,6 +812,32 @@ posix finds=overwrite reason="unpacks into a system folder" | unzip x.zip -d /et
 posix finds=overwrite reason="unpacks into a folder outside the workspace" | tar -xf x.tar -C ../x
 posix finds=overwrite reason="unpacks into a folder only known when it runs" | tar -xf x.tar -C "$D"
 
+# Python's `zipfile` and `tarfile` modules unpack into the folder they name
+# (`tarfile` into the working directory when it names none).
+posix finds=overwrite | python3 -m zipfile -e a.zip ~
+posix finds=overwrite | python3 -m zipfile --extract a.zip ~
+posix finds=overwrite | python3 -m zipfile -v -e a.zip ~
+posix finds=overwrite | python3 -m tarfile -e a.tar ~
+posix finds=overwrite | python3 -m tarfile -v -e a.tar ~/.config
+posix finds=overwrite | py -3 -m zipfile -e a.zip ~
+posix finds=overwrite | python3 -m zipfile -e a.zip /etc
+posix finds=overwrite | cd ~ && python3 -m tarfile -e a.tar
+posix safe | python3 -m zipfile -e a.zip out
+posix safe | python3 -m tarfile -e a.tar
+posix safe | python3 -m tarfile -e a.tar out
+posix safe | python3 -m zipfile -l a.zip
+posix safe | python3 -m tarfile -l a.tar
+# `argparse` reads a single-dash word as a bundle of letters (`-ve` is `-v
+# -e`), and the rest of the word after `-e` as the archive.
+posix finds=overwrite | python3 -m tarfile -ve a.tar ~
+posix finds=overwrite | py -3 -m tarfile -ve a.tar ~
+posix finds=overwrite | python3 -m tarfile -vea.tar ~
+posix finds=overwrite | python3 -m zipfile --extract=a.zip ~
+posix finds=overwrite | python3 -m zipfile --ext a.zip ~
+powershell finds=overwrite | py -3 -m tarfile -ve a.tar C:\\Users\\me
+posix safe | python3 -m tarfile -ve a.tar out
+posix safe | python3 -m tarfile -vl a.tar
+
 # A value only known when it runs may hide a member or the option that
 # removes what is packed: an expansion outside quotes may split into words,
 # and a quoted one that starts with `-` is an option. A delete only such an

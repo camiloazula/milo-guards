@@ -381,7 +381,20 @@ file`, so a script the same line writes is not read, also after options (`bun
 file.py`, and `uv run --script file`: `uv` runs Python on the file, like
 `python file`. `deno run npm:pkg` runs the package's program like a runner,
 and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
-is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
+is `run`. A script deno fetches from the network, a URL of `http:` or
+`https:` (its scheme in any case) or a package of the `jsr:` registry, is
+code no line shows: `deno run https://…`, `deno https://…`, `deno watch
+https://…` and `deno run -A jsr:@x/y` are `run_downloaded`, in every shell.
+An npm package is judged by the program it runs, as `npx` judges one. A
+script or a subcommand only known when it runs (`deno run $F`, `bun $F`) is
+`unknown`. `deno serve` runs its module as `deno run` does, and `deno test`
+and `deno bench` every module they are given; a module deno loads before
+the script (`--preload`, `--import`, `--require`, the files of `deno repl
+--eval-file`) is judged the same, and so is an import map it fetches
+(`--import-map https://…`), which may point any import anywhere. Code in a
+`data:` URL (`deno run 'data:application/javascript,…'`, `--preload
+data:…`) is on the line and not read: `unknown`, `runs an encoded script
+that cannot be read`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
 `bun`, `deno` and `dx` are read as in the other shells (`bun x rimraf C:\`,
 `bun run rimraf C:\`, `deno run npm:rimraf C:\`, `dx rimraf C:\`, and the
 POSIX script of `bun exec "rm -rf ~"`), but a script from the input that
@@ -2040,6 +2053,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+| `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | the second operand after `-e`/`--extract` (or a prefix of it, or with the archive after `=`): `-e a.zip DIR`; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` and `-ea.tar` names the archive; `tarfile` with none unpacks into the working directory | no `-e` (`-l`, `-t`) |
 
 `tar` takes a long option written as a unique prefix, which the guard reads
 for the modes and `--to-stdout` as well as `--directory`. A mode is read from
@@ -3076,8 +3090,15 @@ questions are answered apart:
 **Read whole.** A line with inline code is safe only when all four hold:
 
 1. **The code is written whole on the line**, as the one word after its flag:
-   `python -c CODE` (`python3`, `python3.12`, `python2`), `node -e CODE`
-   (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the same, `deno eval CODE`.
+   `python -c CODE` (`python3`, `python3.12`, `python2`, `pypy`, `pypy3`,
+   `pypy3.10`, `graalpy`, `micropython`, and the launcher `py`, also past the
+   word that picks its Python: `py -3 -c CODE`, where PowerShell's number
+   `-3` is the same word), `node -e CODE` (`nodejs`; also `-p`, `--eval`, `--print`), `bun` the
+   same, `deno eval CODE`. `ipython` (`ipython3`), `tsx` and `ts-node` (and
+   its other programs: `ts-node-esm`, `ts-node-script`, `ts-node-cwd`,
+   `ts-node-transpile-only`, `ts-script`) are never read whole:
+   IPython runs the startup files of its profile first, and the TypeScript
+   runners read a `tsconfig.json`, which can name modules to load.
    Code handed by a here-document, a here-string, a pipe or a redirect
    (`python3 -`, `python3 - <<'PY'`, `node <<< 'code'`, `bun -`, `deno run -`,
    `python3 /dev/stdin`) is never read whole.
@@ -3124,7 +3145,9 @@ questions are answered apart:
    list (Python imports only the modules built into the interpreter binary,
    plainly: `sys`, `errno`, `itertools` and `time` (only `sys` and `errno`
    for `python2` and `python`, which may be Python 2, where `time` and
-   `itertools` are files and `builtins` is `__builtin__`), which the
+   `itertools` are files and `builtins` is `__builtin__`, and the same for
+   `pypy`, `pypy3` and a `py` whose first word does not pick Python 3, whose
+   built-in modules are not known to be those of `python3`), which the
    import system finds before it looks in the folder the code runs in, so
    nothing there can stand in for them; any other import, `json`, `re` and
    `math` among them, is looked up in that folder first and makes the code not
@@ -3194,17 +3217,92 @@ judged from every directory the code may be in, and is only known when it runs
 when they cannot be told.
 
 **Where the code comes from.** `python`, `python3` (and `python3.12`),
-`python2`: `-c`, also in a bundle (`-Sc`) or attached (`-cCODE`). `node`,
-`nodejs`: `-e`, `-p`, `--eval`, `--print`; `bun` the same, and `--cwd DIR`;
+`python2`, `pypy`, `pypy3`, `ipython`, and `py` past the word that picks its
+Python (`-3`, `-3.12`, `-3.12-64`, `-V:3.12`): `-c`, also in a bundle (`-Sc`)
+or attached (`-cCODE`). `node`, `nodejs`, `tsx`, `ts-node` (their TypeScript
+read with the JavaScript grammar, so what it does not parse is not read):
+`-e`, `-p`, `--eval`, `--print`; `bun` the same, and `--cwd DIR`;
 `deno eval`; every piece of code of several `-e` is read, not the first. A
 here-document or here-string of plain text (a quoted delimiter, or one with
 nothing in the body the shell would expand) handed to `python3`, `python3 -`,
 `node`, `node -`, `bun -`, `bun run -`, `deno run -` is read as code. All of
 these are read for what they find, and none but the first kind, written whole
 with no option or environment, is read whole. An `-i` (`python3 -i -c`,
-`node -i -e`) makes the interpreter go on to read code from its input, which is
-`unknown`, as a bare `python3` or `node` is. A script file (`python3
+`node -i -e`, and after a script: `python3 -i x.py`, `node -i build.js`)
+makes the interpreter go on to read code from its input, which is
+`unknown`, as a bare `python3` or `node` is, and a here-document handed to it
+is read as its code. A script file (`python3
 scripts/gen.py`, `node build.js`) is the workspace's own code and is not read.
+
+**Where the script is.** Each interpreter's options are read with its own
+table of the options that take a value, so the word after one is its value
+and never the script: python's `-W`, `-X`, `-Q` and
+`--check-hash-based-pycs`; perl's `-I`, `-M`, `-m` (and `-i`, `-0`, `-l`,
+`-x`, `-d`, `-D`, `-C`, `-F`, `-V`, which take only the rest of their own
+word); ruby's `-I`, `-r`, `-C`, `-E`, `-K` and `--enable`, `--disable`,
+`--encoding`, `--external-encoding`, `--internal-encoding`, `--dump`,
+`--backtrace-limit`, `--crash-report`, `--parser`; php's `-c`, `-d`, `-z`,
+`-t`, `-B`, `-E`, `-S` and their long names, with `-f FILE` and `--file FILE`
+the script; lua's `-l`; node's (and `tsx`'s and `ts-node`'s) `-r`, `-C` and
+the long options its documentation lists with a value (`--require`,
+`--import`, `--loader`, `--title`, `--env-file` and the rest), and
+`ts-node`'s `-P`, `-O`, `-C`, `-I`, `-D`. So `perl -I lib <<'PL'` and `ruby -r
+json <<'RB'` have no script: they read their code from the here-document, and
+are `unknown`; `python3 -W ignore <<'PY'` and `node -r dotenv/config <<'JS'`
+have theirs read. Node hands any option it does not know to V8, whose options
+with a value take the next word too, so a long option the table does not
+know, with no `=`, right before the script makes that word maybe its value:
+with an input handed to node (`node --max-old-space-size 4096 <<'JS'`), node
+may read its code from there, and the line is `unknown`. A word after `--` is
+the script, whatever it starts with (`python3 -- --version` runs a file of
+that name). A script only known when it runs (`python3 $F`, `python3 "$F"`,
+`node $(…)`, `python3 <(cat x.py)`, `deno run $F`, `bun $F`, `python %F%`)
+is `unknown`, `runs a script only known when it runs`, in every shell, and a
+process substitution whose commands download (`python3 <(curl -s …)`, also
+through a pipeline, `<(curl … | gunzip)`, and for a shell: `bash <(curl …)`,
+`source <(wget -qO- …)`) is `run_downloaded`, and so is one an
+interpreter or a shell reads from its input (`python3 < <(curl -s …)`,
+`bash < <(curl …)`). What `xargs` hands on is the
+files a listing names, and stays a script of the workspace's
+(`… | xargs python3`). The words after the script are its own arguments.
+
+**Modules that run what they are given.** `python -m MODULE` runs the module
+in place of a script, judged as a script is (`python3 -m pytest` is safe),
+but `timeit` runs the code it is given, `cProfile`, `profile` and `trace` run
+a script under them, and `pdb` and `code` read what to run from the input:
+the REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read it from the
+input as `code` does: these are `unknown`, `runs code the guard does not
+read`, also attached (`-mtimeit`) and after other options. IPython's own
+options are its own table: it reads any `--Class.trait=value` as a setting,
+and some of those run code before the script
+(`--InteractiveShellApp.code_to_run`, `exec_lines`, `exec_files`, the
+extensions `--ext` loads), so a long option it has that the guard does not know as harmless (`--no-banner`,
+`--profile NAME` and the rest) makes `ipython x.py` `unknown` too. A module only known when it runs is
+`unknown`. `-m zipfile -e` and `-m tarfile -e` unpack (see
+[Unpacking archives](#unpacking-archives)).
+
+**Modules loaded before the program.** `NODE_OPTIONS` that load a module
+(`--require`, `-r`, `--import`, `--loader`, `--experimental-loader`, also
+with `=` or `_` for `-`) have every node the program starts load it first,
+code the line does not show (a `data:` URL included): in front of any program
+but a builtin that starts nothing (`echo`, `cd`, `export` and the others of
+`STARTS_NOTHING`) the line is `unknown`, `loads code through NODE_OPTIONS
+that the guard does not read`, wherever the value is set: a prefix
+assignment, `env`, an `export` or an assignment earlier in the line
+(`NODE_OPTIONS+=` adds to the value the line gave it), PowerShell's
+`$env:NODE_OPTIONS = …` (`Set-Item env:NODE_OPTIONS`,
+`[Environment]::SetEnvironmentVariable`) and cmd's `set NODE_OPTIONS=…`. The
+value is split as node's `ParseNodeOptionsEnvVar` splits it: at a space
+outside double quotes, a `"` turning quoting on and off, and inside quotes a
+backslash taking the next character as it is (`"--requ\ire"` is
+`--require`); a value node cannot split (a backslash at its end inside
+quotes, a quote left open) may hold anything. A value only known when it
+runs may load one. An `unset NODE_OPTIONS` is not read: it may not run, and
+the line stays `unknown`. `NODE_OPTIONS=--max-old-space-size=4096
+npm test` loads nothing and stays safe. A module node is told to load on its
+own line (`node -r ./setup.js main.js`) is the workspace's code as the script
+is, unless the line writes it (see
+[Reading more than one unit at a time](#reading-more-than-one-unit-at-a-time)).
 Neither is code from a pipe or another redirect (`cat x.py | python3`,
 `python3 < x.py`), which stays `unknown`, or `run_downloaded` after a download.
 Code that PowerShell or cmd hands to an interpreter stays `unknown`: its paths
@@ -3503,7 +3601,13 @@ A line is never safe because the guard gave up on it. These come back risky:
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
   `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
-  from a file it is redirected from. Python and JavaScript given inline
+  from a file it is redirected from, or from a here-document after an option
+  that took the next word (`perl -I lib <<'PL'`). A script only known when it
+  runs (`python3 $F`, `node <(…)`), a module that runs what it is given
+  (`python3 -m timeit CODE`), and `NODE_OPTIONS` that load a module in front
+  of a program (see [Inline code](#inline-code)); a process substitution that
+  downloads, or a script deno fetches from the network, run as a script, is
+  `run_downloaded`. Python and JavaScript given inline
   (`python3 -c`, `node -e`, `bun -e`, `deno eval`) are read, and what they do
   is judged, but a line is safe only for code read whole: written whole on the
   line, with no option or environment around the interpreter, and made of
@@ -3718,6 +3822,15 @@ Some risks only show when units are read together.
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
   A line that writes nothing has no such script.
+  A module node, `tsx` or `ts-node` loads before the script (`-r`,
+  `--require`, `--import`, `--loader`, `--experimental-loader`, before the
+  script) and one bun or deno loads (`--preload`, `-r`, `--require`,
+  `--import`) runs as the script does: `echo x > s.js && node -r ./s.js
+  main.js` is `unknown` as `node s.js` is. So does a library ruby's `-r` or
+  perl's `-M` (`-m`) loads, looked up in each `-I` folder with its extension
+  (`ruby -I . -r s` loads `./s.rb`, `perl -Ilib -MA::B` loads
+  `lib/A/B.pm`; ruby also takes a path, `-r ./s`), and a file php's `-d
+  auto_prepend_file=` or `auto_append_file=` names.
   A run is judged from every folder the line may be in when it runs: a `cd`
   that may not have run (in a branch, after `&&` or `||` or on the left of
   `||`, in a loop or a function body, in a pipeline stage of a POSIX shell or

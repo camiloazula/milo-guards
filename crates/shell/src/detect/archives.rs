@@ -9,6 +9,7 @@
 //! own when the line is split.
 
 use super::Checker;
+use crate::launch::{is_python, options, own_args};
 use crate::path::within;
 use crate::powershell::Params;
 use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Flagged, Unit};
@@ -35,6 +36,7 @@ impl Checker<'_> {
             "unzip" => unzip(args),
             "7z" | "7za" | "7zr" | "7zz" => seven_zip(args),
             "expand-archive" => Some(expand_archive(args)),
+            key if is_python(key) => python_unpack(key, args),
             _ => None,
         };
         for folder in folders.unwrap_or_default() {
@@ -595,6 +597,74 @@ fn checkpoint_command(value: &Arg) -> Option<Arg> {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
     });
     (!harmless).then(|| Arg::Unknown(value.text().to_string()))
+}
+
+/// The folder `python -m zipfile -e ARCHIVE FOLDER` and `python -m tarfile
+/// -e ARCHIVE [FOLDER]` unpack into (`--extract`, and any prefix of it
+/// `argparse` takes); `tarfile` unpacks into the working directory when it
+/// names none. `argparse` reads a single-dash word as a bundle of letters
+/// (`-ve` is `-v -e`), and the rest of the word after `-e` is the archive
+/// (`-ea.tar`). Any other module, or a line without `-e`, unpacks nothing.
+fn python_unpack(key: &str, args: &[Arg]) -> Option<Vec<Arg>> {
+    let args = own_args(key, args);
+    let read = options(key, args);
+    let (module, start) = read.module?;
+    let module = module.known()?;
+    if module != "zipfile" && module != "tarfile" {
+        return None;
+    }
+    let mut words = args.get(start..)?.iter();
+    let mut operands: Vec<Arg> = Vec::new();
+    let mut extract = false;
+    while let Some(arg) = words.next() {
+        let Some(text) = arg.known() else {
+            if extract {
+                operands.push(arg.clone());
+            }
+            continue;
+        };
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(name, value)| (name, Some(value)));
+            if !name.is_empty() && "extract".starts_with(name) {
+                extract = true;
+                // `--extract=a.tar`: the archive.
+                operands.extend(value.map(|archive| Arg::Known(archive.to_string())));
+            } else if value.is_none() && matches!(name, "filter" | "metadata-encoding") {
+                words.next();
+            }
+            continue;
+        }
+        if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
+            for (index, letter) in bundle.char_indices() {
+                match letter {
+                    'v' => {}
+                    'e' => {
+                        extract = true;
+                        let rest = &bundle[index + 1..];
+                        if !rest.is_empty() {
+                            operands.push(Arg::Known(rest.to_string()));
+                        }
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            continue;
+        }
+        if extract {
+            operands.push(arg.clone());
+        }
+    }
+    if !extract {
+        return None;
+    }
+    match (module, operands.get(1)) {
+        (_, Some(folder)) => Some(vec![folder.clone()]),
+        ("tarfile", None) => Some(vec![Arg::Known(".".to_string())]),
+        _ => None,
+    }
 }
 
 /// The folder `unzip` unpacks into: `-d dir` (`-ddir`, in a bundle such as

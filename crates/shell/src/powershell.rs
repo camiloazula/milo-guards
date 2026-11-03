@@ -817,8 +817,9 @@ impl Walker<'_> {
             return;
         };
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let node_options = name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(name);
-        if !zip && terraform.is_none() {
+        if !zip && !node_options && terraform.is_none() {
             return;
         }
         let name = name.to_string();
@@ -845,6 +846,9 @@ impl Walker<'_> {
         };
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
+            // `$env:NODE_OPTIONS='--require ./x.js'`: every node a later
+            // program starts loads it first.
+            None if node_options => self.split.node_options.push(value),
             None => {
                 self.split.zip_env.set(&name, &value, true);
             }
@@ -877,6 +881,9 @@ impl Walker<'_> {
             if let Some(name) = name {
                 self.split
                     .note_argument_variable(name, Arg::Unknown(text.to_string()));
+            }
+            if rest.eq_ignore_ascii_case("NODE_OPTIONS") {
+                self.split.node_options.push(Arg::Unknown(text.to_string()));
             }
             self.split
                 .zip_env
@@ -3163,6 +3170,9 @@ impl Walker<'_> {
             let named = blocks::first_string(&children).map(|name| self.string(name));
             if let Some(Arg::Known(name)) = &named {
                 let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                if name.eq_ignore_ascii_case("NODE_OPTIONS") {
+                    self.split.node_options.push(value.clone());
+                }
                 self.split.zip_env.set(name, &value, true);
             }
             let name = match named {
