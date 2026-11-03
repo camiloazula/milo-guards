@@ -1,46 +1,56 @@
 //! The rules about archives. One unpacked into a folder is a write into that
 //! folder, judged like the destination of `cp`; with no folder given it
 //! unpacks into the working directory, and the paths stored in the archive
-//! cannot be seen from the line and are not read, unless `tar -P` keeps them
-//! absolute. One packed with an option that removes what it packs (`tar
-//! --remove-files`, `zip -m`, `7z a -sdel`, `rar m`) deletes the members
+//! cannot be seen from the line and are not read, unless an option keeps
+//! them absolute (`tar -P`). The unpackers other than `tar`, `unzip`, `7z`
+//! and `Expand-Archive` are read in [`unpackers`]. One packed with an option
+//! that removes what it packs (`tar --remove-files`, `zip -m`, `7z a
+//! -sdel`, `rar m`) deletes the members
 //! named on the line, judged like the operands of `rm`. The commands `tar`
 //! and `zip` run through a shell ([`commands`]) are read as lines of their
 //! own when the line is split.
 
+mod unpackers;
+
 use super::Checker;
-use crate::launch::{is_python, options, own_args};
 use crate::path::within;
 use crate::powershell::Params;
 use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
+use std::collections::HashSet;
 
 impl Checker<'_> {
-    /// `tar -x`, `unzip`, `7z x`, `Expand-Archive`.
+    /// `tar -x`, `unzip`, `7z x`, `Expand-Archive`, and the unpackers of
+    /// [`unpackers`]: `cpio -i`, `ditto -x`, `pax -r`, `unrar x`, `unar`,
+    /// `jar x`, `python -m zipfile -e`.
     pub(super) fn unpack(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        let folders = match key {
+        let unpack = match key {
             "tar" | "gtar" | "bsdtar" => {
                 let tar = tar(args, unit.shell, key);
                 // `-P` keeps the leading `/` and the `..` of the paths
                 // stored in the archive: they land wherever those say.
-                if tar.unpacks && tar.absolute {
-                    self.add(
-                        Rule::Overwrite,
-                        "unpacks to absolute paths only known when it runs",
-                        None,
-                    );
-                }
+                let absolute = tar.unpacks && tar.absolute;
                 tar.unpacks_into()
+                    .map(|folders| Unpack::filling(folders).absolute(absolute))
             }
-            "unzip" => unzip(args),
-            "7z" | "7za" | "7zr" | "7zz" => seven_zip(args),
-            "expand-archive" => Some(expand_archive(args)),
-            key if is_python(key) => python_unpack(key, args),
-            _ => None,
+            "unzip" => unzip(args).map(Unpack::filling),
+            "7z" | "7za" | "7zr" | "7zz" => seven_zip(args).map(Unpack::filling),
+            "expand-archive" => Some(Unpack::filling(expand_archive(args))),
+            _ => unpackers::unpack(key, args, unit.shell),
         };
-        for folder in folders.unwrap_or_default() {
-            self.write_folder(unit.shell, unit.scope(), &folder, "unpacks into");
+        let Some(unpack) = unpack else {
+            return;
+        };
+        if let Some(reason) = unpack.anywhere {
+            self.add(Rule::Overwrite, reason, None);
+        }
+        // A folder named again is judged once.
+        let mut judged = HashSet::new();
+        for folder in &unpack.folders {
+            if judged.insert(folder) {
+                self.write_folder(unit.shell, unit.scope(), folder, unpack.verb);
+            }
         }
     }
 
@@ -73,6 +83,43 @@ impl Checker<'_> {
         if unread {
             self.hedge(before);
         }
+    }
+}
+
+/// Where an unpacker writes, as far as its arguments show.
+struct Unpack {
+    /// The folders it fills, each as written (`.` for the working
+    /// directory).
+    folders: Vec<Arg>,
+    /// The words of the reason for a write of each: `unpacks into`, or
+    /// `copies into` for a copy of files into a folder (`cpio -p`, `pax
+    /// -rw`).
+    verb: &'static str,
+    /// The reason when the paths stored in the archive are kept as they are,
+    /// absolute and with their `..`, or renamed by a rule the line gives
+    /// (`pax -s`): they land wherever those say.
+    anywhere: Option<&'static str>,
+}
+
+/// The reason for an unpack that keeps the stored paths absolute.
+const ABSOLUTE: &str = "unpacks to absolute paths only known when it runs";
+
+impl Unpack {
+    /// An unpack into `folders`.
+    fn filling(folders: Vec<Arg>) -> Self {
+        Self {
+            folders,
+            verb: "unpacks into",
+            anywhere: None,
+        }
+    }
+
+    /// The same, keeping the stored paths absolute when `absolute`.
+    fn absolute(mut self, absolute: bool) -> Self {
+        if absolute {
+            self.anywhere = Some(ABSOLUTE);
+        }
+        self
     }
 }
 
@@ -440,7 +487,8 @@ impl TarRead<'_> {
             self.absolute = true;
         } else if long_option(name, "one-top-level", 7) {
             self.folders.extend(attached);
-        } else if is("directory") {
+        } else if is("directory") || name == "cd" {
+            // `--cd` is bsdtar's other name for `-C`.
             if let Some(folder) = value(attached) {
                 self.split(&folder);
                 self.under = Some(moved(self.under.as_ref(), &folder, self.shell));
@@ -482,13 +530,32 @@ impl TarRead<'_> {
         &mut self,
         letters: &str,
         old_style: bool,
-        iter: &mut impl Iterator<Item = (usize, &'b Arg)>,
+        iter: &mut (impl Iterator<Item = (usize, &'b Arg)> + Clone),
     ) {
         // Short options that take a value, whose bundle ends with it.
         const VALUES: &str = "CfbILKNTXFgHV";
         for (position, letter) in letters.char_indices() {
+            let rest = &letters[position + letter.len_utf8()..];
+            if matches!(letter, 'H' | 'L') {
+                // A format or a tape length to GNU tar, a flag to bsdtar.
+                // GNU tar refuses a value that is an option or holds a `C`,
+                // which no format or length does, so then the next word, or
+                // the rest of the bundle, is read as bsdtar reads it.
+                let attached = !old_style && !rest.is_empty();
+                if attached && !rest.contains('C') {
+                    break;
+                }
+                let option = iter
+                    .clone()
+                    .next()
+                    .and_then(|(_, next)| next.known())
+                    .is_some_and(|next| next.starts_with('-'));
+                if !attached && !option {
+                    iter.next();
+                }
+                continue;
+            }
             if VALUES.contains(letter) {
-                let rest = &letters[position + letter.len_utf8()..];
                 let value = if !old_style && !rest.is_empty() {
                     Some(Arg::Known(rest.to_string()))
                 } else {
@@ -597,74 +664,6 @@ fn checkpoint_command(value: &Arg) -> Option<Arg> {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
     });
     (!harmless).then(|| Arg::Unknown(value.text().to_string()))
-}
-
-/// The folder `python -m zipfile -e ARCHIVE FOLDER` and `python -m tarfile
-/// -e ARCHIVE [FOLDER]` unpack into (`--extract`, and any prefix of it
-/// `argparse` takes); `tarfile` unpacks into the working directory when it
-/// names none. `argparse` reads a single-dash word as a bundle of letters
-/// (`-ve` is `-v -e`), and the rest of the word after `-e` is the archive
-/// (`-ea.tar`). Any other module, or a line without `-e`, unpacks nothing.
-fn python_unpack(key: &str, args: &[Arg]) -> Option<Vec<Arg>> {
-    let args = own_args(key, args);
-    let read = options(key, args);
-    let (module, start) = read.module?;
-    let module = module.known()?;
-    if module != "zipfile" && module != "tarfile" {
-        return None;
-    }
-    let mut words = args.get(start..)?.iter();
-    let mut operands: Vec<Arg> = Vec::new();
-    let mut extract = false;
-    while let Some(arg) = words.next() {
-        let Some(text) = arg.known() else {
-            if extract {
-                operands.push(arg.clone());
-            }
-            continue;
-        };
-        if let Some(long) = text.strip_prefix("--") {
-            let (name, value) = long
-                .split_once('=')
-                .map_or((long, None), |(name, value)| (name, Some(value)));
-            if !name.is_empty() && "extract".starts_with(name) {
-                extract = true;
-                // `--extract=a.tar`: the archive.
-                operands.extend(value.map(|archive| Arg::Known(archive.to_string())));
-            } else if value.is_none() && matches!(name, "filter" | "metadata-encoding") {
-                words.next();
-            }
-            continue;
-        }
-        if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
-            for (index, letter) in bundle.char_indices() {
-                match letter {
-                    'v' => {}
-                    'e' => {
-                        extract = true;
-                        let rest = &bundle[index + 1..];
-                        if !rest.is_empty() {
-                            operands.push(Arg::Known(rest.to_string()));
-                        }
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-            continue;
-        }
-        if extract {
-            operands.push(arg.clone());
-        }
-    }
-    if !extract {
-        return None;
-    }
-    match (module, operands.get(1)) {
-        (_, Some(folder)) => Some(vec![folder.clone()]),
-        ("tarfile", None) => Some(vec![Arg::Known(".".to_string())]),
-        _ => None,
-    }
 }
 
 /// The folder `unzip` unpacks into: `-d dir` (`-ddir`, in a bundle such as
