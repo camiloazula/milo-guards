@@ -5,10 +5,13 @@
 //! that may start bash (inline code among them). The value is read as bash
 //! reads it: prompt escapes decoded, subscripts of the variable, declarations
 //! behind `builtin` and `command`, and `$PWD` as the folder the line moved to,
-//! which is plain only when the line wrote that folder out.
+//! which is plain only when the line wrote that folder out. Arithmetic,
+//! `${!x}` and `${x@P}` read any variable's value again, and run the code it
+//! holds.
 //!
 //! The lines and their answers are in `tests/cases/shell_variables.cases`;
-//! here are the lines made of many assignments and the time they take.
+//! here are the lines made of many assignments or reads, the time they take,
+//! and the bounds past which a value is only known when it runs.
 
 mod common;
 
@@ -71,4 +74,62 @@ fn a_line_that_sets_bash_env_or_moves_over_and_over_is_judged_within_a_bound() {
             line.len()
         );
     }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn a_line_that_reads_values_again_over_and_over_is_judged_within_a_bound() {
+    let many = names("v", " ", 6000);
+    let chain = (0..2500).fold(String::new(), |mut line, at| {
+        use std::fmt::Write;
+        let _ = write!(line, "a{at}=a{};", at + 1);
+        line
+    });
+    let lines = [
+        // A value that names more variables than are followed.
+        format!("x='{many}'; {}", "echo $((x));".repeat(2000)),
+        // The same plain value read again and again.
+        format!("x=1; {}", "echo $((x));".repeat(5000)),
+        // An expression that names many variables the line does not set.
+        format!("echo $(({}))", names("v", "+", 9000)),
+        // Values that name each other, read again and again.
+        format!("{chain}{}", "echo $((a0));".repeat(2000)),
+        // Code read again and again, past the budget of nested scripts.
+        format!("x='a[$(:)]'; {}", "echo $((x));".repeat(5000)),
+        "echo \"${x:-'$(:)'}\"; ".repeat(3000),
+        format!("x='$(:)'; {}", "echo \"${x@P}\";".repeat(4000)),
+    ];
+    for line in lines {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let took = took(&line, Shell::Posix, &posix());
+        assert!(
+            took < Duration::from_millis(500),
+            "took {took:?} for a line of {} bytes",
+            line.len()
+        );
+    }
+}
+
+#[test]
+fn a_value_past_the_bounds_is_only_known_when_it_runs() {
+    let many = names("v", " ", 300);
+    let chain = (0..100).fold(String::new(), |mut line, at| {
+        use std::fmt::Write;
+        let _ = write!(line, "a{at}=a{};", at + 1);
+        line
+    });
+    let distinct = names("x=", ";", 20);
+    check(
+        Shell::Posix,
+        &posix(),
+        &[],
+        &[
+            (&format!("x='{many}'; echo $((x))"), Rule::Unknown),
+            (&format!("{chain}echo $((a0))"), Rule::Unknown),
+            (&format!("{distinct}echo $((x))"), Rule::Unknown),
+        ],
+    );
 }

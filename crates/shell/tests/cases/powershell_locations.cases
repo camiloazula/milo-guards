@@ -4,7 +4,9 @@
 # the device; a rooted path or `~` after a `cd` stays on the drive of that
 # `cd`; a single letter is a disk unless the line makes it a drive; and a
 # `Set-Location` fed by the pipeline, `cd -` and `cd -- -` go to a place only
-# known when it runs. The format is in CONTRIBUTING.md.
+# known when it runs. Also the moves the guard cannot follow, the location
+# stacks, provider paths and rooted paths after a `cd`, blocks that run later
+# and jobs. The format is in CONTRIBUTING.md.
 
 # A drive name may hold any character but a separator or a dot: `_` and `-`.
 powershell finds=delete | Remove-Item -Recurse my_drive:*
@@ -193,3 +195,130 @@ powershell finds=delete | cd HKCU:\\Software; cd C:\\x; Set-Location -- -; Remov
 powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- -; Remove-Item -Recurse -Force *
 powershell finds=delete | cd C:\\Windows\\System32; cd C:\\Users\\me\\dev\\repo; cd -- +; Remove-Item -Recurse -Force *
 powershell finds=delete | cd -- C:\\Windows\\System32; Remove-Item -Recurse -Force *
+
+
+# A location change the guard cannot follow leaves every later relative or
+# rooted path known only when it runs; one it can read is followed. The
+# session has one location, so the `cd` in a string `Invoke-Expression` runs
+# moves it, and so does one in a function.
+powershell finds=delete | iex 'cd C:\\Windows'; Remove-Item -Recurse -Force System32
+powershell finds=delete | Invoke-Expression -Command 'cd C:\\Windows'; Remove-Item -Recurse -Force System32
+powershell finds=delete | function f { cd C:\\Windows }; f; Remove-Item -Recurse -Force System32
+powershell safe | iex 'npm test'; Remove-Item -Recurse -Force build
+powershell finds=delete | iex $s; Remove-Item -Recurse -Force build
+powershell finds=delete | iex "cd $d"; Remove-Item -Recurse -Force build
+powershell finds=delete | & $b; Remove-Item -Recurse -Force build
+powershell finds=delete | . $b; Remove-Item -Recurse -Force build
+powershell finds=delete | & ({ cd C:\\Windows }); Remove-Item -Recurse -Force System32
+powershell finds=delete | $ExecutionContext.SessionState.Path.SetLocation('C:\\Windows'); Remove-Item -Recurse -Force System32
+powershell safe | $ExecutionContext.SessionState.Path.SetLocation('src'); Remove-Item -Recurse -Force build
+powershell finds=delete | $p = $ExecutionContext.SessionState.Path; $p.SetLocation('C:\\Users\\me\\dev\\repo'); Remove-Item -Recurse -Force build
+powershell finds=delete | [Environment]::CurrentDirectory = 'C:\\Windows'; Remove-Item -Recurse -Force build
+powershell finds=delete | [System.IO.Directory]::SetCurrentDirectory('C:\\Windows'); Remove-Item -Recurse -Force build
+
+# The location stacks: `-StackName` takes a value, which is not the folder;
+# `Push-Location` saves where the line is, and `Pop-Location` goes back to
+# the last folder saved on its stack, when every step is certain to run in
+# order and the stack is one the line filled.
+powershell finds=delete | Push-Location -StackName s C:\\Windows; Remove-Item -Recurse -Force System32
+powershell safe | Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+powershell safe | Push-Location src; npm test; Pop-Location
+powershell safe | Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell safe | Push-Location src; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Push-Location src; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location; cd C:\\Users\\me\\dev\\repo; Pop-Location; Remove-Item -Recurse -Force System32
+powershell safe | Push-Location; Remove-Item -Recurse -Force System32
+powershell safe | Set-Location -StackName s; Remove-Item -Recurse -Force build
+powershell safe | Push-Location -StackName a src; Pop-Location -StackName a; Remove-Item -Recurse -Force build
+powershell safe | Set-Location -StackName a; Push-Location src; Pop-Location -StackName a; Remove-Item -Recurse -Force build
+powershell safe | $ExecutionContext.SessionState.Path.PushCurrentLocation('s'); cd C:\\Windows; $ExecutionContext.SessionState.Path.PopLocation('s'); Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location -StackName a src; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; Set-Location -StackName b; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; Pop-Location; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | if ($x) { Push-Location C:\\Windows }; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src && Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | function f { Pop-Location }; Push-Location src; f; Remove-Item -Recurse -Force build
+powershell finds=delete | trap { Pop-Location }; Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; & $b; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; iex $s; Pop-Location; Remove-Item -Recurse -Force build
+powershell safe | Push-Location src; iex 'npm test'; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; iex 'Pop-Location'; Pop-Location; Remove-Item -Recurse -Force build
+
+# A job, a thread job, a `-Parallel` block and a nested `pwsh` start with
+# stacks of their own, empty: a `Pop-Location` there fails and stays where it
+# started, whatever the line saved.
+powershell finds=delete | Push-Location C:\\Windows; Start-Job { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; Start-Job -WorkingDirectory C:\\Windows { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; Start-ThreadJob { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; 1 | ForEach-Object -Parallel { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; pwsh -NoProfile -Command 'Pop-Location; Remove-Item -Recurse -Force System32'
+powershell finds=delete | Push-Location C:\\Windows; powershell -Command 'Pop-Location; Remove-Item -Recurse -Force System32'
+posix finds=delete | pwsh -c 'Push-Location /etc; pwsh -c "Pop-Location; Remove-Item -Recurse -Force ssh"'
+# What the line saved is still there after one of them.
+powershell safe | Push-Location src; Start-Job { Push-Location C:\\Windows }; Pop-Location; Remove-Item -Recurse -Force build
+powershell safe | Push-Location src; Start-ThreadJob { cargo build }; Pop-Location; Remove-Item -Recurse -Force build
+
+# A location cmdlet in a later stage of a pipeline runs once for each item,
+# with its path and stack taken from each: no stack can be read after it.
+powershell finds=delete | 'C:\\Windows','x' | Push-Location; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location src; Import-Csv s.csv | Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location src; Import-Csv s.csv | Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; Import-Csv s.csv | Set-Location; Pop-Location; Remove-Item -Recurse -Force build
+
+# A step is kept only when the cmdlet runs: a function or an alias of the line
+# may stand for it, and an argument that does not bind stops it before it does
+# anything.
+powershell finds=delete | function Pop-Location { }; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | function global:popd { }; Push-Location C:\\Windows; popd; Remove-Item -Recurse -Force System32
+powershell finds=delete | function Push-Location { }; Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Set-Alias Pop-Location Get-Date; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | New-Alias -Name popd -Value Get-Date; Push-Location C:\\Windows; popd; Remove-Item -Recurse -Force System32
+powershell finds=delete | Set-Alias $n Get-Date; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -WhatIf; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -Foo; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location x; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -StackName; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -P; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location -Foo x; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location x y; Pop-Location; Remove-Item -Recurse -Force System32
+powershell safe | Push-Location -PassThru src; Pop-Location -PassThru -ErrorAction Stop; Remove-Item -Recurse -Force build
+powershell safe | Set-Alias ll Get-ChildItem; Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+
+# A relative path the file system provider names is from where the line is.
+powershell finds=delete | cd C:\\Windows; Remove-Item -Recurse FileSystem::System32
+powershell finds=delete | cd C:\\Windows; Remove-Item Microsoft.PowerShell.Core\\FileSystem::System32 -Recurse
+powershell finds=delete | cd FileSystem::C:\\Windows; Remove-Item FileSystem::System32 -Recurse
+powershell finds=delete | cd ~; Remove-Item -Recurse FileSystem::.ssh
+powershell finds=delete | cd HKCU:\\Software; Remove-Item FileSystem::build -Recurse
+powershell finds=delete | cd $d; Remove-Item FileSystem::build -Recurse
+powershell safe | cd src; Remove-Item FileSystem::build -Recurse
+powershell safe | cd C:\\Windows; Remove-Item FileSystem::C:\\Users\\me\\dev\\repo\\build -Recurse
+
+# A rooted path after a `cd` to a share is on that share.
+powershell finds=delete | cd \\\\server\\share\\x; Remove-Item \\Users\\me\\dev\\repo\\build -Recurse
+powershell finds=delete | cd \\\\?\\UNC\\server\\share\\x; Remove-Item \\Users\\me\\dev\\repo\\build -Recurse
+powershell finds=delete | cd FileSystem::\\\\server\\share\\x; Remove-Item \\Users\\me\\dev\\repo\\build -Recurse
+powershell finds=delete | cd \\\\.\\C:\\Windows; Remove-Item \\Users\\me\\dev\\repo\\build -Recurse
+powershell safe | cd \\\\?\\C:\\Windows; Remove-Item \\Users\\me\\dev\\repo\\build -Recurse
+
+# A block that runs later is judged from every folder the line may be in when
+# it runs, as a trap's is.
+powershell finds=delete | Set-PSBreakpoint -Command Get-Date -Action { Remove-Item -Recurse -Force .\\build }; cd ~; Get-Date
+powershell finds=delete | $ExecutionContext.InvokeCommand.PreCommandLookupAction = { Remove-Item -Recurse -Force .\\build }; cd ~; ls
+powershell finds=delete | $ExecutionContext.InvokeCommand.set_PreCommandLookupAction({ Remove-Item -Recurse -Force .\\build }); cd ~; ls
+powershell safe | Set-PSBreakpoint -Command Get-Date -Action { Remove-Item -Recurse -Force .\\build }; Get-Date
+powershell safe | $ExecutionContext.InvokeCommand.CommandNotFoundAction = { Remove-Item -Recurse -Force .\\build }; ls
+
+# A job runs in a process of its own, from its `-WorkingDirectory`.
+powershell finds=delete | Start-Job -WorkingDirectory ~ { Remove-Item -Recurse -Force .\\build }
+powershell finds=delete | Start-Job -WorkingDirectory C:\\Windows { Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Start-Job -WorkingDirectory $d { Remove-Item -Recurse -Force build }
+powershell safe | Start-Job -WorkingDirectory src { Remove-Item -Recurse -Force build }
+powershell safe | Start-Job { cd C:\\Windows }; Remove-Item -Recurse -Force System32
+powershell finds=overwrite | cd C:\\Windows; Start-Job -WorkingDirectory C:\\Users\\me\\dev\\repo { Remove-Item -Recurse -Force build } > System32\\x
+powershell finds=delete | Start-Job -InitializationScript { cd C:\\Windows } { Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Start-Job { Remove-Item -Recurse -Force System32 } -InitializationScript { cd C:\\Windows }
+
+# A `cd` into the workspace keeps a delete there safe.
+powershell safe | cd src; Remove-Item obj -Recurse

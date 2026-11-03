@@ -82,12 +82,17 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
 
 /// Whether the wrapper `key` may hand the program it runs an environment of
 /// its own (`env FOO=1`, `sudo FOO=1`, `xargs`): every wrapper but the few
-/// that only change how the program runs (`time`, `nice`, `timeout`).
-fn sets_environment(key: &str) -> bool {
+/// that only change how the program runs (`nice`, `timeout`). The words
+/// that start a command of their own (`time`, `!`, `{`, zsh's `repeat`)
+/// hand it the assignments among `own`, the words before it (`time FOO=1
+/// cmd`).
+fn sets_environment(key: &str, own: &[Arg]) -> bool {
+    if starts_command(key) {
+        return own.iter().filter_map(Arg::known).any(is_assignment);
+    }
     !matches!(
         key,
-        "time"
-            | "nice"
+        "nice"
             | "ionice"
             | "nohup"
             | "builtin"
@@ -163,6 +168,27 @@ fn add_launched(
         if unit.args.iter().any(dotglob::assigns_hiding) {
             split.scope_hidden(true);
         }
+        if unit.shell == Shell::Posix {
+            if let Some(program) = unit.program.known() {
+                // `command {rm,-rf,~}`: the shell spells the list out into
+                // words, and the first is the program.
+                if crate::path::brace_expansion(program) {
+                    split.problem(
+                        Rule::Unreadable,
+                        "runs a program a brace list names, which cannot be read",
+                        Some(program),
+                    );
+                    split.push(unit);
+                    return;
+                }
+                // `env ./* -rf /`: the first name a wildcard matches is the
+                // program. Where nothing wraps the program, the line's own
+                // grammar has said whether its wildcard is quoted.
+                if !unit.wrappers.is_empty() && unit::pattern(program) {
+                    unit.program = Arg::Unknown(program.to_string());
+                }
+            }
+        }
         let Some(key) = unit.key() else {
             split.problem(
                 Rule::Unknown,
@@ -172,19 +198,22 @@ fn add_launched(
             split.push(unit);
             return;
         };
+        let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
         // `env X=1 cmd` and `env -u X cmd` change the program's environment,
-        // as `coproc X=1 cmd` does.
+        // as `coproc X=1 cmd` and `time X=1 cmd` do.
         if split.kept.on && unit.shell != Shell::Cmd {
             let names = match key.as_str() {
                 "env" => env_sets(&unit.args),
-                "coproc" if unit.shell == Shell::Posix => coproc_sets(&unit.args),
+                key if unit.shell == Shell::Posix && (key == "coproc" || starts_command(key)) => {
+                    assigned_before(&unit.args, &launched)
+                }
                 _ => Vec::new(),
             };
             for name in names {
                 split.set(&name);
             }
         }
-        match given.take().unwrap_or_else(|| launch(&key, &unit)) {
+        match launched {
             Launch::Either(first, second) => {
                 if !split.fork(MAX_FORKS) {
                     split.problem(
@@ -214,7 +243,8 @@ fn add_launched(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
-                split.environment += usize::from(sets_environment(&key));
+                let own = unit.args.get(..start).unwrap_or_default();
+                split.environment += usize::from(sets_environment(&key, own));
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));
@@ -236,7 +266,8 @@ fn add_launched(
             }
             Launch::Input { start, replace } => {
                 note_wrapper(split, &key, &unit, start);
-                split.environment += usize::from(sets_environment(&key));
+                let own = unit.args.get(..start).unwrap_or_default();
+                split.environment += usize::from(sets_environment(&key, own));
                 split
                     .node_options
                     .extend(wrappers::node_options(&unit.args, start));
@@ -316,7 +347,9 @@ fn add_launched(
                         // `eval` runs in this shell: a `cd` in it moves the rest
                         // of the line. In a pipeline only zsh's last stage
                         // does, but as for a `cd` the guard counts any stage.
-                        let here = key == "eval";
+                        // PowerShell's `Invoke-Expression` runs its string in
+                        // the session, which has one location.
+                        let here = key == "eval" || key == "invoke-expression";
                         unit::script_in(split, &text, shell, depth + 1, here);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
@@ -475,6 +508,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         startup,
         repeated: false,
         downloaded: false,
+        relocates: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
@@ -587,10 +621,16 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "nohup" | "builtin" | "unbuffer" | "setsid" if posix => {
             runs(args, after_options(args, &[]))
         }
-        "time" if posix => runs(
-            args,
-            after_options(args, &["-f", "-o", "--format", "--output"]),
-        ),
+        // bash's and zsh's `time` times a whole command, which may be a
+        // group or a negation the grammar does not read after it (`time {
+        // cmd; }`, `time ! cmd`, `time X=1 cmd`).
+        "time" if posix => {
+            let start = after_options(args, &["-f", "-o", "--format", "--output"]);
+            match start {
+                Some(start) if unit.shell == Shell::Posix => command_after(args, start, false),
+                start => runs(args, start),
+            }
+        }
         "timeout" | "gtimeout" if posix => runs(
             args,
             after_options(args, &["-s", "-k", "--signal", "--kill-after"])
@@ -626,6 +666,37 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // grammar has no `coproc`, so a group reads as the word `{` and the
         // commands after it, and what comes after is judged as it is.
         "coproc" if unit.shell == Shell::Posix => coproc(args),
+        // The grammar does not read a group or a negation after a word that
+        // starts a command of its own (`time`, `!`, `coproc`, zsh's
+        // `repeat`): `{` and `!` are then programs, and the command after
+        // them is what runs (`! { cmd; }`).
+        key if unit.shell == Shell::Posix && (key == "!" || opens_group(key)) => {
+            command_after(args, 0, false)
+        }
+        // zsh's `repeat N` runs the command or group after the count N
+        // times, or the list between `do` and `done`.
+        "repeat" if unit.shell == Shell::Posix => match args.first() {
+            Some(_) => command_after(args, 1, true),
+            None => Launch::Itself,
+        },
+        // A loop, a conditional or a function the grammar cut into pieces
+        // (`! for …; do …; done`, `time if …`), its body behind the program
+        // `do` or `then`.
+        key if unit.shell == Shell::Posix && COMPOUND.contains(&key) => {
+            Launch::Opaque("starts a compound command that cannot be read")
+        }
+        // The body of a loop or a conditional the grammar cut off from the
+        // words that open it: zsh's `repeat 3; do cmd; done` (zsh skips the
+        // separators after the count), or a loop after `time` or `!`. A
+        // line the shell runs never has a program of these names.
+        key if unit.shell == Shell::Posix && BODY.contains(&key) => {
+            Launch::Opaque("runs the body of a loop or a conditional that cannot be read")
+        }
+        // A `{` stuck to a word (`! {rm -rf ~;}`): zsh runs a group, the
+        // grammar reads a program of that name.
+        key if unit.shell == Shell::Posix && key.starts_with('{') => {
+            Launch::Opaque("starts a group whose commands cannot be read")
+        }
         "flock" if posix => option_value(args, "-c", "--command").map_or_else(
             || {
                 runs(
@@ -756,31 +827,59 @@ fn coproc(args: &[Arg]) -> Launch {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
-    // A `{` stuck to a word (`{rm`) is a group zsh runs, but not one the
-    // grammar reads as such: the word is not read as a program.
-    let stuck =
-        |at: usize| word(at).is_some_and(|text| text.starts_with('{') && !opens_group(text));
+    let stuck = |at: usize| word(at).is_some_and(stuck_group);
     // A name stands before a group or a compound command; before a simple
     // command the first word is the program.
-    let mut at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
-    while opens(at) || word(at).is_some_and(|text| text == "!" || is_assignment(text)) {
+    let at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
+    command_after(args, at, false)
+}
+
+/// What runs after a word that starts a command of its own (`coproc`,
+/// `time`, `!`, `{`, zsh's `repeat`), from the word at `at`: the first word
+/// past the `{` words that open a group, `!` and `NAME=value` words, and,
+/// after `repeat`, the `do` that opens its list. A loop, a conditional or a
+/// function there (`time for …; do …; done`, also inside a group) is cut
+/// into pieces by the grammar, its body behind the program `do`, so it is
+/// not read; nor is a group whose `{` is stuck to a word (`{rm`), a group
+/// zsh runs that the grammar reads as a program.
+fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
+    let word = |at: usize| args.get(at).and_then(Arg::known);
+    while word(at).is_some_and(|text| {
+        opens_group(text) || text == "!" || is_assignment(text) || (repeat && text == "do")
+    }) {
         at += 1;
     }
-    if compound(at) {
+    if word(at).is_some_and(|text| COMPOUND.contains(&text)) {
         Launch::Opaque("starts a compound command that cannot be read")
-    } else if stuck(at) {
+    } else if word(at).is_some_and(stuck_group) {
         Launch::Opaque("starts a group whose commands cannot be read")
     } else {
         runs(args, Some(at))
     }
 }
 
+/// Whether `key` is a word that starts a command of its own, which the
+/// grammar reads as a program: bash's and zsh's `time`, `!`, the `{` of a
+/// group, zsh's `repeat`.
+fn starts_command(key: &str) -> bool {
+    matches!(key, "time" | "!" | "repeat") || opens_group(key)
+}
+
+/// Whether `text` is a `{` stuck to a word (`{rm`), which zsh runs as a
+/// group and the grammar reads as one word.
+fn stuck_group(text: &str) -> bool {
+    text.starts_with('{') && !opens_group(text)
+}
+
 /// The words that open a compound command with a body of its own.
 const COMPOUND: [&str; 7] = ["while", "until", "if", "for", "select", "case", "function"];
 
+/// The words that open the body of a loop or a branch of a conditional.
+const BODY: [&str; 4] = ["do", "then", "elif", "else"];
+
 /// Whether `text` is the `{` of a group, or several of them in one word: the
 /// grammar reads `{ {` as one.
-fn opens_group(text: &str) -> bool {
+pub(crate) fn opens_group(text: &str) -> bool {
     text.starts_with('{') && text.chars().all(|c| c == '{' || c.is_whitespace())
 }
 
@@ -798,10 +897,11 @@ fn is_assignment(text: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The variables a `coproc` sets for the command it runs, read as [`coproc`]
-/// reads its words, for `effect`.
-fn coproc_sets(args: &[Arg]) -> Vec<String> {
-    let Launch::Runs(start) = coproc(args) else {
+/// The variables a `coproc`, `time`, `!` or `{` sets for the command it
+/// runs, the assignments before the program `launched` starts, for
+/// `effect`.
+fn assigned_before(args: &[Arg], launched: &Launch) -> Vec<String> {
+    let Launch::Runs(start) = *launched else {
         return Vec::new();
     };
     args.get(..start)
