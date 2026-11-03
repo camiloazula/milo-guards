@@ -1,0 +1,492 @@
+# The names and modules the inline reader follows, and those it does not: a
+# module under another name, default values, a module handed on as a value,
+# `with` and destructuring with a rest, every way JavaScript reaches a
+# module, names read in their NFKC form or written with an escape, names
+# bound in a class body or more than once, keys that are not plain names,
+# names literal `exec` and `eval` code binds or uses, a dotted `__import__`,
+# the value of `eval`, node's `module`, awaited imports of a computed value,
+# assignments to a module or a builtin prototype, escapes the reader does not
+# decode, and names that hold more than one string. The format is in
+# CONTRIBUTING.md.
+
+# A name is followed only to what it is certain to hold.
+# What is decoded is the character it stands for.
+posix safe | python3 -c "print('\\N{BULLET}')"
+posix safe | node -e "console.log('\\57', '\\0')"
+# A string or a comment that is not ASCII is only text.
+posix safe | python3 -c "print('ｒｅｍｏｖｅ')"
+posix safe | python3 -c "print('é')  # ｒｅｍｏｖｅ"
+# An escape in a string is decoded, and reads as it always did.
+posix safe | node -e "console.log('\\u0072mSync')"
+# A module under another name is followed.
+posix finds=delete | python3 -c 'import os; o = os; o.remove("/etc/passwd")'
+posix finds=delete | python3 -c 'o = __import__("os"); o.remove("/etc/passwd")'
+posix finds=delete | python3 -c 'import shutil; shutil.os.remove("/etc/passwd")'
+posix finds=delete | python3 -c 'import posix; posix.remove("/etc/passwd")'
+posix finds=unknown | python3 -c '__builtins__.__import__("os").remove("/etc/passwd")'
+posix finds=overwrite | python3 -c 'import builtins; builtins.open("/etc/x", "w")'
+posix finds=unknown | python3 -c 'from builtins import exec as e; e(x)'
+posix finds=unknown | python3 -c '().__class__.__bases__[0].__subclasses__()'
+posix finds=delete | python3 -c 'import subprocess; subprocess.os.system("rm -rf ~")'
+posix finds=delete | python3 -c 'from distutils import dir_util; dir_util.remove_tree("/home/me")'
+posix finds=overwrite | python3 -c 'import urllib.request; urllib.request.urlretrieve("http://x", "/etc/x")'
+posix finds=delete | python3 -c 'import os; os.remove("/home/me/x")\nimport subprocess; subprocess.run("ls")'
+posix finds=delete | node -e 'const fs=require("fs"); const g = fs; g.rmSync("/home/me")'
+posix finds=unknown | node -e 'const {rmSync}=require("fs"); (0, rmSync)("/home/me")'
+posix finds=unknown | node -e '(function(){}).constructor("return process")()'
+posix finds=unknown | node -e 'const cp=require("child_process"); const x = cp.exec; x("rm -rf ~")'
+posix finds=delete | node -e 'const x = require; x("fs").rmSync("/home/me")'
+posix finds=delete | node -e 'require("fs").rmSync?.("/home/me")'
+posix finds=unknown | node -e 'module.require("fs").rmSync("/home/me")'
+posix finds=delete | bun -e 'import {$} from "bun"; await $`rm -rf ~`'
+posix finds=overwrite | bun -e 'import {write} from "bun"; await write("/home/me/.zshrc", "x")'
+posix finds=delete | node -e 'require("shelljs").rm("-rf", "~")'
+posix finds=delete | node -e 'const sh = require("shelljs"); sh.exec("rm -rf ~")'
+posix finds=delete | node -e 'require("execa").execaSync("rm", ["-rf", "~"])'
+posix finds=delete | node --input-type=module -e 'import {execSync as e} from "node:child_process"; e("rm -rf ~")'
+posix finds=delete | deno eval 'const {remove} = Deno; await remove("/home/me")'
+posix finds=delete | deno eval 'Deno.run({cmd: ["sh", "-c", "rm -rf ~"]})'
+posix finds=unknown | deno eval 'Deno.run(opts)'
+posix finds=unknown | bun -e 'Bun.spawn(argv)'
+posix finds=delete | node -e 'require("fs").rmSync(...paths)'
+posix finds=overwrite | node -e 'require("fs").writeFileSync(...a)'
+posix finds=overwrite | node -e 'require("fs").openSync(...a)'
+posix finds=overwrite | deno eval 'Deno.openSync(...a)'
+posix finds=overwrite | python3 -c 'import os; os.open(*a)'
+posix finds=overwrite | python3 -c 'open(*a)'
+posix finds=delete | node -e 'eval("require(\\"fs\\").rmSync(\\"/home/me\\")")'
+posix finds=delete | python3 -c 'eval("__import__(\\"os\\").remove(\\"/home/me\\")")'
+posix finds=delete | python3 -c 'exec("import os\\nos.remove(\\"/home/me\\")")'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c 'import os; p = os.path; print(p.join("a"))'
+posix finds=unknown | python3 -c 'import os, sys; print(sys.argv, os.getcwd())'
+posix finds=unknown | python3 -c 'import pathlib; print(list(pathlib.Path(".").glob("*.py")))'
+posix finds=unknown | python3 -c 'import os; print([f for f in os.listdir(".") if f.endswith(".pyc")])'
+posix finds=unknown | node -e 'console.log(process.argv, require("os").homedir())'
+posix finds=unknown | node -e 'JSON.parse(require("fs").readFileSync("package.json"))'
+posix finds=unknown | node --input-type=module -e 'import {execSync as e} from "node:child_process"; e("echo")'
+posix finds=unknown | node -e 'require("shelljs").rm("-rf", "build")'
+posix finds=unknown | node -e 'require("shelljs").mkdir("-p", "build")'
+posix finds=unknown | node -e 'require("child_process").execSync("echo hi", {stdio: "inherit"})'
+posix finds=unknown | node -e 'require("fs").openSync("in.txt")'
+posix finds=unknown | node -e 'require("fs").openSync("/etc/hosts", "r")'
+posix finds=unknown | deno eval 'Deno.openSync("/etc/hosts", {read: true})'
+posix finds=unknown | deno eval 'Deno.openSync("/etc/hosts", {write: false})'
+posix finds=unknown | deno eval 'Deno.openSync("/etc/hosts")'
+posix finds=unknown | python3 -c "import os; os.open('/etc/hosts', os.O_RDONLY)"
+posix finds=unknown | python3 -c "import os; os.open('/etc/hosts', 0)"
+# A default value: a parameter that is called is a function the code is
+# handed, and whatever it is, the reader has no row for it.
+posix finds=unknown | python3 -c 'def f(p, r=print): r(p)'
+posix finds=unknown | python3 -c "import os\ndef f(p, r=os.remove): r(p)\nf('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import os\ndef f(p, *, r=os.remove): r(p)\nf('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import os\ndef f(p, r: object = os.remove): r(p)\nf('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import shutil; f = lambda p, r=shutil.rmtree: r(p)"
+posix finds=unknown | python3 -c "(lambda p, r=__import__('shutil').rmtree: r(p))('/home/me')"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c 'def f(p, r=print): pass'
+posix finds=unknown | python3 -c 'f = lambda x, y=1: x'
+posix finds=unknown | python3 -c 'def f(a, *args, k: int = 1, **kw): pass'
+posix finds=unknown | python3 -c 'def f(open): pass'
+# A module handed on as a value is unread.
+posix finds=unknown | python3 -c "import os\ndef f(o): o.remove('/home/me/.zshrc')\nf(os)"
+posix finds=unknown | python3 -c "import glob\ndef f(g): g.os.remove('/home/me/.zshrc')\nf(glob)"
+posix finds=unknown | python3 -c "import os\ndef f(o): o.remove('/home/me/.zshrc')\nf(os.path)"
+posix finds=unknown | python3 -c "import sys\n(lambda s: s.modules['os'].remove('/home/me/.zshrc'))(sys)"
+posix finds=unknown | python3 -c "(lambda o: o.remove('/home/me/.zshrc'))(__import__('os'))"
+posix finds=unknown | python3 -c "import operator, shutil; operator.methodcaller('rmtree','/home/me')(shutil)"
+posix finds=unknown | python3 -c "import shutil\nfor m in [shutil]: m.rmtree('/home/me')"
+posix finds=unknown | python3 -c "import shutil; [shutil][0].rmtree('/home/me')"
+posix finds=unknown | python3 -c "import shutil; d = {'m': shutil}; d['m'].rmtree('/home/me')"
+posix finds=unknown | python3 -c "import shutil; t = shutil, 1; t[0].rmtree('/home/me')"
+posix finds=unknown | python3 -c "import shutil; m = shutil if x else None; m.rmtree('/home/me')"
+posix finds=unknown | python3 -c "import shutil; list(map(getattr(shutil, 'rmtree'), ['/home/me']))"
+posix finds=unknown | python3 -c "import sys; sys.modules.get('os').remove('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import os\ndef f(s): s.modules['os'].remove('/home/me/.zshrc')\nf(os.sys)"
+# A module another one imported, under the name it imported it by.
+posix finds=delete | python3 -c "import tempfile; tempfile._os.remove('/home/me/.zshrc')"
+posix finds=delete | python3 -c "import glob; glob.os.remove('/home/me/.zshrc')"
+# A chain of names is followed to the end.
+posix finds=delete | python3 -c "import os; a = b = os; a.remove('/home/me/.zshrc')"
+posix finds=unknown | node -e "(f => f.rmSync('/home/me',{recursive:true}))(require('fs'))"
+posix finds=unknown | node -e "Reflect.get(require('fs'),'rmSync')('/home/me',{recursive:true})"
+posix finds=unknown | node -e "Object.values(require('child_process'))[0]('rm -rf ~')"
+posix finds=unknown | node -e "Object.assign(globalThis, require('fs')); rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const d = {f: require('fs')}; d.f.rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const fs = require('fs'); const o = {fs}; o.fs.rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "[require('fs')].forEach(f => f.rmSync('/home/me',{recursive:true}))"
+posix finds=unknown | node -e "for (const f of [require('fs')]) f.rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "(r => r('fs').rmSync('/home/me',{recursive:true}))(require)"
+posix finds=unknown | node -e "(f => f.rmSync('/home/me',{recursive:true}))(process.mainModule)"
+posix finds=unknown | node -e "(m => m.require('fs').rmSync('/home/me'))(module)"
+posix finds=unknown | node -e "const f = x => x.rmSync('/home/me',{recursive:true}); f(require('fs'))"
+posix finds=unknown | node -e "module.exports = require('fs')"
+posix finds=unknown | node -e "require('module')._load('fs').rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const fs = (0, require)('fs'); fs.rmSync('/home/me')"
+posix finds=unknown | node -e "(async () => (f => f.rmSync('/home/me'))(await import('fs')))()"
+posix finds=delete | node -e "const a = b = require('fs'); a.rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "const r = require; r('fs').rmSync('/home/me',{recursive:true})"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c 'import os; print(os.path.join("a", "b"))'
+posix finds=unknown | python3 -c 'import glob; print(glob.glob("*.py"))'
+posix finds=unknown | python3 -c 'import os; o = os; print(o.getcwd())'
+posix finds=unknown | python3 -c 'import os; a = b = os; print(a.getcwd(), b.getcwd())'
+posix finds=unknown | python3 -c 'import os; print(getattr(os, "getcwd")())'
+posix finds=unknown | python3 -c 'import os; print((os).getcwd())'
+posix finds=unknown | python3 -c 'try:\n import os\nexcept ImportError:\n os = None'
+posix finds=unknown | node -e 'const fs = require("fs"); console.log(fs.readFileSync("a"))'
+posix finds=unknown | node -e 'const { readFileSync } = require("fs"); readFileSync("a")'
+posix finds=unknown | node -e 'const { readFileSync: r = null } = require("fs"); r("a")'
+posix finds=unknown | node -e 'const { a, ...rest } = { a: 1, b: 2 }; console.log(rest)'
+posix finds=unknown | node -e 'let fs; fs = require("fs"); fs.readFileSync("a")'
+posix finds=unknown | node -e 'console.log(typeof process, typeof require)'
+posix finds=unknown | node -e 'process.exit(0)'
+posix finds=unknown | node -e 'console.log(require("fs").readdirSync("."))'
+posix finds=unknown | node -e 'const p = require("fs").promises; p.readFile("a")'
+posix finds=unknown | node -e 'require("fs"); require("os")'
+posix finds=unknown | node -e 'const r = require; console.log(r("os").homedir())'
+posix finds=unknown | deno eval 'console.log(Deno.cwd(), typeof Deno)'
+# A `with` statement and a destructuring with a rest are unread.
+posix finds=unknown | node -e "with (require('fs')) rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const fs = require('fs'); with (fs) { rmSync('/home/me') }"
+posix finds=unknown | node -e "const {...f} = require('fs'); f.rmSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const {rmSync, ...f} = require('fs'); f.unlinkSync('/home/me')"
+posix finds=unknown | node -e "const {promises: {...p}} = require('fs'); p.rm('/home/me')"
+# A default for a member that is not there still names the member.
+posix finds=delete | node -e "const {rmSync = null} = require('fs'); rmSync('/home/me',{recursive:true})"
+posix finds=delete | node -e "const {rmSync: r = null} = require('fs'); r('/home/me',{recursive:true})"
+posix finds=delete | node -e "const {promises: {rm = null}} = require('fs'); rm('/home/me')"
+# Every way JavaScript reaches a module: `this` is the global object in
+# `node -e`.
+posix finds=delete | node -e 'this.require("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'this.eval("require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})")'
+posix finds=delete | node -e 'this["eval"]("require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})")'
+posix finds=delete | node -e 'globalThis["require"]("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'globalThis["eval"]("require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})")'
+posix finds=delete | node -e 'global.global.require("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'globalThis.globalThis.require("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'const g = globalThis; g.require("fs").rmSync("/home/me")'
+# `require` through `call`, `apply` and `bind`.
+posix finds=delete | node -e 'require.call(null, "fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'require.apply(null, ["fs"]).rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'require.bind(null)("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'const r = require.bind(null); r("fs").rmSync("/home/me")'
+posix finds=delete | node -e 'require.call(null, "child_process").execSync("rm -rf ~")'
+posix finds=unknown | node -e 'require.call(null, name)'
+posix finds=unknown | node -e 'require.apply(null, args)'
+posix finds=unknown | node -e 'require.call(null, ...args)'
+# `process.getBuiltinModule`.
+posix finds=delete | node -e 'process.getBuiltinModule("fs").rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'require("process").getBuiltinModule("fs").rmSync("/home/me")'
+posix finds=delete | node -e 'const { getBuiltinModule } = process; getBuiltinModule("fs").rmSync("/home/me")'
+posix finds=delete | node -e 'const { rmSync } = process.getBuiltinModule("fs"); rmSync("/home/me")'
+posix finds=delete | node -e 'const get = process.getBuiltinModule; get("child_process").execSync("rm -rf ~")'
+posix finds=unknown | node -e 'process.getBuiltinModule(name)'
+posix finds=unknown | node -e 'f(process.getBuiltinModule)'
+# Bun's `import.meta.require`.
+posix finds=delete | bun -e 'import.meta.require("fs").rmSync("/home/me", {recursive: true})'
+posix finds=unknown | bun -e 'import.meta.require(name)'
+posix finds=unknown | bun -e 'f(import.meta.require)'
+# The default export of a namespace is the module.
+posix finds=delete | node -e 'import * as ns from "fs"; ns.default.rmSync("/home/me", {recursive: true})'
+posix finds=delete | node -e 'import { default as f } from "node:fs"; f.rmSync("/home/me")'
+posix finds=delete | node -e 'import * as ns from "fs"; const { default: f } = ns; f.rmSync("/home/me")'
+posix finds=delete | node -e 'import * as ns from "child_process"; ns.default.execSync("rm -rf ~")'
+# A method only the file system has, on an object the reader cannot name, is
+# a call it cannot follow.
+posix finds=unknown | node -e 'make().rmSync("/home/me")'
+posix finds=unknown | node -e 'x.rmdirSync("/home/me")'
+posix finds=unknown | node -e 'x.unlinkSync("/home/me/.zshrc")'
+posix finds=unknown | node -e 'x.writeFileSync("/home/me/.zshrc", "")'
+posix finds=unknown | node -e 'x.appendFileSync("/home/me/.zshrc", "")'
+posix finds=unknown | node -e 'x.execSync("rm -rf ~")'
+posix finds=unknown | node -e 'x.execFileSync("rm", ["-rf", "~"])'
+posix finds=unknown | node -e 'x.spawnSync("rm", ["-rf", "~"])'
+posix finds=unknown | node -e 'x["rmSync"]("/home/me")'
+posix finds=unknown | node -e 'this.rmSync("/home/me")'
+posix finds=unknown | node -e 'const r = x.rmSync; r("/home/me")'
+posix finds=unknown | node -e 'const { rmSync } = x; rmSync("/home/me")'
+# Not read whole by the strict gate: unknown. (`this` of a class and the
+# names of a program are not the global object's lookups.)
+posix finds=unknown | node -e 'this.require("path").join("a", "b")'
+posix finds=unknown | node -e 'require.call(null, "path").join("a", "b")'
+posix finds=unknown | node -e 'process.getBuiltinModule("fs").readFileSync("x")'
+posix finds=unknown | node -e 'import * as ns from "fs"; ns.default.readFileSync("x")'
+posix finds=unknown | node -e 'globalThis["require"]("fs").readFileSync("x")'
+posix finds=unknown | node -e 'this.require("fs").rmSync("dist", {recursive: true})'
+posix finds=unknown | node -e 'require.call(null, "fs").rmSync("dist")'
+posix finds=unknown | node -e 'process.getBuiltinModule("fs").rmSync("dist")'
+posix finds=unknown | bun -e 'import.meta.require("fs").rmSync("dist")'
+posix finds=unknown | node -e 'import * as ns from "fs"; ns.default.rmSync("dist")'
+posix finds=unknown | node -e 'class A { set(k, v) { this[k] = v; return this.x; } }'
+posix finds=unknown | node -e 'console.log(typeof window, this.x)'
+# Escapes the reader does not decode are only known when the code runs:
+# Python's `\N{NAME}`.
+posix finds=delete | python3 -c "import shutil; shutil.rmtree('\\N{SOLIDUS}home\\N{SOLIDUS}me')"
+posix finds=unknown | python3 -c "import os; os.system('rm -rf \\N{TILDE}')"
+posix finds=delete | python3 -c "import shutil; shutil.rmtree('\\N{LATIN SMALL LETTER E}')"
+posix finds=delete | python3 -c "import shutil; shutil.rmtree('\\x')"
+# JavaScript's legacy octal escapes, which `node -e` reads.
+posix finds=delete | node -e "require('fs').rmSync('\\57home\\57me', {recursive: true})"
+posix finds=delete | node -e "require('fs').rmSync('\\176', {recursive: true})"
+posix finds=delete | node -e "require('fs').rmSync('\\176/.ssh', {recursive: true})"
+posix finds=delete | node -e "require('child_process').execSync('rm -rf \\176')"
+posix finds=delete | node -e "require('fs').rmSync('\\057home\\057me')"
+# One it does not decode.
+posix finds=delete | node -e "require('fs').rmSync('\\ud83d')"
+posix finds=unknown | node -e "require('child_process').execSync('rm -rf \\u{110000}')"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c "import shutil; shutil.rmtree('dist\\x2fx')"
+posix finds=unknown | node -e "require('fs').rmSync('dist\\57x')"
+posix finds=unknown | node -e "require('fs').rmSync('\\144ist')"
+posix finds=unknown | node -e "require('fs').rmSync('\\400')"
+posix finds=unknown | node -e "require('fs').rmSync('\\x64ist')"
+# Python reads `ｒｅｍｏｖｅ` (full-width) as `remove`: each of these runs
+# the call it spells, and is not one the reader follows.
+posix finds=unknown | python3 -c "import os; os.ｒｅｍｏｖｅ('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "ｅｘｅｃ(input())"
+posix finds=unknown | python3 -c "import ｓｈｕｔｉｌ; ｓｈｕｔｉｌ.rmtree('/home/me')"
+posix finds=unknown | python3 -c "__ｉｍｐｏｒｔ__('os').remove('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "ｏｐｅｎ('/home/me/.zshrc','w').write('x')"
+posix finds=unknown | python3 -c "import os; os.ｃｈｄｉｒ('/home/me'); import shutil; shutil.rmtree('.ssh')"
+# Also a keyword argument's name, an alias and a method.
+posix finds=unknown | python3 -c "import os; os.remove('/home/me/.zshrc', ｄｉｒ_ｆｄ=1)"
+posix finds=unknown | python3 -c "from os import remove as ｒ; ｒ('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "from pathlib import Path; Path('/home/me/.zshrc').ｕｎｌｉｎｋ()"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c "import os; print(os.getcwd(), 'ｅｘｅｃ')"
+# Node reads `\u0072mSync` as `rmSync`: JavaScript names written with an
+# escape are unread.
+posix finds=unknown | node -e "require('fs').\\u0072mSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const {\\u0072mSync}=require('fs'); \\u0072mSync('/home/me',{recursive:true})"
+posix finds=unknown | node -e "\\u0065val(process.argv[1])"
+posix finds=unknown | node -e "require('child_process').e\\u0078ecSync('rm -rf ~')"
+posix finds=unknown | node -e "const cp=require('child_process'); cp.\\u{65}xecSync('rm -rf ~')"
+posix finds=unknown | node -e "process.\\u0063hdir('/home/me'); require('fs').rmSync('.ssh',{recursive:true})"
+# A shorthand property, a pattern with a rename and a local name.
+posix finds=unknown | node -e "const {rmSync: \\u0072}=require('fs'); r('/home/me',{recursive:true})"
+posix finds=unknown | node -e "const \\u0066s=require('fs'); fs.rmSync('/home/me',{recursive:true})"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | node -e "console.log(require('fs').readFileSync('\\u002fetc/hosts', 'utf8'))"
+posix finds=unknown | node -e "const o = {a: 1}; console.log(o.a)"
+# A module bound in a class body is unread.
+posix finds=unknown | python3 -c "import os\nclass C: o = os\nC.o.remove('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import os\nclass C: o = os\nC().o.system('rm -rf ~')"
+posix finds=unknown | python3 -c "class C:\n    from os import system\nC.system('rm -rf ~')"
+posix finds=unknown | python3 -c "class C:\n    import shutil as s\nC().s.rmtree('/home/me')"
+# A call the reader knows, bound the same way.
+posix finds=unknown | python3 -c "import os\nclass C:\n    r = os.remove\nC.r('/home/me/.zshrc')"
+posix finds=unknown | python3 -c "import os\nclass C:\n    r = getattr(os, 'remove')\nC.r('/home/me/.zshrc')"
+# A class in a class.
+posix finds=unknown | python3 -c "import os\nclass A:\n    class B:\n        o = os\nA.B.o.remove('/home/me/.zshrc')"
+# Not read whole by the strict gate: unknown. (A class that binds nothing the
+# reader looks for; a name bound in a method is the method's own.)
+posix finds=unknown | python3 -c "class C:\n    x = 1\n    def f(self):\n        return self.x\nprint(C().f())"
+posix finds=unknown | python3 -c "import os\nclass C:\n    def f(self):\n        return os.getcwd()\nprint(C().f())"
+posix finds=unknown | python3 -c "class C:\n    name = 'os'\nprint(C.name)"
+posix finds=unknown | python3 -c "class C:\n    def f(self):\n        o = 1\n        return o\nprint(C().f())"
+# A Python name bound more than once to different things is not followed.
+posix finds=unknown | python3 -c 'import os\nif 0: import pathlib as os\nos.remove("/home/me/.zshrc")'
+posix finds=unknown | python3 -c 'import os\ndef g():\n  import json as os\nos.remove("/home/me/.zshrc")'
+posix finds=unknown | python3 -c 'from os import remove\nif 0: remove = print\nremove("/home/me/.zshrc")'
+posix finds=unknown | python3 -c 'import os, json; o = os\nif 0: o = json\no.remove("/home/me/.zshrc")'
+posix finds=unknown | python3 -c 'import subprocess as s\ntry:\n  import json as s\nexcept: pass\ns.run(["rm", "-rf", "/home/me"])'
+posix finds=unknown | python3 -c 'from shutil import rmtree as r\ndef g(): r = print\nr("/home/me")'
+posix finds=unknown | python3 -c 'import os\n(os := __import__("json"))\nos.remove("/home/me/.zshrc")'
+# The order does not matter: the last may be the one that deletes.
+posix finds=delete | python3 -c 'import json as o\nimport os as o\no.remove("/home/me/.zshrc")'
+# Not read whole by the strict gate: unknown. (The same thing twice, or
+# things the reader has no use for.)
+posix finds=unknown | python3 -c 'import os\nimport os\nfrom os import path\nimport os.path\nprint(os.getcwd())'
+posix finds=unknown | python3 -c 'import os\nx = os\nx = os\nprint(x.getcwd())'
+posix finds=unknown | python3 -c 'a = b\na = c\nprint(a)'
+posix finds=unknown | python3 -c 'import json as j\nk = 1\nk = 2\nprint(j.dumps(k))'
+posix finds=unknown | python3 -c 'from os import path\nimport os.path as path\nprint(path.sep)'
+# A JavaScript key that is not a plain name names its member. A member of a
+# module that is no call the reader has a row for (`fs.1`), and a key looked
+# up on an object that is not a module, are functions it does not know when
+# they are called.
+posix finds=unknown | node -e 'const {1: r} = require("fs"); r(1)'
+posix finds=unknown | node -e 'const {[k]: r} = obj; r(1)'
+posix finds=delete | node -e 'const {"rmSync": r} = require("fs"); r("/home/me",{recursive:true})'
+posix finds=delete | node -e 'const {["rmSync"]: r} = require("fs"); r("/home/me",{recursive:true})'
+posix finds=delete | node -e 'const {[`rm${"Sync"}`]: r} = require("fs"); r("/home/me",{recursive:true})'
+posix finds=delete | node -e '({["rmSync"]: r} = require("fs")); r("/home/me",{recursive:true})'
+posix finds=delete | node -e 'const {"promises": {rm}} = require("fs"); rm("/home/me",{recursive:true})'
+posix finds=delete | node -e 'const {[`exec${"Sync"}`]: x} = require("child_process"); x("rm -rf ~")'
+# A key only known when it runs, taken from a module.
+posix finds=unknown | node -e 'const fs = require("fs"); const {[k]: r} = fs; r("/home/me",{recursive:true})'
+posix finds=unknown | node -e 'const {[k]: r} = require("fs"); r("/home/me",{recursive:true})'
+posix finds=unknown | node -e 'const {"\\uD800": r} = require("fs"); r("/home/me",{recursive:true})'
+posix finds=delete | node --input-type=module -e 'import {"rmSync" as r} from "fs"; r("/home/me",{recursive:true})'
+posix finds=delete | bun -e 'import {"rmSync" as r} from "fs"; r("/home/me",{recursive:true})'
+posix finds=delete | node --input-type=module -e 'import {"promises" as p} from "fs"; p.rm("/home/me",{recursive:true})'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | node -e 'const {"readFileSync": r} = require("fs"); r("/etc/hosts")'
+posix finds=unknown | node -e 'const {["readFileSync"]: r} = require("fs"); r("/etc/hosts")'
+posix finds=unknown | node --input-type=module -e 'import {"readFileSync" as r} from "fs"; r("/etc/hosts")'
+posix finds=unknown | node --input-type=module -e 'import {readFileSync as r} from "fs"; r("/etc/hosts")'
+# Names that literal `exec` and `eval` code binds or uses are not read apart:
+# what a name is bound to in nested code, followed outside it.
+posix finds=unknown | python3 -c "exec('import shutil as json'); json.rmtree('/home/me')"
+posix finds=unknown | python3 -c "exec('from shutil import rmtree as f'); f('/home/me')"
+posix finds=unknown | python3 -c "exec('import os as j'); j.system('rm -rf ~')"
+posix finds=unknown | python3 -c "exec('global j\\nimport shutil as j'); j.rmtree('/home/me')"
+posix finds=unknown | python3 -c "exec(\\"exec('import shutil as j')\\"); j.rmtree('/home/me')"
+posix finds=unknown | python3 -c "exec('j = __import__(\\"shutil\\")'); j.rmtree('/home/me')"
+posix finds=unknown | python3 -c "exec('r = shutil.rmtree'); r('/home/me')"
+posix finds=unknown | python3 -c "exec('(j := __import__(\\"os\\"))'); j.system('rm -rf ~')"
+posix finds=unknown | python3 -c "import os as o; exec('p = o.remove'); p('/home/me/f')"
+posix finds=unknown | python3 -c "exec('import distutils.dir_util as d'); d.remove_tree('/home/me')"
+# A profiler's string runs in the namespace of the code.
+posix finds=unknown | python3 -c "import cProfile; cProfile.run('import shutil as j'); j.rmtree('/home/me')"
+# A name this code bound, used in nested code.
+posix finds=unknown | python3 -c "import shutil as s; exec('s.rmtree(\\"/home/me\\")')"
+posix finds=unknown | python3 -c "from os import remove as r; exec('r(\\"/home/me/f\\")')"
+# What the nested code does is read all the same.
+posix finds=delete | python3 -c "exec('import shutil'); shutil.rmtree('/home/me')"
+posix finds=delete | python3 -c "import os; exec('os.remove(\\"/home/me/f\\")')"
+# JavaScript: `var`, destructuring, an outer name assigned.
+posix finds=unknown | node -e "eval(\\"var m = require('fs')\\"); m.rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | node -e "eval(\\"var {rm} = require('fs')\\"); rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | node -e "eval(\\"var cp = require('child_process')\\"); cp.exec('rm -rf ~')"
+posix finds=unknown | node -e "var m; eval('m = require(\\"fs\\")'); m.rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | node -e "eval('var m = require(\\"fs\\").promises'); m.rm('/home/me',{recursive:true})"
+posix finds=unknown | node -e "eval('let { rm } = require(\\"fs/promises\\")'); rm('/home/me',{recursive:true})"
+posix finds=delete | node -e "eval('function f(p) { return require(\\"fs\\").rm(p, {recursive:true}, () => {}) }'); f('/home/me')"
+# A name this code bound, used in nested code.
+posix finds=unknown | node -e "const f = require('fs'); eval('f.rm(\\"/home/me\\",{recursive:true},()=>{})')"
+posix finds=unknown | node -e "const { rm } = require('fs'); eval('rm(\\"/home/me\\",{recursive:true},()=>{})')"
+# Nested in nested code.
+posix finds=unknown | node -e "eval(\\"eval('var m = require(\\\\\\"fs\\\\\\")')\\"); m.rm('/home/me',{recursive:true},()=>{})"
+# What the nested code does is read all the same.
+posix finds=delete | node -e "eval('require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})')"
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c "exec('x = 1'); print(x)"
+posix finds=unknown | python3 -c "exec('print(1)')"
+posix finds=unknown | python3 -c "exec('def f(): return 1'); print(f())"
+posix finds=unknown | python3 -c "exec('a = [1, 2]'); print(a)"
+posix finds=unknown | python3 -c "x = 1; exec('print(x)')"
+posix finds=unknown | python3 -c "import json; exec('print(json.dumps(1))')"
+posix finds=unknown | node -e "eval('var x = 1'); console.log(x)"
+posix finds=unknown | node -e "eval('console.log(1)')"
+posix finds=unknown | node -e "var x = 1; eval('console.log(x)')"
+posix finds=unknown | node -e "eval('function f() { return 1 }'); console.log(f())"
+# A dotted import is the top package unless a `fromlist` is given.
+posix finds=delete | python3 -c "__import__('os.path').system('rm -rf ~')"
+posix finds=delete | python3 -c "__import__('os.path').remove('/home/me/.zshrc')"
+posix finds=delete | python3 -c "__import__('distutils.dir_util').dir_util.remove_tree('/home/me')"
+posix finds=delete | python3 -c "import builtins; builtins.__import__('os.path').system('rm -rf ~')"
+posix finds=delete | python3 -c "import importlib; importlib.__import__('os.path').system('rm -rf ~')"
+# An empty `fromlist` is none.
+posix finds=delete | python3 -c "__import__('os.path', fromlist=[]).system('rm -rf ~')"
+posix finds=delete | python3 -c "__import__('os.path', None, None, ()).system('rm -rf ~')"
+# A `fromlist` only known when it runs is not read.
+posix finds=unknown | python3 -c "__import__('os.path', fromlist=x).system('rm -rf ~')"
+# Not read whole by the strict gate: unknown. (With a `fromlist` the
+# submodule is what comes back, and it has no `system`.)
+posix finds=unknown | python3 -c "__import__('os.path', fromlist=['join']).join('a', 'b')"
+posix finds=unknown | python3 -c "import importlib; importlib.import_module('os.path').join('a', 'b')"
+# The value of `eval` comes back under no name.
+posix finds=unknown | node -e "eval('require(\\"fs\\")').rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | python3 -c "eval('__import__(\\"shutil\\")').rmtree('/home/me')"
+posix finds=unknown | python3 -c "import os; eval('os').system('rm -rf ~')"
+posix finds=unknown | node -e "eval('require')('child_process').exec('rm -rf ~')"
+posix finds=unknown | node -e "const fs=require('fs'); eval('fs').rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | node -e "const r = eval('1; require(\\"fs\\")'); r.rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | node -e "eval('globalThis').require('fs').rm('/home/me',{recursive:true},()=>{})"
+posix finds=unknown | deno eval "eval('Deno').remove('/home/me',{recursive:true})"
+posix finds=unknown | node -e "eval('process').binding('fs')"
+posix finds=unknown | node -e "globalThis.eval('require')('fs').rmSync('/home/me')"
+posix finds=unknown | python3 -c "import builtins; builtins.eval('__import__')('os').system('rm -rf ~')"
+posix finds=unknown | python3 -c "r = eval('__import__'); r('os').system('rm -rf ~')"
+# Not read whole by the strict gate: unknown. (A statement of its own, or a
+# value that is only printed.)
+posix finds=unknown | node -e "eval('1+1')"
+posix finds=unknown | python3 -c "eval('1+1')"
+posix finds=unknown | python3 -c "print(eval('1+2'))"
+# The members of node's `module` that load or run code are not read.
+posix finds=unknown | node -e "module._compile('require(\\"fs\\").rmSync(\\"/home/me\\",{recursive:true})', 'x.js')"
+posix finds=unknown | node -e "require('module').register('data:text/javascript,1')"
+posix finds=unknown | node -e "module.runMain()"
+posix finds=unknown | node -e "module.prototype._compile('1', 'x.js')"
+posix finds=unknown | node -e "require('module').createRequire('/x')('fs')"
+posix finds=unknown | node -e "module.require('fs')"
+# Not read whole by the strict gate: unknown. (Plain data.)
+posix finds=unknown | node -e "console.log(module.paths, module.id, module.filename)"
+posix finds=unknown | node -e "module.exports = 1"
+# The workspace's own module, awaited, is read as before: not read whole by
+# the strict gate, unknown.
+posix finds=unknown | node --input-type=module -e "await import('./x.js')"
+posix finds=unknown | node --input-type=module -e "const fs = await import('node:fs'); fs.readFileSync('notes.txt')"
+# Reading a member of a module, and assigning to the code's own objects, is
+# not an assignment to the module: not read whole by the strict gate,
+# unknown.
+posix finds=unknown | python3 -c "import os\nx = os.path.join('a', 'b')\nprint(x)"
+posix finds=unknown | python3 -c "class A: pass\na = A()\na.x = 1\nprint(a.x)"
+posix finds=unknown | node -e "const o = {}; o.x = 1; console.log(o.x)"
+posix finds=unknown | node -e "const path = require('path'); const p = path.join('a', 'b'); console.log(p)"
+posix finds=unknown | node -e "process.exitCode = 1; module.exports = 1; process.env.NODE_ENV = 'production'"
+posix finds=unknown | node -e "function F() {} F.prototype.go = function () { return 1 }; console.log(1)"
+# An awaited import of a computed value is unknown.
+posix finds=unknown | node --input-type=module -e "await import(process.argv[1])"
+posix finds=unknown | deno eval "await import(Deno.args[0])"
+posix finds=unknown | bun -e "await import(process.argv[1])"
+posix finds=unknown | deno eval "const m = await import(Deno.args[0])"
+posix finds=unknown | deno eval "await import(Deno.env.get('X'))"
+posix finds=unknown | node -e "(async () => { await import(process.argv[1]) })()"
+posix finds=unknown | node -e "async function f() { await import(process.argv[1]) } f()"
+posix finds=unknown | deno eval "const u = 'https://x.example/a.ts'; await import(u)"
+# Not awaited, as before.
+posix finds=unknown | node -e "import(process.argv[1])"
+# An assignment to a module or a builtin prototype makes the code unknown.
+posix finds=unknown | python3 -c "import os\nos.path.join = lambda *a: '/home/me/.zshrc'\nos.remove(os.path.join('a', 'b'))"
+posix finds=unknown | python3 -c "import os\nos.path.expanduser = lambda p: '/home/me/.zshrc'\nos.remove(os.path.expanduser('~/x'))"
+posix finds=unknown | python3 -c "import posixpath, os\nposixpath.join = lambda *a: '/home/me/.zshrc'\nos.remove(posixpath.join('a', 'b'))"
+posix finds=unknown | python3 -c "from pathlib import Path\nimport os\nPath.__truediv__ = lambda s, o: Path('/home/me/.zshrc')\nos.remove(Path('a') / 'b')"
+posix finds=unknown | python3 -c "import os\nsetattr(os.path, 'join', lambda *a: '/home/me/.zshrc')\nos.remove(os.path.join('a', 'b'))"
+posix finds=unknown | node -e "const fs = require('fs'); const path = require('path'); path.resolve = () => '/home/me/.zshrc'; fs.rmSync(path.resolve('a'))"
+posix finds=unknown | node -e "const fs = require('fs'); require('path').join = () => '/home/me/.zshrc'; fs.rmSync(require('path').join('a'))"
+posix finds=unknown | node -e "const fs = require('fs'); process.cwd = () => '/home/me'; console.log(fs.readFileSync(require('path').join(process.cwd(), '.ssh/id_rsa')))"
+posix finds=unknown | node -e "const fs = require('fs'); String.prototype.concat = () => '/home/me/.zshrc'; fs.rmSync('a'.concat('b'))"
+posix finds=unknown | node -e "const fs = require('fs'); Array.prototype.join = () => '/home/me/.zshrc'; fs.rmSync(['a', 'b'].join('/'))"
+posix finds=unknown | node -e "const fs = require('fs'); String.prototype.toString = () => '/home/me/.zshrc'; fs.rmSync('a'.toString())"
+posix finds=unknown | node -e "const fs = require('fs'); Object.defineProperty(String.prototype, 'concat', { value: () => '/home/me/.zshrc' }); fs.rmSync('a'.concat('b'))"
+posix finds=unknown | node -e "const fs = require('fs'); ''.__proto__.concat = () => '/home/me/.zshrc'; fs.rmSync('a'.concat('b'))"
+posix finds=unknown | node -e "const fs = require('fs'); Object.getPrototypeOf('').concat = () => '/home/me/.zshrc'; fs.rmSync('a'.concat('b'))"
+posix finds=unknown | node -e "const fs = require('fs'); const S = String; S.prototype.concat = () => '/home/me/.zshrc'; fs.rmSync('a'.concat('b'))"
+posix finds=unknown | deno eval "Deno.cwd = () => '/home/me'; Deno.removeSync(Deno.cwd() + '/.zshrc')"
+posix finds=unknown | node -e "process.env.HOME = '/tmp'; console.log(1)"
+posix finds=unknown | bun -e "Bun.file = () => 1; console.log(1)"
+# The literal form of a network module is downloaded code.
+posix finds=run_downloaded | deno eval "await import('https://x.example/a.ts')"
+
+# A name that holds more than the reader keeps is not read as any string
+# (the lines made of many strings are in inline_names.rs).
+# A name grown in place is a string the reader does not work out; one set to
+# a string is.
+posix safe | python3 -c "k = 'a.txt'; print(open(k).read())"
+posix safe | python3 -c "k = j = 'a.txt'; print(open(k).read())"
+# A name that holds more than one string, in a longer path, is read once for
+# each of them.
+posix safe | python3 -c "d = 'a'; d = 'b'; print(open(d + '/x').read())"
+# A name grown in place.
+posix finds=unknown | python3 -c "k = '/home/me/'; k += '.ssh/id_rsa'; print(open(k).read())"
+posix finds=read_secret | python3 -c "k = j = '/home/me/.ssh/id_rsa'; print(open(k).read())"
+posix finds=read_secret | python3 -c "k = j = '/home/me/.ssh/id_rsa'; print(open(j).read())"
+posix finds=unknown | node -e 'let k = "/home/me/"; k += ".ssh/id_rsa"; require("fs").readFileSync(k)'
+posix finds=read_secret | node -e 'let k, j; k = j = "/home/me/.ssh/id_rsa"; require("fs").readFileSync(k)'
+# A name that holds more than one string, in a longer path, is read once for
+# each of them, as the shell reads `for d in a /home/me/.ssh; do cat
+# $d/id_rsa; done`.
+posix finds=read_secret | python3 -c "for d in ['a', '/home/me/.ssh']: print(open(d + '/id_rsa').read())"
+posix finds=read_secret | python3 -c "import os\nfor d in ['a', '/home/me/.ssh']: print(open(os.path.join(d, 'id_rsa')).read())"
+posix finds=read_secret | python3 -c "for d in ['a', '/home/me/']:\n    for n in ['x', '.ssh/id_rsa']: print(open(d + n).read())"
+# A name built from one that holds two.
+posix finds=read_secret | python3 -c "for d in ['a', '/home/me/.ssh']: pass\nk = d + '/id_rsa'\nprint(open(k).read())"
+posix finds=read_secret | node -e 'for (const d of ["a", "/home/me/.ssh"]) require("fs").readFileSync(d + "/id_rsa")'
+posix finds=read_secret | node -e 'for (const d of ["a", "/home/me/.ssh"]) require("fs").readFileSync(`${d}/id_rsa`)'
+# Not read whole by the strict gate: unknown.
+posix finds=unknown | python3 -c "import os\nfor n in ['a.txt', 'b.txt']: print(open(os.path.join('src', n)).read())"
+posix finds=unknown | python3 -c "for n in ['a', 'b']: print(open(f'src/{n}.txt').read())"
+posix finds=unknown | node -e 'for (const n of ["a", "b"]) require("fs").readFileSync("src/" + n + ".txt")'

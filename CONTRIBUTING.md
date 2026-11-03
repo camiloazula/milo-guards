@@ -124,8 +124,10 @@ word, field, shell, rule, effect or paths name, an answer that is not whole
 twice), a case without its `| LINE`, and a case that repeats another (the
 same shell, paths, line and answer). A missing file fails its test, and
 `tests/cases.rs` fails for a case file no test file checks and for a case
-that repeats one in another file. A case that gets another answer is named
-by its file and line with what it got.
+that repeats one in another file checked in the same build (a test file that
+starts `#![cfg(...)]`, as `tests/inline_off.rs` does, is checked in another,
+where the same line may get the same answer). A case that gets another answer
+is named by its file and line with what it got.
 
 To list every case, one to a line (where it is, the shell, the paths, the
 answer and the line as Rust writes a string, tab separated):

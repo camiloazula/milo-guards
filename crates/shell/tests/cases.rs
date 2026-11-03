@@ -327,13 +327,35 @@ fn every_case_file_is_checked_by_the_test_file_of_its_name() {
     assert!(unchecked.is_empty(), "{}", unchecked.join("\n"));
 }
 
+/// The build a case file's test runs in: the `#![cfg(...)]` its test file
+/// starts with (`inline_off.rs` runs without the `inline` feature), or none.
+fn build(name: &str) -> String {
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    std::fs::read_to_string(tests.join(format!("{name}.rs")))
+        .unwrap_or_default()
+        .lines()
+        .find(|line| line.starts_with("#![cfg("))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// No case repeats one in another file checked in the same build; a line of
+/// a file checked in another build may get the same answer there.
 #[test]
 fn no_case_repeats_another_across_files() {
-    let all: Vec<Case> = format::names()
+    let all: Vec<(String, Case)> = format::names()
         .iter()
-        .flat_map(|name| cases::load(name))
+        .flat_map(|name| {
+            let build = build(name);
+            cases::load(name)
+                .into_iter()
+                .map(move |case| (build.clone(), case))
+        })
         .collect();
-    let repeats = format::repeated(all.iter().map(|case| (case.at.clone(), cases::key(case))));
+    let repeats = format::repeated(
+        all.iter()
+            .map(|(build, case)| (case.at.clone(), (build.clone(), cases::key(case)))),
+    );
     assert!(repeats.is_empty(), "{}", repeats.join("\n"));
 }
 

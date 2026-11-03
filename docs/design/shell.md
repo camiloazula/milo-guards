@@ -1663,9 +1663,9 @@ because nothing was found.
 `effect` never answers `ReadsOnly` for a line with inline code: the interpreter
 is not one of its readers (`Unknown`), and a delete, write or command the code
 makes is a unit of its own that changes things (`Changes`). `python3 -c
-'print(1)'` is safe for `classify` and `Unknown` for `effect`. Every row of
-`tests/inline.rs` goes through `effect` with the shared `check`, which holds
-this to `classify`.
+'print(1)'` is safe for `classify` and `Unknown` for `effect`. Every case of
+`tests/cases/inline.cases` goes through `effect` with the runner of the case
+files, which holds this to `classify`.
 
 **What is found.** Whatever the code comes from, the reader finds the calls
 that delete, write, read, move, link, change permissions, run and kill, with
@@ -3269,15 +3269,20 @@ cases of both kinds, and a fix adds cases to the file of what it checks. The eve
 the front door, in `crates/guards/tests/everyday.rs`, which holds each of them
 to the same agreement checks.
 
-`tests/inline.rs` is the same for inline Python and JavaScript, with a table for
-what is safe, what each rule finds and what stays `unknown`; the `inline_*.rs`
-files beside it hold how code reaches an interpreter, the names and modules
-the reader follows, what is read whole, file calls, started programs, reads of
-a key and the working directory of the code. They judge lines
+`tests/cases/inline.cases` is the same for inline Python and JavaScript, with
+the lines that are safe, what each rule finds and what stays `unknown`; the
+`inline_*.cases` files beside it hold how code reaches an interpreter, the
+names and modules the reader follows, what is read whole, file calls, started
+programs, reads of a key and the working directory of the code, each checked
+by the test file of its name. `tests/inline.rs` keeps the path a finding names,
+code nested past the limit and the timed test, and `tests/inline_names.rs`
+the chains of names and the lines of many strings it makes. They judge lines
 through the reader; the reader's own tables (the acts a piece of code gives,
 what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
-`tests/inline_off.rs` holds every inline line to `unknown` with the feature off
-and is only compiled there (`just no-inline`).
+`tests/cases/inline_off.cases` holds every inline line to `unknown` with the
+feature off; its test file, `tests/inline_off.rs`, is only compiled there
+(`just no-inline`), and `tests/cases.rs` does not count a line of it that has
+the same answer in a case file of the other build as a repeat.
 
 `tests/cases/effect.cases` is the same for `effect`: a section of lines for each
 answer, checked by `tests/effect.rs`, which keeps the lines made long or nested

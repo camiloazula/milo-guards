@@ -3,7 +3,7 @@
 //! rule and not another), the makers of the paths a
 //! reads-only line lists, a clock and a linear-time check for the timed
 //! tests, (in [`cases`]) the runner of the case files in `tests/cases`, and
-//! (in [`inline`]) the builders of inline-code rows.
+//! (in [`inline`]) the builder of nested inline code.
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
 
