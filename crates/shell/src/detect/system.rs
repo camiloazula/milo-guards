@@ -265,6 +265,13 @@ impl Checker<'_> {
             "set-scheduledtask" if shell == Shell::PowerShell => {
                 self.add(Rule::SystemSettings, "changes a scheduled task", None);
             }
+            // A scheduled job is a task too, which runs its block later.
+            "register-scheduledjob" if shell == Shell::PowerShell => {
+                self.add(Rule::SystemSettings, "creates a scheduled job", None);
+            }
+            "set-scheduledjob" if shell == Shell::PowerShell => {
+                self.add(Rule::SystemSettings, "changes a scheduled job", None);
+            }
             "forfiles" if shell != Shell::Posix && has_switch(args, "c") => {
                 self.add(Rule::Unknown, "runs a command for each matched file", None);
             }

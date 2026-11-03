@@ -31,7 +31,7 @@ powershell safe | Start-Job { cargo build }
 powershell safe | Start-Job -Name build -ScriptBlock { cargo build }
 powershell safe | Start-Job -InitializationScript { $x = 1 } -ScriptBlock { cargo build }
 powershell safe | Start-ThreadJob -ScriptBlock { cargo build }
-powershell safe | Register-ScheduledJob -Name nightly -ScriptBlock { cargo build }
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob -Name nightly -ScriptBlock { cargo build }
 powershell safe | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action { break }
 powershell safe | Set-PSBreakpoint -Script $script -Line 3
 powershell safe | New-Module -ScriptBlock { function f { 1 } }
@@ -46,7 +46,7 @@ powershell finds=unknown | Invoke-Command -ScriptBlock $b
 powershell finds=unknown | Start-Job $b
 powershell finds=unknown | Start-ThreadJob -ScriptBlock $b
 powershell finds=unknown | Set-PSBreakpoint -Action $b
-powershell finds=unknown | Register-ScheduledJob -ScriptBlock $b
+powershell finds=system_settings,unknown | Register-ScheduledJob -ScriptBlock $b
 powershell finds=unknown | 1 | ForEach-Object $b
 powershell finds=unknown | $ExecutionContext.InvokeCommand.InvokeScript('Remove-Item -Recurse -Force ~')
 powershell finds=unknown | $ExecutionContext.InvokeCommand.CommandNotFoundAction = $b
@@ -66,7 +66,7 @@ powershell finds=unknown | Start-Job -Name build $b
 powershell finds=unknown | Start-Job -InitializationScript $i { 1 }
 powershell finds=unknown | Start-Job -ScriptBlock ([scriptblock]::Create($x))
 powershell finds=unknown | Start-ThreadJob -InitializationScript $i -ScriptBlock { 1 }
-powershell finds=unknown | Register-ScheduledJob -Name nightly -InitializationScript $i -ScriptBlock { 1 }
+powershell finds=system_settings,unknown | Register-ScheduledJob -Name nightly -InitializationScript $i -ScriptBlock { 1 }
 powershell finds=unknown | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action $b
 powershell finds=unknown | Set-PSBreakpoint -Script build.ps1 -Line 3 -Action 'break'
 powershell finds=unknown | 1 | % $b
@@ -138,15 +138,15 @@ powershell finds=unknown | 1..3 | ForEach-Object -Process { 1 }, $b
 powershell safe | Start-ThreadJob -InitializationScript { 1 } { cargo build }
 powershell safe | Start-ThreadJob -InitializationScript { 1 } -ScriptBlock { cargo build }
 powershell safe | Start-ThreadJob { cargo build } -Name build
-powershell safe | Register-ScheduledJob nightly { cargo build }
-powershell safe | Register-ScheduledJob -InitializationScript { 1 } nightly { cargo build }
-powershell safe | Register-ScheduledJob -Name nightly -InitializationScript { 1 } { cargo build }
-powershell safe | Register-ScheduledJob -Name nightly -InitializationScript { 1 } -ScriptBlock { cargo build }
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob nightly { cargo build }
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob -InitializationScript { 1 } nightly { cargo build }
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob -Name nightly -InitializationScript { 1 } { cargo build }
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob -Name nightly -InitializationScript { 1 } -ScriptBlock { cargo build }
 powershell finds=unknown | Start-ThreadJob -InitializationScript { Import-Module x } $b
 powershell finds=unknown | Start-ThreadJob -Init { 1 } (Get-Block)
-powershell finds=unknown | Register-ScheduledJob -InitializationScript { 1 } nightly $b
-powershell finds=unknown | Register-ScheduledJob -Name nightly -InitializationScript { 1 } $b
-powershell finds=unknown | Register-ScheduledJob nightly $b
+powershell finds=system_settings,unknown | Register-ScheduledJob -InitializationScript { 1 } nightly $b
+powershell finds=system_settings,unknown | Register-ScheduledJob -Name nightly -InitializationScript { 1 } $b
+powershell finds=system_settings,unknown | Register-ScheduledJob nightly $b
 powershell finds=unknown | Start-ThreadJob $b
 
 # Common parameters and `-Args` take their value.
@@ -161,8 +161,8 @@ powershell safe | Start-Job { npm test } -InformationAction Ignore -InformationV
 powershell safe | Start-Job { npm test } -OutBuffer 2 -PipelineVariable p
 powershell safe | Start-ThreadJob { npm test } -ErrorAction Stop
 powershell safe | Start-ThreadJob -ScriptBlock { npm test } -EV e
-powershell safe | Register-ScheduledJob -Name nightly -ScriptBlock { npm test } -ErrorAction Stop
-powershell safe | Register-ScheduledJob nightly { npm test } -WA Ignore
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob -Name nightly -ScriptBlock { npm test } -ErrorAction Stop
+powershell finds=system_settings lacks=unknown | Register-ScheduledJob nightly { npm test } -WA Ignore
 powershell safe | Invoke-Command { Get-Date } -ErrorAction Stop
 powershell safe | Invoke-Command -ErrorAction Stop { Get-Date }
 powershell safe | Invoke-Command { param($a) $a } -Args $x
@@ -211,7 +211,7 @@ powershell finds=unknown | Start-Job -ScriptBlock { 1 } @p
 powershell finds=unknown | Start-Job @p
 powershell finds=unknown | Start-ThreadJob { 1 } @p
 powershell finds=unknown | Start-ThreadJob -ScriptBlock { 1 } @p
-powershell finds=unknown | Register-ScheduledJob -Name nightly -ScriptBlock { 1 } @p
+powershell finds=system_settings,unknown | Register-ScheduledJob -Name nightly -ScriptBlock { 1 } @p
 powershell finds=unknown | Invoke-Command @p
 powershell finds=unknown | Invoke-Command -ComputerName srv @p
 powershell finds=unknown | New-Module @p
@@ -425,6 +425,25 @@ powershell finds=unknown | $ExecutionContext.InvokeCommand.GetType().GetProperty
 powershell finds=unknown | $ic = $ExecutionContext.InvokeCommand; $ic.$h = $b
 powershell finds=unknown | $ec = $ExecutionContext; $ec.InvokeCommand.psobject.Properties['PreCommandLookupAction'].Value = $b
 powershell finds=unknown | ($ExecutionContext.InvokeCommand).$h = $b
+# The session is reached through `InvokeCommand`, `SessionState` and
+# `SessionStateProxy` from any object, and through `Get-Variable`; a hook
+# named as text is the hook on any object.
+powershell finds=unknown | (Get-Variable ExecutionContext -ValueOnly).InvokeCommand.$h = $b
+powershell finds=unknown | $ec = (Get-Variable ExecutionContext).Value; $ec.InvokeCommand.$h = $b
+powershell finds=unknown | $ec = (Get-Variable ExecutionContext).Value; $ec.$m.$h = $b
+powershell finds=unknown | $ec = $ExecutionContext; $e2 = $ec; $e2.$m.$h = $b
+powershell finds=unknown | (Get-Variable ExecutionContext -ValueOnly).$m.$h = $b
+powershell finds=unknown | $Host.Runspace.SessionStateProxy.InvokeCommand.$h = $b
+powershell finds=unknown | [runspace]::DefaultRunspace.SessionStateProxy.InvokeCommand.$h = $b
+powershell finds=unknown | $PSCmdlet.SessionState.InvokeCommand.$h = $b
+powershell finds=unknown | $ssp = $Host.Runspace.SessionStateProxy; $ssp.$m.$h = $b
+powershell finds=unknown | $x.psobject.Properties['CommandNotFoundAction'].Value = $b
+powershell finds=unknown | $x.psobject.Properties.Item('PreCommandLookupAction').Value = $b
+powershell finds=unknown | $x.GetType().GetProperty('PostCommandLookupAction').SetValue($x, $b)
+powershell safe | $x.psobject.Properties['CommandNotFoundAction'].Value = { param($name) }
+powershell safe | $Host.Runspace.SessionStateProxy.Path.CurrentLocation
+powershell safe | $Host.UI.RawUI.WindowTitle = 'build'
+powershell safe | $PSCmdlet.SessionState.Path.CurrentLocation
 powershell safe | $ExecutionContext.SessionState.Path.CurrentLocation
 powershell safe | $ExecutionContext.InvokeCommand.GetCommand('git', 'Application').Source
 powershell safe | $row.$col = $v
@@ -475,6 +494,29 @@ powershell finds=unknown | $sb = { Get-ChildItem }; $ExecutionContext.SessionSta
 powershell finds=unknown | $sb = { Get-ChildItem }; Set-Alias x Set-Variable; Invoke-Command $sb
 powershell finds=unknown | $args = { Get-ChildItem }; Invoke-Command $args
 powershell finds=unknown | $sb = { Get-ChildItem }; & $sb
+# A command that may set the variable by its name, a splat that may hold
+# `-OutVariable`, an item cmdlet on a path only known when it runs, a member
+# that reaches the variables or sets what holds one, and a trap, which may run
+# before the assignment, each leave it unknown.
+powershell finds=unknown | $sb = { Get-ChildItem }; $x | Tee-Object -Variable sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $x | tee -var sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Import-LocalizedData -BindingVariable sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Get-Content x @p; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; & ('Set-' + 'Variable') sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; & $c sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; (Get-Item ('Var'+'iable:sb')).Value = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Set-Item ('Var'+'iable:sb') $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $p | Set-Item -Value $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Rename-Item $p sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $v = Get-Item $p; $v.set_Value($x); Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Get-Item $p | % set_Value $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $ExecutionContext.SessionState.'PSVariable'.Set('sb', $x); Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $ExecutionContext.SessionState.$m.Set('sb', $x); Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; (Get-PSCallStack)[0].GetFrameVariables()['sb'].Value = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $Host.Runspace.SessionStateProxy.SetVariable('sb', $x); Invoke-Command $sb
+powershell finds=unknown | Get-Item nope -ErrorAction Stop; $sb = { Get-ChildItem }; trap { Invoke-Command $sb; continue }
+powershell safe | $sb = { Get-ChildItem }; Get-Item .\\a; Invoke-Command $sb
+powershell safe | $sb = { Get-ChildItem }; Set-Content -Path .\\out.txt -Value 'x'; Invoke-Command $sb
 
 # A block given to a cmdlet outside the table above, as a block parameter,
 # a property or a script member, is read the same way.
@@ -502,6 +544,18 @@ powershell safe | Get-ChildItem | Format-Table Name, @{Label='Size'; Expression=
 powershell safe | Get-ChildItem | Group-Object { $_.Extension }
 powershell safe | Get-ChildItem | Measure-Object -Property Length -Sum
 powershell safe | $p = 'Name', 'Length'; Get-ChildItem | Select-Object $p
+# A table or a list a variable holds is read only when nothing on the line may
+# change it in place.
+powershell finds=unknown | $h = @{n='x'}; $h.Add('e', $b); Get-ChildItem | Select-Object $h
+powershell finds=unknown | $h = @{n='x'}; $h.e = $b; Get-ChildItem | Select-Object $h
+powershell finds=unknown | $h = @{n='x'}; $h['e'] = $b; Get-ChildItem | Select-Object $h
+powershell finds=unknown | $h = @{n='x'}; $t = $h; $t.e = $b; Get-ChildItem | Select-Object $h
+powershell finds=unknown | $h = @{n='x'}; $h | ForEach-Object { $_.e = $b }; Get-ChildItem | Select-Object $h
+powershell finds=unknown | $h = @{n='x'}; $h | % Add e $b; Get-ChildItem | Select-Object $h
+powershell finds=unknown | $r = 'a','b'; $r.SetValue($b, 1); 'a' -replace $r
+powershell finds=unknown | $r = 'a','b'; $r[1] = $b; 'a' -replace $r
+powershell finds=unknown | $r = 'a','b'; [array]::Reverse($r); 'a' -replace $r
+powershell safe | $r = 'a','b'; 'a' -replace $r
 powershell finds=unknown | Get-ChildItem | Sort-Object $b
 powershell finds=unknown | Get-ChildItem | Sort-Object -Property $p
 powershell finds=unknown | Get-ChildItem | sort $b
@@ -512,6 +566,23 @@ powershell finds=unknown | Get-ChildItem | Format-Table @{e=$b}
 powershell finds=unknown | Get-ChildItem | Format-List -GroupBy $b
 powershell finds=unknown | Get-ChildItem | Measure-Object -Property (Get-Prop)
 powershell finds=unknown | Get-ChildItem | Sort-Object @p
+powershell safe | Compare-Object $a $c -Property Name
+powershell safe | Compare-Object -ReferenceObject $a -DifferenceObject $c -Property Name, Length -IncludeEqual
+powershell safe | compare $a $c
+powershell safe | Get-ChildItem | ConvertTo-Html Name, Length
+powershell safe | Get-ChildItem | ConvertTo-Html -Property Name -Title $t -Fragment
+powershell safe | Get-ChildItem | ConvertTo-Html Name $head $title
+powershell safe | Get-ChildItem | Join-String Name ', '
+powershell safe | Get-ChildItem | Join-String -Property Name -Separator $sep
+powershell safe | Get-ChildItem | Join-String Name $sep
+powershell safe | Get-ChildItem | Join-String { $_.Name }
+powershell finds=unknown | Compare-Object $a $c -Property $b
+powershell finds=unknown | compare $a $c -Property Name, @{e=$b}
+powershell finds=unknown | Get-ChildItem | ConvertTo-Html $b
+powershell finds=unknown | Get-ChildItem | ConvertTo-Html -Property $b
+powershell finds=unknown | Get-ChildItem | ConvertTo-Html Name, @{l='x';e=$b} $head
+powershell finds=unknown | Get-ChildItem | Join-String $b
+powershell finds=unknown | Get-ChildItem | Join-String -Property $b -Separator ', '
 powershell safe | $lines | % Split $sep
 
 # A script member runs its value as a block whenever it is used.
@@ -542,6 +613,17 @@ powershell finds=unknown | 'a' -ireplace 'a', $b
 powershell finds=unknown | 'a' -replace $pair
 powershell finds=unknown | (Get-Content f) -replace $old, $new
 powershell finds=unknown | Write-Output ('a' -replace 'a', $b)
+# `-split` takes a block as its delimiter, and runs it for each character.
+powershell safe | $env:PATH -split ';'
+powershell safe | $sep = ';'; $env:PATH -split $sep
+powershell safe | 'a,b' -split ',', 2
+powershell safe | 'a b' -split { $_ -eq ' ' }
+powershell safe | -split 'a b'
+powershell finds=unknown | 'a' -split $b
+powershell finds=unknown | 'a' -csplit $b
+powershell finds=unknown | 'a' -isplit $b
+powershell finds=unknown | 'a,b' -split $b, 2
+powershell finds=unknown | $env:PATH -split $sep
 
 # `.Where` and `.ForEach` run a block on each item.
 powershell safe | $list.Where({ $_ -gt 1 })
@@ -559,15 +641,43 @@ powershell finds=unknown | $PSDefaultParameterValues.Add('Invoke-Command:ScriptB
 powershell finds=unknown | $global:PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b
 powershell finds=unknown | ($PSDefaultParameterValues)['Invoke-Command:ScriptBlock'] = $b
 powershell finds=delete | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = { Remove-Item -Recurse -Force .\\build }; cd ~; Invoke-Command
+powershell finds=unknown | $h = @{}; $h.Add('Invoke-Command:ScriptBlock', $b); $PSDefaultParameterValues = $h
+powershell finds=unknown | $PSDefaultParameterValues['*:Encod*'] = $b
+powershell finds=unknown | $PSDefaultParameterValues['Get-ChildItem:Path'] = $b
+powershell finds=unknown | $PSDefaultParameterValues[$k] = $b
+powershell finds=unknown | $PSDefaultParameterValues = @{ '*:Encoding' = $enc; 'Invoke-Command:ScriptBlock' = $b }
+powershell safe | $PSDefaultParameterValues['*:Encoding'] = $enc
+powershell safe | $PSDefaultParameterValues['Out-File:Width'] = $w
+powershell safe | $PSDefaultParameterValues = @{ '*:Encoding' = $enc }
+powershell safe | $PSDefaultParameterValues.Add('*:Encoding', $enc)
+
+# A cmdlet that runs a block, given none, no argument and nothing in its
+# place, takes it from a default value set anywhere in the session, or fails.
+powershell finds=unknown | Invoke-Command
+powershell finds=unknown | Invoke-Command -ComputerName srv
+powershell finds=unknown | Start-Job -Name build
+powershell finds=unknown | Get-ChildItem | Where-Object
+powershell finds=unknown | 1..3 | ForEach-Object
+powershell finds=unknown | Measure-Command
+powershell finds=unknown | Set-Location ~; Invoke-Command
+powershell finds=unknown | $d = $PSDefaultParameterValues; $d['Invoke-Command:ScriptBlock'] = $b; Invoke-Command
+powershell finds=unknown | Set-Variable PSDefaultParameterValues @{'Invoke-Command:ScriptBlock'=$b}; Invoke-Command
+powershell safe | Start-Job -DefinitionName nightly
+powershell safe | Start-ThreadJob -FilePath .\\job.ps1
+powershell safe | Set-PSBreakpoint -Command Get-Date
+powershell safe | Get-ChildItem | Where-Object -Property Name -EQ x
+powershell safe | Get-ChildItem | Where-Object Name -EQ x
+powershell safe | Get-ChildItem | ForEach-Object -MemberName Name
 
 # A script file only known when it runs is unknown.
 powershell safe | Start-Job -FilePath .\\job.ps1
 powershell finds=unknown | Start-Job -FilePath $f
 powershell finds=unknown | Invoke-Command -FilePath $f -ComputerName srv
-powershell finds=unknown | Register-ScheduledJob -Name x -FilePath $f
+powershell finds=system_settings,unknown | Register-ScheduledJob -Name x -FilePath $f
 
 # A number's letters are read in any case.
 powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1MB }
 powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1kb }
 powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1MB -and $_.Length -lt 1.5GB }
 powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 0X10KB }
+powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1MB -and $_.Name -like "*$(Get-Date -f yyyy)*" }

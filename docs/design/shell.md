@@ -95,10 +95,11 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   (`powershell/numbers.rs`): a number starts after white space, a bracket, a
   separator or an operator and ends where its word does (`a1MB` and `1MBx` are
   words, left as written); text in quotes and comments is left as written,
-  and a line the scan cannot follow (a here-string, a `$( … )` in a
-  double-quoted string, a quote that does not end) is left whole, for the
-  grammar to fail on. `Where-Object { $_.Length -gt 1MB }` is read as `-gt
-  1mb`.
+  but a `$( … )` in a double-quoted string is code, followed to the `)`
+  that closes it (`-like "*$(Get-Date -f yyyy)*"`); a line the scan cannot
+  follow (a here-string, a quote or a `$( … )` that does not end, `$( … )`
+  nested more than 64 deep) is left whole, for the grammar to fail on.
+  `Where-Object { $_.Length -gt 1MB }` is read as `-gt 1mb`.
   PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
   and their doubled forms as redirects, but lexes `1>`, `7>` and a `>` glued
   to its word (`echo x>f`, `echo x 1>f`) as words; the guard reads each as the
@@ -1443,7 +1444,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy, scheduled tasks, whose action runs later (`schtasks /create`, `Register-ScheduledTask`, `Set-ScheduledTask`, whatever the action); on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy, scheduled tasks and jobs, whose action runs later (`schtasks /create`, `Register-ScheduledTask`, `Set-ScheduledTask`, `Register-ScheduledJob`, `Set-ScheduledJob`, whatever the action); on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe, `Invoke-Expression`, or code built from it (`[scriptblock]::Create((iwr …))`). |
@@ -3041,12 +3042,23 @@ A line is never safe because the guard gave up on it. These come back risky:
   reached by a way the guard cannot name (its `psobject`, `psbase`,
   `psadapted` or `psextended`, an item by index, the result of a call), may
   be a hook or a method that runs code, so a call of one or an assignment to
-  one is `unknown` when the chain starts at `$ExecutionContext` or at a
-  variable the line sets to something reached from it
-  (`$ExecutionContext.InvokeCommand.$h = $b`,
+  one is `unknown` when it comes after a member that leads to the session
+  (`InvokeCommand`, `SessionState`, `SessionStateProxy`), whatever the chain
+  starts at (`$Host.Runspace.SessionStateProxy.InvokeCommand.$h = $b`,
+  `$PSCmdlet.SessionState.InvokeCommand.$h = $b`,
   `$ExecutionContext.InvokeCommand.psobject.Properties['CommandNotFoundAction']
-  .Value = $b`, `$ic = $ExecutionContext.InvokeCommand; $ic.$h = $b`); a
-  chain is walked only when its text starts with such a variable. `::Create`
+  .Value = $b`), or anywhere in a chain that starts at `$ExecutionContext`,
+  `(Get-Variable ExecutionContext)` or a variable the line sets to something
+  that may reach the session (`$ec = (Get-Variable ExecutionContext).Value;
+  $ec.$m.$h = $b`, `$ic = $ExecutionContext.InvokeCommand; $ic.$h = $b`, and a
+  variable set from such a variable, `$a = $ic`). A value may reach the
+  session when it names `$ExecutionContext`, one of those members or
+  `Get-Variable`; each variable a value names is followed to the ones set
+  from it once. A hook named as text, as an item or an argument of a call
+  in a chain (`$x.psobject.Properties['CommandNotFoundAction'].Value = $b`,
+  `$x.GetType().GetProperty('PreCommandLookupAction').SetValue($x, $b)`), is
+  the hook on any object: `unknown` unless its block is written out, which
+  then runs later. `::Create`
   on a type only known when it runs (`$t::Create(…)`, `([type]'scriptblock')
   ::Create(…)`) may be `[scriptblock]::Create`, and is read as it is; code
   built or run from text with a download in its arguments
@@ -3076,14 +3088,28 @@ A line is never safe because the guard gave up on it. These come back risky:
   position, after the key) and `Use-Transaction -TransactedScript` (also by
   position), and for `.Where(…)` and `.ForEach(…)`, whose argument may be a
   block. A script file only known when it runs (`-FilePath $f`, also
-  `-LiteralPath` on `Start-Job`) given to `Invoke-Command`, `Start-Job` or
-  `Register-ScheduledJob` is `unknown` too.
+  `-LiteralPath` on `Start-Job`) given to `Invoke-Command`, `Start-Job`,
+  `Start-ThreadJob` or `Register-ScheduledJob` is `unknown` too. One of these
+  cmdlets given no block, no argument by position, no splat and nothing in
+  its place (`-FilePath`, `-DefinitionName` and `-DefinitionPath` on
+  `Start-Job`, `-MemberName`, `Where-Object -Property`,
+  `Set-PSReadLineKeyHandler -Function`) takes its block from
+  `$PSDefaultParameterValues`, set anywhere in the session, or fails: so
+  `Invoke-Command`, `Start-Job -Name x` and `Get-ChildItem | Where-Object`
+  are `unknown`, and a block set as a default on an earlier line is not run
+  unseen by a later `Set-Location ~; Invoke-Command`. `Set-PSBreakpoint`,
+  which runs without an action, is not.
 - A PowerShell property that may be a script block only known when it runs.
-  `Sort-Object`, `Group-Object`, `Select-Object`, `Measure-Object` and the
-  `Format-` cmdlets take a property (`-Property` and by position, and
-  `-GroupBy` on the `Format-` cmdlets) that may be a block or a calculated
-  property, a table with one (`@{n='x';e={ … }}`), which they run on each
-  item. A name, text, a number, a block written out, or a list or table of
+  `Sort-Object`, `Group-Object`, `Select-Object`, `Measure-Object`,
+  `ConvertTo-Html`, `Join-String` and the `Format-` cmdlets take a property
+  (`-Property` and first by position, and `-GroupBy` on the `Format-`
+  cmdlets), and `Compare-Object` (also `compare` and `diff`) one by name
+  only, that may be a block or a calculated property, a table with one
+  (`@{n='x';e={ … }}`), which they run on each item. An argument by position
+  after the first and its list is another parameter's value (the separator
+  of `Join-String`, the head of `ConvertTo-Html`), never a block. A word the
+  grammar reads with its comma (`Name, @{e=$b}`) is a list with what follows
+  it. A name, text, a number, a block written out, or a list or table of
   them is read (`Sort-Object Length`, `Select-Object Name, @{e={ $_.Length
   }}`), as `$true`, `$false` and `$null` are; any other value (`Sort-Object
   $b`, `Select-Object @{n='x';e=$b}`, `(Get-Prop)`) and a splat are
@@ -3104,19 +3130,31 @@ A line is never safe because the guard gave up on it. These come back risky:
   replacement for each match: a replacement that is not text, a number or a
   block written out (`'a' -replace 'a', $b`), and a right side that is not a
   list written out (`-replace $pair`, which may hold a pattern and a block),
-  are `unknown`.
+  are `unknown`. `-split` (also `-isplit` and `-csplit`) takes a block as its
+  delimiter, first in its list, and runs it for each character: a delimiter
+  or another value of the list that is not text, a number or a block written
+  out is `unknown` (`'a' -split $b`, `'a,b' -split $b, 2`); `$env:PATH
+  -split ';'` is safe.
 - A PowerShell default parameter value that may be a script block only
   known when it runs: an entry of `$PSDefaultParameterValues` set to one
   (`$PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b`, the whole
   table set to a table with one, `.Add(key, $b)`, `.set_Item(key, $b)`) is
-  `unknown`, as the cmdlet it names runs it.
+  `unknown`, as the cmdlet it names runs it, unless its key is written out
+  and names, with no wildcard, a parameter that never takes a block
+  (`'*:Encoding'`, `'Out-File:Width'`, a common parameter and a few more
+  `powershell/blocks.rs` lists).
 - A PowerShell variable is only known when it runs unless the line shows what
   it holds for certain (`powershell/variables.rs`, read once for the whole
   line before its commands are judged): a variable the line sets once, by a
   plain `=` that is a statement of its own at the top of the line (not in a
   branch, a loop, a block, a function or a chain, which may not run it), to a
   block written out or to text, a number or a list or table of them, holds
-  that value where the line uses it after the assignment. So `$sb = {
+  that value where the line uses it after the assignment. A list or a table
+  is held only when nothing on the line may change it in place without an
+  assignment: no member, item or method of the variable is reached, and the
+  line calls no method, sets no member or item of anything (which may be the
+  same table under another name, `$t = $h; $t.e = $b`, or `$_`) and runs no
+  `ForEach-Object` without a block (`$h | % Add e $b`). So `$sb = {
   Get-ChildItem }; Invoke-Command $sb` and `$p = 'Name', 'Length';
   Select-Object $p` are read as written out; the block is read where it is
   written, as an action that runs later, so a `cd` after it makes its
@@ -3128,10 +3166,18 @@ A line is never safe because the guard gave up on it. These come back risky:
   `$input`, `$_` and the other automatic variables) are not read; nor is any
   variable on a line that may set one the guard does not see: `Set-Variable`
   (also `set`, `sv`), `New-Variable`, `Clear-Variable`, `Remove-Variable`,
-  `Get-Variable`, `Invoke-Expression`, an alias the line sets, `New-PSDrive`,
-  a `-OutVariable` or another common parameter that stores into a variable, a
-  path on the `Variable:` or `Alias:` drive, `[ref]`, a `data` section and
-  `PSVariable`. A variable the session made constant before the line keeps its
+  `Get-Variable`, `Invoke-Expression`, `Tee-Object -Variable` (also `tee`),
+  `Import-LocalizedData -BindingVariable`, `Update-List`, an alias the line
+  sets, `New-PSDrive`, a command whose name is only known when it runs (`&
+  $c`, `& ('Set-' + 'Variable')`), `Set-Item`, `New-Item`, `Rename-Item`,
+  `Copy-Item`, `Move-Item`, `Set-Content` or `Add-Content` with a path not
+  written out or piped to it, a splat, a `-OutVariable` or another common
+  parameter that stores into a variable, a path on the `Variable:` or `Alias:`
+  drive, `[ref]`, a `data` section, a `trap` (which may run before an
+  assignment ahead of it), a member name only known when it runs, a member
+  set named `Value`, and the members `PSVariable`, `GetFrameVariables`,
+  `SetVariable`, `set_Value` and `SetValue`, however their names are quoted
+  (also as a member name `ForEach-Object` is given). A variable the session made constant before the line keeps its
   value though the line assigns it; the guard reads the line, not the
   session, and does not see that.
 - A PowerShell word that may be a redirect and cannot be told apart: a `>`

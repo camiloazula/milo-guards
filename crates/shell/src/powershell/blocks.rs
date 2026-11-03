@@ -41,6 +41,11 @@ struct Cmdlet {
     /// Whether one block parameter is all there is to give a block to: a
     /// splat (`@p`) beside a block written out cannot add another.
     lone: bool,
+    /// The parameters that give the cmdlet what to run, or do, in place of a
+    /// block (`-FilePath`, `-MemberName`). Given none of them, no block and no
+    /// argument, it takes its block from `$PSDefaultParameterValues`, or
+    /// fails. `None`: it runs without a block (`Set-PSBreakpoint`).
+    instead: Option<&'static [&'static str]>,
 }
 
 /// The cmdlets whose script blocks the guard reads. The ones that register
@@ -75,6 +80,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+        instead: Some(&["filepath"]),
     },
     Cmdlet {
         name: "foreach-object",
@@ -89,6 +95,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::Every),
         slots: &[],
         lone: false,
+        instead: Some(&["membername"]),
     },
     Cmdlet {
         name: "start-job",
@@ -110,12 +117,19 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[&["scriptblock", "command"], &["initializationscript"]],
         lone: false,
+        instead: Some(&[
+            "filepath",
+            "literalpath",
+            "definitionname",
+            "definitionpath",
+        ]),
     },
     Cmdlet {
         name: "start-threadjob",
         blocks: &["scriptblock", "initializationscript"],
         values: &[
             "name",
+            "filepath",
             "argumentlist",
             "inputobject",
             "throttlelimit",
@@ -125,6 +139,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[&["scriptblock"]],
         lone: false,
+        instead: Some(&["filepath"]),
     },
     Cmdlet {
         name: "register-scheduledjob",
@@ -143,6 +158,7 @@ const CMDLETS: [Cmdlet; 13] = [
         // The name comes first, then the block.
         slots: &[&["name"], &["scriptblock"]],
         lone: false,
+        instead: Some(&["filepath"]),
     },
     Cmdlet {
         name: "set-psbreakpoint",
@@ -153,6 +169,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: None,
         slots: &[],
         lone: true,
+        instead: None,
     },
     Cmdlet {
         name: "new-module",
@@ -161,6 +178,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+        instead: Some(&[]),
     },
     Cmdlet {
         name: "measure-command",
@@ -169,6 +187,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+        instead: Some(&[]),
     },
     // The filter runs on every item: `-FilterScript` is the first parameter
     // by position, and a word there is the `-Property` of the comparison form.
@@ -179,6 +198,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::First),
         slots: &[],
         lone: true,
+        instead: Some(&["property"]),
     },
     // `-Expression` is the second parameter by position, after `-Name`. The
     // `-Command` it can be given instead runs a command by name, which the
@@ -197,6 +217,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[&["name"], &["expression", "command"]],
         lone: false,
+        instead: Some(&[]),
     },
     // The completer runs whenever the command's arguments are completed.
     Cmdlet {
@@ -206,6 +227,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: None,
         slots: &[],
         lone: true,
+        instead: Some(&[]),
     },
     // The handler runs when its key is pressed; the key comes first by
     // position, then the block.
@@ -223,6 +245,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[&["chord", "key"], &["scriptblock"]],
         lone: true,
+        instead: Some(&["function"]),
     },
     Cmdlet {
         name: "use-transaction",
@@ -231,6 +254,7 @@ const CMDLETS: [Cmdlet; 13] = [
         positional: Some(Positional::One),
         slots: &[],
         lone: true,
+        instead: Some(&[]),
     },
 ];
 
@@ -243,12 +267,14 @@ struct Properties {
     properties: &'static [&'static str],
     /// The other parameters that take a value.
     values: &'static [&'static str],
-    /// Whether the property is also given by position.
+    /// Whether the property is also given by position, first: any other
+    /// argument by position is a value of another parameter, or no
+    /// parameter's, which the cmdlet fails on.
     positional: bool,
 }
 
 /// The cmdlets that run a block given as a property.
-const PROPERTIES: [Properties; 8] = [
+const PROPERTIES: [Properties; 11] = [
     Properties {
         names: &["sort-object", "sort"],
         properties: &["property"],
@@ -305,6 +331,47 @@ const PROPERTIES: [Properties; 8] = [
         names: &["measure-object", "measure"],
         properties: &["property"],
         values: &["inputobject"],
+        positional: true,
+    },
+    // The objects come first by position; the property only by name.
+    Properties {
+        names: &["compare-object", "compare", "diff"],
+        properties: &["property"],
+        values: &[
+            "referenceobject",
+            "differenceobject",
+            "syncwindow",
+            "culture",
+        ],
+        positional: false,
+    },
+    Properties {
+        names: &["convertto-html"],
+        properties: &["property"],
+        values: &[
+            "head",
+            "title",
+            "body",
+            "cssuri",
+            "as",
+            "precontent",
+            "postcontent",
+            "charset",
+            "meta",
+            "inputobject",
+        ],
+        positional: true,
+    },
+    Properties {
+        names: &["join-string"],
+        properties: &["property"],
+        values: &[
+            "separator",
+            "outputprefix",
+            "outputsuffix",
+            "formatstring",
+            "inputobject",
+        ],
         positional: true,
     },
 ];
@@ -523,7 +590,7 @@ pub(super) fn check(
             if let Some(value) = iter.next() {
                 if matches!(
                     key,
-                    "invoke-command" | "start-job" | "register-scheduledjob"
+                    "invoke-command" | "start-job" | "start-threadjob" | "register-scheduledjob"
                 ) && names(&name, &["filepath", "literalpath"])
                     && value.arg.known().is_none()
                 {
@@ -612,6 +679,23 @@ pub(super) fn check(
             Some(command),
         );
     }
+    // Given no block, no argument where one goes and nothing in its place,
+    // the block can only come from `$PSDefaultParameterValues`, set anywhere
+    // in the session.
+    let splat = items.iter().any(|item| item.shape.splat);
+    if let Some(instead) = cmdlet.instead {
+        if !named
+            && !splat
+            && positional.is_empty()
+            && !bound.iter().any(|name| names(name, instead))
+        {
+            split.problem(
+                Rule::Unknown,
+                "runs a script block only a default parameter value gives",
+                Some(command),
+            );
+        }
+    }
     if file_unread {
         split.problem(
             Rule::Unknown,
@@ -634,6 +718,10 @@ fn properties(
     command: &str,
 ) {
     let mut unread = false;
+    // Whether the arguments by position have reached past the first, and
+    // its list.
+    let mut past = false;
+    let mut first = true;
     let mut iter = args.iter().zip(shapes).peekable();
     while let Some((arg, shape)) = iter.next() {
         if shape.splat {
@@ -641,7 +729,13 @@ fn properties(
             continue;
         }
         let Some(name) = parameter(arg) else {
-            unread |= table.positional && !shape.plain;
+            past |= !first;
+            first = false;
+            let checked = table.positional && !past;
+            unread |= checked && !shape.plain;
+            for more in rest_of_list(&mut iter, arg) {
+                unread |= checked && !more.plain;
+            }
             continue;
         };
         let colon = arg.known().is_some_and(|text| text.ends_with(':'));
@@ -653,11 +747,11 @@ fn properties(
                     .peek()
                     .is_some_and(|(next, _)| parameter(next).is_none()))
         {
-            if let Some((_, value)) = iter.next() {
-                unread |= takes && !value.plain;
-            }
-            while let Some((_, more)) = iter.next_if(|(_, next)| next.joined) {
-                unread |= takes && !more.plain;
+            if let Some((value, shape)) = iter.next() {
+                unread |= takes && !shape.plain;
+                for more in rest_of_list(&mut iter, value) {
+                    unread |= takes && !more.plain;
+                }
             }
         }
     }
@@ -667,6 +761,30 @@ fn properties(
             "runs a script block only known when it runs",
             Some(command),
         );
+    }
+}
+
+/// The rest of a list an argument starts: the arguments the walk joins to it
+/// (`Name, Length`), and the one after a word the grammar reads with its
+/// comma (`Name, @{e=$b}`, where `Name,` is one word).
+fn rest_of_list<'a, I>(iter: &mut std::iter::Peekable<I>, first: &'a Arg) -> Vec<&'a Shape>
+where
+    I: Iterator<Item = (&'a Arg, &'a Shape)>,
+{
+    let mut rest = Vec::new();
+    let mut last = first;
+    loop {
+        let goes_on = last.known().is_some_and(|text| text.ends_with(','));
+        let next = iter.next_if(|(_, next)| next.joined).or_else(|| {
+            goes_on
+                .then(|| iter.next_if(|(next, _)| parameter(next).is_none()))
+                .flatten()
+        });
+        let Some((arg, shape)) = next else {
+            return rest;
+        };
+        rest.push(shape);
+        last = arg;
     }
 }
 
@@ -866,6 +984,62 @@ pub(super) fn stops_process(method: &str) -> bool {
     matches!(method, "kill" | "terminate" | "closemainwindow")
 }
 
+/// The parameters a default value may be given for (`'*:Encoding'`) that
+/// never take a script block: the common ones, and the ones of everyday
+/// cmdlets that take text, a number or a switch. Any other may be a
+/// parameter of some command that runs a block.
+const PLAIN_DEFAULTS: [&str; 24] = [
+    "encoding",
+    "force",
+    "confirm",
+    "whatif",
+    "verbose",
+    "debug",
+    "erroraction",
+    "warningaction",
+    "informationaction",
+    "progressaction",
+    "noclobber",
+    "append",
+    "depth",
+    "width",
+    "autosize",
+    "wrap",
+    "recurse",
+    "nonewline",
+    "usebasicparsing",
+    "timeoutsec",
+    "skipcertificatecheck",
+    "noprofile",
+    "computername",
+    "credential",
+];
+
+/// Whether a key of `$PSDefaultParameterValues`, written out
+/// (`'*:Encoding'`, `'Out-File:Width'`), names a parameter of
+/// [`PLAIN_DEFAULTS`] with no wildcard in it, for any command.
+pub(super) fn plain_default(key: Node<'_>, source: &str) -> bool {
+    let Some(text) = plain_text(unwrap(key), source) else {
+        return false;
+    };
+    text.rsplit_once(':').is_some_and(|(_, parameter)| {
+        !parameter.contains(['*', '?', '[', ']']) && PLAIN_DEFAULTS.contains(&parameter.trim())
+    })
+}
+
+/// The item an assignment to an item sets (`$x['key'] = …`): its index.
+pub(super) fn assigned_key(left: Node<'_>) -> Option<Node<'_>> {
+    let mut left = left;
+    if left.kind() == "left_assignment_expression" {
+        left = left.named_child(0)?;
+    }
+    let left = unwrap(left);
+    if left.kind() != "element_access" {
+        return None;
+    }
+    left.named_child(1)
+}
+
 /// A member name without the quotes it was written in, in lower case.
 pub(super) fn bare(name: &str) -> String {
     name.trim_matches(['\'', '"']).to_ascii_lowercase()
@@ -880,28 +1054,34 @@ pub(super) fn called(member: Node<'_>, source: &str) -> Option<String> {
     let name = member.named_child(0)?;
     match name.kind() {
         "simple_name" => Some(bare(unit::text(&name, source))),
-        "string_literal" => {
-            let text = unit::text(&name, source);
-            let quote = text.chars().next()?;
-            let inner = text.get(1..text.len().checked_sub(1)?)?;
-            let plain = match name.named_child(0) {
-                Some(part) if part.kind() == "verbatim_string_characters" => quote == '\'',
-                Some(part) if part.kind() == "expandable_string_literal" => {
-                    quote == '"' && part.named_child_count() == 0
-                }
-                _ => false,
-            };
-            plain.then(|| {
-                let inner = if quote == '"' {
-                    super::unescape(inner)
-                } else {
-                    inner.to_string()
-                };
-                inner.to_ascii_lowercase()
-            })
-        }
-        _ => None,
+        _ => plain_text(name, source),
     }
+}
+
+/// The text a string literal holds, in lower case, when nothing in it is only
+/// known when it runs: single-quoted, or double-quoted with no `$` part.
+pub(super) fn plain_text(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() != "string_literal" {
+        return None;
+    }
+    let text = unit::text(&node, source);
+    let quote = text.chars().next()?;
+    let inner = text.get(1..text.len().checked_sub(1)?)?;
+    let plain = match node.named_child(0) {
+        Some(part) if part.kind() == "verbatim_string_characters" => quote == '\'',
+        Some(part) if part.kind() == "expandable_string_literal" => {
+            quote == '"' && part.named_child_count() == 0
+        }
+        _ => false,
+    };
+    plain.then(|| {
+        let inner = if quote == '"' {
+            super::unescape(inner)
+        } else {
+            inner.to_string()
+        };
+        inner.to_ascii_lowercase()
+    })
 }
 
 /// The name of the property or method a member access or call ends in, as
@@ -1015,37 +1195,33 @@ pub(super) fn first_string<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree
     }
 }
 
-/// Whether a chain of members (`$ExecutionContext.InvokeCommand.$h`,
-/// `….psobject.Properties['CommandNotFoundAction'].Value`) reaches a member
-/// by a way the guard cannot name: a name only known when it runs, an item
-/// by index, the result of a call, or the object's own view of its members
-/// (`psobject`, `psbase`, `psadapted`, `psextended`). Such a member may be a
-/// hook, or a method that runs code.
-pub(super) fn obscure(node: Node<'_>, source: &str) -> bool {
+/// Whether a chain of members, items and calls names a hook as text: an
+/// item (`….psobject.Properties['CommandNotFoundAction']`) or an argument
+/// of a call (`….GetProperty('CommandNotFoundAction')`). The object it is
+/// reached from may be the session's `InvokeCommand`, whatever it is
+/// written as.
+pub(super) fn names_hook(node: Node<'_>, source: &str) -> bool {
     let mut node = unwrap(node);
     for _ in 0..unit::MAX_TREE_DEPTH {
         match node.kind() {
-            "member_access" => {
+            "element_access" | "invokation_expression" => {
                 let mut cursor = node.walk();
-                let member = node
-                    .named_children(&mut cursor)
-                    .filter(|child| child.kind() == "member_name")
-                    .last();
-                match member.and_then(|member| called(member, source)) {
-                    None => return true,
-                    Some(name)
-                        if matches!(
-                            name.as_str(),
-                            "psobject" | "psbase" | "psadapted" | "psextended"
-                        ) =>
-                    {
-                        return true;
-                    }
-                    Some(_) => {}
+                let named = node.named_children(&mut cursor).skip(1).any(|part| {
+                    let parts = if part.kind() == "argument_list" {
+                        part.named_child(0).map_or(Vec::new(), |list| {
+                            let mut cursor = list.walk();
+                            list.named_children(&mut cursor).collect()
+                        })
+                    } else {
+                        vec![part]
+                    };
+                    parts.into_iter().any(|part| hook_text(part, source))
+                });
+                if named {
+                    return true;
                 }
             }
-            "element_access" | "invokation_expression" => return true,
-            "parenthesized_expression" => {}
+            "member_access" | "parenthesized_expression" => {}
             _ => return false,
         }
         let Some(object) = node.named_child(0) else {
@@ -1053,7 +1229,28 @@ pub(super) fn obscure(node: Node<'_>, source: &str) -> bool {
         };
         node = unwrap(object);
     }
-    true
+    false
+}
+
+/// Whether an expression is text that names a hook (`'CommandNotFoundAction'`).
+fn hook_text(node: Node<'_>, source: &str) -> bool {
+    let node = unwrap(node);
+    node.kind() == "string_literal" && HOOKS.contains(&bare(unit::text(&node, source)).as_str())
+}
+
+/// Whether any argument a method call is given is `test`; `children` are the
+/// call's parts.
+pub(super) fn any_argument(children: &[Node<'_>], test: impl Fn(Node<'_>) -> bool) -> bool {
+    let Some(list) = children
+        .iter()
+        .find(|child| child.kind() == "argument_list")
+        .and_then(|list| list.named_child(0))
+    else {
+        return false;
+    };
+    let mut cursor = list.walk();
+    let any = list.named_children(&mut cursor).any(test);
+    any
 }
 
 /// The member an assignment sets (`$x.y = …`, `$x[0] = …`), however the

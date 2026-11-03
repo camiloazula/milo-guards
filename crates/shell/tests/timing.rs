@@ -529,10 +529,12 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
 )]
 fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     let _serial = serial();
-    // The variables of a line are read once for the whole of it; a chain of
-    // members or calls is walked down only when it starts at the session or
-    // the default values; a value is read for blocks only as deep as a limit;
-    // and the letters of numbers are made lower case in one pass.
+    // The variables of a line are read once for the whole of it, and the
+    // ones that may reach the session are followed from one to the next once
+    // each; a chain of members or calls is walked down only as deep as a
+    // tree is; a value is read for blocks only as deep as a limit; and the
+    // letters of numbers are made lower case in one pass, subexpressions in
+    // strings only as deep as a limit.
     let limit = if cfg!(debug_assertions) {
         std::time::Duration::from_secs(2)
     } else {
@@ -557,6 +559,29 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
         fit(" -replace 'a', 'b'", "'a'", ""),
         fit("1MB ", "echo ", ""),
         fit("1MB+", "", "1"),
+        fit("\"$(1MB)\" ", "echo ", ""),
+        fit("\"$(", "echo ", ""),
+        fit(".SessionStateProxy", "$x", ".$h = $b"),
+        fit(".$h", "$x.InvokeCommand", " = $b"),
+        fit(
+            "[0]",
+            "$x",
+            ".psobject.Properties['CommandNotFoundAction'].Value = $b",
+        ),
+        fit(
+            "$a = $e; $e = $a; ",
+            "$e = $ExecutionContext; ",
+            "$a.$m.$h = $b",
+        ),
+        fit("Name, ", "Get-ChildItem | Select-Object ", "x"),
+        fit("Name, ", "Compare-Object $a $c -Property ", "x"),
+        fit(" -split $b", "'a'", ""),
+        fit("Invoke-Command; ", "", ""),
+        fit(
+            "$h.Add(1, 2); ",
+            "$h = @{}; ",
+            "Get-ChildItem | Select-Object $h",
+        ),
         fit("$o | Add-Member ScriptMethod X $b; ", "", ""),
         fit(
             "-Value $b ",

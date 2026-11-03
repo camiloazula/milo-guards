@@ -648,7 +648,7 @@ impl Walker<'_> {
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
-                self.session_member(node);
+                let named_hook = self.session_member(node);
                 self.env_assignment(node);
                 // `[Environment]::CurrentDirectory = …` moves the process,
                 // whose folder a .NET call and a program the session starts
@@ -663,6 +663,7 @@ impl Walker<'_> {
                 let defaults = self.sets_defaults(node);
                 let later = (blocks::assigned_member(node, self.source)
                     .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
+                    || named_hook
                     || defaults
                     || self.variables.runs_later(node))
                 .then(|| self.split.begin_later());
@@ -1256,6 +1257,8 @@ impl Walker<'_> {
         // A parameter that ends in a `$`, as its start, its end and the index
         // of its argument: what comes right after it is the rest of its word.
         let mut dangling: Option<(usize, usize, usize)> = None;
+        // Where the element before ends, when no separator follows it.
+        let mut last_end: Option<usize> = None;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -1359,14 +1362,23 @@ impl Walker<'_> {
                             );
                         }
                     }
-                    _ => self.push_element(
-                        &mut args,
-                        &mut shapes,
-                        element,
-                        program_key.as_deref(),
-                        false,
-                    ),
+                    _ => {
+                        // `Name, @{e=$b}`: the grammar reads a word with the
+                        // comma after it, and what follows is the next item
+                        // of the same list.
+                        let joined = last_end
+                            .and_then(|end| self.source.get(end..element.start_byte()))
+                            .is_some_and(|between| between.trim() == ",");
+                        self.push_element(
+                            &mut args,
+                            &mut shapes,
+                            element,
+                            program_key.as_deref(),
+                            joined,
+                        );
+                    }
                 }
+                last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
         }
         // Whether a `ForEach-Object` calls a method that stops a process on
@@ -2959,13 +2971,26 @@ impl Walker<'_> {
         // A member of the session reached by a way the guard cannot name
         // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
         // method that runs code.
-        if children.first().is_some_and(|object| {
-            self.variables.reaches_session(*object, self.source)
-                && blocks::obscure(*object, self.source)
-        }) {
+        if children
+            .first()
+            .is_some_and(|object| self.variables.reaches_session(*object, self.source))
+        {
             self.split.problem(
                 Rule::Unknown,
                 "calls a member of the session only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        // `$x.GetType().GetProperty('CommandNotFoundAction').SetValue($x, $b)`:
+        // a hook named as text, on any object.
+        if children
+            .first()
+            .is_some_and(|object| blocks::names_hook(*object, self.source))
+            && !blocks::any_argument(&children, blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
                 Some(unit::text(&node, self.source)),
             );
         }
@@ -3069,33 +3094,82 @@ impl Walker<'_> {
 
     /// `$ExecutionContext.InvokeCommand.$h = $b`, `….psobject.Properties[…]
     /// .Value = $b`: a member of the session set by a way the guard cannot
-    /// name may be a hook, whose block runs for every command.
-    fn session_member(&mut self, node: Node<'_>) {
-        if blocks::assigned_target(node).is_some_and(|target| {
-            self.variables.reaches_session(target, self.source)
-                && blocks::obscure(target, self.source)
-        }) {
+    /// name may be a hook, whose block runs for every command. A hook named
+    /// as text (`$x.psobject.Properties['CommandNotFoundAction'].Value =
+    /// $b`) is the hook on any object. True when the assignment sets such a
+    /// hook, whose block runs later.
+    fn session_member(&mut self, node: Node<'_>) -> bool {
+        let Some(target) = blocks::assigned_target(node) else {
+            return false;
+        };
+        if self.variables.reaches_session(target, self.source) {
             self.split.problem(
                 Rule::Unknown,
                 "sets a member of the session only known when it runs",
                 Some(unit::text(&node, self.source)),
             );
         }
+        if !blocks::names_hook(target, self.source) {
+            return false;
+        }
+        if !node
+            .child_by_field_name("value")
+            .is_some_and(blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        true
     }
 
     /// Whether an assignment sets `$PSDefaultParameterValues` or one of its
     /// entries, which give a command a parameter it runs with: a block for
     /// `Invoke-Command:ScriptBlock` runs where the command does. A value that
-    /// may be a block only known when it runs is unknown.
+    /// may be a block only known when it runs is unknown, unless its key is
+    /// written out and names a parameter that never takes one (see
+    /// [`blocks::plain_default`]).
     fn sets_defaults(&mut self, node: Node<'_>) -> bool {
-        let defaults = node
-            .named_child(0)
-            .is_some_and(|left| variables::root_is(left, self.source, "psdefaultparametervalues"));
-        if defaults
-            && !node
-                .child_by_field_name("value")
-                .is_some_and(|value| self.variables.inert(value, self.source))
-        {
+        let Some(left) = node.named_child(0) else {
+            return false;
+        };
+        let defaults = variables::root_is(left, self.source, "psdefaultparametervalues");
+        let unread = || {
+            let Some(value) = node.child_by_field_name("value") else {
+                return true;
+            };
+            // `$PSDefaultParameterValues['*:Encoding'] = $enc`
+            if let Some(key) = blocks::assigned_key(left) {
+                return !blocks::plain_default(key, self.source)
+                    && !self.variables.inert(value, self.source);
+            }
+            // `$PSDefaultParameterValues = @{ '*:Encoding' = $enc }`
+            let table = blocks::unwrap(value);
+            if table.kind() == "hash_literal_expression" {
+                let Some(body) = table.named_child(0) else {
+                    return false;
+                };
+                let mut cursor = body.walk();
+                let unread = body.named_children(&mut cursor).any(|entry| {
+                    let mut cursor = entry.walk();
+                    let parts: Vec<Node<'_>> = entry.named_children(&mut cursor).collect();
+                    let key = parts.first().and_then(|key| key.named_child(0));
+                    let value = parts
+                        .last()
+                        .filter(|value| value.kind() != "key_expression");
+                    entry.kind() != "hash_entry"
+                        || !value.is_some_and(|value| {
+                            key.is_some_and(|key| blocks::plain_default(key, self.source))
+                                || self.variables.inert(*value, self.source)
+                        })
+                });
+                return unread;
+            }
+            !self.variables.inert(value, self.source)
+        };
+        if defaults && unread() {
             self.split.problem(
                 Rule::Unknown,
                 "sets a default parameter value only known when it runs",
@@ -3131,11 +3205,15 @@ impl Walker<'_> {
             .and_then(|list| list.named_child(0));
         let unread = values.is_some_and(|values| {
             let mut cursor = values.walk();
-            let unread = values
-                .named_children(&mut cursor)
-                .skip(1)
-                .any(|value| !self.variables.inert(value, self.source));
-            unread
+            let mut values = values.named_children(&mut cursor);
+            // `.Add('*:Encoding', $enc)`
+            if values
+                .next()
+                .is_some_and(|key| blocks::plain_default(key, self.source))
+            {
+                return false;
+            }
+            values.any(|value| !self.variables.inert(value, self.source))
         });
         if unread {
             self.split.problem(
@@ -3151,7 +3229,9 @@ impl Walker<'_> {
     /// script block, which runs for each match. One that is not text, a
     /// number or a block written out may be a block only known when it runs,
     /// and so may a right side that is not a list written out (`-replace
-    /// $pair`, which may hold a pattern and a block).
+    /// $pair`, which may hold a pattern and a block). `-split` takes a block
+    /// as its delimiter, first in its list (`'a,b' -split $b, 2`), and runs
+    /// it for each character.
     fn replace(&mut self, node: Node<'_>) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -3160,7 +3240,8 @@ impl Walker<'_> {
                 continue;
             }
             let operator = unit::text(child, self.source).to_ascii_lowercase();
-            if !matches!(operator.as_str(), "-replace" | "-ireplace" | "-creplace") {
+            let split = matches!(operator.as_str(), "-split" | "-isplit" | "-csplit");
+            if !split && !matches!(operator.as_str(), "-replace" | "-ireplace" | "-creplace") {
                 continue;
             }
             let Some(right) = children.iter().skip(at + 1).find(|next| next.is_named()) else {
@@ -3168,10 +3249,12 @@ impl Walker<'_> {
             };
             let right = blocks::unwrap(*right);
             let unread = if right.kind() == "array_literal_expression" {
+                // The pattern of `-replace` is never run; every other value
+                // may be the block.
                 let mut cursor = right.walk();
                 let unread = right
                     .named_children(&mut cursor)
-                    .skip(1)
+                    .skip(usize::from(!split))
                     .any(|value| !self.variables.inert(value, self.source));
                 unread
             } else {
@@ -3180,7 +3263,11 @@ impl Walker<'_> {
             if unread {
                 self.split.problem(
                     Rule::Unknown,
-                    "replaces text with a script block only known when it runs",
+                    if split {
+                        "splits text with a script block only known when it runs"
+                    } else {
+                        "replaces text with a script block only known when it runs"
+                    },
                     Some(unit::text(&node, self.source)),
                 );
             }
