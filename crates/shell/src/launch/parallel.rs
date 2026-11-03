@@ -4,12 +4,24 @@
 //! after the words when none does.
 
 use super::{join, shell_word, Launch};
-use crate::unit::{Arg, Reads};
+use crate::unit::{Arg, Reads, MAX_LEN};
 use crate::Shell;
 
 /// How many jobs the values of a line may make before it runs too many to
 /// read one by one.
 const MAX_JOBS: usize = 256;
+
+/// How many sources of values (`:::`, `::::`, `-a`) a line may give before
+/// it is not read: each job holds a value of each.
+const MAX_SOURCES: usize = 32;
+
+/// The longest replacement string (`-I`) read: a real one is a few bytes.
+const MAX_REPLACE: usize = 64;
+
+/// Why the jobs of a line are not read.
+const UNREAD: &str = "runs commands built in a way that cannot be read";
+const TOO_MANY: &str = "runs more commands than can be read one by one";
+const TOO_LONG: &str = "runs commands too long to read";
 
 /// The short options that take a value, as the next word or the rest of
 /// the bundle.
@@ -230,7 +242,7 @@ struct Options {
 /// expression, an option it does not know), is not read.
 pub(super) fn parallel(args: &[Arg]) -> Launch {
     let Some(options) = read_options(args) else {
-        return Launch::Opaque("runs commands built in a way that cannot be read");
+        return Launch::Opaque(UNREAD);
     };
     let separator = args[options.start..]
         .iter()
@@ -297,7 +309,7 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
         };
     }
     let Some(mut jobs) = jobs(&sources) else {
-        return Launch::Opaque("runs more commands than can be read one by one");
+        return Launch::Opaque(TOO_MANY);
     };
     // The jobs run together: a command given every value at once is judged
     // too (`docker rm -f` of several containers).
@@ -309,26 +321,30 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
                 .collect(),
         );
     }
+    // The jobs' lines are one script, which is not read past the longest
+    // line: building them stops there.
     let script = |text: &str| {
         let mut lines: Vec<String> = Vec::new();
+        let mut budget = MAX_LEN;
         for job in &jobs {
-            let line = fill(text, job, &options.replace, grouping)?;
+            let line = fill(text, job, &options.replace, grouping, budget)?;
             if !lines.contains(&line) {
+                budget = budget.checked_sub(line.len() + 1).ok_or(TOO_LONG)?;
                 lines.push(line);
             }
         }
-        Some(Launch::Script(Shell::Posix, Arg::Known(lines.join("\n"))))
+        Ok(Launch::Script(Shell::Posix, Arg::Known(lines.join("\n"))))
     };
-    let unread = || Launch::Opaque("runs commands built in a way that cannot be read");
-    let Some(first) = script(&joined) else {
-        return unread();
+    let first = match script(&joined) {
+        Ok(first) => first,
+        Err(reason) => return Launch::Opaque(reason),
     };
     if joined == quoted {
         return first;
     }
     match script(&quoted) {
-        Some(second) => Launch::Either(Box::new(first), Box::new(second)),
-        None => unread(),
+        Ok(second) => Launch::Either(Box::new(first), Box::new(second)),
+        Err(reason) => Launch::Opaque(reason),
     }
 }
 
@@ -336,9 +352,10 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
 /// read from the input are run as a shell runs its input.
 fn values_as_lines(sources: &[Vec<Value>]) -> Launch {
     let Some(jobs) = jobs(sources) else {
-        return Launch::Opaque("runs more commands than can be read one by one");
+        return Launch::Opaque(TOO_MANY);
     };
     let mut lines = Vec::new();
+    let mut length = 0;
     for job in jobs {
         let mut words = Vec::new();
         for value in job.iter().flatten() {
@@ -350,7 +367,12 @@ fn values_as_lines(sources: &[Vec<Value>]) -> Launch {
                 Value::Input => return Launch::Reads(Reads::Shell),
             }
         }
-        lines.push(words.join(" "));
+        let line = words.join(" ");
+        length += line.len() + 1;
+        if length > MAX_LEN {
+            return Launch::Opaque(TOO_LONG);
+        }
+        lines.push(line);
     }
     Launch::Script(Shell::Posix, Arg::Known(lines.join("\n")))
 }
@@ -383,16 +405,19 @@ fn plain(command: &[Arg], options: &Options) -> bool {
 type Job<'a> = Vec<Vec<&'a Value>>;
 
 /// Every job: one value from each source, each source in turn. `None` past
-/// [`MAX_JOBS`].
+/// [`MAX_JOBS`] or [`MAX_SOURCES`].
 fn jobs(sources: &[Vec<Value>]) -> Option<Vec<Job<'_>>> {
+    if sources.len() > MAX_SOURCES {
+        return None;
+    }
     let mut jobs: Vec<Job<'_>> = vec![Vec::new()];
     for source in sources {
         if jobs.len().checked_mul(source.len().max(1))? > MAX_JOBS {
             return None;
         }
-        if source.is_empty() {
+        if source.len() <= 1 {
             for job in &mut jobs {
-                job.push(Vec::new());
+                job.push(source.iter().collect());
             }
             continue;
         }
@@ -413,9 +438,16 @@ fn jobs(sources: &[Vec<Value>]) -> Option<Vec<Job<'_>>> {
 /// The line one job runs: `text` with each replacement string replaced by
 /// its values, quoted, or the values after it when there is none. A value
 /// only known when it runs stands as `"$1"`, which the shell's grammar reads
-/// as one. `None` for a `{= … =}` expression, which is Perl, and for a
-/// numbered string when `grouping` pairs values the guard does not.
-fn fill(text: &str, job: &[Vec<&Value>], replace: &str, grouping: bool) -> Option<String> {
+/// as one. Why not, for a `{= … =}` expression, which is Perl, for a
+/// numbered string when `grouping` pairs values the guard does not, and for
+/// a line longer than `budget`.
+fn fill(
+    text: &str,
+    job: &[Vec<&Value>],
+    replace: &str,
+    grouping: bool,
+    budget: usize,
+) -> Result<String, &'static str> {
     let words = |values: &[&Value], transform: &str| {
         values
             .iter()
@@ -430,12 +462,15 @@ fn fill(text: &str, job: &[Vec<&Value>], replace: &str, grouping: bool) -> Optio
         let every: Vec<&Value> = job.iter().flatten().copied().collect();
         words(&every, transform)
     };
-    let mut line = String::with_capacity(text.len());
+    let mut line = String::with_capacity(text.len().min(budget));
     let mut replaced = false;
     let mut rest = text;
     while !rest.is_empty() {
+        if line.len() > budget {
+            return Err(TOO_LONG);
+        }
         if rest.starts_with("{=") {
-            return None;
+            return Err(UNREAD);
         }
         if let Some(after) = rest.strip_prefix(replace) {
             line.push_str(&all(""));
@@ -445,7 +480,7 @@ fn fill(text: &str, job: &[Vec<&Value>], replace: &str, grouping: bool) -> Optio
         }
         if let Some((number, transform, after)) = token(rest) {
             match number {
-                Some(_) if grouping => return None,
+                Some(_) if grouping => return Err(UNREAD),
                 Some(number) => match job.get(number - 1) {
                     Some(values) if !values.is_empty() => {
                         line.push_str(&words(values, transform));
@@ -467,22 +502,23 @@ fn fill(text: &str, job: &[Vec<&Value>], replace: &str, grouping: bool) -> Optio
         line.push(' ');
         line.push_str(&all(""));
     }
-    Some(line)
+    if line.len() > budget {
+        return Err(TOO_LONG);
+    }
+    Ok(line)
 }
 
 /// A replacement string at the start of `text` other than the whole value:
 /// `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`, `{%}`, and each with a source's
 /// number in front (`{1}`, `{2.}`). Its number, its transform and the text
-/// after it.
+/// after it. Only the few bytes a transform takes are looked at past the
+/// number, so a `{` that never closes costs no more than itself.
 fn token(text: &str) -> Option<(Option<usize>, &str, &str)> {
     let inner = text.strip_prefix('{')?;
-    let close = inner.find('}')?;
-    let (inside, after) = (&inner[..close], &inner[close + 1..]);
-    let digits = inside.len()
-        - inside
-            .trim_start_matches(|c: char| c.is_ascii_digit())
-            .len();
-    let (number, transform) = inside.split_at(digits);
+    let digits = inner.len() - inner.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let (number, rest) = inner.split_at(digits);
+    let close = rest.bytes().take(3).position(|byte| byte == b'}')?;
+    let (transform, after) = (&rest[..close], &rest[close + 1..]);
     let number = if number.is_empty() {
         None
     } else {
@@ -571,7 +607,7 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             options.files += usize::from(name == "arg-file");
             // `--replace` alone is `{}`; its own string only follows `=`.
             if name == "replace" {
-                options.replace = value.unwrap_or("{}").to_string();
+                options.replace = replacement(value.unwrap_or("{}"))?;
             }
             if value.is_none() && LONG_VALUES.contains(&name) {
                 at += 1;
@@ -592,7 +628,7 @@ fn read_options(args: &[Arg]) -> Option<Options> {
                         Arg::Known(rest.to_string())
                     };
                     match letter {
-                        'I' => options.replace = value.known()?.to_string(),
+                        'I' => options.replace = replacement(value.known()?)?,
                         'a' => options.files += 1,
                         'n' | 'N' | 'L' => options.grouping = true,
                         _ => {}
@@ -612,7 +648,7 @@ fn read_options(args: &[Arg]) -> Option<Options> {
                     }
                     'i' => {
                         if !rest.is_empty() {
-                            options.replace = rest.to_string();
+                            options.replace = replacement(rest)?;
                         }
                         break;
                     }
@@ -650,4 +686,11 @@ fn long_name(name: &str) -> Option<&'static str> {
         (Some(only), None) => Some(only),
         _ => None,
     }
+}
+
+/// A replacement string an option names. `None` for an empty one, which
+/// would stand everywhere, and for one longer than [`MAX_REPLACE`], which
+/// would be looked for at every byte of the command.
+fn replacement(text: &str) -> Option<String> {
+    (!text.is_empty() && text.len() <= MAX_REPLACE).then(|| text.to_string())
 }

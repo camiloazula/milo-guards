@@ -254,8 +254,8 @@ const NIX_PAIRS: &[&str] = &[
 
 /// `nix run INSTALLABLE [-- ARGS]` runs the package's program with the
 /// arguments: the program is named by the attribute after `#`
-/// (`nixpkgs#hello` runs `hello`), and a flake's own app (`nix run .`) is
-/// the user's. The package sets which of its programs runs, which need not
+/// (`nixpkgs#hello` runs `hello`), and a flake's own app (`nix run .`, or
+/// `nix run -- ARGS` with none named) is the user's. The package sets which of its programs runs, which need not
 /// be its name, and may be one that runs its arguments; so the words after
 /// `--` are also read as a command, and the riskier reading counts.
 pub(super) fn nix(unit: &Unit) -> Launch {
@@ -271,6 +271,9 @@ pub(super) fn nix(unit: &Unit) -> Launch {
         match arg.known() {
             Some(text) if NIX_PAIRS.contains(&text) => at += 3,
             Some(text) if NIX_VALUES.contains(&text) => at += 2,
+            // `nix run -- ARGS` runs the flake of the folder it is in, its
+            // default app, with the words after `--`.
+            Some("--") if sub.is_some() => return runs(args, Some(at + 1)),
             Some("--") => return Launch::Itself,
             Some(text) if text.starts_with('-') => at += 1,
             _ if sub.is_none() => {

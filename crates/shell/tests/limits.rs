@@ -407,3 +407,38 @@ fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
     assert!(stopped_by(&heavy(349), Shell::Posix, why));
     // Everyday finds are far under it (in limits.cases).
 }
+
+#[test]
+fn the_most_jobs_sources_and_bytes_parallel_builds_that_read_are_the_limit() {
+    // `MAX_JOBS` in `parallel.rs`: each value after `:::` is a job, and 256
+    // of them read.
+    let jobs = edge(400, |n| {
+        !stopped_by(
+            &format!("parallel rm -rf ::: {}", "a ".repeat(n)),
+            Shell::Posix,
+            "runs more commands than can be read one by one",
+        )
+    });
+    assert_eq!(jobs, 256);
+    // `MAX_SOURCES`: each `:::` is a source a job takes a value from.
+    let sources = edge(100, |n| {
+        !stopped_by(
+            &format!("parallel rm -rf{}", " ::: a".repeat(n)),
+            Shell::Posix,
+            "runs more commands than can be read one by one",
+        )
+    });
+    assert_eq!(sources, 32);
+    // `MAX_LEN` in `unit.rs`: the jobs' lines are one script, built only as
+    // far as the longest line. Three jobs and the one that takes every value
+    // are four lines of `echo`, the command and a value or three, each ended
+    // by a line break: 4n + 36 bytes.
+    let bytes = edge(40_000, |n| {
+        !stopped_by(
+            &format!("parallel echo {} ::: a b c", "x".repeat(n)),
+            Shell::Posix,
+            "runs commands too long to read",
+        )
+    });
+    assert_eq!(bytes, 16_375);
+}

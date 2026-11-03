@@ -249,7 +249,8 @@ each with the options it reads and those of them that take a value, as
   (`nixpkgs#hello` runs `hello`, `nixpkgs#bash -- -c '…'` reads the script);
   a package sets which of its programs runs, which need not be its name and
   may be one that runs its arguments, so the words after `--` are also read
-  as a command, and the riskier reading counts.
+  as a command, and the riskier reading counts; with no installable (`nix
+  run -- ARGS`, the flake of the folder it is in), they are read as one.
 - The runners that load secrets into the command's environment first:
   `aws-vault exec PROFILE [--] cmd`, `doppler run`, `op run`, `infisical
   run`, `direnv exec DIR cmd` and `dotenv` (dotenv-cli, `-e`, `-v`, `-p`
@@ -282,13 +283,16 @@ reads it whole too, and the riskier reading counts. With no command each
 value is a line of its own, and lines read from the input are its input run
 as a shell runs it. A command of plain words fed its input is read as
 `xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
-or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs,
-for a `{= … =}` expression (Perl), a numbered string where several values go
-to a job (`-n`, `-N`, `-L`, `-X`, `-m`, `--link`, `:::+`), an option that
-changes how values are split, named or separated (`--colsep`, `--csv`,
-`--header`, `--plus`, `--rpl`, `--arg-sep`, the `--…replace` options), or
-an option the guard does not know (a long one may be shortened to an
-unambiguous start, as `parallel` reads it), the line is `Unreadable`.
+or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs
+or 32 sources, for jobs whose lines together are longer than the longest
+line (64 KiB, which is as far as they are built), for a replacement string
+that is empty or longer than 64 bytes, for a `{= … =}` expression (Perl),
+a numbered string where several values go to a job (`-n`, `-N`, `-L`,
+`-X`, `-m`, `--link`, `:::+`), an option that changes how values are
+split, named or separated (`--colsep`, `--csv`, `--header`, `--plus`,
+`--rpl`, `--arg-sep`, the `--…replace` options), or an option the guard
+does not know (a long one may be shortened to an unambiguous start, as
+`parallel` reads it), the line is `Unreadable`.
 
 `env -S` splits its string into the command, and the arguments after it are
 added to its words (`env -S 'rm -rf' ~`); the string may be attached (`env
@@ -317,6 +321,9 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Wrappers in front of a program | 15 | `sudo env nice … rm` |
 | `find` inside `find -exec` | 16 | the walk, so the stack |
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
+| Jobs `parallel` runs | 256 | each a line built from the command and a value of each source, judged one by one |
+| Sources of values to `parallel` | 32 | each job holds a value of each `:::`, `::::` or `-a` |
+| Lines `parallel` builds | 64 KiB | the jobs' lines together are one script, read no further than the longest line, so built no further; a value put in at each of thousands of `{}` is megabytes otherwise |
 | Opening `(` with none closed | 400 | counted before parsing, blind to quoting; only `(` is counted, not `{` or `[`: cmd's grammar takes time that grows with the square of the depth |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
 | Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more); with no command before the `<<` the grammar is slow, see the noise below |
@@ -3697,13 +3704,16 @@ a nasty line against a 200 ms bound;
   `just verify` runs (500 ms and 2 s). In a release build the longest takes
   under 100 ms, and most are far quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
-  ones of several levels, are timed the same.
+  ones of several levels, are timed the same, as are `parallel` lines that
+  would build megabytes of jobs and the other wrappers that read their words
+  as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
+  length limit.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,
   the most shells in shells, wrappers in front of a program, finds in finds,
   here-documents started on a line, the `find -exec` work (in places, at a
-  fixed weight), brackets still open and cmd's `&` and `|` that still read:
+  fixed weight), the jobs, sources and bytes `parallel` builds, brackets still open and cmd's `&` and `|` that still read:
   the last two inside a string, where the grammar sees no nesting, so the count
   alone is measured. One past each is unreadable, so a later
   change to a limit, or to how deep a grammar nests, fails loudly. `find`s

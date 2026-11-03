@@ -298,6 +298,10 @@ posix finds=delete | parallel rm -rf {//} ::: ~/x
 posix finds=unreadable | parallel rm -rf '{= s/a/b/ =}' ::: ~
 posix finds=unreadable | parallel --colsep , rm -rf ::: a,~
 posix finds=delete | parallel rm -rf ::: $X
+posix finds=unreadable | parallel -I '' rm -rf ::: ~
+posix finds=unreadable | parallel --replace= rm -rf ::: ~
+posix finds=delete | parallel rm -rf {1//} ::: ~/x
+posix finds=delete | parallel rm -rf '{1' ::: ~
 posix finds=delete | launchctl asuser 501 rm -rf /
 posix finds=delete | launchctl bsexec 1 rm -rf /
 posix finds=delete | launchctl submit -l x -- rm -rf ~
@@ -314,6 +318,9 @@ posix finds=delete | wsl echo 'a;rm -rf ~'
 posix finds=delete | lima rm -rf /
 posix finds=delete | nix run nixpkgs#hello -- rm -rf ~
 posix finds=delete | nix run nixpkgs#bash -- -c 'rm -rf ~'
+posix finds=delete | nix run -- rm -rf ~
+posix finds=delete | nix run . -- rm -rf ~
+posix safe | nix run -- --help
 posix finds=delete | aws-vault exec prod -- rm -rf /
 posix finds=delete | aws-vault exec --duration 1h prod -- rm -rf /
 posix finds=delete | aws-vault exec prod rm -rf /
