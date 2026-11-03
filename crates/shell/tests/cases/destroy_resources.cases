@@ -1,0 +1,657 @@
+# Deleting containers, cluster objects, cloud resources or an infrastructure
+# stack is `destroy_resources`; listing, describing, creating and rehearsing
+# are safe, and a command only known when it runs is `unknown`. One section
+# per kind of tool, then the lines that wrap or run them, PowerShell and cmd,
+# and the reason a prompt can show. How the words of such a line are read
+# (options, rehearsals, variables, loops) is in
+# `destroy_resources_options.cases`. The format is in CONTRIBUTING.md.
+
+# Containers.
+posix safe | docker ps -a
+posix safe | docker run --rm -it alpine sh
+posix safe | docker run --rm alpine rm -rf /tmp/x
+posix safe | docker exec web rm -rf /var/cache
+posix safe | docker rm web
+posix safe | docker rm -f web
+posix safe | docker rm web db
+posix safe | docker rm --force web
+posix safe | docker container rm web
+posix safe | docker rm "$NAME"
+posix safe | docker rm -f "$NAME"
+posix safe | docker stop web
+posix safe | docker kill web
+posix safe | docker rmi app
+posix safe | docker image rm app
+posix safe | docker image prune
+posix safe | docker image ls
+posix safe | docker network rm app
+posix safe | docker network ls
+posix safe | docker volume ls
+posix safe | docker volume create pgdata
+posix safe | docker volume inspect pgdata
+posix safe | docker system df
+posix safe | docker system info
+posix safe | docker builder prune
+posix safe | docker compose up -d
+posix safe | docker compose down
+posix safe | docker compose down --remove-orphans
+posix safe | docker compose -f stack.yml down
+posix safe | docker compose logs -f
+posix safe | docker compose rm
+posix safe | docker-compose down
+posix safe | docker-compose up -d
+posix safe | docker pull alpine
+posix safe | docker build -t app .
+posix safe | docker --context prod ps
+posix safe | docker -H tcp://host:2375 ps
+posix safe | docker --help
+posix safe | docker system prune --help
+posix safe | podman rm web
+posix safe | podman ps
+posix safe | nerdctl rm web
+posix safe | nerdctl -n k8s.io ps
+posix safe | docker
+posix safe | docker -v
+posix finds=destroy_resources | docker system prune
+posix finds=destroy_resources | docker system prune -f
+posix finds=destroy_resources | docker system prune -af --volumes
+posix finds=destroy_resources | docker system prune -a --volumes -f
+posix finds=destroy_resources | docker -H tcp://host:2375 system prune -f
+posix finds=destroy_resources | docker --context prod system prune
+posix finds=destroy_resources | docker volume rm pgdata
+posix finds=destroy_resources | docker volume remove pgdata
+posix finds=destroy_resources | docker volume rm -f pgdata
+posix finds=destroy_resources | docker volume prune
+posix finds=destroy_resources | docker volume prune -f
+posix finds=destroy_resources | docker container prune
+posix finds=destroy_resources | docker container prune -f
+posix finds=destroy_resources | docker image prune -a
+posix finds=destroy_resources | docker image prune -af
+posix finds=destroy_resources | docker image prune --all --force
+posix finds=destroy_resources | docker network prune
+posix finds=destroy_resources | docker network prune -f
+posix finds=destroy_resources | docker rm -f $(docker ps -aq)
+posix finds=destroy_resources | docker rm $(docker ps -aq)
+posix finds=destroy_resources | docker rm `docker ps -aq`
+posix finds=destroy_resources | docker container rm -f $(docker ps -aq)
+posix finds=destroy_resources | docker rm -f $ids
+posix finds=destroy_resources | docker ps -aq | xargs docker rm -f
+posix finds=destroy_resources | docker rm -f web db
+posix finds=destroy_resources | docker rm -f web db cache
+posix finds=destroy_resources | docker rm --force web db
+posix finds=destroy_resources | docker rm -fv web
+posix finds=destroy_resources | docker rm -v web
+posix finds=destroy_resources | docker rm --volumes web
+posix finds=destroy_resources | docker compose down -v
+posix finds=destroy_resources | docker compose down --volumes
+posix finds=destroy_resources | docker compose down --remove-orphans -v
+posix finds=destroy_resources | docker compose -f stack.yml -p app down -v
+posix finds=destroy_resources | docker-compose down -v
+posix finds=destroy_resources | docker-compose -f a.yml down --volumes
+posix finds=destroy_resources | docker compose rm -fsv
+posix finds=destroy_resources | docker stack rm app
+posix finds=destroy_resources | docker service rm web
+posix finds=destroy_resources | podman system prune -af
+posix finds=destroy_resources | podman system reset -f
+posix finds=destroy_resources | podman volume rm pgdata
+posix finds=destroy_resources | podman rm -a
+posix finds=destroy_resources | podman rm --all --force
+posix finds=destroy_resources | podman rm --filter status=exited
+posix finds=destroy_resources | podman pod rm -f $(podman pod ls -q)
+posix finds=destroy_resources | podman pod prune
+posix finds=destroy_resources | podman machine rm -f
+posix finds=destroy_resources | podman kube down pod.yaml
+posix finds=destroy_resources | podman-compose down -v
+posix finds=destroy_resources | nerdctl system prune -af
+posix finds=destroy_resources | nerdctl -n k8s.io volume rm data
+posix finds=destroy_resources | nerdctl --namespace k8s.io rm -f $(nerdctl ps -aq)
+posix finds=unknown | docker $cmd ps
+posix finds=unknown | docker system $sub
+posix finds=unknown | docker "$@"
+
+# Clusters.
+posix safe | kubectl get pods
+posix safe | kubectl get ns
+posix safe | kubectl get pods -n prod -o wide
+posix safe | kubectl describe pod web
+posix safe | kubectl logs web
+posix safe | kubectl apply -f deploy.yaml
+posix safe | kubectl apply -f deploy.yaml --dry-run=client
+posix safe | kubectl create namespace dev
+posix safe | kubectl rollout restart deploy web
+posix safe | kubectl rollout status deploy web
+posix safe | kubectl cordon node1
+posix safe | kubectl config get-contexts
+posix safe | kubectl config use-context prod
+posix safe | kubectl delete pod web --dry-run=client
+posix safe | kubectl delete -f pod.yaml --dry-run=server
+posix safe | kubectl delete namespace prod --dry-run
+posix safe | kubectl drain node1 --dry-run=client
+posix safe | kubectl delete --help
+posix safe | kubectl
+posix safe | kubectl --context prod get pods
+posix safe | kubectl -n delete get pods
+posix safe | oc get pods
+posix safe | helm install api ./chart
+posix safe | helm upgrade --install api ./chart
+posix safe | helm list
+posix safe | helm repo remove stable
+posix safe | helm plugin uninstall diff
+posix safe | kind create cluster
+posix safe | kind get clusters
+posix safe | kind delete kubeconfig
+posix safe | minikube start
+posix safe | minikube stop
+posix safe | minikube status
+posix safe | k3d cluster create dev
+posix safe | k3d cluster list
+posix safe | microk8s status
+posix safe | microk8s kubectl get pods
+posix safe | k3s kubectl get pods
+posix finds=destroy_resources | kubectl delete namespace prod
+posix finds=destroy_resources | kubectl delete ns prod
+posix finds=destroy_resources | kubectl delete namespace/prod
+posix finds=destroy_resources | kubectl delete pod web
+posix finds=destroy_resources | kubectl delete pods --all
+posix finds=destroy_resources | kubectl delete pods -A
+posix finds=destroy_resources | kubectl delete pods --all-namespaces
+posix finds=destroy_resources | kubectl delete all --all -n prod
+posix finds=destroy_resources | kubectl delete -f deploy.yaml
+posix finds=destroy_resources | kubectl delete -k overlays/prod
+posix finds=destroy_resources | kubectl delete pvc data
+posix finds=destroy_resources | kubectl delete pod -l app=web
+posix finds=destroy_resources | kubectl delete pod web --grace-period=0 --force
+posix finds=destroy_resources | kubectl -n prod delete pod web
+posix finds=destroy_resources | kubectl --namespace prod delete pod web
+posix finds=destroy_resources | kubectl --namespace=prod delete pod web
+posix finds=destroy_resources | kubectl --context prod --namespace prod delete pod web
+posix finds=destroy_resources | kubectl --kubeconfig ~/.kube/prod delete pod web
+posix finds=destroy_resources | kubectl -v 6 delete pod web
+posix finds=destroy_resources | kubectl --namespace=$NS delete pod web
+posix finds=destroy_resources | kubectl get pods -o name | xargs kubectl delete
+posix finds=destroy_resources | sudo kubectl delete pod web
+posix finds=destroy_resources | kubectl.exe delete pod web
+posix finds=destroy_resources | oc delete project prod
+posix finds=destroy_resources | kubectl drain node1
+posix finds=destroy_resources | kubectl drain node1 --ignore-daemonsets --delete-emptydir-data
+posix finds=destroy_resources | kubectl replace --force -f pod.yaml
+posix finds=destroy_resources | kubectl apply --prune -f dir/ --all
+posix finds=destroy_resources | microk8s kubectl delete ns prod
+posix finds=destroy_resources | microk8s reset
+posix finds=destroy_resources | k3s kubectl delete pod web
+posix finds=destroy_resources | minikube kubectl -- delete ns prod
+posix finds=unknown | kubectl $verb pods
+posix finds=destroy_resources | helm uninstall api
+posix finds=destroy_resources | helm uninstall api -n prod
+posix finds=destroy_resources | helm -n prod uninstall api
+posix finds=destroy_resources | helm --kube-context prod uninstall api
+posix finds=destroy_resources | helm delete api
+posix finds=destroy_resources | helm del api
+posix finds=destroy_resources | helm un api
+posix finds=destroy_resources | kind delete cluster
+posix finds=destroy_resources | kind delete cluster --name dev
+posix finds=destroy_resources | kind delete clusters --all
+posix finds=destroy_resources | minikube delete
+posix finds=destroy_resources | minikube delete --all --purge
+posix finds=destroy_resources | minikube -p dev delete
+posix finds=destroy_resources | k3d cluster delete dev
+posix finds=destroy_resources | k3d cluster delete --all
+posix finds=destroy_resources | k3d node delete n1
+
+# Infrastructure.
+posix safe | terraform plan
+posix safe | terraform plan -destroy
+posix safe | terraform init
+posix safe | terraform validate
+posix safe | terraform fmt
+posix safe | terraform apply
+posix safe | terraform apply -auto-approve
+posix safe | terraform output
+posix safe | terraform destroy -help
+posix safe | terraform -chdir=infra plan
+posix safe | terraform
+posix safe | tofu plan
+posix safe | tofu apply
+posix safe | terragrunt plan
+posix safe | terragrunt run-all plan
+posix safe | pulumi up
+posix safe | pulumi preview
+posix safe | pulumi stack ls
+posix safe | pulumi stack select dev
+posix safe | cdk deploy
+posix safe | cdk synth
+posix safe | cdk diff
+posix safe | sst deploy
+posix safe | sst dev
+posix safe | serverless deploy
+posix safe | sls invoke -f hello
+posix safe | vagrant up
+posix safe | vagrant status
+posix safe | sam build
+posix safe | sam deploy
+posix finds=destroy_resources | terraform destroy
+posix finds=destroy_resources | terraform destroy -auto-approve
+posix finds=destroy_resources | terraform destroy -target=aws_instance.web
+posix finds=destroy_resources | terraform -chdir=infra destroy
+posix finds=destroy_resources | terraform apply -destroy
+posix finds=destroy_resources | terraform apply -destroy -auto-approve
+posix finds=destroy_resources | terraform apply --destroy
+posix finds=destroy_resources | terraform apply -destroy=true
+posix finds=destroy_resources | terraform apply -destroy=false -destroy
+posix finds=destroy_resources | terraform apply -auto-approve -destroy
+posix finds=destroy_resources | tofu destroy
+posix finds=destroy_resources | tofu apply -destroy
+posix finds=destroy_resources | terragrunt destroy
+posix finds=destroy_resources | terragrunt run-all destroy
+posix finds=destroy_resources | terragrunt run --all -- destroy
+posix finds=destroy_resources | terragrunt destroy-all
+posix finds=destroy_resources | terragrunt run-all apply -destroy
+posix finds=destroy_resources | terragrunt --terragrunt-working-dir infra destroy
+posix finds=destroy_resources | pulumi destroy
+posix finds=destroy_resources | pulumi destroy --yes
+posix finds=destroy_resources | pulumi down --yes
+posix finds=destroy_resources | pulumi stack rm dev
+posix finds=destroy_resources | pulumi stack rm dev --force --yes
+posix finds=destroy_resources | pulumi stack remove dev
+posix finds=destroy_resources | pulumi --cwd infra destroy
+# pulumi is found behind its own stack option.
+posix finds=destroy_resources | pulumi --stack dev destroy --yes
+posix finds=destroy_resources | pulumi -s dev destroy
+posix finds=destroy_resources | pulumi --stack dev down
+posix finds=destroy_resources | pulumi --stack=dev destroy
+posix finds=destroy_resources | pulumi -s dev stack rm
+posix finds=destroy_resources | pulumi --stack dev stack rm dev
+posix finds=destroy_resources | pulumi --target urn:x destroy
+posix finds=destroy_resources | pulumi -m msg -s dev destroy
+posix finds=destroy_resources | cdk destroy
+posix finds=destroy_resources | cdk destroy --force
+posix finds=destroy_resources | cdk -a 'node app.js' destroy
+posix finds=destroy_resources | cdk --profile prod destroy
+posix finds=destroy_resources | cdktf destroy
+posix finds=destroy_resources | sst remove
+posix finds=destroy_resources | sst remove --stage prod
+posix finds=destroy_resources | sst --stage prod remove
+posix finds=destroy_resources | serverless remove
+posix finds=destroy_resources | serverless remove --stage prod
+posix finds=destroy_resources | sls remove
+posix finds=destroy_resources | vagrant destroy
+posix finds=destroy_resources | vagrant destroy -f
+posix finds=destroy_resources | sam delete
+posix finds=destroy_resources | sam delete --stack-name app
+posix finds=unknown | terraform $cmd
+
+# aws.
+posix safe | aws s3 ls
+posix safe | aws s3 ls s3://bucket --recursive
+posix safe | aws s3 cp a.txt s3://bucket/a.txt
+posix safe | aws s3 sync . s3://bucket
+posix safe | aws s3 mb s3://bucket
+posix safe | aws s3 rm s3://bucket --recursive --dryrun
+posix safe | aws s3 rm s3://bucket/key --dryrun
+posix safe | aws s3 sync . s3://bucket --delete --dryrun
+posix safe | aws s3api list-buckets
+posix safe | aws ec2 describe-instances
+posix safe | aws ec2 run-instances --image-id ami-1
+posix safe | aws ec2 stop-instances --instance-ids i-1
+posix safe | aws iam list-users
+posix safe | aws iam create-user --user-name bob
+posix safe | aws sts get-caller-identity
+posix safe | aws --profile prod sts get-caller-identity
+posix safe | aws configure list
+posix safe | aws --version
+posix safe | aws
+posix safe | aws s3
+posix safe | aws s3api head-object --bucket b --key delete-me
+posix safe | aws logs describe-log-groups --log-group-name-prefix delete
+posix finds=destroy_resources | aws s3 rm s3://prod-bucket --recursive
+posix finds=destroy_resources | aws s3 rm s3://prod-bucket/key
+posix finds=destroy_resources | aws s3 rm --recursive s3://prod-bucket
+posix finds=destroy_resources | aws s3 rm s3://b --recursive
+posix finds=destroy_resources | aws --profile prod s3 rm s3://b --recursive
+posix finds=destroy_resources | aws s3 rb s3://bucket
+posix finds=destroy_resources | aws s3 rb s3://bucket --force
+posix finds=destroy_resources | aws s3 sync . s3://bucket --delete
+posix finds=destroy_resources | aws s3 sync . s3://b --delete
+posix finds=destroy_resources | aws s3 sync s3://a s3://b --delete
+posix finds=destroy_resources | aws s3api delete-bucket --bucket b
+posix finds=destroy_resources | aws s3api delete-object --bucket b --key k
+posix finds=destroy_resources | aws s3api delete-objects --bucket b --delete file://x.json
+posix finds=destroy_resources | aws ec2 terminate-instances --instance-ids i-1
+posix finds=destroy_resources | aws --region us-east-1 ec2 terminate-instances --instance-ids i-1
+posix finds=destroy_resources | aws ec2 delete-volume --volume-id vol-1
+posix finds=destroy_resources | aws ec2 delete-security-group --group-id sg-1
+posix finds=destroy_resources | aws ec2 deregister-image --image-id ami-1
+posix finds=destroy_resources | aws rds delete-db-instance --db-instance-identifier x --skip-final-snapshot
+posix finds=destroy_resources | aws cloudformation delete-stack --stack-name x
+posix finds=destroy_resources | aws dynamodb delete-table --table-name t
+posix finds=destroy_resources | aws lambda delete-function --function-name f
+posix finds=destroy_resources | aws iam delete-user --user-name bob
+posix finds=destroy_resources | aws ecr batch-delete-image --repository-name r --image-ids imageTag=a
+posix finds=destroy_resources | aws sqs purge-queue --queue-url u
+posix finds=destroy_resources | aws kms schedule-key-deletion --key-id k
+posix finds=destroy_resources | aws --output json --query x ec2 delete-volume --volume-id v
+posix finds=unknown | aws $service $verb
+posix finds=unknown | aws s3 $verb s3://b
+
+# Every cloud CLI but aws. Each holds the delete verbs its siblings have: a
+# bulk delete, a sync that deletes what the source lacks, a removal of one
+# node or backup.
+posix safe | gcloud projects list
+posix safe | gcloud config set project prod
+posix safe | gcloud compute instances list
+posix safe | gcloud compute instances list --filter=name~delete
+posix safe | gcloud compute instances list --filter name=delete
+posix safe | gcloud compute instances describe vm
+posix safe | gcloud compute instances describe vm --zone us-central1-a
+posix safe | gcloud compute instances create vm
+posix safe | gcloud compute instances stop vm
+posix safe | gcloud compute instance-groups managed list
+posix safe | gcloud storage ls gs://bucket
+posix safe | gcloud storage cp a gs://bucket
+posix safe | gcloud storage rsync -r . gs://b
+posix safe | gcloud auth login
+posix safe | gsutil ls gs://bucket
+posix safe | gsutil cp a gs://bucket
+posix safe | gsutil -m cp -r dir gs://bucket
+posix safe | gsutil rsync -r dir gs://bucket
+posix safe | gsutil mb gs://bucket
+posix safe | az group list
+posix safe | az vm list -g delete
+posix safe | az vm show -g rg -n delete
+posix safe | az vm create -g rg -n vm --image ubuntu
+posix safe | az account show
+posix safe | az storage blob list --account-name a -c c
+posix safe | doctl compute droplet list
+posix safe | doctl compute droplet create web
+posix safe | doctl auth remove --context x
+posix safe | doctl kubernetes cluster node-pool list c
+posix safe | flyctl apps list
+posix safe | flyctl deploy
+posix safe | fly status
+posix safe | fly apps list
+posix safe | fly machine list
+posix safe | fly m list
+posix safe | fly vol list
+posix safe | vercel
+posix safe | vercel deploy
+posix safe | vercel ls
+posix safe | vercel env ls
+posix safe | heroku apps
+posix safe | heroku logs --tail
+posix safe | heroku apps:info -a x
+posix safe | heroku pg:backups:capture
+posix safe | wrangler deploy
+posix safe | wrangler dev
+posix safe | wrangler tail
+posix safe | wrangler kv namespace list
+posix safe | firebase deploy
+posix safe | firebase projects:list
+posix safe | firebase database:get /
+posix safe | hcloud server list
+posix safe | scw instance server list
+posix safe | oci compute instance list
+posix safe | oci os object list --bucket-name b
+posix safe | eksctl get cluster
+posix safe | eksctl create cluster
+posix safe | kops get clusters
+posix finds=destroy_resources | gcloud projects delete prod
+posix finds=destroy_resources | gcloud projects delete prod --quiet
+posix finds=destroy_resources | gcloud compute instances delete vm --zone us-central1-a
+posix finds=destroy_resources | gcloud --project prod compute instances delete vm
+posix finds=destroy_resources | gcloud compute instances delete vm --quiet
+posix finds=destroy_resources | gcloud beta compute disks delete d
+posix finds=destroy_resources | gcloud container clusters delete c
+posix finds=destroy_resources | gcloud sql instances delete db
+posix finds=destroy_resources | gcloud run services delete svc
+posix finds=destroy_resources | gcloud functions delete f
+posix finds=destroy_resources | gcloud storage buckets delete gs://b
+posix finds=destroy_resources | gcloud storage rm -r gs://b
+posix finds=destroy_resources | gcloud storage rm gs://b/o
+posix finds=destroy_resources | gcloud alpha storage rm gs://b/o
+posix finds=destroy_resources | gcloud storage rsync -r . gs://b --delete-unmatched-destination-objects
+posix finds=destroy_resources | gcloud storage rsync --delete-unmatched-destination-objects -r . gs://b
+posix finds=destroy_resources | gcloud kms keys versions destroy 1 --key k
+posix finds=destroy_resources | gcloud --format json compute instances delete vm
+posix finds=destroy_resources | gcloud firestore bulk-delete --collection-ids=x
+posix finds=destroy_resources | gcloud compute instance-groups managed delete-instances mig --instances=a
+posix finds=destroy_resources | gsutil rm -r gs://bucket
+posix finds=destroy_resources | gsutil -m rm -r gs://bucket/**
+posix finds=destroy_resources | gsutil rm gs://bucket/obj
+posix finds=destroy_resources | gsutil rb gs://bucket
+posix finds=destroy_resources | gsutil -m rsync -d -r dir gs://bucket
+posix finds=destroy_resources | gsutil rsync -dr dir gs://bucket
+posix finds=destroy_resources | gsutil rsync -d . gs://b
+posix finds=destroy_resources | az group delete --name rg --yes
+posix finds=destroy_resources | az group delete -n rg -y
+posix finds=destroy_resources | az vm delete -g rg -n vm
+posix finds=destroy_resources | az --subscription s group delete -n rg
+posix finds=destroy_resources | az aks delete -g rg -n c
+posix finds=destroy_resources | az storage blob delete -c c -n b
+posix finds=destroy_resources | az storage blob delete-batch -s c
+posix finds=destroy_resources | az storage remove --account-name a -c c --recursive
+posix finds=destroy_resources | az keyvault purge -n kv
+posix finds=destroy_resources | az resource delete --ids x
+posix finds=destroy_resources | az sql db delete -g rg -s s -n d
+posix finds=destroy_resources | doctl compute droplet delete web
+posix finds=destroy_resources | doctl compute droplet delete web -f
+posix finds=destroy_resources | doctl compute droplet d web
+posix finds=destroy_resources | doctl -t $TOKEN compute droplet delete web
+posix finds=destroy_resources | doctl kubernetes cluster delete c
+posix finds=destroy_resources | doctl kubernetes cluster node-pool delete-node c p n
+posix finds=destroy_resources | doctl databases delete id
+posix finds=destroy_resources | doctl apps delete id
+posix finds=destroy_resources | flyctl apps destroy app
+posix finds=destroy_resources | flyctl apps destroy app -y
+posix finds=destroy_resources | fly apps destroy app
+posix finds=destroy_resources | fly volumes destroy v
+posix finds=destroy_resources | fly machine destroy m
+posix finds=destroy_resources | fly machine rm m
+posix finds=destroy_resources | fly -a app apps destroy app
+# flyctl's aliases of a group and of a verb.
+posix finds=destroy_resources | fly m rm abc
+posix finds=destroy_resources | fly m remove abc
+posix finds=destroy_resources | fly m destroy abc
+posix finds=destroy_resources | fly vol rm v
+posix finds=destroy_resources | fly vol delete v
+posix finds=destroy_resources | fly volumes remove v
+posix finds=destroy_resources | fly apps rm app
+posix finds=destroy_resources | fly apps remove app
+posix finds=destroy_resources | flyctl apps rm app
+posix finds=destroy_resources | fly -a app apps rm app
+posix finds=destroy_resources | vercel remove app
+posix finds=destroy_resources | vercel rm app --yes
+posix finds=destroy_resources | vercel project rm app
+posix finds=destroy_resources | vercel --token $T remove app
+posix finds=destroy_resources | vercel env rm KEY
+posix finds=destroy_resources | heroku apps:destroy -a x --confirm x
+posix finds=destroy_resources | heroku apps:destroy x
+posix finds=destroy_resources | heroku apps destroy -a x
+posix finds=destroy_resources | heroku addons:destroy db -a x
+posix finds=destroy_resources | heroku addons:delete x
+posix finds=destroy_resources | heroku pg:backups:delete b001
+posix finds=destroy_resources | wrangler delete
+posix finds=destroy_resources | wrangler delete --name w
+posix finds=destroy_resources | wrangler d1 delete db
+posix finds=destroy_resources | wrangler kv namespace delete --namespace-id x
+posix finds=destroy_resources | wrangler kv:namespace delete --namespace-id x
+posix finds=destroy_resources | wrangler r2 bucket delete b
+posix finds=destroy_resources | wrangler pages project delete p
+posix finds=destroy_resources | wrangler secret delete KEY
+posix finds=destroy_resources | firebase projects:delete p
+posix finds=destroy_resources | firebase firestore:delete --all-collections
+posix finds=destroy_resources | firebase database:remove / --force
+posix finds=destroy_resources | hcloud server delete web
+posix finds=destroy_resources | scw instance server terminate s
+posix finds=destroy_resources | scw instance server delete s
+posix finds=destroy_resources | oci compute instance terminate --instance-id i
+posix finds=destroy_resources | oci os bucket delete --name b
+posix finds=destroy_resources | oci os object bulk-delete --bucket-name b --force
+posix finds=destroy_resources | eksctl delete cluster --name c
+posix finds=destroy_resources | eksctl delete nodegroup --cluster c --name n
+posix finds=destroy_resources | kops delete cluster --name c --yes
+
+# An operand only known when it runs, after a verb that copies, runs, reads
+# or sets something, does not make an everyday cloud line unknown; a verb
+# that deletes is still read behind it.
+posix safe | gcloud container clusters get-credentials $C --zone z
+posix safe | gcloud builds submit --tag "gcr.io/$P/app"
+posix safe | gcloud auth activate-service-account --key-file $F
+posix safe | gcloud secrets versions access latest --secret $S
+posix safe | gcloud projects add-iam-policy-binding $P --member $M --role r
+posix safe | gcloud compute instances add-metadata $VM
+posix safe | gcloud storage cp $F gs://b/
+posix safe | gcloud storage cp "$F" gs://b/
+posix safe | gcloud storage rsync $SRC gs://b
+posix safe | gcloud storage mv $A gs://b/
+posix safe | gcloud pubsub topics publish $T --message x
+posix safe | gcloud container images list-tags $IMG
+posix safe | gcloud sql connect $DB --user root
+posix safe | gcloud config configurations activate $C
+posix safe | heroku config:set FOO=$BAR
+posix safe | heroku config:set $(cat .env)
+posix safe | heroku config:get $KEY
+posix safe | heroku ps:scale web=$N
+posix safe | wrangler secret put $NAME
+posix safe | wrangler kv key put $K $V
+posix safe | wrangler r2 object put b/$K
+posix safe | wrangler tail $W
+posix safe | wrangler dev $F
+posix safe | wrangler d1 execute $DB --command "select 1"
+posix safe | vercel link --project $P
+posix safe | vercel pull --environment $E
+posix safe | vercel promote $URL
+posix safe | vercel redeploy $URL
+posix safe | hcloud context use $C
+posix safe | oci os object put -bn $B
+posix safe | oci ce cluster create-kubeconfig --cluster-id $ID
+posix safe | oci session authenticate --profile-name $P
+posix safe | az storage blob upload -f $F -c c -n x
+posix safe | az storage blob upload-batch -d c -s $DIR
+posix safe | az storage blob download -c c -n x -f $F
+posix safe | az storage blob download-batch -d $DIR -s c
+posix safe | az acr build -r $R -t img .
+posix safe | aws lambda invoke --function-name $F out.json
+# A word only known when it runs, where a verb could be, is still unknown.
+posix finds=unknown | heroku $verb
+posix finds=unknown | wrangler kv:namespace $verb x
+posix finds=unknown | gcloud compute $x instances
+posix finds=unknown | gcloud run $verb web
+# A verb that deletes is read behind an operand too.
+posix finds=destroy_resources | heroku config:set FOO=$BAR; heroku apps:destroy x
+posix finds=destroy_resources | gcloud compute instances delete $VM
+posix finds=destroy_resources | gcloud storage cp $F gs://b/; gcloud storage rm gs://b/x
+posix finds=destroy_resources | gcloud storage rsync $SRC gs://b --delete-unmatched-destination-objects
+posix finds=destroy_resources | az storage blob upload -f $F -c c -n x; az group delete -n g -y
+
+# A destroying command is found inside a shell's script, behind a wrapper, a
+# path, an assignment, in a list or a pipeline, and when a package runner
+# runs it; quoted or searched for, it is only text.
+posix safe | echo 'docker system prune -af'
+posix safe | echo kubectl delete namespace prod
+posix safe | git commit -m 'terraform destroy'
+posix safe | grep -r 'aws s3 rm' docs
+posix safe | man docker
+posix safe | docker ps -a | grep web
+posix safe | kubectl get pods | grep delete
+posix safe | terraform plan | tee plan.txt
+posix safe | npx cdk diff
+posix safe | pnpm dlx cdk synth
+posix finds=destroy_resources | bash -c 'docker system prune -af'
+posix finds=destroy_resources | sh -c "kubectl delete namespace prod"
+posix finds=destroy_resources | env KUBECONFIG=x kubectl delete pod web
+posix finds=destroy_resources | nohup terraform destroy -auto-approve &
+posix finds=destroy_resources | time terraform destroy
+posix finds=destroy_resources | cd infra && terraform destroy -auto-approve
+posix finds=destroy_resources | terraform plan && terraform destroy -auto-approve
+posix finds=destroy_resources | kubectl get ns -o name | xargs kubectl delete
+posix finds=destroy_resources | /usr/local/bin/kubectl delete pod web
+posix finds=destroy_resources | DOCKER_HOST=tcp://h:2375 docker system prune -af
+posix finds=destroy_resources | for ns in a b; do kubectl delete namespace $ns; done
+posix finds=destroy_resources | npx cdk destroy
+posix finds=destroy_resources | pnpm dlx cdk destroy
+posix finds=destroy_resources | bunx cdk destroy
+posix finds=destroy_resources | npm exec -- cdk destroy
+posix finds=destroy_resources | npx wrangler delete
+posix finds=destroy_resources | npx sst remove
+
+# It adds to what other rules find.
+posix rules=elevated,destroy_resources | sudo docker system prune -af
+posix rules=destroy_resources,delete | kubectl delete ns prod; rm -rf ~/x
+
+# PowerShell and cmd.
+powershell safe | docker ps
+powershell safe | docker rm web
+powershell safe | docker rm -f web
+powershell safe | docker compose down
+powershell safe | kubectl get pods
+powershell safe | terraform plan
+powershell safe | aws s3 ls
+powershell safe | az group list
+powershell finds=destroy_resources | docker system prune -af
+powershell finds=destroy_resources | docker.exe system prune -af
+powershell finds=destroy_resources | docker volume rm pgdata
+powershell finds=destroy_resources | docker rm -f (docker ps -aq)
+powershell finds=destroy_resources | docker rm -f $(docker ps -aq)
+powershell finds=destroy_resources | docker compose down -v
+powershell finds=destroy_resources | kubectl delete namespace prod
+powershell finds=destroy_resources | kubectl.exe delete pod web
+powershell finds=destroy_resources | helm uninstall api
+powershell finds=destroy_resources | terraform destroy -auto-approve
+powershell finds=destroy_resources | terraform apply -destroy
+powershell finds=destroy_resources | aws s3 rm s3://prod-bucket --recursive
+powershell finds=destroy_resources | aws.exe ec2 terminate-instances --instance-ids i-1
+powershell finds=destroy_resources | gcloud projects delete prod
+powershell finds=destroy_resources | az group delete --name rg --yes
+powershell finds=destroy_resources | docker ps -aq | ForEach-Object { docker rm -f $_ }
+cmd safe | docker ps
+cmd safe | docker rm web
+cmd safe | kubectl get pods
+cmd safe | terraform plan
+cmd finds=destroy_resources | docker system prune -af
+cmd finds=destroy_resources | kubectl delete namespace prod
+cmd finds=destroy_resources | terraform destroy -auto-approve
+cmd finds=destroy_resources | aws s3 rm s3://prod-bucket --recursive
+cmd finds=destroy_resources | docker volume rm %VOL%
+
+# `sls` in PowerShell is `Select-String`: the alias wins over any program on
+# the path, so this never runs serverless.
+powershell safe | Get-Content app.log | sls remove
+powershell safe | git log --oneline | sls remove
+powershell safe | gci -r | sls "remove"
+powershell safe | sls remove *.txt
+powershell safe | sls -Pattern remove -Path *.txt
+powershell safe | SLS remove
+powershell effect=reads_workspace | Get-Content app.log | sls remove
+powershell effect=reads_workspace | gci -r | sls "remove"
+powershell effect=reads_workspace | sls remove *.txt
+powershell effect=reads_workspace | sls -Pattern remove -Path *.txt
+powershell effect=reads_workspace | SLS remove
+# A program with an extension, or serverless itself, is still serverless.
+powershell finds=destroy_resources | sls.cmd remove
+powershell finds=destroy_resources | serverless remove
+# No alias in cmd, nor on a POSIX shell (`Infrastructure` holds that case).
+cmd finds=destroy_resources | sls remove
+
+# The one finding of each line and the reason a prompt can show for it, for
+# what it destroys or for the command only known when it runs.
+posix rules=destroy_resources first=destroy_resources reason="deletes a namespace and everything in it" | kubectl delete namespace prod
+posix rules=destroy_resources first=destroy_resources reason="removes unused containers, images and volumes" | docker system prune -af --volumes
+posix rules=destroy_resources first=destroy_resources reason="removes unused containers, networks and images" | docker system prune
+posix rules=destroy_resources first=destroy_resources reason="deletes volumes" | docker volume rm pgdata
+posix rules=destroy_resources first=destroy_resources reason="removes containers chosen when it runs" | docker rm -f $(docker ps -aq)
+posix rules=destroy_resources first=destroy_resources reason="deletes every object of a kind" | kubectl delete pods --all
+posix rules=destroy_resources first=destroy_resources reason="deletes objects in every namespace" | kubectl delete pods -A
+posix rules=destroy_resources first=destroy_resources reason="deletes cluster objects" | kubectl delete pod web
+posix rules=destroy_resources first=destroy_resources reason="uninstalls a Helm release" | helm uninstall api
+posix rules=destroy_resources first=destroy_resources reason="destroys the infrastructure a configuration manages" | terraform apply -destroy
+posix rules=destroy_resources first=destroy_resources reason="terminates EC2 instances" | aws ec2 terminate-instances --instance-ids i-1
+posix rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | aws rds delete-db-instance --db-instance-identifier x
+posix rules=destroy_resources first=destroy_resources reason="deletes every object under a prefix" | aws s3 rm s3://b --recursive
+posix rules=unknown first=unknown reason="runs a docker command only known when it runs" | docker $cmd ps
+posix rules=unknown first=unknown reason="runs an aws command only known when it runs" | aws $service
+posix rules=unknown first=unknown reason="runs an az command only known when it runs" | az $x
+posix rules=unknown first=unknown reason="runs an oc command only known when it runs" | oc $x
+posix rules=unknown first=unknown reason="runs an oci command only known when it runs" | oci $x
+posix rules=unknown first=unknown reason="runs an eksctl command only known when it runs" | eksctl $x
+posix rules=unknown first=unknown reason="runs an sst command only known when it runs" | sst $x
+posix rules=unknown first=unknown reason="runs a gcloud command only known when it runs" | gcloud $x

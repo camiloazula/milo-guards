@@ -1,0 +1,876 @@
+# A statement given to a database client that drops, truncates or empties
+# something is `drop_data`; reading, inserting, creating and a statement that
+# picks its rows are safe, and one the line does not show is `unknown`. One
+# section per client, then what every client shares: its commands, its
+# quoting, its long options, the `WHERE` of each verb, and the drops that
+# delete no data; then PowerShell and cmd, and the reason a prompt can show.
+# How the text a client gets is read (fed by `printf`, `echo`, `cat` or a
+# here-document) is in `drop_data_input.cases`; how PowerShell hands words to
+# a client is in `powershell_arguments.cases`. The format is in
+# CONTRIBUTING.md.
+
+# The reason a prompt can show.
+posix first=drop_data reason="deletes data in a database" | psql -c 'DROP TABLE users'
+posix first=unknown reason="runs a database statement only known when it runs" | psql -c "$Q"
+
+# A line that drops data changes something: `effect` places every rule, and
+# dropping data is a change, not a read.
+posix effect=changes | psql -c 'DROP TABLE users'
+posix effect=changes | redis-cli FLUSHALL
+posix effect=changes | dropdb prod
+
+# psql.
+posix safe | psql
+posix safe | psql -d app
+posix safe | psql -c 'SELECT 1'
+posix safe | psql -h db -U me -d app -c 'SELECT count(*) FROM users'
+posix safe | psql -c 'INSERT INTO t VALUES (1)'
+posix safe | psql -c 'CREATE TABLE t (id int)'
+posix safe | psql -c 'UPDATE users SET a = 1 WHERE id = 3'
+posix safe | psql -c "DELETE FROM users WHERE id = 3"
+posix safe | psql -c 'DELETE FROM users WHERE id IN (SELECT id FROM gone)'
+posix safe | psql -c 'SELECT * FROM users FOR UPDATE'
+posix safe | psql -c 'CREATE TABLE t (p int REFERENCES p(id) ON DELETE CASCADE)'
+posix safe | psql -c "INSERT INTO t VALUES (1) ON CONFLICT (a) DO UPDATE SET b = 2"
+posix safe | psql -c "SELECT 'DROP TABLE users'"
+posix safe | psql -c 'SELECT 1 -- DROP TABLE users'
+posix safe | psql -c '/* DROP TABLE users */ SELECT 1'
+posix safe | psql -c 'SELECT truncate(1.5)'
+posix safe | psql -f migrations/001.sql
+posix safe | psql -f schema.sql
+posix safe | psql -f schema.sql -d app
+posix safe | psql app < schema.sql
+posix safe | psql -c "DELETE FROM users WHERE id = $id"
+posix safe | psql -c "SELECT * FROM $table"
+posix safe | psql -l
+posix safe | psql --version
+posix safe | psql -c '\\dt'
+posix safe | psql -c '\\c other'
+posix safe | pg_dump app > backup.sql
+posix safe | echo 'DROP TABLE users' > notes.txt
+posix safe | echo 'DROP TABLE users'
+posix safe | grep -r 'DROP TABLE' migrations
+posix safe | cat migrations/001.sql | psql app
+posix finds=drop_data | psql -c 'DROP TABLE users'
+posix finds=drop_data | psql -c 'drop table if exists users'
+posix finds=drop_data | psql -c 'DROP DATABASE prod'
+posix finds=drop_data | psql -c 'DROP SCHEMA public CASCADE'
+posix finds=drop_data | psql -c 'DROP INDEX i'
+posix finds=drop_data | psql -c 'DROP VIEW v'
+posix finds=drop_data | psql --command 'DROP TABLE users'
+posix finds=drop_data | psql --command='DROP TABLE users'
+posix finds=drop_data | psql --comm 'DROP TABLE users'
+posix finds=drop_data | psql -Atc 'DROP TABLE users'
+posix finds=drop_data | psql -qc 'TRUNCATE users'
+posix finds=drop_data | psql -cTRUNCATE\\ users
+posix finds=drop_data | psql -h db -U me -d app -c 'TRUNCATE TABLE users'
+posix finds=drop_data | psql -c 'SELECT 1' -c 'DROP TABLE users'
+posix finds=drop_data | psql -c 'DELETE FROM users'
+posix finds=drop_data | psql -c 'DELETE FROM users;'
+posix finds=drop_data | psql -c 'UPDATE users SET admin = false'
+posix finds=drop_data | psql -c 'DELETE FROM users WHERE 1=1'
+posix finds=drop_data | psql -c 'DELETE FROM users WHERE true'
+posix finds=drop_data | psql -c 'ALTER TABLE users DROP COLUMN email'
+posix finds=drop_data | psql -c 'SELECT 1; DROP TABLE users'
+posix finds=drop_data | psql -c 'BEGIN; DELETE FROM users; COMMIT'
+posix finds=drop_data | psql -c 'WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d'
+posix finds=drop_data | psql -c 'EXPLAIN ANALYZE DELETE FROM users'
+posix finds=drop_data | psql -c 'DO $$ BEGIN DROP TABLE users; END $$'
+posix finds=drop_data | psql -c "DROP TABLE $t"
+posix finds=drop_data | psql -c "DELETE FROM $t"
+posix finds=drop_data | psql -c 'SELECT 1 -- x\nDROP TABLE users'
+posix finds=drop_data | psql -c "SELECT 'a\\\\'; DROP TABLE users; --'"
+posix finds=drop_data | sudo -u postgres psql -c 'DROP DATABASE prod'
+posix finds=drop_data | env PGPASSWORD=x psql -c 'DROP DATABASE prod'
+posix finds=drop_data | /usr/bin/psql -c 'DROP DATABASE prod'
+posix finds=drop_data | true && psql -c 'DROP TABLE users'
+posix finds=drop_data | bash -c "psql -c 'DROP TABLE users'"
+posix finds=unknown | psql -c "$Q"
+posix finds=unknown | psql -c $Q
+posix finds=unknown | psql -c "$(cat q.sql)"
+posix finds=unknown | psql --command="$Q"
+posix finds=unknown | psql -c "$Q; SELECT 1"
+posix finds=unknown | psql -c "SELECT 1; $Q"
+posix finds=unknown | psql -c "SELECT 'unclosed"
+posix finds=unknown | psql -c '/* never closed'
+posix finds=unknown | psql -c '\\! rm -rf build'
+posix finds=unknown | psql -c "COPY t FROM PROGRAM 'rm -rf x'"
+posix finds=unknown | xargs -I{} psql -c {} < statements
+
+# MySQL and MariaDB.
+posix safe | mysql
+posix safe | mysql -u root -p app
+posix safe | mysql -uroot -psecret app
+posix safe | mysql -e 'SELECT 1'
+posix safe | mysql -u root -p -e 'SELECT * FROM users'
+posix safe | mysql -e 'DELETE FROM users WHERE id = 3'
+posix safe | mysql -e 'INSERT INTO t VALUES (1)'
+posix safe | mysql -e 'CREATE TABLE t (id int)'
+posix safe | mysql app < dump.sql
+posix safe | mysql --execute='SHOW TABLES'
+posix safe | mysql -e 'SELECT 1 # DROP TABLE t'
+posix safe | mysql -e "SELECT * FROM t WHERE a = '\\\\''"
+posix safe | mysqldump app > dump.sql
+posix safe | mysql --version
+posix finds=drop_data | mysql -e 'DROP DATABASE prod'
+posix finds=drop_data | mysql -u root -p -e 'DROP DATABASE prod'
+posix finds=drop_data | mysql -uroot -psecret -e 'DROP DATABASE prod'
+posix finds=drop_data | mysql -uroot -psecret app -e 'TRUNCATE users'
+posix finds=drop_data | mysql -h db -P 3307 -D app -e 'DELETE FROM users'
+posix finds=drop_data | mysql --execute='DROP TABLE t'
+posix finds=drop_data | mysql --execute 'DROP TABLE t'
+posix finds=drop_data | mysql --exec 'DROP TABLE t'
+posix finds=drop_data | mysql -Ne 'DROP TABLE t'
+posix finds=drop_data | mysql -e'DROP TABLE t'
+posix finds=drop_data | mysql -e 'UPDATE users SET admin = 0'
+posix finds=drop_data | mysql -e 'ALTER TABLE users DROP COLUMN email'
+posix finds=drop_data | mysql -e 'SELECT 1; DROP TABLE t'
+posix finds=drop_data | mysql -e '/*!50000 DROP TABLE t */'
+posix finds=drop_data | mysql -e 'SELECT 1 /*! ; DROP TABLE t */'
+posix finds=drop_data | mysql -e 'SELECT 1 --x; DROP TABLE t'
+posix finds=drop_data | mysql -e "SELECT 'a\\\\''; DROP TABLE t"
+# With NO_BACKSLASH_ESCAPES the client sends `SELECT "a\"` and then `DROP
+# TABLE t`, which runs.
+posix finds=drop_data | mysql -e 'SELECT "a\\"; DROP TABLE t; --"'
+posix finds=drop_data | mysql --init-command='DROP TABLE t'
+posix finds=drop_data | mariadb -e 'DROP DATABASE prod'
+posix finds=unknown | mysql -e "$Q"
+posix finds=unknown | mysql -e '\\! rm -rf x'
+posix finds=unknown | mysql -e 'system rm -rf x'
+
+# mysqladmin and mariadb-admin run a command from any start of its name.
+posix safe | mysqladmin ping
+posix safe | mysqladmin status
+posix safe | mysqladmin -u root status
+posix safe | mysqladmin -h db variables
+posix safe | mysqladmin version
+posix safe | mysqladmin proc stat
+posix safe | mysqladmin create test
+# `d` starts `debug` too and `mysqladmin` refuses it.
+posix safe | mysqladmin d test
+posix safe | mysqladmin drops test
+posix safe | mysqladmin droppy test
+posix safe | mariadb-admin status
+posix safe | mariadb-admin -u root ping
+posix finds=drop_data | mysqladmin drop prod
+posix finds=drop_data | mysqladmin -f drop prod
+posix finds=drop_data | mysqladmin -u root -p drop prod
+posix finds=drop_data | mysqladmin -h db drop prod
+posix finds=drop_data | mysqladmin --user root DROP prod
+posix finds=drop_data | mysqladmin status drop prod
+posix finds=drop_data | mysqladmin drop test
+posix finds=drop_data | mysqladmin dro test
+posix finds=drop_data | mysqladmin dr test
+posix finds=drop_data | mysqladmin DR test
+posix finds=drop_data | mysqladmin -u root --force dro test
+posix finds=drop_data | mysqladmin status dr test
+posix finds=drop_data | mariadb-admin drop prod
+posix finds=drop_data | mariadb-admin -u root drop prod
+posix finds=drop_data | mariadb-admin dro prod
+
+# SQLite and DuckDB files are judged like any file.
+posix safe | sqlite3 data.db 'DROP TABLE t'
+posix safe | sqlite3 data.db 'DELETE FROM users'
+posix safe | sqlite3 ./data.db 'DROP TABLE t'
+posix safe | sqlite3 db/app.sqlite 'DELETE FROM t'
+posix safe | sqlite3 /home/me/work/repo/data.db 'DROP TABLE t'
+posix safe | sqlite3 /home/me/work/repo/data.db 'TRUNCATE t'
+posix safe | sqlite3 /tmp/scratch.db 'DROP TABLE t'
+posix safe | sqlite3 :memory: 'DROP TABLE t'
+posix safe | sqlite3 'DROP TABLE t'
+posix safe | sqlite3 -readonly ~/data.db 'DROP TABLE t'
+posix safe | sqlite3 data.db 'SELECT * FROM t'
+posix safe | sqlite3 ~/data/data.db 'SELECT * FROM t'
+posix safe | sqlite3 ~/data/data.db 'INSERT INTO t VALUES (1)'
+posix safe | sqlite3 ~/data/data.db 'DELETE FROM t WHERE id = 1'
+posix safe | sqlite3 ~/data/data.db '.dump'
+posix safe | sqlite3 ~/data/data.db .schema
+posix safe | sqlite3 -header -csv data.db 'SELECT 1'
+posix safe | sqlite3 data.db < seed.sql
+posix safe | sqlite3 ~/data/data.db < seed.sql
+posix safe | sqlite3 data.db '.read seed.sql'
+posix safe | sqlite3 -cmd '.mode csv' data.db 'SELECT 1'
+posix safe | duckdb data.duckdb 'DROP TABLE t'
+posix safe | duckdb -c 'DROP TABLE t'
+posix safe | duckdb ~/x.duckdb 'SELECT 1'
+posix safe | duckdb -readonly ~/x.duckdb 'DROP TABLE t'
+posix safe | duckdb -c 'SELECT 1'
+posix safe | cd work && sqlite3 data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 ~/data/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 ~/data/data.db 'DELETE FROM users'
+posix finds=drop_data | sqlite3 ~/data/data.db 'TRUNCATE t'
+posix finds=drop_data | sqlite3 ~/data/data.db 'UPDATE t SET a = 1'
+posix finds=drop_data | sqlite3 /var/lib/app/app.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 ../other/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 "$DB" 'DROP TABLE t'
+posix finds=drop_data | sqlite3 $DB 'DELETE FROM t'
+posix finds=drop_data | sqlite3 ~/data.db 'SELECT 1; DROP TABLE t'
+posix finds=drop_data | sqlite3 ~/data.db 'SELECT 1' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -cmd 'DROP TABLE t' ~/data.db
+posix finds=drop_data | sqlite3 -header ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 ~/data.db <<< 'DROP TABLE t'
+posix finds=drop_data | sqlite3 ~/data.db <<EOF\nDROP TABLE t;\nEOF
+posix finds=drop_data | echo 'DROP TABLE t' | sqlite3 ~/data.db
+posix finds=drop_data | cd ~ && sqlite3 data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 data.db "ATTACH '/home/me/x.db' AS o; DROP TABLE o.t"
+posix finds=drop_data | sqlite3 data.db '.open ~/x.db' 'DROP TABLE t'
+posix finds=drop_data | duckdb ~/x.duckdb 'DROP TABLE t'
+posix finds=drop_data | duckdb ~/x.duckdb -c 'DELETE FROM t'
+posix finds=drop_data | duckdb ~/x.duckdb -s 'TRUNCATE t'
+posix finds=unknown | sqlite3 data.db "$Q"
+posix finds=unknown | sqlite3 data.db '.shell rm -rf x'
+posix finds=unknown | sqlite3 data.db '.read |ls'
+posix finds=unknown | sqlite3 data.db .system
+
+# A SQLite database name can be a URI or a remote database.
+posix safe | sqlite3 file:x.db 'DROP TABLE t'
+posix safe | sqlite3 file:./x.db 'DROP TABLE t'
+posix safe | sqlite3 'file:x.db?mode=rwc' 'DROP TABLE t'
+posix safe | sqlite3 'file:/home/me/work/repo/x.db' 'DROP TABLE t'
+posix safe | sqlite3 'file:///home/me/work/repo/x.db' 'DROP TABLE t'
+posix safe | sqlite3 'file://localhost/home/me/work/repo/x.db' 'DROP TABLE t'
+posix safe | sqlite3 'file::memory:' 'DROP TABLE t'
+posix safe | sqlite3 'file:x?mode=memory&cache=shared' 'DROP TABLE t'
+posix safe | sqlite3 -readonly ~/x.db 'DROP TABLE t'
+posix safe | sqlite3 -readonly ~/x.db 'SELECT 1'
+posix safe | sqlite3 -nonce X x.db 'DROP TABLE t'
+posix safe | sqlite3 -lookaside 100 5 x.db 'DROP TABLE t'
+posix safe | sqlite3 -memtrace x.db 'DROP TABLE t'
+posix safe | duckdb :memory: 'DROP TABLE t'
+posix safe | duckdb x.db 'DROP TABLE t'
+posix safe | sqlite3 '' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 file:/home/me/x.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'file:///home/me/x.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'file://localhost/home/me/x.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'file:///home/me/x%2Edb?mode=ro' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'file://host/x.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'file:///work/%zz.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 file: 'DROP TABLE t'
+posix finds=drop_data | duckdb "md:my_db" 'DROP TABLE t'
+posix finds=drop_data | duckdb 'motherduck:my_db' 'DROP TABLE t'
+posix finds=drop_data | duckdb 's3://bucket/x.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 'postgres:dbname=x' 'DROP TABLE t'
+# `-readonly` holds only while nothing opens another file.
+posix finds=drop_data | sqlite3 -readonly ~/x.db '.open /home/me/y.db' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -readonly ~/x.db '.attach /home/me/y.db o' 'DROP TABLE o.t'
+posix finds=drop_data | sqlite3 -readonly x.db 'ATTACH "/home/me/o.db" AS o' 'DROP TABLE o.t'
+# An option that takes a value must not move the file onto it.
+posix finds=drop_data | sqlite3 -nonce X ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -screenwidth 80 ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -escape ascii ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -A x ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -alg a ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -hexkey k ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -textkey k ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -key k ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -vfs unix ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -lookaside 100 5 ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -pagecache 100 5 ~/data.db 'DROP TABLE t'
+posix finds=drop_data | sqlite3 -- ~/data.db 'DROP TABLE t'
+posix finds=drop_data | duckdb -f x.sql ~/data.db 'DROP TABLE t'
+
+# A SQLite dot command is every command its name starts.
+# Names that start no command the guard reads.
+posix safe | sqlite3 :memory: '.schema'
+posix safe | sqlite3 :memory: '.sch'
+posix safe | sqlite3 :memory: '.tables'
+posix safe | sqlite3 :memory: '.mode csv'
+posix safe | sqlite3 :memory: '.headers on'
+posix safe | sqlite3 :memory: '.quit'
+posix safe | duckdb -c '.tables'
+posix safe | sqlite3 ./x.db '.import data.csv t'
+posix safe | sqlite3 ./x.db '.imp data.csv t'
+posix safe | sqlite3 ./x.db '.output out.txt'
+posix safe | sqlite3 data.db '.bail on'
+posix safe | sqlite3 data.db '.ba on'
+posix safe | sqlite3 data.db '.b ~/x.db'
+posix safe | sqlite3 data.db '.schema'
+# `.restore` of the agent's own file, as for a DROP.
+posix safe | sqlite3 ./x.db '.restore empty.db'
+posix safe | sqlite3 :memory: '.restore empty.db'
+posix safe | sqlite3 -readonly ~/x.db '.restore empty.db'
+# `.backup` and `.save` to a copy in the workspace or the temporary folder.
+posix safe | sqlite3 ~/x.db '.backup out.db'
+posix safe | sqlite3 data.db '.backup backup.db'
+posix safe | sqlite3 data.db '.backup /tmp/backup.db'
+posix safe | sqlite3 data.db '.backup temp /tmp/backup.db'
+posix safe | sqlite3 data.db '.save ./copy.db'
+posix safe | sqlite3 -readonly data.db '.backup backup.db'
+posix safe | sqlite3 data.db '.backup :memory:'
+# `VACUUM INTO` and `.clone` refuse a file that exists.
+posix safe | sqlite3 data.db "VACUUM INTO '/home/me/y.db'"
+posix safe | sqlite3 data.db '.clone /home/me/y.db'
+# The start of `.shell` and `.system` runs the program.
+posix finds=unknown | sqlite3 :memory: '.sh rm -rf ~'
+posix finds=unknown | sqlite3 :memory: '.she rm -rf ~'
+posix finds=unknown | sqlite3 :memory: '.shel rm -rf ~'
+posix finds=unknown | sqlite3 :memory: '.sy rm -rf ~'
+posix finds=unknown | sqlite3 :memory: '.syst rm -rf ~'
+posix finds=unknown | duckdb -c '.sys rm -rf ~'
+posix finds=unknown | sqlite3 :memory: <<'EOF'\n.sy rm -rf ~\nEOF
+# The start of `.output`, `.once`, `.read` and `.import` that pipes to or
+# reads from a program.
+posix finds=unknown | sqlite3 :memory: '.o "|rm -rf ~"'
+posix finds=unknown | sqlite3 :memory: '.onc "|rm -rf ~"'
+posix finds=unknown | sqlite3 :memory: '.ou "|rm -rf ~"'
+posix finds=unknown | sqlite3 x.db '.rea "|rm -rf ~"'
+posix finds=unknown | sqlite3 x.db '.re "|rm -rf ~"'
+posix finds=unknown | sqlite3 :memory: '.imp "|rm -rf ~" t'
+posix finds=unknown | duckdb -c '.rea "|rm -rf ~"'
+# The start of `.open` and `.attach` reaches another file.
+posix finds=drop_data | sqlite3 x.db '.op /home/me/y.db' 'DELETE FROM t'
+posix finds=drop_data | sqlite3 x.db '.att /home/me/y.db z' 'DROP TABLE t'
+posix finds=drop_data | sqlite3 x.db '.open /home/me/y.db' 'DELETE FROM t'
+# `.restore`, and the start of it, replaces the database.
+posix finds=drop_data | sqlite3 ~/x.db '.restore empty.db'
+posix finds=drop_data | sqlite3 ~/x.db ".restore main empty.db"
+posix finds=drop_data | sqlite3 ~/x.db <<'EOF'\n.restore empty.db\nEOF
+posix finds=drop_data | sqlite3 ./x.db '.restore other.db' '.open ~/y.db' '.restore z.db'
+posix finds=drop_data | sqlite3 ~/x.db '.restore b.db'
+posix finds=drop_data | sqlite3 ~/x.db '.rest b.db'
+posix finds=drop_data | sqlite3 ~/x.db '.res b.db'
+# `.backup` and `.save` replace the file they are given.
+posix finds=drop_data | sqlite3 data.db '.backup /home/me/y.db'
+posix finds=drop_data | sqlite3 data.db '.save ~/prod.db'
+posix finds=drop_data | sqlite3 -readonly data.db '.backup ~/prod.db'
+# The start of a name that no other command has.
+posix finds=drop_data | sqlite3 data.db '.bac ~/prod.db'
+posix finds=drop_data | sqlite3 data.db '.back ~/prod.db'
+posix finds=drop_data | sqlite3 data.db '.backu ~/prod.db'
+posix finds=drop_data | sqlite3 data.db '.sav ~/prod.db'
+posix finds=drop_data | sqlite3 data.db '.sa ~/prod.db'
+posix finds=drop_data | sqlite3 data.db '.BACKUP ~/prod.db'
+# A database name before the file, or an option.
+posix finds=drop_data | sqlite3 data.db '.backup temp /home/me/y.db'
+posix finds=drop_data | sqlite3 data.db '.backup main ../y.db'
+posix finds=drop_data | sqlite3 data.db '.backup "/home/me/y db"'
+# After another statement, or fed to the client.
+posix finds=drop_data | sqlite3 data.db 'SELECT 1;' '.backup ~/prod.db'
+posix finds=drop_data | echo '.backup ~/prod.db' | sqlite3 data.db
+posix finds=drop_data | sqlite3 data.db <<EOF\n.backup ~/prod.db\nEOF
+posix finds=drop_data | sqlite3 data.db <<< '.save ~/prod.db'
+posix finds=drop_data | duckdb x.db '.backup /home/me/y.db'
+# A file only the shell knows.
+posix finds=unknown | sqlite3 data.db ".backup $x"
+
+# SQLite skips a line that starts with a hash.
+posix safe | sqlite3 ~/x.db <<'EOF'\n# a note\nSELECT 1;\nEOF
+posix safe | sqlite3 ~/x.db <<'EOF'\nSELECT 1;\n# it's a note\nSELECT 2;\nEOF
+posix safe | duckdb ~/x.db <<'EOF'\n# a note\nSELECT 1;\nEOF
+# A `#` that is not at the start of a line is not a comment, so the quote
+# after it opens a string.
+posix safe | sqlite3 ~/x.db "SELECT 1 # ' ; DROP TABLE t; --'"
+posix safe | sqlite3 ~/x.db <<'EOF'\nSELECT 1; # '\nDROP TABLE t; --'\nEOF
+# Nor when a statement is pending.
+posix safe | sqlite3 ~/x.db <<'EOF'\nSELECT 1\n# ';\nDROP TABLE t; --'\nEOF
+# Only SQLite and DuckDB skip it: in PostgreSQL the quote opens a string.
+posix safe | psql <<'EOF'\n# it's\nDROP TABLE t;\n# '\nEOF
+posix finds=drop_data | sqlite3 ~/x.db <<'EOF'\n# it's\nDROP TABLE t;\n# '\nEOF
+posix finds=drop_data | sqlite3 ~/x.db <<'EOF'\nSELECT 1;\n# it's\nDROP TABLE t;\n# '\nEOF
+posix finds=drop_data | duckdb ~/x.db <<'EOF'\n# it's\nDROP TABLE t;\n# '\nEOF
+posix finds=drop_data | sqlite3 ~/x.db <<'EOF'\n.mode csv\n# it's\nDROP TABLE t;\n# '\nEOF
+
+# Redis.
+posix safe | redis-cli
+posix safe | redis-cli GET k
+posix safe | redis-cli get k
+posix safe | redis-cli -h cache -p 6380 -n 2 GET k
+posix safe | redis-cli SET k v
+posix safe | redis-cli DEL k
+posix safe | redis-cli del k1 k2
+posix safe | redis-cli UNLINK k
+posix safe | redis-cli del "$K"
+posix safe | redis-cli keys 'sess:*'
+posix safe | redis-cli --scan --pattern 'sess:*'
+posix safe | redis-cli --scan | head
+posix safe | redis-cli INFO
+posix safe | redis-cli -a secret PING
+posix safe | redis-cli <<< 'GET k'
+posix safe | echo 'SET a 1' | redis-cli
+posix safe | cat commands.txt | redis-cli
+posix safe | printf 'a\\nb\\n' | xargs redis-cli del
+posix safe | cat keys.txt | xargs -n1 redis-cli del
+posix safe | redis-cli --version
+posix safe | redis-cli -t 5 GET k
+posix safe | redis-cli -h db -t 5 GET k
+posix safe | redis-cli --cluster info 127.0.0.1:7000
+posix safe | redis-cli --cluster call 127.0.0.1:7000 GET k
+posix safe | redis-cli --cluster call 127.0.0.1:7000 DBSIZE
+# Options that take a value do not move the command onto it.
+posix safe | redis-cli --tls --cacertdir /etc/ssl/certs GET k
+posix safe | redis-cli --show-pushes no GET k
+posix safe | redis-cli -X tag GET k
+posix safe | redis-cli --quoted-pattern x --scan
+posix safe | redis-cli --intrinsic-latency 5
+posix finds=drop_data | redis-cli FLUSHALL
+posix finds=drop_data | redis-cli flushall
+posix finds=drop_data | redis-cli FLUSHDB
+posix finds=drop_data | redis-cli FLUSHALL ASYNC
+posix finds=drop_data | redis-cli -n 3 FLUSHDB
+posix finds=drop_data | redis-cli -h cache -p 6380 -a secret FLUSHALL
+posix finds=drop_data | redis-cli --user me --pass x FLUSHALL
+posix finds=drop_data | redis-cli -u redis://cache:6379/0 flushdb
+posix finds=drop_data | redis-cli -r 3 flushall
+posix finds=drop_data | redis-cli <<< 'FLUSHALL'
+posix finds=drop_data | redis-cli <<EOF\nSET a 1\nFLUSHDB\nEOF
+posix finds=drop_data | echo FLUSHALL | redis-cli
+posix finds=drop_data | echo 'SET a 1\nFLUSHDB' | redis-cli -n 1
+posix finds=drop_data | redis-cli --scan --pattern 'sess:*' | xargs redis-cli del
+posix finds=drop_data | redis-cli --scan --pattern 'a*' | xargs redis-cli del
+posix finds=drop_data | redis-cli --scan --pattern 'sess:*' | xargs -L 100 redis-cli unlink
+posix finds=drop_data | redis-cli -h cache keys 'sess:*' | xargs redis-cli -h cache DEL
+posix finds=drop_data | redis-cli del $(redis-cli keys 'sess:*')
+posix finds=drop_data | redis-cli unlink $(redis-cli --scan --pattern 'a*')
+posix finds=drop_data | redis-cli --scan | xargs -I{} redis-cli del {}
+posix finds=drop_data | redis-cli --cluster call 127.0.0.1:7000 FLUSHALL
+posix finds=drop_data | redis-cli -h db --cluster call 127.0.0.1:7000 FLUSHDB
+posix finds=drop_data | redis-cli -t 5 FLUSHALL
+posix finds=drop_data | redis-cli -h db -t 5 FLUSHDB
+posix finds=drop_data | redis-cli --tls --cacertdir /etc/ssl/certs FLUSHALL
+posix finds=drop_data | redis-cli --show-pushes no FLUSHALL
+posix finds=drop_data | redis-cli -X tag FLUSHALL
+posix finds=drop_data | redis-cli --quoted-pattern x FLUSHALL
+posix finds=drop_data | redis-cli --intrinsic-latency 5 FLUSHDB
+posix finds=unknown | redis-cli $CMD
+posix finds=unknown | redis-cli "$CMD" k
+posix finds=unknown | redis-cli <<< "$CMD"
+
+# A Redis script that lists keys and deletes them drops data.
+posix safe | redis-cli EVAL 'return 1' 0
+posix safe | redis-cli EVAL "return redis.call('GET', KEYS[1])" 1 k
+posix safe | redis-cli --eval script.lua k , a
+# The keys a script is given are not a listing.
+posix safe | redis-cli eval "return redis.call('del', KEYS[1])" 1 k
+posix safe | redis-cli eval "return redis.call('get', KEYS[1])" 1 k
+posix safe | redis-cli eval "return redis.call('unlink', KEYS[1], KEYS[2])" 2 a b
+# A listing with nothing deleted.
+posix safe | redis-cli eval "return redis.call('keys', '*')" 0
+posix safe | redis-cli eval "return redis.call('scan', 0)" 0
+posix safe | redis-cli evalsha abc 1 k
+posix finds=drop_data | redis-cli eval "return redis.call('del', unpack(redis.call('keys', '*')))" 0
+posix finds=drop_data | redis-cli eval "for _,k in ipairs(redis.call('keys','*')) do redis.call('del',k) end" 0
+posix finds=drop_data | redis-cli eval "return redis.call('unlink', unpack(redis.call('scan', 0)))" 0
+posix finds=drop_data | redis-cli eval "return redis.call('DEL', unpack(redis.call('KEYS', ARGV[1])))" 0 'user:*'
+posix finds=drop_data | redis-cli eval "return redis.call([[del]], redis.call([==[keys]==], '*'))" 0
+posix finds=drop_data | redis-cli eval_ro "redis.call('del', redis.call('keys', '*'))" 0
+# Text fed to it, a line at a time.
+posix finds=drop_data | echo "eval \\"return redis.call('del', unpack(redis.call('keys','*')))\\" 0" | redis-cli
+# The flushes are still found.
+posix finds=drop_data | redis-cli EVAL "redis.call('FLUSHALL')" 0
+posix finds=drop_data | redis-cli eval "redis.call('flushall')" 0
+# A script only known when it runs.
+posix finds=unknown | redis-cli --cluster call 127.0.0.1:7000 EVAL "$S" 0
+posix finds=unknown | redis-cli EVAL "$S" 0
+posix finds=unknown | redis-cli EVALSHA "$SHA" 0
+posix finds=unknown | redis-cli FCALL "$F" 0
+posix finds=unknown | redis-cli EVAL $(cat s.lua) 0
+posix finds=unknown | echo "EVAL \\"$S\\" 0" | redis-cli
+
+# MongoDB.
+posix safe | mongosh
+posix safe | mongosh script.js
+posix safe | mongosh --file migrate.js
+posix safe | mongosh --eval 'db.users.find()'
+posix safe | mongosh mongodb://localhost/app --eval 'db.users.countDocuments()'
+posix safe | mongosh --eval 'db.users.deleteMany({age: {$lt: 3}})'
+posix safe | mongosh --eval 'db.users.deleteOne({})'
+posix safe | mongosh --eval 'db.users.insertOne({a: 1})'
+posix safe | mongosh --eval "print('db.dropDatabase()')"
+posix safe | mongosh --eval '// db.dropDatabase()'
+posix safe | mongo --eval 'db.stats()'
+posix safe | mongodump --db app
+posix safe | mongosh <<< 'db.users.find()'
+posix finds=drop_data | mongosh --eval 'db.dropDatabase()'
+posix finds=drop_data | mongosh --eval="db.dropDatabase()"
+posix finds=drop_data | mongosh app --eval 'db.users.drop()'
+posix finds=drop_data | mongosh --host db --port 27018 --eval 'db.users.drop()'
+posix finds=drop_data | mongosh -u me -p x --eval 'db.dropDatabase()'
+posix finds=drop_data | mongosh --eval 'db.getCollection("users").drop()'
+posix finds=drop_data | mongosh --eval 'db.users.deleteMany({})'
+posix finds=drop_data | mongosh --eval 'db.users.deleteMany({ })'
+posix finds=drop_data | mongosh --eval 'db.users.deleteMany()'
+posix finds=drop_data | mongosh --eval 'db.users.remove({})'
+posix finds=drop_data | mongosh --eval 'db.runCommand({dropDatabase: 1})'
+posix finds=drop_data | mongosh --eval 'db.stats(); db.dropDatabase()'
+posix finds=drop_data | mongosh --eval 'db.dropCollection("users")'
+posix finds=drop_data | mongo --eval 'db.dropDatabase()'
+posix finds=drop_data | mongo app --eval 'db.users.drop()'
+posix finds=drop_data | mongosh <<< 'db.dropDatabase()'
+posix finds=drop_data | mongosh <<EOF\ndb.users.drop()\nEOF
+posix finds=drop_data | echo 'db.dropDatabase()' | mongosh
+posix finds=unknown | mongosh --eval "$JS"
+posix finds=drop_data | mongosh --eval "db.$c.drop()"
+posix finds=unknown | mongosh --eval 'db.users.find("x'
+
+# ClickHouse, sqlcmd and cqlsh.
+posix safe | clickhouse-client -q 'SELECT 1'
+posix safe | clickhouse-client --query 'INSERT INTO t VALUES (1)'
+posix safe | clickhouse-client --query "ALTER TABLE t DELETE WHERE id = 3"
+posix safe | clickhouse-client --queries-file migrate.sql
+posix safe | clickhouse client -q 'SELECT 1'
+posix safe | clickhouse-client < schema.sql
+# ClickHouse's `SYSTEM` statements are not programs or drops.
+posix safe | clickhouse-client -q 'SYSTEM FLUSH LOGS'
+posix safe | clickhouse-client -q 'SYSTEM RELOAD DICTIONARIES'
+posix safe | clickhouse-client -q 'SYSTEM DROP DNS CACHE'
+posix safe | clickhouse-client -q 'SYSTEM DROP MARK CACHE'
+posix safe | clickhouse-client -q 'SYSTEM DROP UNCOMPRESSED CACHE'
+posix safe | clickhouse client -q 'SYSTEM FLUSH LOGS'
+posix safe | sqlcmd -S db -Q 'SELECT 1'
+posix safe | sqlcmd -S db -U sa -P x -Q 'DELETE FROM users WHERE id = 3'
+posix safe | sqlcmd -i schema.sql
+posix safe | sqlcmd -S db -C -Q 'SELECT 1'
+posix safe | cqlsh -e 'SELECT * FROM t'
+posix safe | cqlsh -f schema.cql
+posix safe | cqlsh host 9042 -e "DELETE FROM t WHERE k = 1"
+posix safe | cqlsh -e '// DROP TABLE t\nSELECT 1'
+posix finds=drop_data | clickhouse-client -q 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client --query 'TRUNCATE TABLE t'
+posix finds=drop_data | clickhouse-client --query='DROP DATABASE d'
+posix finds=drop_data | clickhouse-client -h db -u me -q 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client -q 'ALTER TABLE t DELETE WHERE 1'
+posix finds=drop_data | clickhouse-client -q 'ALTER TABLE t DROP PARTITION 1'
+posix finds=drop_data | clickhouse client -q 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client <<< 'DROP TABLE t'
+# A `DROP` that is not after a leading `SYSTEM` still drops.
+posix finds=drop_data | clickhouse-client -q 'SYSTEM FLUSH LOGS; DROP TABLE t'
+# MySQL's `system` runs a program; nothing else has one.
+posix finds=unknown | mysql -e 'system ls'
+posix finds=unknown | mariadb -e 'system rm -rf x'
+posix finds=drop_data | sqlcmd -S db -Q 'DROP TABLE users'
+posix finds=drop_data | sqlcmd -S db -U sa -P x -d app -Q 'TRUNCATE TABLE users'
+posix finds=drop_data | sqlcmd -q 'DELETE FROM users'
+posix finds=drop_data | sqlcmd -Q"DROP TABLE users"
+posix finds=drop_data | sqlcmd -S db -Q 'DELETE FROM a DELETE FROM b WHERE x = 1'
+posix finds=unknown | sqlcmd -S db -Q "EXEC xp_cmdshell 'dir'"
+posix finds=unknown | sqlcmd -Q "$Q"
+posix finds=drop_data | cqlsh -e 'DROP KEYSPACE app'
+posix finds=drop_data | cqlsh -e 'TRUNCATE app.users'
+posix finds=drop_data | cqlsh --execute 'DROP TABLE t'
+posix finds=drop_data | cqlsh host 9042 -u me -p x -e 'DROP TABLE t'
+posix finds=drop_data | cqlsh -e 'DELETE FROM t'
+posix finds=unknown | cqlsh -e "$Q"
+
+# The tools that drop a database.
+posix safe | dropdb --help
+posix safe | dropdb --version
+posix safe | createdb app
+posix safe | pg_dump app
+posix finds=drop_data | dropdb prod
+posix finds=drop_data | dropdb -h db -U me prod
+posix finds=drop_data | dropdb --if-exists prod
+posix finds=drop_data | dropdb -e prod
+posix finds=drop_data | sudo -u postgres dropdb prod
+posix finds=drop_data | dropuser alice
+posix finds=drop_data | dropuser --if-exists alice
+posix finds=drop_data | dropdb "$DB"
+
+# A line that runs no client is safe: the rule reads the program, not the
+# text.
+posix safe | echo 'psql -c "DROP TABLE t"'
+posix safe | grep FLUSHALL notes.txt
+posix safe | git log --grep='DROP TABLE'
+posix safe | psqlx -c 'DROP TABLE t'
+posix safe | python3 scripts/gen.py
+posix safe | sqlx migrate run
+posix safe | rails db:migrate
+
+# A client command is read anywhere outside a string.
+posix safe | psql <<< '\\echo hi \\\\ SELECT 1;'
+posix safe | psql <<< '\\o out.txt'
+posix safe | psql <<< '\\copy t to out.csv csv'
+posix safe | psql <<< '\\set ON_ERROR_STOP on'
+posix safe | psql -c 'SELECT 1 \\g out.txt'
+posix safe | psql -c 'SELECT 1 \\gx'
+# A command runs to the end of its line: the `;` is its argument.
+posix safe | psql -c 'SELECT 1 \\g out.txt; DROP TABLE t'
+posix safe | psql <<EOF\n\\dt\n\\d users\nSELECT 1;\nEOF
+posix safe | psql -c "SELECT 'C:\\\\dir'"
+posix safe | psql -c '\\dt \\\\ \\d users'
+# A backslash ends a command and starts the next.
+posix safe | psql -c '\\set x 1'
+posix safe | psql -c '\\set x 1 \\set y 2'
+posix safe | psql -c '\\set x "a b" \\echo done'
+posix safe | psql -c '\\echo C:\\\\tmp'
+posix safe | psql <<'EOF'\n\\set x 1\n\\set y 2\nEOF
+posix safe | mysql -e 'SELECT * FROM t \\G'
+posix safe | mysql -e 'SELECT 1\\g'
+posix safe | clickhouse-client -q 'SELECT 1 \\G'
+# What the query result runs, or sets for later, is not on the line.
+posix finds=unknown | psql <<EOF\nSELECT format('DROP TABLE %I', tablename) FROM pg_tables WHERE schemaname = 'public' \\gexec\nEOF
+posix finds=unknown | psql <<< "SELECT 'DROP TABLE users' \\gexec"
+posix finds=unknown | psql -c 'SELECT a FROM t \\gset'
+posix finds=unknown | psql -c "SELECT 'DROP TABLE t' \\set x 1 \\gexec"
+# A command that runs a program.
+posix finds=unknown | psql <<< 'SELECT 1 \\! touch x'
+posix finds=unknown | psql <<< '\\o |touch x'
+posix finds=unknown | psql <<< 'SELECT 1 \\g |touch x'
+posix finds=unknown | psql <<< '\\gx |touch x'
+posix finds=unknown | psql <<< '\\w |touch x'
+posix finds=unknown | psql <<< 'SELECT 1 \\g (format=csv) |touch x'
+posix finds=unknown | psql <<< '\\echo `touch x`'
+posix finds=unknown | psql <<< '\\o '\\''|touch x'\\'''
+posix finds=unknown | psql <<< "\\o $dest"
+posix finds=unknown | psql -c '\\copy t from program x'
+posix finds=unknown | psql -c '\\set x 1 \\! touch /tmp/pwn'
+posix finds=unknown | psql <<'EOF'\n\\set x 1 \\! touch /tmp/pwn\nEOF
+posix finds=unknown | psql -c '\\echo hi \\copy t from program x'
+posix finds=unknown | psql -c '\\set x 1 \\o |cat'
+posix finds=unknown | mysql -e 'SELECT 1 \\! touch x'
+# The SQL goes on after a command ends.
+posix finds=drop_data | psql <<< '\\echo hi \\\\ DROP TABLE users;'
+posix finds=drop_data | psql <<< '\\\\ DROP TABLE users'
+posix finds=drop_data | psql <<< '\\i x.sql \\\\ DROP TABLE t'
+posix finds=drop_data | psql <<EOF\n\\c prod\nDROP TABLE users;\nEOF
+posix finds=drop_data | psql -c 'SELECT 1 \\g out.txt \\\\ DROP TABLE t'
+posix finds=drop_data | psql -c '\\set x 1 \\g \\\\ DROP TABLE t'
+# `\g` and `\G` end a MySQL statement.
+posix finds=drop_data | mysql -e "DELETE FROM t \\g SELECT * FROM x WHERE a = 1"
+posix finds=drop_data | mysql -e 'SELECT 1 \\G DROP TABLE t'
+
+# Each client reads its own quoting.
+# PostgreSQL's `$tag$` and `E'…'` strings, and nested comments.
+posix safe | psql -c 'SELECT $a$; DROP TABLE t; $a$'
+# DuckDB's parser is PostgreSQL's, so it has `$tag$` and `E'…'` strings too,
+# which hide what they hold.
+posix safe | duckdb ~/x.db 'SELECT $a$; DROP TABLE t; SELECT $a$'
+posix safe | duckdb ~/x.duckdb "SELECT \\$a\\$; DROP TABLE t; \\$a\\$"
+posix safe | duckdb ~/x.duckdb "SELECT E'a\\\\'; DROP TABLE t; --'"
+posix safe | psql -c "SELECT E'a\\\\'; DROP TABLE t; --'"
+posix safe | psql -c "/* /* ; DROP TABLE t */ */ SELECT 1"
+# Comments do not nest in MySQL and SQLite: the string after the first `*/`
+# hides what follows.
+posix safe | mysql -e "/* /* */ ' */ DROP TABLE t; --'"
+posix safe | sqlite3 ~/x.db "/* /* */ ' */ DROP TABLE t; --'"
+# ClickHouse: heredocs, `#` comments, backslash escapes, and block comments
+# that nest.
+posix safe | clickhouse-client -q 'SELECT $a$; DROP TABLE t; $a$'
+posix safe | clickhouse-client -q 'SELECT 1 # ; DROP TABLE t'
+posix safe | clickhouse-client -q "SELECT 'a\\\\'; DROP TABLE t; --'"
+posix safe | clickhouse-client -q "/* /* ; DROP TABLE t */ */ SELECT 1"
+# MySQL and SQLite: backticks.
+posix safe | mysql -e 'SELECT `a;b` FROM t'
+posix safe | sqlite3 ~/x.db 'SELECT `a;b` FROM t'
+# SQLite and SQL Server: brackets.
+posix safe | sqlite3 ~/x.db 'SELECT [a;b] FROM t'
+posix safe | sqlcmd -Q 'SELECT [a;b] FROM t'
+posix safe | sqlcmd -Q 'SELECT [a]]; DROP TABLE t; ] FROM t'
+# CQL: `$$` strings.
+posix safe | cqlsh -e 'INSERT INTO t (a) VALUES ($$; DROP TABLE t; $$)'
+# SQLite has no `$tag$` string.
+posix finds=drop_data | sqlite3 ~/x.db 'SELECT $a$; DROP TABLE t; SELECT $a$'
+# MySQL and MariaDB read `$$` as an identifier.
+posix finds=drop_data | mysql -e 'SELECT 1 AS $$; DROP TABLE t; SELECT 1 AS $$'
+# CQL has `$$` and no tag.
+posix finds=drop_data | cqlsh -e 'SELECT $a$; DROP TABLE t; $a$'
+# `E'…'` is PostgreSQL's.
+posix finds=drop_data | sqlite3 ~/x.db <<'EOF'\nSELECT E'a\\';\nDROP TABLE t;\n--';\nEOF
+# In DuckDB, what looked like a string is code.
+posix finds=drop_data | duckdb ~/x.duckdb "SELECT \\$\\$'\\$\\$; DROP TABLE t; SELECT \\$\\$'\\$\\$"
+posix finds=drop_data | duckdb ~/x.duckdb "SELECT E'a\\\\' ; SELECT '; DROP TABLE t; --'"
+# PostgreSQL has no backtick, and psql splits stdin on `;`.
+posix finds=drop_data | psql <<'EOF'\nSELECT `;\nDROP TABLE users;\nSELECT `;\nEOF
+# PostgreSQL's and SQL Server's block comments nest.
+posix finds=drop_data | psql -c "/* /* */ ' */ DROP TABLE users; --'"
+posix finds=drop_data | sqlcmd -Q "/* /* */ ' */ DROP TABLE users; --'"
+# So do ClickHouse's: the comment ends at the last `*/`, and the quote after
+# the DROP is never closed.
+posix finds=unknown | clickhouse-client -q "/* /* */ ' */ DROP TABLE t; SELECT '"
+posix finds=drop_data | clickhouse-client -q "/* /* */ ' */ SELECT 1; DROP TABLE t; /* ' */"
+# MySQL and ClickHouse read a backslash in a string.
+posix finds=drop_data | sqlite3 ~/x.db "SELECT 'a\\\\'; DROP TABLE t; --'"
+# DuckDB's comments may nest: not read.
+posix finds=unknown | duckdb ~/x.db '/* /* */ */ DROP TABLE t'
+# A string, bracket or comment never closed.
+posix finds=unknown | sqlite3 ~/x.db 'SELECT [a; DROP TABLE t'
+posix finds=unknown | sqlcmd -Q 'SELECT [a; DROP TABLE t'
+posix finds=unknown | sqlite3 ~/x.db 'SELECT `a; DROP TABLE t'
+posix finds=unknown | duckdb ~/x.db 'SELECT 1 /* DROP TABLE t'
+
+# Statements that end before a string that never closes still run: a client
+# sends each one as its `;` arrives.
+posix safe | mysql -e "SELECT 'it\\'s'"
+posix safe | mysql -e "SELECT 'it\\'s'; SELECT 1"
+posix safe | mariadb -e "SELECT 'it\\'s'"
+posix finds=drop_data | mysql -e "SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '"
+posix finds=drop_data | mariadb -e "SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '"
+posix finds=drop_data | mysql <<'EOF'\nSET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE t; SELECT '\nEOF
+posix finds=drop_data | mysql -e "SET sql_mode='ANSI_QUOTES'; SELECT \\"a\\\\\\"; DROP TABLE t; SELECT \\""
+posix finds=drop_data | mysql -e "SELECT 'a\\'; DROP TABLE t; SELECT '"
+posix finds=drop_data | psql <<'EOF'\nSET standard_conforming_strings = off;\nSELECT 'a\\''; DROP TABLE t; SELECT ';\nEOF
+
+# A long option is any unique start of one.
+# `--c` is ambiguous (`--command`, `--csv`): psql refuses to run.
+posix safe | psql --c 'DROP TABLE users'
+# Not a statement option: its value is read as the next one.
+posix safe | psql --host h --dbname db -c 'SELECT 1'
+posix safe | psql --ho h 'DROP TABLE users'
+posix safe | psql --user-typo x
+posix safe | mysql --e 'DROP TABLE t'
+posix safe | mysql --host h 'DROP TABLE t'
+posix finds=drop_data | psql --co 'DROP TABLE users'
+posix finds=drop_data | psql --com 'DROP TABLE users'
+posix finds=drop_data | psql --comm='DROP TABLE users'
+posix finds=drop_data | psql --db x --co 'DROP TABLE users'
+posix finds=drop_data | mysql --ex 'DROP TABLE t'
+posix finds=drop_data | mysql --exec='DROP TABLE t'
+posix finds=drop_data | mysql --init_command='DROP TABLE t'
+posix finds=drop_data | mysql --init 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client --query 'DROP TABLE t'
+posix finds=drop_data | sqlcmd --quer 'DROP TABLE t'
+posix finds=drop_data | cqlsh --exe 'DROP TABLE t'
+posix finds=drop_data | mongosh --ev 'db.dropDatabase()'
+
+# A password option with no value does not take the statement option.
+posix safe | mongosh -u admin -p --eval 'db.users.find()'
+posix safe | mongosh -u admin -p secret --eval 'db.users.find()'
+posix safe | mongosh --username admin --password secret --eval 'db.users.find()'
+posix safe | mongosh --username admin --password --eval 'db.users.find()'
+posix safe | mongosh --password=secret --eval 'db.users.find()'
+posix safe | mongo -u admin -p --eval 'db.users.find()'
+posix safe | clickhouse-client --password secret --query 'SELECT 1'
+posix safe | clickhouse-client --password --query 'SELECT 1'
+posix safe | clickhouse-client --password=secret -q 'SELECT 1'
+posix safe | clickhouse-client --password -q 'SELECT 1'
+# The word after a password with no value is an option of its own.
+posix finds=drop_data | mongosh -u admin -p --eval 'db.dropDatabase()'
+posix finds=drop_data | mongosh --username admin --password --eval 'db.dropDatabase()'
+posix finds=drop_data | mongo -u admin -p --eval 'db.dropDatabase()'
+posix finds=drop_data | mongosh --host -p --eval 'db.dropDatabase()'
+posix finds=drop_data | clickhouse-client --password --query 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client --password -q 'DROP TABLE t'
+posix finds=drop_data | clickhouse-client --pass -q 'DROP TABLE t'
+# A password that has a value still leaves the statement read.
+posix finds=drop_data | mongosh -u admin -p secret --eval 'db.dropDatabase()'
+posix finds=drop_data | clickhouse-client --password secret --query 'DROP TABLE t'
+# A statement that starts with `-` is read as one too.
+posix finds=drop_data | mongosh --eval '-1; db.dropDatabase()'
+
+# A `WHERE` picks the rows of its own statement only: a batch without
+# semicolons keeps each `WHERE` with the statement it follows.
+posix safe | psql -c 'DELETE FROM t WHERE id = 1'
+posix safe | psql -c 'DELETE FROM t WHERE id IN (SELECT id FROM u)'
+posix safe | psql -c 'WITH d AS (DELETE FROM t WHERE x = 1 RETURNING *) SELECT * FROM d'
+posix safe | psql -c 'DELETE FROM t WHERE id = 1; UPDATE u SET a = 1 WHERE b = 2'
+posix safe | psql -c 'UPDATE t SET a = (SELECT 1) WHERE id = 1'
+posix safe | psql -c 'UPDATE users SET a = (SELECT 1) WHERE id = 2'
+posix safe | psql -c 'UPDATE users SET a = 1 FROM (SELECT 1 AS id) s WHERE users.id = s.id'
+posix safe | psql -c 'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE WHEN NOT MATCHED THEN INSERT VALUES (1)'
+posix safe | sqlcmd -Q 'UPDATE users SET active = 0 WHERE id = 1 SELECT * FROM users'
+posix safe | sqlcmd -Q 'DELETE FROM users WHERE id = 1 PRINT 1'
+posix finds=drop_data | psql -c 'DELETE FROM t'
+posix finds=drop_data | psql -c 'DELETE FROM t WHERE 1 = 1'
+posix finds=drop_data | psql -c 'DELETE FROM t WHERE (1)'
+posix finds=drop_data | psql -c 'WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d WHERE x = 1'
+posix finds=drop_data | psql -c 'DELETE FROM a DELETE FROM b WHERE x = 1'
+posix finds=drop_data | psql -c 'SELECT (DELETE FROM t) WHERE x = 1'
+posix finds=drop_data | psql -c 'DELETE FROM t WHERE id = 1; UPDATE u SET a = 1'
+posix finds=drop_data | psql -c 'WITH x AS (SELECT 1) MERGE INTO t USING x ON true WHEN MATCHED THEN DELETE; DELETE FROM u'
+posix finds=drop_data | sqlcmd -Q "UPDATE users SET active = 0 SELECT * FROM users WHERE id = 1"
+posix finds=drop_data | psql -c "UPDATE users SET a = 1 SELECT 1 WHERE id = 2"
+posix finds=drop_data | sqlcmd -Q "DELETE FROM users PRINT 'x' SELECT 1 WHERE a = 1"
+posix finds=drop_data | sqlcmd -Q "DELETE FROM users EXEC sp_who SELECT 1 WHERE a = 1"
+posix finds=drop_data | sqlcmd -Q "DELETE FROM users EXECUTE sp_who WHERE a = 1"
+# A `WHERE` that picks every row, then another statement.
+posix finds=drop_data | psql -c "UPDATE users SET a = 1 WHERE 1 SELECT 2"
+powershell safe | sqlcmd -S db -Q 'UPDATE users SET a = 0 WHERE id = 1 SELECT 1'
+powershell finds=drop_data | sqlcmd -S db -Q 'UPDATE users SET a = 0 SELECT * FROM users WHERE id = 1'
+
+# `ON` before a verb is a statement, unless it is a rule.
+posix safe | psql -c "CREATE TEMP TABLE x (a int) ON COMMIT DELETE ROWS"
+posix safe | psql -c "CREATE TEMP TABLE x (a int) ON COMMIT DROP"
+posix safe | sqlcmd -Q "SET NOCOUNT ON DELETE FROM users WHERE id = 1"
+posix safe | psql -c "CREATE TABLE t (p int REFERENCES p(id) ON DELETE SET NULL ON UPDATE NO ACTION)"
+posix safe | psql -c "CREATE TABLE t (p int REFERENCES p(id) ON DELETE RESTRICT ON UPDATE CASCADE)"
+posix safe | mysql -e "CREATE TABLE t (a timestamp ON UPDATE CURRENT_TIMESTAMP)"
+posix safe | psql -c "CREATE RULE r AS ON DELETE TO t DO INSTEAD NOTHING"
+posix safe | psql -c "CREATE RULE r AS ON UPDATE TO t DO INSTEAD NOTHING"
+posix finds=drop_data | sqlcmd -Q "SET NOCOUNT ON DELETE FROM users"
+posix finds=drop_data | sqlcmd -Q "SET QUOTED_IDENTIFIER ON\nDELETE FROM t"
+posix finds=drop_data | sqlcmd -Q "SET ANSI_NULLS ON UPDATE users SET a = 1"
+posix finds=drop_data | sqlcmd -Q "SET NOCOUNT ON UPDATE users SET a = 1 SELECT 1 WHERE b = 2"
+posix finds=drop_data | psql -c "CREATE TEMP TABLE x (a int) ON COMMIT DELETE ROWS; DELETE FROM t"
+
+# `THEN DELETE` is part of a MERGE and nothing else.
+posix safe | psql -c 'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE'
+posix safe | psql -c 'MERGE INTO t USING s ON t.id = s.id WHEN NOT MATCHED BY SOURCE THEN DELETE'
+posix safe | psql -c 'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED AND s.x THEN UPDATE SET a = 1 WHEN NOT MATCHED THEN INSERT VALUES (1)'
+posix safe | psql -c 'WITH s AS (SELECT 1 AS id) MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE'
+posix finds=drop_data | psql -c 'DO $$ BEGIN IF true THEN DELETE FROM users; END IF; END $$'
+posix finds=drop_data | psql -c 'DO $$ BEGIN IF true THEN UPDATE users SET a = 1; END IF; END $$'
+posix finds=drop_data | psql -c 'DO $$ BEGIN EXCEPTION WHEN OTHERS THEN DELETE FROM users; END $$'
+posix finds=drop_data | psql -c 'DO $$ BEGIN IF true THEN DROP TABLE users; END IF; END $$'
+posix finds=drop_data | psql -c 'SELECT CASE WHEN a THEN 1 END; DELETE FROM users'
+# Not the matched clause of a MERGE.
+posix finds=drop_data | psql -c 'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DO NOTHING; IF x THEN DELETE FROM t'
+
+# A `DROP` that takes away a constraint, a default, an identity or an
+# expression deletes no data; `DROP IDENTITY` and `DROP EXPRESSION` only of a
+# column.
+posix safe | psql -c 'ALTER TABLE users ALTER COLUMN name DROP NOT NULL'
+posix safe | psql -c 'ALTER TABLE users ALTER COLUMN name DROP DEFAULT'
+posix safe | psql -c 'ALTER TABLE users ALTER COLUMN id DROP IDENTITY'
+posix safe | psql -c 'ALTER TABLE users ALTER COLUMN id DROP IDENTITY IF EXISTS'
+posix safe | psql -c 'ALTER TABLE users ALTER COLUMN c DROP EXPRESSION'
+posix safe | psql -c 'ALTER TABLE users DROP CONSTRAINT users_pkey'
+posix safe | psql -c 'ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey CASCADE'
+posix safe | psql -c 'CREATE TEMP TABLE t (a int) ON COMMIT DROP'
+posix safe | sqlcmd -Q 'ALTER TABLE users DROP CONSTRAINT users_pkey'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN c DROP IDENTITY'
+posix safe | psql -c 'ALTER TABLE t ALTER c DROP IDENTITY IF EXISTS'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN c DROP EXPRESSION'
+posix safe | psql -c 'ALTER TABLE t ALTER c DROP expression'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN "c" DROP identity'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN identity DROP identity'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN c DROP NOT NULL'
+posix safe | psql -c 'ALTER TABLE t ALTER COLUMN c DROP DEFAULT'
+posix safe | psql -c 'ALTER TABLE t DROP CONSTRAINT k'
+posix finds=drop_data | psql -c 'ALTER TABLE users DROP COLUMN name'
+posix finds=drop_data | psql -c 'ALTER TABLE users DROP name'
+posix finds=drop_data | mysql -e 'ALTER TABLE t DROP PARTITION p1'
+posix finds=drop_data | psql -c 'ALTER TABLE users DROP CONSTRAINT c, DROP COLUMN name'
+posix finds=drop_data | psql -c 'ALTER TABLE users ALTER COLUMN name DROP NOT NULL; DROP TABLE users'
+posix finds=drop_data | psql -c 'CREATE TEMP TABLE t (a int) ON COMMIT DROP; DROP TABLE users'
+posix finds=drop_data | psql -c 'ALTER TABLE users DROP DEFAULT, DROP COLUMN name'
+# The word `COLUMN` is optional and neither word is reserved.
+posix finds=drop_data | mysql -e 'ALTER TABLE users DROP identity'
+posix finds=drop_data | psql -c 'ALTER TABLE t DROP expression'
+posix finds=drop_data | psql -c 'ALTER TABLE t DROP COLUMN identity'
+posix finds=drop_data | psql -c 'ALTER TABLE t DROP IF EXISTS identity'
+posix finds=drop_data | psql -c 'ALTER TABLE t ALTER c TYPE int, DROP identity'
+posix finds=drop_data | sqlite3 ~/x.db 'ALTER TABLE users DROP identity'
+posix finds=drop_data | sqlite3 ~/x.db 'ALTER TABLE users DROP expression'
+
+# On Windows.
+powershell safe | sqlcmd -S db -Q 'SELECT 1'
+powershell safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = 3"
+powershell safe | psql -c 'SELECT 1'
+powershell safe | sqlite3 data.db 'DROP TABLE t'
+powershell safe | sqlite3 C:\\Users\\me\\dev\\repo\\data.db 'DROP TABLE t'
+powershell safe | Get-Content schema.sql | psql app
+powershell safe | Write-Output 'SELECT 1' | psql app
+powershell safe | Select-String 'DROP TABLE' migrations\\001.sql
+powershell finds=drop_data | sqlcmd -S db -Q 'DROP TABLE users'
+powershell finds=drop_data | sqlcmd -S db -Q "TRUNCATE TABLE users"
+powershell finds=drop_data | sqlcmd -S db -Q 'DELETE FROM users'
+powershell finds=drop_data | sqlcmd -S db -q 'DROP DATABASE prod'
+powershell finds=drop_data | psql -c 'DROP TABLE users'
+powershell finds=drop_data | psql.exe -c 'DROP TABLE users'
+powershell finds=drop_data | mysql -e 'DROP DATABASE prod'
+powershell finds=drop_data | sqlite3 C:\\Users\\me\\data.db 'DROP TABLE t'
+powershell finds=drop_data | sqlite3 $env:DB 'DROP TABLE t'
+powershell finds=drop_data | redis-cli FLUSHALL
+powershell finds=drop_data | dropdb prod
+powershell finds=drop_data | Write-Output 'DROP TABLE users' | psql app
+powershell finds=drop_data | echo 'DROP TABLE users' | psql app
+powershell finds=unknown | sqlcmd -S db -Q $q
+cmd safe | sqlcmd -S db -Q "SELECT 1"
+cmd safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = 3"
+cmd safe | sqlcmd -i schema.sql
+cmd finds=drop_data | sqlcmd -S db -Q "DROP TABLE users"
+cmd finds=drop_data | sqlcmd -S db -Q "TRUNCATE TABLE users"
+cmd finds=drop_data | sqlcmd /S db /Q "DROP TABLE users"
+cmd finds=drop_data | psql -c "DROP TABLE users"
+cmd finds=drop_data | redis-cli FLUSHALL
+cmd finds=drop_data | echo DROP TABLE users | sqlcmd -S db
+cmd finds=unknown | sqlcmd -S db -Q "%Q%"
