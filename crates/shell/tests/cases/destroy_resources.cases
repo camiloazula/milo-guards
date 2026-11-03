@@ -944,10 +944,11 @@ powershell finds=destroy_resources | gcloud projects delete prod
 powershell finds=destroy_resources | az group delete --name rg --yes
 powershell finds=destroy_resources | docker ps -aq | ForEach-Object { docker rm -f $_ }
 # The cloud modules' own cmdlets: a `Remove-` cmdlet whose noun starts with a
-# cloud module's prefix (`Az`, `AzureRM`, AWS's service prefixes, `Gc`) is a
-# delete in that cloud, inside a block too. Listing and creating stay safe,
-# as do the cmdlets that only change the module's sign-in on this machine,
-# and cmdlets of other modules whose noun only looks like a prefix.
+# cloud module's prefix (`Az`, `AzureRM`, AWS's service prefixes, `Gc`, `Gke`,
+# `Bq`, `Mg`, `Entra`, `Msol`) is a delete in that cloud, inside a block too.
+# Listing and creating stay safe, as do the cmdlets that only change the
+# module's sign-in on this machine, and cmdlets of other modules whose noun
+# only looks like a prefix.
 powershell safe | Get-AzVM
 powershell safe | Get-AzResourceGroup
 powershell safe | Get-S3Bucket
@@ -961,6 +962,21 @@ powershell safe | Remove-DscConfigurationDocument -Stage Pending
 powershell safe | Remove-RDSessionCollection -CollectionName c
 powershell safe | Remove-OrganizationRelationship -Identity x
 powershell safe | Remove-AWSCredentialProfile -ProfileName dev
+powershell safe | Remove-EcpVirtualDirectory -Identity x
+powershell safe | Remove-CDDrive -CD $cd -Confirm:$false
+powershell safe | Remove-OSCustomizationSpec -OSCustomizationSpec s
+powershell safe | Remove-EsxSoftwareDepot -SoftwareDepot d
+powershell safe | Remove-RsCatalogItem -RsFolder /x
+powershell safe | Remove-Computer -WorkgroupName w
+powershell rules=system_settings | Remove-LocalUser -Name u
+powershell safe | Remove-LocalGroup -Name g
+powershell safe | Remove-WmiObject -Class Win32_Share -Filter x
+powershell safe | Remove-ADComputer -Identity pc
+powershell safe | Remove-ADServiceAccount -Identity sa
+powershell safe | Remove-CertificateEnrollmentPolicyServer -Url x
+powershell safe | Remove-OdbcDsn -Name d -DsnType User
+powershell safe | Remove-MaskingSet -FriendlyName m
+powershell safe | Remove-Secret -Name s -Vault v
 powershell finds=destroy_resources | Remove-AzResourceGroup -Name rg -Force
 powershell finds=destroy_resources | Remove-AzVM -Name vm -Force
 powershell finds=destroy_resources | Remove-AzStorageAccount -Name s -ResourceGroupName rg -Force
@@ -986,6 +1002,35 @@ powershell finds=destroy_resources | Az.Resources\\Remove-AzResourceGroup -Name 
 powershell finds=destroy_resources | Remove-GcsBucket -Name b -Force
 powershell finds=destroy_resources | Remove-GceInstance -Name vm
 powershell finds=destroy_resources | Remove-GcSqlInstance -Instance db
+powershell finds=destroy_resources | Remove-GkeCluster -ClusterName c
+powershell finds=destroy_resources | Remove-GkeNodePool -ClusterName c -NodePoolName p
+powershell finds=destroy_resources | Remove-BqDataset -DatasetId d -Force
+powershell finds=destroy_resources | Remove-BqTable -Table t
+powershell finds=destroy_resources | Remove-KSTable -KeyspaceName k -TableName t
+powershell finds=destroy_resources | Remove-QLDBLedger -Name l
+powershell finds=destroy_resources | Remove-TSWDatabase -DatabaseName d
+powershell finds=destroy_resources | Remove-SDBDomain -DomainName d
+powershell finds=destroy_resources | Remove-LKFResource -ResourceArn a
+powershell finds=destroy_resources | Remove-KVStream -StreamARN a
+powershell finds=destroy_resources | Remove-BDRCustomModel -ModelIdentifier m
+powershell finds=destroy_resources | Remove-GDDetector -DetectorId d
+powershell finds=destroy_resources | Remove-SHUBHub -Force
+powershell finds=destroy_resources | Remove-QSDashboard -AwsAccountId 1 -DashboardId d
+powershell finds=destroy_resources | Remove-NWFWFirewall -FirewallName f
+powershell finds=destroy_resources | Remove-DCConnection -ConnectionId c
+powershell finds=destroy_resources | Remove-GACLAccelerator -AcceleratorArn a
+powershell finds=destroy_resources | Remove-APSFleet -Name f
+powershell finds=destroy_resources | Remove-CONNInstance -InstanceId i
+powershell finds=destroy_resources | Remove-PINApp -ApplicationId a
+powershell finds=destroy_resources | Remove-REKCollection -CollectionId c
+powershell finds=destroy_resources | Remove-SCProduct -Id p
+powershell finds=destroy_resources | Remove-CARepository -Domain d -Repository r
+powershell finds=destroy_resources | Remove-CSDomain -DomainName d
+powershell finds=destroy_resources | Remove-SECSecret -SecretId s
+powershell finds=destroy_resources | Remove-SecurityIRResourceTag -ResourceArn a -TagKey k
+powershell finds=destroy_resources | Remove-MgUser -UserId u
+powershell finds=destroy_resources | Remove-EntraUser -UserId u
+powershell finds=destroy_resources | Remove-MsolUser -UserPrincipalName u
 powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Remove-AzVM -Name vm -Force }
 posix finds=destroy_resources | pwsh -c 'Remove-AzResourceGroup -Name rg -Force'
 cmd finds=destroy_resources | powershell -Command Remove-AzResourceGroup -Name rg -Force
@@ -1035,6 +1080,9 @@ posix rules=destroy_resources first=destroy_resources reason="deletes AWS resour
 powershell rules=destroy_resources first=destroy_resources reason="deletes Azure resources" | Remove-AzResourceGroup -Name rg -Force
 powershell rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | Remove-EC2Instance -InstanceId i-1 -Force
 powershell rules=destroy_resources first=destroy_resources reason="deletes Google Cloud resources" | Remove-GcsBucket -Name b -Force
+powershell rules=destroy_resources first=destroy_resources reason="deletes Google Cloud resources" | Remove-GkeCluster -ClusterName c
+powershell rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | Remove-SecurityIRResourceTag -ResourceArn a -TagKey k
+powershell rules=destroy_resources first=destroy_resources reason="deletes Microsoft Entra or Microsoft 365 objects" | Remove-MgUser -UserId u
 posix rules=destroy_resources first=destroy_resources reason="deletes every object under a prefix" | aws s3 rm s3://b --recursive
 posix rules=unknown first=unknown reason="runs a docker command only known when it runs" | docker $cmd ps
 posix rules=unknown first=unknown reason="runs an aws command only known when it runs" | aws $service
