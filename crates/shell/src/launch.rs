@@ -628,6 +628,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stdin,
         startup,
         depth,
+        names,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -669,6 +670,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listed: Vec::new(),
         tf_cli_args: Vec::new(),
         depth,
+        names,
     }
 }
 
