@@ -898,6 +898,20 @@ pub(crate) struct Place {
     stayed: Vec<Option<Arg>>,
 }
 
+/// Where the line is when the right side of an `||` ends the shell (see
+/// [`Split::exits_after`]): the rest of the line runs only when the left side
+/// did not fail.
+#[derive(Debug)]
+pub(crate) struct Exit {
+    dir: Option<Arg>,
+    dir_code: bool,
+    drive: Option<char>,
+    drive_guess: bool,
+    maybe_moved: bool,
+    elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
+}
+
 /// A list of commands joined by `&&` or `||` being read, from
 /// [`Split::list_start`] to [`Split::list_end`].
 #[derive(Debug)]
@@ -1604,6 +1618,45 @@ impl Split {
             self.chain.stops.extend(list.places.iter().cloned());
         }
         self.add_stops();
+    }
+
+    /// The right side of the `||` about to be read ends the shell (`cd s ||
+    /// exit`): the rest of the line runs only when the left side did not
+    /// fail, so a plain `cd` that ends it ran (none of the folders it may
+    /// have stayed in, see [`Self::stayed`]), and so did every right side of
+    /// `&&` in it (none of the folders it may have stopped in, see
+    /// [`Chain`]). Note where the line is then, before [`Self::list_or`] says
+    /// the left side may have failed, which only the right side reads;
+    /// [`Self::exited`] puts it back when that side ends.
+    pub(crate) fn exits_after(&self) -> Exit {
+        let mut stayed = self.stayed.clone();
+        stayed.retain(|folder| !self.last_stayed.contains(folder));
+        Exit {
+            dir: self.dir.clone(),
+            dir_code: self.dir_code,
+            drive: self.drive,
+            drive_guess: self.drive_guess,
+            maybe_moved: self.maybe_moved,
+            elsewhere: self.elsewhere.clone(),
+            stayed,
+        }
+    }
+
+    /// The right side of `||` that ended the shell has been read: put the
+    /// line back where [`Self::exits_after`] noted it, for what comes after.
+    /// The `cd`s read since still count as read (see [`Self::moves`]), which
+    /// only makes a later action less certain of where it runs.
+    pub(crate) fn exited(&mut self, exit: Exit) {
+        self.dir = exit.dir;
+        self.dir_code = exit.dir_code;
+        self.drive = exit.drive;
+        self.drive_guess = exit.drive_guess;
+        self.maybe_moved = exit.maybe_moved;
+        self.elsewhere = exit.elsewhere;
+        self.stayed = exit.stayed;
+        self.last_stayed.clear();
+        self.chain.stops.clear();
+        self.chain.stayed.clear();
     }
 
     /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
