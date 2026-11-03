@@ -7,9 +7,10 @@
 # modifier or `coproc` is read where the shell runs it: past the name, the `{`
 # words, `NAME=value` words and `!`. The loop, conditional and function forms
 # are cut up by the grammar with the body behind a program named `do`, `then`
-# or `{`, zsh reads a `{` stuck to a word as a group where the grammar reads
-# `{rm` as a program, and the grammar takes the words after a redirect's
-# target for more targets: none of these can be read.
+# or `{`, and zsh reads a `{` stuck to a word as a group where the grammar
+# reads `{rm` as a program: neither can be read. The words the grammar takes
+# for more files of a redirect are the command's arguments, as they are
+# without `coproc`.
 posix safe | noglob ls *.txt
 posix safe | nocorrect ls -la
 posix safe | - ls
@@ -88,14 +89,14 @@ posix finds=elevated | coproc FOO=1 sudo rm -rf ~
 posix finds=unknown | coproc $X=1 rm -rf ~
 posix finds=delete | coproc GLOBIGNORE=x bash -c 'rm -rf *git'
 # A command after a redirect.
-posix finds=unreadable | coproc { 2>/dev/null rm -rf ~; }
-posix finds=unreadable | coproc { > out rm -rf ~; }
-posix finds=unreadable | coproc { < in rm -rf ~; }
-posix finds=unreadable | coproc { 2>&1 rm -rf ~; }
-posix finds=unreadable | coproc NAME { 2>/dev/null rm -rf ~; }
-posix finds=unreadable | coproc NAME { > out rm -rf ~; }
-posix finds=unreadable | coproc > out rm -rf ~
-posix finds=unreadable | coproc 2>/dev/null rm -rf ~
+posix finds=delete | coproc { 2>/dev/null rm -rf ~; }
+posix finds=delete | coproc { > out rm -rf ~; }
+posix finds=delete | coproc { < in rm -rf ~; }
+posix finds=delete | coproc { 2>&1 rm -rf ~; }
+posix finds=delete | coproc NAME { 2>/dev/null rm -rf ~; }
+posix finds=delete | coproc NAME { > out rm -rf ~; }
+posix finds=delete | coproc > out rm -rf ~
+posix finds=delete | coproc 2>/dev/null rm -rf ~
 
 # What they run decides the effect; an assignment in front of the command is
 # a variable set, as it is without `coproc`.

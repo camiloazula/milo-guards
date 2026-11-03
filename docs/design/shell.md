@@ -69,6 +69,17 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   "comment" that hides a command cannot be read.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
+- The bash grammar reads every word after the operator of a redirect as one
+  more file (`rm 2>/dev/null -rf ~`, `command >out rm -rf ~`) and the shell
+  only the first: the rest are arguments of the command, after the ones
+  written before the redirect, so the line is read as `rm -rf ~`. The same
+  for the words after a here-document's delimiter on the line it starts
+  (`rm <<EOF -rf ~`) and a redirect the grammar holds inside a
+  here-document's (`cat <<EOF > out -n`). On a list, a pipeline or a
+  negation they are the last command's, as the redirect is. A group, a loop,
+  a subshell or a function takes no arguments, and the shell refuses such a
+  line (`{ ls; } > out rm -rf ~`): it is `unreadable`, `has words after a
+  redirect that cannot be read`.
 
 ### Wrappers and scripts
 
@@ -170,17 +181,42 @@ one (`coproc NAME { … }`). The program is the first word past the name, the
 `{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
 both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
-the `rm`. The grammar has no `coproc`, so three forms are not read, and are
-risky:
+the `rm`. A redirect in front of the command gives the command its words
+back, as any redirect does (see [Splitting](#splitting)): `coproc { 2>/dev/null
+rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar has no
+`coproc`, so two forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
-- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
-  `coproc > out rm -rf ~`): the grammar takes the words after its target for
-  more targets, so the command is not among the arguments: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
+
+The other words that start a command of their own are read the same way,
+since the grammar does not read a group or a negation after them either.
+bash's and zsh's `time` (after its `-p`) runs the command after it, past `{`,
+`!` and `NAME=value` words: `time { rm -rf ~; }`, `time ! rm -rf ~` and
+`time FOO=1 rm -rf ~` judge the `rm`. After `!` the grammar reads a group's
+`{` as a program; wherever `{` or `!` is a program, the command after it is
+what runs: `! { rm -rf ~; }` is `Delete`. zsh's `repeat
+N` runs the command or group after its count (`repeat 3 rm -rf ~`, `repeat 3 {
+rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`). A loop,
+a conditional or a function after any of them (`time for …`, `! while …`), and
+a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
+grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
+`for` or any of the words that open such a command, and one that starts with a
+`{`, is read so wherever it stands.
+
+The program after a wrapper is the word the shell makes of it. A brace list
+(`command {rm,-rf,~}`, `r{m,x} -rf ~`) is spelt out into words, the first of
+which is the program: `Unreadable`, `runs a program a brace list names, which
+cannot be read`, behind a wrapper or not (`{rm,-rf,~}` alone is a line the
+grammar cannot parse). A word with an unquoted wildcard (`./* -rf /`, `?? -rf
+/`, `[r]m`) names the first file it matches, so the program is only known when
+it runs: `Unknown`, as for `$CMD`. A quoted one (`'*' -h`) is the name as
+written; behind a wrapper (`env ./* -rf /`) the guard no longer knows whether
+the word was quoted, and reads a wildcard as one either way. A `[` alone is a
+name, as the program `[` is.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -2052,6 +2088,12 @@ A line is never safe because the guard gave up on it. These come back risky:
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
+- A program named by a brace list or a wildcard (`command {rm,-rf,~}`, `./*
+  -rf /`).
+- A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
+  or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words
+  after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
+  out rm -rf ~`), which the grammar cuts up.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
   than the limit.
