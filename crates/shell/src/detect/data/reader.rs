@@ -144,6 +144,9 @@ pub(super) struct Reading {
     /// It opens or attaches another database (`ATTACH`, `.open`), so the
     /// file the client was given is not the only one it can change.
     pub(super) moves: bool,
+    /// It runs the statements of a file (`\i`, `.read`, `source`), which
+    /// the line does not show.
+    pub(super) unseen: bool,
 }
 
 impl Reading {
@@ -152,6 +155,17 @@ impl Reading {
         unreadable: true,
         program: false,
         moves: false,
+        unseen: false,
+    };
+
+    /// Statements the line does not show: a file, or what a program the
+    /// rule does not read hands the client.
+    pub(super) const UNSEEN: Self = Self {
+        destroys: false,
+        unreadable: false,
+        program: false,
+        moves: false,
+        unseen: true,
     };
 
     pub(super) fn merge(&mut self, other: Self) {
@@ -159,6 +173,7 @@ impl Reading {
         self.unreadable |= other.unreadable;
         self.program |= other.program;
         self.moves |= other.moves;
+        self.unseen |= other.unseen;
     }
 }
 
@@ -620,7 +635,8 @@ fn tokenize_into(
                 tokens.push(Token::Symbol(';'));
                 at += 2;
             }
-            '\\' if dialect == Dialect::MySql && next == Some('!') => {
+            // `\!` runs a program, `\.` the statements of a file.
+            '\\' if dialect == Dialect::MySql && matches!(next, Some('!' | '.')) => {
                 let (meta, end) = line(&chars, at);
                 tokens.push(Token::Meta(meta));
                 at = end;
@@ -1057,6 +1073,10 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
             "XP_CMDSHELL" => reading.program = true,
             "PROGRAM" if is_word(tokens.first(), "COPY") => reading.program = true,
             "SYSTEM" if at == 0 && scope.dialect == Dialect::MySql => reading.program = true,
+            // The client's `source FILE` runs the statements of a file.
+            "SOURCE" if at == 0 && matches!(scope.dialect, Dialect::MySql | Dialect::Cql) => {
+                reading.unseen = true;
+            }
             // PL/pgSQL's `EXECUTE` runs text that is only known when it
             // runs; a trigger's `EXECUTE FUNCTION` does not.
             "EXECUTE"
@@ -1272,6 +1292,16 @@ fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Re
     }
     if matches!(name, ".open" | ".attach") {
         reading.moves = true;
+    }
+    // A command that runs the statements of a file: `psql`'s `\i` and
+    // `\include` (and their `_relative` forms), `mysql`'s `\.`, and `.read`
+    // of a file, not of a program.
+    let includes = matches!(
+        name,
+        "\\i" | "\\ir" | "\\include" | "\\include_relative" | "\\."
+    );
+    if includes || (name == ".read" && !pipes && !words.is_empty()) {
+        reading.unseen = true;
     }
     // `.restore` replaces the whole database with a file.
     if name == ".restore" {
@@ -1501,6 +1531,9 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
                     _ => true,
                 };
             }
+            // `load("drop.js")` runs the script of a file, which the line
+            // does not show.
+            "load" if called => reading.unseen = true,
             _ => {}
         }
     }

@@ -229,7 +229,7 @@ pub(super) const SHARED_VALUES: [&str; 21] = [
 /// The properties of `$ExecutionContext.InvokeCommand` that hold a block
 /// PowerShell runs when a command is looked up or is not found, or when the
 /// location changes. Each has a `set_` method that does the same.
-const HOOKS: [&str; 4] = [
+pub(super) const HOOKS: [&str; 4] = [
     "commandnotfoundaction",
     "precommandlookupaction",
     "postcommandlookupaction",
@@ -595,29 +595,50 @@ fn member(node: Node<'_>, source: &str) -> Option<String> {
 /// runs for every command, a block the guard reads only when it is written
 /// out.
 pub(super) fn hook(split: &mut Split, node: Node<'_>, source: &str) {
-    let Some(mut left) = node.named_child(0) else {
-        return;
-    };
     let Some(right) = node.child_by_field_name("value") else {
         return;
     };
-    // The grammar wraps the target in a chain of one-child nodes.
-    while left.kind() != "member_access" && left.named_child_count() == 1 {
-        match left.named_child(0) {
-            Some(only) => left = only,
-            None => return,
-        }
-    }
-    if left.kind() != "member_access" {
-        return;
-    }
-    if member(left, source).is_some_and(|name| HOOKS.contains(&name.as_str())) && !written(right) {
+    if assigned_member(node, source).is_some_and(|name| HOOKS.contains(&name.as_str()))
+        && !written(right)
+    {
         split.problem(
             Rule::Unknown,
             "sets a hook that runs a script block only known when it runs",
             Some(unit::text(&node, source)),
         );
     }
+}
+
+/// The property an assignment sets (`$x.CommandNotFoundAction = …`,
+/// `[Environment]::CurrentDirectory = …`), in lower case; `None` when it sets
+/// a variable.
+pub(super) fn assigned_member(node: Node<'_>, source: &str) -> Option<String> {
+    let mut left = node.named_child(0)?;
+    // The grammar wraps the target in a chain of one-child nodes.
+    while left.kind() != "member_access" && left.named_child_count() == 1 {
+        left = left.named_child(0)?;
+    }
+    if left.kind() != "member_access" {
+        return None;
+    }
+    member(left, source)
+}
+
+/// Whether a method call sets a hook (`$ExecutionContext.InvokeCommand
+/// .set_PreCommandLookupAction({ … })`), whose block runs later.
+pub(super) fn sets_hook(node: Node<'_>, source: &str) -> bool {
+    let mut cursor = node.walk();
+    let member = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "member_name");
+    member
+        .and_then(|member| called(member, source))
+        .and_then(|method| {
+            method
+                .strip_prefix("set_")
+                .map(|property| HOOKS.contains(&property))
+        })
+        .unwrap_or(false)
 }
 
 /// `$ExecutionContext.InvokeCommand.set_CommandNotFoundAction($b)`: the same
@@ -647,7 +668,7 @@ pub(super) fn hook_call(
 
 /// The first argument a method call is given; `children` are the call's
 /// parts.
-fn first_argument<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree>> {
+pub(super) fn first_argument<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree>> {
     let list = children
         .iter()
         .find(|child| child.kind() == "argument_list")?;

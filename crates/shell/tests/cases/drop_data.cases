@@ -1,6 +1,7 @@
 # A statement given to a database client that drops, truncates or empties
 # something is `drop_data`; reading, inserting, creating and a statement that
-# picks its rows are safe, and one the line does not show is `unknown`. One
+# picks its rows are safe, one only known when it runs is `unknown`, and one
+# the line does not show (a file, a stage it does not read) is `drop_data`. One
 # section per client, then what every client shares: its commands, its
 # quoting, its long options, the `WHERE` of each verb, and the drops that
 # delete no data; then PowerShell and cmd, and the reason a prompt can show.
@@ -36,10 +37,10 @@ posix safe | psql -c "SELECT 'DROP TABLE users'"
 posix safe | psql -c 'SELECT 1 -- DROP TABLE users'
 posix safe | psql -c '/* DROP TABLE users */ SELECT 1'
 posix safe | psql -c 'SELECT truncate(1.5)'
-posix safe | psql -f migrations/001.sql
-posix safe | psql -f schema.sql
-posix safe | psql -f schema.sql -d app
-posix safe | psql app < schema.sql
+posix finds=drop_data | psql -f migrations/001.sql
+posix finds=drop_data | psql -f schema.sql
+posix finds=drop_data | psql -f schema.sql -d app
+posix finds=drop_data | psql app < schema.sql
 posix safe | psql -c "DELETE FROM users WHERE id = $id"
 posix safe | psql -c "SELECT * FROM $table"
 posix safe | psql -l
@@ -50,7 +51,7 @@ posix safe | pg_dump app > backup.sql
 posix safe | echo 'DROP TABLE users' > notes.txt
 posix safe | echo 'DROP TABLE users'
 posix safe | grep -r 'DROP TABLE' migrations
-posix safe | cat migrations/001.sql | psql app
+posix finds=drop_data | cat migrations/001.sql | psql app
 posix finds=drop_data | psql -c 'DROP TABLE users'
 posix finds=drop_data | psql -c 'drop table if exists users'
 posix finds=drop_data | psql -c 'DROP DATABASE prod'
@@ -106,7 +107,7 @@ posix safe | mysql -u root -p -e 'SELECT * FROM users'
 posix safe | mysql -e 'DELETE FROM users WHERE id = 3'
 posix safe | mysql -e 'INSERT INTO t VALUES (1)'
 posix safe | mysql -e 'CREATE TABLE t (id int)'
-posix safe | mysql app < dump.sql
+posix finds=drop_data | mysql app < dump.sql
 posix safe | mysql --execute='SHOW TABLES'
 posix safe | mysql -e 'SELECT 1 # DROP TABLE t'
 posix safe | mysql -e "SELECT * FROM t WHERE a = '\\\\''"
@@ -188,7 +189,7 @@ posix safe | sqlite3 ~/data/data.db '.dump'
 posix safe | sqlite3 ~/data/data.db .schema
 posix safe | sqlite3 -header -csv data.db 'SELECT 1'
 posix safe | sqlite3 data.db < seed.sql
-posix safe | sqlite3 ~/data/data.db < seed.sql
+posix finds=drop_data | sqlite3 ~/data/data.db < seed.sql
 posix safe | sqlite3 data.db '.read seed.sql'
 posix safe | sqlite3 -cmd '.mode csv' data.db 'SELECT 1'
 posix safe | duckdb data.duckdb 'DROP TABLE t'
@@ -388,7 +389,7 @@ posix safe | redis-cli INFO
 posix safe | redis-cli -a secret PING
 posix safe | redis-cli <<< 'GET k'
 posix safe | echo 'SET a 1' | redis-cli
-posix safe | cat commands.txt | redis-cli
+posix finds=drop_data | cat commands.txt | redis-cli
 posix safe | printf 'a\\nb\\n' | xargs redis-cli del
 posix safe | cat keys.txt | xargs -n1 redis-cli del
 posix safe | redis-cli --version
@@ -439,7 +440,7 @@ posix finds=unknown | redis-cli <<< "$CMD"
 # A Redis script that lists keys and deletes them drops data.
 posix safe | redis-cli EVAL 'return 1' 0
 posix safe | redis-cli EVAL "return redis.call('GET', KEYS[1])" 1 k
-posix safe | redis-cli --eval script.lua k , a
+posix finds=drop_data | redis-cli --eval script.lua k , a
 # The keys a script is given are not a listing.
 posix safe | redis-cli eval "return redis.call('del', KEYS[1])" 1 k
 posix safe | redis-cli eval "return redis.call('get', KEYS[1])" 1 k
@@ -469,8 +470,8 @@ posix finds=unknown | echo "EVAL \\"$S\\" 0" | redis-cli
 
 # MongoDB.
 posix safe | mongosh
-posix safe | mongosh script.js
-posix safe | mongosh --file migrate.js
+posix finds=drop_data | mongosh script.js
+posix finds=drop_data | mongosh --file migrate.js
 posix safe | mongosh --eval 'db.users.find()'
 posix safe | mongosh mongodb://localhost/app --eval 'db.users.countDocuments()'
 posix safe | mongosh --eval 'db.users.deleteMany({age: {$lt: 3}})'
@@ -507,9 +508,9 @@ posix finds=unknown | mongosh --eval 'db.users.find("x'
 posix safe | clickhouse-client -q 'SELECT 1'
 posix safe | clickhouse-client --query 'INSERT INTO t VALUES (1)'
 posix safe | clickhouse-client --query "ALTER TABLE t DELETE WHERE id = 3"
-posix safe | clickhouse-client --queries-file migrate.sql
+posix finds=drop_data | clickhouse-client --queries-file migrate.sql
 posix safe | clickhouse client -q 'SELECT 1'
-posix safe | clickhouse-client < schema.sql
+posix finds=drop_data | clickhouse-client < schema.sql
 # ClickHouse's `SYSTEM` statements are not programs or drops.
 posix safe | clickhouse-client -q 'SYSTEM FLUSH LOGS'
 posix safe | clickhouse-client -q 'SYSTEM RELOAD DICTIONARIES'
@@ -519,10 +520,10 @@ posix safe | clickhouse-client -q 'SYSTEM DROP UNCOMPRESSED CACHE'
 posix safe | clickhouse client -q 'SYSTEM FLUSH LOGS'
 posix safe | sqlcmd -S db -Q 'SELECT 1'
 posix safe | sqlcmd -S db -U sa -P x -Q 'DELETE FROM users WHERE id = 3'
-posix safe | sqlcmd -i schema.sql
+posix finds=drop_data | sqlcmd -i schema.sql
 posix safe | sqlcmd -S db -C -Q 'SELECT 1'
 posix safe | cqlsh -e 'SELECT * FROM t'
-posix safe | cqlsh -f schema.cql
+posix finds=drop_data | cqlsh -f schema.cql
 posix safe | cqlsh host 9042 -e "DELETE FROM t WHERE k = 1"
 posix safe | cqlsh -e '// DROP TABLE t\nSELECT 1'
 posix finds=drop_data | clickhouse-client -q 'DROP TABLE t'
@@ -962,7 +963,7 @@ powershell safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = 3"
 powershell safe | psql -c 'SELECT 1'
 powershell safe | sqlite3 data.db 'DROP TABLE t'
 powershell safe | sqlite3 C:\\Users\\me\\dev\\repo\\data.db 'DROP TABLE t'
-powershell safe | Get-Content schema.sql | psql app
+powershell finds=drop_data | Get-Content schema.sql | psql app
 powershell safe | Write-Output 'SELECT 1' | psql app
 powershell safe | Select-String 'DROP TABLE' migrations\\001.sql
 powershell finds=drop_data | sqlcmd -S db -Q 'DROP TABLE users'
@@ -981,7 +982,7 @@ powershell finds=drop_data | echo 'DROP TABLE users' | psql app
 powershell finds=unknown | sqlcmd -S db -Q $q
 powershell safe | Invoke-Sqlcmd -Query 'SELECT 1'
 powershell safe | Invoke-Sqlcmd -ServerInstance db -Query 'SELECT 1'
-powershell safe | Invoke-Sqlcmd -InputFile schema.sql
+powershell safe | Invoke-Sqlcmd -InputFile nul
 powershell safe | Invoke-Sqlcmd 'SELECT 1'
 powershell safe | psql -c "SELECT * FROM t WHERE id = $id"
 powershell safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = $id"
@@ -995,6 +996,7 @@ powershell finds=drop_data | Invoke-Sqlcmd 'DROP TABLE x'
 powershell finds=drop_data | Invoke-Sqlcmd -ServerInstance db 'DROP TABLE x'
 powershell finds=drop_data | Invoke-Sqlcmd -Que 'DROP TABLE x'
 powershell finds=drop_data | Invoke-Sqlcmd -TrustServerCertificate -Query 'DROP TABLE x'
+powershell finds=drop_data | Invoke-Sqlcmd -InputFile schema.sql
 powershell finds=unknown | Invoke-Sqlcmd -Query $q
 powershell finds=unknown | Invoke-Sqlcmd $q
 powershell finds=drop_data | mysql --execute='DROP TABLE x'
@@ -1007,7 +1009,7 @@ powershell finds=drop_data | keydb-cli FLUSHALL
 powershell finds=drop_data | clickhouse-client 'DROP TABLE t'
 cmd safe | sqlcmd -S db -Q "SELECT 1"
 cmd safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = 3"
-cmd safe | sqlcmd -i schema.sql
+cmd finds=drop_data | sqlcmd -i schema.sql
 cmd finds=drop_data | sqlcmd -S db -Q "DROP TABLE users"
 cmd finds=drop_data | sqlcmd -S db -Q "TRUNCATE TABLE users"
 cmd finds=drop_data | sqlcmd /S db /Q "DROP TABLE users"
@@ -1015,3 +1017,59 @@ cmd finds=drop_data | psql -c "DROP TABLE users"
 cmd finds=drop_data | redis-cli FLUSHALL
 cmd finds=drop_data | echo DROP TABLE users | sqlcmd -S db
 cmd finds=unknown | sqlcmd -S db -Q "%Q%"
+
+# A client run in a container or on another machine is read as the client:
+# the command is read as the line would read it here (wrappers come off, a
+# shell's `-c` line is split by the same grammar), and a program or a line
+# only known when it runs is `unknown` there as it is here.
+posix finds=drop_data | docker exec -i db psql -c 'DROP DATABASE x'
+posix finds=drop_data | docker compose exec db psql -U postgres -c 'DROP DATABASE app'
+posix finds=drop_data | docker-compose exec -T db psql -c 'DROP TABLE t'
+posix finds=drop_data | docker container exec db psql -c 'DROP TABLE t'
+posix finds=drop_data | podman exec -it -e PGUSER=me db mysql -e 'DROP TABLE t'
+posix finds=drop_data | kubectl exec db-0 -- psql -c 'DROP DATABASE app'
+posix finds=drop_data | kubectl exec -n prod db-0 -c pg -- psql -c 'DROP TABLE t'
+posix finds=drop_data | oc exec db -- redis-cli FLUSHALL
+posix finds=drop_data | ssh db psql -c 'DROP DATABASE app'
+posix finds=drop_data | ssh -p 2222 db 'psql -c "DROP TABLE t"'
+posix finds=drop_data | ssh db sudo -u postgres psql -c 'DROP TABLE t'
+posix finds=drop_data | docker exec db sh -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db sqlite3 data.db 'DROP TABLE t'
+posix finds=drop_data | cat dump.sql | docker exec -i db psql
+posix finds=drop_data | docker exec -i db psql < dump.sql
+posix finds=drop_data | echo 'DROP TABLE t' | ssh db psql
+posix finds=drop_data | ssh db 'cd /srv && psql -c "DROP TABLE t"'
+posix finds=unknown | ssh db "psql -c \\"$Q\\""
+posix safe | docker exec db psql -c 'SELECT 1'
+posix safe | echo 'SELECT 1' | docker exec -i db psql
+posix safe | kubectl exec db-0 -- psql -c 'SELECT 1'
+posix safe | ssh -p 22 db psql -c 'SELECT 1'
+posix safe | ssh db ls
+posix safe | docker exec db ls /var/lib/postgresql
+posix safe | ssh host 'ls -la ~/backups/mysql'
+posix finds=drop_data | ssh db 'docker exec db psql -c "DROP TABLE t"'
+posix finds=drop_data | echo 'DROP TABLE t' | docker exec -i db sh -c psql
+posix finds=drop_data | docker exec db timeout 5 psql -c 'DROP TABLE t'
+posix finds=unknown | ssh db 'ps${x}ql -c "DROP TABLE t"'
+posix finds=unknown | ssh db 'ps$@ql -c "DROP TABLE t"'
+posix finds=unknown | docker exec db sh -c 'ps${x}ql -c "DROP TABLE t"'
+posix finds=unknown | docker exec db $CLIENT -c 'DROP TABLE t'
+posix finds=unknown | ssh db "ls $dir"
+# A shell's options that take a value come before its `-c` line.
+posix finds=drop_data | docker exec db bash -o pipefail -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash -O extglob -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash --rcfile x -c "psql -c 'DROP TABLE t'"
+posix finds=drop_data | docker exec db bash --init-file x -c "psql -c 'DROP TABLE t'"
+# `podman exec --latest` names no container: the command comes first.
+posix finds=drop_data | podman exec -l psql -c 'DROP DATABASE app'
+posix finds=drop_data | podman exec --latest psql -c 'DROP DATABASE app'
+posix finds=drop_data | podman exec -it -l psql -c 'DROP DATABASE app'
+posix safe | podman exec -l psql -c 'SELECT 1'
+powershell finds=drop_data | Start-Process psql '-c "DROP TABLE t"'
+powershell finds=drop_data | Start-Process -FilePath psql -ArgumentList '-c "DROP TABLE t"' -Wait
+powershell finds=drop_data | Start-Process psql -Args '-c "DROP TABLE t"'
+powershell finds=drop_data | Start-Process psql -ArgumentList '-c', '"DROP TABLE t"'
+powershell finds=drop_data | Start-Process psql -ArgumentList @('-c', '"DROP TABLE t"')
+powershell safe | Start-Process psql -ArgumentList @('-c', '"SELECT 1"')
+powershell finds=unknown | Start-Process psql -ArgumentList @('-c', $q)
+powershell finds=unknown | Start-Process psql -ArgumentList $a

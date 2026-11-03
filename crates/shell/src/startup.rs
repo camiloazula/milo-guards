@@ -103,7 +103,7 @@ pub(crate) fn variable(name: &str) -> &str {
 /// Whether `text`, a value the shell expands, holds code it runs: `$(…)`, a
 /// backtick, or a funsub (`${ cmd; }`, `${| cmd; }`), which bash 5.3 runs as
 /// a command.
-fn runs(text: &str) -> bool {
+pub(crate) fn runs(text: &str) -> bool {
     text.contains("$(")
         || text.contains('`')
         || text
@@ -113,11 +113,11 @@ fn runs(text: &str) -> bool {
 
 /// A prompt as bash prints it: the text, and whether it holds an escape the
 /// guard cannot decode.
-struct Prompt<'a> {
-    text: Cow<'a, str>,
+pub(crate) struct Prompt<'a> {
+    pub(crate) text: Cow<'a, str>,
     /// An escape whose output is only known when it prints (`\D{fmt}` is
     /// `strftime`'s output), left as written.
-    undecoded: bool,
+    pub(crate) undecoded: bool,
 }
 
 /// `text` as bash prints a prompt from it, before the expansion that finds
@@ -137,7 +137,7 @@ struct Prompt<'a> {
 /// which may be any text: it is left as written and reported. Any other
 /// escape prints a name or a number, never a `$`, `(` or backtick, and is
 /// left as written.
-fn prompt(text: &str) -> Prompt<'_> {
+pub(crate) fn prompt(text: &str) -> Prompt<'_> {
     if !text.contains('\\') {
         return Prompt {
             text: Cow::Borrowed(text),
@@ -310,13 +310,14 @@ pub(crate) fn word(arg: &Arg) -> Option<(String, Arg)> {
     match arg {
         Arg::Known(text) => assignment(text)
             .map(|(name, value)| (variable(name).to_string(), Arg::Known(value.to_string()))),
-        Arg::Template { text, source } => assignment(text).map(|(name, value)| {
-            let written = assignment(source).map_or(source.as_str(), |(_, value)| value);
+        Arg::Template { text, source, runs } => assignment(text).map(|(name, value)| {
+            let written = assignment(source).map_or(&**source, |(_, value)| value);
             (
                 variable(name).to_string(),
                 Arg::Template {
                     text: value.to_string(),
-                    source: written.to_string(),
+                    source: written.into(),
+                    runs: *runs,
                 },
             )
         }),
@@ -356,7 +357,7 @@ fn plain(value: &Arg, split: &Split) -> bool {
     if source.contains('`') {
         return false;
     }
-    let mut rest = source.as_str();
+    let mut rest: &str = source;
     while let Some((_, after)) = rest.split_once('$') {
         // `$$`, the shell's own number.
         if let Some(next) = after.strip_prefix('$') {
@@ -436,7 +437,7 @@ const NESTING: usize = 32;
 /// the guard would cut short could hide the rest of it. The code is read to
 /// its end by the quotes, `${…}` and nested `$(…)` it holds; one it holds a
 /// here-document, a `case`, a comment or a funsub in is not read.
-fn quote(text: &str) -> Option<String> {
+pub(crate) fn quote(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut quoted = String::with_capacity(text.len() + 4);
     quoted.push_str(": \"");
