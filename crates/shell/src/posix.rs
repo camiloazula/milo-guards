@@ -671,6 +671,61 @@ fn last_child(node: Node<'_>) -> Option<Node<'_>> {
     last
 }
 
+/// Whether a redirect the grammar holds on a statement whose last command
+/// is the last command of the list `node` is on that command (`a || b 2> e`
+/// is `a || (b 2> e)`).
+fn redirected_last(node: Node<'_>) -> bool {
+    let mut node = node;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "redirected_statement" => {
+                return parent
+                    .child_by_field_name("body")
+                    .is_some_and(|body| body.id() == node.id());
+            }
+            "list" if last_child(parent).is_some_and(|last| last.id() == node.id()) => {
+                node = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `node` holds a negated command anywhere (`! cd a`, `{ ! cd a; }`,
+/// `cd a && ! cd b`): it succeeds when what it negates fails, so a `cd` in it
+/// may have failed while `node` succeeded.
+fn negates(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    loop {
+        if cursor.node().kind() == "negated_command" {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return false;
+            }
+        }
+    }
+}
+
+/// Whether the argument `text` of `exit` may stand for more than one word,
+/// which zsh refuses with "too many arguments" and goes on past: a glob, `$@`
+/// or `$*`, an array or a brace expansion. `$?` and `${name}` are one word.
+fn many_words(text: &str) -> bool {
+    text.char_indices().any(|(at, c)| match c {
+        '*' | '[' | '@' => true,
+        '?' | '{' => !text[..at].ends_with('$'),
+        _ => false,
+    })
+}
+
 /// The ids of the lists along the last command of `node`: the ones whose
 /// last command a redirect after `node` is opened before.
 fn list_ids(node: Node<'_>) -> Vec<usize> {
@@ -1325,6 +1380,7 @@ impl Walker<'_> {
         let mut cursor = node.walk();
         let list = self.split.list_start();
         let mut at = 0;
+        let mut exit = None;
         let last = self
             .tail_of
             .contains(&node.id())
@@ -1346,8 +1402,28 @@ impl Walker<'_> {
                 _ => stage,
             };
             // The right side of `||` only runs when the left failed: a `cd`
-            // on the left may not have moved the line.
+            // on the left may not have moved the line. When that side ends
+            // the shell (`cd s || exit`), the rest of the line runs only
+            // where the left side took it.
             if child.kind() == "||" {
+                // A redirect the grammar holds on the whole list is on its
+                // last command (`cd s || exit 2> e`).
+                // A left side that may succeed when its `cd` failed (`! cd
+                // s || exit`, or a `cd` the line made a function of) does
+                // not say the `cd` ran.
+                if stage.is_none()
+                    && staged.is_none()
+                    && child
+                        .next_named_sibling()
+                        .is_some_and(|right| self.exits(right))
+                    && !redirected_last(node)
+                    && !child.prev_named_sibling().is_none_or(negates)
+                    && !["cd", "chdir", "pushd", "popd"]
+                        .iter()
+                        .any(|name| self.split.defines_function(name))
+                {
+                    exit = Some(self.split.exits_after());
+                }
                 self.split.list_or(&list);
             }
             if !child.is_named() {
@@ -1370,6 +1446,9 @@ impl Walker<'_> {
                 let link = self.split.link_start();
                 self.walk(child, stage, level + 1);
                 self.split.link_end(&list, link);
+                if let Some(exit) = exit.take() {
+                    self.split.exited(exit);
+                }
             } else {
                 self.split.list_head(heads_list(child));
                 self.walk(child, stage, level + 1);
@@ -1378,6 +1457,48 @@ impl Walker<'_> {
             at += 1;
         }
         self.split.list_end(list);
+    }
+
+    /// Whether `node`, the right side of an `||`, ends the shell: the
+    /// builtin `exit`, alone or last in a `{ …; }` group. Not `return`, which
+    /// bash goes on past outside a function; not an `exit` with a redirect,
+    /// before or after its name, which does not run when the redirect fails;
+    /// not one with more than one argument, which zsh goes on past; not one
+    /// in a subshell, a pipeline or the background, which ends only that
+    /// process; and not after a function of that name, an alias, `enable` or
+    /// `disable` may have changed what the name stands for.
+    fn exits(&self, node: Node<'_>) -> bool {
+        let mut node = node;
+        while node.kind() == "compound_statement" {
+            // `{ …; exit & }` ends only the background process.
+            let Some(last) = last_child(node)
+                .filter(|last| last.next_sibling().is_none_or(|next| next.kind() != "&"))
+            else {
+                return false;
+            };
+            node = last;
+        }
+        let mut cursor = node.walk();
+        let mut arguments = node.children_by_field_name("argument", &mut cursor);
+        let one = arguments
+            .next()
+            .is_none_or(|argument| !many_words(unit::text(&argument, self.source)))
+            && arguments.next().is_none();
+        let mut cursor = node.walk();
+        let redirected = node.named_children(&mut cursor).any(|child| {
+            matches!(
+                child.kind(),
+                "file_redirect" | "heredoc_redirect" | "herestring_redirect"
+            )
+        });
+        node.kind() == "command"
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|name| unit::text(&name, self.source) == "exit")
+            && one
+            && !redirected
+            && !self.split.defines_function("exit")
+            && !self.split.renames_builtins()
     }
 
     /// Note a function definition before its body is read: its name, where
