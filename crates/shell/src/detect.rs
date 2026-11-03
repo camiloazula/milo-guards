@@ -91,7 +91,20 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
+    judge(split, resolver, data::Nest::default())
+}
+
+/// What the rules find in `split`, a program a database client runs, read
+/// as a line of its own `nest` deep in such programs.
+fn nested(split: &Split, resolver: &Resolver, nest: data::Nest) -> Vec<Finding> {
+    judge(split, resolver, nest).found
+}
+
+/// [`findings`], for a line `nest` deep in the programs database clients
+/// run (see [`data::Nest`]).
+fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     let mut checker = Checker::new(split, resolver);
+    checker.data.nest = nest;
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
@@ -948,7 +961,15 @@ impl Checker<'_> {
         let folder_for_sure = several
             || text.ends_with(separators)
             || matches!(text.rsplit(separators).next(), Some("." | ".."));
-        for &leaf in leaves {
+        // A copy into the root (`/`) lands in it.
+        let into = if folder.is_empty() {
+            text.get(..1).unwrap_or_default()
+        } else {
+            folder
+        };
+        self.selinux_landing((shell, scope.dir), (into, leaves), recursive, destination);
+        // What a folder's contents replace is read with the folder.
+        for &leaf in leaves.iter().filter(|leaf| **leaf != CONTENTS) {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
                 self.place(shell, scope, &landing, Access::Item)
@@ -1500,6 +1521,11 @@ fn folder(arg: &Arg) -> Arg {
 
 /// The options of `cp`, `install`, `mv` and `ln` that take a value, which is
 /// not an operand.
+/// The name a copied source lands as when the line shows none of its own:
+/// a folder's contents (`.`, `..`), the home folder and the root. It may
+/// be any name.
+const CONTENTS: &str = ".";
+
 const COPY_VALUED: [&str; 8] = [
     "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
 ];

@@ -162,8 +162,8 @@ pub(crate) struct Unit {
     /// The values the line gives the variables a program reads as its own
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
-    /// arguments of its command, and `npm_config_call`, the command `npx`
-    /// runs. Shared with the line's, so a long value is not copied for
+    /// arguments of its command, `npm_config_call`, the command `npx`
+    /// runs, and the editor, pager and shell `psql` runs (`PAGER`). Shared with the line's, so a long value is not copied for
     /// each program.
     pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many levels deep the script it came from is nested: `0` for the
@@ -589,6 +589,19 @@ pub(crate) struct Start {
     /// Whether a `cd` that may not have run is among what left it there
     /// (see [`Split::unsure_writes`]).
     unsure: bool,
+    /// For [`OpensFrom::Both`], where the unit went.
+    went: Went,
+}
+
+/// Where a unit that [`OpensFrom::Both`] names went.
+#[derive(Debug, Clone)]
+enum Went {
+    /// Where the line is when the redirect is read.
+    Here,
+    /// This folder (`None`: where the line began). It is not where the line
+    /// is while what the unit's command expands is read from where it
+    /// started (see [`Split::enter_start`]).
+    To(Option<Arg>),
 }
 
 impl OpensFrom {
@@ -597,14 +610,16 @@ impl OpensFrom {
             dir,
             others,
             unsure,
+            went: Went::Here,
         }))
     }
 
-    fn both(dir: Option<Arg>, others: Vec<Option<Arg>>) -> Self {
+    fn both(dir: Option<Arg>, others: Vec<Option<Arg>>, went: Went) -> Self {
         Self::Both(Box::new(Start {
             dir,
             others,
             unsure: true,
+            went,
         }))
     }
 }
@@ -756,11 +771,24 @@ pub(crate) fn npm_call(name: &str) -> bool {
     name.eq_ignore_ascii_case("npm_config_call")
 }
 
-/// Whether a program reads the variable `name` as arguments of its own:
-/// terraform's [`tf_cli_args`], and npm's [`npm_call`]. The line's values
+/// The variables whose value `psql` runs as a command line: the editor of
+/// `\e`, the pager of a long result, and the shell of a bare `\!`.
+pub(crate) const PSQL_PROGRAMS: [&str; 7] = [
+    "EDITOR",
+    "PSQL_EDITOR",
+    "VISUAL",
+    "PAGER",
+    "PSQL_PAGER",
+    "PSQL_WATCH_PAGER",
+    "SHELL",
+];
+
+/// Whether a program reads the variable `name` as arguments or a command
+/// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], and the
+/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]). The line's values
 /// of these are noted where it sets them (see [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
-    tf_cli_args(name) || npm_call(name)
+    tf_cli_args(name) || npm_call(name) || PSQL_PROGRAMS.contains(&name)
 }
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
@@ -958,6 +986,13 @@ pub(crate) struct Split {
     /// [`Self::maybe_moved`]; a loop or a function body runs again from where
     /// its last `cd` went), by their place in `units`.
     unsure_starts: HashSet<usize>,
+    /// The units that move the line from a folder that may hold code (see
+    /// [`Self::dir_code`]), by their place in `units`: what the shell expands
+    /// for one before it runs is read from there (see [`Self::enter_start`]).
+    code_starts: HashSet<usize>,
+    /// For each [`Self::enter_start`] not yet put back, where the command it
+    /// read from moved the line to; `None` for one that does not move it.
+    aways: Vec<Option<Moved>>,
     /// In cmd, the drive the line is on, upper case: where it started, then
     /// where a drive switch, `cd /d` or `pushd` took it. `None` when it is
     /// on no drive or is only known when it runs.
@@ -1022,8 +1057,9 @@ pub(crate) struct Split {
     /// The values the variables of [`read_as_arguments`] are given for the
     /// program being added, by name, noted as `node_options` is: terraform
     /// reads `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` as arguments of its
-    /// command, and npm reads `npm_config_call` as the command `npx` and
-    /// `npm exec` run. Each unit shares the list (see
+    /// command, npm reads `npm_config_call` as the command `npx` and `npm
+    /// exec` run, and `psql` runs `PAGER`, `EDITOR` and the like as command
+    /// lines. Each unit shares the list (see
     /// [`Split::note_argument_variable`]).
     pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many assignments and wrappers hand the program being added an
@@ -1316,6 +1352,23 @@ impl Began {
     pub(crate) fn moved(&self) -> usize {
         self.moved
     }
+}
+
+/// Where a command moved the line to, set aside while what the shell
+/// expands for it before it runs is read from where it started (see
+/// [`Split::enter_start`]).
+#[derive(Debug)]
+struct Moved {
+    /// The unit that moves the line, by its place in [`Split::units`].
+    mover: usize,
+    /// How many `cd`s this shell had run then (see [`Split::moves_so_far`]).
+    moves: usize,
+    dir: Option<Arg>,
+    dir_code: bool,
+    elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
+    adrift: bool,
+    last_stayed: Vec<Option<Arg>>,
 }
 
 /// Where the line was, to put back after a subshell or a nested script
@@ -1623,6 +1676,9 @@ impl Split {
         } else {
             None
         };
+        if moved.is_some() && self.dir_code {
+            self.code_starts.insert(self.units.len());
+        }
         if let (Some(_), Some(saved)) = (&moved, back) {
             self.moves += 1;
             self.moved += 1;
@@ -1632,63 +1688,69 @@ impl Split {
             self.set_elsewhere(saved.elsewhere);
             self.set_stayed(saved.stayed);
         } else if let Some(target) = moved {
-            self.moves += 1;
-            self.moved += 1;
-            if unit.shell == Shell::Posix && target.known().is_some_and(names_after_dots) {
-                self.pwd.climbed = true;
-            }
-            let dir = self.moved_to(self.dir.as_ref(), &target, unit.shell);
-            // Every other folder the line may be in moves too; a `cd` that
-            // may not have run also leaves the line where it was.
-            let mut elsewhere: Vec<Option<Arg>> = self
-                .elsewhere
-                .iter()
-                .map(|from| Some(self.moved_to(from.as_ref(), &target, unit.shell)))
-                .collect();
-            if unsure {
-                elsewhere.push(self.dir.clone());
-                elsewhere.extend(self.elsewhere.iter().cloned());
-            }
-            // The folders a plain `cd` that failed left the line in move
-            // on too; a `cd` that may not have run keeps them as they were,
-            // and a plain one that may have failed keeps every folder the
-            // line may be in now (see [`Self::stayed`]).
-            let mut stayed: Vec<Option<Arg>> = self
-                .stayed
-                .iter()
-                .map(|from| Some(self.moved_to(from.as_ref(), &target, unit.shell)))
-                .collect();
-            let mut added = Vec::new();
-            if unsure {
-                stayed.extend(self.stayed.iter().cloned());
-            } else if !steps_up(&target, unit.shell) {
-                added = std::iter::once(self.dir.clone())
-                    .chain(self.elsewhere.iter().cloned())
-                    .chain(self.stayed.iter().cloned())
-                    .filter(|folder| !stayed.contains(folder))
-                    .collect();
-                stayed.extend(added.iter().cloned());
-            }
-            // The folder holds code when the target does (it replaced the
-            // folder, or was put after it), or when the folder did and the
-            // target was put after it: a join is longer than its target.
-            // Only the target is read, never the whole folder again.
-            let target_text = target.known();
-            self.dir_code = match &dir {
-                Arg::Known(text) => {
-                    target_text.is_none_or(holds_code)
-                        || (self.dir_code && target_text != Some(text.as_str()))
-                }
-                _ => true,
-            };
-            self.pwd.unplain |= self.dir_code;
-            self.dir = Some(dir);
-            self.set_elsewhere(elsewhere);
-            self.set_stayed(stayed);
-            added.retain(|folder| self.stayed.contains(folder));
-            self.last_stayed = added;
+            self.move_line(&target, unit.shell, unsure);
         }
         self.units.push(unit);
+    }
+
+    /// Move the line by a `cd` to `target`, read as a `shell` path; `unsure`
+    /// says the `cd` may not have run, so the line may still be where it was.
+    fn move_line(&mut self, target: &Arg, shell: Shell, unsure: bool) {
+        self.moves += 1;
+        self.moved += 1;
+        if shell == Shell::Posix && target.known().is_some_and(names_after_dots) {
+            self.pwd.climbed = true;
+        }
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        // Every other folder the line may be in moves too; a `cd` that
+        // may not have run also leaves the line where it was.
+        let mut elsewhere: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        if unsure {
+            elsewhere.push(self.dir.clone());
+            elsewhere.extend(self.elsewhere.iter().cloned());
+        }
+        // The folders a plain `cd` that failed left the line in move
+        // on too; a `cd` that may not have run keeps them as they were,
+        // and a plain one that may have failed keeps every folder the
+        // line may be in now (see [`Self::stayed`]).
+        let mut stayed: Vec<Option<Arg>> = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let mut added = Vec::new();
+        if unsure {
+            stayed.extend(self.stayed.iter().cloned());
+        } else if !steps_up(target, shell) {
+            added = std::iter::once(self.dir.clone())
+                .chain(self.elsewhere.iter().cloned())
+                .chain(self.stayed.iter().cloned())
+                .filter(|folder| !stayed.contains(folder))
+                .collect();
+            stayed.extend(added.iter().cloned());
+        }
+        // The folder holds code when the target does (it replaced the
+        // folder, or was put after it), or when the folder did and the
+        // target was put after it: a join is longer than its target.
+        // Only the target is read, never the whole folder again.
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.pwd.unplain |= self.dir_code;
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+        added.retain(|folder| self.stayed.contains(folder));
+        self.last_stayed = added;
     }
 
     /// Keep PowerShell's location stacks (see [`Locations`]) for `unit`,
@@ -2207,23 +2269,8 @@ impl Split {
     /// `> /dev/null`) is not placed from the folder of a call to a function
     /// that moves the line.
     pub(crate) fn starts_in(&mut self, units: Range<usize>, by_folder: bool) -> OpensFrom {
-        // The units are only added to: a range holds the same units each
-        // time it is asked for.
         let key = (units.start, units.end);
-        let mover = if let Some(mover) = self.starts.get(&key) {
-            *mover
-        } else {
-            let start = units.start;
-            let mover = self
-                .units
-                .get(units)
-                .into_iter()
-                .flatten()
-                .position(|unit| moves_to(unit).is_some())
-                .map(|index| start + index);
-            self.starts.insert(key, mover);
-            mover
-        };
+        let mover = self.mover(units);
         let Some((index, unit)) =
             mover.and_then(|index| self.units.get(index).map(|unit| (index, unit)))
         else {
@@ -2247,10 +2294,171 @@ impl Split {
             );
         };
         if self.unsure_starts.contains(&index) {
-            OpensFrom::both(unit.dir.clone(), unit.others())
+            // While what the command expands is read from where it started
+            // (see [`Self::enter_start`]), where it went is set aside.
+            let went = self
+                .aways
+                .iter()
+                .rev()
+                .flatten()
+                .find(|moved| moved.mover == index)
+                .map_or(Went::Here, |moved| Went::To(moved.dir.clone()));
+            OpensFrom::both(unit.dir.clone(), unit.others(), went)
         } else {
             OpensFrom::start(unit.dir.clone(), unit.others(), false)
         }
+    }
+
+    /// The first of `units` that moves the line (`cd`, `pushd`,
+    /// `Set-Location`), by its place in [`Self::units`]. The units are only
+    /// added to, so a range holds the same units each time it is asked for:
+    /// each range is read once, however often it is asked for.
+    fn mover(&mut self, units: Range<usize>) -> Option<usize> {
+        let key = (units.start, units.end);
+        if let Some(mover) = self.starts.get(&key) {
+            return *mover;
+        }
+        let start = units.start;
+        let mover = self
+            .units
+            .get(units)
+            .into_iter()
+            .flatten()
+            .position(|unit| moves_to(unit).is_some())
+            .map(|index| start + index);
+        self.starts.insert(key, mover);
+        mover
+    }
+
+    /// Read what comes next from where the line was before the first of
+    /// `units` that moves it, until [`Self::leave_start`]: the shell
+    /// expands a command's words, redirects, here-documents and here-strings
+    /// before the command runs, so what a substitution in them runs (`cd sub
+    /// <<< "$(cat ../x)"`) starts where the `cd` does, not where it goes.
+    /// When the `cd` starts from a folder that is not certain (a loop or a
+    /// function body runs again from where its last pass went, see
+    /// [`Self::unsure_starts`]), the line may also be where it went. When
+    /// none of `units` moves the line, or `plain` says what is read holds
+    /// nothing that runs (`cd sub`), nothing changes. Kept in the split, not
+    /// in the walk's frame, which recurses once for each level of the parse
+    /// tree.
+    pub(crate) fn enter_start(&mut self, units: &Range<usize>, plain: bool) {
+        if plain {
+            self.aways.push(None);
+            return;
+        }
+        let moved = self.mover(units.clone()).and_then(|mover| {
+            let unit = self.units.get(mover)?;
+            let (dir, mut elsewhere, stayed, adrift) = (
+                unit.dir.clone(),
+                unit.elsewhere.clone(),
+                unit.stayed.clone(),
+                unit.adrift,
+            );
+            if self.unsure_starts.contains(&mover) {
+                elsewhere.extend(self.places());
+            }
+            // `$PWD` is plain text only when it is so in both folders.
+            let code = self.dir_code || self.code_starts.contains(&mover);
+            let moved = Moved {
+                mover,
+                moves: self.moves,
+                dir: std::mem::replace(&mut self.dir, dir),
+                dir_code: std::mem::replace(&mut self.dir_code, code),
+                elsewhere: std::mem::take(&mut self.elsewhere),
+                stayed: std::mem::replace(&mut self.stayed, stayed),
+                adrift: std::mem::replace(&mut self.adrift, adrift),
+                last_stayed: std::mem::take(&mut self.last_stayed),
+            };
+            self.set_elsewhere(elsewhere);
+            Some(moved)
+        });
+        self.aways.push(moved);
+    }
+
+    /// Whether what was read since the last [`Self::enter_start`] moved the
+    /// line itself, when that one read from where a command started: a
+    /// PowerShell `$()` argument runs in the session (`cd $(cd ..; 'x')`). A
+    /// `cd` in a subshell or a POSIX substitution has not moved it.
+    pub(crate) fn moved_since_start(&self) -> bool {
+        self.aways
+            .last()
+            .and_then(Option::as_ref)
+            .is_some_and(|moved| moved.moves != self.moves)
+    }
+
+    /// Put the line back where the command the last [`Self::enter_start`]
+    /// read from moved it to. When what was read in between moved the line
+    /// itself (see [`Self::moved_since_start`]), the command moves it on from
+    /// there, and may not have moved it at all.
+    pub(crate) fn leave_start(&mut self) {
+        if let Some(mover) = self.step_out() {
+            self.move_on(mover);
+        }
+    }
+
+    /// End the last [`Self::enter_start`] as [`Self::leave_start`] does,
+    /// but when what was read in between moved the line itself, leave the
+    /// line where that left it and give back the command that moves it on,
+    /// for [`Self::move_on`] once the rest of what the command expands is
+    /// read: a PowerShell command's later arguments run where an earlier
+    /// `$()` left the session, before the command does.
+    pub(crate) fn step_out(&mut self) -> Option<usize> {
+        let moved_inside = self.moved_since_start();
+        let moved = self.aways.pop().flatten()?;
+        if moved_inside {
+            return Some(moved.mover);
+        }
+        self.dir = moved.dir;
+        self.dir_code = moved.dir_code;
+        self.elsewhere = moved.elsewhere;
+        self.stayed = moved.stayed;
+        self.adrift = moved.adrift;
+        self.last_stayed = moved.last_stayed;
+        None
+    }
+
+    /// Where `mover`, a unit that moves the line, moves it to from where
+    /// the line is now, as a path of its shell.
+    fn moved_on_to(&self, mover: usize) -> Option<(Arg, Shell)> {
+        let unit = self.units.get(mover)?;
+        let target = moves_to(unit)?;
+        // Where a `Pop-Location` goes back to was taken from its stack
+        // where it was first read.
+        let popped = unit.key().as_deref() == Some("pop-location");
+        Some((
+            if popped {
+                Arg::Unknown(unit.program.text().to_string())
+            } else {
+                target
+            },
+            unit.shell,
+        ))
+    }
+
+    /// Move the line on from where it is by `mover`, which
+    /// [`Self::step_out`] gave back; it may fail and leave the line there.
+    pub(crate) fn move_on(&mut self, mover: usize) {
+        if let Some((target, shell)) = self.moved_on_to(mover) {
+            self.move_line(&target, shell, true);
+        }
+    }
+
+    /// Where a redirect read before [`Self::move_on`] opens its file from:
+    /// where the line is, and where `mover` will move it on to from there.
+    pub(crate) fn opens_moved_on(&self, mover: usize) -> OpensFrom {
+        let Some((target, shell)) = self.moved_on_to(mover) else {
+            return OpensFrom::Line;
+        };
+        let went = self.moved_to(self.dir.as_ref(), &target, shell);
+        let mut others: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .chain(&self.stayed)
+            .map(|from| Some(self.moved_to(from.as_ref(), &target, shell)))
+            .collect();
+        others.extend(self.others());
+        OpensFrom::both(Some(went), others, Went::Here)
     }
 
     /// The other folders the line may be in now, besides where the walk has
@@ -2469,7 +2677,13 @@ impl Split {
             OpensFrom::Line => (vec![self.dir.clone()], self.others()),
             OpensFrom::Start(start) => (vec![start.dir.clone()], start.others.clone()),
             OpensFrom::Both(start) => (
-                vec![start.dir.clone(), self.dir.clone()],
+                vec![
+                    start.dir.clone(),
+                    match &start.went {
+                        Went::Here => self.dir.clone(),
+                        Went::To(dir) => dir.clone(),
+                    },
+                ],
                 start.others.clone(),
             ),
             OpensFrom::Among(dirs) => (
@@ -2510,7 +2724,7 @@ impl Split {
             // it began.
             OpensFrom::Among(vec![self.dir.clone(), None])
         } else if self.repeats > 0 {
-            OpensFrom::both(self.dir.clone(), self.others())
+            OpensFrom::both(self.dir.clone(), self.others(), Went::Here)
         } else {
             OpensFrom::start(self.dir.clone(), self.others(), false)
         }

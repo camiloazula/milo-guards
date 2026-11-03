@@ -1219,7 +1219,20 @@ the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
 ../../.ssh/id_rsa` does (`read_secret`), `cd ../.. < .ssh/id_rsa` reads
 `<cwd>/.ssh/id_rsa`, and `cd sub > ../x` writes `<cwd>/../x`. The same holds in
 cmd (`cd sub > ..\x.txt`) and for `effect_paths`: `cd x < f` lists `<cwd>/f`.
-The redirect of the next command is placed from where the line now is. In a
+The redirect of the next command is placed from where the line now is. What
+the shell expands for the `cd` itself is expanded before it runs too, so what
+a substitution in its words, its assignments, its redirects, its
+here-document or its here-string runs starts where the `cd` starts, not where
+it goes: `cd sub <<< "$(cat ../../.ssh/id_rsa)"`, `cd sub < <(cat
+../../.ssh/id_rsa)`, `cd sub <<EOF` with `$(cat ../../.ssh/id_rsa)` in its
+body, `cd "$(cat ../../.ssh/id_rsa)"` and `X=$(cat ../../.ssh/id_rsa) cd sub`
+read the key (`read_secret`), while `cd sub <<< "$(cat ../../../.ssh/id_rsa)"`
+reads `<cwd>/../../../.ssh`, which holds none, and `cd ~ <<< "$(rm -rf .ssh)"`
+deletes the workspace's `.ssh`. What runs after the `cd` is placed where it
+went (`cd sub $(true) && cat ../../.ssh/id_rsa` is safe), and when the folder
+the `cd` starts in is not certain (below), what it expands is read from every
+folder that may be it (`for i in 1 2; do cd .. <<< "$(cat ../.ssh/id_rsa)";
+done` reads the key on the second pass). In a
 POSIX shell only a redirect on the command itself is read this way, and that
 includes a `cd` after `&&`, `||`, `|` or `!` (`ls && cd sub < ../../.ssh/id_rsa`,
 `cd ~ && cd sub < .ssh/id_rsa`: the grammar puts the redirect on the whole list,
@@ -1314,12 +1327,18 @@ is in where the function is defined, not from where the body ends; a name
 relative to the folder (not `/dev/null`, `~/x` or `2>&1`) that a call reaches
 after a `cd`, a second call of a function that moves the line, a call in a loop
 that later moves the line, or from a definition the line may not have reached,
-is `unknown` too. In PowerShell only the
-redirects of the command itself are placed so: a redirect inside a `$()` in its
-arguments is placed from where the line is there, and so is a redirect that
-follows an argument that moved the line (`Set-Location $(cd ..\..; 'sub') >
-x.txt` writes two folders up, as the session ran the argument before it opened
-the file).
+is `unknown` too. In PowerShell a `$()` in a command's arguments runs in the
+session before the command, so what it runs is read from where the command
+starts (`Set-Location $(Get-Content ..\..\.ssh\id_rsa)` reads the key), and a
+redirect inside it from where the line is there. Once such an argument has
+moved the session itself (`cd $(cd ..\..; 'x' > y.txt; 'sub')`), the arguments
+that follow run where it left the session, before the command too (`cd ~
+$(cd sub) $(Remove-Item -Recurse .ssh)` removes the `.ssh` in `sub`); a redirect
+that follows that argument is read from both folders (`Set-Location $(cd
+..\..; 'sub') > x.txt` writes two folders up, or where `sub` is from there, as
+the session ran the argument before it opened the file). Once all are read, the
+command moves the session on from where the argument left it, and may fail and
+leave it there, so what follows the command is read from both folders.
 
 The folder a `cd` starts in is not always certain, and the redirect is then
 placed from both places, the one the `cd` starts in and the one it goes to, so
@@ -1659,12 +1678,12 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy, scheduled tasks and jobs, whose action runs later (`schtasks /create`, `Register-ScheduledTask`, `Set-ScheduledTask`, `Register-ScheduledJob`, `Set-ScheduledJob`, whatever the action); on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy, scheduled tasks and jobs, whose action runs later (`schtasks /create`, `Register-ScheduledTask`, `Set-ScheduledTask`, `Register-ScheduledJob`, `Set-ScheduledJob`, whatever the action); on macOS and Linux also security switches, the kernel's settings, the boot loader, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe, `Invoke-Expression`, or code built from it (`[scriptblock]::Create((iwr …))`). |
@@ -2232,6 +2251,11 @@ for `iptables`), no `rmtcomputergrp=` or `rmtusrgrp=`, no `security=` but
 `enable=no`. An operand only known when it runs may narrow it, as for
 `iptables`. The same line is judged the same in cmd and in PowerShell.
 
+A command word only known when it runs may be one that changes the
+machine: `reg %verb% HKLM\x` and `sc %verb% x` are risky, and so is any
+`bcdedit` argument only known when it runs (`bcdedit $x`); `reg query`, `sc
+query` and `bcdedit /enum` stay safe.
+
 ### Machine settings on macOS and Linux
 
 `system_settings` also covers the changes to the machine that `sudo` does not
@@ -2240,14 +2264,74 @@ a setting and a user's own settings stay safe. Callers treat the rule as one
 of their strictest, so each family below was added on that test.
 
 - **Security switches.** `spctl --master-disable`, `--global-disable` and
-  `--disable` (Gatekeeper); `csrutil disable`, `authenticated-root disable`
-  and `enable --without …` (System Integrity Protection); `setenforce` to
-  anything but `1` or `Enforcing`; any write to `/etc/selinux/config` or
-  `/etc/sysconfig/selinux`, whatever the program (a redirect, `tee`, `sed -i`,
-  `cp`); `nvram` that sets, deletes or clears a variable (`boot-args`). A
-  value only known when it runs is risky. `spctl --master-enable`, `csrutil
-  status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
-  safe.
+  `--disable` (Gatekeeper), `spctl --add` (a rule that lets what it names
+  pass Gatekeeper's check), `spctl kext-consent disable` and `add` (kernel
+  extensions load without the user's consent) and `spctl developer-mode
+  enable-terminal` (the terminal's programs skip Gatekeeper); `csrutil
+  disable`, `authenticated-root disable` and `enable --without …` (System
+  Integrity Protection); `setenforce` to anything but `1` or `Enforcing`;
+  any write to `/etc/selinux/config` or `/etc/sysconfig/selinux`, whatever
+  the program (a redirect, `tee`, `sed -i`, `cp`), a file copied or moved
+  into their folder at their name (`cp config /etc/selinux/`, or a name
+  that is a pattern or only known when it runs), and a folder copied whole
+  that lands on one of those folders (`cp -r selinux /etc/`, `cp -r etc /`),
+  a folder's contents among them (`cp -r . /etc/selinux`, whose names may
+  be any); any `setsebool` of a boolean and any `semanage` that adds,
+  deletes or modifies (`-a`, `-d`, `-m`, `-D`, and `module -r`) or
+  `import`s (`-i`, `--input`) (`SELinux`'s policy; `semanage … -l` and
+  `export` read it), and `semodule -i`, `-u`, `-r`, `-d` and `-e`, which
+  `semanage module` runs (`semodule -l` lists); `aa-disable`
+  and `aa-complain` of a profile, `aa-teardown`, and `apparmor_parser -R`
+  (`--remove`) and `-C` (`--complain`) (AppArmor); `auditctl -D` (every
+  audit rule), `-e` with anything but `1` or `2`, a rule `-a` or `-A` adds
+  whose action is `never` or whose list is `exclude` (`-a never,task`, in
+  either order), `-d` and `-W` (a rule or a watch deleted), and `-R`
+  (rules from a file the line does not show); `sysctl -w`, a `name=value` operand, `-p`,
+  `-f` and `--system` (the kernel's settings, such as
+  `kernel.randomize_va_space`); `nvram` that sets, deletes or clears a
+  variable (`boot-args`). A value only known when it runs is risky.
+  `spctl --master-enable`, `spctl --status`, `kext-consent status`, `csrutil
+  status`, `setenforce 1`, `getenforce`, `getsebool -a`, `aa-status`,
+  `auditctl -l` and `-s`, `sysctl -a` and `sysctl name`, `nvram -p` and
+  reading the files are safe.
+- **Boot settings.** `grubby` with any option but those that read
+  (`--info`, `--default-kernel`, `--default-index`, `--default-title`,
+  `--bootloader-probe`), as `grubby --update-kernel ALL --args selinux=0`;
+  `efibootmgr` with any option but `-v`, `-q`, `--help` and `--version` (it
+  lists the entries alone; `-B` deletes one, `-o` sets the order, `-n` the next);
+  `grub-set-default` and `grub-reboot` (and their `grub2-` names) given an
+  entry, and `grub-editenv FILE set` and `unset`, which they run
+  (`saved_entry`, `next_entry`); `bootctl install`, `update`, `remove`,
+  `set-default`, `set-oneshot`, `unlink` and `cleanup`. Each is `changes how
+  the computer starts`; `grub-editenv list`, `bootctl status` and `bootctl
+  list` read.
+- **An option only known when it runs.** Every program these rules read
+  takes an argument only known when it runs that may be an option as a
+  change: it may be the one that turns a protection off (`spctl $x`,
+  `iptables $flag`, `auditctl $flag`, `firewall-cmd $x`, `pfctl $x`,
+  `socketfilterfw $x`, `networksetup $x`, `scutil $x`), and the finding
+  says what it may do (`may change the firewall with an option only known
+  when it runs`, `may change Gatekeeper …`, `may change auditing …`). One
+  that is the value of the option before it and quoted (`iptables -s
+  "$ip"`, `pfctl -s "$what"`, `auditctl -k "$key"`) is not; outside quotes
+  it may split into words, the next of which may be an option, so it is
+  risky as below (`iptables -L $chain`, `networksetup -getinfo $service`).
+  Only an option known to take a value takes one: never one written with
+  `=` (`firewall-cmd --zone=public "$x"`) nor a flag (`firewall-cmd
+  --permanent "$x"`, `scutil --dns "$x"`, `systemsetup -getremotelogin
+  "$x"` are risky; `firewall-cmd --get-zone-of-interface "$iface"` and
+  `networksetup -getinfo "$service"` are safe). One whose known start is
+  neither empty nor a `-` (`"app-$name.service"`) cannot be an option.
+  `iptables` refuses a second command, so once the line names one (`-A`,
+  `-L`, `-P`) an argument only known when it runs cannot add one
+  (`iptables -A INPUT "$x" -j DROP` is safe; `iptables -t nat $x` is not);
+  but a rule added with no target may take it from such an argument
+  (`-jACCEPT`), so `iptables -I INPUT $x` lets everything through, as `-j
+  ACCEPT` would. The programs whose
+  command word comes first read one only known when it runs as before
+  (`systemctl $verb x`, `defaults $verb x`), and `systemctl --user` with an
+  argument only known when it runs that may be an option is read as
+  system-wide, since that argument may be `--system`.
 - **The firewall.** `iptables` and `ip6tables`, and `ebtables` and
   `arptables`, which take the same commands (and their `-legacy` and
   `-nft` builds), with `-F`/`--flush` (`ebtables --init-table` too),
@@ -2360,7 +2444,11 @@ of their strictest, so each family below was added on that test.
   is a plist inside the workspace: `launchctl unload ./x.plist` and
   `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`
   (a label), `bootout system/…`, and any plist in `/Library/LaunchDaemons` or
-  `~/Library/LaunchAgents` are not. `launchctl unload -D domain` unloads
+  `~/Library/LaunchAgents` are not. A domain only known when it runs is a
+  user's when what it starts with says so (`gui/$UID`, `user/$(id -u)`), and
+  may be `system` otherwise (`$domain`). `launchctl config system|user KEY
+  VALUE` sets what launchd starts services with, for good, and is risky
+  (`changes how the system starts services`). `launchctl unload -D domain` unloads
   every plist in that search path (`-D system`, `-D all`), so it is risky
   whatever the domain. A command word only known when it runs
   (`systemctl $verb x`) is risky. `systemctl` options that take a value
@@ -2408,9 +2496,25 @@ of their strictest, so each family below was added on that test.
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
-  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
-  down *`), which the shell expands against the files. For `service name action`, an
+  is tested against the units that protect the machine, the slices that
+  hold every system service (`system.slice`, `-.slice`) and the units it
+  needs: one that may match a protecting unit or such a slice
+  (`systemctl stop 'firewall*'`, `'*'`, `'clamd@*'`, `'ufw.*'`,
+  `'*.slice'`) is risky, and so is one given to any other
+  service manager (`sv down /etc/service/*`, `cd /etc/service && sv down
+  *`), which the shell expands against the files. A unit is matched by its
+  name, its name with `.service`, and the name before its instance, without
+  case; a `[…]` set counts as any one character and a brace list the shell
+  expands (`{ufw,nginx}`) as a `*`. A pattern whose reading may differ
+  from `fnmatch`'s may match any name: one with a `\` (`'u\fw*'`), a
+  class in a set (`'[[:alpha:]]fw'`, `[[=u=]]`, `[[.u.]]`), or a set whose
+  first member is `]` (`'[]u]fw'`, `'[!]]fw'`). One that may match a unit
+  the system needs (`'systemd-logi*'`), or a unit the sessions, the
+  machines or systemd run in (`user.slice`, `user-1000.slice`,
+  `user@1000.service`, `session-3.scope`, `init.scope`, and a pattern that
+  may match one, as `'user*'` and `'*.scope'`), is `stop_system`; one that
+  matches none (`systemctl stop 'docker*'`) is everyday work. Stopping
+  `system.slice` by its name `stops every system service`. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
@@ -2490,14 +2594,22 @@ of their strictest, so each family below was added on that test.
   and the verbs `hostnamectl` has since systemd 249 (`hostname`,
   `icon-name`, `chassis`, `deployment`, `location`) when given a value
   (`hostnamectl hostname newname`; with none they print); `hostname name`
-  and `hostname -F`. An application's own keys
+  and `hostname -F`. A key that keeps a protection on is not an
+  application's own: writing, deleting or renaming `LSQuarantine` of
+  `com.apple.LaunchServices` (or its file), which has Gatekeeper check what
+  is downloaded, or a key only known when it runs there, is risky (`changes
+  the quarantine of downloaded files`). An application's own keys
   (`defaults write com.example.app key value`, `defaults delete com.apple.dock
-  persistent-apps`), a path in the workspace or the user's own folder,
-  `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
+  persistent-apps`), a path in the user's own folder, `defaults read`,
+  `pmset -g` and the `-get`/`-list` options are safe. A domain given as a
+  path in the workspace is a file of the workspace's own, whatever the verb
+  (`defaults delete ./Info.plist`, `defaults import ./Info.plist x.plist`).
 
-`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
-and cmd they are Windows programs or aliases (`sv` is PowerShell's
-`Set-Variable`) and are left alone. An init script is read in PowerShell too
+`sv` is read in POSIX shells only: in PowerShell it is `Set-Variable`. pwsh
+on Linux and macOS runs the native `hostname` and `service`, so they are
+read in PowerShell as in POSIX (`hostname newname` and `service ufw stop`
+are risky there too); in cmd, `hostname` is Windows' own, which sets
+nothing, and there is no `service`. An init script is read in PowerShell too
 (`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
 on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
@@ -2506,8 +2618,12 @@ may be an option (see [Values only known when they
 run](#values-only-known-when-they-run)) may be the option that changes a
 setting, so a line in which the program's own reading finds nothing is
 `system_settings` all the same ("may change a machine setting with an option
-only known when it runs"): `iptables $flag`, `spctl $x`, `iptables "-$F"`,
-`iptables -A INPUT -s $ip -j DROP`. Quoted with nothing before it, it is one
+only known when it runs"): `iptables -A INPUT -s $ip -j DROP`, `iptables -L
+$chain`, `networksetup -getinfo $service`. Where the program's own reading
+takes such an argument as a possible option, its finding says what that
+option may do instead (`iptables $flag` and `iptables "-$F"` "may change the
+firewall with an option only known when it runs", `spctl $x` "may change
+Gatekeeper …"). Quoted with nothing before it, it is one
 word, a value (`iptables -A INPUT -s "$ip" -j DROP` is safe). `service`,
 `launchctl` and the other service managers take no option that changes what
 their words do, and their own reading judges each word, an unknown one
@@ -4421,14 +4537,13 @@ when it runs, never left out.
   command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
   `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
   command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
-  `.output`, `.once`, `.import`, `.restore`, `.backup` and `.save`.
-  `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace the file they are
-  given, whatever database they copy from and `-readonly` or not, so the last
-  word is judged like any file: in the workspace, a temporary directory or
-  memory it is safe, anywhere else it is `drop_data`. The names are the
-  shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
-  not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
-  refuse a file that exists and are safe.
+  `.output`, `.once`, `.import`, `.restore`, `.backup`, `.save`, `.clone`,
+  `.cd`, `.load`, `.excel`, `.log`, `.trace` and `.archive`. `.backup ?DB?
+  FILE` and `.save ?OPTIONS? FILE` replace the file they are given, whatever
+  database they copy from and `-readonly` or not: a write of the last word
+  (see "Files a client writes and programs it runs" below). The names are
+  the shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
+  not them, and `.bail` is another command).
 - **Replacing a table.** `CREATE OR REPLACE TABLE` (with `TEMPORARY` or the
   like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
   `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
@@ -4528,10 +4643,12 @@ command that ends at the end of its line or at the next backslash outside a
 quote, which starts the next command (or is `\\`, and the SQL goes on after
 it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
 touch f` runs `touch`. A here-document whose first line starts with a
-backslash is read from that line. `\gexec` and
+backslash is read from that line. `\!` is the one command that does not end
+at a backslash: it hands the whole rest of its line to the shell. `\gexec` and
 `\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
 a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
-followed by `|` run a program. A statement the reader has to guess at is
+followed by `|` run a program (see "Files a client
+writes and programs it runs" below). A statement the reader has to guess at is
 `unknown`, never safe: a string, a comment or a `$$` string that is never
 closed.
 
@@ -4576,12 +4693,113 @@ the reader would take it for an expansion that hides what follows. On cmd an
 expansion in a double-quoted word (`%id%`) is not read as a word, so any
 statement with one is `unknown` (`psql -c "DROP TABLE t; %x%"` is `unknown`,
 not `drop_data`); a single-quoted PowerShell word has none. A client command that runs a
-program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
-`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
-and `system` in `mysql` (it is no command of another client: ClickHouse's
-`SYSTEM FLUSH LOGS` is a statement).
+program the text does not show is `unknown` too (see "Files a client writes
+and programs it runs" below).
 A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
 when it runs is `unknown` too.
+
+**Files a client writes and programs it runs.** A client does more than
+change the database: its commands and some statements write a file the
+text names, or run a program. Each is read from the text as the client reads
+it, and judged by the rule that judges the same act on the line itself, never
+by matching the text:
+
+- **A file it writes** is a write, judged as a redirect's is, from the folder
+  the client runs in: a startup file, a protected path or a place beyond the
+  workspace is `overwrite`, a file in the workspace or a temporary folder is
+  the agent's own. That is `psql`'s `\o` (`\out`), `\g` and `\gx` (after their
+  `(…)` options), `\w` (`\write`), `\s`, `\lo_export OID FILE` and `\copy … to
+  FILE` (the first `to` outside parentheses; `stdout`, `pstdout` and `program`
+  are no file, and `\copy … from` reads); `.output` and `.once` (the last word
+  that is no option), `.log` and `.trace` (not `stdout`, `stderr`, `on` or
+  `off`), `.backup`, `.save` and `.clone` in `sqlite3` and `duckdb`; `mysql`'s
+  `tee` and `\T`; `sqlcmd`'s `:out`, `:error` and `:perftrace` (not `stdout`
+  or `stderr`); `cqlsh`'s `CAPTURE 'FILE'`; the statements `COPY … TO 'FILE'`
+  (not `TO STDOUT`, nor `DuckDB`'s `COPY FROM DATABASE a TO b`), `SELECT …
+  INTO OUTFILE` and `INTO DUMPFILE`, `VACUUM INTO`, `DuckDB`'s `EXPORT
+  DATABASE ['db' TO] 'DIR'` (a folder written into), `PostgreSQL`'s
+  `lo_export(OID, 'FILE')` and `sqlite3`'s `writefile('FILE', …)`, its name a
+  quoted identifier too (`"writefile"`, `` `writefile` ``, `[writefile]`, in
+  any case, as `sqlite3` takes it); and the options that send the output to a
+  file, `psql -o` (`--output`) and `-L` (`--log-file`), `mysql --tee` and
+  `sqlcmd -o`. A server writes `COPY … TO`, `lo_export` and `INTO OUTFILE`
+  where it runs, which may be this machine, so they are read as writes here
+  too. `.archive` writes the files an archive holds by the names in it, or an
+  archive of them, so it is `unknown`. After a `\cd` or a `.cd` the client is
+  in a folder the line does not say, and a relative file is placed from there,
+  as after a `cd` to a folder only known when it runs. A name with a shell
+  expansion in it, or a statement's file that is not a plain string (`VACUUM
+  INTO printf(…)`, `COPY t TO E'…'` or `U&'…'`, whose escapes the server
+  decodes, `lo_export(1, '/a' || 'b')`), is only known when it runs:
+  `unknown`. So is a word the client changes before it opens the file (see
+  "Each client's words" below). A file written by a client in a container or
+  on another machine is not on this machine and is not judged, but a database
+  `.backup` or `.save` replaces there is not the agent's own: `drop_data`.
+- **A program it runs with a command line the text shows** is that line, split
+  by the POSIX grammar and judged by every rule as a line of its own, as `sh
+  -c` is: `psql`'s and `mysql`'s `\!`, `mysql`'s `system` and `pager` (`\P`),
+  `sqlcmd`'s `!!` and `:!!` at the start of a line, `.shell` and `.system`
+  (the words joined with spaces, a word with a space in quotes, as `sqlite3`
+  makes the line), `sqlite3`'s `edit(TEXT, 'EDITOR')`, the value `\setenv`
+  gives `EDITOR`, `PSQL_EDITOR`, `VISUAL`, `PAGER`, `PSQL_PAGER`,
+  `PSQL_WATCH_PAGER` or `SHELL`, the same variables given to `psql` by the
+  line (`PAGER=CMD psql`, `env PAGER=CMD psql`, `export PAGER=CMD`), and
+  `mysql --pager=CMD`. An empty value turns the pager or editor off and runs
+  nothing. Such a value is judged as the program it names, whether or not a
+  command that runs it follows: `\setenv SHELL /bin/sh` is read as the shell a
+  bare `\!` would start, which reads its input (`run_input`). The legacy
+  `mongo` shell's `runProgram`, `run`, `runMongoProgram`,
+  `runNonMongoProgram`, `startMongoProgram` and their kin run a program with
+  the words they are given, with no shell: given only strings, they are that
+  program and its words. So `psql -c '\! rm -rf ~'` deletes the home
+  directory, and `psql -c '\! ls'` is as safe as `ls`. The programs run where
+  the client runs, so a program is read only for a client on this machine, in
+  a POSIX shell, that runs where the line started and has not moved (`\cd`,
+  `.cd`) or set the environment of what it runs (`\setenv` of any other
+  variable); any other is `unknown`. A line is read for at most 16 such
+  programs and 64 KB of their text, at most four programs deep (a program that
+  starts a client that runs a program), and a read keeps at most 32 files and
+  32 programs: past any of them the program is `unknown`.
+- **A program the text does not show** is `unknown`, with the reason `runs a
+  program from a database client`: a `\!`, `system` or `pager` with no command
+  line (a shell, or the pager the environment names), one with a shell
+  expansion in it, a backtick in another `psql` command, `COPY … PROGRAM`,
+  `\copy … program`, `xp_cmdshell`, a command that writes to or reads from a
+  pipe (`\o |cmd`, `\g |cmd`, `.output |cmd`, `.read |cmd`, `.import |cmd`),
+  which hands the program text the guard does not read, a library loaded into
+  the client (`.load`, `load_extension(…)`), the editor or spreadsheet `.once
+  -e`, `.once -x` and `.excel` open, `edit(…)` with no editor or one not
+  written out, `mysql --pager` with no value (the pager the environment
+  names), a `DuckDB` extension installed or loaded (`INSTALL x`, `FORCE
+  INSTALL x`, `LOAD x`, `LOAD 'FILE'`), and in `mongosh` and `mongo`: a
+  `require(…)` or `import(…)` of any module but the few that cannot write a
+  file or run a program (`assert`, `buffer`, `crypto`, `events`, `path`,
+  `punycode`, `querystring`, `string_decoder`, `url` and `util`, `node:`
+  before them or not), or of one only known when it runs; `require`, `import`,
+  `load`, `runProgram` and its kin named as a value but not called (`const r =
+  require`); `runProgram(…)` given anything but strings; and, however they are
+  used, `process`, `eval`, `Function`, `constructor`, `globalThis`, `global`
+  and the legacy shell's file functions (`removeFile`, `copyFile`,
+  `writeFile`, `appendFile`, `mkdir`, `cd`, `resetDbpath`, `copyDbpath`). A
+  name that is a key of an object (`{process: 1}`) is none of them. `system`
+  is no command of another client: ClickHouse's `SYSTEM FLUSH LOGS` is a
+  statement. `mysql` reads `system`, `pager` and `tee` where a statement
+  starts, to the end of the line, and what follows a `;` on it is read as SQL
+  too, so that neither reading hides the other.
+- **Each client's words.** A command's words are split as its client splits
+  them, and a word the client changes before it uses it is not what the line
+  says, so a file or a program in it is `unknown`. `sqlite3` and `duckdb`
+  start a quoted word only at a `'` or `"` that starts it, double nothing, and
+  decode escapes inside `"…"` (`"\176"` is `~`) but not inside `'…'`, where a
+  backslash is itself: `.shell 'echo\' ; rm -rf ~` runs `rm`, and a word with
+  a backslash inside `"…"` is `unknown`. They read only so many words of a
+  command and drop the rest, so a command of 50 words or more is `unknown`
+  too. `psql` fills in its variables outside quotes (`:f`, `:'f'`, `:"f"`,
+  `:{?f}`, set by `-v` or `\set`) and decodes escapes inside `'…'` (`'\176'`,
+  `'\x7e'`); `\!` takes its line as it is, and `\copy`'s words, which `psql`
+  does not fill in, are read with the same caution. `sqlcmd` fills in
+  `$(NAME)` (from `-v`, `:setvar` or the environment) anywhere in a command, a
+  `!!` line too.
 
 **A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
 database file are judged like any file: inside the workspace or a temporary
