@@ -90,7 +90,7 @@ fn many_redirects_and_substitutions_on_one_command_are_read_in_linear_time() {
     // machine or an unoptimized build, which slow both, does not fail the
     // test.
     type Line = (Shell, fn(usize, usize) -> String, usize, usize);
-    let lines: [Line; 8] = [
+    let lines: [Line; 9] = [
         // The redirects and the substitutions in turn, each substitution a
         // command with a redirect of its own.
         (
@@ -141,6 +141,19 @@ fn many_redirects_and_substitutions_on_one_command_are_read_in_linear_time() {
             Shell::PowerShell,
             |subs, _| format!("Set-Location{}", " $(Get-Content f)".repeat(subs)),
             3_000,
+            0,
+        ),
+        // In a loop, arguments that move the session in turn with ones that
+        // read a file: each read from where the last one left it.
+        (
+            Shell::PowerShell,
+            |pairs, _| {
+                format!(
+                    "foreach ($i in 1) {{ cd a{} }}",
+                    " $(cd b) $(gc f)".repeat(pairs)
+                )
+            },
+            3_600,
             0,
         ),
         (

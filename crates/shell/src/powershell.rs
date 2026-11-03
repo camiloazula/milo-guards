@@ -370,6 +370,9 @@ struct Redirects {
     /// Whether the arguments are still read from where the command starts
     /// (see [`Split::enter_start`]): not once one of them has moved the line.
     at_start: bool,
+    /// Once one of them has, the command's unit that moves the line on from
+    /// there when it runs, after the rest are read (see [`Split::step_out`]).
+    then: Option<usize>,
 }
 
 /// Whether the command `node` holds only plain words, parameters and the
@@ -897,10 +900,11 @@ impl Walker<'_> {
     /// command that moves the line (`Set-Location sub > f`) is opened before
     /// it runs: from where it starts. So is a sub-expression in an argument
     /// walked (`Set-Location $(Get-Content ..\x)`), as the session runs it
-    /// before the command. Once one has moved the line, the command moves it
-    /// on from there, and what follows, a redirect too, is read where the
-    /// line has gone to, as the session ran the argument before opening the
-    /// file.
+    /// before the command. Once one has moved the line, the arguments that
+    /// follow are read from where it went, as the session runs them before
+    /// the command too, a redirect that follows from there and from where
+    /// the command moves the line on to, and the command moves it on from
+    /// there once all are read.
     fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize, job: bool) {
         let folder = job.then(|| self.job_folder(own.clone()));
         self.split.enter_start(&own, plain(node));
@@ -911,6 +915,7 @@ impl Walker<'_> {
             pending: false,
             job: job.then(Vec::new),
             at_start: true,
+            then: None,
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -929,6 +934,9 @@ impl Walker<'_> {
         }
         if state.at_start {
             self.split.leave_start();
+        }
+        if let Some(mover) = state.then {
+            self.split.move_on(mover);
         }
         if let (Some(blocks), Some(folder)) = (state.job, folder) {
             self.job(node, &blocks, folder.as_ref(), level);
@@ -1152,7 +1160,9 @@ impl Walker<'_> {
         let len = self.split.units.len();
         state.moved |= self.split.moves_in(state.seen..len);
         state.seen = len;
-        let from = if state.moved {
+        let from = if let Some(mover) = state.then {
+            self.split.opens_moved_on(mover)
+        } else if state.moved {
             OpensFrom::Line
         } else {
             self.split.starts_in(state.own.clone(), true)
@@ -1176,12 +1186,13 @@ impl Walker<'_> {
         self.moved_on(state);
     }
 
-    /// Once what the command's parts run has moved the line, the command
-    /// moves it on from there (see [`Split::leave_start`]).
+    /// Once what the command's parts run has moved the line, the rest is
+    /// read from where it went, and the command moves it on from there once
+    /// all is read (see [`Split::step_out`]).
     fn moved_on(&mut self, state: &mut Redirects) {
         if state.at_start && self.split.moved_since_start() {
             state.at_start = false;
-            self.split.leave_start();
+            state.then = self.split.step_out();
         }
     }
 

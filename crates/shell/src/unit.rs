@@ -883,9 +883,6 @@ pub(crate) struct Split {
     /// [`Self::dir_code`]), by their place in `units`: what the shell expands
     /// for one before it runs is read from there (see [`Self::enter_start`]).
     code_starts: HashSet<usize>,
-    /// Where each of [`Self::unsure_starts`] moved the line to: a redirect
-    /// on it may be opened there too (see [`Start::went`]).
-    went: HashMap<usize, Option<Arg>>,
     /// For each [`Self::enter_start`] not yet put back, where the command it
     /// read from moved the line to; `None` for one that does not move it.
     aways: Vec<Option<Moved>>,
@@ -1556,9 +1553,6 @@ impl Split {
         } else if let Some(target) = moved {
             self.move_line(&target, unit.shell, unsure);
         }
-        if self.unsure_starts.contains(&self.units.len()) {
-            self.went.insert(self.units.len(), self.dir.clone());
-        }
         self.units.push(unit);
     }
 
@@ -2163,11 +2157,16 @@ impl Split {
             );
         };
         if self.unsure_starts.contains(&index) {
-            OpensFrom::both(
-                unit.dir.clone(),
-                unit.others(),
-                Went::To(self.went.get(&index).cloned().flatten()),
-            )
+            // While what the command expands is read from where it started
+            // (see [`Self::enter_start`]), where it went is set aside.
+            let went = self
+                .aways
+                .iter()
+                .rev()
+                .flatten()
+                .find(|moved| moved.mover == index)
+                .map_or(Went::Here, |moved| Went::To(moved.dir.clone()));
+            OpensFrom::both(unit.dir.clone(), unit.others(), went)
         } else {
             OpensFrom::start(unit.dir.clone(), unit.others(), false)
         }
@@ -2256,29 +2255,22 @@ impl Split {
     /// itself (see [`Self::moved_since_start`]), the command moves it on from
     /// there, and may not have moved it at all.
     pub(crate) fn leave_start(&mut self) {
+        if let Some(mover) = self.step_out() {
+            self.move_on(mover);
+        }
+    }
+
+    /// End the last [`Self::enter_start`] as [`Self::leave_start`] does,
+    /// but when what was read in between moved the line itself, leave the
+    /// line where that left it and give back the command that moves it on,
+    /// for [`Self::move_on`] once the rest of what the command expands is
+    /// read: a PowerShell command's later arguments run where an earlier
+    /// `$()` left the session, before the command does.
+    pub(crate) fn step_out(&mut self) -> Option<usize> {
         let moved_inside = self.moved_since_start();
-        let Some(moved) = self.aways.pop().flatten() else {
-            return;
-        };
+        let moved = self.aways.pop().flatten()?;
         if moved_inside {
-            let target = self.units.get(moved.mover).and_then(|unit| {
-                let target = moves_to(unit)?;
-                // Where a `Pop-Location` goes back to was taken from its
-                // stack where it was first read.
-                let popped = unit.key().as_deref() == Some("pop-location");
-                Some((
-                    if popped {
-                        Arg::Unknown(unit.program.text().to_string())
-                    } else {
-                        target
-                    },
-                    unit.shell,
-                ))
-            });
-            if let Some((target, shell)) = target {
-                self.move_line(&target, shell, true);
-            }
-            return;
+            return Some(moved.mover);
         }
         self.dir = moved.dir;
         self.dir_code = moved.dir_code;
@@ -2286,6 +2278,50 @@ impl Split {
         self.stayed = moved.stayed;
         self.adrift = moved.adrift;
         self.last_stayed = moved.last_stayed;
+        None
+    }
+
+    /// Where `mover`, a unit that moves the line, moves it to from where
+    /// the line is now, as a path of its shell.
+    fn moved_on_to(&self, mover: usize) -> Option<(Arg, Shell)> {
+        let unit = self.units.get(mover)?;
+        let target = moves_to(unit)?;
+        // Where a `Pop-Location` goes back to was taken from its stack
+        // where it was first read.
+        let popped = unit.key().as_deref() == Some("pop-location");
+        Some((
+            if popped {
+                Arg::Unknown(unit.program.text().to_string())
+            } else {
+                target
+            },
+            unit.shell,
+        ))
+    }
+
+    /// Move the line on from where it is by `mover`, which
+    /// [`Self::step_out`] gave back; it may fail and leave the line there.
+    pub(crate) fn move_on(&mut self, mover: usize) {
+        if let Some((target, shell)) = self.moved_on_to(mover) {
+            self.move_line(&target, shell, true);
+        }
+    }
+
+    /// Where a redirect read before [`Self::move_on`] opens its file from:
+    /// where the line is, and where `mover` will move it on to from there.
+    pub(crate) fn opens_moved_on(&self, mover: usize) -> OpensFrom {
+        let Some((target, shell)) = self.moved_on_to(mover) else {
+            return OpensFrom::Line;
+        };
+        let went = self.moved_to(self.dir.as_ref(), &target, shell);
+        let mut others: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .chain(&self.stayed)
+            .map(|from| Some(self.moved_to(from.as_ref(), &target, shell)))
+            .collect();
+        others.extend(self.others());
+        OpensFrom::both(Some(went), others, Went::Here)
     }
 
     /// The other folders the line may be in now, besides where the walk has

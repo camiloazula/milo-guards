@@ -269,3 +269,6 @@ powershell finds=read_secret | foreach ($i in 1..2) { cd .. $(Get-Content ..\\.s
 # it on from there, and may fail and leave it there.
 powershell finds=delete | cd $(cd ~; 'x'); Remove-Item -Recurse .ssh
 powershell finds=delete | cd ~ $(cd sub); Remove-Item -Recurse .ssh
+# A later argument runs before the command too: where the earlier one left
+# the session (`.ssh` in `sub`, the workspace's), not where the cd goes.
+powershell safe | cd ~ $(cd sub) $(Remove-Item -Recurse .ssh)

@@ -1210,12 +1210,14 @@ is `unknown` too. In PowerShell a `$()` in a command's arguments runs in the
 session before the command, so what it runs is read from where the command
 starts (`Set-Location $(Get-Content ..\..\.ssh\id_rsa)` reads the key), and a
 redirect inside it from where the line is there. Once such an argument has
-moved the session itself (`cd $(cd ..\..; 'x' > y.txt; 'sub')`), the command
-moves it on from there, and may fail and leave it there, so what follows is
-read from both folders; so is a redirect that follows that argument
-(`Set-Location $(cd ..\..; 'sub') > x.txt` writes two folders up, or where
-`sub` is from there, as the session ran the argument before it opened the
-file).
+moved the session itself (`cd $(cd ..\..; 'x' > y.txt; 'sub')`), the arguments
+that follow run where it left the session, before the command too (`cd ~
+$(cd sub) $(Remove-Item -Recurse .ssh)` removes the `.ssh` in `sub`); a redirect
+that follows that argument is read from both folders (`Set-Location $(cd
+..\..; 'sub') > x.txt` writes two folders up, or where `sub` is from there, as
+the session ran the argument before it opened the file). Once all are read, the
+command moves the session on from where the argument left it, and may fail and
+leave it there, so what follows the command is read from both folders.
 
 The folder a `cd` starts in is not always certain, and the redirect is then
 placed from both places, the one the `cd` starts in and the one it goes to, so
