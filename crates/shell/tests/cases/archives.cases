@@ -1085,3 +1085,36 @@ posix safe | tar -cf "$A" src
 posix safe | tar -cf "$A" src --remove-files
 posix safe | tar -cf x.tar ~/src "--exclude=$X"
 posix safe | 7z a -p"$PASS" x.7z ~/src
+
+# `zip -R` matches each name it is given in every folder below the working
+# directory, `.git` among them, and so does a pattern under `zip -r`; `7z
+# -r` does the same with its wildcards. With `-m` and `-sdel`, a name that
+# can be one of `.git`'s entries deletes the repository's history.
+posix finds=delete | zip -mR x.zip HEAD
+posix finds=delete | zip -m -R x.zip '*.pack'
+posix finds=delete | zip -m --recurse-patterns x.zip config
+posix finds=delete | zip -mr x.zip '*.pack'
+posix finds=delete | 7z a -r x.7z '*.pack' -sdel
+posix finds=delete | 7z a -sdel -r x.7z HEAD*
+posix finds=delete | 7z a x.7z -ir!*.pack -sdel
+posix safe | zip -mR x.zip '*.o'
+posix safe | zip -R x.zip HEAD
+posix safe | 7z a -r x.7z '*.log' -sdel
+posix safe | 7z a -r x.7z '*.pack'
+posix safe | 7z a -r- x.7z '*.pack' -sdel
+posix finds=delete | 7z a -R x.7z '*.PACK' -sdel
+posix finds=delete | 7z a -r0 x.7z 'obj*' x -sdel
+posix safe | 7z a -r0 x.7z objects -sdel
+posix finds=delete | 7z a -r x.7z objects -sdel
+posix finds=delete | 7z a x.7z -ir!HEAD -sdel
+posix safe | 7z a x.7z -i!HEAD -sdel
+posix finds=delete | 7z a $OPT x.7z '*.pack' -sdel
+posix finds=delete | zip -m $OPT x.zip HEAD
+posix finds=delete reason="deletes the repository's history" | zip -mR x.zip packed-refs
+posix safe | zip -mR x.zip 'src/*.pack'
+posix safe | 7z a -r x.7z 'src/*.pack' -sdel
+powershell finds=delete | 7z a -r x.7z *.pack -sdel
+cmd finds=delete | 7z a -r x.7z *.pack -sdel
+cmd finds=delete | 7z a -r x.7z head -sdel
+cmd safe | 7z a -r x.7z *.obj -sdel
+cmd safe | 7z a -r x.7z src\\*.pack -sdel

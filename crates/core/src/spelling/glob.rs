@@ -123,13 +123,13 @@ const GIT_SHORT_NAMES: [&str; 12] = [
 /// `flavour` is as for [`matches()`]; a name is matched with `hidden` on.
 #[must_use]
 pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
-    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
+    let names = git_names();
     if flavour != Flavour::Windows {
         return !pattern.is_empty()
             && (names
                 .clone()
                 .any(|name| matches(pattern, name, flavour, true))
-                || can_match_shape(pattern, flavour, &hex_shapes(false)));
+                || can_match_shape(pattern, flavour, &hex_shapes(false), false));
     }
     can_match_cmd(
         pattern,
@@ -139,12 +139,117 @@ pub fn can_match_git_entry(pattern: &str, flavour: Flavour) -> bool {
     )
 }
 
+/// As [`can_match_git_entry`] on POSIX, with names compared without case, as
+/// `find -iname` compares them: `head` and `*.PACK` can match.
+#[must_use]
+pub fn can_match_git_entry_ignoring_case(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && (git_names().any(|name| matches_case(pattern, name, Flavour::Posix, true, true))
+            || can_match_shape(pattern, Flavour::Posix, &hex_shapes(false), true))
+}
+
+/// How many parts below `.git` [`path_can_reach_git_entry`] reads: the
+/// deepest of git's own paths that matter, `logs/refs/remotes/origin/main`,
+/// has five.
+const GIT_DEPTH: usize = 6;
+
+/// Whether the POSIX pattern `pattern`, matched against a whole path as
+/// `find -path` matches one, where a `*` and a `?` take a `/` too, can match
+/// a path below the folder `git` (the path of a repository's `.git` as the
+/// search spells it, `./.git`) made of the names of what `.git` holds (see
+/// [`can_match_git_entry`]), up to six of them: `*/HEAD`,
+/// `./.git/*` and `*/refs/*` can, `*/__pycache__/*`, `*.o` and `./src/*`
+/// cannot. With `fold`, the path compares without case (`-ipath`).
+#[must_use]
+pub fn path_can_reach_git_entry(pattern: &str, git: &str, fold: bool) -> bool {
+    let prefix: Vec<char> = git.chars().collect();
+    let names: Vec<Vec<char>> = git_names().map(|name| name.chars().collect()).collect();
+    let shapes = hex_shapes(false);
+    // As in [`matches()`], bash's reading and zsh's, which differ only in a
+    // bracket.
+    let readings: &[bool] = if pattern.contains('[') {
+        &[false, true]
+    } else {
+        &[false]
+    };
+    readings.iter().any(|&zsh| {
+        let tokens = tokens(pattern, Flavour::Posix, zsh);
+        let optional = vec![false; tokens.len()];
+        let end = tokens.len();
+        let slash = |states: Vec<bool>| {
+            run(&tokens, &optional, states, 1, &|_, token| {
+                token.takes('/', false)
+            })
+        };
+        let mut start = vec![false; end + 1];
+        start[0] = true;
+        let mut states = slash(run(
+            &tokens,
+            &optional,
+            start,
+            prefix.len(),
+            &|at, token| token.takes(prefix[at], fold),
+        ));
+        // The positions already read from, so that each is read once.
+        let mut seen = states.clone();
+        for _ in 0..GIT_DEPTH {
+            if !states.contains(&true) {
+                return false;
+            }
+            // What one part of the path, a name or a shape, leaves.
+            let mut after = vec![false; end + 1];
+            let mut add = |reached: Vec<bool>| {
+                for (into, live) in after.iter_mut().zip(reached) {
+                    *into |= live;
+                }
+            };
+            for name in &names {
+                add(run(
+                    &tokens,
+                    &optional,
+                    states.clone(),
+                    name.len(),
+                    &|at, token| token.takes(name[at], fold),
+                ));
+            }
+            for shape in &shapes {
+                add(run(
+                    &tokens,
+                    &optional,
+                    states.clone(),
+                    shape.len(),
+                    &|at, token| shape[at].iter().any(|c| token.takes(*c, fold)),
+                ));
+            }
+            if after[end] {
+                return true;
+            }
+            let next = slash(after);
+            states = next
+                .iter()
+                .zip(&seen)
+                .map(|(live, old)| *live && !old)
+                .collect();
+            for (old, live) in seen.iter_mut().zip(&next) {
+                *old |= live;
+            }
+        }
+        false
+    })
+}
+
+/// The names [`can_match_git_entry`] tries: `.git`'s top-level entries, and
+/// the files and folders deeper in.
+fn git_names() -> impl Iterator<Item = &'static &'static str> + Clone {
+    GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS)
+}
+
 /// As [`can_match_git_entry`] on Windows, for PowerShell's own matching (an
 /// `-Include`), where cmd's DOS wildcards (`<`, `>`, `"`) are plain
 /// characters.
 #[must_use]
 pub fn can_match_git_entry_powershell(pattern: &str) -> bool {
-    let names = GIT_ENTRIES.iter().chain(&GIT_FILES).chain(&GIT_FOLDERS);
+    let names = git_names();
     can_match_cmd(
         pattern,
         names.chain(&GIT_SHORT_NAMES),
@@ -194,9 +299,10 @@ fn hex_shapes(short: bool) -> Vec<NameShape> {
 
 /// Whether the (non-cmd) pattern can match a name of one of `shapes`. As in
 /// [`matches()`], a pattern on POSIX may be read by bash or by zsh (`[.x.]`
-/// and `[=x=]` differ), and can match when either reading does.
-fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape]) -> bool {
-    let fold = flavour == Flavour::Windows;
+/// and `[=x=]` differ), and can match when either reading does. Names
+/// compare without case on Windows, and with `fold`.
+fn can_match_shape(pattern: &str, flavour: Flavour, shapes: &[NameShape], fold: bool) -> bool {
+    let fold = fold || flavour == Flavour::Windows;
     let readings: &[bool] = if fold { &[false] } else { &[false, true] };
     readings.iter().any(|&zsh| {
         let tokens = tokens(pattern, flavour, zsh);
@@ -326,34 +432,68 @@ fn matches_by(
     len: usize,
     takes: &dyn Fn(usize, &Token) -> bool,
 ) -> bool {
-    // The token positions the name read so far can stand at, after skipping
-    // every token that can match nothing.
-    let settle = |states: &mut Vec<bool>| {
-        for at in 0..tokens.len() {
-            if states[at] && (tokens[at] == Token::Star || optional[at]) {
-                states[at + 1] = true;
-            }
-        }
-    };
-    let mut states = vec![false; tokens.len() + 1];
-    states[0] = true;
-    settle(&mut states);
+    let mut start = vec![false; tokens.len() + 1];
+    start[0] = true;
+    run(tokens, optional, start, len, takes)[tokens.len()]
+}
+
+/// The token positions `tokens` can stand at after reading a name of `len`
+/// characters (see [`matches_by`]), from the positions marked in `states`.
+/// Only the positions that are live are visited, so a long pattern of which
+/// little is live costs little for each character.
+fn run(
+    tokens: &[Token],
+    optional: &[bool],
+    mut marks: Vec<bool>,
+    len: usize,
+    takes: &dyn Fn(usize, &Token) -> bool,
+) -> Vec<bool> {
+    let mut live: Vec<usize> = (0..marks.len()).filter(|at| marks[*at]).collect();
+    settle(tokens, optional, &mut marks, &mut live);
+    let mut next_marks = vec![false; marks.len()];
+    let mut next_live = Vec::new();
     for position in 0..len {
-        let mut next = vec![false; tokens.len() + 1];
-        for at in 0..tokens.len() {
-            if !states[at] {
+        for &at in &live {
+            let Some(token) = tokens.get(at) else {
                 continue;
-            }
-            if tokens[at] == Token::Star {
-                next[at] = true;
-            } else if takes(position, &tokens[at]) {
-                next[at + 1] = true;
+            };
+            let to = if *token == Token::Star {
+                at
+            } else if takes(position, token) {
+                at + 1
+            } else {
+                continue;
+            };
+            if !next_marks[to] {
+                next_marks[to] = true;
+                next_live.push(to);
             }
         }
-        settle(&mut next);
-        states = next;
+        settle(tokens, optional, &mut next_marks, &mut next_live);
+        for &at in &live {
+            marks[at] = false;
+        }
+        std::mem::swap(&mut marks, &mut next_marks);
+        std::mem::swap(&mut live, &mut next_live);
+        next_live.clear();
     }
-    states[tokens.len()]
+    marks
+}
+
+/// Marks, and adds to `live`, every position reached from a live one by
+/// skipping tokens that can match nothing (a `*`, or one marked in
+/// `optional`).
+fn settle(tokens: &[Token], optional: &[bool], marks: &mut [bool], live: &mut Vec<usize>) {
+    let mut next = 0;
+    while let Some(&from) = live.get(next) {
+        next += 1;
+        let mut at = from;
+        while at < tokens.len() && (tokens[at] == Token::Star || optional[at]) && !marks[at + 1] {
+            marks[at + 1] = true;
+            live.push(at + 1);
+            at += 1;
+        }
+    }
 }
 
 /// Whether the pattern part `pattern` matches the file name `name`.
@@ -377,7 +517,20 @@ fn matches_by(
 /// a literal `.`.
 #[must_use]
 pub fn matches(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
-    let fold = flavour == Flavour::Windows;
+    matches_case(pattern, name, flavour, hidden, false)
+}
+
+/// As [`matches()`], with names compared without case on POSIX too when
+/// `fold` (`find -iname`, `-ipath`).
+#[must_use]
+pub fn matches_ignoring_case(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
+    matches_case(pattern, name, flavour, hidden, true)
+}
+
+/// [`matches()`], with names compared without case when `fold` or on
+/// Windows.
+fn matches_case(pattern: &str, name: &str, flavour: Flavour, hidden: bool, fold: bool) -> bool {
+    let fold = fold || flavour == Flavour::Windows;
     // `[.x.]` and `[=x=]` are elements in bash and plain members in zsh, and
     // a pattern on POSIX may be read by either: it matches when either
     // reading of it does.
@@ -1054,6 +1207,73 @@ mod tests {
         assert!(can_match_git_entry("??", Flavour::Posix));
         assert!(!can_match_git_entry("A?", Flavour::Posix));
         assert!(!can_match_git_entry("??????~1", Flavour::Posix));
+    }
+
+    #[test]
+    fn a_name_search_without_case_finds_the_files_of_git() {
+        for pattern in ["head", "HEAD", "Config", "*.PACK", "PACK-*", "??", "AB"] {
+            assert!(can_match_git_entry_ignoring_case(pattern), "{pattern}");
+        }
+        for pattern in ["", "*.o", "*.LOG", "node_modules", "x*", "HEAD.", "[!h]ead"] {
+            assert!(!can_match_git_entry_ignoring_case(pattern), "{pattern}");
+        }
+        assert!(matches_ignoring_case(".GIT", ".git", Flavour::Posix, true));
+        assert!(!matches(".GIT", ".git", Flavour::Posix, true));
+    }
+
+    #[test]
+    fn a_path_search_finds_the_files_of_git_below_it() {
+        for pattern in [
+            "*",
+            "*/HEAD",
+            "./.git/*",
+            "*/refs/*",
+            "*/objects/??",
+            "*.pack",
+            "./.git/HEAD",
+            "./.git/refs/heads/main",
+            "./*/config",
+            "*D",
+            "./.g[i]t/*",
+        ] {
+            assert!(
+                path_can_reach_git_entry(pattern, "./.git", false),
+                "{pattern}"
+            );
+        }
+        for pattern in [
+            "",
+            "*.o",
+            "*/__pycache__/*",
+            "*/node_modules/*",
+            "./src/*",
+            "./.git",
+            "*/.git",
+            "./.gi/*",
+            "*/HEAD/x",
+            "*.log",
+            "./.git/head",
+        ] {
+            assert!(
+                !path_can_reach_git_entry(pattern, "./.git", false),
+                "{pattern}"
+            );
+        }
+        assert!(path_can_reach_git_entry("*/OBJECTS/*", "./.git", true));
+        assert!(path_can_reach_git_entry("./.GIT/head", "./.git", true));
+        assert!(!path_can_reach_git_entry("*/OBJECTS/*", "./.git", false));
+        assert!(path_can_reach_git_entry("/w/.git/*", "/w/.git", false));
+        assert!(!path_can_reach_git_entry("./.git/*", "src/.git", false));
+    }
+
+    #[test]
+    fn a_long_path_pattern_is_read_in_linear_time() {
+        let pattern = "*a".repeat(5000);
+        assert!(!path_can_reach_git_entry(&pattern, "./.git", false));
+        let pattern = "?".repeat(10_000);
+        assert!(!path_can_reach_git_entry(&pattern, "./.git", true));
+        let pattern = "[".repeat(10_000);
+        assert!(!path_can_reach_git_entry(&pattern, "./.git", false));
     }
 
     #[test]

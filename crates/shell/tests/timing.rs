@@ -431,6 +431,73 @@ fn cmd_commands_read_again_are_read_in_time() {
     }
 }
 
+/// A line of a shape, and how it is made for a size.
+type Shape = (&'static str, fn(usize) -> String);
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn find_expressions_are_read_in_linear_time() {
+    let _serial = serial();
+    // A `find` expression is read for `.git` and its entries below each
+    // folder searched: its name and path patterns are asked of every name
+    // `.git` holds, and a path pattern again for each folder.
+    let paths = posix();
+    let shapes: [Shape; 9] = [
+        ("names joined by -o", |size| {
+            format!("find . {}-delete", filled("-name HEAD -o ", size, 20))
+        }),
+        ("negations", |size| {
+            format!("find . {}-name HEAD -delete", filled("! ", size, 30))
+        }),
+        ("brackets", |size| {
+            let open = filled("( ", size / 2, 20);
+            format!(
+                "find . {open}-name HEAD{} -delete",
+                " )".repeat(open.len() / 2)
+            )
+        }),
+        ("folders and a path test", |size| {
+            format!("find {}-path '*/HEAD' -delete", filled(". ", size, 30))
+        }),
+        ("folders and path tests", |size| {
+            let half = size / 2;
+            format!(
+                "find {}{}-delete",
+                filled(". ", half, 20),
+                filled("-path '*/x' -o ", half, 20)
+            )
+        }),
+        ("a long name pattern", |size| {
+            format!("find . -name '{}' -delete", filled("*a", size, 30))
+        }),
+        ("a long path pattern", |size| {
+            format!("find . -path '{}' -delete", filled("*a", size, 30))
+        }),
+        ("prunes", |size| {
+            format!(
+                "find . {}-name HEAD -exec rm {{}} +",
+                filled("-name .git -prune -o ", size, 40)
+            )
+        }),
+        ("tests and actions", |size| {
+            format!(
+                "find . {}-delete",
+                filled("-type f -print -mtime 1 , ", size, 20)
+            )
+        }),
+    ];
+    for (what, line) in shapes {
+        assert_linear(what, Shell::Posix, &paths, line);
+        assert!(
+            !classify(&line(64 * 1024), Shell::Posix, &paths).is_safe(),
+            "{what}"
+        );
+    }
+}
+
 #[test]
 #[allow(
     clippy::disallowed_methods,

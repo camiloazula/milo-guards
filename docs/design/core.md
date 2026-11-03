@@ -496,8 +496,11 @@ Some guards need to take a path's spelling apart before they hand it to the
 resolver. Those helpers are in the `spelling` module, not at the crate root,
 and are for guard crates, not callers: `parts` (the parts of a relative path,
 dots applied), `device` (the device a path names) and the `glob` module
-(`has_wildcard`, `matches`, `reaches_git`, `can_match_git_entry`,
-`can_match_git_entry_powershell`, `can_match_git_short_name`,
+(`has_wildcard`, `matches`, `matches_ignoring_case`, `reaches_git`,
+`can_match_git_entry`, `can_match_git_entry_powershell`,
+`can_match_git_entry_ignoring_case`, `path_can_reach_git_entry` (whether a
+pattern matched against a whole path, as `find -path` matches, can reach the
+names `.git` holds below it), `can_match_git_short_name`,
 `can_match_git_folder`, and `shape` with its `Shape`, which is
 `#[non_exhaustive]`), `network` (whether a text names a place on another
 machine: a share, spelled with two separators or as a long path or device path;
