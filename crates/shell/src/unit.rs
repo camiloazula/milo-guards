@@ -25,8 +25,14 @@ pub(crate) enum Arg {
     Template {
         /// The text, with each expansion as written.
         text: String,
-        /// The argument as written, quotes and all.
-        source: String,
+        /// The argument as written, quotes and all. A boxed `str`, not a
+        /// `String`, so that with `runs` an `Arg` stays the size of two
+        /// strings: the walk of a deeply nested line holds many on the
+        /// stack, and a bigger one overflows it before the depth limit.
+        source: Box<str>,
+        /// Whether an expansion in it runs a command (`$(…)`, a backtick):
+        /// it prints what it likes, where a variable stands for a value.
+        runs: bool,
     },
     /// What the previous stage of its pipeline hands it: `xargs`, a
     /// cmdlet's pipeline input, `$_`.
@@ -55,7 +61,8 @@ impl Arg {
     /// The value, or the source text of what is only known when it runs.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
+            Self::Known(text) | Self::Unknown(text) => text,
+            Self::Template { source, .. } => source,
             Self::Input => "<input>",
             Self::Null => "$null",
         }
@@ -687,6 +694,9 @@ pub(crate) struct Split {
     /// item of what the loop walks, so a rule that counts what a command
     /// reaches reads `"$c"` as every item, not one.
     looped: Vec<String>,
+    /// What a POSIX line sets its variables to, for the places bash reads a
+    /// value again as code (arithmetic, `${!x}`, `${x@P}`).
+    pub(crate) values: crate::values::Values,
     /// The characters a backtick `u{…}` made in a PowerShell string that are
     /// a space that is not an ASCII one, a dash or a typographic quote: as a
     /// path or an argument each is the text it holds, but a script that holds
@@ -773,9 +783,19 @@ pub(crate) struct Split {
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
+    /// Each function the line defines, by name, with the units of its body:
+    /// a call runs them, handed the call's input.
+    pub(crate) function_bodies: Vec<(String, Range<usize>)>,
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
+    /// The units of each function body and alias the line defines, by name:
+    /// what a call of the name runs (see [`Split::bodies_of`]).
+    called_bodies: HashMap<String, Vec<Range<usize>>>,
+    /// The names among [`Split::called_bodies`] an `alias` defines, whose
+    /// call is its value followed by the call's words (see
+    /// [`Split::is_alias`]).
+    aliases: HashSet<String>,
     /// The functions whose body moves the line, or whose definition is
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
@@ -2013,11 +2033,50 @@ impl Split {
         }
     }
 
+    /// Note that `units` are the body of the function or alias `name`: a
+    /// call may run any body of its name the line defines. Past
+    /// [`MAX_BODIES`] for one name, the two first are kept as one range from
+    /// the start of the first to the end of the second, which holds both
+    /// and whatever the line runs between them.
+    pub(crate) fn body(&mut self, name: &str, units: Range<usize>) {
+        if units.is_empty() {
+            return;
+        }
+        let bodies = self.called_bodies.entry(name.to_string()).or_default();
+        if bodies.len() >= MAX_BODIES {
+            let first = bodies.remove(0);
+            if let Some(second) = bodies.first_mut() {
+                *second = first.start.min(second.start)..first.end.max(second.end);
+            }
+        }
+        bodies.push(units);
+    }
+
+    /// Note that `units` are the value of `alias name=…`: a call of `name`
+    /// runs it, with the call's words after its last command.
+    pub(crate) fn alias_body(&mut self, name: &str, units: Range<usize>) {
+        self.body(name, units);
+        self.aliases.insert(name.to_string());
+    }
+
+    /// Whether an `alias` on the line defines `name`.
+    pub(crate) fn is_alias(&self, name: &str) -> bool {
+        self.aliases.contains(name)
+    }
+
+    /// The units of the bodies a unit that runs the program `name` may run:
+    /// the functions and aliases of that name the line defines.
+    pub(crate) fn bodies_of(&self, name: &str) -> &[Range<usize>] {
+        self.called_bodies.get(name).map_or(&[], Vec::as_slice)
+    }
+
     /// Note that the definition which began at `defining` has been read. A
     /// call to a function whose body moves the line, or that calls one that
     /// does, or whose definition is redirected, starts in a folder the walk
     /// has to work out from where the function was defined.
     pub(crate) fn defined(&mut self, defining: Defining) {
+        self.function_bodies
+            .push((defining.name.clone(), defining.first..self.units.len()));
         let Defining {
             name,
             dir,
@@ -2028,6 +2087,7 @@ impl Split {
             replaces,
             ..
         } = defining;
+        self.body(&name, first..self.units.len());
         // The walk moves its own line for every `cd` it reads, so a body
         // moves it as far as the walk is concerned unless a subshell or a
         // substitution gave the `cd` back. A `cd` in a pipeline stage, the
@@ -2989,6 +3049,14 @@ const MAX_ELSEWHERE: usize = 8;
 /// person wrote to be read call by call, and it bounds what a call has to
 /// look through.
 const MAX_MOVING_FUNCTIONS: usize = 256;
+
+/// The most bodies kept apart for one function or alias name (see
+/// [`Split::body`]): a name defined again runs the last definition, or one of
+/// those before it when a later one may not have run. Each body a call may
+/// run is followed for the secrets it reads and sends, so the work a line
+/// can make stays bounded however often it defines one name; the ones before
+/// are kept together, as one range that holds them all.
+const MAX_BODIES: usize = 4;
 
 /// Whether the grammar of `shell` would take too long over `text`, and why,
 /// found by counting bytes without parsing:
