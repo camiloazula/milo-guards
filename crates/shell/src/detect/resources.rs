@@ -505,7 +505,7 @@ fn values_of(key: &str) -> Vec<&'static str> {
 // help, manual and docs show them, and a new one is added when it turns up.
 
 /// Options of docker, podman and nerdctl that take a value.
-const ENGINE_VALUES: &[&str] = &[
+pub(super) const ENGINE_VALUES: &[&str] = &[
     "--config",
     "-c",
     "--context",
@@ -564,7 +564,7 @@ const ENGINE_VALUES: &[&str] = &[
 ];
 
 /// Options of `docker compose` that take a value.
-const COMPOSE_VALUES: &[&str] = &[
+pub(super) const COMPOSE_VALUES: &[&str] = &[
     "-f",
     "--file",
     "-p",
@@ -602,7 +602,7 @@ const RM_VALUES: &[&str] = &["-t", "--time", "--cidfile", "--filter"];
 
 /// Options of kubectl and oc that take a value, global ones and those of the
 /// commands that matter here (`delete`, `drain`, `scale`, `apply`).
-const KUBECTL_VALUES: &[&str] = &[
+pub(super) const KUBECTL_VALUES: &[&str] = &[
     "-n",
     "--namespace",
     "--context",
@@ -1286,7 +1286,7 @@ fn is_option(arg: &Arg) -> bool {
 
 /// The first word that is not an option, with what follows it. An option
 /// listed in `values` takes the next word as its value; `--` ends options.
-fn command<'a>(args: &'a [Arg], values: &[&str]) -> Option<(&'a Arg, &'a [Arg])> {
+pub(super) fn command<'a>(args: &'a [Arg], values: &[&str]) -> Option<(&'a Arg, &'a [Arg])> {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         at += 1;
@@ -1382,7 +1382,8 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
         // The null value is no word, and holds no list.
         Arg::Null => false,
         Arg::Unknown(_) | Arg::Template { .. } if unit.repeated => true,
-        Arg::Unknown(text) | Arg::Template { source: text, .. } => {
+        Arg::Unknown(_) | Arg::Template { .. } => {
+            let text = arg.text();
             text.contains("$(")
                 || text.contains('`')
                 || text.contains("<(")

@@ -229,9 +229,10 @@ posix finds=unreadable | cat <<EOF\n`if then fi`\nEOF
 # A backtick the grammar read inside a `${...}`.
 posix finds=unreadable | cat <<EOF\n${x:-`rm -rf /home/me`}\nEOF
 # A here-document in a backtick substitution: the outer one takes a backslash
-# off first, so the body is not what it shows.
-posix finds=unreadable | echo "`cat <<EOF\n\\`rm -rf /home/me\\`\nEOF\n`"
-posix finds=unreadable | echo `cat <<EOF\n\\`ls\\`\nEOF\n`
+# off first, so the body is not what it shows, and the code is read as the
+# shell reads it once the backslash is off.
+posix finds=delete | echo "`cat <<EOF\n\\`rm -rf /home/me\\`\nEOF\n`"
+posix safe | echo `cat <<EOF\n\\`ls\\`\nEOF\n`
 
 # Text before a here-document that a scan misreads hides nothing. Text before
 # a here-document that a plain scan misreads leaves the next lines copied as a

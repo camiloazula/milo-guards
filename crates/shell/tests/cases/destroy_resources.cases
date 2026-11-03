@@ -383,11 +383,11 @@ posix finds=destroy_resources | pulumi dn
 posix safe | aws s3 ls
 posix safe | aws s3 ls s3://bucket --recursive
 posix safe | aws s3 cp a.txt s3://bucket/a.txt
-posix safe | aws s3 sync . s3://bucket
+posix safe | aws s3 sync dist s3://bucket
 posix safe | aws s3 mb s3://bucket
 posix safe | aws s3 rm s3://bucket --recursive --dryrun
 posix safe | aws s3 rm s3://bucket/key --dryrun
-posix safe | aws s3 sync . s3://bucket --delete --dryrun
+posix safe | aws s3 sync dist s3://bucket --delete --dryrun
 posix safe | aws s3api list-buckets
 posix safe | aws ec2 describe-instances
 posix safe | aws ec2 run-instances --image-id ami-1
@@ -447,7 +447,7 @@ posix safe | gcloud compute instances stop vm
 posix safe | gcloud compute instance-groups managed list
 posix safe | gcloud storage ls gs://bucket
 posix safe | gcloud storage cp a gs://bucket
-posix safe | gcloud storage rsync -r . gs://b
+posix safe | gcloud storage rsync -r dist gs://b
 posix safe | gcloud auth login
 posix safe | gsutil ls gs://bucket
 posix safe | gsutil cp a gs://bucket
