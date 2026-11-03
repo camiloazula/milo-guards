@@ -11,7 +11,6 @@ posix safe | spctl --master-enable
 posix safe | spctl --global-enable
 posix safe | spctl --status
 posix safe | spctl --assess --type execute x.app
-posix safe | spctl --add --label x /Applications/x.app
 posix safe | csrutil status
 posix safe | csrutil enable
 posix safe | csrutil authenticated-root status
@@ -24,6 +23,8 @@ posix safe | cat /etc/selinux/config
 posix safe | grep SELINUX= /etc/selinux/config
 posix safe | cp /etc/selinux/config selinux.conf
 posix safe | echo x > selinux/config
+posix lacks=system_settings | cp other /etc/selinux/
+posix lacks=system_settings | cp -r x /etc/selinux
 posix safe | nvram -p
 posix safe | nvram -x -p
 posix safe | nvram boot-args
@@ -34,6 +35,8 @@ posix finds=system_settings | spctl --disable --label x
 posix finds=system_settings | spctl --master-d
 posix finds=system_settings | spctl --global-d
 posix finds=system_settings | spctl --di --label x
+posix finds=system_settings | spctl --add --label x /Applications/x.app
+posix finds=system_settings | spctl --add /Applications/x.app
 posix finds=system_settings | csrutil disable
 posix finds=system_settings | csrutil authenticated-root disable
 posix finds=system_settings | csrutil enable --without debug
@@ -48,6 +51,18 @@ posix finds=system_settings | echo SELINUX=disabled >> /etc/selinux/config
 posix finds=system_settings | sed -i s/enforcing/disabled/ /etc/selinux/config
 posix finds=system_settings | sudo tee /etc/selinux/config
 posix finds=system_settings | cp selinux.conf /etc/selinux/config
+posix finds=system_settings | cp config /etc/selinux/
+posix finds=system_settings | cp ./config /etc/selinux
+posix finds=system_settings | cp -f x/selinux /etc/sysconfig/
+posix finds=system_settings | mv config /etc/selinux/
+posix finds=system_settings | cp $file /etc/selinux/
+posix finds=system_settings | cp conf* /etc/selinux/
+posix finds=system_settings | cp -r selinux /etc/
+posix finds=system_settings | cd /etc && cp -r ~/selinux .
+posix finds=system_settings | cp -r . /etc/selinux
+posix finds=system_settings | cp -r ./ /etc/selinux/
+posix finds=system_settings | cp -a ~/backup/etc /
+posix finds=system_settings | cp -r etc /
 posix finds=system_settings | cd /etc/selinux && echo x > config
 posix finds=system_settings | echo x > /etc/../etc/selinux/config
 posix finds=system_settings | echo SELINUX=disabled > /etc/sysconfig/selinux
@@ -532,6 +547,16 @@ posix safe | systemctl --user kill firewalld
 posix safe | systemctl kill -s HUP nginx
 posix safe | systemctl --legend false status nginx
 posix safe | systemctl --user -p x disable web
+posix safe | systemctl stop 'docker*'
+posix safe | systemctl kill 'docker*'
+posix safe | systemctl stop 'postgresql@*'
+posix safe | systemctl stop docker{,-x}*
+posix safe | systemctl edit 'docker*'
+posix safe | systemctl stop 'docker*.service'
+posix safe | systemctl stop 'dock[e]r*'
+posix safe | systemctl --user stop "app-$name.service"
+posix safe | systemctl --user stop "app-$name"
+posix finds=system_settings | systemctl --user stop app-$name
 posix finds=system_settings | systemctl mask systemd-resolved
 posix finds=system_settings | systemctl disable nginx
 posix finds=system_settings | systemctl disable --now nginx
@@ -560,6 +585,52 @@ posix finds=system_settings | systemctl stop firewalld\\*
 posix finds=system_settings | systemctl stop 'fire[w]alld'
 posix finds=system_settings | systemctl stop "uf*"
 posix finds=system_settings | systemctl stop docker 'ufw*'
+posix finds=system_settings | systemctl stop 'clamd@*'
+posix finds=system_settings | systemctl stop {ufw,nginx}
+posix finds=system_settings | systemctl stop {u{f,x},n}w
+posix finds=system_settings | sv down /etc/service/{ufw,nginx}
+posix finds=system_settings | systemctl stop 'clamd@scan*'
+posix finds=system_settings | systemctl stop '[u@]fw'
+posix finds=system_settings | systemctl stop 'ufw.*'
+posix finds=system_settings | systemctl stop '*'
+posix finds=system_settings | systemctl stop '*.service'
+posix finds=system_settings | systemctl edit 'fire*'
+posix finds=stop_system | systemctl stop 'systemd-logi*'
+posix finds=system_settings | systemctl stop '[[:alpha:]]fw'
+posix finds=system_settings | systemctl stop 'u[[:alpha:]]w'
+posix finds=system_settings | systemctl stop '[[:lower:]]*'
+posix finds=system_settings | systemctl stop '[[=u=]]fw'
+posix finds=system_settings | systemctl stop '[[.u.]]fw'
+posix finds=system_settings | systemctl stop '[]u]fw'
+posix finds=system_settings | systemctl stop '[!]]fw'
+posix finds=system_settings | systemctl stop '[^]]fw'
+posix finds=system_settings | systemctl stop 'u\\fw*'
+posix finds=system_settings | systemctl stop '\\u\\f\\w*'
+posix finds=system_settings | systemctl stop fire\\walld*
+posix finds=system_settings | service 'u\\fw*' stop
+posix finds=system_settings | sv down /etc/service/[[:alpha:]]fw
+posix finds=system_settings | systemctl stop '*.slice'
+posix finds=system_settings | systemctl stop 'sys*.slice'
+posix finds=system_settings | systemctl kill '*.slice'
+posix finds=system_settings | systemctl stop system.slice
+posix finds=system_settings | systemctl stop -- -.slice
+posix finds=stop_system | systemctl stop 'user*'
+posix finds=stop_system | systemctl stop 'us*'
+posix finds=stop_system | systemctl stop 'user@*'
+posix finds=stop_system | systemctl stop 'session-*.scope'
+posix finds=stop_system | systemctl stop '*.scope'
+posix finds=stop_system | systemctl stop user.slice
+posix finds=stop_system | systemctl stop user-1000.slice
+posix finds=stop_system | systemctl stop user@1000.service
+posix finds=stop_system | systemctl stop user@1000
+posix finds=stop_system | systemctl stop session-3.scope
+posix finds=stop_system | systemctl stop init.scope
+posix finds=stop_system | systemctl stop machine.slice
+posix finds=system_settings | systemctl --user stop $svc
+posix finds=system_settings | systemctl --user stop -$x ufw
+posix finds=system_settings | echo --system | xargs systemctl --user stop ufw
+posix finds=system_settings | echo -F | xargs iptables -n
+posix finds=system_settings | systemctl --user $x disable web
 posix finds=system_settings | service ufw $action
 posix finds=system_settings | service ufw "$a"
 posix finds=system_settings | service $name $action
@@ -618,11 +689,21 @@ posix safe | launchctl bootout gui/501 /tmp/scratch/x.plist
 posix safe | launchctl
 posix safe | launchctl unload -S Aqua ./x.plist
 posix safe | launchctl unload -wF ./x.plist
+posix safe | launchctl bootout gui/$UID ./x.plist
+posix safe | launchctl bootout "gui/$UID" ./x.plist
+posix safe | launchctl bootout gui/$(id -u) ./x.plist
+posix safe | launchctl bootout user/$UID ./x.plist
 posix finds=system_settings | launchctl bootout gui/501/com.x
 posix finds=system_settings | launchctl bootout system/com.x
 posix finds=system_settings | launchctl bootout system ./x.plist
 posix finds=system_settings | launchctl bootout user/501
 posix finds=system_settings | launchctl bootout $domain ./x.plist
+posix finds=system_settings | launchctl bootout gui/$UID/com.x
+posix finds=system_settings | launchctl bootout $UID/x ./x.plist
+posix finds=system_settings | launchctl bootout gui/$UID /Library/LaunchDaemons/x.plist
+posix finds=system_settings | launchctl config system path /x
+posix finds=system_settings | launchctl config user umask 000
+posix finds=system_settings | launchctl config $domain path /x
 posix finds=system_settings | launchctl bootout gui/501 /Library/LaunchDaemons/x.plist
 posix finds=system_settings | launchctl bootout gui/501 ./x.plist /Library/LaunchDaemons/x.plist
 posix finds=system_settings | launchctl unload /Library/LaunchDaemons/x.plist
@@ -923,6 +1004,7 @@ posix safe | defaults write com.apple.dock autohide -bool true
 posix safe | defaults write com.example.app key value
 posix safe | defaults write -g ApplePressAndHoldEnabled -bool false
 posix safe | defaults write -app Safari key value
+posix safe | defaults read com.apple.LaunchServices LSQuarantine
 posix safe | defaults -currentHost write com.apple.x k v
 posix safe | defaults write ~/Library/Preferences/com.example.app.plist k v
 posix safe | defaults write ./app.plist k v
@@ -931,6 +1013,9 @@ posix safe | defaults delete com.apple.dock persistent-apps
 posix safe | defaults delete -g ApplePressAndHoldEnabled
 posix safe | defaults delete -app Safari key
 posix safe | defaults delete ./app.plist key
+posix safe | defaults delete ./Info.plist
+posix safe | defaults import ./Info.plist x.plist
+posix safe | defaults delete sub/Info.plist
 posix safe | defaults rename com.example.app old new
 posix safe | defaults
 posix finds=system_settings | defaults delete com.apple.dock
@@ -949,6 +1034,12 @@ posix finds=system_settings | defaults rename /Library/Preferences/x a b
 posix finds=system_settings | defaults write $domain x -bool true
 posix finds=system_settings | defaults $verb com.x
 posix finds=system_settings | sudo defaults write /Library/Preferences/x k v
+posix finds=system_settings | defaults delete ~/Library/Preferences/com.apple.dock.plist
+posix finds=system_settings | defaults write com.apple.LaunchServices LSQuarantine -bool false
+posix finds=system_settings | defaults write com.apple.launchservices lsquarantine -bool NO
+posix finds=system_settings | defaults delete com.apple.LaunchServices LSQuarantine
+posix finds=system_settings | defaults write com.apple.LaunchServices $key -bool false
+posix finds=system_settings | defaults write ~/Library/Preferences/com.apple.LaunchServices.plist LSQuarantine -bool false
 
 # Every pmset setting changes power settings, with or without a power source
 # flag; reading them, sleeping now and pmset's other actions do not.
@@ -1056,12 +1147,219 @@ posix finds=system_settings | hostname -F /etc/hostname
 posix finds=system_settings | hostname --file /etc/hostname
 posix finds=system_settings | hostname $name
 
-# The same names in PowerShell and cmd stay as they were.
+# Other protections of the machine. AppArmor's profiles, the audit rules,
+# SELinux's booleans and policy, the kernel's settings, the boot loader and
+# its entries, kernel extension consent, developer mode and the quarantine
+# of downloads: turning one off or changing it is risky, reading it is not.
+posix safe | aa-status
+posix safe | aa-disable --help
+posix safe | aa-teardown --help
+posix safe | apparmor_parser -p /etc/apparmor.d/x
+posix safe | apparmor_parser -r /etc/apparmor.d/x
+posix safe | apparmor_parser -I dir -r /etc/apparmor.d/x
+posix safe | auditctl -l
+posix safe | auditctl -s
+posix safe | auditctl -e 1
+posix safe | auditctl -e 2
+posix safe | auditctl -w /etc/passwd -p wa -k passwd
+posix safe | auditctl -a always,exit -F arch=b64 -S open -k x
+posix safe | auditctl -A exit,always -S open
+posix safe | semodule -l
+posix safe | semodule -lfull
+posix safe | semodule --list-modules=full
+posix safe | grub-editenv list
+posix safe | grub2-editenv - list
+posix safe | grub-editenv /boot/grub/grubenv create
+posix safe | bootctl status
+posix safe | bootctl list
+posix safe | bootctl
+posix safe | bootctl --esp-path /efi status
+posix safe | auditctl -k "$key" -w /etc/passwd
+posix finds=system_settings | auditctl -k $key -w /etc/passwd
+posix safe | getsebool -a
+posix safe | getsebool httpd_can_network_connect
+posix safe | setsebool
+posix safe | semanage boolean -l
+posix safe | semanage port --list
+posix safe | semanage fcontext -l -C
+posix safe | semanage export
+posix safe | semanage export -f out.txt
+posix safe | sysctl -a
+posix safe | sysctl kernel.randomize_va_space
+posix safe | sysctl -n kern.boottime
+posix safe | sysctl -ar kernel
+posix safe | grubby --info=ALL
+posix safe | grubby --info ALL
+posix safe | grubby --info "$kernel"
+posix safe | grubby --default-kernel
+posix safe | grubby --default-index
+posix safe | grubby
+posix safe | efibootmgr
+posix safe | efibootmgr -v
+posix safe | efibootmgr -vv
+posix safe | efibootmgr --verbose
+posix safe | grub-set-default --help
+posix safe | grub-set-default
+posix safe | spctl kext-consent status
+posix safe | spctl kext-consent list
+posix safe | spctl developer-mode
+posix safe | spctl --assess -t execute ./x.app
+posix finds=system_settings | aa-disable /etc/apparmor.d/x
+posix finds=system_settings | aa-disable usr.bin.firefox
+posix finds=system_settings | aa-complain /etc/apparmor.d/*
+posix finds=system_settings | aa-disable $profile
+posix finds=system_settings | aa-teardown
+posix finds=system_settings | apparmor_parser -R /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser --remove /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser --rem /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser -QR /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser -C /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser --complain /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser $flag /etc/apparmor.d/x
+posix finds=system_settings | apparmor_parser -r $profile
+posix finds=system_settings | auditctl -D
+posix finds=system_settings | auditctl -e 0
+posix finds=system_settings | auditctl -e0
+posix finds=system_settings | auditctl -e $mode
+posix finds=system_settings | auditctl $flag
+posix finds=system_settings | auditctl -l $flag
+posix finds=system_settings | auditctl -a never,task
+posix finds=system_settings | auditctl -a task,never
+posix finds=system_settings | auditctl -a exit,never
+posix finds=system_settings | auditctl -anever,task
+posix finds=system_settings | auditctl -A never,exit -S all
+posix finds=system_settings | auditctl -a always,exclude -F msgtype=SYSCALL
+posix finds=system_settings | auditctl -a $rule
+posix finds=system_settings | auditctl -d exit,always -S open
+posix finds=system_settings | auditctl -W /etc/passwd
+posix finds=system_settings | setsebool -P httpd_can_network_connect 1
+posix finds=system_settings | setsebool httpd_can_network_connect=1
+posix finds=system_settings | setsebool $name 1
+posix finds=system_settings | semanage permissive -a httpd_t
+posix finds=system_settings | semanage permissive --add httpd_t
+posix finds=system_settings | semanage boolean -m --on httpd_can_network_connect
+posix finds=system_settings | semanage fcontext -d /x
+posix finds=system_settings | semanage port -D
+posix finds=system_settings | semanage import -f x
+posix finds=system_settings | semanage $x
+posix finds=system_settings | semanage permissive $flag httpd_t
+posix finds=system_settings | semanage -i x
+posix finds=system_settings | semanage --input x
+posix finds=system_settings | semodule -r x
+posix finds=system_settings | semodule -d x
+posix finds=system_settings | semodule -X 400 -r x
+posix finds=system_settings | semodule --remove=x
+posix finds=system_settings | semodule -i x.pp
+posix finds=system_settings | semodule -u x.pp
+posix finds=system_settings | semodule -e x
+posix finds=system_settings | semodule $flag x
+posix finds=system_settings | sysctl -w kernel.randomize_va_space=0
+posix finds=system_settings | sysctl kernel.randomize_va_space=0
+posix finds=system_settings | sysctl --write kernel.randomize_va_space=0
+posix finds=system_settings | sysctl -p
+posix finds=system_settings | sysctl -p /etc/sysctl.d/x.conf
+posix finds=system_settings | sysctl --system
+posix finds=system_settings | sysctl $x
+posix finds=system_settings | sysctl -- $x
+posix finds=system_settings | sudo sysctl -w net.ipv4.ip_forward=1
+posix finds=system_settings | grubby --update-kernel ALL --args selinux=0
+posix finds=system_settings | grubby --update-kernel=ALL --remove-args=quiet
+posix finds=system_settings | grubby --set-default /boot/vmlinuz-x
+posix finds=system_settings | grubby --remove-kernel /boot/vmlinuz-x
+posix finds=system_settings | grubby $x
+posix finds=system_settings | efibootmgr -B -b 0001
+posix finds=system_settings | efibootmgr -b 0001 -B
+posix finds=system_settings | efibootmgr -o 0001,0002
+posix finds=system_settings | efibootmgr -n 0002
+posix finds=system_settings | efibootmgr -c -d /dev/sda -l x.efi
+posix finds=system_settings | efibootmgr --delete-bootnum -b 1
+posix finds=system_settings | efibootmgr $x
+posix finds=system_settings | grub-set-default 1
+posix finds=system_settings | grub2-set-default 1
+posix finds=system_settings | grub-reboot 1
+posix finds=system_settings | grub-set-default $entry
+posix finds=system_settings | grub2-editenv - set saved_entry=1
+posix finds=system_settings | grub-editenv /boot/grub/grubenv set next_entry=1
+posix finds=system_settings | grub-editenv - unset saved_entry
+posix finds=system_settings | grub-editenv - $command x=1
+posix finds=system_settings | bootctl set-default x
+posix finds=system_settings | bootctl set-oneshot x
+posix finds=system_settings | bootctl remove
+posix finds=system_settings | bootctl install
+posix finds=system_settings | bootctl --esp-path /efi install
+posix finds=system_settings | bootctl $verb
+posix finds=system_settings | spctl kext-consent disable
+posix finds=system_settings | spctl kext-consent add ABCDE12345
+posix finds=system_settings | spctl kext-consent $verb
+posix finds=system_settings | spctl developer-mode enable-terminal
+posix finds=system_settings | spctl developer-mode $verb
+
+# An option or a command word only known when it runs may be one that turns
+# a protection off, so it is risky; the value of an option before it is not
+# an option. Outside quotes a value may split into words, any of which may
+# be an option, so only a quoted one is a value for sure.
+posix safe | iptables -A INPUT -p tcp --dport "$port" -j DROP
+posix safe | iptables -t nat -A POSTROUTING -o "$iface" -j MASQUERADE
+posix safe | iptables -A INPUT "$x" -j DROP
+posix safe | iptables -L "$chain"
+posix safe | iptables -nL "$chain"
+posix safe | iptables --list "$chain"
+posix safe | pfctl -s "$what"
+posix safe | firewall-cmd --get-zone-of-interface "$iface"
+posix safe | networksetup -getinfo "$service"
+posix safe | scutil --get "$name"
+posix safe | socketfilterfw --getappblocked "$app"
+posix safe | firewall-cmd --add-service "$service"
+posix safe | firewall-cmd --zone public --list-all
+posix safe | scutil --nc status "$service"
+posix safe | iptables -A INPUT -s 10.0.0.1 "$x"
+posix safe | iptables -A OUTPUT "$x"
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | iptables -L $chain
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | networksetup -getinfo $service
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | firewall-cmd --add-service $service
+posix finds=system_settings | spctl $x
+posix finds=system_settings | spctl --assess $flag
+posix finds=system_settings | iptables $flag
+posix finds=system_settings | ip6tables $flag
+posix finds=system_settings | iptables -t nat $x
+posix finds=system_settings | iptables -n $x
+posix finds=system_settings | iptables-nft $flag
+posix finds=system_settings | ebtables $flag
+posix finds=system_settings | firewall-cmd $x
+posix finds=system_settings | pfctl $x
+posix finds=system_settings | pfctl -s rules $x
+posix finds=system_settings | socketfilterfw $x
+posix finds=system_settings | networksetup $x Wi-Fi
+posix finds=system_settings | systemsetup $x
+posix finds=system_settings | scutil $x HostName y
+posix finds=system_settings | firewall-cmd --permanent $x
+posix finds=system_settings | firewall-cmd --zone=public $x
+posix finds=system_settings | firewall-cmd --reload $x
+posix finds=system_settings | firewall-cmd --state $x
+posix finds=system_settings | socketfilterfw --getglobalstate $x
+posix finds=system_settings | networksetup -listallnetworkservices $x
+posix finds=system_settings | systemsetup -getremotelogin $x
+posix finds=system_settings | scutil --dns $x
+posix finds=system_settings | firewall-cmd --permanent "$x"
+posix finds=system_settings | firewall-cmd --zone=public "$x"
+posix finds=system_settings | systemsetup -getremotelogin "$x"
+posix finds=system_settings | scutil --dns "$x"
+posix finds=system_settings | iptables -I INPUT $x
+posix finds=system_settings | iptables -I INPUT 1 $x
+posix finds=system_settings | iptables -A INPUT $x
+posix finds=system_settings | iptables -A INPUT -p tcp $x
+posix finds=system_settings | iptables -I FORWARD -i + $x
+
+# pwsh on Linux and macOS runs the native `hostname` and `service`, which
+# are read as in a POSIX shell; cmd's `hostname` is Windows', and cmd has no
+# `service`.
 powershell safe | hostname
 powershell safe | hostname -s
 powershell safe | service stop
-powershell safe | hostname newname
-powershell safe | service ufw stop
+powershell safe | service nginx stop
+powershell finds=system_settings | hostname newname
+powershell finds=system_settings | service ufw stop
+powershell finds=system_settings reason="changes the computer's name" | hostname $name
 cmd safe | hostname
 cmd safe | hostname -s
 cmd safe | service stop
@@ -1124,12 +1422,35 @@ posix rules=system_settings first=system_settings reason="changes the computer's
 posix rules=system_settings first=system_settings reason="changes the computer's name" | hostnamectl hostname newname
 posix rules=system_settings first=system_settings reason="changes the computer's clock settings" | timedatectl set-timezone UTC
 posix rules=system_settings first=system_settings reason="changes the computer's name" | hostname newname
+posix rules=system_settings first=system_settings reason="turns off an AppArmor profile" | aa-disable /etc/apparmor.d/x
+posix rules=system_settings first=system_settings reason="turns off an AppArmor profile" | apparmor_parser -R /etc/apparmor.d/x
+posix rules=system_settings first=system_settings reason="turns off AppArmor" | aa-teardown
+posix rules=system_settings first=system_settings reason="turns off auditing" | auditctl -D
+posix rules=system_settings first=system_settings reason="turns off auditing" | auditctl -e 0
+posix rules=system_settings first=system_settings reason="turns off auditing" | auditctl -a never,task
+posix rules=system_settings first=system_settings reason="changes the audit rules" | auditctl -W /etc/passwd
+posix rules=system_settings first=system_settings reason="changes SELinux settings" | setsebool -P httpd_can_network_connect 1
+posix rules=system_settings first=system_settings reason="changes SELinux settings" | semanage permissive -a httpd_t
+posix rules=system_settings first=system_settings reason="changes kernel settings" | sysctl -w kernel.randomize_va_space=0
+posix rules=system_settings first=system_settings reason="changes how the computer starts" | grubby --update-kernel ALL --args selinux=0
+posix rules=system_settings first=system_settings reason="changes how the computer starts" | efibootmgr -B -b 0001
+posix rules=system_settings first=system_settings reason="changes how the computer starts" | grub-set-default 1
+posix rules=system_settings first=system_settings reason="lets kernel extensions load without consent" | spctl kext-consent disable
+posix rules=system_settings first=system_settings reason="lets programs skip Gatekeeper" | spctl developer-mode enable-terminal
+posix rules=system_settings first=system_settings reason="lets programs skip Gatekeeper" | spctl --add --label x /Applications/x.app
+posix rules=system_settings first=system_settings reason="changes how the computer starts" | bootctl set-default x
+posix rules=system_settings first=system_settings reason="changes SELinux settings" | semodule -r x
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | iptables -I INPUT $x
+posix rules=system_settings first=system_settings reason="stops every system service" | systemctl stop system.slice
+posix rules=system_settings first=system_settings reason="may change Gatekeeper with an option only known when it runs" | spctl $x
+posix rules=system_settings first=system_settings reason="may change the firewall with an option only known when it runs" | iptables $flag
+posix rules=system_settings first=system_settings reason="changes the quarantine of downloaded files" | defaults write com.apple.LaunchServices LSQuarantine -bool false
+posix rules=system_settings first=system_settings reason="changes how the system starts services" | launchctl config system path /x
+posix finds=system_settings reason="changes SELinux settings" | cp config /etc/selinux/
 
 # A machine-setting program given an option only known when it runs: one
 # outside quotes may split into words, and a quoted one that starts with
 # `-` is an option.
-posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | iptables $flag
-posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | spctl $x
 posix finds=system_settings | ufw $c
 posix finds=system_settings | csrutil $x
-posix finds=system_settings | iptables "-$F"
+posix finds=system_settings reason="may change the firewall with an option only known when it runs" | iptables "-$F"

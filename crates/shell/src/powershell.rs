@@ -373,6 +373,36 @@ struct Redirects {
     /// the command in the job's own process (see [`Walker::job`]); `None`
     /// for any other command.
     job: Option<Vec<usize>>,
+    /// Whether the arguments are still read from where the command starts
+    /// (see [`Split::enter_start`]): not once one of them has moved the line.
+    at_start: bool,
+    /// Once one of them has, the command's unit that moves the line on from
+    /// there when it runs, after the rest are read (see [`Split::step_out`]).
+    then: Option<usize>,
+}
+
+/// Whether the command `node` holds only plain words, parameters and the
+/// spaces between them: nothing in it runs when the session reads its
+/// arguments (no sub-expression, variable, string or redirection).
+fn plain(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    let plain = node
+        .named_children(&mut cursor)
+        .all(|part| match part.kind() {
+            "command_name" => part.named_child_count() == 0,
+            "command_elements" => {
+                let mut cursor = part.walk();
+                let words = part.named_children(&mut cursor).all(|element| {
+                    matches!(
+                        element.kind(),
+                        "generic_token" | "command_parameter" | "command_argument_sep"
+                    ) && element.named_child_count() == 0
+                });
+                words
+            }
+            _ => false,
+        });
+    plain
 }
 
 /// What a bare word (a generic token) holds of a redirect. The grammar reads
@@ -787,8 +817,9 @@ impl Walker<'_> {
             return;
         };
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let node_options = name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(name);
-        if !zip && terraform.is_none() {
+        if !zip && !node_options && terraform.is_none() {
             return;
         }
         let name = name.to_string();
@@ -815,6 +846,9 @@ impl Walker<'_> {
         };
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
+            // `$env:NODE_OPTIONS='--require ./x.js'`: every node a later
+            // program starts loads it first.
+            None if node_options => self.split.node_options.push(value),
             None => {
                 self.split.zip_env.set(&name, &value, true);
             }
@@ -847,6 +881,9 @@ impl Walker<'_> {
             if let Some(name) = name {
                 self.split
                     .note_argument_variable(name, Arg::Unknown(text.to_string()));
+            }
+            if rest.eq_ignore_ascii_case("NODE_OPTIONS") {
+                self.split.node_options.push(Arg::Unknown(text.to_string()));
             }
             self.split
                 .zip_env
@@ -904,18 +941,24 @@ impl Walker<'_> {
 
     /// What a command holds, `own` being its own units. A redirect on a
     /// command that moves the line (`Set-Location sub > f`) is opened before
-    /// it runs: from where it starts. Only the redirects are placed so: a
-    /// sub-expression in an argument is walked from where the line is, and a
-    /// redirect that follows one that moved the line is opened where the line
-    /// has gone to, as the session ran the argument before opening the file.
+    /// it runs: from where it starts. So is a sub-expression in an argument
+    /// walked (`Set-Location $(Get-Content ..\x)`), as the session runs it
+    /// before the command. Once one has moved the line, the arguments that
+    /// follow are read from where it went, as the session runs them before
+    /// the command too, a redirect that follows from there and from where
+    /// the command moves the line on to, and the command moves it on from
+    /// there once all are read.
     fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize, job: bool) {
         let folder = job.then(|| self.job_folder(own.clone()));
+        self.split.enter_start(&own, plain(node));
         let mut state = Redirects {
             seen: own.end,
             own,
             moved: false,
             pending: false,
             job: job.then(Vec::new),
+            at_start: true,
+            then: None,
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -931,6 +974,12 @@ impl Walker<'_> {
         // `echo x 1>` with no file after it.
         if state.pending {
             self.unclear_redirect(node);
+        }
+        if state.at_start {
+            self.split.leave_start();
+        }
+        if let Some(mover) = state.then {
+            self.split.move_on(mover);
         }
         if let (Some(blocks), Some(folder)) = (state.job, folder) {
             self.job(node, &blocks, folder.as_ref(), level);
@@ -1146,6 +1195,7 @@ impl Walker<'_> {
                 return;
             }
             self.walk(child, None, level);
+            self.moved_on(state);
             return;
         }
         // The units of the arguments walked since the last redirect: each
@@ -1153,7 +1203,9 @@ impl Walker<'_> {
         let len = self.split.units.len();
         state.moved |= self.split.moves_in(state.seen..len);
         state.seen = len;
-        let from = if state.moved {
+        let from = if let Some(mover) = state.then {
+            self.split.opens_moved_on(mover)
+        } else if state.moved {
             OpensFrom::Line
         } else {
             self.split.starts_in(state.own.clone(), true)
@@ -1174,6 +1226,17 @@ impl Walker<'_> {
             _ => self.walk(child, None, level),
         }
         self.split.open_from(outer);
+        self.moved_on(state);
+    }
+
+    /// Once what the command's parts run has moved the line, the rest is
+    /// read from where it went, and the command moves it on from there once
+    /// all is read (see [`Split::step_out`]).
+    fn moved_on(&mut self, state: &mut Redirects) {
+        if state.at_start && self.split.moved_since_start() {
+            state.at_start = false;
+            state.then = self.split.step_out();
+        }
     }
 
     /// The file glued to a redirect operator (`..\x.txt` in `1>..\x.txt`):
@@ -3163,6 +3226,9 @@ impl Walker<'_> {
             let named = blocks::first_string(&children).map(|name| self.string(name));
             if let Some(Arg::Known(name)) = &named {
                 let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                if name.eq_ignore_ascii_case("NODE_OPTIONS") {
+                    self.split.node_options.push(value.clone());
+                }
                 self.split.zip_env.set(name, &value, true);
             }
             let name = match named {

@@ -319,6 +319,10 @@ posix finds=overwrite | cd ~ && python3 -m tarfile --extract=a.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile --ext=a.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile -ea.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile -ve a.tar
+posix finds=overwrite | python3 -m zipfile -ve a.zip ~
+posix finds=overwrite | pypy3 -m zipfile -e a.zip ~
+posix safe | python3 -m tarfile -ea.tar build
+posix safe | python3 -m zipfile -vl a.zip
 powershell safe | [System.IO.Compression.ZipFile]::ExtractToDirectory('x.zip', 'build')
 powershell safe | [IO.Compression.ZipFile]::ExtractToDirectory('x.zip', "$env:TEMP\\x")
 powershell safe | $zip.ExtractToDirectory('build')
@@ -1040,6 +1044,24 @@ posix finds=overwrite reason="unpacks into your home directory" | tar -xf x.tar 
 posix finds=overwrite reason="unpacks into a system folder" | unzip x.zip -d /etc
 posix finds=overwrite reason="unpacks into a folder outside the workspace" | tar -xf x.tar -C ../x
 posix finds=overwrite reason="unpacks into a folder only known when it runs" | tar -xf x.tar -C "$D"
+
+# Python's `zipfile` and `tarfile` modules unpack into the folder they name
+# (`tarfile` into the working directory when it names none).
+posix finds=overwrite | python3 -m zipfile -v -e a.zip ~
+posix finds=overwrite | python3 -m tarfile -v -e a.tar ~/.config
+posix finds=overwrite | py -3 -m zipfile -e a.zip ~
+posix finds=overwrite | python3 -m zipfile -e a.zip /etc
+posix safe | python3 -m zipfile -e a.zip out
+posix safe | python3 -m tarfile -e a.tar out
+# `argparse` reads a single-dash word as a bundle of letters (`-ve` is `-v
+# -e`), and the rest of the word after `-e` as the archive.
+posix finds=overwrite | python3 -m tarfile -ve a.tar ~
+posix finds=overwrite | py -3 -m tarfile -ve a.tar ~
+posix finds=overwrite | python3 -m tarfile -vea.tar ~
+posix finds=overwrite | python3 -m zipfile --extract=a.zip ~
+posix finds=overwrite | python3 -m zipfile --ext a.zip ~
+powershell finds=overwrite | py -3 -m tarfile -ve a.tar C:\\Users\\me
+posix safe | python3 -m tarfile -ve a.tar out
 
 # A value only known when it runs may hide a member or the option that
 # removes what is packed: an expansion outside quotes may split into words,

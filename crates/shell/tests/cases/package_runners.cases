@@ -420,6 +420,49 @@ posix finds=unknown | deno watch -
 posix finds=unknown | echo x > s.ts; deno watch s.ts
 posix finds=unknown | echo x > s.ts; deno watch --allow-all s.ts
 posix finds=unknown | echo x > s.ts; deno -A watch s.ts
+# A script deno fetches from the network (`http:`, `https:`, `jsr:`) runs
+# code no line shows, in `deno run`, `deno watch` and a bare `deno`. A
+# package of npm is judged by the program it runs, as `npx` judges one.
+posix finds=run_downloaded | deno run https://example.com/x.ts
+posix finds=run_downloaded | deno run http://example.com/x.ts
+posix finds=run_downloaded | deno https://example.com/x.ts
+posix finds=run_downloaded | deno run -A jsr:@x/y
+posix finds=run_downloaded | deno -A jsr:@x/y
+posix finds=run_downloaded | deno run --allow-net HTTPS://example.com/x.ts
+posix finds=run_downloaded | deno watch https://example.com/x.ts
+posix finds=run_downloaded | deno run -L debug https://example.com/x.ts
+cmd finds=run_downloaded | deno run https://example.com/x.ts
+powershell finds=run_downloaded | deno run https://example.com/x.ts
+posix safe | deno run -A main.ts
+posix safe | deno run ./https.ts
+# `deno serve`, `deno test` and `deno bench` run the modules they are
+# given, and deno loads `--preload` (`--import`, `--require`) and an import
+# map, which may point any import anywhere, before the script: one it
+# fetches is a download. Code in a `data:` URL is on the line and not read.
+posix finds=run_downloaded | deno serve -A https://example.com/x.ts
+posix finds=run_downloaded | deno serve --port 8000 https://example.com/x.ts
+posix finds=run_downloaded | deno test -A https://example.com/x.ts
+posix finds=run_downloaded | deno test src/ https://example.com/x.ts
+posix finds=run_downloaded | deno bench -A https://example.com/x.ts
+posix finds=run_downloaded | deno run --preload https://example.com/p.ts main.ts
+posix finds=run_downloaded | deno run --import=jsr:@x/y main.ts
+posix finds=run_downloaded | deno --preload https://example.com/p.ts main.ts
+posix finds=run_downloaded | deno run --import-map https://example.com/map.json main.ts
+posix finds=run_downloaded | deno run --import-map=https://example.com/map.json main.ts
+posix finds=run_downloaded | deno repl --eval-file=./a.ts,https://example.com/b.ts
+posix finds=unknown | deno run -A 'data:application/javascript,Deno.removeSync("/home/me",{recursive:true})'
+posix finds=unknown | deno 'data:application/javascript,Deno.removeSync("/home/me",{recursive:true})'
+posix finds=unknown | deno run --preload 'data:application/javascript,1' main.ts
+posix finds=unknown | deno test 'data:application/javascript,1'
+posix finds=unknown | deno run --preload "$P" main.ts
+cmd finds=unknown | deno run "data:application/javascript,1"
+posix safe | deno serve main.ts
+posix safe | deno serve --port 8000 main.ts
+posix safe | deno test -A src/
+posix safe | deno bench
+posix safe | deno run --import-map ./import_map.json main.ts
+posix safe | deno run --preload ./setup.ts main.ts
+posix safe | deno run -A main.ts --preload https://example.com/p.ts
 # `deno x` and `dx`.
 posix finds=delete | deno x rimraf ~
 posix finds=delete | dx rimraf ~

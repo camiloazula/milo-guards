@@ -6,6 +6,7 @@
 //! working directory, which the caller judges as the destination of `cp`.
 
 use super::{long_option, readable, unknown_long, Unpack};
+use crate::launch::{is_python, options, own_args};
 use crate::path::within;
 use crate::unit::{could_be, may_split, unknown_start, Arg};
 use crate::Shell;
@@ -21,9 +22,12 @@ pub(super) fn unpack(key: &str, args: &[Arg], shell: Shell) -> Option<Unpack> {
         "unrar" | "rar" | "winrar" => rar(args),
         "unar" => unar(args, shell),
         "jar" => jar(args),
-        _ if key == "py" || key.starts_with("python") => {
-            let (module, args) = python_module(args)?;
-            match module {
+        // Any Python of the interpreter table, past its own options.
+        _ if is_python(key) => {
+            let args = own_args(key, args);
+            let (module, start) = options(key, args).module?;
+            let args = args.get(start..)?;
+            match module.known()? {
                 "zipfile" => zipfile(args),
                 "tarfile" => tarfile(args),
                 _ => None,
@@ -519,101 +523,38 @@ fn jar(args: &[Arg]) -> Option<Unpack> {
     Some(Unpack::filling(folders).absolute(absolute))
 }
 
-/// The module `python -m` runs and the arguments it is given, when the
-/// interpreter's own options come before it (`python3 -I -m zipfile`,
-/// `-mzipfile`); `None` for code (`-c`), a script or the input. An option
-/// only known when it runs is passed over.
-fn python_module(args: &[Arg]) -> Option<(&str, &[Arg])> {
-    let mut at = 0;
-    while let Some(arg) = args.get(at) {
-        at += 1;
-        let Some(text) = arg.known() else { continue };
-        if text == "--check-hash-based-pycs" {
-            at += 1;
-            continue;
-        }
-        if text.starts_with("--") {
-            if text == "--" {
-                return None;
-            }
-            continue;
-        }
-        let letters = text.strip_prefix('-').filter(|rest| !rest.is_empty())?;
-        for (position, letter) in letters.char_indices() {
-            let rest = &letters[position + letter.len_utf8()..];
-            match letter {
-                'c' => return None,
-                'm' if !rest.is_empty() => return Some((rest, &args[at..])),
-                'm' => return Some((args.get(at)?.known()?, args.get(at + 1..)?)),
-                'W' | 'X' | 'Q' => {
-                    at += usize::from(rest.is_empty());
-                    break;
-                }
-                _ => {}
-            }
-        }
-    }
-    None
+/// What the arguments of `python -m zipfile` or `python -m tarfile` ask
+/// for, read as `argparse` reads them: a long option may be a unique prefix
+/// (`--ext`), a single-dash word is a bundle of letters (`-ve` is `-v -e`),
+/// and the rest of the word after `-e` is the archive (`-ea.tar`).
+struct ModuleArgs {
+    /// What `-e` or `--extract` is given: the archive attached to it
+    /// (`--extract=a.tar`, `-ea.tar`), if any, then every word up to the
+    /// next option. `None` without `-e`.
+    extract: Option<(bool, Vec<Arg>)>,
+    /// Whether a word only known when it runs stands where `-e` may be.
+    unknown: bool,
+    /// Whether `--filter` (tarfile) is `fully_trusted`, which keeps the
+    /// stored paths as they are, or a filter only known when it runs.
+    trusted: bool,
 }
 
-/// The folder `python -m zipfile -e ARCHIVE FOLDER` (`--extract`) unpacks
-/// into. `-l`, `-c` and `-t` write no folder; argparse takes a unique
-/// prefix of a long option. A mode only known when it runs may be `-e`,
-/// into a folder only known then.
-fn zipfile(args: &[Arg]) -> Option<Unpack> {
-    let mut unknown = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let Some(text) = arg.known() else {
-            unknown |= arg.is_unknown();
-            continue;
-        };
-        if text == "-e"
-            || text
-                .strip_prefix("--")
-                .is_some_and(|name| long_option(name, "extract", 1))
-        {
-            iter.next()?;
-            return Some(Unpack::filling(vec![iter.next()?.clone()]));
-        }
-        if matches!(text, "-l" | "-c" | "-t")
-            || ["list", "create", "test"].iter().any(|mode| {
-                text.strip_prefix("--")
-                    .is_some_and(|name| long_option(name, mode, 1))
-            })
-        {
-            return None;
-        }
-        if text
-            .strip_prefix("--")
-            .is_some_and(|name| long_option(name, "metadata-encoding", 1))
-        {
-            iter.next();
-        }
-    }
-    unknown.then(|| Unpack::filling(vec![Arg::Unknown("<a folder>".to_string())]))
-}
-
-/// The folder `python -m tarfile -e ARCHIVE [FOLDER]` (`--extract`) unpacks
-/// into: the one named, or the working directory. A value attached to the
-/// option (`--extract=a.tar`, `-ea.tar`) is the archive, and argparse then
-/// takes no other, so it unpacks into the working directory. `--filter
-/// fully_trusted` keeps the stored paths as they are, and so may a filter
-/// only known when it runs. `-l`, `-c` and `-t` write no folder. Short
-/// options may be bundled (`-ve a.tar`). A mode only known when it runs may
-/// be `-e`.
-fn tarfile(args: &[Arg]) -> Option<Unpack> {
+/// Read the module's arguments; `None` for a listing, a test or an archive
+/// it makes (`-l`, `-t`, `-c`, `--list`, `--test`, `--create`).
+fn module_args(args: &[Arg]) -> Option<ModuleArgs> {
     let long = |text: &str, full: &str| {
         text.strip_prefix("--")
             .is_some_and(|name| long_option(name.split('=').next().unwrap_or(name), full, 1))
     };
-    let mut unknown = false;
-    let mut absolute = false;
-    let mut values: Option<Vec<Arg>> = None;
+    let mut read = ModuleArgs {
+        extract: None,
+        unknown: false,
+        trusted: false,
+    };
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else {
-            unknown |= arg.is_unknown();
+            read.unknown |= arg.is_unknown();
             continue;
         };
         // What follows `-e` or `--extract`: `None` for a word that is
@@ -641,18 +582,18 @@ fn tarfile(args: &[Arg]) -> Option<Unpack> {
             None
         };
         if let Some(attached) = extract {
-            values = Some(if let Some(archive) = attached {
-                vec![Arg::Known(archive.to_string())]
-            } else {
-                // Every word up to the next option: the archive and the folder.
-                let mut taken = Vec::new();
-                while let Some(next) =
-                    iter.next_if(|next| !next.known().is_some_and(|t| t.starts_with('-')))
-                {
-                    taken.push(next.clone());
-                }
-                taken
-            });
+            let mut values: Vec<Arg> = attached
+                .map(|archive| Arg::Known(archive.to_string()))
+                .into_iter()
+                .collect();
+            // Every word up to the next option. After an attached archive
+            // `argparse` refuses one, but it is read all the same.
+            while let Some(next) =
+                iter.next_if(|next| !next.known().is_some_and(|t| t.starts_with('-')))
+            {
+                values.push(next.clone());
+            }
+            read.extract = Some((attached.is_some(), values));
         } else if ["list", "create", "test"]
             .iter()
             .any(|mode| long(text, mode))
@@ -663,19 +604,56 @@ fn tarfile(args: &[Arg]) -> Option<Unpack> {
                 Some((_, value)) => Some(Arg::Known(value.to_string())),
                 None => iter.next().cloned(),
             };
-            absolute |= filter.is_none_or(|filter| {
+            read.trusted |= filter.is_none_or(|filter| {
                 filter
                     .known()
                     .is_none_or(|filter| long_option(filter, "fully_trusted", 1))
             });
+        } else if long(text, "metadata-encoding") && !text.contains('=') {
+            iter.next();
         }
     }
-    let folders = match values.as_deref() {
-        Some([_]) => vec![here()],
-        Some([_, folder]) => vec![folder.clone()],
-        Some(_) => return None,
-        None if unknown => vec![Arg::Unknown("<a folder>".to_string())],
+    Some(read)
+}
+
+/// The folder `python -m zipfile -e ARCHIVE FOLDER` (`--extract`) unpacks
+/// into: every word after the archive. A mode only known when it runs may
+/// be `-e`, into a folder only known then.
+fn zipfile(args: &[Arg]) -> Option<Unpack> {
+    let read = module_args(args)?;
+    match read.extract {
+        Some((_, values)) => {
+            let folders = values.get(1..).unwrap_or_default().to_vec();
+            (!folders.is_empty()).then(|| Unpack::filling(folders))
+        }
+        None => read
+            .unknown
+            .then(|| Unpack::filling(vec![Arg::Unknown("<a folder>".to_string())])),
+    }
+}
+
+/// The folder `python -m tarfile -e ARCHIVE [FOLDER]` (`--extract`) unpacks
+/// into: the one named, or the working directory. A value attached to the
+/// option (`--extract=a.tar`, `-ea.tar`) is the archive, and argparse then
+/// takes no other, so it unpacks into the working directory; a word after
+/// it is judged too. `--filter fully_trusted` keeps the stored paths as
+/// they are, and so may a filter only known when it runs. A mode only
+/// known when it runs may be `-e`.
+fn tarfile(args: &[Arg]) -> Option<Unpack> {
+    let read = module_args(args)?;
+    let folders = match read.extract {
+        Some((true, values)) => {
+            let mut folders = vec![here()];
+            folders.extend(values.into_iter().skip(1));
+            folders
+        }
+        Some((false, values)) => match values.as_slice() {
+            [] => return None,
+            [_] => vec![here()],
+            [_, folders @ ..] => folders.to_vec(),
+        },
+        None if read.unknown => vec![Arg::Unknown("<a folder>".to_string())],
         None => return None,
     };
-    Some(Unpack::filling(folders).absolute(absolute))
+    Some(Unpack::filling(folders).absolute(read.trusted))
 }

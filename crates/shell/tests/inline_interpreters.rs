@@ -5,7 +5,11 @@
 //! print flag as their value, runners and bun options in front of the code,
 //! hashbang lines, Python coding declarations and carriage returns, `data:`
 //! URLs and `NODE_OPTIONS`, and code handed to an interpreter under cmd and
-//! PowerShell.
+//! PowerShell; the interpreters past python and node (`py`, `pypy`,
+//! `ipython`, `tsx`, `ts-node`), modules that run what they are given, the
+//! options that take a value before the script, a script only known when it
+//! runs or downloaded, and `NODE_OPTIONS` that load a module in front of a
+//! program.
 //!
 //! The lines and their answers are in `tests/cases/inline_interpreters.cases`.
 

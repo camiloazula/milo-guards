@@ -18,7 +18,7 @@ use milo_guards_core::{Flavour, Sensitivity};
 
 use super::files::remote;
 use super::Checker;
-use crate::launch::{code_options, valued_options, INTERPRETERS};
+use crate::launch::{code_options, is_interpreter, valued_options};
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, referenced, Arg, Nested, Stage, Unit};
 use crate::{Rule, Shell};
@@ -2239,7 +2239,7 @@ fn candidates(unit: &Unit, key: &str) -> Vec<Arg> {
         return archive.members;
     }
     let logs_in = KEY_USERS.contains(&key);
-    let interprets = INTERPRETERS.contains(&key) || key.starts_with("python");
+    let interprets = is_interpreter(key) || key.starts_with("python");
     let mut found = Vec::new();
     let mut iter = unit.args.iter();
     while let Some(arg) = iter.next() {
