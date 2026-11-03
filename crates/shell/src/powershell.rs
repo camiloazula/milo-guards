@@ -113,6 +113,25 @@ fn is_script_block(node: Node<'_>) -> bool {
     }
 }
 
+/// Whether a command's name is a script block written out (`& { … }`,
+/// `. ({ … })`), however the grammar wraps it: its commands are read where
+/// they stand.
+fn names_block(node: Node<'_>) -> bool {
+    let mut node = node;
+    loop {
+        if node.kind() == "script_block_expression" {
+            return true;
+        }
+        if node.named_child_count() != 1 {
+            return false;
+        }
+        match node.named_child(0) {
+            Some(only) => node = only,
+            None => return false,
+        }
+    }
+}
+
 /// Whether `node` is a splat (`@args`), however the grammar wraps it.
 fn is_splat(node: Node<'_>, source: &str) -> bool {
     let mut node = node;
@@ -193,6 +212,10 @@ struct Redirects {
     /// Whether the last word was a redirect operator alone (`1>`), so that
     /// the next argument is the file it writes.
     pending: bool,
+    /// For `Start-Job`, the script blocks it is given, read after the rest of
+    /// the command in the job's own process (see [`Walker::job`]); `None`
+    /// for any other command.
+    job: Option<Vec<usize>>,
 }
 
 /// What a bare word (a generic token) holds of a redirect. The grammar reads
@@ -358,12 +381,14 @@ impl Walker<'_> {
                     self.item = stage;
                     self.split.repeats += 1;
                 }
-                // The block of an event runs later, in this session.
+                // The block of an event, and a breakpoint's action, runs
+                // later, in this session.
                 let later = key
                     .as_deref()
-                    .is_some_and(|key| EVENTS.contains(&key))
+                    .is_some_and(|key| EVENTS.contains(&key) || key == "set-psbreakpoint")
                     .then(|| self.split.begin_later());
-                self.command_children(node, own.clone(), level);
+                let job = key.as_deref() == Some("start-job");
+                self.command_children(node, own.clone(), level, job);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
@@ -405,11 +430,30 @@ impl Walker<'_> {
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
                 self.dotnet(node);
+                // A hook's block, set by its method, runs later.
+                let later = blocks::sets_hook(node, self.source).then(|| self.split.begin_later());
                 self.children(node, stage, level);
+                if let Some(began) = later {
+                    self.split.end_later(began, false);
+                }
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                // `[Environment]::CurrentDirectory = …` moves the process,
+                // whose folder a .NET call and a program the session starts
+                // may take: where the line is, is only known when it runs.
+                if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory")
+                {
+                    self.moves_unknown(node);
+                }
+                // A hook's block runs later, when a command is looked up.
+                let later = blocks::assigned_member(node, self.source)
+                    .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
+                    .then(|| self.split.begin_later());
                 self.children(node, stage, level);
+                if let Some(began) = later {
+                    self.split.end_later(began, false);
+                }
             }
             _ => self.children(node, stage, level),
         }
@@ -469,12 +513,14 @@ impl Walker<'_> {
     /// sub-expression in an argument is walked from where the line is, and a
     /// redirect that follows one that moved the line is opened where the line
     /// has gone to, as the session ran the argument before opening the file.
-    fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize) {
+    fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize, job: bool) {
+        let folder = job.then(|| self.job_folder(own.clone()));
         let mut state = Redirects {
             seen: own.end,
             own,
             moved: false,
             pending: false,
+            job: job.then(Vec::new),
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -491,6 +537,135 @@ impl Walker<'_> {
         if state.pending {
             self.unclear_redirect(node);
         }
+        if let (Some(blocks), Some(folder)) = (state.job, folder) {
+            self.job(node, &blocks, folder.as_ref(), level);
+        }
+    }
+
+    /// The folder a `Start-Job` among `own` starts its job in: its
+    /// `-WorkingDirectory`, or where the line is when it names none.
+    fn job_folder(&self, own: Range<usize>) -> Option<Arg> {
+        let unit = self
+            .split
+            .units
+            .get(own)?
+            .iter()
+            .find(|unit| unit.key().as_deref() == Some("start-job"))?;
+        Params::read(&unit.args)
+            .values(&["workingdirectory"])
+            .first()
+            .map(|folder| (*folder).clone())
+    }
+
+    /// The script blocks of a `Start-Job`, the descendants of `node` with
+    /// the ids in `blocks`: they run in a process of its own, which starts
+    /// in `folder` when one is given, so a `cd` in them does not move the
+    /// line. They are read after the rest of the command, as the session
+    /// runs its arguments before the job starts, and together, in the order
+    /// they are written; when one of several moves, which runs first (an
+    /// `-InitializationScript` runs before the block) is not read, and every
+    /// path in them is only known when it runs.
+    fn job(&mut self, node: Node<'_>, blocks: &[usize], folder: Option<&Arg>, level: usize) {
+        let mut found = Vec::new();
+        unit::for_each_node(node, |inner| {
+            if blocks.contains(&inner.id()) {
+                found.push(inner);
+            }
+        });
+        let outer = self.split.dir_snapshot();
+        let began = self.split.begin_later();
+        self.split.apart += 1;
+        if let Some(folder) = folder {
+            self.split.enter(folder, Shell::PowerShell);
+        }
+        for block in &found {
+            self.walk(*block, None, level + 1);
+        }
+        self.split.apart -= 1;
+        if found.len() > 1 && self.split.moved_so_far() != began.moved() {
+            self.split.unplace(began);
+        }
+        self.split.restore_dir(outer);
+    }
+
+    /// A move of the session (or of its process) to a place the guard cannot
+    /// read: the line is then only known to be somewhere when it runs. It is
+    /// added as a `Set-Location` there, which the walk follows as it does any.
+    fn moves_unknown(&mut self, node: Node<'_>) {
+        let target = Arg::Unknown(unit::text(&node, self.source).to_string());
+        self.location_unit("Set-Location", vec![target]);
+    }
+
+    /// Add a location cmdlet a .NET call stands for, with `args`.
+    fn location_unit(&mut self, cmdlet: &str, args: Vec<Arg>) {
+        let unit = Unit::new(
+            Shell::PowerShell,
+            Arg::Known(cmdlet.to_string()),
+            args,
+            None,
+        );
+        launch::add(self.split, unit, self.depth);
+    }
+
+    /// A call of a method of the session's paths (`$ExecutionContext
+    /// .SessionState.Path`), or of the process's folder
+    /// (`[IO.Directory]::SetCurrentDirectory`), that moves the line or keeps
+    /// its location stacks: it is the location cmdlet it stands for, with the
+    /// string it is given when that is written out. Called on another object
+    /// (a variable that may hold the paths), the place, or the stack, is only
+    /// known when it runs. True when `method` is one of them.
+    fn location_call(
+        &mut self,
+        method: &str,
+        object: &str,
+        node: Node<'_>,
+        children: &[Node<'_>],
+    ) -> bool {
+        if matches!(method, "setcurrentdirectory" | "set_currentdirectory") {
+            self.moves_unknown(node);
+            return true;
+        }
+        if !matches!(
+            method,
+            "setlocation" | "poplocation" | "pushcurrentlocation" | "setdefaultlocationstack"
+        ) {
+            return false;
+        }
+        let call = unit::text(&node, self.source);
+        let paths = object.ends_with("sessionstate.path");
+        // The string given first, when one is given.
+        let given = blocks::first_argument(children).map(|_| {
+            match blocks::first_string(children).map(|string| self.string(string)) {
+                Some(Arg::Known(text)) if paths && !text.starts_with('-') => Arg::Known(text),
+                _ => Arg::Unknown(call.to_string()),
+            }
+        });
+        let stack = |given: Option<Arg>| {
+            given.map_or_else(Vec::new, |name| {
+                vec![Arg::Known("-StackName".to_string()), name]
+            })
+        };
+        match method {
+            "setlocation" => {
+                let target = given.unwrap_or_else(|| Arg::Unknown(call.to_string()));
+                self.location_unit("Set-Location", vec![target]);
+            }
+            // On another object the stack is not known: popping from it
+            // leaves every stack unknown, and the line only known.
+            _ if !paths => {
+                let unknown = Some(Arg::Unknown(call.to_string()));
+                self.location_unit("Pop-Location", stack(unknown));
+            }
+            "poplocation" => self.location_unit("Pop-Location", stack(given)),
+            "pushcurrentlocation" => self.location_unit("Push-Location", stack(given)),
+            _ => self.location_unit(
+                "Set-Location",
+                stack(Some(
+                    given.unwrap_or_else(|| Arg::Unknown(call.to_string())),
+                )),
+            ),
+        }
+        true
     }
 
     /// A word that may be a redirect, which the guard cannot place.
@@ -539,6 +714,11 @@ impl Walker<'_> {
             self.unclear_redirect(child);
         }
         if kind != "redirection" && !target && !matches!(bare, Bare::Redirect { .. }) {
+            // A job's block is read once the rest of the command is.
+            if let Some(blocks) = state.job.as_mut().filter(|_| is_script_block(child)) {
+                blocks.push(child.id());
+                return;
+            }
             self.walk(child, None, level);
             return;
         }
@@ -684,6 +864,9 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
         unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
+        // A block or a script run by a name only known when it runs (`& $b`)
+        // may move the session; one written out (`& { … }`) is read.
+        unit.relocates = key.is_none() && !names_block(name);
         // The processes a `Stop-Process` is handed by a listing in its own
         // arguments: `-InputObject (Get-Process)`.
         if key.as_deref() == Some("stop-process") {
@@ -1521,6 +1704,9 @@ impl Walker<'_> {
         .iter()
         .any(|kind| object.contains(kind));
         blocks::hook_call(self.split, &method, &children, node, self.source);
+        if self.location_call(&method, &object, node, &children) {
+            return;
+        }
         // A method that stops a process, called on it (`.Kill()`). The
         // array's `.ForEach('Kill')` is a line the grammar does not read.
         if blocks::stops_process(&method) {
@@ -2013,6 +2199,15 @@ impl Param {
             .or_else(|| all().find(|param| param.starts_with(typed)))
     }
 }
+
+/// The parameters of `Set-Location`, `Push-Location` and `Pop-Location`:
+/// `-StackName` takes a value, which is not the folder.
+pub(crate) const LOCATION: [Param; 4] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["pspath", "lp"]),
+    Param::value("stackname", &[]),
+    Param::switch("passthru", &[]),
+];
 
 /// The parameters every cmdlet takes.
 const COMMON: [Param; 12] = [
