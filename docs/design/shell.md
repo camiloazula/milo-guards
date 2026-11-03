@@ -55,7 +55,39 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 - Where a grammar reads a line differently from the shell, the shell wins.
   A POSIX line's backslash-newlines are joined first, so `r\<newline>m` is
   `rm`. cmd's built-ins also split arguments at `,`, `;` and `=`. PowerShell's
-  `--%` ends at `|`. PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
+  stop-parsing token `--%` hands the rest of the line up to a `|` or the end
+  of the line to the program as written, and the program splits it by its own
+  rules: by the C runtime's (white space between words, double quotes around
+  one, `\"` a quote, backslashes before a quote halved), or, for `cmd`, not
+  at all, as it runs the text as it is (`git --% push --force` is
+  `git_remote`, `cmd /c --% rd /s /q C:\Users\me` a `delete`); a `>` there is
+  the program's argument, a typographic quote is no quote, and `%NAME%` is the
+  environment variable, a known place (`%USERPROFILE%`) or only known when it
+  runs. When the command after cmd's `/c`, `/k` or `/r` starts with a quote,
+  cmd drops the first and the last quote of it unless `/s` came before, there
+  are just two, white space and none of `&<>()@^|` is between them, and what
+  is between them is a program it finds; whether it finds one is not known
+  here, so then both readings are judged (`cmd /c --% "rd /s /q C:\Users\me"`
+  is a `delete`). What follows a `|` after `--%` is read as a script of its
+  own, not as the next stage of the pipeline. PowerShell does not hand a
+  native program an unquoted `$null` at all, nor an empty `$()` or `@()`, nor
+  what a pipeline that ends in `Out-Null` gives, so the arguments after it
+  move up (`git $null push --force` and `git (Out-Null) push --force` are
+  `git push --force`); a cmdlet (a name of an approved verb, a dash and a
+  noun, or a built-in `-Object` cmdlet) binds it, and `'$null'` is a file of
+  that name. PowerShell reads a space that is not an ASCII one (U+0085, U+00A0,
+  U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) as a
+  space, a typographic quote (U+2018 to U+201B, U+201C to U+201E) as a quote
+  and an en dash, em dash or horizontal bar at the start of a word as `-`,
+  which its grammar does not, so a line, and each script it runs, is written
+  with the ASCII ones before it is parsed (`Remove-Item<U+00A0>C:\Windows
+  -Recurse` is a `delete`, `iex –Command $x` is `unknown`); inside a string
+  they are the text it holds, as they are after a backtick, in a comment and
+  after `--%`, but a `$( … )` in a double-quoted string or a `@" … "@`
+  here-string is code again. A here-string opens only at the start of a word
+  with nothing after its marker on the line (`ssh me@"host"` is a word with a
+  string in it).
+  PowerShell's grammar knows `>`, `>>`, `2>` to `6>`, `*>`
   and their doubled forms as redirects, but lexes `1>`, `7>` and a `>` glued
   to its word (`echo x>f`, `echo x 1>f`) as words; the guard reads each as the
   redirect it is, with the stream number dropped, and the file glued to it or
@@ -90,7 +122,15 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. `Start-Process`
+reads its parameters as the cmdlet does: each that takes a value takes the
+next argument whatever it is (`-WindowStyle Hidden`, `-Credential`,
+`-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`, `-ArgumentList
+'-c x'`), so none is left where the program is read; the strings of
+`-ArgumentList` are joined into one command line that the program splits as
+it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'`
+is `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError`
+write their file, as a redirect does. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
