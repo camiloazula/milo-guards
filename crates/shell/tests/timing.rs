@@ -203,6 +203,12 @@ fn a_line_at_the_length_limit_is_read_in_time() {
             ("blocks left open", fit("if x; then ", "", "")),
             ("loops left open", fit("for i in a b; do ", "", "")),
             ("here-documents left open", fit("cat <<EOF; ", "", "")),
+            // Each name a stop is given is matched against the processes the
+            // system needs and the ones that protect it.
+            ("pkill operands", fit(" x", "pkill", "")),
+            ("pkill -f operands", fit(" x", "pkill -f", "")),
+            ("killall operands", fit(" x", "killall", "")),
+            ("Stop-Process names", fit(",x", "Stop-Process -Name x", "")),
         ]
     };
     let mut slowest = (std::time::Duration::ZERO, String::new());
