@@ -48,6 +48,7 @@ mod detect;
 mod dotglob;
 mod effect;
 mod explain;
+mod extended;
 mod inline;
 mod launch;
 mod path;

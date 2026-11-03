@@ -219,15 +219,32 @@ posix finds=drop_data | mongosh --eval "db.users.remove$x()"
 posix finds=drop_data | mongosh --eval "db.users.drop${x}()"
 posix finds=drop_data | mongosh --eval "db.drop${x}Database()"
 
-# On PowerShell and cmd an expansion in a statement is unknown: an expansion
-# in a double-quoted word is not read as a word there, so what it holds is
-# only known when it runs.
+# On PowerShell an expansion in a double-quoted statement stands as a word,
+# as in POSIX: a value, and where a statement starts, a statement only known
+# when it runs. A `$` or backtick the string holds as text is no expansion,
+# but a reader of the text would take it for one, so the statement is
+# unknown. On cmd any statement with an expansion is unknown.
 powershell safe | psql -c "SELECT 1"
 powershell safe | psql -c 'DELETE FROM t WHERE id = $id'
 powershell safe | psql -c "DELETE FROM t WHERE id = 3"
-powershell finds=unknown | psql -c "DELETE FROM t WHERE id = $id"
-powershell finds=unknown | psql -c "SELECT * FROM t WHERE name = '$name'"
-powershell finds=unknown | psql -c "DROP TABLE t; $x"
+powershell safe | psql -c "DELETE FROM t WHERE id = $id"
+powershell safe | psql -c "SELECT * FROM t WHERE name = '$name'"
+powershell safe | psql -c "DELETE FROM t WHERE id = ${id}"
+powershell safe | psql -c "DELETE FROM t WHERE id = $env:ID"
+powershell safe | mongosh --eval "db.users.deleteMany({a: $a})"
+powershell safe | sqlite3 data.db "DROP TABLE $t"
+powershell finds=drop_data,unknown | psql -c "DROP TABLE t; $x"
+powershell finds=drop_data | psql -c "DROP$x TABLE t"
+powershell finds=drop_data | mysql -e "TRUNCATE $t"
+powershell finds=drop_data | mongosh --eval "db.dropDatabase$x()"
+powershell finds=drop_data | sqlite3 C:\\Users\\me\\x.db "DROP TABLE $t"
+powershell finds=drop_data | psql -c @"\nDELETE FROM $t\n"@
+powershell finds=unknown | psql -c "$verb FROM t"
+powershell finds=unknown | psql -c "SELECT 1; $x"
+powershell finds=unknown | psql -c "DELETE FROM t WHERE id = $($ids[0])"
+powershell finds=unknown | psql -c "SELECT `$x; DROP TABLE t; $y"
+powershell finds=unknown | psql -c "SELECT ``1``; $y"
+powershell finds=unknown | psql -c "SELECT 1 $ 2 $y"
 cmd safe | psql -c "SELECT 1"
 cmd safe | psql -c "DELETE FROM t WHERE id = 3"
 cmd finds=unknown | psql -c "DELETE FROM t WHERE id = %id%"
