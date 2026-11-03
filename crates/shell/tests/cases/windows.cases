@@ -325,6 +325,23 @@ cmd finds=system_settings | vssadmin delete shadows /all /quiet
 cmd finds=system_settings | wmic shadowcopy delete
 cmd finds=system_settings | net user hacker P4ss /add
 cmd finds=system_settings | netsh advfirewall set allprofiles state off
+cmd safe | netsh advfirewall export x.wfw
+cmd finds=system_settings | netsh advfirewall import x.wfw
+powershell finds=system_settings | netsh advfirewall import x.wfw
+cmd rules=system_settings first=system_settings reason="replaces the firewall's rules" | netsh advfirewall import x.wfw
+cmd safe | netsh advfirewall firewall add rule name=ssh dir=in action=allow protocol=TCP localport=22
+cmd safe | netsh advfirewall firewall add rule name=x dir=out action=allow
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=block
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=allow program=C:\\x\\x.exe
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=allow remoteip=localsubnet
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=allow enable=no
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=allow protocol=icmpv4
+cmd safe | netsh advfirewall firewall add rule name=x dir=in action=allow %spec%
+cmd finds=system_settings | netsh advfirewall firewall add rule name=x dir=in action=allow
+cmd finds=system_settings | netsh advfirewall firewall add rule name="all in" dir=in action=allow protocol=any remoteip=any profile=any
+cmd finds=system_settings | netsh advfirewall firewall add rule name=x dir=in action=allow remoteip=0.0.0.0/0
+powershell finds=system_settings | netsh advfirewall firewall add rule name=x dir=in action=allow
+cmd rules=system_settings first=system_settings reason="lets everything through the firewall" | netsh advfirewall firewall add rule name=x dir=in action=allow
 cmd finds=permissions | icacls C:\\Windows /grant Everyone:F /T
 cmd finds=permissions | takeown /f C:\\Windows\\System32 /r
 cmd finds=stop_system | shutdown /s /t 0
