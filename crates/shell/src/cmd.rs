@@ -183,8 +183,9 @@ impl Walker<'_> {
     /// (`call call rd …`, a `call` of the program `call`). cmd reads each as
     /// the statement it is, so the command's text (from the second `call`,
     /// in the last case) is split again on its own, the carets of its first
-    /// word taken off, where the grammar reads it as one. Returns whether it
-    /// was. An `if` or a `for` with no carets that already starts the text
+    /// word taken off, where the grammar reads it as one; a `,`, `;` or `=`
+    /// ends that word as a space does (`ca^ll,rd` is `call rd`). Returns
+    /// whether it was. An `if` or a `for` with no carets that already starts the text
     /// it was split from is not split again: the grammar would read it the
     /// same way. The text split again counts against the line's budget of
     /// nested text, so a command that holds another such command, and so
@@ -197,7 +198,15 @@ impl Walker<'_> {
         let Some(range) = span(&word) else {
             return false;
         };
-        let raw = self.source.get(range.clone()).unwrap_or_default();
+        // cmd skips the `,`, `;` and `=` before the name and ends it at the
+        // first one after, as at a space (see `Self::word`): `ca^ll,,rd` is
+        // `call rd`.
+        let whole = self.source.get(range.clone()).unwrap_or_default();
+        let raw = whole.trim_start_matches(DELIMITERS);
+        let (raw, rest) = match find_unquoted(raw, |c| DELIMITERS.contains(&c)) {
+            Some(end) => (&raw[..end], raw[end..].trim_start_matches(DELIMITERS)),
+            None => (raw, ""),
+        };
         let bare = unescape(raw);
         let is =
             |text: &str, names: &[&str]| names.iter().any(|name| name.eq_ignore_ascii_case(text));
@@ -223,7 +232,12 @@ impl Walker<'_> {
                 .source
                 .get(range.end..node.end_byte())
                 .unwrap_or_default();
-            format!("{before}{bare}{after}\n")
+            let rest = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" {rest}")
+            };
+            format!("{before}{bare}{rest}{after}\n")
         } else {
             let command = self.source.get(from..node.end_byte()).unwrap_or_default();
             format!("{command}\n")
@@ -340,13 +354,37 @@ impl Walker<'_> {
         }
     }
 
+    /// A command as the program its first word names. A `call`, `if` or
+    /// `for` read here is one [`Self::statement`] did not read as the
+    /// statement it is, spelled in a way it does not know (`call^,rd`): what
+    /// it runs cannot be read. A `call` of a label (`call:sub`) runs no
+    /// program.
     fn command(&mut self, node: Node<'_>, stage: Option<Stage>) {
         let Some((word, after)) = parts(node) else {
             return;
         };
         let (args, spans) = self.args(&after);
-        let units: Vec<Unit> = self
-            .word(&word)
+        let readings = self.word(&word);
+        let statement = readings.iter().any(|reading| {
+            let name = reading.program.known().map(str::to_ascii_lowercase);
+            match name.as_deref() {
+                Some("if" | "for") => true,
+                Some("call") => !reading
+                    .first
+                    .first()
+                    .and_then(|(first, _)| first.known())
+                    .is_some_and(|first| first.starts_with(':')),
+                _ => false,
+            }
+        });
+        if statement {
+            self.split.problem(
+                Rule::Unreadable,
+                "runs a call, if or for that cannot be read",
+                None,
+            );
+        }
+        let units: Vec<Unit> = readings
             .into_iter()
             .map(|reading| self.unit(reading, args.clone(), spans.clone(), &after, stage))
             .collect();

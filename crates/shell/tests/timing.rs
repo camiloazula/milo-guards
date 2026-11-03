@@ -231,8 +231,8 @@ fn cmd_commands_read_again_are_read_in_time() {
     let _serial = serial();
     // cmd's `ver && if …`, `i^f`, `f^or`, `ca^ll` and `call call` are each
     // read again as a statement of their own, and each holds the rest of the
-    // line: repeated, the line would be read once for each. The bound is for
-    // the debug build `just verify` runs.
+    // line: repeated, the line would be read once for each. `just timing`
+    // runs it in an optimized build; the bound holds in a debug build too.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let fit = |unit: &str| {
         let tail = "rd /s /q C:\\";

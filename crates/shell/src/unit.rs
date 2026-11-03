@@ -340,8 +340,26 @@ impl Names {
 }
 
 /// The name rules know a program by.
+///
+/// On Windows a name is read by its last part after a drive's colon too: cmd
+/// and PowerShell run `C:shutdown` from that drive's current folder, and an
+/// elevated cmd starts in `C:\\Windows\\System32`. Windows drops the dots and
+/// spaces that end a file's name, so `shutdown.exe.` is `shutdown`. A name
+/// that is no more than a drive (PowerShell's `C:`) or dots (`.`) stays as
+/// it is.
 pub(crate) fn key(program: &str, shell: Shell) -> String {
-    let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let mut base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    if shell != Shell::Posix {
+        if let [letter, b':', _, ..] = base.as_bytes() {
+            if letter.is_ascii_alphabetic() {
+                base = &base[2..];
+            }
+        }
+        let trimmed = base.trim_end_matches(['.', ' ']);
+        if !trimmed.is_empty() {
+            base = trimmed;
+        }
+    }
     let lower = base.to_ascii_lowercase();
     let stem = [".exe", ".com", ".bat", ".cmd"]
         .iter()

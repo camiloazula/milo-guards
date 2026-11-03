@@ -278,6 +278,25 @@ cmd rules=delete | call ca^ll rd /s /q C:\\Windows
 cmd rules=delete | ver && call call rd /s /q C:\\Windows
 cmd rules=stop_system | CALL Call C:\\Windows\\System32\\shutdown.exe /s
 cmd safe | call call dir
+# A `,`, `;` or `=` ends a `call`, `if` or `for` as a space does.
+cmd rules=delete | ca^ll,rd /s /q C:\\Windows
+cmd rules=stop_system | c^all;C:\\Windows\\System32\\shutdown.exe /s
+cmd rules=delete | i^f,exist q rd /s /q C:\\Windows
+cmd rules=delete | ver && i^f,exist q rd /s /q C:\\Windows
+cmd rules=delete | f^or,%%i in (a) do rd /s /q C:\\Windows
+cmd rules=delete | call call,rd /s /q C:\\Windows
+cmd rules=delete | call call;rd /s /q C:\\Windows
+cmd rules=delete | call call=rd /s /q C:\\Windows
+cmd rules=stop_system | call call,C:\\Windows\\System32\\shutdown.exe /s
+cmd rules=delete | call ca^ll,rd /s /q C:\\Windows
+cmd rules=delete | call call call,rd /s /q C:\\Windows
+cmd rules=delete | ca^ll,,rd /s /q C:\\Windows
+cmd safe | call call,dir
+cmd safe | ca^ll,dir
+# A `call`, `if` or `for` the guard does not read as the statement is a
+# command it cannot read; a `call` of a label runs no program.
+cmd rules=unreadable | call^,rd /s /q C:\\Windows
+cmd safe | call:sub
 # cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
 # `cmd/c`. A word that may name a program in a folder is read both ways.
 cmd rules=drop_data | echo.DROP TABLE t| psql
@@ -291,6 +310,24 @@ cmd safe | echo.hello
 cmd safe | ver && dir
 cmd safe | D: & dir
 cmd rules=delete | cd\\ & rd /s /q Users
+# A program named by a drive and no folder runs from that drive's current
+# folder: it is judged by the name after the colon.
+cmd rules=stop_system | C:shutdown /s
+cmd rules=stop_system | C:shutdown.exe /s
+cmd rules=delete | C:cmd /c rd /s /q C:\\
+cmd rules=delete | C:cmd.exe /c rd /s /q C:\\
+cmd rules=stop_system | D:shutdown /s
+cmd rules=stop_system | call C:shutdown /s
+cmd rules=stop_system | cd /d C:\\Windows\\System32 && C:shutdown /s
+cmd safe | C:tool.exe --version
+powershell rules=stop_system | C:shutdown.exe /s
+# Windows drops the dots and spaces that end a file's name.
+cmd rules=stop_system | shutdown.exe. /s
+cmd rules=delete | cmd.exe. /c rd /s /q C:\\
+cmd rules=delete | C:\\Windows\\System32\\cmd.exe. /c rd /s /q C:\\
+cmd rules=delete | "C:\\Windows\\System32\\cmd.exe." /c rd /s /q C:\\
+cmd rules=delete | C:\\Windows\\System32\\cmd.exe" " /c rd /s /q C:\\
+powershell rules=stop_system | shutdown.exe. /s
 # An `if` or a `for` after `&&`, `||` or `|` is read as one at the start of
 # a statement.
 cmd rules=delete | ver && if exist q rd /s /q C:\\Windows

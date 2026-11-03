@@ -85,6 +85,11 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   does not run, so a `cd` among them may not have moved the line. Any other
   name, quoted or not, is the path of a program, judged by its last part as
   the bare name is (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`).
+  A drive with no folder after it is read past too: cmd and PowerShell run
+  `C:shutdown` from that drive's current folder, which for an elevated cmd
+  is `C:\Windows\System32`, so it is `shutdown`. Windows drops the dots and
+  spaces that end a file's name, and the guard does too
+  (`shutdown.exe. /s` is `shutdown /s`).
   A `/` outside the quotes ends the name (`cmd/c`) unless it follows a
   drive (`C:/Windows/System32/shutdown.exe` is `shutdown`); one after a
   folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
@@ -99,7 +104,11 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   that command's text is split again with the carets of its first word
   taken off. A `call` of the program `call` (`call call rd /s /q C:\x`)
   runs the command after it, so the text from the second `call` is split
-  again the same way. Each text split again counts against the line's
+  again the same way. A `,`, `;` or `=` ends such a first word as a space
+  does (`ca^ll,rd …` and `call call,rd …` are `call rd …`). A command the
+  guard still reads as the program `call`, `if` or `for`, spelled some way
+  it does not split again (`call^,rd …`), is `unreadable`; a `call` of a
+  label (`call:sub`) runs no program. Each text split again counts against the line's
   budget of nested script text, so a line of `f^or … do f^or … do …`,
   where each command holds the rest of the line, is `unreadable` past it
   instead of read once for each command. A `for` typed at the prompt
