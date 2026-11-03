@@ -1,6 +1,7 @@
 //! The rule about resources the guard sees no path for: containers and their
 //! volumes, cluster objects, infrastructure stacks, hosted repositories and
-//! sites, and what a cloud CLI or an object store deletes.
+//! sites, and what a cloud CLI, a cloud's PowerShell cmdlet or an object
+//! store deletes.
 //!
 //! Each program is read like git is: the program, its global options, its
 //! command and sub-command, and the few options that change what a command
@@ -46,6 +47,12 @@ impl Say<'_> {
 impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
+        if unit.shell == Shell::PowerShell {
+            if let Some(reason) = cloud_cmdlet(key) {
+                self.add(Rule::DestroyResources, reason, None);
+                return;
+            }
+        }
         let args = unit.args.as_slice();
         let read_as = read_as(key);
         let values = values_of(read_as);
@@ -435,6 +442,76 @@ impl Checker<'_> {
         }
     }
 }
+
+/// What a cmdlet of a cloud's PowerShell modules removes, by its name (the
+/// key: lower case, without a module's qualifier): a `Remove-` cmdlet whose
+/// noun starts with one of the cloud's prefixes. `Remove-AzVM`,
+/// `Remove-AzureRmResourceGroup`, `Remove-EC2Instance`, `Remove-S3Bucket`
+/// and `Remove-GcsBucket` delete what they name in the cloud, and the guard
+/// cannot tell a scratch resource from one that matters, so each is a
+/// delete whatever its parameters (`-WhatIf` among them: a quoted
+/// `'-WhatIf'` is a value, and the guard reads both as the same word).
+///
+/// PowerShell reads a cmdlet's name in any case, so the prefix is read in
+/// lower case too, and a noun of another module that starts like one
+/// (`Remove-SmbShare`, `Remove-DscConfigurationDocument`) is told apart by
+/// [`NOT_CLOUD_NOUNS`]. The cmdlets that only change the module's own
+/// sign-in on this machine (`Remove-AzContext`) delete nothing in the cloud.
+fn cloud_cmdlet(key: &str) -> Option<&'static str> {
+    let noun = key.strip_prefix("remove-")?;
+    if NOT_CLOUD_NOUNS.iter().any(|other| noun.starts_with(other)) {
+        return None;
+    }
+    let after = |prefix: &str| noun.strip_prefix(prefix).filter(|rest| !rest.is_empty());
+    if let Some(rest) = after("az") {
+        let rest = ["urerm", "ure"]
+            .iter()
+            .find_map(|family| rest.strip_prefix(family))
+            .unwrap_or(rest);
+        return (!AZURE_SIGN_IN.contains(&rest)).then_some("deletes Azure resources");
+    }
+    if after("gc").is_some() {
+        return Some("deletes Google Cloud resources");
+    }
+    AWS_PREFIXES
+        .iter()
+        .any(|prefix| after(prefix).is_some())
+        .then_some("deletes AWS resources")
+}
+
+/// The nouns the Azure modules' sign-in cmdlets take after their prefix
+/// (`Remove-AzContext`, `Remove-AzureRmAccount`, an alias of
+/// `Disconnect-AzureRmAccount`): they change what this machine is signed in
+/// to, not the cloud.
+const AZURE_SIGN_IN: &[&str] = &["context", "account", "environment"];
+
+/// The noun prefixes of the AWS Tools for PowerShell, one to a service, in
+/// lower case. A longer prefix is read by the shorter one it starts with:
+/// `EC2`, `ECS` and `ECR` by `ec` (`ElastiCache`'s own), `CFN` by `cf`, `CWL`
+/// by `cw`, `ELB2` by `elb`, `AG2` by `ag`.
+const AWS_PREFIXES: &[&str] = &[
+    "aas", "acm", "ag", "amp", "as", "ath", "bak", "bat", "cb", "cc", "cd", "cf", "cgi", "cp",
+    "ct", "cw", "dax", "ddb", "dms", "doc", "ds", "eb", "ec", "efs", "eks", "elb", "emr", "es",
+    "evb", "fsx", "glc", "glue", "iam", "iot", "kin", "kms", "lm", "ls", "mdb", "mq", "msk", "npt",
+    "org", "os", "pca", "r53", "rds", "rs", "s3", "sec", "ses", "sfn", "sg", "sm", "sns", "sqs",
+    "ssm", "sso", "tfr", "waf", "wks",
+];
+
+/// The nouns of other modules' `Remove-` cmdlets that start like a cloud
+/// prefix: SMB shares, DSC configurations, Remote Desktop collections and servers,
+/// assigned access, OS configuration, Exchange organization relationships,
+/// and security and session settings.
+const NOT_CLOUD_NOUNS: &[&str] = &[
+    "smb",
+    "dscconfiguration",
+    "rdsession",
+    "rdserver",
+    "assignedaccess",
+    "osconfig",
+    "organization",
+    "secur",
+    "session",
+];
 
 /// Whether the unit is PowerShell's `sls`, written bare (any case, no
 /// extension, no path): the alias of `Select-String`.

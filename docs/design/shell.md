@@ -3578,6 +3578,30 @@ one given counting, and `unknown` with a method only known when it runs),
 Midnight Commander), each safe with `--dry-run` (and rclone's and s3cmd's
 `-n`), the last one given counting.
 
+**The clouds' PowerShell modules.** In PowerShell, a `Remove-` cmdlet whose
+noun starts with a cloud module's prefix deletes in that cloud: `Az` (with
+`AzureRM`, `Azure` and `AzureAD`) for Azure, the service prefixes of the AWS
+Tools (`EC2`, `S3`, `RDS`, `IAM`, `CFN`, `CF`, `ECS`, `EKS`, `LM`, `DDB` and
+the others listed in `detect/resources.rs`) for AWS, and `Gc` (`Gce`, `Gcs`,
+`GcSql`, `Gcd`) for Google Cloud. So `Remove-AzResourceGroup -Name rg
+-Force`, `Remove-AzVM`, `Remove-EC2Instance`, `Remove-S3Bucket
+-DeleteBucketContent` and `Remove-GcsBucket` are `destroy_resources`,
+whatever their parameters, as a pipeline's last stage (`Get-AzResourceGroup |
+Remove-AzResourceGroup -Force`), in a block (`ForEach-Object { … }`,
+`foreach`, `Invoke-Command`), behind a module's qualifier
+(`Az.Resources\Remove-AzResourceGroup`) and in `pwsh -c` from another shell.
+A resource group, a bucket or an account is several resources at once, and
+the line cannot tell a scratch one from one that matters, so no named target
+makes it safe. The name is read in any case, as PowerShell reads it, so a
+noun of another module that starts like a prefix is told apart by name
+(`Remove-SmbShare`, `Remove-DscConfigurationDocument`,
+`Remove-RDSessionCollection`, `Remove-OrganizationRelationship`), and the
+cmdlets that only change what this machine is signed in to
+(`Remove-AzContext`, `Remove-AzAccount`, `Remove-AzureRmAccount`) stay safe,
+as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
+`-WhatIf` does not make one safe: a quoted `'-WhatIf'` is a value, and the
+guard reads the two as the same word.
+
 A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
 and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a
 verb that takes operands (`deploy`, `create`) such a word is the name of what
@@ -3638,9 +3662,10 @@ the command word after it (`cdk --json destroy`).
 Not read, so the caller has to account for them: a verb that deletes under
 another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `aws s3 mv`, `rclone sync`, which deletes at
-the destination what the source lacks); a program run on another machine (`ssh
-host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf
-/`); a command a tool reads from a file or its environment (`TF_CLI_ARGS` set
+the destination what the source lacks, and a cloud module's cmdlet of another
+verb, `Unregister-EC2Image` or `Stop-EC2Instance -Terminate`); a program run
+on another machine (`ssh host docker system prune`, `docker exec c rm -rf /`,
+`kubectl exec p -- rm -rf /`); a command a tool reads from a file or its environment (`TF_CLI_ARGS` set
 before the line, or exported by `set -a` and then set by `read`, a `kubectl`
 plugin, a shell alias); a `gh api graphql` mutation that deletes; and a
 resource named like a whole delete verb behind a verb that does not make or set
