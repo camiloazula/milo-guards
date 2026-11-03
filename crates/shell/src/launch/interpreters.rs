@@ -1,7 +1,7 @@
 //! Shells and interpreters given a script, inline code, or their input:
 //! which is which, and the perl in-place edits read like `sed -i`.
 
-use super::wrappers::{runner, running, running_package, DELETERS};
+use super::wrappers::{runner, runner_in, running, running_package, DELETERS};
 use super::{after_options, is_stdin, join, Launch};
 use crate::inline;
 use crate::unit::{Arg, Reads, Unit};
@@ -134,6 +134,39 @@ pub(super) fn trap_inherited(args: &[Arg]) -> bool {
     })
 }
 
+/// The options of the interpreter `key` that carry code to run, by letter
+/// and by long name: `perl -e`, `python3 -c`, `node -p`, `php -r`.
+pub(crate) fn code_options(key: &str) -> (&'static [char], &'static [&'static str]) {
+    if key.starts_with("python") {
+        return (&['c'], &[]);
+    }
+    match key {
+        "perl" => (&['e', 'E'], &[]),
+        "ruby" => (&['e'], &["--eval"]),
+        "node" | "nodejs" => (&['e', 'p'], &["--eval", "--print"]),
+        "php" => (&['r', 'R', 'F'], &[]),
+        "lua" => (&['e'], &[]),
+        _ => (&['c', 'e'], &["--eval", "--print"]),
+    }
+}
+
+/// The short options of the interpreter `key` that take a value which is
+/// neither code nor a file it reads, and so end a bundle: python's `-W
+/// ignore`, php's `-d foo=1`, perl's `-I lib`.
+pub(crate) fn valued_options(key: &str) -> &'static [char] {
+    if key.starts_with("python") {
+        return &['W', 'X', 'm', 'Q'];
+    }
+    match key {
+        "perl" => &['I', 'M', 'm'],
+        "ruby" => &['I', 'r', 'C', 'E', 'K'],
+        "node" | "nodejs" => &['r', 'C'],
+        "php" => &['c', 'd', 'z', 't', 'B', 'E'],
+        "lua" => &['l'],
+        _ => &[],
+    }
+}
+
 /// An interpreter runs code the guard does not read when it is given code inline
 /// or reads it from its input; a script file or a module is its own
 /// business. The flags that carry inline code differ per interpreter, so a
@@ -142,18 +175,7 @@ pub(super) fn trap_inherited(args: &[Arg]) -> bool {
 /// reads its input: always under a POSIX shell, and under cmd and PowerShell
 /// only when something is piped into it.
 pub(super) fn interpreter(key: &str, args: &[Arg], console: bool) -> Launch {
-    let (short, long): (&[char], &[&str]) = if key.starts_with("python") {
-        (&['c'], &[])
-    } else {
-        match key {
-            "perl" => (&['e', 'E'], &[]),
-            "ruby" => (&['e'], &["--eval"]),
-            "node" | "nodejs" => (&['e', 'p'], &["--eval", "--print"]),
-            "php" => (&['r', 'R', 'F'], &[]),
-            "lua" => (&['e'], &[]),
-            _ => (&['c', 'e'], &["--eval", "--print"]),
-        }
-    };
+    let (short, long) = code_options(key);
     let code = args.iter().any(|arg| {
         arg.known()
             .is_some_and(|text| match text.strip_prefix('-') {
@@ -462,6 +484,11 @@ fn only_runs(unit: &Unit, evals: bool, launch: Launch) -> Launch {
             Box::new(only_runs(unit, evals, *first)),
             Box::new(only_runs(unit, evals, *second)),
         ),
+        // `bun --cwd DIR rimraf x`: what it starts in its folder is read the
+        // same way.
+        Launch::In(folder, shell, inner) => {
+            Launch::In(folder, shell, Box::new(only_runs(unit, evals, *inner)))
+        }
         _ if unit.shell != Shell::Cmd => launch,
         Launch::Reads(_) if evals || super::piped(unit) => launch,
         _ => Launch::Itself,
@@ -523,11 +550,17 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
         "exec" => {
             let rest = &args[first + 1..];
             after_options(rest, &BUN_VALUES).map_or(Launch::Itself, |at| {
-                Launch::Script(Shell::Posix, join(&rest[at..]))
+                let script = Launch::Script(Shell::Posix, join(&rest[at..]));
+                runner_in("bun", args, first + 1 + at, script)
             })
         }
         // `bun rimraf dir` runs the project's own delete tool by its name.
-        name if DELETERS.contains(&name) => Launch::Replace(Box::new(running(unit, "bun", first))),
+        name if DELETERS.contains(&name) => runner_in(
+            "bun",
+            args,
+            first,
+            Launch::Replace(Box::new(running(unit, "bun", first))),
+        ),
         // `bun run name` runs a script of the project, a bin of it, or else
         // any program on the path (`bun run rm -rf x` deletes): a word that
         // is no file is judged as the program.
@@ -547,7 +580,12 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
                 Launch::Reads(Reads::Interpreter)
             }
             Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
-            Some(at) if !is_file(&args[at]) => Launch::Replace(Box::new(running(unit, "bun", at))),
+            Some(at) if !is_file(&args[at]) => runner_in(
+                "bun",
+                args,
+                at,
+                Launch::Replace(Box::new(running(unit, "bun", at))),
+            ),
             _ => Launch::Itself,
         },
         _ if is_stdin(word) => Launch::Reads(Reads::Interpreter),

@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use tree_sitter::{Node, TreeCursor};
+use tree_sitter::Node;
 
 use crate::dotglob;
 use crate::extended::{self, Reading};
@@ -12,6 +12,7 @@ use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
+mod fork_bomb;
 mod values;
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
@@ -68,6 +69,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         environment(walker.split, tree.root_node(), text);
     }
     walker.walk(tree.root_node(), None, 0);
+    walker.fork_bombs(tree.root_node());
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -90,19 +92,58 @@ fn qualifier_char(c: char) -> bool {
 /// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
 /// `.#git(D)` match `.git`, which a guard that reads them as plain text
 /// would not see.
-fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
-    word.chars()
-        .last()
-        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
-    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
-        return None;
-    }
-    let end = rest.iter().position(|c| *c == ')')?;
+///
+/// `word` gives the last character of the word and whether it holds one of
+/// those operators; it is asked only once `rest` is a qualifier, and kept as
+/// the text grows (see [`Word`]), so a line of many `(` in one long word is
+/// not read back to its start at each.
+fn qualifier(word: impl FnOnce() -> (Option<char>, bool), rest: &[char]) -> Option<usize> {
+    // The body is qualifier characters only, so the scan for its `)` stops
+    // at the first other one.
+    let end = rest.iter().position(|c| !qualifier_char(*c))?;
     let body = &rest[..end];
     let ends = rest
         .get(end + 1)
         .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
-    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
+    if rest[end] != ')' || !ends || !body.contains(&'D') {
+        return None;
+    }
+    let (last, operators) = word();
+    last.filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    (!operators).then_some(end + 1)
+}
+
+/// The last word of a text that only grows, the part after its last space,
+/// as [`qualifier`] reads it: each part added is looked through once.
+#[derive(Default)]
+struct Word {
+    /// How much of the text has been looked through.
+    seen: usize,
+    /// Whether the word has started (a character after the last space).
+    started: bool,
+    /// Its last character.
+    last: Option<char>,
+    /// Whether it holds `^` or `#`, or a `~` that does not start it.
+    operators: bool,
+}
+
+impl Word {
+    fn of(&mut self, text: &str) -> (Option<char>, bool) {
+        for c in text.get(self.seen..).unwrap_or_default().chars() {
+            if c.is_whitespace() {
+                *self = Self {
+                    last: Some(c),
+                    ..Self::default()
+                };
+            } else {
+                self.operators |= c == '^' || c == '#' || (c == '~' && self.started);
+                self.started = true;
+                self.last = Some(c);
+            }
+        }
+        self.seen = text.len();
+        (self.last.filter(|_| self.started), self.operators)
+    }
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -143,6 +184,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // each delimiter, whether `<<-` lets it be indented with tabs, and
     // whether the word had a quote or a backslash (a body fed as it is).
     let mut bodies: Vec<(String, bool, bool)> = Vec::new();
+    // The last word of `joined` (see [`qualifier`]).
+    let mut word = Word::default();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
@@ -162,8 +205,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
-            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
-            if let Some(length) = qualifier(word, rest) {
+            if let Some(length) = qualifier(|| word.of(&joined), rest) {
                 at += length;
                 marks.push(joined.len());
                 continue;
@@ -1195,8 +1237,14 @@ impl Walker<'_> {
                         self.startup_words(&[self.arg(child)], written);
                     }
                 }
+                let first = self.split.units.len();
                 self.declaration(node, stage);
+                let own = first..self.split.units.len();
                 self.children(node, stage, level);
+                // What its substitutions run is handed to it, as to a
+                // command: `export $(cat .env)` sets what `cat` prints.
+                self.split
+                    .nest(own.clone(), own.end..self.split.units.len());
             }
             // `(( GLOBIGNORE=1 ))`
             "binary_expression" => {
@@ -1278,6 +1326,8 @@ impl Walker<'_> {
                 if let Some(function) = &function {
                     let here = function.here.clone();
                     self.function_children(node, stage, level, &here);
+                } else if node.kind() == "for_statement" {
+                    self.loop_children(node, stage, level);
                 } else {
                     self.children(node, stage, level);
                 }
@@ -1535,7 +1585,6 @@ impl Walker<'_> {
             .filter(|_| node.kind() == "function_definition")?;
         let name = unit::text(&name, self.source);
         self.split.define_function(name);
-        self.fork_bomb(node, name);
         let opens = node
             .child_by_field_name("redirect")
             .is_some_and(|redirect| self.opens_by_folder(redirect));
@@ -1549,6 +1598,31 @@ impl Walker<'_> {
         if let Some(start) = start {
             self.split.defined(*start);
         }
+    }
+
+    /// Whether `last`, the last argument of `command`, is the number written
+    /// right against the redirect after the command (`0` in `exec 0<.env`):
+    /// its descriptor, which the grammar reads apart.
+    fn descriptor_of_redirect(&self, command: Node<'_>, last: Node<'_>) -> bool {
+        if last.kind() != "number" || last.end_byte() != command.end_byte() {
+            return false;
+        }
+        let Some(statement) = command
+            .parent()
+            .filter(|parent| parent.kind() == "redirected_statement")
+        else {
+            return false;
+        };
+        let mut cursor = statement.walk();
+        let found = statement
+            .children_by_field_name("redirect", &mut cursor)
+            .next()
+            .is_some_and(|redirect| {
+                redirect.kind() == "file_redirect"
+                    && redirect.start_byte() == last.end_byte()
+                    && redirect.child_by_field_name("descriptor").is_none()
+            });
+        found
     }
 
     /// Whether `redirect` opens a file that a relative name picks by the
@@ -1604,54 +1678,6 @@ impl Walker<'_> {
                     self.walk_in(*child, stage, level + 1, background);
                 }
             }
-        }
-    }
-
-    /// A function that starts itself in the background, or as one side of a
-    /// pipeline, starts copies of itself without end: `:(){ :|:& };:`.
-    fn fork_bomb(&mut self, function: Node<'_>, name: &str) {
-        let Some(body) = function.child_by_field_name("body") else {
-            return;
-        };
-        // A function defined inside is judged when the walk reaches it, so
-        // its commands are not read again here: each node is read once. Each
-        // level of the walk says whether what it holds runs apart, so the
-        // scan never climbs back up: it is linear in the nodes.
-        let mut cursor = body.walk();
-        let mut stack = vec![Level::of(body, false, &mut cursor)];
-        let mut bomb = false;
-        while let Some(level) = stack.last_mut() {
-            let Some(&inner) = level.children.get(level.at) else {
-                stack.pop();
-                continue;
-            };
-            let apart = level.apart
-                || level.staged
-                || level
-                    .children
-                    .get(level.at + 1)
-                    .is_some_and(|next| next.kind() == "&");
-            level.at += 1;
-            if inner.kind() == "function_definition" {
-                continue;
-            }
-            if apart
-                && inner.kind() == "command"
-                && inner
-                    .child_by_field_name("name")
-                    .is_some_and(|called| self.arg(called).known() == Some(name))
-            {
-                bomb = true;
-                break;
-            }
-            stack.push(Level::of(inner, apart, &mut cursor));
-        }
-        if bomb {
-            self.split.problem(
-                Rule::StopSystem,
-                "starts copies of itself without end",
-                Some(name),
-            );
         }
     }
 
@@ -1730,6 +1756,35 @@ impl Walker<'_> {
         self.split.bind(name, words, start);
     }
 
+    /// The children of a `for`, as [`Self::children`] walks them; the loop's
+    /// variable is then set from what runs in its words and from the
+    /// variables they name, as `k=$(cat f)` is (`for k in $(cat f)`).
+    fn loop_children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        let mut cursor = node.walk();
+        let values: Vec<Node<'_>> = node.children_by_field_name("value", &mut cursor).collect();
+        let last = values.last().map(Node::id);
+        let mut end = first;
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if child.is_named() {
+                let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                self.walk_in(*child, stage, level + 1, background);
+            }
+            if Some(child.id()) == last {
+                end = self.split.units.len();
+            }
+        }
+        if let Some(variable) = node.child_by_field_name("variable") {
+            let text: Vec<&str> = values
+                .iter()
+                .map(|value| unit::text(value, self.source))
+                .collect();
+            let name = unit::text(&variable, self.source);
+            self.split.assign(name, first..end, &text.join(" "));
+        }
+    }
+
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -1758,9 +1813,17 @@ impl Walker<'_> {
             self.arg(name)
         };
         let mut cursor = node.walk();
-        let nodes: Vec<Node<'_>> = node
+        let mut nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // The grammar reads the `0` of `cmd 0< f` as an argument and the `<`
+        // as a redirect of its own: the `0` is the redirect's descriptor.
+        if nodes
+            .last()
+            .is_some_and(|last| self.descriptor_of_redirect(node, *last))
+        {
+            nodes.pop();
+        }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
         let mut qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
@@ -1920,6 +1983,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
+        let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1940,6 +2004,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
+        self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -2302,10 +2367,44 @@ impl Walker<'_> {
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
+    /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
+    /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
+    /// so what terraform gets is only known when it runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        // The grammar reads a bare name as a variable, not a word.
+        if let Some(name) = Some(word.known().unwrap_or(source))
+            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+        {
+            let noted = self
+                .split
+                .tf_cli_args
+                .iter()
+                .any(|(noted, _)| noted == name);
+            if !noted {
+                self.split
+                    .tf_cli_args
+                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+            }
+            return;
+        }
+        if let Some((name, _)) = source
+            .split_once('=')
+            .filter(|(name, _)| unit::tf_cli_args(name))
+        {
+            let value = match word.known() {
+                Some(text) => Arg::Known(
+                    text.split_once('=')
+                        .map_or("", |(_, value)| value)
+                        .to_string(),
+                ),
+                None => Arg::Unknown(source.to_string()),
+            };
+            self.split.tf_cli_args.push((name.to_string(), value));
+            return;
+        }
         match word.known() {
             Some(text) => {
                 if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
@@ -2355,20 +2454,24 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
-    /// when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
+    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
+    /// variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+        let terraform = unit::tf_cli_args(name);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        if name == "PYTHONPATH" {
+        if terraform {
+            self.split.tf_cli_args.push((name.to_string(), value));
+        } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {
             self.split.node_options.push(value);
@@ -2904,7 +3007,10 @@ impl Walker<'_> {
                     .children(&mut cursor)
                     .find(|child| !child.is_named())
                     .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
-                Some(heredoc_fed(raw, strips, quoted))
+                // Whether an expansion in the body runs a command, as the
+                // grammar reads it: a quoted delimiter expands nothing.
+                let runs = !quoted && lost.iter().copied().chain(body.copied()).any(runs_command);
+                Some(heredoc_fed(raw, strips, quoted, runs))
             }
             _ => None,
         }
@@ -2978,6 +3084,7 @@ impl Walker<'_> {
                 let mut value = String::new();
                 let mut template = String::new();
                 let mut partial = false;
+                let mut runs = false;
                 let mut cursor = node.walk();
                 for part in node.children(&mut cursor) {
                     // The grammar leaves a `$$` out of the named parts when
@@ -3000,8 +3107,11 @@ impl Walker<'_> {
                             value.push_str(&text);
                             template.push_str(&text);
                         }
-                        Arg::Template { text, .. } => {
+                        Arg::Template {
+                            text, runs: hole, ..
+                        } => {
                             partial = true;
+                            runs |= hole;
                             template.push_str(&text);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null
@@ -3011,6 +3121,7 @@ impl Walker<'_> {
                             ) =>
                         {
                             partial = true;
+                            runs |= runs_command(part);
                             template.push_str(OPAQUE);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null => {
@@ -3021,7 +3132,8 @@ impl Walker<'_> {
                 if partial {
                     Arg::Template {
                         text: template,
-                        source: source.to_string(),
+                        source: source.into(),
+                        runs,
                     }
                 } else {
                     Arg::Known(value)
@@ -3049,6 +3161,7 @@ impl Walker<'_> {
         let mut value = String::new();
         let mut template = String::new();
         let mut partial = false;
+        let mut runs = false;
         let mut at = start;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -3069,11 +3182,13 @@ impl Walker<'_> {
                     }
                     Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
+                        runs |= runs_command(child);
                         template.push_str(OPAQUE);
                     }
                 },
                 _ => {
                     partial = true;
+                    runs |= runs_command(child);
                     template.push_str(OPAQUE);
                 }
             }
@@ -3085,7 +3200,8 @@ impl Walker<'_> {
         if partial {
             Arg::Template {
                 text: template,
-                source: source.to_string(),
+                source: source.into(),
+                runs,
             }
         } else {
             Arg::Known(value)
@@ -3124,7 +3240,7 @@ impl Walker<'_> {
 /// as an expansion). A body with both an escaped and an expanding `$` or
 /// backtick is known only when it runs: a template reads each `$` it holds as
 /// an expansion, and would take a character the client gets as it is for one.
-fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool, runs: bool) -> Arg {
     let lines: String = if strips {
         raw.split_inclusive('\n')
             .map(|line| line.trim_start_matches('\t'))
@@ -3159,34 +3275,19 @@ fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
         (true, true) => Arg::Unknown(raw.to_string()),
         (false, true) => Arg::Template {
             text,
-            source: raw.to_string(),
+            source: raw.into(),
+            runs,
         },
         (_, false) => Arg::Known(text),
     }
 }
 
-/// One node of the fork-bomb scan, with its children still to read.
-struct Level<'t> {
-    children: Vec<Node<'t>>,
-    /// The next child to read.
-    at: usize,
-    /// Whether the node, or one it is inside (up to the function's body), is
-    /// followed by `&` or is a stage of a pipeline: what it holds runs as a
-    /// process of its own.
-    apart: bool,
-    /// Whether the children are the stages of a pipeline of more than one.
-    staged: bool,
-}
-
-impl<'t> Level<'t> {
-    fn of(node: Node<'t>, apart: bool, cursor: &mut TreeCursor<'t>) -> Self {
-        Self {
-            children: node.children(cursor).collect(),
-            at: 0,
-            apart,
-            staged: node.kind() == "pipeline" && node.named_child_count() > 1,
-        }
-    }
+/// Whether `node` is a command substitution (`$(…)`, a backtick), or holds
+/// one (`${x:-$(…)}`, `$(( $(…) ))`): an expansion that runs a command.
+fn runs_command(node: Node<'_>) -> bool {
+    let mut runs = false;
+    unit::for_each_node(node, |inner| runs |= inner.kind() == "command_substitution");
+    runs
 }
 
 /// A bare word as the program receives it: a backslash keeps the next

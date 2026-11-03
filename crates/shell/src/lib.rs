@@ -50,6 +50,7 @@ mod path;
 mod posix;
 mod powershell;
 mod startup;
+mod tangled;
 mod unit;
 mod values;
 
@@ -122,7 +123,8 @@ pub enum Rule {
     /// Writes into a file beyond the workspace or a sensitive one.
     Overwrite,
     /// Throws away work git cannot give back: uncommitted changes,
-    /// untracked files, stashes, unmerged branches.
+    /// untracked files, stashes, unmerged branches, tags deleted or moved,
+    /// a submodule's changes.
     GitDiscard,
     /// Rewrites or deletes branches on a remote.
     GitRemote,
@@ -159,8 +161,8 @@ pub enum Rule {
     SendSecret,
     /// Deletes data in a database.
     DropData,
-    /// Deletes containers, cluster objects, cloud resources or an
-    /// infrastructure stack.
+    /// Deletes containers, cluster objects, cloud resources, a hosted
+    /// repository or an infrastructure stack.
     DestroyResources,
     /// Runs a program or a script known only when it runs.
     Unknown,
