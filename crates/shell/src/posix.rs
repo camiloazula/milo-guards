@@ -679,6 +679,27 @@ fn last_simple(node: Node<'_>) -> Option<Node<'_>> {
     (last.kind() == "command").then_some(last)
 }
 
+/// Whether `node` is a plain word, or holds only plain words and the
+/// descriptor of a redirect: nothing in it runs when the shell expands it (no
+/// substitution, expansion or here-document). A command and a redirect are
+/// plain when each of their parts is.
+fn plain(node: Node<'_>) -> bool {
+    let kind = node.kind();
+    // A word holds no part; a number may (`1$(x)`), and is then not plain.
+    let parts = matches!(
+        kind,
+        "command" | "command_name" | "file_redirect" | "herestring_redirect"
+    );
+    if !parts && !matches!(kind, "word" | "raw_string" | "number" | "file_descriptor") {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let plain = node
+        .named_children(&mut cursor)
+        .all(|part| parts && plain(part));
+    plain
+}
+
 /// Whether `node`, the left side of a list, is a list of its own (`a && b &&
 /// c` is `(a && b) && c`), or one a redirect on its last command wraps
 /// (`a && b > log && c` is `(a && b > log) && c`, the redirect on `b`): its
@@ -2694,11 +2715,14 @@ impl Walker<'_> {
     }
 
     /// A command and what it holds. What its substitutions run is handed to
-    /// it, and a redirect in front of it (`< f cat`) feeds it.
+    /// it, and a redirect in front of it (`< f cat`) feeds it. The shell
+    /// expands its words and redirects before it runs: when it moves the line
+    /// (`cd "$(cat ../x)"`), what they run starts where it does.
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
         self.command(node, stage);
         let own = first..self.split.units.len();
+        self.split.enter_start(&own, plain(node));
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "variable_assignment" {
@@ -2709,6 +2733,7 @@ impl Walker<'_> {
                 self.walk(child, None, level + 1);
             }
         }
+        self.split.leave_start();
         self.split
             .nest(own.clone(), own.end..self.split.units.len());
         self.last_command = own.clone();
@@ -2928,11 +2953,22 @@ impl Walker<'_> {
                     placed = self.last_command.clone();
                 }
             } else if let (Some(pipeline), true) = (pipeline, piped_heredoc(*child)) {
+                let mover = if simple {
+                    own.clone()
+                } else if chained {
+                    placed.clone()
+                } else {
+                    0..0
+                };
                 // What the redirect's own parts run is handed to the body,
                 // and what the rest of the pipeline runs is not.
+                // They are expanded before the body runs, from where it
+                // starts; the rest of the pipeline runs where it runs.
                 let mut inside = Vec::new();
                 let first = self.split.units.len();
+                self.split.enter_start(&mover, false);
                 self.heredoc_backticks(*child);
+                self.split.leave_start();
                 inside.push(first..self.split.units.len());
                 let mut cursor = child.walk();
                 for part in child.named_children(&mut cursor) {
@@ -2940,12 +2976,24 @@ impl Walker<'_> {
                     if part.kind() == "pipeline" {
                         self.pipeline_in(part, pipeline, next, level + 1);
                     } else {
+                        self.split.enter_start(&mover, plain(part));
                         self.walk(part, None, level + 1);
+                        self.split.leave_start();
                         inside.push(first..self.split.units.len());
                     }
                 }
                 after.push((*child, inside));
             } else {
+                // The command the redirect is on, when it is one: a plain
+                // command's own units, or the last command of a list,
+                // pipeline or negation.
+                let mover = if simple {
+                    own.clone()
+                } else if chained {
+                    placed.clone()
+                } else {
+                    0..0
+                };
                 let redirects = matches!(child.kind(), "file_redirect" | "heredoc_redirect");
                 // The shell opens a redirect before the body runs: from the
                 // folder the command starts in, the last command of a list,
@@ -2980,6 +3028,10 @@ impl Walker<'_> {
                         by_folder,
                     )
                 };
+                // What the redirect expands (`<<< "$(cat f)"`, a
+                // here-document's body) is expanded before the command it is
+                // on runs, so from where it starts when it moves the line.
+                self.split.enter_start(&mover, plain(*child));
                 if child.kind() == "file_redirect" {
                     self.walk_redirect_from(*child, stage, level, opens);
                 } else if child.kind() == "heredoc_redirect" {
@@ -2987,6 +3039,7 @@ impl Walker<'_> {
                 } else {
                     self.walk(*child, stage, level + 1);
                 }
+                self.split.leave_start();
                 let whole = first..self.split.units.len();
                 after.push((*child, std::iter::once(whole).collect()));
             }

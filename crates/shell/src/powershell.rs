@@ -367,6 +367,33 @@ struct Redirects {
     /// the command in the job's own process (see [`Walker::job`]); `None`
     /// for any other command.
     job: Option<Vec<usize>>,
+    /// Whether the arguments are still read from where the command starts
+    /// (see [`Split::enter_start`]): not once one of them has moved the line.
+    at_start: bool,
+}
+
+/// Whether the command `node` holds only plain words, parameters and the
+/// spaces between them: nothing in it runs when the session reads its
+/// arguments (no sub-expression, variable, string or redirection).
+fn plain(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    let plain = node
+        .named_children(&mut cursor)
+        .all(|part| match part.kind() {
+            "command_name" => part.named_child_count() == 0,
+            "command_elements" => {
+                let mut cursor = part.walk();
+                let words = part.named_children(&mut cursor).all(|element| {
+                    matches!(
+                        element.kind(),
+                        "generic_token" | "command_parameter" | "command_argument_sep"
+                    ) && element.named_child_count() == 0
+                });
+                words
+            }
+            _ => false,
+        });
+    plain
 }
 
 /// What a bare word (a generic token) holds of a redirect. The grammar reads
@@ -868,18 +895,22 @@ impl Walker<'_> {
 
     /// What a command holds, `own` being its own units. A redirect on a
     /// command that moves the line (`Set-Location sub > f`) is opened before
-    /// it runs: from where it starts. Only the redirects are placed so: a
-    /// sub-expression in an argument is walked from where the line is, and a
-    /// redirect that follows one that moved the line is opened where the line
-    /// has gone to, as the session ran the argument before opening the file.
+    /// it runs: from where it starts. So is a sub-expression in an argument
+    /// walked (`Set-Location $(Get-Content ..\x)`), as the session runs it
+    /// before the command. Once one has moved the line, the command moves it
+    /// on from there, and what follows, a redirect too, is read where the
+    /// line has gone to, as the session ran the argument before opening the
+    /// file.
     fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize, job: bool) {
         let folder = job.then(|| self.job_folder(own.clone()));
+        self.split.enter_start(&own, plain(node));
         let mut state = Redirects {
             seen: own.end,
             own,
             moved: false,
             pending: false,
             job: job.then(Vec::new),
+            at_start: true,
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -895,6 +926,9 @@ impl Walker<'_> {
         // `echo x 1>` with no file after it.
         if state.pending {
             self.unclear_redirect(node);
+        }
+        if state.at_start {
+            self.split.leave_start();
         }
         if let (Some(blocks), Some(folder)) = (state.job, folder) {
             self.job(node, &blocks, folder.as_ref(), level);
@@ -1110,6 +1144,7 @@ impl Walker<'_> {
                 return;
             }
             self.walk(child, None, level);
+            self.moved_on(state);
             return;
         }
         // The units of the arguments walked since the last redirect: each
@@ -1138,6 +1173,16 @@ impl Walker<'_> {
             _ => self.walk(child, None, level),
         }
         self.split.open_from(outer);
+        self.moved_on(state);
+    }
+
+    /// Once what the command's parts run has moved the line, the command
+    /// moves it on from there (see [`Split::leave_start`]).
+    fn moved_on(&mut self, state: &mut Redirects) {
+        if state.at_start && self.split.moved_since_start() {
+            state.at_start = false;
+            self.split.leave_start();
+        }
     }
 
     /// The file glued to a redirect operator (`..\x.txt` in `1>..\x.txt`):
