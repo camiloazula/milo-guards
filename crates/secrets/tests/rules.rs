@@ -1,8 +1,10 @@
-//! One table of texts per rule: each text must break its rule, and the
-//! spelling variants a reviewer would try are rows of their own. A Discord bot
-//! token is found by its own shape (its first part is a user id in base64url,
-//! digits when decoded), and the real passwords and tokens beside the rows of
-//! `safe.rs` are still found.
+//! Texts by rule: each text must break its rule, and the spelling variants a
+//! reviewer would try are rows of their own. A Discord bot token is found by
+//! its own shape (its first part is a user id in base64url, digits when
+//! decoded), and the real passwords and tokens beside the rows of `safe.rs`
+//! are still found. The texts that hold no value shaped like a real key are
+//! in `tests/cases/rules.cases`; what stays here builds such a value in Rust,
+//! so that none sits in the repository.
 
 mod common;
 
@@ -29,6 +31,21 @@ fn assert_found(rows: &[(String, String)], rule: Rule) {
         assert_eq!(spans[0].rule, rule, "{text:?}");
         assert_eq!(&text[spans[0].start..spans[0].end], secret, "{text:?}");
     }
+}
+
+/// The span of the only finding in `text`.
+fn only_span(text: &str) -> (Rule, String) {
+    let spans = find_spans(text);
+    assert_eq!(spans.len(), 1, "{text:?} {spans:?}");
+    (
+        spans[0].rule,
+        text[spans[0].start..spans[0].end].to_string(),
+    )
+}
+
+#[test]
+fn every_case() {
+    common::cases::check("rules");
 }
 
 #[test]
@@ -150,22 +167,8 @@ fn a_key_of_a_service() {
         stripe,
         format!("SLACK_TOKEN={slack}"),
     ];
-    let wanted = [
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-        Rule::ApiKey,
-    ];
-    for (row, rule) in rows.iter().zip(wanted) {
-        only(row, rule);
+    for row in &rows {
+        only(row, Rule::ApiKey);
     }
 }
 
@@ -191,8 +194,6 @@ fn a_jwt() {
     let rows = [
         format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlLXVzZXIifQ.{signature}"),
         format!("token: \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlLXVzZXIifQ.{signature}\""),
-        // Signed with `none`: no signature.
-        "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlLXVzZXIifQ.".to_string(),
     ];
     for row in &rows {
         only(row, Rule::Jwt);
@@ -200,32 +201,8 @@ fn a_jwt() {
 }
 
 #[test]
-fn basic_and_bearer_headers() {
+fn a_bearer_header() {
     let bearer = fill("FakeBearer0123456789", 40);
-    let risky = [
-        (
-            "Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=",
-            Rule::BasicAuth,
-        ),
-        (
-            "authorization: basic ZmFrZXVzZXI6ZmFrZXBhc3M=",
-            Rule::BasicAuth,
-        ),
-        (
-            "curl -H 'Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=' x",
-            Rule::BasicAuth,
-        ),
-        (
-            "Proxy-Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=",
-            Rule::BasicAuth,
-        ),
-        // No padding.
-        (
-            "Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3N4",
-            Rule::BasicAuth,
-        ),
-    ];
-    check(&[], &risky, find);
     for header in [
         format!("Authorization: Bearer {bearer}"),
         format!("authorization: bearer {bearer}"),
@@ -234,181 +211,6 @@ fn basic_and_bearer_headers() {
     ] {
         only(&header, Rule::BearerToken);
     }
-}
-
-#[test]
-fn a_password_in_an_address() {
-    let risky = [
-        ("postgres://u:p@h/db", Rule::ConnectionString),
-        (
-            "postgresql://app:fakePass0word1@db.internal:5432/app",
-            Rule::ConnectionString,
-        ),
-        (
-            "mysql://root:fakePass0word1@localhost/db",
-            Rule::ConnectionString,
-        ),
-        (
-            "mongodb://app:fakePass0word1@h1:27017,h2:27017/db",
-            Rule::ConnectionString,
-        ),
-        (
-            "mongodb+srv://app:fakePass0word1@cluster.example.io/db",
-            Rule::ConnectionString,
-        ),
-        (
-            "redis://:fakePass0word1@cache:6379/0",
-            Rule::ConnectionString,
-        ),
-        (
-            "rediss://default:fakePass0word1@cache:6380",
-            Rule::ConnectionString,
-        ),
-        (
-            "amqps://app:fakePass0word1@mq.example.io/vhost",
-            Rule::ConnectionString,
-        ),
-        (
-            "POSTGRES://app:fakePass0word1@db/app",
-            Rule::ConnectionString,
-        ),
-        (
-            "DATABASE_URL=\"postgres://app:fakePass0word1@db/app?sslmode=require\"",
-            Rule::ConnectionString,
-        ),
-        (
-            "https://me:fakePass0word1@example.net/",
-            Rule::UrlCredentials,
-        ),
-        ("http://:fakePass0word1@example.net/", Rule::UrlCredentials),
-        (
-            "ftp://me:fakePass0word1@files.example.net/x",
-            Rule::UrlCredentials,
-        ),
-        (
-            "git+https://me:fakePass0word1@host.io/r.git",
-            Rule::UrlCredentials,
-        ),
-        ("ssh://me:fakePass0word1@host.io/", Rule::UrlCredentials),
-    ];
-    check(&[], &risky, find);
-}
-
-#[test]
-fn the_password_of_an_address_is_the_span_and_the_rest_stays() {
-    let text = "dsn = postgres://app:p@ss0rd@db.internal:5432/app";
-    let spans = find_spans(text);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(&text[spans[0].start..spans[0].end], "p@ss0rd");
-    let text = "git clone https://me:fakePass0word1@host.io/r.git";
-    let spans = find_spans(text);
-    assert_eq!(&text[spans[0].start..spans[0].end], "fakePass0word1");
-}
-
-#[test]
-fn a_secret_written_as_the_value_of_a_name() {
-    let risky = [
-        ("password=fakePass0word1", Rule::GenericSecret),
-        ("PASSWORD=fakeHorse1Staple", Rule::GenericSecret),
-        ("export TOKEN=fakeValueXyz", Rule::GenericSecret),
-        ("secret = 'fakeValue0Xyz'", Rule::GenericSecret),
-        ("secret: fakeValue0Xyz", Rule::GenericSecret),
-        ("\"password\": \"fakeHorse1Staple\"", Rule::GenericSecret),
-        (
-            "{\"client_secret\":\"fakeClientValue\"}",
-            Rule::GenericSecret,
-        ),
-        ("api_key = \"fakeValueAbc12\"", Rule::GenericSecret),
-        ("X-Api-Key: fakeValue0123", Rule::GenericSecret),
-        ("--password=fakeHorse1Staple", Rule::GenericSecret),
-        (
-            "https://x.io/a?token=fakeValue0123b&b=1",
-            Rule::GenericSecret,
-        ),
-        (
-            "Server=db;User Id=sa;Password=fakePass0word1;Encrypt=true",
-            Rule::GenericSecret,
-        ),
-        ("let password = \"fakeHorse1Staple\";", Rule::GenericSecret),
-        ("db.password: fakePass0word1", Rule::GenericSecret),
-        ("pass=fakeHorse1Staple", Rule::GenericSecret),
-        ("db_pass: fakePass0word1", Rule::GenericSecret),
-        ("AUTH_TOKEN = fakeValue01", Rule::GenericSecret),
-        ("secret_key: \"fakeValue123\"", Rule::GenericSecret),
-        ("passphrase: \"fakeHorseStaple\"", Rule::GenericSecret),
-        ("data: password=fakePass0word1", Rule::GenericSecret),
-        ("token := \"fakeValueXyz\"", Rule::GenericSecret),
-        ("password => \"fakeHorse1Staple\"", Rule::GenericSecret),
-    ];
-    check(&[], &risky, find);
-}
-
-#[test]
-fn a_generic_secrets_span_is_its_value_without_its_name_or_quotes() {
-    for (text, value) in [
-        ("password=fakePass0word1 next", "fakePass0word1"),
-        ("api_key = \"fakeValueAbc12\" # ok", "fakeValueAbc12"),
-        (
-            "{\"password\": \"fakePass0word1\", \"user\": \"x\"}",
-            "fakePass0word1",
-        ),
-        ("Password=fakePass0word1;Encrypt=true", "fakePass0word1"),
-        ("?token=fakeValue0123b&b=1", "fakeValue0123b"),
-    ] {
-        let spans = find_spans(text);
-        assert_eq!(spans.len(), 1, "{text:?}");
-        assert_eq!(&text[spans[0].start..spans[0].end], value, "{text:?}");
-    }
-}
-
-#[test]
-fn a_card_number() {
-    let risky = [
-        ("4111111111111111", Rule::CreditCard),
-        ("card: 4111 1111 1111 1111.", Rule::CreditCard),
-        ("4111-1111-1111-1111", Rule::CreditCard),
-        ("{\"card\":\"4012888888881881\"}", Rule::CreditCard),
-        ("5555555555554444", Rule::CreditCard),
-        ("2223003122003222", Rule::CreditCard),
-        ("3782 822463 10005", Rule::CreditCard),
-        ("378282246310005", Rule::CreditCard),
-        ("6011111111111117", Rule::CreditCard),
-        ("30569309025904", Rule::CreditCard),
-        ("3530111333300000", Rule::CreditCard),
-        ("4222222222222", Rule::CreditCard),
-        ("6200000000000005", Rule::CreditCard),
-    ];
-    check(&[], &risky, find);
-}
-
-#[test]
-fn an_id_number() {
-    let risky = [
-        ("ssn: 123-45-6789", Rule::GovernmentId),
-        ("(123-45-6789)", Rule::GovernmentId),
-        ("NI AB 12 34 56 C", Rule::GovernmentId),
-        ("NI AB123456C", Rule::GovernmentId),
-        ("cpf 529.982.247-25", Rule::GovernmentId),
-    ];
-    check(&[], &risky, find);
-}
-
-#[test]
-fn an_email_a_phone_and_an_address() {
-    let risky = [
-        ("alice.smith@acme.io", Rule::Email),
-        ("Alice <alice+tag@mail.acme.co.uk>", Rule::Email),
-        ("mailto:a_b-c@acme.io?subject=x", Rule::Email),
-        ("+14155550132", Rule::Phone),
-        ("+1 (415) 555-0132", Rule::Phone),
-        ("tel:+49 151 12345678", Rule::Phone),
-        ("+44.20.7946.0958", Rule::Phone),
-        ("8.8.8.8", Rule::PublicIp),
-        ("connect to 93.184.216.34:443", Rule::PublicIp),
-        ("2606:4700:4700::1111", Rule::PublicIp),
-        ("[2001:4860:4860:0:0:0:0:8888]:53", Rule::PublicIp),
-    ];
-    check(&[], &risky, find);
 }
 
 #[test]
@@ -440,98 +242,6 @@ fn many_kinds_in_one_text_are_found_in_the_order_they_read() {
 }
 
 #[test]
-fn an_email_in_a_query_is_found_and_one_in_a_login_is_the_urls() {
-    only(
-        "https://x.io/unsubscribe?email=alice.smith@acme.io",
-        Rule::Email,
-    );
-    only("https://x.io/contact/alice.smith@acme.io", Rule::Email);
-    assert!(find("https://alice.smith@acme.io/repo.git").is_safe());
-}
-
-/// The span of the only finding in `text`.
-fn only_span(text: &str) -> (Rule, String) {
-    let spans = find_spans(text);
-    assert_eq!(spans.len(), 1, "{text:?} {spans:?}");
-    (
-        spans[0].rule,
-        text[spans[0].start..spans[0].end].to_string(),
-    )
-}
-
-#[test]
-fn where_a_value_ends_is_decided_on_the_text_as_written() {
-    // An escape is never a separator: the whole value is the span.
-    for (text, value) in [
-        (
-            "https://api.fake.test/login?user=me&password=F4kePa%26ss9word&next=/",
-            "F4kePa%26ss9word",
-        ),
-        ("password=F4kePass9%20more9", "F4kePass9%20more9"),
-        ("password=F4ke%22Pass9word", "F4ke%22Pass9word"),
-        ("password=F4ke\"Pass9word", "F4ke\"Pass9word"),
-        ("password=F4ke'Pass9word", "F4ke'Pass9word"),
-        (
-            "{\"password\": \"F4kePass9\\\"tail0123\"}",
-            "F4kePass9\\\"tail0123",
-        ),
-        (
-            "{\"password\": \"F4kePass9\\u0022tail0123\"}",
-            "F4kePass9\\u0022tail0123",
-        ),
-        ("password = \"F4ke\\\\Pass9word\"", "F4ke\\\\Pass9word"),
-        ("password = 'F4ke\\'Pass9word'", "F4ke\\'Pass9word"),
-        ("password: 'F4ke''Pass9word'", "F4ke''Pass9word"),
-        (
-            "{\\\"password\\\": \\\"F4kePass9\\\\tail0123\\\"}",
-            "F4kePass9\\\\tail0123",
-        ),
-        // Not a separator of an unquoted value: only white space ends it.
-        ("SECRET=F4kePass9|tail0123", "F4kePass9|tail0123"),
-        ("SECRET=F4ke;Pass9word", "F4ke;Pass9word"),
-        ("SECRET=F4ke&Pass9word", "F4ke&Pass9word"),
-        ("SECRET=F4ke(Pass9)word", "F4ke(Pass9)word"),
-        ("SECRET=F4ke`Pass9word", "F4ke`Pass9word"),
-        ("SECRET=F4ke,Pass9word", "F4ke,Pass9word"),
-        // The format's own separator, where there is one.
-        ("?user=me&password=F4kePass9&next=/", "F4kePass9"),
-        ("password=F4kePass9&x=1", "F4kePass9"),
-        (
-            "Server=db;User Id=sa;Password=F4kePass9;Encrypt=true",
-            "F4kePass9",
-        ),
-        ("Password=F4kePass9;User Id=sa;Server=db", "F4kePass9"),
-        ("Password=F4ke%3BPass9;User Id=sa", "F4ke%3BPass9"),
-        // The quote or bracket the name sits in.
-        ("echo \"password=F4kePass9word\" >> .env", "F4kePass9word"),
-        ("login(password=F4kePass9word)", "F4kePass9word"),
-        ("{password: F4kePass9word}", "F4kePass9word"),
-        ("[password=F4kePass9word]", "F4kePass9word"),
-        ("\"password=F4kePass9word\"", "F4kePass9word"),
-    ] {
-        assert_eq!(
-            only_span(text),
-            (Rule::GenericSecret, value.to_string()),
-            "{text:?}"
-        );
-    }
-}
-
-#[test]
-fn a_value_that_never_closes_is_read_as_the_word_after_the_quote() {
-    for (text, value) in [
-        ("password=\"F4kePass9word and more", "F4kePass9word"),
-        ("password='F4kePass9word", "F4kePass9word"),
-    ] {
-        assert_eq!(
-            only_span(text),
-            (Rule::GenericSecret, value.to_string()),
-            "{text:?}"
-        );
-    }
-}
-
-#[test]
 fn spans_that_overlap_become_one_that_covers_both() {
     let aws = ["AKIA", "FAKE2KEY3ID4TEST"].concat();
     let github = format!("ghp_{}", fill("FakeGitHub0", 36));
@@ -551,11 +261,6 @@ fn spans_that_overlap_become_one_that_covers_both() {
             format!("{github}-9"),
             Rule::ApiKey,
         ),
-        (
-            "postgres://u:F4ke.me@fake.io@db.fake.test/x".to_string(),
-            "F4ke.me@fake.io".to_string(),
-            Rule::ConnectionString,
-        ),
     ] {
         assert_eq!(only_span(&text), (rule, whole), "{text:?}");
     }
@@ -572,54 +277,6 @@ fn a_merged_finding_shows_no_front_that_is_not_the_keys() {
         assessment.findings()[0].target.as_deref(),
         Some("… (30 chars)")
     );
-}
-
-#[test]
-fn a_password_in_an_address_with_escapes_in_it() {
-    for (text, secret) in [
-        (
-            "postgres://fakeuser:F4ke%2FPass9@db.fake.test/app",
-            "F4ke%2FPass9",
-        ),
-        (
-            "postgres://fakeuser:F4ke%40Pass9@db.fake.test/app",
-            "F4ke%40Pass9",
-        ),
-        (
-            "postgres://fakeuser:F4ke%23Pass9@db.fake.test/app",
-            "F4ke%23Pass9",
-        ),
-        (
-            "postgres://fakeuser:F4ke%3FPass9@db.fake.test/app",
-            "F4ke%3FPass9",
-        ),
-        (
-            "postgres://fakeuser%40fakeserver:F4kePass9@fakeserver.postgres.database.azure.com/app",
-            "F4kePass9",
-        ),
-        (
-            "https://fakeuser:F4ke%2FPass9@git.fake.test/repo.git",
-            "F4ke%2FPass9",
-        ),
-        (
-            "https://fake%40user:F4kePass9@git.fake.test/repo.git",
-            "F4kePass9",
-        ),
-        // Written in escapes as a whole, in a query.
-        (
-            "?next=postgres%3A%2F%2Ffakeuser%3AF4kePass9%40db.fake.test%2Fapp",
-            "F4kePass9",
-        ),
-    ] {
-        let spans = find_spans(text);
-        assert!(
-            spans
-                .iter()
-                .any(|span| text[span.start..span.end].contains(secret)
-                    && matches!(span.rule, Rule::ConnectionString | Rule::UrlCredentials)),
-            "{text:?} {spans:?}"
-        );
-    }
 }
 
 #[test]
@@ -689,9 +346,8 @@ fn a_putty_key_file_private_lines() {
         &text[spans[0].start..spans[0].end],
         format!("{line}\n{two}")
     );
-    // The public part is public, and a count with nothing after it is not a key.
+    // The public part is public.
     assert!(find(&format!("Public-Lines: 1\n{two}\n")).is_safe());
-    assert!(find("Private-Lines: 1\nMAC\n").is_safe());
 }
 
 #[test]
@@ -756,21 +412,6 @@ fn chat_and_cloud_credentials_of_a_few_more_providers() {
             docker.to_string(),
             Rule::BasicAuth,
         ),
-        (
-            "machine api.fake.test login fakeuser password F4kePassw0rdZ".to_string(),
-            "F4kePassw0rdZ".to_string(),
-            Rule::GenericSecret,
-        ),
-        (
-            "machine api.fake.test\n  login fakeuser\n  password F4kePassw0rdZ\n".to_string(),
-            "F4kePassw0rdZ".to_string(),
-            Rule::GenericSecret,
-        ),
-        (
-            "default login fakeuser password F4kePassw0rdZ".to_string(),
-            "F4kePassw0rdZ".to_string(),
-            Rule::GenericSecret,
-        ),
     ] {
         let spans = find_spans(&text);
         assert!(!spans.is_empty(), "{text:?}");
@@ -793,11 +434,6 @@ fn a_provider_shape_with_nothing_to_say_it_is_one_is_safe() {
         ),
         format!("x{telegram}"),
         format!("{telegram}9"),
-        "https://fake.test/?sig=FakeSasSig0123AbCdFakeSasSig0123AbCdFakeSasSig0123AbCd".to_string(),
-        "password for the machine is in the vault".to_string(),
-        "Enter your password to log in to the machine".to_string(),
-        "{\"auth\": \"ZmFrZQ==\"}".to_string(),
-        "auth: bW9zdGx5IGhhcm1sZXNzIHRleHQ=".to_string(),
     ] {
         assert!(
             find(&text).is_safe(),
@@ -808,87 +444,13 @@ fn a_provider_shape_with_nothing_to_say_it_is_one_is_safe() {
 }
 
 #[test]
-fn braces_quote_a_value_of_a_connection_string() {
-    for (text, value) in [
-        ("Driver={SQL};Uid=me;Pwd={F4kePass9};", "F4kePass9"),
-        ("Driver={SQL};Uid=me;Pwd={F4ke;Pass9=x};", "F4ke;Pass9=x"),
-        ("Driver={SQL};Uid=me;Pwd={F4ke}}Pass9};", "F4ke}}Pass9"),
-    ] {
-        let found = only_span(text);
-        assert_eq!(found.0, Rule::GenericSecret, "{text:?}");
-        assert_eq!(found.1, value, "{text:?}");
-    }
-    // A template or a value that is its own name is no password.
-    for text in [
-        "token={{ token }}",
-        "token={token}",
-        "Pwd={}",
-        "password={PASSWORD}",
-    ] {
-        assert!(find(text).is_safe(), "{text:?}");
-    }
-}
-
-#[test]
-fn a_quote_that_closes_the_string_a_name_is_in_is_one_only_if_it_is_not_escaped() {
-    for (text, value) in [
-        ("[\"password=F4kePa\\\"ss9word\"]", "F4kePa\\\"ss9word"),
-        ("'password=F4kePa''ss9word'", "F4kePa''ss9word"),
-        (
-            "\"password=F4ke\\\\\\\"Pass9word\"",
-            "F4ke\\\\\\\"Pass9word",
-        ),
-        ("echo \"password=F4kePass9word\" >> .env", "F4kePass9word"),
-        ("'password=F4kePass9word' x", "F4kePass9word"),
-    ] {
-        assert_eq!(
-            only_span(text),
-            (Rule::GenericSecret, value.to_string()),
-            "{text:?}"
-        );
-    }
-}
-
-#[test]
-fn a_bracket_in_a_value_ends_it_when_the_name_is_in_one() {
-    // Known limit: a closing bracket is not escaped by anything, so the value
-    // of a name inside brackets ends at the first one. The part after it is
-    // not covered; the rest of the text is read on.
-    for (text, covered) in [
-        ("[password=F4kePass9]word]", "F4kePass9"),
-        ("f(password=F4kePass9)word)", "F4kePass9"),
-        ("{password=F4kePass9}word}", "F4kePass9"),
-    ] {
-        assert_eq!(
-            only_span(text),
-            (Rule::GenericSecret, covered.to_string()),
-            "{text:?}"
-        );
-    }
-}
-
-#[test]
-fn the_limits_of_reading_a_value_are_kept_as_rows() {
-    // `&` before something that reads as another pair ends a value, even
-    // when it was part of the password.
-    assert_eq!(
-        only_span("SECRET=F4kePa&ss9=word"),
-        (Rule::GenericSecret, "F4kePa".to_string())
-    );
-    // A quoted value with a space in it is prose to this guard.
-    assert!(find("export PASSWORD=\"F4ke Pass9 x\"").is_safe());
-    // A block of key written on one line with spaces for its line ends is not
-    // read: a text of plain words between the lines is no key.
+fn a_block_of_key_on_one_line_with_spaces_for_its_line_ends_is_not_read() {
+    // A text of plain words between the lines is no key.
     let body = fill("FakeKeyBody0+/", 64);
     assert!(find(&format!(
         "KEY=\"-----BEGIN RSA PRIVATE KEY----- {body} {body} -----END RSA PRIVATE KEY-----\""
     ))
     .is_safe());
-    // A password of fewer than six characters, and a password that is the
-    // value of a name that does not end in a word of a secret's, are not
-    // found.
-    assert!(find("password=Ab3d9").is_safe());
-    assert!(find("passcode=F4kePass9word").is_safe());
 }
 
 #[test]
@@ -948,31 +510,6 @@ fn a_page_access_token_is_still_a_secret() {
 }
 
 #[test]
-fn a_decoy_discord_match_does_not_hide_the_real_token() {
-    let rows = [
-        // The decoy begins at a glued letter, and the real token is inside it.
-        (
-            "NMTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-        ),
-        (
-            "O_MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-            "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-        ),
-        // The third part of the decoy swallows the id of the real token.
-        (
-            "see NavigationControllerDelegate.handler.MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-            "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
-        ),
-    ];
-    let rows: Vec<(String, String)> = rows
-        .into_iter()
-        .map(|(text, secret)| (text.to_string(), secret.to_string()))
-        .collect();
-    assert_found(&rows, Rule::ApiKey);
-}
-
-#[test]
 fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
     // The base64url of an id made of digits holds no `_` or `-`, so one that
     // touches the token ends the run of letters before it, whatever it was.
@@ -1007,45 +544,17 @@ fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
 }
 
 #[test]
-fn a_real_password_or_token_beside_the_safe_rows_is_still_found() {
+fn a_long_real_token_beside_the_safe_rows_is_still_found() {
     let long = fill("Fk9Zq2Xw", 32);
     let rows: Vec<(String, String)> = [
-        // A quoted password with a digit or a symbol is not a word.
-        ("{\"password\": \"Contraseña1\"}", "Contraseña1"),
-        ("{\"password\": \"Hunter2!\"}", "Hunter2!"),
-        ("{\"password\": \"Correct?Horse\"}", "Correct?Horse"),
-        ("{\"password\": \"hunter22\"}", "hunter22"),
-        ("{\"confirm_password\": \"Confirmar#7\"}", "Confirmar#7"),
-        // Not a Title word: lower case, upper case or several capitals.
-        ("{\"password\": \"sunshine\"}", "sunshine"),
-        ("{\"password\": \"SUNSHINE\"}", "SUNSHINE"),
-        ("{\"password\": \"SunShine\"}", "SunShine"),
-        // A word as the value of a name that is not a key of data.
-        ("password = \"Sunshine\"", "Sunshine"),
-        ("let password = \"Sunshine\";", "Sunshine"),
-        ("password: Sunshine1", "Sunshine1"),
-        // More than a word, or too long to be a label.
-        (
-            "{\"password\": \"Supercalifragilisticexpialidocious\"}",
-            "Supercalifragilisticexpialidocious",
-        ),
-        // A quoted token of eight characters, and a long one under any name.
-        ("let token = \"abc12345\";", "abc12345"),
-        ("{\"token\": \"Xk9fQ2mZ\"}", "Xk9fQ2mZ"),
-        ("let api_token = \"Xk9fQ2mZ7p\";", "Xk9fQ2mZ7p"),
-        // A secret short value under a word that is not a token's.
-        ("password = \"abc123\"", "abc123"),
-        ("let secret = \"abc123\";", "abc123"),
+        format!("{{\"token\": \"{long}\"}}"),
+        format!("let token = \"{long}\";"),
+        format!("\"next_token_secret\": \"{long}\""),
+        format!("{{\"page_secret\": \"{long}\"}}"),
+        format!("{{\"api_key\": \"{long}\"}}"),
     ]
     .into_iter()
-    .map(|(text, secret)| (text.to_string(), secret.to_string()))
-    .chain([
-        (format!("{{\"token\": \"{long}\"}}"), long.clone()),
-        (format!("let token = \"{long}\";"), long.clone()),
-        (format!("\"next_token_secret\": \"{long}\""), long.clone()),
-        (format!("{{\"page_secret\": \"{long}\"}}"), long.clone()),
-        (format!("{{\"api_key\": \"{long}\"}}"), long),
-    ])
+    .map(|text| (text, long.clone()))
     .collect();
     assert_found(&rows, Rule::GenericSecret);
 }

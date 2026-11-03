@@ -1,11 +1,17 @@
 //! A span is offsets, on character boundaries, and covers exactly what was
 //! found: replacing every span leaves the rest of the text byte for byte as
-//! it was, with multi-byte text around it.
+//! it was, with multi-byte text around it. The plain texts are in
+//! `tests/cases/spans.cases`.
 
 mod common;
 
 use common::{fill, pem, samples};
 use milo_guards_secrets::{find, find_spans, Span};
+
+#[test]
+fn every_case() {
+    common::cases::check("spans");
+}
 
 /// `text` with every span replaced by `with`.
 fn replaced(text: &str, spans: &[Span], with: &str) -> String {
@@ -88,34 +94,4 @@ fn a_secret_spelled_with_escapes_is_the_same_secret_and_its_span_is_the_whole_sp
         assert_eq!(found, spelling.as_str(), "{text:?}");
         assert_eq!(replaced(&text, &spans, "[x]"), "é日 key=[x] 😀", "{text:?}");
     }
-}
-
-#[test]
-fn an_escape_that_is_not_printable_ascii_is_left_alone() {
-    // A line end, a control character and a letter that is not ASCII.
-    for text in [
-        "password=fake%0APass0word1",
-        "token=\\u00e9FakeToken01",
-        "api_key=fake&#10;ApiKey01",
-    ] {
-        let spans = find_spans(text);
-        for span in &spans {
-            assert!(text.is_char_boundary(span.start) && text.is_char_boundary(span.end));
-        }
-    }
-    assert!(find("see %41KIA and \\u0041KI and &#65K").is_safe());
-}
-
-#[test]
-fn a_percent_encoded_query_is_read() {
-    let text = "https://x.io/?q=password%3Dfake%50ass0word1&x=1";
-    let spans = find_spans(text);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(&text[spans[0].start..spans[0].end], "fake%50ass0word1");
-    let text = "https://x.io/?mail=alice%2Esmith%40acme.io";
-    let spans = find_spans(text);
-    assert_eq!(
-        &text[spans[0].start..spans[0].end],
-        "alice%2Esmith%40acme.io"
-    );
 }

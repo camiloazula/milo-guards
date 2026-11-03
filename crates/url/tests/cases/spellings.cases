@@ -1,0 +1,282 @@
+# The spellings a reviewer tries, each a permanent case: whatever the URL
+# parser reads as the host is the host, and a spelling a client could read
+# differently is unreadable. A fix must never silently reopen one. Every URL
+# is judged on `posix`; a spelling that is also a plain case of `urls.cases`
+# is written there only.
+
+# Loopback in every IPv4 spelling: decimal, hex, octal as one number.
+finds=local_address | http://0x7f000001/
+finds=local_address | http://0X7F000001/
+finds=local_address | http://017700000001/
+# Dotted, with parts in other bases or shortened.
+finds=local_address | http://0177.0.0.1/
+finds=local_address | http://0177.0.0.01/
+finds=local_address | http://0177.0000.0000.0001/
+finds=local_address | http://0x7f.1/
+finds=local_address | http://0x7f.0.0.1/
+finds=local_address | http://0x7f.0x0.0x0.0x1/
+finds=local_address | http://0x7F.0X0.0x0.0x01/
+finds=local_address | http://127.1/
+finds=local_address | http://127.0.1/
+finds=local_address | http://127.000.000.001/
+finds=local_address | http://127.0.0.1./
+finds=local_address | http://127.0.0.1:80/
+finds=local_address | http://127.0.0.1:0/
+finds=local_address | http://127.0.0.0/
+finds=local_address | http://127.1.2.3/
+# Escaped, full-width, other full stops.
+finds=local_address | http://%31%32%37.0.0.1/
+finds=local_address | http://127%2e0%2e0%2e1/
+finds=local_address | http://１２７.０.０.１/
+finds=local_address | http://127。0。0。1/
+finds=local_address | http://127．0．0．1/
+finds=local_address | http://127｡0｡0｡1/
+# The unspecified address.
+finds=local_address | http://0x0/
+finds=local_address | http://00.0.0.0/
+finds=local_address | http://0x/
+# In IPv6.
+finds=local_address | http://[::FFFF:127.0.0.1]/
+finds=local_address | http://[0:0:0:0:0:ffff:127.0.0.1]/
+finds=local_address | http://[0000:0000:0000:0000:0000:ffff:7f00:0001]/
+finds=local_address | http://[::7f00:1]/
+finds=local_address | http://[0::1]/
+finds=local_address | http://[0000:0000:0000:0000:0000:0000:0000:0001]/
+finds=local_address | http://[::0001]/
+
+# A private or link-local address in other spellings.
+finds=local_address | http://3232235777/
+finds=local_address | http://0xc0a80001/
+finds=local_address | http://0300.0250.0.1/
+finds=local_address | http://192.168.1/
+finds=local_address | http://192.11010049/
+finds=local_address | http://10.1/
+finds=local_address | http://0xa.1/
+finds=local_address | http://167772161/
+finds=local_address | http://0xa000001/
+finds=local_address | http://012.0.0.1/
+finds=local_address | http://172.0x10.0.1/
+finds=local_address | http://2886729729/
+finds=local_address | http://[::ffff:c0a8:101]/
+
+# The metadata address in every spelling.
+finds=metadata | http://2852039166/
+finds=metadata | http://0xa9fea9fe/
+finds=metadata | http://0251.0376.0251.0376/
+finds=metadata | http://0xa9.0xfe.0xa9.0xfe/
+finds=metadata | http://169.254.43518/
+finds=metadata | http://169.16689662/
+finds=metadata | http://169.254.169.254./
+finds=metadata | http://%31%36%39.254.169.254/
+finds=metadata | http://１６９.２５４.１６９.２５４/
+finds=metadata | http://[::ffff:a9fe:a9fe]/
+finds=metadata | http://[::169.254.169.254]/
+finds=metadata | http://[64:ff9b::169.254.169.254]/
+finds=metadata | http://[fd00:ec2::254]/
+finds=metadata | http://[FD00:EC2:0:0:0:0:0:254]/
+finds=metadata | http://[fd00:0ec2::0254]/
+
+# An address spelled in a form clients read differently is unreadable even
+# when it is public: `010.0.0.1` is `8.0.0.1` to the parser and `10.0.0.1` to
+# a client that reads every number as decimal; the others are one address
+# spelled so that a client may not read it at all.
+finds=unreadable | http://010.0.0.1/
+finds=unreadable | http://0127.0.0.1/
+finds=unreadable | http://00000127.0.0.1/
+finds=unreadable | http://0x08080808/
+finds=unreadable | http://0x8.8.8.8/
+finds=unreadable | http://134744072/
+finds=unreadable | http://8.8.8/
+finds=unreadable | http://8.8.8.8./
+finds=unreadable | http://8.8.8.08/
+finds=unreadable | http://８.８.８.８/
+finds=unreadable | http://%38.8.8.8/
+finds=unreadable | http://1.1.1/
+finds=unreadable | http://0254.0.0.1/
+safe | http://8.8.8.8:80/
+
+# The host is the one the parser reads, not the one the text shows. In
+# user-info, the host is what follows the last `@`.
+rules=credentials,local_address | http://example.com:80@127.0.0.1/
+rules=credentials,local_address | http://example.com%2f@127.0.0.1/
+rules=credentials,local_address | http://a@b@127.0.0.1/
+rules=credentials | http://127.0.0.1@example.com/
+rules=credentials | http://localhost:80@example.com/
+rules=credentials,local_address | http://user:pass@localhost/
+# The fragment, the query and the path end the host.
+rules=local_address | http://127.0.0.1#@example.com/
+rules=local_address | http://127.0.0.1?@example.com/
+rules=local_address | http://127.0.0.1/@example.com/
+rules=local_address | http://127.0.0.1:80#@example.com/
+safe | http://example.com#@127.0.0.1/
+safe | http://example.com?@127.0.0.1/
+safe | http://example.com/@127.0.0.1/
+safe | http://example.com/http://127.0.0.1/
+safe | https://example.com/?u=http://169.254.169.254/
+
+# A spelling the parser and another client read differently is unreadable. A
+# backslash ends the authority for the parser and not for a client that
+# follows the RFC: two hosts.
+finds=unreadable | http://example.com\\@127.0.0.1/
+finds=unreadable | http://example.com\\.evil.example/
+finds=unreadable | https://example.com\\/path
+finds=unreadable | http://example.com\\
+finds=unreadable | http:\\\\example.com/
+finds=unreadable,local_address | http:\\\\127.0.0.1
+finds=unreadable | http://\\\\example.com/
+finds=unreadable | http:\\/example.com/
+finds=unreadable | http:/\\example.com/
+# A scheme with no or one slash is a path to a client that follows the RFC.
+finds=unreadable | http:/example.com/
+finds=unreadable | http:example.com/
+finds=unreadable | http:///example.com/
+finds=unreadable | http:////example.com/
+finds=unreadable | https:example.com
+finds=unreadable | https:/127.0.0.1
+# A percent-encoded host is plain text to some clients.
+finds=unreadable | http://%65xample.com/
+finds=unreadable | http://exa%6dple.com/
+finds=unreadable | http://example%2ecom/
+finds=unreadable | http://user@%65xample.com/
+# A backslash after the authority is a path character and no concern.
+safe | https://example.com/a\\b
+safe | https://example.com/?q=a\\b
+
+# An odd spelling of a local host still says which host.
+finds=local_address,unreadable | http:/127.0.0.1
+finds=local_address,unreadable | http:127.0.0.1
+finds=local_address,unreadable | http://127.0.0.1\\@example.com/
+finds=local_address,unreadable | http://%6c%6f%63alhost/
+
+# White space and control characters: around a URL, white space the parser
+# drops changes nothing.
+safe | \shttps://example.com/
+safe | https://example.com/\s
+safe | \thttps://example.com/
+safe | \nhttps://example.com/\r\n
+safe | \u{c}https://example.com/\u{c}
+finds=local_address | \s http://127.0.0.1/ \s
+finds=local_address | \nhttp://localhost/\n
+# Inside, a tab or a newline is dropped by the parser and kept by a client
+# that does not.
+finds=unreadable | http://exa\rmple.com/
+finds=unreadable | ht\ttp://example.com/
+finds=unreadable | http://127.\t0.0.1/
+finds=unreadable | http://localhost\t.example.com/
+finds=unreadable | http://example.com/a\nb
+finds=unreadable | http://example.com/\u{0}
+finds=unreadable | http://example.com/\u{1b}[31m
+finds=unreadable | http://example.com/\u{80}
+# Other white space is not trimmed by the parser.
+finds=unreadable | \u{a0}https://example.com/
+finds=unreadable | \u{3000}http://example.com/
+finds=unreadable | http://exam ple.com/
+
+# Names in other spellings.
+finds=local_address | http://LocalHost/
+finds=local_address | http://localhost.:9090/
+finds=local_address | http://Localhost.LOCALDOMAIN/
+finds=local_address | http://foo.LOCALHOST./
+finds=local_address | http://%6c%6f%63%61%6c%68%6f%73%74/
+finds=local_address | http://ｌｏｃａｌｈｏｓｔ/
+finds=local_address | http://ＬＯＣＡＬＨＯＳＴ/
+finds=local_address | http://ⓛⓞⓒⓐⓛⓗⓞⓢⓣ/
+finds=local_address | http://localhost\u{200b}/
+finds=local_address | http://local\u{ad}host/
+finds=local_address | http://localhost。/
+finds=local_address | http://foo。localhost/
+finds=local_address | http://printer.LOCAL/
+finds=local_address | http://printer。local/
+finds=local_address | http://BOX/
+finds=local_address | http://xn--r8jz45g.localhost/
+finds=local_address | http://例え.local/
+finds=local_address | http://a.b.c.d.e.f.internal/
+
+# International names are safe unless they decode to a local one; a name
+# that is not valid is not read.
+safe | https://XN--R8JZ45G.JP/
+safe | https://пример.рф/
+safe | https://xn--e1afmkfd.xn--p1ai/
+safe | https://ı.com/
+safe | https://日本語.example.com/
+finds=unreadable | http://xn--/
+finds=unreadable | http://xn--a/
+finds=unreadable | http://xn--r8jz45g.jp.xn--/
+
+# Zone ids and malformed IP literals are unreadable.
+finds=unreadable | http://[fe80::1%25]/
+finds=unreadable | http://[::1%25lo]/
+finds=unreadable | http://::1/
+finds=unreadable | http://[::1]x/
+finds=unreadable | http://[::g]/
+finds=unreadable | http://[1:2:3:4:5:6:7:8:9]/
+finds=unreadable | http://[]/
+finds=unreadable | http://[127.0.0.1]/
+finds=unreadable | http://1.2.3.256/
+finds=unreadable | http://256.256.256.256/
+finds=unreadable | http://4294967296/
+finds=unreadable | http://0x100000000/
+finds=unreadable | http://09.0.0.1/
+finds=unreadable | http://1.2.3.4.5.6.7.8/
+
+# Ports do not change the host.
+safe | https://example.com:1/
+safe | https://example.com:65535/
+safe | http://93.184.216.34:8080/
+finds=local_address | http://127.0.0.1:65535/
+finds=local_address | http://localhost:1/
+finds=local_address | http://[::1]:443/
+finds=metadata | http://169.254.169.254:8080/
+finds=unreadable | http://example.com:65536/
+finds=unreadable | http://example.com:-1/
+finds=unreadable | http://example.com:abc/
+
+# A metadata name in other spellings; a name under one is an ordinary one.
+rules=metadata | http://metadata.google.internal./
+rules=metadata | http://METADATA.GOOGLE.INTERNAL/
+rules=metadata | http://Metadata.Google.Internal:80/computeMetadata/v1/
+rules=metadata | http://metadata.google.internal。/
+rules=metadata | http://ｍｅｔａｄａｔａ.google.internal/
+rules=metadata | http://metadata./
+rules=metadata | http://METADATA/
+rules=metadata | http://instance-data.ec2.internal./
+rules=metadata | http://Instance-Data/
+rules=metadata | http://metadata.azure.com./
+rules=metadata | http://metadata.tencentyun.com/
+rules=local_address | http://evil.metadata.google.internal/
+safe | https://metadata.example.com/
+
+# A name the two IDNA standards read differently is judged both ways: `ß` is
+# `ss` to IDNA2003 clients (Python's `idna` codec, older libraries) and
+# itself to the parser, so `127.0.0.1.ßlip.io` is `127.0.0.1.sslip.io`, a
+# rebinding service, to them.
+finds=unreadable,local_address | http://127.0.0.1.ßlip.io/
+finds=unreadable,local_address | http://ßlip.io/
+finds=unreadable,local_address | http://a.ßlip.io:8080/x
+finds=unreadable | http://me@127.0.0.1.ßlip.io/
+finds=unreadable | http://loca\u{3c2}lhost/
+finds=unreadable | http://localhos\u{3c2}.localhost/
+# The name the older reading gives is the host judged, too.
+rules=local_address,unreadable | http://169.254.169.254.ßlip.io/
+# The differential is a finding even for an ordinary name: an accepted false
+# alarm.
+rules=unreadable | https://faß.de/
+rules=unreadable | https://straße.de/
+# The same text in a path, or as a punycode label, is no differential.
+safe | https://example.com/straße
+safe | https://xn--fa-hia.de/
+
+# The names of known local services.
+finds=local_address | http://localho.st/
+finds=local_address | http://a.localho.st/
+finds=local_address | http://localhost.direct/
+finds=local_address | http://a.localhost.direct/
+finds=local_address | http://1u.ms/
+finds=local_address | http://a.1u.ms/
+finds=local_address | http://7f000001.c0a80001.rbndr.us/
+finds=local_address | http://rbndr.us/
+finds=local_address | http://kubernetes.default.svc/
+finds=local_address | http://my-service.my-namespace.svc/
+finds=local_address | http://kubernetes.default.svc.cluster.local/
+finds=local_address | http://svc/
+safe | https://svc.example.com/

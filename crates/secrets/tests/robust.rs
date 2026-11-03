@@ -189,9 +189,9 @@ fn every_prefix_of_every_piece_never_panics() {
     }
 }
 
+/// The empty text is a case of `tests/cases/safe.cases`.
 #[test]
-fn an_empty_text_and_a_lone_character_are_safe() {
-    assert!(find("").is_safe());
+fn a_lone_character_never_panics_and_is_answered_whole() {
     for text in [
         "\u{0}", "%", "\\", "&", "&#", "\\u", "\\u{", "%4", "&#6", "\u{200b}",
     ] {

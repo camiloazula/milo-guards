@@ -427,6 +427,14 @@ does.
 
 ## Tests
 
+A text that holds no value shaped like a real key is a case of a case file,
+one text and its answer to a line
+([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), in
+`tests/cases/<name>.cases` beside the test file of its name, which checks
+it; every case is also held to spans that agree with the findings. A text
+with such a value is built in Rust (`tests/common`), so that none sits in the
+repository, and stays in the test file. `tests/cases.rs` tests the runner.
+
 - `tests/rules.rs`: one table of texts per rule, with the spelling variants a
   reviewer would try as rows of their own; a Discord bot token found by its
   own shape, and the real passwords and tokens beside the Safe rows.

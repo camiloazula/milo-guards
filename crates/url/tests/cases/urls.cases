@@ -1,0 +1,239 @@
+# A URL judged by its host and scheme: what is safe, what is risky and under
+# which rule, and the words and the target each finding carries. Every URL
+# is judged on `posix`. The format is in CONTRIBUTING.md.
+
+# A public host over the web is safe.
+safe | https://example.com/
+safe | http://example.com
+safe | https://docs.rs/url
+safe | https://EXAMPLE.com/Path?Q=1#frag
+safe | HTTP://example.com/
+safe | https://example.com:8443/api?x=1
+safe | https://example.com:443/
+safe | https://sub.domain.example.co.uk/a/b/c.html
+safe | https://xn--r8jz45g.jp/
+safe | https://例え.jp/
+safe | https://münchen.de/
+safe | https://a-b.example.org/
+safe | https://example.com./
+safe | http://93.184.216.34/
+safe | http://93.184.216.34:8080/x
+safe | http://8.8.8.8/
+safe | http://1.1.1.1/
+safe | https://[2606:2800:220:1:248:1893:25c8:1946]/
+safe | https://[2001:4860:4860::8888]/
+safe | http://[::ffff:93.184.216.34]/
+safe | http://[64:ff9b::5db8:d822]/
+safe | http://[2002:5db8:d822::1]/
+safe | https://example.com/a%20b?q=%7Bx%7D
+safe | https://example.com/path/with\\backslash
+safe | https://example.com/?next=http://127.0.0.1/
+safe | https://example.com/#http://localhost/
+safe | \s https://example.com/ \s
+safe | \thttps://example.com/\n
+safe | https://localhost.example.com/
+safe | https://notlocalhost.com/
+safe | https://example.com/localhost
+safe | https://local.example.com/
+safe | https://home.example.com/
+safe | https://internal.example.com/
+safe | https://www.example.org:80/
+
+# A local machine is a local address, and the reason says which.
+first=local_address reason="fetches your own machine" | http://localhost/
+finds=local_address | http://localhost:9090/
+finds=local_address | http://LOCALHOST/
+finds=local_address | http://localhost./
+finds=local_address | http://foo.localhost/
+finds=local_address | http://a.b.localhost:3000/
+first=local_address reason="fetches your own machine" | http://127.0.0.1/
+finds=local_address | http://127.255.255.254/
+finds=local_address | http://[::1]/
+finds=local_address | http://[::1]:8080/
+finds=local_address | http://[0:0:0:0:0:0:0:1]/
+first=local_address reason="fetches your own machine" | http://0.0.0.0/
+finds=local_address | http://[::]/
+finds=local_address | http://0/
+finds=local_address | http://10.0.0.1/
+finds=local_address | http://10.255.255.255/
+finds=local_address | http://10.0.0.5:8080/
+finds=local_address | http://172.16.0.1/
+finds=local_address | http://172.31.255.255/
+finds=local_address | http://192.168.0.1/
+first=local_address reason="fetches a machine on your own network" | http://192.168.1.1/
+finds=local_address | http://169.254.1.1/
+finds=local_address | http://100.64.0.1/
+finds=local_address | http://100.127.255.255/
+finds=local_address | http://[fc00::1]/
+finds=local_address | http://[fd12:3456:789a::1]/
+finds=local_address | http://[fe80::1]/
+finds=local_address | http://[febf::1]/
+finds=local_address | http://[fec0::1]/
+finds=local_address | http://router.lan/
+finds=local_address | http://nas.home.arpa/
+first=local_address reason="fetches a machine on your own network" | http://printer.local/
+finds=local_address | http://printer.local./
+finds=local_address | http://api.internal/
+finds=local_address | http://host.docker.internal:8080/
+finds=local_address | http://intranet/
+first=local_address reason="fetches a machine on your own network" | http://box/
+finds=local_address | http://wiki.corp/
+finds=local_address | http://app.test/
+finds=local_address | http://nas.localdomain/
+first=local_address reason="fetches a name that can point at your own network" | http://127.0.0.1.nip.io/
+finds=local_address | http://10-0-0-5.sslip.io/
+finds=local_address | http://anything.localtest.me/
+finds=local_address | http://lvh.me/
+
+# An address in no public range is a local address.
+first=local_address reason="fetches an address that is not on the public internet" | http://192.0.2.1/
+finds=local_address | http://198.51.100.7/
+finds=local_address | http://203.0.113.9/
+finds=local_address | http://198.18.0.1/
+finds=local_address | http://198.19.255.255/
+finds=local_address | http://192.0.0.8/
+finds=local_address | http://224.0.0.1/
+finds=local_address | http://239.255.255.250/
+finds=local_address | http://240.0.0.1/
+finds=local_address | http://255.255.255.255/
+finds=local_address | http://0.1.2.3/
+finds=local_address | http://[2001:db8::1]/
+finds=local_address | http://[2001::1]/
+finds=local_address | http://[2001:2::1]/
+finds=local_address | http://[ff02::1]/
+finds=local_address | http://[100::1]/
+finds=local_address | http://[3fff::1]/
+finds=local_address | http://[64:ff9b:1::1]/
+finds=local_address | http://[4000::1]/
+
+# An IPv4 address inside an IPv6 one is judged by the IPv4 inside.
+safe | http://[::ffff:8.8.8.8]/
+safe | http://[::ffff:5db8:d822]/
+safe | http://[64:ff9b::808:808]/
+safe | http://[2002:808:808::]/
+first=local_address target="[::ffff:7f00:1]" | http://[::ffff:127.0.0.1]/
+finds=local_address | http://[::ffff:7f00:1]/
+finds=local_address | http://[0:0:0:0:0:ffff:7f00:1]/
+finds=local_address | http://[::ffff:10.1.2.3]/
+finds=local_address | http://[::ffff:192.168.1.1]/
+finds=local_address | http://[::ffff:0.0.0.0]/
+finds=local_address | http://[::127.0.0.1]/
+finds=local_address | http://[::10.0.0.1]/
+finds=local_address | http://[::a00:1]/
+finds=local_address | http://[64:ff9b::7f00:1]/
+finds=local_address | http://[64:ff9b::a00:1]/
+finds=local_address | http://[64:ff9b::192.168.1.1]/
+finds=local_address | http://[2002:7f00:1::]/
+finds=local_address | http://[2002:a00:1::1]/
+finds=local_address | http://[2002:c0a8:101::]/
+finds=metadata | http://[::ffff:169.254.169.254]/
+finds=metadata | http://[::a9fe:a9fe]/
+finds=metadata | http://[64:ff9b::a9fe:a9fe]/
+finds=metadata | http://[2002:a9fe:a9fe::]/
+
+# A metadata service wins over a local address, and the reason says what it
+# is.
+rules=metadata | http://169.254.169.254/latest/meta-data/
+rules=metadata | http://169.254.169.254:80/
+rules=metadata | http://metadata.google.internal/
+rules=metadata | http://metadata.google.internal/computeMetadata/v1/
+rules=metadata | http://metadata/
+rules=metadata | http://[fd00:ec2::254]/latest/meta-data/
+rules=metadata | http://100.100.100.200/latest/meta-data/
+rules=metadata | http://169.254.170.2/v2/credentials
+rules=metadata | http://192.0.0.192/opc/v2/instance/
+rules=metadata | http://metadata.azure.com/
+rules=metadata | http://instance-data/latest/meta-data/
+first=metadata reason="fetches the cloud metadata service (AWS, Google Cloud, Azure, DigitalOcean and OpenStack), which hands out credentials" | http://169.254.169.254/
+
+# The target is the host as the parser reads it.
+first=local_address target="127.0.0.1" | http://2130706433/
+first=local_address target="127.0.0.1" | http://0x7f.1:8080/x
+first=local_address target="localhost." | http://LocalHost./
+first=scheme target="ftp" | ftp://example.com/x
+
+# Credentials are found and never show the password (`urls.rs` holds every
+# answer of this file to that): the target is the URL with the user-info
+# replaced.
+first=credentials reason="sends a user name or a password in the URL" | https://me:pw@example.com/
+first=credentials target="https://…@example.com/" | https://me:hunter2@example.com/
+first=credentials target="https://…@example.com/a?b=c#d" | https://me@example.com/a?b=c#d
+first=credentials target="https://…@example.com/" | https://:hunter2@example.com/
+first=credentials target="http://…@example.com/" | http://a:b@c@example.com/
+first=credentials target="http://…@example.com:8080/x" | http://me:p%40ss@example.com:8080/x
+first=credentials target="http://…@example.com/" | HTTP://Me:Hunter2@Example.COM/
+
+# Credentials and the host are both found.
+rules=credentials,local_address | http://me:pw@127.0.0.1/
+rules=credentials,local_address | http://example.com@127.0.0.1/
+rules=scheme,credentials,metadata | ftp://me:pw@169.254.169.254/
+
+# A password in a URL that cannot be read is not repeated.
+rules=unreadable | https://me:hunter2@exa mple.com/
+rules=unreadable | https://me:hunter2@exa\u{0}mple.com/
+rules=unreadable | https://me:hunter2@[fe80::1%25en0]/
+rules=unreadable | https://me:hunter2@host:99999/
+
+# A scheme that is not the web is a finding.
+finds=scheme | ftp://example.com/
+finds=scheme | gopher://example.com/
+first=scheme reason="uses the javascript scheme, which is not a web page" | javascript:alert(1)
+finds=scheme | JavaScript:alert(1)
+finds=scheme | data:text/html,<script>1</script>
+finds=scheme | ssh://git@github.com/x/y
+finds=scheme | ws://example.com/socket
+finds=scheme | wss://example.com/socket
+finds=scheme | mailto:me@example.com
+finds=scheme | view-source:https://example.com/
+finds=scheme | blob:https://example.com/uuid
+finds=scheme | localhost:9090/admin
+finds=scheme | chrome://settings
+
+# A host is judged whatever the scheme.
+finds=local_address | ftp://127.0.0.1/
+finds=local_address | ws://localhost:8080/
+finds=local_address | ssh://0x7f.1/
+finds=local_address | ssh://git@192.168.1.5/x
+finds=metadata | gopher://metadata.google.internal/
+finds=local_address | ftp://[::1]/
+
+# What cannot be read is unreadable; the long ones are made in `urls.rs`. A
+# finding that a URL is unreadable carries no copy of it.
+rules=unreadable |
+finds=unreadable | \s \s
+finds=unreadable | \n
+finds=unreadable | http://
+finds=unreadable | https://
+finds=unreadable | http:///
+rules=unreadable | not a url
+finds=unreadable | example.com
+finds=unreadable | example.com/path
+finds=unreadable | 127.0.0.1:8080
+finds=unreadable | //127.0.0.1/
+finds=unreadable | //example.com/
+finds=unreadable | /etc/passwd
+rules=unreadable | http://exa mple.com/
+finds=unreadable | http://example.com:99999/
+finds=unreadable | http://example.com:80:80/
+rules=unreadable | http://[::1/
+finds=unreadable | http://[fe80::1%25en0]/
+finds=unreadable | http://[fe80::1%en0]/
+finds=unreadable | http://1.2.3.4.5/
+finds=unreadable | http://256.1.1.1/
+finds=unreadable | http://foo.1/
+finds=unreadable | http://a..b/
+finds=unreadable | http://./
+finds=unreadable | http://localhost../
+finds=unreadable | http://exa_mple.com/
+finds=unreadable | http://exa!mple.com/
+finds=unreadable | http://xn--localhost-/
+finds=unreadable | http://example.com\u{0}/
+finds=unreadable | http://exam\u{0}ple.com/
+finds=unreadable | http://example.com/\u{1}
+finds=unreadable | http://example.com/\u{7f}
+finds=unreadable | http://example.com/\u{85}
+finds=unreadable | \u{0}http://example.com/
+finds=unreadable | http://exa\tmple.com/
+finds=unreadable | http://exa\nmple.com/
+finds=unreadable | ht\ntp://example.com/
+finds=unreadable | http://127.0.0.1\n.example.com/

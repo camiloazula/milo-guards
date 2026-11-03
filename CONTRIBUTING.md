@@ -74,8 +74,9 @@ the same name, `tests/<what-it-checks>.rs`, which checks them all with one
 call: `common::cases::check("<what-it-checks>")`. What is not a plain case
 stays in that Rust file: cases made in a loop, long or nested input, timing,
 tests of the API itself, and tests that check a structure (the paths a line
-lists, the tree `explain` draws). The shell guard and the file guard read
-case files; the other guards' tables move to them next.
+lists, the tree `explain` draws). The shell, file, URL and secrets guards
+read case files; the secrets guard's cases hold no value shaped like a real
+key, which its tests build in Rust so that none sits in the repository.
 
 One case to a line, and nothing else on it:
 
@@ -148,6 +149,24 @@ cases -- --ignored --nocapture dump`.
 read@windows finds=read_secret | C:\\Users\\me\\.ssh\\id_rsa
 paths home cwd=/home/me home=/home/me workspace=/home/me
 write@home rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | .bashrc
+```
+
+The URL guard's case is `[@PATHS] ANSWER... | URL`: no first word but the
+paths, `posix` without them, no `effect=`, and `target="..."` beside
+`reason=` (the target of the same finding). Every case is also held to carry
+no target on a finding that the URL is unreadable. The secrets guard's case
+is `ANSWER... | TEXT`: no paths, no `effect=`, `target=` as the URL guard's,
+`span="..."` (the text has one span, and it covers exactly this) and
+`covers="..."` (every byte of the first place this is in the text is in a
+span); every case is also held to spans that agree with the findings, one
+for one, in order and apart. Their dumps are the same command with
+`-p milo-guards-url` and `-p milo-guards-secrets`.
+
+```text
+first=local_address target="127.0.0.1" | http://2130706433/
+@windows first=local_file reason="reads a file from another machine" | file://server/share/x
+rules=generic_secret span="F4kePass9" | password=F4kePass9&x=1
+covers="F4kePassw0rdZ" | machine api.fake.test login fakeuser password F4kePassw0rdZ
 ```
 
 The reading of the format is shared, in `crates/core/tests/common/cases.rs`
