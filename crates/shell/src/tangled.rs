@@ -53,10 +53,10 @@ const MAX_PIPES: usize = MAX_TREE_DEPTH;
 /// found by counting bytes without parsing, outside the literals the module
 /// comment names:
 ///
-/// - more `(` opened (`{` and `[` are not counted), with none closed in
-///   between, than a parse tree is walked deep (the line is unreadable
-///   whatever the grammar makes of it, and cmd's takes seconds to find that
-///   out at the length limit);
+/// - more brackets opened, with none closed in between, than a parse tree
+///   is walked deep: the line is unreadable whatever the grammar makes of
+///   it, and the grammars take seconds to find that out at the length limit
+///   (see [`Openers`]);
 /// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
 ///   `||` count once);
 /// - in a POSIX shell, more here-documents started on one line (a `\` before
@@ -69,7 +69,8 @@ pub(crate) fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
         Shell::PowerShell => Counted::raw(text.as_bytes()),
     };
     let bytes = counted.bytes.as_slice();
-    let (mut open, mut heredocs) = (0_usize, 0_usize);
+    let mut openers = Openers::default();
+    let mut heredocs = 0_usize;
     let (mut ands, mut pipes) = (0_usize, 0_usize);
     let mut pipelines = Pipelines {
         command: true,
@@ -102,14 +103,10 @@ pub(crate) fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
             }
         }
         run = 0;
+        if openers.too_deep(bytes, at, shell) {
+            return Some("nests too deeply to read");
+        }
         match byte {
-            b'(' => {
-                open += 1;
-                if open > MAX_TREE_DEPTH {
-                    return Some("nests too deeply to read");
-                }
-            }
-            b')' => open = open.saturating_sub(1),
             b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
             b'&' | b'|' if shell == Shell::Cmd => {
                 // The second of two the same is part of `&&` or `||`.
@@ -127,6 +124,47 @@ pub(crate) fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// The brackets a script opens and has not closed, counted byte by byte,
+/// each kind apart, so a closer counts off only the kind it closes: `(` in
+/// every shell; `${` in a POSIX shell, where a `{` elsewhere is a word as
+/// often as a group; `{` and `[` in PowerShell, which open a block, a hash
+/// table, a variable's name (`${…}`), a type or an index. To find a line
+/// of them unreadable, cmd's grammar takes time that grows with the square
+/// of the depth, PowerShell's lexer reads on to the next `}` at each `${`,
+/// and the grammars recover from an error at each, up to a second at the
+/// length limit; the count reads the line once.
+#[derive(Default)]
+struct Openers {
+    parens: usize,
+    braces: usize,
+    squares: usize,
+}
+
+impl Openers {
+    /// Count the byte at `at`; whether more are open now than a parse tree
+    /// is walked deep.
+    fn too_deep(&mut self, bytes: &[u8], at: usize, shell: Shell) -> bool {
+        let count = match bytes.get(at) {
+            Some(b'(' | b')') => &mut self.parens,
+            Some(b'{') if shell == Shell::PowerShell => &mut self.braces,
+            Some(b'{') if shell == Shell::Posix && at > 0 && bytes[at - 1] == b'$' => {
+                &mut self.braces
+            }
+            // Only a `${` is counted in a POSIX shell, but any `}` may
+            // close it.
+            Some(b'}') if shell != Shell::Cmd => &mut self.braces,
+            Some(b'[' | b']') if shell == Shell::PowerShell => &mut self.squares,
+            _ => return false,
+        };
+        if matches!(bytes.get(at), Some(b')' | b'}' | b']')) {
+            *count = count.saturating_sub(1);
+            return false;
+        }
+        *count += 1;
+        self.parens + self.braces + self.squares > MAX_TREE_DEPTH
+    }
 }
 
 /// The pipes of each POSIX pipeline, counted byte by byte over the code

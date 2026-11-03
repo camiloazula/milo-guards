@@ -300,8 +300,8 @@ fn counted_text(text: &str, shell: Shell) -> String {
 
 #[test]
 fn the_most_brackets_opened_that_read_is_the_limit() {
-    // `MAX_TREE_DEPTH` in `unit.rs` is also the count of `(` with none
-    // closed, taken before parsing (`tangled.rs`). Where the grammar sees no nesting the
+    // `MAX_TREE_DEPTH` in `unit.rs` is also the count of brackets with none
+    // closed, taken before parsing (`Openers` in `tangled.rs`). Where the grammar sees no nesting the
     // count alone is measured: the edge is the same in every shell.
     for shell in SHELLS {
         let found = edge(1_000, |n| {
@@ -312,8 +312,53 @@ fn the_most_brackets_opened_that_read_is_the_limit() {
         let closed = counted_text(&"() ".repeat(2_000), shell);
         assert!(!stopped_by(&closed, shell, "too deeply"), "{shell:?}");
     }
+    // The other openers a grammar takes too long over: `${` in a POSIX
+    // shell, and `{`, `${` and `[` in PowerShell, count with the `(` open.
+    for (shell, open, close) in [
+        (Shell::Posix, "${", "}"),
+        (Shell::PowerShell, "{", "}"),
+        (Shell::PowerShell, "${", "}"),
+        (Shell::PowerShell, "[", "]"),
+    ] {
+        let found = edge(1_000, |n| {
+            !stopped_by(&counted_text(&open.repeat(n), shell), shell, "too deeply")
+        });
+        assert_eq!(found, 400, "{shell:?} {open}");
+        let found = edge(1_000, |n| {
+            let mixed = format!("({open}").repeat(n);
+            !stopped_by(&counted_text(&mixed, shell), shell, "too deeply")
+        });
+        assert_eq!(found, 200, "{shell:?} {open}");
+        let closed = counted_text(&format!("{open}a{close} ").repeat(2_000), shell);
+        assert!(
+            !stopped_by(&closed, shell, "too deeply"),
+            "{shell:?} {open}"
+        );
+        // A closer closes only its own kind.
+        let crossed = counted_text(&format!("({close}").repeat(401), shell);
+        assert!(
+            stopped_by(&crossed, shell, "too deeply"),
+            "{shell:?} {open}"
+        );
+    }
+    // A `{` that is no `${` is a word in a POSIX shell, and nothing but a
+    // `(` is counted in cmd.
+    assert!(!stopped_by(
+        &format!("echo {}", "{ ".repeat(2_000)),
+        Shell::Posix,
+        "too deeply"
+    ));
+    for open in ["{", "${", "["] {
+        let many = counted_text(&open.repeat(2_000), Shell::Cmd);
+        assert!(!stopped_by(&many, Shell::Cmd, "too deeply"), "{open}");
+    }
     // A string cmd reads as one, and a POSIX shell's single-quoted string,
     // are text: not counted at all.
+    assert!(!stopped_by(
+        &format!("echo '{}'", "${".repeat(2_000)),
+        Shell::Posix,
+        "too deeply"
+    ));
     let many = "(".repeat(2_000);
     assert!(!stopped_by(
         &format!("echo \"{many}\""),

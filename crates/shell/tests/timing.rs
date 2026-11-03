@@ -239,7 +239,12 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // for every path (`MAX_DIR_LEN` in `unit.rs`, which folds a round trip
     // down and back up), PowerShell's children asked one by one for the
     // next, and a long word read back to its start at each `(` (`qualifier`
-    // in `posix.rs`). A release build reads each in
+    // in `posix.rs`). Brackets left open, where the grammar recovers from an
+    // error at each (PowerShell's lexer also reads on to the next `}` at
+    // each `${`), took a tenth of a second to a second at the length limit,
+    // and 3.4 s on a slow machine for `${` repeated, inside the budget of
+    // what a lexer reads: they are counted before parsing (`Openers` in
+    // `tangled.rs`). A release build reads each in
     // tens of milliseconds; the bounds leave room for a machine busy with
     // other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
@@ -257,6 +262,16 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::PowerShell, "${".repeat(10_000)),
         (Shell::PowerShell, fit("${", "echo ", "")),
         (Shell::PowerShell, fit("${", "echo \"", "")),
+        (Shell::PowerShell, fit("$a{", "", "")),
+        (Shell::PowerShell, fit("${a}{", "", "")),
+        (Shell::PowerShell, fit("if (1){", "", "")),
+        (Shell::PowerShell, fit("$[", "", "")),
+        (Shell::PowerShell, fit("[", "", "")),
+        (Shell::Posix, fit("${", "", "")),
+        (Shell::Posix, fit("${", "echo ", "")),
+        (Shell::Posix, fit("\"${", "", "")),
+        (Shell::Posix, fit("a${", "", "")),
+        (Shell::Posix, fit("${a", "", "")),
         (Shell::Cmd, fit("cd x; echo y > NUL; ", "", "")),
         (Shell::Cmd, fit("@", "", "")),
         (Shell::Cmd, fit("()", "", "")),
