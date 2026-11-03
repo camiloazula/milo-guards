@@ -16,7 +16,7 @@ use milo_guards_core::{Flavour, Sensitivity};
 use super::files::remote;
 use super::Checker;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, referenced, Arg, Stage, Unit};
+use crate::unit::{has_flag, operands, referenced, referenced_in, Arg, Stage, Unit};
 use crate::{Rule, Shell};
 
 const ENVIRONMENT: &str = "your environment variables";
@@ -346,7 +346,7 @@ impl Checker<'_> {
         }
         // A here-string or here-document that expands one is its input.
         for redirect in self.split.redirects.iter().filter(|redirect| redirect.text) {
-            let Some(hit) = text_mentions(redirect.target.text(), &held) else {
+            let Some(hit) = text_mentions(redirect.target.text(), Shell::Posix, &held) else {
                 continue;
             };
             for at in redirect.units.clone() {
@@ -445,7 +445,7 @@ impl Checker<'_> {
                     unit.args
                         .iter()
                         .filter(|arg| arg.is_unknown())
-                        .flat_map(|arg| referenced(arg.text())),
+                        .flat_map(|arg| referenced_in(arg.text(), unit.shell)),
                 );
             }
         }
@@ -661,16 +661,17 @@ fn mentions(unit: &Unit, held: &HashMap<String, Hit>) -> Option<Hit> {
     unit.args
         .iter()
         .filter(|arg| arg.is_unknown())
-        .find_map(|arg| text_mentions(arg.text(), held))
+        .find_map(|arg| text_mentions(arg.text(), unit.shell, held))
 }
 
 /// A secret a variable `text`, an expansion the guard cannot resolve,
-/// names holds: `$k`, `"$k"`, `${k}`, but not `$key`.
-fn text_mentions(text: &str, held: &HashMap<String, Hit>) -> Option<Hit> {
+/// names holds: `$k`, `"$k"`, `${k}`, but not `$key`. PowerShell's names
+/// are read as it reads them (`$K` and `$script:k` are `$k`).
+fn text_mentions(text: &str, shell: Shell, held: &HashMap<String, Hit>) -> Option<Hit> {
     if held.is_empty() {
         return None;
     }
-    referenced(text)
+    referenced_in(text, shell)
         .iter()
         .find_map(|name| held.get(name).cloned())
 }
@@ -739,11 +740,16 @@ fn dumps_environment(unit: &Unit, key: &str) -> bool {
         (Shell::Posix, "declare" | "typeset") => {
             none && (has_flag(args, Some('p'), None) || has_flag(args, Some('x'), None))
         }
+        // `env:`, `env:\`, `env:*`, and a wildcard that may match many
+        // (`env:AWS*`).
         (Shell::PowerShell, "get-childitem" | "get-item") => args.iter().any(|arg| {
             arg.known().is_some_and(|text| {
                 text.to_ascii_lowercase()
                     .strip_prefix("env:")
-                    .is_some_and(|rest| rest.trim_matches(['\\', '/', '*']).is_empty())
+                    .is_some_and(|rest| {
+                        let rest = rest.trim_matches(['\\', '/']);
+                        rest.is_empty() || glob::has_wildcard(rest)
+                    })
             })
         }),
         _ => false,
@@ -860,7 +866,7 @@ fn bits_files(args: &[Arg]) -> Vec<Upload> {
                     || args
                         .get(*at - 1)
                         .and_then(Arg::known)
-                        .is_none_or(|before| !before.starts_with('-')))
+                        .is_none_or(|before| !takes_value(before, &BITS_SWITCHES)))
         });
         sources.extend(first.map(|(_, arg)| arg.clone()));
     }
@@ -868,6 +874,32 @@ fn bits_files(args: &[Arg]) -> Vec<Upload> {
         .into_iter()
         .map(|arg| Upload { arg, word: true })
         .collect()
+}
+
+/// The switches of `Start-BitsTransfer`, its own and the common ones: they
+/// take no value, so the word after one is the source.
+const BITS_SWITCHES: [&str; 6] = [
+    "asynchronous",
+    "suspended",
+    "confirm",
+    "whatif",
+    "verbose",
+    "debug",
+];
+
+/// Whether `word` is a PowerShell parameter that takes the next word as its
+/// value: one that is not among `switches` (by its name or an abbreviation
+/// of it), or any parameter bound to the next word by a colon
+/// (`-Asynchronous:$true`).
+fn takes_value(word: &str, switches: &[&str]) -> bool {
+    let Some(param) = word.strip_prefix('-') else {
+        return false;
+    };
+    if param.ends_with(':') {
+        return true;
+    }
+    let param = param.to_ascii_lowercase();
+    !(param.len() >= 2 && switches.iter().any(|switch| switch.starts_with(&param)))
 }
 
 /// A file named in text; a device that is the input is `-`.

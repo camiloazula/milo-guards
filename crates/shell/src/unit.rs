@@ -484,6 +484,41 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The variables PowerShell `text` names, in lower case as PowerShell
+/// matches them, without a scope: `$k`, `${K}` and `$script:k` all name `k`
+/// (`$env:k` names the environment, `env`).
+pub(crate) fn referenced_powershell(text: &str) -> Vec<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let name = |piece: &str| {
+                let end = piece
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(piece.len());
+                piece.get(..end).unwrap_or_default().to_ascii_lowercase()
+            };
+            let first = name(piece);
+            let scoped = piece
+                .get(first.len()..)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .filter(|_| SCOPES.contains(&first.as_str()))
+                .map(name);
+            Some(scoped.unwrap_or(first)).filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// The variables `text` names in `shell`: see [`referenced`] and
+/// [`referenced_powershell`].
+pub(crate) fn referenced_in(text: &str, shell: Shell) -> Vec<String> {
+    match shell {
+        Shell::PowerShell => referenced_powershell(text),
+        Shell::Posix | Shell::Cmd => referenced(text),
+    }
+}
+
 /// A function definition, noted where it begins (see [`Split::defining`]).
 #[derive(Debug)]
 pub(crate) struct Defining {
@@ -1391,7 +1426,13 @@ impl Split {
     /// Note that the variable `name` is set from what runs in `inside` and
     /// from the variables `value` names.
     pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
-        let uses = referenced(value);
+        self.assign_uses(name, inside, referenced(value));
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `uses`, as [`Self::assign`] does, the names already
+    /// read from the value (as PowerShell reads them, say).
+    pub(crate) fn assign_uses(&mut self, name: &str, inside: Range<usize>, uses: Vec<String>) {
         if !inside.is_empty() || !uses.is_empty() {
             self.assigned.push(Assigned {
                 name: name.to_string(),

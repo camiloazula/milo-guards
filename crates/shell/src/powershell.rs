@@ -381,10 +381,31 @@ impl Walker<'_> {
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
             }
+            // `foreach ($l in …) { … }`: the variable holds each item of what
+            // the collection runs prints, and the body runs once for each.
+            "foreach_statement" => {
+                self.split.repeats += 1;
+                let mut names = Vec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    let first = self.split.units.len();
+                    self.walk(child, stage, level + 1);
+                    match child.kind() {
+                        "variable" => {
+                            names = unit::referenced_powershell(unit::text(&child, self.source));
+                        }
+                        "statement_block" => {}
+                        _ => {
+                            let value = unit::text(&child, self.source);
+                            self.hold(&names, first, value);
+                        }
+                    }
+                }
+                self.split.repeats -= 1;
+            }
             // A loop, or a function that is called more than once, runs
             // what it holds again with other values.
-            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
-            | "function_statement" => {
+            "for_statement" | "while_statement" | "do_statement" | "function_statement" => {
                 self.split.repeats += 1;
                 self.children(node, stage, level);
                 self.split.repeats -= 1;
@@ -404,12 +425,31 @@ impl Walker<'_> {
                 // A method call is no unit, and the rules know only some of
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
-                self.dotnet(node);
+                let first = self.split.units.len();
+                let sends = self.dotnet(node, stage);
+                let own = first..self.split.units.len();
                 self.children(node, stage, level);
+                // What the call's object and arguments run is handed to the
+                // sender it stands for.
+                if sends {
+                    self.split
+                        .nest(own.clone(), own.end..self.split.units.len());
+                }
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                let first = self.split.units.len();
                 self.children(node, stage, level);
+                // `$k = Get-Content .env`: what the variables the left side
+                // names hold.
+                if let Some(left) = node.named_child(0) {
+                    let names = unit::referenced_powershell(unit::text(&left, self.source));
+                    let value = node
+                        .child_by_field_name("value")
+                        .map(|value| unit::text(&value, self.source))
+                        .unwrap_or_default();
+                    self.hold(&names, first, value);
+                }
             }
             _ => self.children(node, stage, level),
         }
@@ -1481,15 +1521,114 @@ impl Walker<'_> {
         Arg::Known(value.to_string())
     }
 
+    /// Note that each of `names` holds what the units from `first` on print
+    /// and what the variables `value` names hold, for the rule that follows
+    /// a secret into a variable (`$k = Get-Content .env`).
+    fn hold(&mut self, names: &[String], first: usize, value: &str) {
+        let inside = first..self.split.units.len();
+        let uses = unit::referenced_powershell(value);
+        for name in names {
+            self.split.assign_uses(name, inside.clone(), uses.clone());
+        }
+    }
+
+    /// The arguments a method call is given, as the guard reads each;
+    /// `children` are the call's parts.
+    fn call_arguments(&self, children: &[Node<'_>]) -> Vec<Arg> {
+        let Some(list) = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .and_then(|list| list.named_child(0))
+        else {
+            return Vec::new();
+        };
+        let mut cursor = list.walk();
+        list.named_children(&mut cursor)
+            .map(|mut argument| {
+                // The grammar wraps an argument in a chain of one-child nodes.
+                while argument.kind().ends_with("argument_expression")
+                    && argument.named_child_count() == 1
+                {
+                    match argument.named_child(0) {
+                        Some(inner) => argument = inner,
+                        None => break,
+                    }
+                }
+                self.expr(argument)
+            })
+            .collect()
+    }
+
+    /// A .NET call that reads a secret or sends what it is given: it is
+    /// judged as the cmdlet that does the same. A read of a file
+    /// (`[IO.File]::ReadAllText('.env')`) is a `Get-Content` of it, a read of
+    /// the environment (`[Environment]::GetEnvironmentVariables()`) a
+    /// `Get-ChildItem env:`, and an upload (`$wc.UploadFile(url, f)`,
+    /// `$wc.UploadString(url, $b)`, `$client.PostAsync(url, $content)`) an
+    /// `Invoke-RestMethod` that posts each argument, a file for `UploadFile`
+    /// and a body for the others. Whether it sends is returned: what its
+    /// object and arguments run is then handed to it.
+    fn secret_call(&mut self, method: &str, children: &[Node<'_>], stage: Option<Stage>) -> bool {
+        let unit = |program: &str, args: Vec<Arg>| {
+            Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                args,
+                stage,
+            )
+        };
+        let known = |text: &str| Arg::Known(text.to_string());
+        let arguments = self.call_arguments(children);
+        match method {
+            "readalltext" | "readalllines" | "readallbytes" | "readlines" | "openread"
+            | "opentext" | "readalltextasync" | "readalllinesasync" | "readallbytesasync" => {
+                if let Some(path) = arguments.into_iter().next() {
+                    self.split.push(unit("Get-Content", vec![path]));
+                }
+                false
+            }
+            // One variable is what `Get-ChildItem env:NAME` lists; a name
+            // only known when it runs may be any of them.
+            "getenvironmentvariables" | "getenvironmentvariable" => {
+                let name = arguments
+                    .first()
+                    .and_then(Arg::known)
+                    .filter(|_| method == "getenvironmentvariable");
+                let drive = format!("env:{}", name.unwrap_or_default());
+                self.split
+                    .push(unit("Get-ChildItem", vec![Arg::Known(drive)]));
+                false
+            }
+            _ => {
+                let parameter = if UPLOADS_FILE.contains(&method) {
+                    "-InFile"
+                } else if UPLOADS_DATA.contains(&method) {
+                    "-Body"
+                } else {
+                    return false;
+                };
+                let mut args = vec![known("-Method"), known("Post")];
+                for argument in arguments {
+                    args.push(known(parameter));
+                    args.push(argument);
+                }
+                self.split.push(unit("Invoke-RestMethod", args));
+                true
+            }
+        }
+    }
+
     /// A .NET method call that changes files or the system
     /// (`[IO.Directory]::Delete(…)`, `(Get-Item ~).Delete()`): its arguments
     /// are expressions the guard does not resolve, so the call is risky
-    /// wherever it points.
-    fn dotnet(&mut self, node: Node<'_>) {
+    /// wherever it points. A call that reads a secret or sends is judged as
+    /// the cmdlet that does the same (see [`Self::secret_call`]), and whether
+    /// it sends is returned.
+    fn dotnet(&mut self, node: Node<'_>, stage: Option<Stage>) -> bool {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
-            return;
+            return false;
         };
         // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
         // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
@@ -1500,8 +1639,9 @@ impl Walker<'_> {
                 "calls a method only known when it runs",
                 Some(unit::text(&node, self.source)),
             );
-            return;
+            return false;
         };
+        let sends = self.secret_call(&method, &children, stage);
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
@@ -1525,7 +1665,7 @@ impl Walker<'_> {
         // array's `.ForEach('Kill')` is a line the grammar does not read.
         if blocks::stops_process(&method) {
             self.stop_call(node, &children);
-            return;
+            return sends;
         }
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
@@ -1543,13 +1683,13 @@ impl Walker<'_> {
             {
                 unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
             }
-            return;
+            return sends;
         }
-        let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
-            return;
-        };
-        self.split
-            .problem(rule, reason, Some(unit::text(&node, self.source)));
+        if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {
+            self.split
+                .problem(rule, reason, Some(unit::text(&node, self.source)));
+        }
+        sends
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
@@ -1580,6 +1720,30 @@ impl Walker<'_> {
         self.split.write(Shell::PowerShell, target);
     }
 }
+
+/// The .NET methods that upload a file they are given by name:
+/// `Net.WebClient`'s `UploadFile`.
+const UPLOADS_FILE: [&str; 3] = ["uploadfile", "uploadfileasync", "uploadfiletaskasync"];
+
+/// The .NET methods that send data they are given: `Net.WebClient`'s
+/// uploads, `HttpClient`'s posts, a socket's or a mail client's sends.
+const UPLOADS_DATA: [&str; 15] = [
+    "uploaddata",
+    "uploaddataasync",
+    "uploaddatataskasync",
+    "uploadstring",
+    "uploadstringasync",
+    "uploadstringtaskasync",
+    "uploadvalues",
+    "uploadvaluesasync",
+    "uploadvaluestaskasync",
+    "postasync",
+    "putasync",
+    "patchasync",
+    "sendasync",
+    "send",
+    "sendmailasync",
+];
 
 /// The id in `[System.Diagnostics.Process]::GetProcessById(1234)`, when the
 /// text is exactly that call (or the same with the namespace left out) and
