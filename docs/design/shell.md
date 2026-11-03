@@ -271,9 +271,10 @@ so `npx cd src` does not move the rest of the line to `src`.
 comes back as `Unknown`. `bun repl`, `deno repl`, a bare `deno` and a script
 read from the input (`bun run -`, `deno run -`, `uv run -`) run code the guard
 does not read: `Unknown`, or `RunDownloaded` after a download; in cmd and
-PowerShell lines a REPL reads its input only when something is piped into it
-(`echo x | deno`), and in cmd lines so does a script read from the input
-(`type x.js | bun run -`). The options before the
+PowerShell lines a REPL reads its input only when it is handed one, something
+piped into it (`echo x | deno`) or a file redirected onto it (`deno < x.js`),
+and in cmd lines so does a script read from the input (`type x.js | bun run
+-`, `bun run - < x.js`). The options before the
 subcommand are skipped with their values (`bun -d x:1 -e 'code'` is still
 inline code). `bun exec 'script'` runs a shell script, read as POSIX like `sh
 -c`. `bun run file`, `deno run file` and `bun file` are judged like `node
@@ -283,12 +284,12 @@ file.py`, and `uv run --script file`: `uv` runs Python on the file, like
 `python file`. `deno run npm:pkg` runs the package's program like a runner,
 and so do `deno watch npm:pkg` and `deno npm:pkg`: deno's default subcommand
 is `run`. `deno x` and `dx` are package runners, like `bun x`. In cmd lines
-these runner parts of `bun`, `deno` and `dx` are read as in the other shells
-(`bun x rimraf C:\`, `bun run rimraf C:\`, `deno run npm:rimraf C:\`,
-`dx rimraf C:\`); what they read of an interpreter (a script from the input
-that nothing is piped into, `bun exec`) is not, and inline code is `Unknown`
-there, also when the code cannot be told (a loader in front of `-e`, as in
-`bun --import r.js -e "$X"`). `deno -v` and `deno --help=full` only
+`bun`, `deno` and `dx` are read as in the other shells (`bun x rimraf C:\`,
+`bun run rimraf C:\`, `deno run npm:rimraf C:\`, `dx rimraf C:\`, and the
+POSIX script of `bun exec "rm -rf ~"`), but a script from the input that
+nothing is handed to is not, and inline code is `Unknown` there, also when the
+code cannot be told (a loader in front of `-e`, as in `bun --import r.js -e
+"$X"`). `deno -v` and `deno --help=full` only
 print. The options of `deno` that take their value
 only after `=` (`--reload`, `--env-file`) do not take the next word.
 
@@ -437,6 +438,47 @@ A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
 rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
 is judged as one: its `$1` and `$@` name a different value each time, only
 known when it runs.
+
+A cmd line reads the shells and interpreters it starts with the same tables
+as the other shells: one that starts a POSIX shell (`bash -c "rm -rf /"`,
+`sh`, `zsh` and the rest, by their name or their path, as
+`C:\msys64\usr\bin\bash.exe`) has its script split in the POSIX grammar,
+and a shell with no script reads its input (`RunInput`), as `cmd` does; a
+shell's `--version` or `--help` prints and runs nothing, in every shell. A
+shell handed an input of its own, a file redirected onto it or something
+piped into it, hands it on to what its script runs: `cmd /c python < x.py`
+and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
+x.py` is (an interpreter in cmd reads its input when it is handed one, see
+[Inline code](#inline-code)). The null device holds nothing to read, so
+`python < NUL` is handed no input.
+
+cmd does not split a program's arguments: it hands every program it starts,
+all but its own built-in commands, the text after its name as written, with
+the carets outside quotes taken off and the variables put in, and the program
+splits it. So a program started from a cmd line is given the words the C
+runtime makes of that text (see [Splitting](#splitting)): a quote does not
+end a word and `\"` is a quote, so `bash -c "echo \"hi\"; rm -rf ~"` hands
+bash `echo "hi"; rm -rf ~`, a `Delete`, where cmd's own quotes would give
+`echo \hi\; rm -rf ~`. A runner or a wrapper splits its text the same way
+and hands on the words it made (`uv run`, `npx`, `pnpm dlx`, `npm exec`,
+`wsl`, `git submodule foreach`), and `start` hands the program it starts the
+text after its title. A word that holds a variable only known when it runs
+keeps its quotes, so `docker rm -f "%IDS%"` is one name. A shell built on
+Cygwin or MSYS2 also reads single quotes; a script that opens one and does
+not close it in the C runtime's word is unreadable as POSIX, and so risky.
+`cmd` itself is given the text as it is, quotes and all, with cmd's rule for
+the quotes around the command after `/c` (see Splitting), so `cmd /c bash -c
+"rm -rf ~"` runs `bash -c "rm -rf ~"`, not `bash -c rm -rf ~`.
+
+A PowerShell or POSIX line that starts `cmd` hands it one command line made
+of its words, which cmd reads by the same rules. PowerShell puts a word that
+holds white space outside the quotes in it between double quotes and leaves
+the quotes in it as they are (as it does for `cmd.exe` in every mode of
+passing arguments); a POSIX shell on Windows (Cygwin, MSYS2) quotes a word
+with white space or a quote in it and puts a `\` before each quote, as the C
+runtime reads them. So `cmd /c bash -c "rm -rf ~"` from PowerShell or a POSIX
+shell runs `bash -c "rm -rf ~"` too. A word only known when it runs stays one
+where it stands.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command
