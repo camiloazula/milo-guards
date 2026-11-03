@@ -158,6 +158,12 @@ pub(crate) struct Unit {
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+    /// For a PowerShell unit the walk reads from the grammar, the variables
+    /// its arguments read, by the grammar's variable nodes (`$k`, `"x$k"`, a
+    /// splat `@p`; see [`crate::powershell::variables`]). `None` for a unit
+    /// of another shell, or one the guard makes up for a .NET call, whose
+    /// variables are read from its arguments' text (see [`Unit::variables`]).
+    pub(crate) names: Option<Vec<String>>,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -239,6 +245,22 @@ impl Unit {
             unread_item: false,
             listed: Vec::new(),
             depth: 0,
+            names: None,
+        }
+    }
+
+    /// The variables the unit's arguments read: [`Unit::names`] when the
+    /// grammar gave them, and otherwise the ones its arguments that are only
+    /// known when it runs name.
+    pub(crate) fn variables(&self) -> Vec<String> {
+        match &self.names {
+            Some(names) => names.clone(),
+            None => self
+                .args
+                .iter()
+                .filter(|arg| arg.is_unknown())
+                .flat_map(|arg| referenced_in(arg.text(), self.shell))
+                .collect(),
         }
     }
 
@@ -3416,6 +3438,28 @@ pub(crate) fn for_each_node<'tree>(
     loop {
         visit(cursor.node());
         if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// Visit the nodes under `root`, without recursion, going into the children
+/// of a node only when `visit` says so.
+pub(crate) fn for_each_node_until<'tree>(
+    root: tree_sitter::Node<'tree>,
+    mut visit: impl FnMut(tree_sitter::Node<'tree>) -> bool,
+) {
+    let mut cursor = root.walk();
+    loop {
+        if visit(cursor.node()) && cursor.goto_first_child() {
             continue;
         }
         loop {

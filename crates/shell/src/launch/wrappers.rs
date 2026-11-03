@@ -450,6 +450,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         unread_item: false,
         listed: Vec::new(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }))
 }
 
@@ -1044,6 +1045,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         unread_item: false,
         listed: Vec::new(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }
 }
 

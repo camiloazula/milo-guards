@@ -538,6 +538,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stdin,
         startup,
         depth,
+        names,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -578,6 +579,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         unread_item: false,
         listed: Vec::new(),
         depth,
+        names,
     }
 }
 

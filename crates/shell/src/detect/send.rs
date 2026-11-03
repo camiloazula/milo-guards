@@ -20,7 +20,7 @@ use super::files::remote;
 use super::Checker;
 use crate::launch::{code_options, valued_options, INTERPRETERS};
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, referenced, referenced_in, Arg, Nested, Stage, Unit};
+use crate::unit::{has_flag, operands, referenced, Arg, Nested, Stage, Unit};
 use crate::{Rule, Shell};
 
 const ENVIRONMENT: &str = "your environment variables";
@@ -695,7 +695,7 @@ impl Checker<'_> {
         // A here-string or here-document that expands one is its input.
         for redirect in self.split.redirects.iter().filter(|redirect| redirect.text) {
             let text = redirect.target.text();
-            let hit = text_mentions(text, Shell::Posix, &held).or_else(|| {
+            let hit = text_mentions(text, &held).or_else(|| {
                 let (from, hit) = flow.sourced.as_ref()?;
                 (redirect.units.start > *from && !referenced(text).is_empty()).then(|| hit.clone())
             });
@@ -983,12 +983,7 @@ impl Checker<'_> {
         let mut reads: Vec<Vec<String>> = vec![Vec::new(); units.len()];
         for (at, unit) in units.iter().enumerate() {
             if let Some(names) = reads.get_mut(at) {
-                names.extend(
-                    unit.args
-                        .iter()
-                        .filter(|arg| arg.is_unknown())
-                        .flat_map(|arg| referenced_in(arg.text(), unit.shell)),
-                );
+                names.extend(unit.variables());
             }
         }
         // The names a here-string or here-document reads, once for each, and
@@ -1561,8 +1556,17 @@ fn replaces_input(unit: &Unit) -> bool {
 
 /// The variables a builtin sets from what it reads: `read`'s names (or
 /// `REPLY`) and the array of `-a`, `mapfile`'s and `readarray`'s array (or
-/// `MAPFILE`), and the name `printf -v` prints into.
+/// `MAPFILE`), and the name `printf -v` prints into. In PowerShell, the
+/// variable `Set-Variable` sets from what it is handed (`gc .env | sv k`),
+/// and the one a cmdlet's `-OutVariable` or `-PipelineVariable` sets from
+/// what it prints (see [`crate::powershell::variables_set`]).
 fn sets(unit: &Unit) -> Vec<String> {
+    if unit.shell == Shell::PowerShell {
+        return unit
+            .key()
+            .map(|key| crate::powershell::variables_set(&key, &unit.args))
+            .unwrap_or_default();
+    }
     if unit.shell != Shell::Posix {
         return Vec::new();
     }
@@ -2160,22 +2164,24 @@ fn exports_secret_keys(unit: &Unit, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A secret a variable the unit's arguments mention holds.
+/// A secret a variable the unit's arguments read holds (see
+/// [`Unit::variables`]).
 fn mentions(unit: &Unit, held: &HashMap<String, Hit>) -> Option<Hit> {
-    unit.args
-        .iter()
-        .filter(|arg| arg.is_unknown())
-        .find_map(|arg| text_mentions(arg.text(), unit.shell, held))
-}
-
-/// A secret a variable `text`, an expansion the guard cannot resolve,
-/// names holds: `$k`, `"$k"`, `${k}`, but not `$key`. PowerShell's names
-/// are read as it reads them (`$K` and `$script:k` are `$k`).
-fn text_mentions(text: &str, shell: Shell, held: &HashMap<String, Hit>) -> Option<Hit> {
     if held.is_empty() {
         return None;
     }
-    referenced_in(text, shell)
+    unit.variables()
+        .iter()
+        .find_map(|name| held.get(name).cloned())
+}
+
+/// A secret a variable `text`, an expansion the guard cannot resolve,
+/// names holds: `$k`, `"$k"`, `${k}`, but not `$key`.
+fn text_mentions(text: &str, held: &HashMap<String, Hit>) -> Option<Hit> {
+    if held.is_empty() {
+        return None;
+    }
+    referenced(text)
         .iter()
         .find_map(|name| held.get(name).cloned())
 }
@@ -2320,8 +2326,11 @@ fn dumps_environment(unit: &Unit, key: &str) -> bool {
             none && (has_flag(args, Some('p'), None) || has_flag(args, Some('x'), None))
         }
         // `env:`, `env:\`, `env:*`, and a wildcard that may match many
-        // (`env:AWS*`).
-        (Shell::PowerShell, "get-childitem" | "get-item") => args.iter().any(|arg| {
+        // (`env:AWS*`), listed or printed (`Get-Content env:*`).
+        (
+            Shell::PowerShell,
+            "get-childitem" | "get-item" | "get-content" | "gc" | "cat" | "type",
+        ) => args.iter().any(|arg| {
             arg.known().is_some_and(|text| {
                 text.to_ascii_lowercase()
                     .strip_prefix("env:")
@@ -2567,8 +2576,10 @@ fn blob_files(args: &[Arg]) -> Vec<Upload> {
 }
 
 /// What `Start-BitsTransfer` uploads: its `-Source` files, when `-TransferType`
-/// is `Upload`. A source given by position is the first word that is not an
-/// option or an option's value.
+/// is `Upload`. Without `-Source`, any word that is not a parameter or the
+/// value of one may be a source given by position: a word after a switch
+/// (`-Asynchronous`, `-Dynamic`), or after a parameter the guard does not
+/// know, is one (see [`bits_takes_value`]).
 fn bits_files(args: &[Arg]) -> Vec<Upload> {
     let upload = parameter(args, "transfertype").iter().any(|kind| {
         kind.known()
@@ -2579,15 +2590,15 @@ fn bits_files(args: &[Arg]) -> Vec<Upload> {
     }
     let mut sources = parameter_list(args, "source");
     if sources.is_empty() {
-        let first = args.iter().enumerate().find(|(at, arg)| {
+        let positional = args.iter().enumerate().filter(|(at, arg)| {
             arg.known().is_none_or(|text| !text.starts_with('-'))
                 && (*at == 0
                     || args
                         .get(*at - 1)
                         .and_then(Arg::known)
-                        .is_none_or(|before| !takes_value(before, &BITS_SWITCHES)))
+                        .is_none_or(|before| !bits_takes_value(before)))
         });
-        sources.extend(first.map(|(_, arg)| arg.clone()));
+        sources.extend(positional.map(|(_, arg)| arg.clone()));
     }
     sources
         .into_iter()
@@ -2595,22 +2606,81 @@ fn bits_files(args: &[Arg]) -> Vec<Upload> {
         .collect()
 }
 
-/// The switches of `Start-BitsTransfer`, its own and the common ones: they
-/// take no value, so the word after one is the source.
-const BITS_SWITCHES: [&str; 6] = [
+/// The parameters of `Start-BitsTransfer` that take a value, its own and the
+/// common ones, with the common ones' aliases.
+const BITS_VALUES: [&str; 47] = [
+    "source",
+    "destination",
+    "authentication",
+    "credential",
+    "description",
+    "displayname",
+    "priority",
+    "proxyauthentication",
+    "proxybypass",
+    "proxycredential",
+    "proxylist",
+    "proxyusage",
+    "retryinterval",
+    "retrytimeout",
+    "transferpolicy",
+    "transfertype",
+    "usestoredcredential",
+    "certstorelocation",
+    "certstorename",
+    "certhash",
+    "customheaders",
+    "httpmethod",
+    "maxdownloadtime",
+    "securityflags",
+    "notifyflags",
+    "notifycmdline",
+    "aclflags",
+    "erroraction",
+    "errorvariable",
+    "warningaction",
+    "warningvariable",
+    "informationaction",
+    "informationvariable",
+    "outvariable",
+    "outbuffer",
+    "pipelinevariable",
+    "progressaction",
+    "ea",
+    "ev",
+    "wa",
+    "wv",
+    "infa",
+    "iv",
+    "ov",
+    "ob",
+    "pv",
+    "proga",
+];
+
+/// The switches of `Start-BitsTransfer`, its own and the common ones, with
+/// the common ones' aliases: they take no value.
+const BITS_SWITCHES: [&str; 12] = [
     "asynchronous",
     "suspended",
+    "dynamic",
+    "customheaderswriteonly",
     "confirm",
     "whatif",
     "verbose",
     "debug",
+    "cf",
+    "wi",
+    "vb",
+    "db",
 ];
 
-/// Whether `word` is a PowerShell parameter that takes the next word as its
-/// value: one that is not among `switches` (by its name or an abbreviation
-/// of it), or any parameter bound to the next word by a colon
-/// (`-Asynchronous:$true`).
-fn takes_value(word: &str, switches: &[&str]) -> bool {
+/// Whether `word` is a parameter of `Start-BitsTransfer` that takes the next
+/// word as its value: one of [`BITS_VALUES`] by its name, or by an
+/// abbreviation that no switch also begins with, or any parameter bound to
+/// the next word by a colon (`-Asynchronous:$true`). A parameter the guard
+/// does not know is not one, so the word after it is read as a source.
+fn bits_takes_value(word: &str) -> bool {
     let Some(param) = word.strip_prefix('-') else {
         return false;
     };
@@ -2618,7 +2688,14 @@ fn takes_value(word: &str, switches: &[&str]) -> bool {
         return true;
     }
     let param = param.to_ascii_lowercase();
-    !(param.len() >= 2 && switches.iter().any(|switch| switch.starts_with(&param)))
+    if BITS_VALUES.contains(&param.as_str()) {
+        return true;
+    }
+    !param.is_empty()
+        && BITS_VALUES.iter().any(|value| value.starts_with(&param))
+        && !BITS_SWITCHES
+            .iter()
+            .any(|switch| switch.starts_with(&param))
 }
 
 /// A file named in text; a device that is the input is `-`.
