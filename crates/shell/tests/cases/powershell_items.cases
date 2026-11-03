@@ -379,7 +379,7 @@ powershell finds=unknown | Start-Process -PSPath $p
 powershell finds=unknown | Start-Process -Path $p
 powershell finds=unknown | saps -PSPath $p
 powershell finds=unknown | start -PSPath $p
-powershell finds=run_input | Start-Process -PSPath powershell -ArgumentList '-c Remove-Item -Recurse ~'
+powershell finds=delete | Start-Process -PSPath powershell -ArgumentList '-c Remove-Item -Recurse ~'
 powershell finds=delete | Start-Process -psp cmd -ArgumentList '/c rd /s /q C:\\'
 
 # A shortened `-FilePath` is not read as the `-File` switch: `-File`, `-Fil`

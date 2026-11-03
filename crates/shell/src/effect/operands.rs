@@ -988,7 +988,7 @@ fn cmd_paths<'a>(key: &str, args: &'a [Arg]) -> Opened<'a> {
                 }
                 Some(Switch::Operand) | None => {}
             }
-        } else if text.and_then(switches).is_some() {
+        } else if text.is_some_and(crate::unit::is_switch) {
             continue;
         }
         operands.push(arg);
@@ -1072,21 +1072,6 @@ fn findstr_switch(text: &str) -> Switch<'_> {
         return Switch::Unread;
     }
     Switch::Run { value, text }
-}
-
-/// A cmd switch run for a program other than `findstr`: the names of `/s/b`
-/// or `/A:d`, and the value after the first `:`. `None` for what is not one,
-/// such as `//server/share`.
-fn switches(text: &str) -> Option<(Vec<&str>, Option<&str>)> {
-    let body = text.strip_prefix('/')?;
-    let (names, value) = match body.split_once(':') {
-        Some((names, value)) => (names, Some(value)),
-        None => (body, None),
-    };
-    let list: Vec<&str> = names.split('/').collect();
-    list.iter()
-        .all(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '?'))
-        .then_some((list, value))
 }
 
 /// The places a `find` searches: its arguments before the first test or
@@ -1545,7 +1530,7 @@ fn substitute(arg: &Arg, pairs: &[(&str, &str)]) -> Option<Arg> {
                 .filter(|_| alone)
                 .map(|word| Arg::Known(word.to_string()))
         }
-        Arg::Template { text, source } => {
+        Arg::Template { text, source, .. } => {
             let found = expansions(source);
             let pieces: Vec<&str> = text.split(crate::posix::OPAQUE).collect();
             if found.is_empty() || pieces.len() != found.len() + 1 {

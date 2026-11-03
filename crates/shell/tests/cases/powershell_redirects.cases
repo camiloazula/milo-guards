@@ -144,3 +144,10 @@ powershell effect=reads_workspace | git log --pretty=format:"%h -> %s"
 powershell effect=reads_workspace | git log --format='%an <%ae>'
 powershell effect=reads_workspace | git log --format="%h > %s"
 powershell effect=changes | git commit --author="Me <me@example.com>" -m "x"
+
+# A redirect with no space before its file writes that file.
+powershell finds=overwrite reason="writes to a shell startup file" | Get-Date >~\\.bashrc
+powershell finds=overwrite reason="writes to your SSH keys" | Get-Date >>~\\.ssh\\authorized_keys
+powershell finds=overwrite reason="writes to a system folder" | Get-Date >C:\\Windows\\System32\\x.dll
+powershell safe | Get-Date >out.txt
+powershell safe | Get-ChildItem 2>$null
