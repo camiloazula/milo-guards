@@ -306,6 +306,43 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("doppler run{} -- rm", " -p x".repeat(12_000)),
         format!("aws-vault exec{} prod -- rm", " -d 1h".repeat(10_000)),
         format!("ls | xargs sh -c '{}' _", "rm -rf \"$1\"; ".repeat(4_000)),
+        // Archivers: every operand under every pattern of `zip -i`, the
+        // commands `tar` and `zip` run, and the options `ZIPOPT` gives.
+        format!(
+            "zip -m x.zip{} -i{}",
+            " src".repeat(8_000),
+            " '*.log'".repeat(4_000)
+        ),
+        format!("zip -m x.zip{} -i{}", " a".repeat(250), " b".repeat(250)),
+        format!("tar -xf x.tar{}", " --to-command='rm a'".repeat(3_000)),
+        format!("tar -cf x.tar -C a{} src", " -I 'gzip -9'".repeat(4_000)),
+        format!("zip -T{} x.zip src", " -TT 'unzip -t'".repeat(4_000)),
+        format!("{}zip -r x.zip src", "ZIPOPT='-q -m' ".repeat(4_000)),
+        format!("ZIPOPT='{}' zip -r x.zip src", "-q ".repeat(20_000)),
+        // A value read again at each of many `zip` calls: one too long to
+        // split, one as long as the guard splits, and many assignments.
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(10_000),
+            "zip x; ".repeat(5_000)
+        ),
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!(
+            "export ZIP='{}'; {}",
+            "\"-q\" ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!("{}{}", "ZIPOPT=-q; ".repeat(4_000), "zip x; ".repeat(3_000)),
+        format!(
+            "{}{}",
+            "ZIPOPT+=-q; ".repeat(4_000),
+            "zip x; ".repeat(2_000)
+        ),
+        format!("rar m x.rar{}", " ~/a".repeat(15_000)),
         // Package and environment runners: words of yarn taken off, options
         // a table does not list (each may take the word after it), lines
         // run side by side, nested runners.

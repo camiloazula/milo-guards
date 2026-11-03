@@ -460,6 +460,18 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .collect()
 }
 
+/// The values `ZIPOPT` and `ZIP` are given by the wrapper's own arguments,
+/// by name and in order, as [`node_options`] reads `NODE_OPTIONS`.
+pub(super) fn zip_env(args: &[Arg], start: usize) -> Vec<(&str, Arg)> {
+    args.iter()
+        .take(start)
+        .filter_map(Arg::known)
+        .filter_map(|text| text.split_once('='))
+        .filter(|(name, _)| matches!(*name, "ZIPOPT" | "ZIP"))
+        .map(|(name, value)| (name, Arg::Known(value.to_string())))
+        .collect()
+}
+
 /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given by the
 /// wrapper's own arguments, by name, as [`node_options`] reads
 /// `NODE_OPTIONS` (`env TF_CLI_ARGS=-destroy terraform apply`). One only
