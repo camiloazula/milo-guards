@@ -328,7 +328,7 @@ pub(super) fn getopt(
 /// `launch`, started in `folder` when there is one (see [`Launch::In`]).
 pub(super) fn in_folder(folder: Option<Arg>, launch: Launch) -> Launch {
     match folder {
-        Some(folder) => Launch::In(folder, Box::new(launch)),
+        Some(folder) => Launch::In(folder, None, Box::new(launch)),
         None => launch,
     }
 }
@@ -1223,7 +1223,7 @@ pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> 
     };
     let launch = match either {
         Some(project) => Launch::Either(
-            Box::new(Launch::In(project, Box::new(launch.clone()))),
+            Box::new(Launch::In(project, None, Box::new(launch.clone()))),
             Box::new(launch),
         ),
         None => launch,

@@ -380,8 +380,10 @@ each with the options it reads and those of them that take a value, as
   whether the line it is started from quotes an argument with a space is not
   on the line, so both are read and the riskier counts: `wsl pwsh -c
   "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
-  `wsl 'rm -rf ~'` may run `rm -rf ~`. The folder `--cd` names is not
-  followed.
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The shell starts in the folder
+  `--cd` names, read as a Linux path: `~` is the home directory, and an
+  absolute Windows path is where WSL mounts it (`C:\Windows` is
+  `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),
@@ -835,7 +837,8 @@ safe). The options read so are `env -C DIR` (`--chdir`), `sudo -D` and `run0
 -D` (`--chdir`), pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's
 `--directory`, PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or
 `powershell -WorkingDirectory` for the script given with `-Command`, and cmd's
-`start /d DIR` (`/dDIR`), which names the drive too: `env -C ~ rm -rf .ssh`,
+`start /d DIR` (`/dDIR`), which names the drive too, and `wsl --cd DIR`, a
+Linux path (see [Wrappers and scripts](#wrappers-and-scripts)): `env -C ~ rm -rf .ssh`,
 `pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s /q
 System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
 x.obj` are safe. When one is given more than once, the last counts. A folder

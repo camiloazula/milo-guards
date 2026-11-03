@@ -78,8 +78,10 @@ pub(super) enum Launch {
     /// It does what the inner launch says, started in the folder its own
     /// option names (`env -C DIR`, `pnpm --dir DIR`, `start /d DIR`): what
     /// it runs has its relative paths judged from there, and the rest of
-    /// the line from where it was.
-    In(Arg, Box<Launch>),
+    /// the line from where it was. The folder is read as a path of the
+    /// shell given, or of the line's own shell when none is (`wsl --cd`
+    /// names a folder of its Linux shell).
+    In(Arg, Option<Shell>, Box<Launch>),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
@@ -252,8 +254,8 @@ fn add_launched(
         match launched {
             // The wrapper starts what it runs in a folder of its own, and
             // takes no more of the wrappers left for that.
-            Launch::In(folder, inner) => {
-                split.start_in(&folder, unit.shell);
+            Launch::In(folder, shell, inner) => {
+                split.start_in(&folder, shell.unwrap_or(unit.shell));
                 add_launched(split, unit, depth, wrappers - used, Some(*inner));
                 return;
             }
