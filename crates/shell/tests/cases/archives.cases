@@ -188,13 +188,21 @@ posix finds=overwrite | gtar -xf x.tar --inc -C /etc
 posix finds=overwrite | tar -xf x.tar --mod -C /etc
 posix finds=overwrite | bsdtar -xf x.tar --mod -C /etc
 posix finds=overwrite | tar -xpf x.tar --mod -C ~
+# A mode is read from any prefix no other long option shares: `--cr`,
+# `--ap`, `--up` and `--ge`, and `--ext`, since `--ex` may be `--exclude`.
+posix safe | tar --cr -f x.tar src --remove-files
+posix finds=delete | tar --cr -f x.tar ~ --remove-files
+posix finds=delete | tar --ap -f x.tar /etc --remove-files
+posix finds=delete | tar --up -f x.tar ~ --remove-files
+posix finds=overwrite | tar --ge -f x.tar -C ~
 
-# tar with a mode only known when it runs may unpack.
+# tar with a mode only known when it runs may unpack. One outside quotes
+# may split into words, `--remove-files` among them.
 posix safe | tar -czf "$out" -C ~ .
 posix safe | tar -cf "$out" -C ~ "$file"
 posix safe | tar -tf "$a" -C ~
 posix safe | tar "$mode" -f x.tar -C build
-posix safe | tar $mode -f x.tar -C .
+posix finds=delete | tar $mode -f x.tar -C .
 posix safe | tar "$mode" -f x.tar -O -C ~
 posix safe | tar --create -f "$out" -C ~ .
 posix safe | tar -xf x.tar "$file"
@@ -303,6 +311,76 @@ posix finds=delete | tar "$mode" -f x.tar ~ --remove-files
 posix finds=delete | tar $mode -f x.tar src --remove-files
 posix finds=delete | ls | xargs tar -rf x.tar --remove-files
 posix finds=delete | ls ~ | xargs tar -rf x.tar --remove-files
+
+# tar runs a command through a shell: the one `--to-command`, `-I` and
+# `--use-compress-program`, `--checkpoint-action=exec=`, `-F`,
+# `--info-script`, `--new-volume-script` and `--rsh-command` give it. Each is
+# judged as a line of its own, and one only known when it runs is unknown.
+posix safe | tar -czf x.tgz src
+posix safe | tar -I zstd -cf x.tar.zst src
+posix safe | tar --use-compress-program=zstd -cf x.tar.zst src
+posix safe | tar --use-compress-program 'zstd -19' -cf x.tar.zst src
+posix safe | tar -xf x.tar --to-command=cat
+posix safe | tar -cf x.tar --checkpoint=100 --checkpoint-action=dot src
+posix safe | tar -cf x.tar --checkpoint-action=echo src
+posix finds=delete | tar -xf x.tar --to-command='rm -rf ~'
+posix finds=delete | tar -xf x.tar --to-command 'rm -rf ~'
+posix finds=delete | tar -xf x.tar --to-com='rm -rf ~'
+posix finds=delete | tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec='rm -rf ~'
+posix finds=delete | tar -cf x.tar --checkpoint-action 'exec=rm -rf ~' src
+posix finds=delete | tar -xf x.tar -I 'sh -c "rm -rf ~"'
+posix finds=delete | tar xIf 'rm -rf ~' x.tar
+posix finds=delete | tar -cf x.tar --use-compress-program='sh -c "rm -rf ~"' src
+posix finds=delete | tar -cf x.tar --use-compress-program 'rm -rf ~' src
+posix finds=delete | gtar -cf x.tar -I 'rm -rf ~' src
+posix finds=delete | tar -cf x.tar -F 'rm -rf ~' src
+posix finds=delete | tar -cMf x.tar --new-volume-script='rm -rf ~' src
+posix finds=delete | tar -cMf x.tar --info-script='rm -rf ~' src
+posix finds=delete | tar -cf host:x.tar --rsh-command='rm -rf ~' src
+posix finds=delete | sudo tar -xf x.tar --to-command='rm -rf ~'
+# A filter or a checkpoint's command runs from where `-C` left tar.
+posix finds=delete | tar -cf x.tar -C ~ notes.txt --checkpoint=1 --checkpoint-action=exec='rm .bashrc'
+posix finds=delete | tar -xf x.tar -C build --to-command='rm -rf .'
+posix safe | tar -I zstd -cf x.tar.zst -C build .
+# `-I` that names a compressor is GNU tar's, not bsdtar's file of members;
+# any other value may be either.
+posix safe | tar -cf x.tar -I zstd src --remove-files
+posix safe | tar -cf x.tar -I 'xz -9' src --remove-files
+posix safe | tar -cf x.tar -I /usr/bin/pigz src --remove-files
+posix finds=delete | tar -cf x.tar -I list.txt src --remove-files
+posix safe | gtar -cf x.tar -I ./my-compressor src --remove-files
+# `--rmt-command` runs on the machine of a `host:` archive, which the paths
+# on the line do not reach: it is not read.
+posix safe | tar -cf host:x.tar --rmt-command=/usr/sbin/rmt src
+posix finds=unknown | tar -xf x.tar --to-command="$CMD"
+posix finds=unknown | tar -xf x.tar --to-command "$CMD"
+posix finds=unknown | tar -cf x.tar -I "$PROG" src
+posix finds=unknown | tar -cf x.tar --checkpoint-action="$ACTION" src
+
+# `-P` (`--absolute-names`) unpacks to the paths stored in the archive,
+# leading `/` and `..` kept: a place only known when it runs.
+posix safe | tar -cPf x.tar src
+posix safe | tar -tPf x.tar
+posix safe | tar -xOPf x.tar notes.txt
+posix finds=overwrite | tar -xPf x.tar
+posix finds=overwrite | tar xPf x.tar
+posix finds=overwrite | tar -xf x.tar -P
+posix finds=overwrite | tar -xf x.tar -P -C build
+posix finds=overwrite | tar -xf x.tar --absolute-names
+posix finds=overwrite | tar -xf x.tar --abs
+posix finds=overwrite | bsdtar -xf x.tar --absolute-paths
+posix finds=overwrite | tar "$mode" -Pf x.tar
+
+# An option with a value only known when it runs is an option, not a member.
+posix safe | tar --create --file="$OUT" src --remove-files
+posix safe | tar -c --exclude="$SKIP" -f x.tar src --remove-files
+posix safe | tar -cf x.tar --transform="$T" src --remove-files
+posix finds=delete | tar --create --file="$OUT" ~ --remove-files
+posix finds=delete | tar -cf x.tar --directory="$DIR" a --remove-files
+posix finds=delete | tar -cf x.tar --add-file="$F" --remove-files
+posix finds=delete | tar -cf x.tar --files-from="$LIST" --remove-files
+posix finds=overwrite | tar -xf x.tar --directory="$DIR"
+posix finds=overwrite | tar --file="$A" "$mode" -C ~
 
 # `zip -m` (`--move`) deletes the members it archives; members inside the
 # workspace, and packing without it, stay safe.
@@ -455,6 +533,84 @@ posix finds=delete | zip -m x.zip -x "$X" ~
 posix finds=delete | zip -mr x.zip src -x "$X" /etc
 posix finds=delete | zip -m x.zip src --exclude "$X" ~
 posix finds=delete | zip -m x.zip src -i "$X" ~
+# The patterns of `-i` choose among the files under each name.
+posix safe | zip -mr logs.zip . -i '*.log'
+posix safe | zip -mr logs.zip src docs -i '*.log' '*.txt'
+posix finds=delete | zip -mr logs.zip ~ -i '*.log'
+posix finds=delete | zip -mr logs.zip . ~ -i '*.log'
+posix finds=delete | zip -mr logs.zip . -i /etc/passwd
+posix finds=delete | zip -mr logs.zip . -i "$PAT"
+posix finds=delete | cd ~ && zip -mr logs.zip . -i '*.log'
+# `-u`, `-f` and `-FS` with no names take the files the archive lists, under
+# the working directory.
+posix safe | zip -um x.zip src
+posix safe | zip -u x.zip
+posix safe | zip -f x.zip
+posix finds=delete | zip -fm x.zip
+posix finds=delete | zip -um x.zip
+posix finds=delete | zip -m -u x.zip
+posix finds=delete | zip --move --freshen x.zip
+posix finds=delete | zip -FSm x.zip
+posix finds=delete | cd ~ && zip -um x.zip
+posix finds=delete reason="deletes your home directory" | cd ~ && zip -um x.zip
+# `ZIPOPT` set on the line holds options zip reads before its own.
+posix safe | ZIPOPT=-m zip -r x.zip src
+posix safe | ZIPOPT=-q zip -r x.zip src
+posix finds=read_secret lacks=delete | ZIPOPT=-q zip -r x.zip ~
+posix finds=delete | ZIPOPT=-m zip -qr x.zip ~
+posix finds=delete | ZIPOPT='-q -m' zip -r x.zip ~
+posix finds=delete | export ZIPOPT=-m; zip -r x.zip ~
+posix finds=delete | ZIPOPT=-m; zip -r x.zip ~
+posix finds=delete | env ZIPOPT=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT=-m sudo zip -r x.zip ~
+posix finds=unknown | ZIPOPT="$OPTS" zip -r x.zip src
+posix finds=unknown | export ZIPOPT; zip -r x.zip src
+# One value: an assignment replaces the one before it, and one in front of a
+# command is that command's only.
+posix finds=read_secret lacks=delete | ZIPOPT=-m; ZIPOPT=-q; zip -r x.zip ~
+posix finds=read_secret lacks=delete | export ZIPOPT=-m; export ZIPOPT=-q; zip -r x.zip ~
+posix finds=read_secret lacks=delete | ZIPOPT=-m zip -r x.zip src; zip -r y.zip ~
+posix finds=read_secret lacks=delete | env ZIPOPT=-m zip -r x.zip src; zip -r y.zip ~
+posix finds=delete | ZIPOPT=-q; ZIPOPT+=' -m'; zip -r x.zip ~
+posix finds=delete | ZIPOPT=-q; ZIPOPT=-m zip -r x.zip ~
+posix safe | ZIPOPT=-m; export ZIPOPT; zip -r x.zip src
+posix finds=delete | ZIPOPT=-m; export ZIPOPT; zip -r x.zip ~
+# zip reads `ZIP` when `ZIPOPT` holds no word, and takes a word in double
+# quotes as one, without them.
+posix finds=delete | ZIP=-m zip -r x.zip ~
+posix finds=delete | export ZIP=-m; zip -r x.zip ~
+posix finds=delete | env ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT=' ' ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT="$OPTS" ZIP=-m zip -r x.zip ~
+posix finds=read_secret lacks=delete | ZIPOPT=-q ZIP=-m zip -r x.zip ~
+posix finds=delete | ZIPOPT='"-m"' zip -r x.zip ~
+posix finds=delete | ZIPOPT='-q "-m"' zip -r x.zip ~
+posix finds=unknown | ZIP="$OPTS" zip -r x.zip src
+# A value longer than the guard splits holds options only known when it runs.
+posix finds=unknown | ZIPOPT='-q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q -q' zip -r x.zip src
+# On Windows too: `$env:ZIPOPT` in PowerShell, `set ZIPOPT=` in cmd.
+powershell safe | $env:ZIPOPT='-q'; zip -qr x.zip src
+powershell finds=delete | $env:ZIPOPT='-m'; zip -qr x.zip ~
+powershell finds=delete | $env:ZIPOPT='-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=delete | $env:zipopt = '-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=delete | $env:ZIP='-m'; zip -qr x.zip C:\\Users\\me
+powershell finds=unknown | $env:ZIPOPT=$opts; zip -qr x.zip src
+powershell finds=unknown | Set-Item env:ZIPOPT $opts; zip -qr x.zip src
+cmd safe | set ZIPOPT=-q && zip -qr x.zip src
+cmd finds=delete | set ZIPOPT=-m && zip -qr x.zip %USERPROFILE%
+cmd finds=delete | set "ZIPOPT=-m" & zip -qr x.zip C:\\Users\\me
+cmd finds=delete | set zip=-m & zip -qr x.zip C:\\Users\\me
+# `-TT` (`--unzip-command`) is a command zip runs to test the archive.
+posix safe | zip -T x.zip src
+posix safe | zip -T -TT 'unzip -tqq' x.zip src
+posix finds=delete | zip -T -TT 'rm -rf ~' x.zip src
+posix finds=delete | zip -T --unzip-command 'rm -rf ~' x.zip src
+posix finds=delete | zip -T --unzip-command='rm -rf ~' x.zip src
+posix finds=unknown | zip -T -TT "$CMD" x.zip src
+posix safe | zip -T -TT='unzip -tqq' x.zip src
+posix finds=delete | zip -T -TT='rm -rf ~' x.zip src
+posix finds=delete | zip -T -TT=rm\\ -rf\\ ~ x.zip src
+posix finds=delete | ZIPOPT='-T "-TT=rm -rf ~"' zip x.zip src
 
 # `7z a -sdel` (and `u`) deletes the members it archives. With no name after
 # the archive's it packs, and deletes, everything in the folder; a switch
@@ -525,6 +681,12 @@ posix finds=delete | 7z a $OPTS x.7z -sdel
 posix finds=delete | 7z a "$OPTS" x.7z -sdel
 posix finds=delete | 7z a x.7z -i"$PAT" -sdel
 posix finds=delete | 7z a x.7z -i!"$PAT" -sdel
+# `-si` packs the input, not files: no name means no `*`.
+posix safe | 7z a -sdel x.7z -si
+posix safe | 7z a x.7z -si -sdel
+posix safe | 7z a -sdel x.7z -sinotes.txt
+posix safe | 7z a -sdel x.7z -SI
+posix finds=delete | 7z a -sdel x.7z -si ~
 
 # `7z -sdel` on Windows.
 powershell safe | 7z a x.7z src -sdel
@@ -549,6 +711,42 @@ cmd finds=delete | 7z a -sdel x.7z
 cmd finds=delete | 7z u x.7z -sdel -x!keep
 cmd finds=delete | cd %USERPROFILE% && 7z a -sdel x.7z
 cmd finds=delete | 7z a -sdel -p%PW% x.7z
+
+# Other archivers that remove what they pack. `rar m` and `mf`, and `a`, `u`
+# or `f` with `-df`, `-dr` or `-dw`, delete the names after the archive's (all
+# under the working directory with none); `rsync --remove-source-files`
+# deletes its sources, on this machine or another.
+posix safe | rar a x.rar src
+posix safe | rar m x.rar src
+posix safe | rar a -df x.rar src
+posix safe | rar a -ds x.rar src
+posix lacks=delete | rar a x.rar ~
+posix lacks=delete | rar a -ds x.rar ~
+posix finds=delete | rar m x.rar ~
+posix finds=delete | rar mf x.rar ~
+posix finds=delete | rar M x.rar ~
+posix finds=delete | rar a -df x.rar ~
+posix finds=delete | rar a -dr x.rar ~
+posix finds=delete | rar a -dw x.rar ~
+posix finds=delete | rar a -DF x.rar ~
+posix finds=delete | rar u -df x.rar ~
+posix finds=delete | rar a x.rar ~ -df
+posix finds=delete | rar m -r -pSECRET x.rar ~
+posix finds=delete | rar m -- x.rar ~
+posix finds=delete | rar m x.rar @list.txt
+posix finds=delete | rar m x.rar "$DIR"
+posix finds=delete | rar $CMD -df x.rar ~
+posix finds=delete | rar m x.rar
+posix finds=delete | cd ~ && rar m x.rar
+posix finds=delete reason="deletes your home directory" | rar a -df x.rar ~
+posix safe | rsync -a --remove-source-files build/ /tmp/b
+posix safe | rsync -a build/ host:/srv/
+posix finds=delete | rsync -a --remove-source-files ~/ host:/srv/
+posix finds=delete | rsync -a --remove-source-files /etc/ /tmp/b
+posix finds=delete | rsync -a --remove-sent-files ~/ host:/srv/
+posix finds=delete | rsync -a --remove-source-files "$SRC" /tmp/b
+posix finds=delete | rsync -a --remove-source-files host:/srv/ build/
+posix finds=delete reason="deletes your home directory" | rsync -a --remove-source-files ~/ host:/srv/
 
 # Archiving that deletes is judged from the machine's home.
 posix@macos safe | tar -cf x.tar src --remove-files
@@ -629,3 +827,26 @@ posix safe | python3 -m tarfile -e a.tar
 posix safe | python3 -m tarfile -e a.tar out
 posix safe | python3 -m zipfile -l a.zip
 posix safe | python3 -m tarfile -l a.tar
+
+# A value only known when it runs may hide a member or the option that
+# removes what is packed: an expansion outside quotes may split into words,
+# and a quoted one that starts with `-` is an option. A delete only such an
+# option turns on says the program may do it.
+posix finds=delete reason="deletes a path only known when it runs" | tar -cf $A src --remove-files
+posix finds=delete reason="deletes a path only known when it runs" | A='x.tar /etc'; tar -cf $A --remove-files
+posix finds=delete | tar --exclude $E -cf x.tar src --remove-files
+posix finds=delete | tar -cf$A src --remove-files
+posix finds=delete | tar -c --file=$A src --remove-files
+posix finds=delete | tar -c --exclude=$E src --remove-files
+posix safe | tar -c --file="$A" src --remove-files
+posix finds=delete | tar -czf x.tar src $OPTS
+posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | tar -cf x.tar ~/src "--$X"
+posix finds=delete | tar -cf x.tar ~/src "--remove-$X"
+posix finds=delete | zip $OPTS x.zip src
+posix finds=delete | zip "-$O" x.zip ~/src
+posix finds=delete | 7z a x.7z src $OPTS
+posix finds=delete | 7z a "-s$O" x.7z ~/src
+posix safe | tar -cf "$A" src
+posix safe | tar -cf "$A" src --remove-files
+posix safe | tar -cf x.tar ~/src "--exclude=$X"
+posix safe | 7z a -p"$PASS" x.7z ~/src

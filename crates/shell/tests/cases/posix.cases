@@ -814,3 +814,63 @@ posix@home finds=delete | rm -rf .ssh
 posix@home finds=delete | rm -rf .SSH
 posix@home finds=delete | rm -rf ~/.zshrc
 posix@home finds=overwrite | echo x >> .bashrc
+
+# A value only known when it runs may hide an operand or an option. An
+# expansion outside quotes may split into several words: more operands for
+# a delete or a move, and an option that throws work away. A quoted one is
+# one word, a value, unless the text it is sure to start with makes it an
+# option: a `-` written before it, a default or an alternate that writes one
+# out, or an ANSI-C or locale quote. A finding that only such an option
+# turns on says what the program may do.
+posix finds=delete | shred -n $N notes.txt
+posix finds=delete | mv -S $X a b
+posix finds=delete | mv -t $T a
+posix finds=overwrite reason="writes to a file only known when it runs" | cp --target-directory=$T a
+posix finds=overwrite reason="writes to a file only known when it runs" | cp --target-directory="$T" a
+posix finds=overwrite reason="writes to a file only known when it runs" | install --target-directory=$T a
+posix rules=overwrite first=overwrite reason="writes to a file only known when it runs" | mv --target-directory="$T" a
+posix finds=overwrite | cp -rt"$T" a
+posix finds=git_remote reason="may rewrite or delete branches on the remote with an option only known when it runs" | git push $F origin main
+posix finds=git_remote | git push "-$F" origin main
+posix finds=git_remote | git push "--$F" origin main
+posix finds=git_remote | git push -"$F" origin main
+posix finds=git_remote | git push "${X:---force}" origin main
+posix finds=git_remote | git push "${X:+--force}" origin main
+posix finds=git_remote | git push $'--force' origin main
+posix finds=git_remote | git push $'-f' origin main
+posix finds=git_remote | git push $"--force" origin main
+posix finds=git_remote | git push origin $BRANCH
+posix finds=git_remote reason="rewrites or deletes branches on the remote" | git push origin "+$B"
+posix finds=git_remote reason="rewrites or deletes branches on the remote" | git push origin ":$B"
+posix finds=git_discard reason="may throw away uncommitted changes with an option only known when it runs" | git reset "--$M"
+posix finds=git_discard | git reset "-$M"
+posix finds=git_discard | git reset "--${M:-hard}"
+posix finds=git_discard | git reset $MODE
+posix finds=git_discard reason="may throw away uncommitted changes with an option only known when it runs" | git reset HEAD $F
+posix finds=git_discard reason="may throw away changes to files with an option only known when it runs" | git checkout $BRANCH
+posix finds=git_discard | git clean $FLAGS
+posix finds=git_discard | git switch $BRANCH
+posix finds=git_discard reason="may throw away changes to files with an option only known when it runs" | git restore --staged $F
+posix finds=git_discard reason="may delete a branch even if it is not merged with an option only known when it runs" | git branch $NAME
+posix finds=git_discard reason="may delete a tag with an option only known when it runs" | git tag $TAG
+posix finds=git_history | git gc $FLAGS
+posix safe | git tag -l $PATTERN
+posix safe | git branch --list $PATTERN
+posix safe | git push origin "$BRANCH"
+posix safe | git push "$REMOTE" main
+posix finds=overwrite reason="may edit a shell startup file with an option only known when it runs" | sed $FLAGS 's/a/b/' ~/.bashrc
+posix finds=overwrite | sed "-$I" s/a/b/ ~/.bashrc
+posix finds=overwrite reason="may edit a file only known when it runs with an option only known when it runs" | sed -n 1,10p $F
+posix finds=delete | rsync -a $FLAGS build/ ../deploy/
+posix finds=delete | rsync -a "--del$X" build/ ../deploy/
+posix safe | rsync -a "--exclude=$X" build/ out/
+# After find's first test, every word is part of its expression: one only
+# known when it runs may be `-delete`, unless it is a test's value.
+posix finds=delete | find ~ -name x $ACTION
+posix finds=delete reason="may delete your home directory with an option only known when it runs" | find ~ -name x "$A"
+posix finds=delete | find ~ -name x "-$A"
+posix finds=delete | find ~ "-del$X"
+posix finds=delete | find ~ -type f -exec cat {} + "$A"
+posix safe | find ~ -name "$p"
+posix safe | find . -name "$p" -exec cat {} +
+posix safe | find "$d" -name x

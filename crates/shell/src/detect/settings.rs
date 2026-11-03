@@ -6,11 +6,12 @@
 
 pub(super) mod firewall;
 
+use super::hedged;
 use super::processes::{is_system_label, is_system_unit};
 use super::{script_operand, Checker};
 use crate::launch::SHELLS;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, Arg, Unit};
+use crate::unit::{has_flag, operands, unread_option, Arg, Unit};
 use crate::{Rule, Shell};
 
 /// Units that protect the machine: stopping one turns protection off, as
@@ -452,7 +453,13 @@ fn protects(name: &str) -> bool {
 }
 
 impl Checker<'_> {
-    /// Machine settings of macOS and Linux.
+    /// Machine settings of macOS and Linux. An argument of one of these
+    /// programs that may split into words when it runs (`iptables $flag`)
+    /// may be the option that changes a setting, so a line the program's
+    /// own reading finds nothing in is a change all the same. `service`,
+    /// `launchctl` and the other service managers take no option that
+    /// changes what their words do, which their own reading judges one by
+    /// one, an unknown one included.
     pub(super) fn settings(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
         // pwsh on Linux and macOS runs a path under `/etc/init.d` as the
@@ -461,7 +468,9 @@ impl Checker<'_> {
             self.init_script(unit, &unit.program, args, false);
             self.shell_runs_init_script(unit, key);
         }
-        match base_name(key) {
+        let before = self.found.len();
+        let name = base_name(key);
+        match name {
             "spctl" => self.spctl(args),
             "csrutil" => self.csrutil(args),
             "setenforce" => self.setenforce(args),
@@ -506,7 +515,27 @@ impl Checker<'_> {
             }
             "hostnamectl" | "timedatectl" => self.set_commands(args, key),
             "hostname" if unit.shell == Shell::Posix => self.hostname(args),
-            _ => {}
+            _ => return,
+        }
+        if self.found.len() == before
+            && !matches!(
+                name,
+                "service"
+                    | "invoke-rc.d"
+                    | "rc-service"
+                    | "rc-update"
+                    | "update-rc.d"
+                    | "chkconfig"
+                    | "sv"
+                    | "launchctl"
+            )
+            && unread_option(args, unit.shell)
+        {
+            self.add(
+                Rule::SystemSettings,
+                hedged("changes a machine setting"),
+                None,
+            );
         }
     }
 

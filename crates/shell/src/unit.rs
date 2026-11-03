@@ -1015,6 +1015,10 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// What `ZIPOPT` and `ZIP` hold for the program being added: `zip`
+    /// reads them as options before its own. One value each, which an
+    /// assignment replaces.
+    pub(crate) zip_env: crate::zipopt::ZipEnv,
     /// The values the variables of [`read_as_arguments`] are given for the
     /// program being added, by name, noted as `node_options` is: terraform
     /// reads `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` as arguments of its
@@ -4181,10 +4185,305 @@ pub(crate) fn has_flag(args: &[Arg], short: Option<char>, long: Option<&str>) ->
     false
 }
 
+/// Whether `arg`, a value only known when it runs, may be several words when
+/// it does, any of which may be an option or another operand: in a POSIX
+/// shell an expansion outside quotes (`$f`, `x$f`, `$(…)`, a backtick), which
+/// the shell splits, and a quoted one that is a list (`"$@"`, `"${a[@]}"`,
+/// `"${!p@}"`); in PowerShell a variable (not `$env:`), a splat (`@a`) or a
+/// subexpression, which hand a program each item of an array as its own
+/// argument; in cmd a `%X%` or `!X!`, quoted or not, which is put in as
+/// text before the program splits its own command line, so a value that
+/// holds a `"` ends the quotes around it; and what a pipeline hands a
+/// program (`xargs`). A quoted expansion in a POSIX shell or PowerShell is
+/// one word (`"$f"`, `"$(…)"`), and so is a known value.
+pub(crate) fn may_split(arg: &Arg, shell: Shell) -> bool {
+    let text = match arg {
+        Arg::Known(_) | Arg::Null => return false,
+        Arg::Input => return true,
+        Arg::Unknown(text) => text.as_str(),
+        Arg::Template { source, .. } => source,
+    };
+    match shell {
+        Shell::Posix => {
+            text.contains("$@")
+                || text.contains("${@")
+                || text.contains("[@]")
+                || (text.contains("${!") && text.contains("@}"))
+                || unquoted_expansion(text)
+        }
+        Shell::PowerShell => {
+            text.starts_with('(')
+                || text.starts_with("@(")
+                || (text.starts_with('$')
+                    && !text
+                        .get(..5)
+                        .is_some_and(|head| head.eq_ignore_ascii_case("$env:")))
+                || (text.starts_with('@') && text.len() > 1)
+        }
+        Shell::Cmd => text.contains(['%', '!']),
+    }
+}
+
+/// Whether a POSIX word holds a `$` or a backtick outside quotes: an
+/// expansion the shell splits into words. `$'…'` and `$"…"` are quotes.
+fn unquoted_expansion(text: &str) -> bool {
+    let mut quote = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            // A backslash keeps the next character, outside quotes and
+            // inside double ones.
+            (Some('"') | None, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '$') if !matches!(chars.peek(), Some('\'' | '"') | None) => return true,
+            (None, '`') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The text an argument only known when it runs is sure to start with,
+/// when that makes it an option, one word though it is: its text up to the
+/// first expansion, quotes taken off, when that starts with `-` (or `/`, a
+/// switch, in cmd): `"-$F"`, `-"$F"`, `"--remove-$X"`. In a POSIX shell
+/// also the start of the value a default or an alternate writes out, which
+/// is what the word is when the variable is unset or empty (`"${X:---force}"`,
+/// `"${X:+--force}"`), and the text of an ANSI-C or locale quote, which the
+/// reader keeps as only known when it runs (`$'--force'`, `$"-f"`); an
+/// escape that starts an ANSI-C quote may be any character, a `-` among
+/// them, and gives the empty start: any option. `None` when the word starts
+/// with what an expansion holds (`"$F"`): a rule takes that as a value.
+pub(crate) fn option_start(arg: &Arg, shell: Shell) -> Option<String> {
+    let start = unknown_start(arg, shell)?;
+    let dashes: &[char] = if shell == Shell::Cmd {
+        &['-', '/']
+    } else {
+        &['-']
+    };
+    (start.is_empty() || start.starts_with(dashes)).then_some(start)
+}
+
+/// The text an argument only known when it runs is sure to start with,
+/// whatever that is (see [`option_start`]): `+` for `"+$B"`. `None` for a
+/// known value, and when nothing is written before the first expansion.
+pub(crate) fn unknown_start(arg: &Arg, shell: Shell) -> Option<String> {
+    let text = match arg {
+        Arg::Unknown(text) => text.as_str(),
+        Arg::Template { source, .. } => source,
+        Arg::Known(_) | Arg::Null | Arg::Input => return None,
+    };
+    match shell {
+        Shell::Posix => posix_start(text),
+        Shell::PowerShell => Some(literal_start(text, '`', &['$', '@', '('])),
+        Shell::Cmd => Some(literal_start(text, '^', &['%', '!'])),
+    }
+}
+
+/// The start of a POSIX word up to its first expansion, quotes taken off
+/// (see [`option_start`]). `None` when nothing is written before it and no
+/// default writes it out.
+fn posix_start(text: &str) -> Option<String> {
+    let mut start = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), c) => start.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '\\') => start.extend(chars.next()),
+            // Inside double quotes a backslash keeps only `$`, a backtick,
+            // `"` and itself.
+            (_, '\\') => match chars.next() {
+                Some(next @ ('$' | '`' | '"' | '\\')) => start.push(next),
+                Some(next) => {
+                    start.push('\\');
+                    start.push(next);
+                }
+                None => start.push('\\'),
+            },
+            (_, '$') => match chars.peek() {
+                // ANSI-C quoting: its text, up to an escape.
+                Some('\'') if quote.is_none() => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\'') | None => break,
+                            Some('\\') => return Some(start),
+                            Some(c) => start.push(c),
+                        }
+                    }
+                }
+                // Locale quoting reads as double quotes.
+                Some('"') if quote.is_none() => {
+                    chars.next();
+                    quote = Some('"');
+                }
+                Some('{') if start.is_empty() => {
+                    chars.next();
+                    let mut depth = 1;
+                    let inner: String = chars
+                        .by_ref()
+                        .take_while(|&c| {
+                            match c {
+                                '{' => depth += 1,
+                                '}' => depth -= 1,
+                                _ => {}
+                            }
+                            depth > 0
+                        })
+                        .collect();
+                    return default_start(&inner);
+                }
+                _ => break,
+            },
+            (_, '`') => break,
+            (_, c) => start.push(c),
+        }
+    }
+    (!start.is_empty()).then_some(start)
+}
+
+/// The start of the value a `${NAME:-word}`, `${NAME-word}`, `${NAME:=word}`
+/// or `${NAME:+word}` writes out, `inner` being what is between its braces.
+fn default_start(inner: &str) -> Option<String> {
+    let name = inner
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(inner.len());
+    if name == 0 {
+        return None;
+    }
+    let rest = &inner[name..];
+    let rest = rest.strip_prefix(':').unwrap_or(rest);
+    let word = rest.strip_prefix(['-', '=', '+'])?;
+    posix_start(word)
+}
+
+/// The start of a PowerShell or cmd word up to its first expansion, quotes
+/// taken off, `escape` keeping the character after it (see
+/// [`option_start`]).
+fn literal_start(text: &str, escape: char, expansions: &[char]) -> String {
+    let mut start = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {}
+            c if c == escape => start.extend(chars.next()),
+            c if expansions.contains(&c) => break,
+            c => start.push(c),
+        }
+    }
+    start
+}
+
+/// Whether an argument before `--` that is only known when it runs may be an
+/// option `could` takes, given the start of its text (see [`option_start`]):
+/// one that may split into words when it runs (see [`may_split`]) may be
+/// any option.
+pub(crate) fn may_be_option(args: &[Arg], shell: Shell, could: impl Fn(&str) -> bool) -> bool {
+    args.iter()
+        .take_while(|arg| arg.known() != Some("--"))
+        .any(|arg| {
+            may_split(arg, shell) || option_start(arg, shell).is_some_and(|start| could(&start))
+        })
+}
+
+/// Whether an argument before `--` that is only known when it runs may be
+/// any option (see [`may_be_option`]): a rule that looks for an option that
+/// destroys takes it as given.
+pub(crate) fn unread_option(args: &[Arg], shell: Shell) -> bool {
+    may_be_option(args, shell, |_| true)
+}
+
+/// Whether the POSIX-style option `-short` or `--long` may start with
+/// `start` (see [`option_start`]): `-` and a bundle of letters may go on
+/// with `short`, and `--` with the letters of `long` or a prefix of them,
+/// which a program that takes an abbreviation reads as it. The empty start
+/// and `-` alone, which a second `-` may follow, may be any option.
+pub(crate) fn could_be(start: &str, short: Option<char>, long: Option<&str>) -> bool {
+    if start.is_empty() || start == "-" {
+        return short.is_some() || long.is_some();
+    }
+    if let Some(name) = start.strip_prefix("--") {
+        return long.is_some_and(|long| {
+            long.starts_with(name)
+                || name
+                    .strip_prefix(long)
+                    .is_some_and(|rest| rest.starts_with('='))
+        });
+    }
+    start
+        .strip_prefix('-')
+        .is_some_and(|bundle| short.is_some() && bundle.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// How an option is given: written out, maybe (by an argument only known
+/// when it runs, see [`may_be_option`]), or not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flagged {
+    Absent,
+    Unread,
+    Written,
+}
+
+impl Flagged {
+    /// `Written` when `written`, else `Unread` when `unread`.
+    pub(crate) fn of(written: bool, unread: bool) -> Self {
+        if written {
+            Self::Written
+        } else if unread {
+            Self::Unread
+        } else {
+            Self::Absent
+        }
+    }
+}
+
+/// How the POSIX-style option `-short` or `--long` is given: written out
+/// ([`has_flag`]), or maybe, by an argument before `--` only known when it
+/// runs that may be it (see [`may_be_option`] and [`could_be`]).
+pub(crate) fn flagged(
+    args: &[Arg],
+    shell: Shell,
+    short: Option<char>,
+    long: Option<&str>,
+) -> Flagged {
+    Flagged::of(
+        has_flag(args, short, long),
+        may_be_option(args, shell, |start| could_be(start, short, long)),
+    )
+}
+
 /// The arguments that are not POSIX-style options: everything after `--`,
 /// and what does not start with `-` before it. `takes_value` names the
 /// options whose next argument is their value, not an operand.
 pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |_| false)
+}
+
+/// As [`operands`], with the value of an option in `takes_value` among them
+/// when it may split into words when it runs (`shred -n $N f`, see
+/// [`may_split`]): a word after the first is an operand.
+pub(crate) fn operands_split<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    shell: Shell,
+) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |value| may_split(value, shell))
+}
+
+/// The operands as [`operands`] reads them, and each value of an option in
+/// `takes_value` that `counts` takes as one.
+fn operands_where<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    counts: impl Fn(&Arg) -> bool,
+) -> Vec<&'a Arg> {
     let mut operands = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -4195,7 +4494,7 @@ pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg
             }
             Some(text) if text.len() > 1 && text.starts_with('-') => {
                 if takes_value.contains(&text) {
-                    iter.next();
+                    operands.extend(iter.next().filter(|value| counts(value)));
                 }
             }
             _ => operands.push(arg),

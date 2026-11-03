@@ -25,7 +25,7 @@ mod tools;
 mod wrappers;
 
 use find::find_exec;
-pub(crate) use find::find_targets;
+pub(crate) use find::{find_targets, find_unread_primary, FIND_VALUED};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, code_options, is_node, is_python, options, own_args, perl_edits, py_picks_three,
@@ -71,6 +71,14 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It is the program the rules judge, and it runs each of these
+    /// commands through `shell` besides (`tar --to-command`, `zip -TT`),
+    /// from a folder only known when it runs when `moves` (`tar -C`).
+    Commands {
+        shell: Shell,
+        commands: Vec<Arg>,
+        moves: bool,
+    },
     /// It runs `code`, given inline, in `language`.
     Inline(Language, Code),
     /// It runs a script it downloads.
@@ -99,6 +107,7 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // and so is the folder it starts the program in.
     let options = split.node_options.len();
     let paths = split.python_path.len();
+    let zip = split.zip_env.clone();
     let variables = split.argument_variables.len();
     let environment = split.environment;
     let folders = split.folders_mark();
@@ -106,6 +115,7 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     split.leave_folders(folders);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
+    split.zip_env = zip;
     split.truncate_argument_variables(variables);
     split.environment = environment;
     split.unscope_hidden(outer);
@@ -275,6 +285,11 @@ fn add_launched(
             split.push(unit);
             return;
         };
+        // `ZIPOPT=-m zip …`: zip reads its options from there first, on
+        // Windows too (`$env:ZIPOPT`, `set ZIPOPT=`).
+        if key == "zip" && !split.zip_env.is_empty() {
+            zip_options(split, &mut unit);
+        }
         // What the line sets for the program where it runs, which a runner
         // reads (`npm_config_call='…' npx`).
         unit.argument_variables = Rc::clone(&split.argument_variables);
@@ -378,6 +393,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                for (name, value) in wrappers::zip_env(&unit.args, start) {
+                    split.zip_env.set(name, &value, false);
+                }
                 for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
                     split.note_argument_variable(name, value);
                 }
@@ -418,6 +436,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                for (name, value) in wrappers::zip_env(&unit.args, start) {
+                    split.zip_env.set(name, &value, false);
+                }
                 for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
                     split.note_argument_variable(name, value);
                 }
@@ -572,6 +593,14 @@ fn add_launched(
                 }
                 return;
             }
+            Launch::Commands {
+                shell,
+                commands,
+                moves,
+            } => {
+                run_commands(split, unit, shell, commands, moves, depth);
+                return;
+            }
             Launch::Inline(language, code) => {
                 // The paths in the code are read as POSIX ones, and a command it
                 // runs as a POSIX shell line: on Windows they are neither.
@@ -657,6 +686,86 @@ fn unread_script(split: &mut Split, script: &Arg) {
             Some(script.text()),
         );
     }
+}
+
+/// Add `unit`, an archiver, and the `commands` it runs through `shell`
+/// besides, each nested under it, from a folder only known when it runs
+/// when it `moves`. A function of its own, so that its locals are not on
+/// the stack of [`add_launched`] in the deepest walk of a nested line.
+#[inline(never)]
+fn run_commands(
+    split: &mut Split,
+    unit: Unit,
+    shell: Shell,
+    commands: Vec<Arg>,
+    moves: bool,
+    depth: usize,
+) {
+    let at = split.units.len();
+    split.push(unit);
+    for command in commands {
+        let Arg::Known(text) = command else {
+            split.problem(
+                Rule::Unknown,
+                "runs a command only known when it runs",
+                Some(command.text()),
+            );
+            continue;
+        };
+        // Each runs in a shell of its own, which a `GLOBIGNORE` in front of
+        // the program hands the option to.
+        let outer = split.hidden_snapshot();
+        if split.scoped_hidden() {
+            split.hide_for_script();
+        }
+        // `tar -C dir` runs it from `dir`, or from where the line was:
+        // which, only the order of the run shows.
+        let outer_dir = moves.then(|| split.dir_snapshot());
+        if moves {
+            split.move_unknown("the folder it runs in");
+        }
+        let first = split.units.len();
+        unit::script_in(split, &text, shell, depth + 1, false);
+        if let Some(place) = outer_dir {
+            split.restore_dir(place);
+        }
+        split.nest(at..at + 1, first..split.units.len());
+        split.restore_hidden(outer);
+    }
+}
+
+/// What an archiver that may run commands through a shell besides does:
+/// itself alone, or with the commands its arguments give.
+#[inline(never)]
+fn archiver(key: &str, unit: &Unit) -> Launch {
+    let (commands, moves) = crate::detect::archive_commands(key, &unit.args, unit.shell);
+    if commands.is_empty() {
+        Launch::Itself
+    } else {
+        Launch::Commands {
+            shell: if unit.shell == Shell::Posix {
+                Shell::Posix
+            } else {
+                Shell::Cmd
+            },
+            commands,
+            moves,
+        }
+    }
+}
+
+/// Put the options `ZIPOPT` (or `ZIP`) gives in front of `zip`'s own, as it
+/// reads them. A value only known when it runs may hold any option, `-m`
+/// among them.
+#[inline(never)]
+fn zip_options(split: &mut Split, unit: &mut Unit) {
+    let read = split.zip_env.read();
+    for (reason, text) in read.problems {
+        split.problem(Rule::Unknown, reason, text.as_deref());
+    }
+    let mut words = read.words;
+    words.append(&mut unit.args);
+    unit.args = words;
 }
 
 /// The name and value of each alias `alias NAME=VALUE…` defines: every word
@@ -1016,6 +1125,9 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             packages::line_runner(key, unit).unwrap_or(Launch::Itself)
         }
         "dx" => runner(key, unit),
+        // An archiver that runs commands through a shell besides: `/bin/sh`
+        // on a POSIX system, and `cmd` on Windows.
+        "tar" | "gtar" | "bsdtar" | "zip" => archiver(key, unit),
         "git" => git::launch(args),
         "bun" => bun(unit, input),
         "deno" => deno(unit, input),

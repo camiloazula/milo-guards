@@ -462,7 +462,7 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
             .map(|file| Cow::Owned(Arg::Known(file.to_string())))
             .collect(),
         // The sources of a copy are read whatever the destination is.
-        "cp" | "install" => borrowed(sources_and_destination(args, &COPY_VALUED).0),
+        "cp" | "install" => borrowed(sources_and_destination(args, &COPY_VALUED, unit.shell).0),
         "rsync" => {
             let operands = rsync_operands(args);
             match operands.split_last() {
